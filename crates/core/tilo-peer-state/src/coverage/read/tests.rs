@@ -35,16 +35,16 @@ fn admitted() -> BTreeMap<String, u64> {
 tilo_test_env::scenario! {
     fn the_coverage_reader_reads_what_governance_holds_of_a_route;
 
-    phase coverage_reader_accepts_the_governed_checkpoint;
+    phase coverage_reader_accepts_the_covering_checkpoint;
     {
         let (workspace, snapshot) = stored();
-        let read = governed_snapshot_matches(
+        let read = coverage_snapshot_matches(
             Some(&workspace),
             ("test.app", "tab:1"),
             &admitted(),
             Some(&snapshot),
         );
-        assert_eq!(read, Ok(Governed::Current));
+        assert_eq!(read, Ok(Listed::Current));
     }
 
     phase coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint_semantics;
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
             } else {
                 &snapshot
             };
-            let read = governed_snapshot_matches(
+            let read = coverage_snapshot_matches(
                 Some(&workspace),
                 ("test.app", "tab:1"),
                 &admitted(),
@@ -89,7 +89,7 @@ tilo_test_env::scenario! {
             );
             match mode {
                 0 | 1 => {
-                    assert_eq!(read, Ok(Governed::Current));
+                    assert_eq!(read, Ok(Listed::Current));
                 }
                 2 => {
                     assert!(matches!(read, Err(CoverageMatchError::Decode(_))));
@@ -105,22 +105,22 @@ tilo_test_env::scenario! {
     {
         let (workspace, snapshot) = stored();
         assert_eq!(
-            governed_snapshot_matches(
+            coverage_snapshot_matches(
                 Some(&workspace),
                 ("test.app", "tab:1"),
                 &admitted(),
                 None,
             ),
-            Ok(Governed::Current)
+            Ok(Listed::Current)
         );
         assert_eq!(
-            governed_snapshot_matches(
+            coverage_snapshot_matches(
                 Some(&workspace),
                 ("test.app", "unknown"),
                 &admitted(),
                 Some(&snapshot),
             ),
-            Ok(Governed::Current)
+            Ok(Listed::Current)
         );
     }
 
@@ -130,13 +130,13 @@ tilo_test_env::scenario! {
         let older = b"older checkpoint".as_slice();
         let arriving = BTreeMap::new();
         assert_eq!(
-            governed_snapshot_matches(
+            coverage_snapshot_matches(
                 Some(&workspace),
                 ("test.app", "tab:1"),
                 &arriving,
                 Some(older),
             ),
-            Ok(Governed::Arriving)
+            Ok(Listed::Arriving)
         );
     }
 }

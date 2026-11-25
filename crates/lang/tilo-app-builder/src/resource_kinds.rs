@@ -31,7 +31,7 @@ pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result
 /// The kinds that are the app's own: declared in its sources or in a local
 /// crate it depends on directly, such as a shared model, and not by the SDK,
 /// whose kinds are the framework's. They are what the app's manifest must
-/// list in `[resources] kinds`, so a governed workspace lets the app create
+/// list in `[resources] kinds`, so a workspace lets the app create
 /// its records.
 /// Keep the historical queue kind for apps with chain parts so earlier
 /// records can still drain after upgrading.

@@ -22,7 +22,7 @@ fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> DeviceId
     DeviceIdentity::kept(cert.clone(), key.clone())
 }
 
-/// This device's engine, holding the workspace it governs, and the session's own view of it with
+/// This device's engine, holding the workspace it hosts, and the session's own view of it with
 /// the person in it as its owner. `joiner` joins the workspace too, as their own device, and
 /// comes back as the person the workspace knows them by.
 fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir) {
@@ -33,9 +33,9 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
     let identity = identity(&cert, &person_key);
     let engine = Engine::open(identity, Some(directory.path()), std::iter::empty())
         .expect("this device's engine opens");
-    let governor = TestWorkspace::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
-        .expect("this device governs its workspace");
-    let mut governor = testing::enroll_into(governor, engine.owner(), &person_key, &cert)
+    let admitting = TestWorkspace::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
+        .expect("this device hosts its workspace");
+    let mut admitting = testing::enroll_into(admitting, engine.owner(), &person_key, &cert)
         .expect("this device's workspace is its own");
     // The person the settings change, as their own device of the same workspace: a person the
     // workspace has a device of is one it has.
@@ -45,13 +45,13 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
     let joining = tempfile::TempDir::new().expect("her state directory");
     let hers = tilo_peer_state::owner::open_file(&joining.path().join("owner.json"))
         .expect("her owner opens");
-    governor = testing::enroll_into(governor, &hers, &her_key, &her)
+    admitting = testing::enroll_into(admitting, &hers, &her_key, &her)
         .expect("the workspace admits her device");
     // What her admission changed reaches this device's copy of the workspace, as it would over
     // the workspace's own peer network.
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
     let now = tilo_clock::wall();
-    for (bytes, _) in governor.outgoing() {
+    for (bytes, _) in admitting.outgoing() {
         engine
             .owner()
             .receive(
@@ -60,7 +60,7 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
                 postcard::from_bytes(&bytes).expect("a workspace change"),
                 now,
             )
-            .expect("this device takes the workspace as its governor has it");
+            .expect("this device takes the workspace as its host has it");
     }
     let mut workspace = Workspace::new(workspace_id, "Test");
     workspace
@@ -142,8 +142,8 @@ fn the_owner_admitted_ada() -> TwoSessions {
     let a_root = SigningKey::from_bytes(&[51; 32]);
     let a_key = SigningKey::from_bytes(&[52; 32]);
     let a_cert = testing::certificate(&a_root, &a_key, "The owner's laptop");
-    let governor = TestWorkspace::empty_interactive(a_cert.clone(), a_key.clone(), WORKSPACE)
-        .expect("the workspace's owner governs it");
+    let admitting = TestWorkspace::empty_interactive(a_cert.clone(), a_key.clone(), WORKSPACE)
+        .expect("the workspace's owner hosts it");
     let a_state = tempfile::TempDir::new().expect("a state directory");
     let a_engine = Engine::open(
         identity(&a_cert, &a_key),
@@ -151,7 +151,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         std::iter::empty(),
     )
     .expect("the owner's engine opens");
-    let mut governor = testing::enroll_into(governor, a_engine.owner(), &a_key, &a_cert)
+    let mut admitting = testing::enroll_into(admitting, a_engine.owner(), &a_key, &a_cert)
         .expect("the workspace is the owner's");
     // The person at this session joins it as their own device, and so does another member.
     let b_root = SigningKey::from_bytes(&[53; 32]);
@@ -164,7 +164,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         [workspace_id],
     )
     .expect("this session's engine opens");
-    governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
+    admitting = testing::enroll_into(admitting, b_engine.owner(), &b_key, &b_cert)
         .expect("the workspace admits this session");
     let her_root = SigningKey::from_bytes(&[55; 32]);
     let her_key = SigningKey::from_bytes(&[56; 32]);
@@ -172,9 +172,9 @@ fn the_owner_admitted_ada() -> TwoSessions {
     let hers_at = tempfile::TempDir::new().expect("her state directory");
     let hers = tilo_peer_state::owner::open_file(&hers_at.path().join("owner.json"))
         .expect("her owner opens");
-    governor = testing::enroll_into(governor, &hers, &her_key, &her)
+    admitting = testing::enroll_into(admitting, &hers, &her_key, &her)
         .expect("the workspace admits her device");
-    let admitted: Vec<neighbour_wire::NeighbourMsg> = governor
+    let admitted: Vec<neighbour_wire::NeighbourMsg> = admitting
         .outgoing()
         .map(|(bytes, _)| postcard::from_bytes(&bytes).expect("a workspace change"))
         .collect();
@@ -293,11 +293,11 @@ fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
 
     // This member's shell takes it from the workspace: a capability that lasts only while this
     // session does stays, one the workspace took back goes.
-    let governed = sessions
+    let listed = sessions
         .session
         .owner()
         .with_current(sessions.workspace_id, |view| {
-            view.peer().governance().governed_sandbox()
+            view.peer().governance().member_sandbox()
         })
         .expect("this session holds the workspace");
     let mut shown = Workspace::new(sessions.workspace_id, "Test");
@@ -315,7 +315,7 @@ fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
     )
     .through("so.tilo.notes");
     shown.sandbox = vec![session_only.clone(), taken_back];
-    assert!(super::project_sandbox(&mut shown, governed));
+    assert!(super::project_sandbox(&mut shown, listed));
     assert!(
         shown
             .sandbox
@@ -528,9 +528,9 @@ fn a_change_the_workspace_refuses_leaves_its_people_as_they_were() {
 }
 
 /// The session this computer keeps under `state` , acting as `person` , with its own workspace
-/// governed by this computer's device — the workspace's owner — and ada admitted by a device of
+/// hosted by this computer's device — the workspace's owner — and ada admitted by a device of
 /// her own.
-struct GovernedSession {
+struct ListedSession {
     session: Option<crate::Session>,
     state: tempfile::TempDir,
     _served: Option<tempfile::TempDir>,
@@ -569,22 +569,22 @@ fn session_as(
     .expect("a session")
 }
 
-fn a_governed_session() -> GovernedSession {
-    governed_session(None)
+fn a_listed_session() -> ListedSession {
+    listed_session(None)
 }
 
-/// [`a_governed_session`] whose session serves its apps' broker, so this computer's own device
+/// [`a_listed_session`] whose session serves its apps' broker, so this computer's own device
 /// changes the workspace through the session it runs.
-fn governed_session(served: Option<tempfile::TempDir>) -> GovernedSession {
-    governed_session_seeded(served, |_, _, _| ())
+fn listed_session(served: Option<tempfile::TempDir>) -> ListedSession {
+    listed_session_seeded(served, |_, _, _| ())
 }
 
-/// `governed_session`, with what `seed` gives the governor to publish once
+/// `listed_session`, with what `seed` gives the host to publish once
 /// the workspace has both devices in it.
-fn governed_session_seeded(
+fn listed_session_seeded(
     served: Option<tempfile::TempDir>,
     seed: impl FnOnce(&mut TestWorkspace, &tilo_user_identity::DeviceCert, &SigningKey),
-) -> GovernedSession {
+) -> ListedSession {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let (identity, cert, key) = provisioned_identity(&mut home);
     let person = hex::encode(cert.user_public_key);
@@ -608,7 +608,7 @@ fn governed_session_seeded(
     session
         .step(std::time::Duration::from_millis(1))
         .expect("a frame");
-    GovernedSession {
+    ListedSession {
         session: Some(session),
         state,
         _served: served,
@@ -625,7 +625,7 @@ fn governed_session_seeded(
     }
 }
 
-impl GovernedSession {
+impl ListedSession {
     /// The session this session runs.
     fn session(&mut self) -> &mut crate::Session {
         self.session.as_mut().expect("the session runs")
@@ -663,7 +663,7 @@ impl GovernedSession {
 
 /// The sheet the session hosts, as the person at this session presses it.
 fn settings_sheet(
-    session: &mut GovernedSession,
+    session: &mut ListedSession,
 ) -> tilo_app_test_host::TestApp<tilo_sheets::workspace_settings::WorkspaceSettingsApp> {
     session
         .session()
@@ -697,7 +697,7 @@ fn settings_sheet(
 }
 
 /// The role the sheet shows for `who` .
-fn shown_role(session: &mut GovernedSession, who: &str) -> Option<String> {
+fn shown_role(session: &mut ListedSession, who: &str) -> Option<String> {
     let who = who.to_owned();
     session
         .settings()
@@ -740,7 +740,7 @@ fn activate(
 #[test]
 fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
     let _settled = ui::motion::testing::settled();
-    let mut session = a_governed_session();
+    let mut session = a_listed_session();
     let mut app = settings_sheet(&mut session);
     let ada = session.ada.clone();
     assert_eq!(
@@ -779,7 +779,7 @@ fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
 #[test]
 fn a_refused_role_change_says_why_and_keeps_the_role() {
     let _settled = ui::motion::testing::settled();
-    let mut session = a_governed_session();
+    let mut session = a_listed_session();
     let mut app = settings_sheet(&mut session);
     app.effect(
         &tilo_sheets::workspace_settings::WorkspaceSettingsEffect::SetRole {
@@ -808,13 +808,13 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
         Some("editor"),
         "she keeps the role she had"
     );
-    let governed = session.session().handle().read(|tree| {
+    let listed = session.session().handle().read(|tree| {
         tree.workspaces
             .first()
             .and_then(|ws| ws.policy.role_of(&ada))
     });
     assert_eq!(
-        governed,
+        listed,
         Some(Role::Editor),
         "and the workspace never had her as anything else"
     );
@@ -825,7 +825,7 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
 #[test]
 fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     let _settled = ui::motion::testing::settled();
-    let mut session = a_governed_session();
+    let mut session = a_listed_session();
     // The workspace grants an app the camera, as one of its devices wrote.
     let mut tree = session.session().handle().read(Clone::clone);
     collab_types::caps::sandbox::grant(
@@ -963,7 +963,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
             .read(|tree| tree.workspaces.first().map(Workspace::id))
             .expect("a workspace on the session")
     };
-    // The workspace, as this computer's device governs it, takes ada in: a change another
+    // The workspace, as this computer's device hosts it, takes ada in: a change another
     // member's device makes while this session is away.
     let now = tilo_clock::wall();
     let her_root = SigningKey::from_bytes(&[0x63; 32]);
@@ -972,18 +972,18 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
     {
         let engine = Engine::open(identity(&cert, &key), Some(state.path()), [workspace_id])
             .expect("this computer's engine opens");
-        the_fixture_governs(&engine, workspace_id);
-        let governor =
+        the_fixture_hosts(&engine, workspace_id);
+        let admitting =
             TestWorkspace::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
-                .expect("this computer's device governs the workspace");
-        let mut governor = testing::enroll_into(governor, engine.owner(), &key, &cert)
+                .expect("this computer's device hosts the workspace");
+        let mut admitting = testing::enroll_into(admitting, engine.owner(), &key, &cert)
             .expect("the workspace is this computer's");
         let hers_at = tempfile::TempDir::new().expect("her state directory");
         let hers = tilo_peer_state::owner::open_file(&hers_at.path().join("owner.json"))
             .expect("her owner opens");
-        governor = testing::enroll_into(governor, &hers, &her_key, &her)
+        admitting = testing::enroll_into(admitting, &hers, &her_key, &her)
             .expect("the workspace admits her device");
-        for (bytes, _) in governor.outgoing() {
+        for (bytes, _) in admitting.outgoing() {
             engine
                 .owner()
                 .receive(
@@ -1174,16 +1174,16 @@ fn a_workspace_on_the_shell(state: &std::path::Path) -> WorkspaceId {
         .expect("a workspace on the session")
 }
 
-/// Let go of the workspace the session founded here, so a fixture host can be the one that governs
+/// Let go of the workspace the session founded here, so a fixture host can be the one that hosts
 /// it: the fixture's own genesis is the workspace's then, and the devices it admits are the
 /// workspace's.
-fn the_fixture_governs(mine: &Engine, workspace_id: WorkspaceId) {
+fn the_fixture_hosts(mine: &Engine, workspace_id: WorkspaceId) {
     mine.delete(workspace_id)
         .expect("this device lets go of the workspace it founded");
 }
 
 /// Another person the workspace admits, on a device of her own: her engine on `her_state` , her
-/// certificate and key, and the id the workspace knows her by. `seed` makes what the governor
+/// certificate and key, and the id the workspace knows her by. `seed` makes what the host
 /// publishes to the devices once the workspace has both of them.
 fn a_second_device(
     state: &std::path::Path,
@@ -1198,22 +1198,22 @@ fn a_second_device(
     let her = testing::certificate(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
     let hers = Engine::open(identity(&her, &her_key), Some(her_state), [workspace_id])
         .expect("her engine opens");
-    // This computer's device governs the workspace, and admits her.
+    // This computer's device hosts the workspace, and admits her.
     let mine = Engine::open(identity(cert, key), Some(state), [workspace_id])
         .expect("this computer's engine opens");
-    // The workspace the session made is this computer's own already: a fixture host governs it
+    // The workspace the session made is this computer's own already: a fixture host serves it
     // from here, and admits her device into it.
-    the_fixture_governs(&mine, workspace_id);
-    let governor =
+    the_fixture_hosts(&mine, workspace_id);
+    let admitting =
         TestWorkspace::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
-            .expect("this computer's device governs the workspace");
-    let mut governor = testing::enroll_into(governor, mine.owner(), key, cert)
+            .expect("this computer's device hosts the workspace");
+    let mut admitting = testing::enroll_into(admitting, mine.owner(), key, cert)
         .expect("the workspace is this computer's");
-    governor = testing::enroll_into(governor, hers.owner(), &her_key, &her)
+    admitting = testing::enroll_into(admitting, hers.owner(), &her_key, &her)
         .expect("the workspace admits her device");
     let person = hex::encode(her.user_public_key);
-    seed(&mut governor, cert, key);
-    for (bytes, _) in governor.outgoing() {
+    seed(&mut admitting, cert, key);
+    for (bytes, _) in admitting.outgoing() {
         for engine in [&mine, &hers] {
             engine
                 .owner()

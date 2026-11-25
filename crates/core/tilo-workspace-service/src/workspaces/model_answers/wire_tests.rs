@@ -25,7 +25,7 @@ use test_http::{Reply, Responder};
 use super::scripted::Linking;
 use super::*;
 use crate::workspaces::fixtures::TestHost;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 const ADA: WorkspaceId = WorkspaceId::from_u128(7);
 const KEY: &str = "sk-ada-wire-secret";
@@ -70,7 +70,7 @@ async fn linked(
     model: &str,
 ) -> (tempfile::TempDir, TestHost) {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -795,7 +795,7 @@ async fn a_call_let_go_of_ends_the_providers_request() {
 async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
     let responder = Responder::silent();
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()

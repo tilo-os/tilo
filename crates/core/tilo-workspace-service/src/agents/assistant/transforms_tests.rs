@@ -26,8 +26,8 @@ use crate::apps::collab_app_broker::AppBrokerState;
 use crate::apps::services::ProcessServices;
 use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use crate::work::AgentEngine;
-use crate::workspaces::fixtures::{governor, test_host};
-use crate::workspaces::governed;
+use crate::workspaces::fixtures::{hosting_device, test_host};
+use crate::workspaces::hosted;
 use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
 
 /// An agent engine that acts as every agent: what makes this device one that answers its
@@ -97,7 +97,7 @@ fn two_agents_each_run_four_transforms_and_a_fifth_is_refused_for_that_agent() {
 #[test]
 fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -105,7 +105,7 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
         .unwrap();
     let (server, workspace) = runtime.block_on(async {
         let server = test_host(dir.path(), &key, &owner).await;
-        let (workspace, _, _service) = governed(server.workspaces()).await;
+        let (workspace, _, _service) = hosted(server.workspaces()).await;
         server.workspaces().run_agents(Arc::new(Keys));
         server.workspaces().call_private_model_addresses(true);
         server

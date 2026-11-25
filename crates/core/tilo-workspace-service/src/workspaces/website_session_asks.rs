@@ -183,7 +183,7 @@ mod tests {
 
     use browser_continuity_core::sessions::{Cookie, SameSite, Service};
 
-    use super::super::fixtures::{governor, test_host_keyed};
+    use super::super::fixtures::{hosting_device, test_host_keyed};
 
     /// The person's selected Slack session, made under `binding`.
     fn selected(identity: [u8; 32]) -> SessionCookies {
@@ -243,7 +243,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_selection_the_workspaces_vault_keeps_is_listed_opened_and_forgotten() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let (host, _keys) = test_host_keyed(dir.path(), &key, &cert).await;
         let workspaces = host.workspaces();
         let workspace = workspaces.create("Sessions").await.unwrap().workspace;

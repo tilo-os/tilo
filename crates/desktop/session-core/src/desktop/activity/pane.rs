@@ -389,7 +389,7 @@ pub struct WorkspaceActivityPane {
     /// [`Self::history_log`]'s rows revision at the last rebuild: while it holds, the changes since
     /// were all passed over (a workspace switch) and the rows are as derived.
     last_rows: u64,
-    /// The heads of the workspace's own document at the last rebuild: what it governed since is
+    /// The heads of the workspace's own document at the last rebuild: what it recorded since is
     /// read even while the layout's own document stands still.
     last_governing: Vec<ChangeHash>,
     /// Every row the document yielded, with the workspace each belongs to (`None` for no single
@@ -1625,8 +1625,8 @@ impl WorkspaceActivityPane {
         if let Some(own) = tree.document_workspace() {
             tags.fill(Some(own));
         }
-        // What the workspace governs — who owns it, who it is shared with, what it grants — is
-        // written in the workspace's own document, which the layout is one record of.
+        // What the workspace's governance says — who owns it, who it is shared with, what it
+        // grants — is written in the workspace's own document, which the layout is one record of.
         self.read_governance(tree, &mut entries, &mut tags);
         // A receipt is committed by the workspace host, but its authenticated `actor` is the person
         // (or agent) who performed the semantic action. Attribute the projected CRDT row to that
@@ -1754,8 +1754,8 @@ impl WorkspaceActivityPane {
             .unwrap_or_default()
     }
 
-    /// Append what the workspace's own document says it governed — who owns it, who it is shared
-    /// with, what it grants — to `entries`, each row tagged with the workspace it governs.
+    /// Append what the workspace's own document says of its governance — who owns it, who it is
+    /// shared with, what it grants — to `entries`, each row tagged with its workspace.
     fn read_governance(
         &mut self,
         tree: &impl ActivityTree,

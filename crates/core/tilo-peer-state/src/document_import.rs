@@ -1,16 +1,15 @@
-//! Bringing a whole document into a governed workspace: the proposals the
-//! governor keeps in the workspace and the actions that carry them.
+//! Bringing a whole document into a workspace: the proposals the host keeps in
+//! the workspace and the actions that carry them.
 //!
 //! A member proposes ([`PROPOSE`]) with a signed
-//! [`DocumentImportProposalV1`] and the document itself. The governor
-//! checks that the proposer could create that record, validates the
-//! document, and records the proposal under [`WORKSPACE_KEY`] in the workspace's
-//! governed state, where every member's desktop sees it. The workspace's owner
-//! answers ([`ACCEPT`] or [`DECLINE`]) with a signed [`DocumentImportDecisionV1`]. Only an
-//! accepted, unexpired proposal becomes a record, created by the governor
-//! with the rights an empty creation needs; a declined or expired one never
-//! creates anything. The map is governed: only the workspace's authority writes
-//! it.
+//! [`DocumentImportProposalV1`] and the document itself. The host checks that
+//! the proposer could create that record, validates the document, and records
+//! the proposal under [`WORKSPACE_KEY`] in the workspace, where every member's
+//! desktop sees it. The workspace's owner answers ([`ACCEPT`] or [`DECLINE`])
+//! with a signed [`DocumentImportDecisionV1`]. Only an accepted, unexpired
+//! proposal becomes a record, created by the host with the rights an empty
+//! creation needs; a declined or expired one never creates anything. Only the
+//! workspace's authority writes the map.
 pub use collab_types::document_import::{
     DOCUMENT_IMPORT_VERSION, DocumentImportDecisionV1, DocumentImportError,
     DocumentImportProposalV1, DocumentImportTerms, MAX_IMPORT_DOCUMENT_BYTES,
@@ -24,7 +23,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The surface the governor publishes the import actions on: its own, so
+/// The surface the host publishes the import actions on: its own, so
 /// clients that look for the desktop surface by its app id never find it.
 pub const APP_ID: &str = "so.tilo.document-imports";
 pub const RESOURCE: &str = "desktop:document-import";
@@ -32,7 +31,7 @@ pub const PROPOSE: &str = "propose";
 /// Separate actions, so the workspace's activity says which answer was given.
 pub const ACCEPT: &str = "accept";
 pub const DECLINE: &str = "decline";
-/// Governed workspace map: proposal id (hex) to its [`ImportEntry`] as JSON bytes.
+/// The workspace's map of proposals: proposal id (hex) to its [`ImportEntry`] as JSON bytes.
 pub const WORKSPACE_KEY: &str = "document_imports_v1";
 /// Most proposals a workspace keeps at once.
 pub const MAX_WORKSPACE_IMPORTS: usize = 64;
@@ -102,9 +101,9 @@ pub fn entries(doc: &AutoCommit) -> BTreeMap<String, ImportEntry> {
         .collect()
 }
 
-/// Write `entry` into the workspace's governed map; the authority's own change.
+/// Write `entry` into the workspace's map of proposals; the authority's own change.
 pub fn put_entry(doc: &mut AutoCommit, entry: &ImportEntry) -> Result<(), String> {
-    let object = crate::state::governed_map(doc, WORKSPACE_KEY)?;
+    let object = crate::state::workspace_map(doc, WORKSPACE_KEY)?;
     let key = key(&entry.proposal.proposal_id);
     if doc.get(&object, &key).map_err(|e| e.to_string())?.is_none()
         && doc.length(&object) >= MAX_WORKSPACE_IMPORTS
@@ -253,7 +252,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn import_proposals_are_governed_and_kept_by_id;
+        fn import_proposals_are_signed_and_kept_by_id;
 
         phase the_workspace_keeps_proposals_by_id_and_prunes_settled_ones;
         {

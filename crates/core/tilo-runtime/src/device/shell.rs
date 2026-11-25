@@ -691,13 +691,13 @@ impl Standing {
             move || changed.notify_one()
         };
         let mut decided = copies.governance_changes();
-        let governed = tell(&self.changed);
+        let hosted = tell(&self.changed);
         tilo_rt::app().spawn(async move {
             while !matches!(
                 decided.recv().await,
                 Err(tokio::sync::broadcast::error::RecvError::Closed)
             ) {
-                governed();
+                hosted();
             }
         });
         let (written, lagged) = (tell(&self.changed), tell(&self.changed));

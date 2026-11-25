@@ -792,7 +792,7 @@ tilo_test_env::scenario! {
             let owner = Authority::person(workspace.party(ALICE));
             let mut next = workspace.clone();
             next.apply(ALICE, &owner, change, &Context::at(now), false)
-                .expect("the owner governs");
+                .expect("the owner administers");
             next
         }
         let workspace = by_owner(
@@ -835,7 +835,7 @@ tilo_test_env::scenario! {
         assert_eq!(workspace.joined_at(CAROL), None);
     }
 
-    phase only_governors_change_membership;
+    phase only_administrators_change_membership;
     {
         let mut workspace = workspace_with_members(&[(BOB, Role::Editor)]);
         let bob = workspace.party(BOB);
@@ -1360,7 +1360,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn granting_is_a_governed_action;
+    fn granting_is_an_administrators_action;
 
     phase grant_requires_grant_action;
     // Granting is a governance action on the workspace's own resource: whoever is
@@ -2055,7 +2055,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             MemberAccess::person(workspace.clone(), ALICE).answer(&set_role, roles::GOVERNANCE_KIND, &cx()),
             Answer::Allow,
-            "the owner governs"
+            "the owner administers"
         );
         let viewer_agent = MemberAccess::new(
             workspace,
@@ -2084,7 +2084,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_agents_role_never_exceeds_its_person_or_the_cap;
-    // An agent acts as its person, within the agent cap, and never governs.
+    // An agent acts as its person, within the agent cap, and never administers.
     {
         use roles::agent_policy;
         for person in Role::ALL {

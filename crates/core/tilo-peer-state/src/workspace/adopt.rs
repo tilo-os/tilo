@@ -19,7 +19,7 @@ pub fn adopt_workspace(
     doc: &AutoCommit,
     kept: &[tilo_desktop_model::WorkspaceEffectReceipt],
 ) -> bool {
-    let (name, mut policy) = super::extract_governed_fields(doc);
+    let (name, mut policy) = super::extract_listed_fields(doc);
     let mut changed = false;
     if let Some(name) = name
         && workspace.name != name

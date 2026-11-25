@@ -50,7 +50,7 @@ pub const REQUIRED_SCOPES: [&str; 2] = ["registry.tilo.so/tilo/tilo", "code.tilo
 /// Every scope under these namespaces is Tilo-published: it may be refused
 /// outright, or it must require the release signature.
 pub const TILO_NAMESPACES: [&str; 2] = ["registry.tilo.so/tilo/", "code.tilo.so/tilo/"];
-/// Broader scopes that would also govern a Tilo repository with no scope of
+/// Broader scopes that would also cover a Tilo repository with no scope of
 /// its own.
 pub const TILO_NAMESPACE_ROOTS: [&str; 4] = [
     "registry.tilo.so",
@@ -569,7 +569,7 @@ fn check_policy(
         }
         if let Some(problem) = scope_problem(requirements, true, trust).map_err(Failure::Crash)? {
             return Err(Failure::Policy(format!(
-                "{repository}: governed by {scope}: {problem}"
+                "{repository}: covered by {scope}: {problem}"
             )));
         }
     }

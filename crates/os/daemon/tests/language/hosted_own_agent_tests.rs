@@ -43,7 +43,7 @@ use tilo_workspace_service::work::{Actor, Ineligible, NotTaken, Order, Turn};
 use tilo_workspace_service::workspaces::fixtures::Started;
 use tilo_workspace_service::workspaces::fixtures::invited;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, TestHost, device_cert, governor, test_host_holding,
+    TestGroupKeys, TestHost, device_cert, hosting_device, test_host_holding,
 };
 use tilo_workspace_service::workspaces::servers::{self, Servers};
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
@@ -205,7 +205,7 @@ async fn hosted() -> Hosted {
     let keys = Arc::new(TestGroupKeys::default());
     let bea_root = SigningKey::from_bytes(&[0xbe; 32]);
     let (bea_key, bea_cert) = device_cert(&bea_root, "bea-laptop", DeviceCapabilities::member());
-    let (ada_key, ada_cert) = governor();
+    let (ada_key, ada_cert) = hosting_device();
     let ada = test_host_holding(ada_state.path(), &ada_key, &ada_cert, Arc::clone(&keys)).await;
     offers_compute(&ada, &ada_cert).await;
     let (ada, (bea_key, bea_cert), created, invitation) =

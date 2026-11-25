@@ -1,4 +1,4 @@
-//! The workspaces another workspace service of this same device governed, moved into this one.
+//! The workspaces another workspace service of this same device hosted, moved into this one.
 //!
 //! A desktop once kept the workspaces it founded on a service of its own, beside the device's.
 //! Once the device's service keeps its person's workspaces, the desktop hands over, once, what
@@ -7,7 +7,7 @@
 //! that service wrote under. This service takes them in ([`Workspaces::move_in`]): the writes
 //! into its own store as the move of an older host's history does
 //! ([`crate::history_move`]), the workspace as it was kept, and then, writing one last time as
-//! the service that governed it, it admits this service and names it among the devices keeping
+//! the service that hosted it, it admits this service and names it among the devices keeping
 //! the workspace in that service's place.
 
 use std::path::Path;
@@ -21,7 +21,7 @@ use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::delete::DELETED;
-use super::{GovernedWorkspace, RELEASED, Workspaces};
+use super::{HostedWorkspace, RELEASED, Workspaces};
 
 /// What another workspace service of this device kept, as it moves into this one.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -30,7 +30,7 @@ pub struct MovingService {
     pub key: [u8; 32],
     /// The certificate the device issued that service.
     pub cert: DeviceCert,
-    /// Each workspace it governed.
+    /// Each workspace it hosted.
     pub workspaces: Vec<MovingWorkspace>,
 }
 
@@ -56,7 +56,7 @@ impl MovingService {
     }
 }
 
-/// One workspace a service governed, as it moves.
+/// One workspace a service hosted, as it moves.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct MovingWorkspace {
     pub id: WorkspaceId,
@@ -235,7 +235,7 @@ impl Workspaces {
                 Ok(true) => moved.moved.push(id),
                 Ok(false) => {}
                 Err(error) => {
-                    tracing::warn!(workspace = %id, %error, "a workspace another service of this device governed did not move here");
+                    tracing::warn!(workspace = %id, %error, "a workspace another service of this device hosted did not move here");
                     moved.refused.push((id, error));
                 }
             }
@@ -286,25 +286,25 @@ impl Workspaces {
                 .map_err(|error| format!("{}: {error}", path.display()))?;
         }
         let path = self.inner.dir.join(format!("{name}.workspace"));
-        let governed = GovernedWorkspace::open(path, self.device_keys().as_ref())?;
-        if governed.workspace_id() != id {
+        let hosted = HostedWorkspace::open(path, self.device_keys().as_ref())?;
+        if hosted.workspace_id() != id {
             return Err("the workspace's record names another workspace".into());
         }
-        self.serve_direct(&governed)?;
-        let reading = governed.reading();
-        let state = Arc::new(AsyncMutex::new(governed));
+        self.serve_direct(&hosted)?;
+        let reading = hosted.reading();
+        let state = Arc::new(AsyncMutex::new(hosted));
         self.inner.readings.hold(&name, &state, reading);
         self.inner
             .workspaces
             .lock()
             .await
             .insert(name.clone(), Arc::clone(&state));
-        let mut governed = state.lock().await;
+        let mut hosted = state.lock().await;
         let hint = self
-            .transport_hint_as(&governed, CopyRole::KeyHolder)
+            .transport_hint_as(&hosted, CopyRole::KeyHolder)
             .map_err(|error| error.to_string())?;
         let now = tilo_clock::wall();
-        governed.change(
+        hosted.change(
             key,
             now,
             |_, candidate| {
@@ -324,11 +324,11 @@ impl Workspaces {
             },
             |record, _| Ok(record.collaboration.clone()),
         )?;
-        drop(governed);
+        drop(hosted);
         // Served from here as a workspace this service kept from its last run is.
         self.serve_kept(std::slice::from_ref(&state)).await?;
         let _ = self.inner.changes.send(name);
-        tracing::info!(workspace = %id, "a workspace another service of this device governed is kept here");
+        tracing::info!(workspace = %id, "a workspace another service of this device hosted is kept here");
         Ok(true)
     }
 }

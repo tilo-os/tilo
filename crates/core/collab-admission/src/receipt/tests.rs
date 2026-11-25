@@ -89,7 +89,7 @@ fn claim(byte: u8, action: ClaimedAction, units: Vec<UnitPath>) -> ChangeClaim {
 
 /// Ada edits the workspace; Cleo only comments.
 fn grants() -> Vec<Grant> {
-    let governor = Grantee::person("workspace-owner");
+    let owner = Grantee::person("workspace-owner");
     vec![
         Grant::new(
             "ada-edits",
@@ -97,7 +97,7 @@ fn grants() -> Vec<Grant> {
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            governor.clone(),
+            owner.clone(),
         ),
         Grant::new(
             "cleo-comments",
@@ -105,7 +105,7 @@ fn grants() -> Vec<Grant> {
             roles::comments(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            governor,
+            owner,
         ),
     ]
 }

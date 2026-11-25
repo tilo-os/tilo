@@ -214,7 +214,7 @@ impl PeerWorkspaceMut<'_> {
             return Err("a refusal is signed by the device that made it".into());
         }
         let bytes = postcard::to_allocvec(refusal).map_err(|error| error.to_string())?;
-        let rows = super::governed_map(&candidate, WORKSPACE_WRITE_REFUSALS_KEY)?;
+        let rows = super::workspace_map(&candidate, WORKSPACE_WRITE_REFUSALS_KEY)?;
         let entries = map_for(
             &mut candidate,
             &rows,

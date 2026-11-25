@@ -1,4 +1,4 @@
-//! What a governor does with its members' writes: take them into its copy,
+//! What a host does with its members' writes: take them into its copy,
 //! file its verdict on the ones admission refused, and write the copy through
 //! to the workspace file.
 
@@ -6,14 +6,14 @@ use std::sync::Arc;
 
 use neighbour_wire::NeighbourMsg;
 
-use super::{GovernedWorkspace, KEEP_FOLLOWED, WeakWorkspaces, Workspaces, peer_parts};
+use super::{HostedWorkspace, KEEP_FOLLOWED, WeakWorkspaces, Workspaces, peer_parts};
 use ed25519_dalek::SigningKey;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-/// A member's write to a record of a governed workspace, after the governor's
-/// copy took it in: what wakes the workspace's installed bots.
+/// A member's write to a record of a workspace this device hosts, after the
+/// host's copy took it in: what wakes the workspace's installed bots.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceWrite {
     /// The workspace's UUID.
@@ -24,7 +24,7 @@ pub struct ResourceWrite {
     pub record: String,
 }
 
-/// What taking a member's write into the governor's copy did.
+/// What taking a member's write into the host's copy did.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Followed {
     /// The copy changed.
@@ -53,7 +53,7 @@ pub(super) enum BehindRefusal {
 }
 
 impl Workspaces {
-    /// [`GovernedWorkspace::follow_kept`], keeping this host's check of a compaction the copy
+    /// [`HostedWorkspace::follow_kept`], keeping this host's check of a compaction the copy
     /// took: one taken behind was checked as it was taken, against every write here it covers,
     /// and no later read can check it against the writes only it holds; any other is checked
     /// against the writes it stands in for now. The stores keep those writes until every device
@@ -61,7 +61,7 @@ impl Workspaces {
     /// checked it would keep them everywhere for good.
     pub(super) async fn follow_kept_checked(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Followed {
@@ -111,7 +111,7 @@ impl Workspaces {
     )]
     pub(super) async fn tell_followers(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
         history: bool,
@@ -140,7 +140,7 @@ impl Workspaces {
     /// device catches up on, rather than one made just now.
     pub(super) fn hand_on(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
         history: bool,
@@ -157,7 +157,7 @@ impl Workspaces {
     /// restart on an empty disk), is the apps' to take in as anyone's is.
     pub(super) fn hand_on_any(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
         history: bool,
@@ -180,7 +180,7 @@ impl Workspaces {
     }
 }
 
-impl GovernedWorkspace {
+impl HostedWorkspace {
     /// Whether `author` may start `document` of `app` in this workspace with a
     /// write of its own: a device of an editor may, and no other.
     ///
@@ -227,11 +227,11 @@ impl GovernedWorkspace {
         Ok(())
     }
 
-    /// Write the governor's copy, as following members' writes changed it,
+    /// Write the host's copy, as following members' writes changed it,
     /// through to the workspace file. A start replays what the server retains,
     /// but that replay alone does not bring a write back: the app surfaces
     /// it is decided against are still on their way then, so it holds the
-    /// write and may let it go. A write the governor took in and lost that
+    /// write and may let it go. A write the host took in and lost that
     /// way left its record with a gap, once a later write that builds on it
     /// was committed, and the workspace no longer opened.
     pub(super) fn keep_followed(&mut self) {
@@ -241,12 +241,12 @@ impl GovernedWorkspace {
         if let Err(error) = files.write(&write) {
             self.unsure();
             self.unkept = true;
-            tracing::warn!(workspace = %self.workspace(), %error, "the governor's copy of members' writes was not kept");
+            tracing::warn!(workspace = %self.workspace(), %error, "the host's copy of members' writes was not kept");
         }
     }
 
     /// Whether the copy holds what its workspace file does not name. The link takes a member's
-    /// write into the copy before the governor follows it and marks the copy unkept, so a copy
+    /// write into the copy before the host follows it and marks the copy unkept, so a copy
     /// can differ from its file with nothing marked. One that cannot be named counts as
     /// differing: writing it says why.
     pub(super) fn differs_from_file(&mut self) -> bool {
@@ -274,17 +274,17 @@ impl GovernedWorkspace {
         match kept {
             Ok(write) => Some((self.parts.files(), write)),
             Err(error) => {
-                tracing::warn!(workspace = %self.workspace(), %error, "the governor's copy of members' writes was not kept");
+                tracing::warn!(workspace = %self.workspace(), %error, "the host's copy of members' writes was not kept");
                 None
             }
         }
     }
 
-    /// Take a member's write into the governor's copy, in memory:
+    /// Take a member's write into the host's copy, in memory:
     /// [`Self::keep_followed`] writes it through. A retained checkpoint can
     /// also restore signed history for a document placed by the store.
     /// Admission refusals name the reason in [`Followed::refused`] so the
-    /// governor can file its verdict in the workspace document.
+    /// host can file its verdict in the workspace document.
     pub(super) fn follow(
         &self,
         author: [u8; 32],
@@ -455,7 +455,7 @@ impl GovernedWorkspace {
     }
 
     /// File this device's verdict on the write admission refused as
-    /// `refusal` says, in the governor's copy, for [`Self::keep_followed`] to write
+    /// `refusal` says, in the host's copy, for [`Self::keep_followed`] to write
     /// through: the write's author reads why it is not here.
     pub(super) fn refused(
         &self,
@@ -481,7 +481,7 @@ impl GovernedWorkspace {
                     workspace = %self.record.workspace,
                     %refusal,
                     %error,
-                    "the governor did not file a refusal of a record write"
+                    "the host did not file a refusal of a record write"
                 );
                 Followed::default()
             }
@@ -490,11 +490,11 @@ impl GovernedWorkspace {
 }
 
 impl Workspaces {
-    /// Replay what the server retains for `workspace` into the governor's copy
+    /// Replay what the server retains for `workspace` into the host's copy
     /// ([`Self::recall_retained`]), apart from whatever asked for it. The
-    /// server's copy is read once every write the governor was handed is
+    /// server's copy is read once every write the host was handed is
     /// durable in it, and before the workspace is locked: their delivery waits
-    /// for the governor to follow them.
+    /// for the host to follow them.
     pub(super) fn replay_soon(&self, workspace: String) {
         let workspaces = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
@@ -508,7 +508,7 @@ impl Workspaces {
     /// Write the members' writes `workspace` took in through to its workspace file
     /// within [`KEEP_FOLLOWED`], once for all of them: a write each made a
     /// busy chat queue behind its own workspace file.
-    pub(super) fn keep_soon(&self, workspace: &mut GovernedWorkspace) {
+    pub(super) fn keep_soon(&self, workspace: &mut HostedWorkspace) {
         workspace.unkept = true;
         if std::mem::replace(&mut workspace.keeping, true) {
             return;
@@ -541,7 +541,7 @@ impl Workspaces {
                 let mut workspace = workspace.lock().await;
                 workspace.unsure();
                 workspace.unkept = true;
-                tracing::warn!(workspace = %workspace.workspace(), %error, "the governor's copy of members' writes was not kept");
+                tracing::warn!(workspace = %workspace.workspace(), %error, "the host's copy of members' writes was not kept");
             }
         });
     }
@@ -551,7 +551,7 @@ impl Workspaces {
     /// Serve `workspace`'s replica over the direct link, keeping its history
     /// and its channels' governance at the host's store, and take in what its
     /// members send there.
-    pub(super) fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
+    pub(super) fn serve_direct(&self, workspace: &HostedWorkspace) -> Result<(), String> {
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
@@ -564,20 +564,17 @@ impl Workspaces {
 
     /// Take in what `workspace`'s link admits and answer what its members ask
     /// there: a frame the link admitted is a member's write, followed into the
-    /// governor's copy ([`Self::absorb`]), and each ask for content is answered with what this host keeps of it, or word
-    /// that it keeps none, addressed to whoever asked. The link carries each
-    /// ask on to the workspace's other members itself.
+    /// host's copy ([`Self::absorb`]), and each ask for content is answered
+    /// with what this host keeps of it, or word that it keeps none, addressed
+    /// to whoever asked. The link carries each ask on to the workspace's other
+    /// members itself.
     ///
     /// A reader that falls behind the link's frames takes in the writes it
     /// missed before it reads on ([`tilo_peer_state::direct::Reader`]): a
     /// member is told its write landed once the link admitted it, so the host
     /// following it is not the member's to retry. Only the link ending stops
     /// the reads.
-    fn follow_link(
-        &self,
-        workspace: &GovernedWorkspace,
-        link: &tilo_peer_state::direct::DirectSync,
-    ) {
+    fn follow_link(&self, workspace: &HostedWorkspace, link: &tilo_peer_state::direct::DirectSync) {
         let name = workspace.workspace().to_owned();
         let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
         let link = link.clone();
@@ -608,7 +605,7 @@ impl Workspaces {
                 // its workspace's files reads the pieces here
                 // ([`Self::content_for_host`]). Asks and answers are no record
                 // writes: they go to the content's own intake, as they came,
-                // never through the governor's copy.
+                // never through the host's copy.
                 if answering {
                     // The intake's thread is gone only with the host.
                     if intake.send((frame.author, frame.message)).await.is_err() {
@@ -1194,11 +1191,11 @@ struct LinkDecision {
 
 impl Workspaces {
     /// Replay every record write the device's store keeps for `workspace` into
-    /// the governor's copy, and keep what it took in. A sealed write the copy
+    /// the host's copy, and keep what it took in. A sealed write the copy
     /// holds and the store lost is carried again, as the bytes its author
     /// signed: a device that links later reads it from the store as from
     /// anyone who kept it.
-    pub(super) async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
+    pub(super) async fn recall(&self, workspace: &mut HostedWorkspace) -> Result<(), String> {
         let retained = self
             .inner
             .records
@@ -1221,7 +1218,7 @@ impl Workspaces {
     /// among `kept`, under its author, unchanged.
     fn carry_held(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         kept: &std::collections::HashSet<collab_types::Signature>,
     ) -> Result<(), String> {
         // Read out under the copy's lock and carried after it is let go: the
@@ -1261,7 +1258,7 @@ impl Workspaces {
     }
 
     /// Take `retained`, the record writes the device's store keeps for `workspace`, into
-    /// the governor's copy, and keep what it took in. A write held for an
+    /// the host's copy, and keep what it took in. A write held for an
     /// app surface not here yet may be let go past the held queue's bound,
     /// and so is every later write of its author to its record, which
     /// would otherwise overtake it for good. The store still keeps them
@@ -1270,7 +1267,7 @@ impl Workspaces {
     /// for lands ([`Followed::replay_wanted`]).
     pub(super) async fn recall_retained(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         retained: Vec<crate::workspace_documents::RetainedBody>,
     ) {
         let (mut changed, mut again) = (false, false);
@@ -1284,10 +1281,10 @@ impl Workspaces {
                 continue;
             };
             // What the server's device wrote is kept under its key, the
-            // governor's own commits and its own writes of records alike. The
-            // first are the governor's copy already, each written through
+            // host's own commits and its own writes of records alike. The
+            // first are the host's copy already, each written through
             // as it was made. The second (the actions the server carries
-            // out for members, its agents' answers) the governor took in as
+            // out for members, its agents' answers) the host took in as
             // they came, in memory, and writes through within
             // `KEEP_FOLLOWED`: a server killed inside that time starts
             // without them, and nobody sends them again. So those are
@@ -1363,7 +1360,7 @@ impl Workspaces {
     pub(super) async fn found_retained(
         &self,
         workspace: &str,
-        state: &tokio::sync::Mutex<GovernedWorkspace>,
+        state: &tokio::sync::Mutex<HostedWorkspace>,
         retained: &[crate::workspace_documents::RetainedBody],
     ) {
         let mut first: std::collections::BTreeMap<
@@ -1371,7 +1368,7 @@ impl Workspaces {
             &crate::workspace_documents::RetainedBody,
         > = std::collections::BTreeMap::new();
         for retained in retained {
-            // What the server's own device wrote the governor holds already, or
+            // What the server's own device wrote the host holds already, or
             // took in as it came ([`Self::recall_retained`]).
             let server = &self.inner.host;
             if retained.author == server.cert.device_public_key {
@@ -1387,7 +1384,7 @@ impl Workspaces {
                 continue;
             };
             // A document the server may read in the clear was founded when its
-            // first write was handed to the governor: only a sealed one waits
+            // first write was handed to the host: only a sealed one waits
             // for the group to admit this server's device.
             if envelope.encryption.is_none() {
                 continue;
@@ -1410,7 +1407,7 @@ impl Workspaces {
                 .absorb(workspace, retained.author, &retained.body)
                 .await
             {
-                tracing::warn!(%workspace, %error, "governed workspace did not found a document its members wrote");
+                tracing::warn!(%workspace, %error, "the workspace's host did not found a document its members wrote");
             }
         }
     }
@@ -1418,7 +1415,7 @@ impl Workspaces {
 
 /// Whether `message`, which the server's device wrote, is a write of a record
 /// it made as any member does: a change to a document or a resource store
-/// write. Other whole documents under that key are the governor's own commits.
+/// write. Other whole documents under that key are the host's own commits.
 fn written_as_a_record(message: &neighbour_wire::NeighbourMsg) -> bool {
     matches!(
         message,

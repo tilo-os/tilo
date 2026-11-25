@@ -1,4 +1,4 @@
-//! Where a host answers, as the workspaces it governs name it: the relay its
+//! Where a host answers, as the workspaces it hosts name it: the relay its
 //! endpoint is reached through when it has one, and the address it has when
 //! it has none.
 
@@ -11,7 +11,7 @@ use super::*;
 async fn a_host_reached_through_a_relay_names_it_from_the_start() {
     use tilo_delivery_protocol::workspace_join::{WorkspaceDeviceHintV1, reachable};
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let relay = test_host(dir.path(), &key, &cert).await;
     let addr = relay.node_addr();
     assert_eq!(
@@ -54,7 +54,7 @@ async fn a_host_reached_through_a_relay_names_it_from_the_start() {
 async fn a_host_that_comes_back_elsewhere_names_its_new_address_in_the_workspace_it_kept() {
     use tilo_delivery_protocol::workspace_join::{WorkspaceDeviceHintV1, reachable};
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let first = server.node_addr();
     let workspace = server.workspaces().create("Demo").await.unwrap().workspace;
@@ -94,7 +94,7 @@ async fn a_host_that_comes_back_elsewhere_names_its_new_address_in_the_workspace
 async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_has() {
     use tilo_delivery_protocol::workspace_join::{WorkspaceDeviceHintV1, reachable};
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .bind()
@@ -145,7 +145,7 @@ async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_h
 async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() {
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .bind()

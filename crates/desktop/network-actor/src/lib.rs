@@ -188,7 +188,7 @@ pub enum NetCmd {
         ws: WorkspaceId,
     },
     /// Workspace `ws`'s admitted roster changed: `devices` are every device its
-    /// governor admitted, by endpoint id, with its certificate's expiry.
+    /// member list admits, by endpoint id, with its certificate's expiry.
     /// They alone send and receive the workspace's window streams; a device that
     /// left, or whose certificate expired, has its connections closed.
     SetWorkspaceRoster {

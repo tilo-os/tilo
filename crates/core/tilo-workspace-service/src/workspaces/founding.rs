@@ -18,11 +18,11 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
 
 use super::{
-    DOCUMENT_VERSION, DeviceKeys, GovernedWorkspace, RECEIPTS, WorkspaceDocumentEntry, appended,
+    DOCUMENT_VERSION, DeviceKeys, HostedWorkspace, RECEIPTS, WorkspaceDocumentEntry, appended,
     collaboration, peer_parts, select_exact_admission,
 };
 
-impl GovernedWorkspace {
+impl HostedWorkspace {
     pub(super) fn create(
         dir: &Path,
         name: &str,
@@ -43,7 +43,7 @@ impl GovernedWorkspace {
         )
     }
 
-    /// A new governed workspace under the identity `workspace`: a fresh one, or the
+    /// A new hosted workspace under the identity `workspace`: a fresh one, or the
     /// workspace a workspace already is when it moves here from the device that
     /// made it (a workspace is its workspace, and keeps it when its governance
     /// moves). `starts` names the registries it fetches apps from, recorded as
@@ -169,7 +169,7 @@ fn record_defaults(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::fixtures::governor;
+    use crate::workspaces::fixtures::hosting_device;
 
     /// A release as `create_in` records one, with a distinct surface and package per app.
     fn release(app: &str) -> AppRelease {
@@ -189,9 +189,9 @@ mod tests {
     #[test]
     fn a_new_workspace_records_the_apps_it_starts_with_as_its_founders() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let defaults = vec![release("so.tilo.files"), release("so.tilo.writer")];
-        let workspace = GovernedWorkspace::create(
+        let workspace = HostedWorkspace::create(
             dir.path(),
             "Team",
             &cert,
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn a_new_workspace_records_the_registries_it_fetches_apps_from_as_its_founders() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let registries = vec![PackageRegistry {
             name: "Tilo main".into(),
             base_url: "https://apps.tilo.so".into(),
@@ -227,7 +227,7 @@ mod tests {
             channel: "stable".into(),
         }];
         let defaults = vec![release("so.tilo.files")];
-        let workspace = GovernedWorkspace::create(
+        let workspace = HostedWorkspace::create(
             dir.path(),
             "Team",
             &cert,
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn the_versions_a_workspace_ran_before_read_from_its_history_most_recent_first() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let version = |number: &str| AppRelease {
             version: number.into(),
             package: hex::encode(blake3::hash(number.as_bytes()).as_bytes()),
@@ -260,7 +260,7 @@ mod tests {
             version("1.0.0"),
             version("2.0.0"),
         ];
-        let workspace = GovernedWorkspace::create(
+        let workspace = HostedWorkspace::create(
             dir.path(),
             "Team",
             &cert,
@@ -292,8 +292,8 @@ mod tests {
     #[test]
     fn a_workspace_that_keeps_the_apps_it_has_records_no_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
-        let workspace = GovernedWorkspace::create(
+        let (key, cert) = hosting_device();
+        let workspace = HostedWorkspace::create(
             dir.path(),
             "Placed",
             &cert,
@@ -309,10 +309,10 @@ mod tests {
     #[test]
     fn a_default_the_install_action_would_refuse_fails_the_creation() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let mut malformed = release("so.tilo.broken");
         malformed.surface = "not a hash".into();
-        let made = GovernedWorkspace::create(
+        let made = HostedWorkspace::create(
             dir.path(),
             "Team",
             &cert,

@@ -860,7 +860,7 @@ alike). Now the device that writes a removal into a workspace's governance write
 (`crates/core/tilo-peer-state/src/removals.rs`); a removed device's change is decided, when it is
 taken in and when it is handed to an app, by that cut
 (`crates/core/tilo-peer-state/src/state/authority.rs::written_as`); a replica that knows a
-removal and not its cut holds such changes undecided; and the governing device writes the cut of a
+removal and not its cut holds such changes undecided; and the host writes the cut of a
 removal that was written before cuts were kept the next time it opens the workspace. Held by
 `crates/core/tilo-peer-state/src/state/removal_tests.rs::removing_a_device_takes_its_future_and_keeps_its_persons_past`
 (history for each reason; a device that keeps writing, dates its writes back, sends an old one
@@ -874,7 +874,7 @@ it wrote after it. Every change at or below the cut is plain history today, what
 history says. A holder that has the removed device's key can show a device that joins later
 another change under a number below the cut; a device that holds the original refuses it. Closing
 this needs the cut to name the content it keeps. And a cut holds what its writer had taken: a
-write the governing device kept without having decided it yet (one waiting for a change it builds
+write the host kept without having decided it yet (one waiting for a change it builds
 on) is above the cut, so everyone refuses it afterwards, and a device that merged it before the
 removal holds a change the others never take.
 
@@ -944,9 +944,10 @@ first delegation today: every call of `WorkDelegation::sign` is test code, and w
 delegated nothing their command to take work back writes nothing, so no copy comes to hold a
 withdrawal by a program of ours; a member who signs one with a tool of their own can.
 
-**A copy behind its governor's base.** A copy whose device may not write the workspace's document,
-a viewer's, refuses a governor's base that lacks a withdrawal it holds and stays on the workspace
-document it held, and nothing tells its person. Such a copy knows of governance it does not hold.
+**A copy behind the host's base.** A copy whose device may not write the workspace's document,
+a viewer's, refuses a base from the host that lacks a withdrawal it has and stays on the
+workspace document it kept, and nothing tells its person. Such a copy knows of governance it does
+not hold.
 From that refusal on it takes in no write on the roles and grants of the document it kept: what
 they would admit is held, the way a write under governance not yet held is, and the base the copy
 takes later decides it
@@ -959,7 +960,7 @@ takes later decides it
 `a_base_the_copy_takes_later_decides_the_writes_it_held` and
 `a_copy_that_refused_no_base_holds_nothing_it_takes_in`. Two limits. The copy's memory of the
 refusal is not in its durable state, which does keep the held writes: after a restart, a held write
-that comes again before the copy's governor hands it the base again is decided on the roles the
+that comes again before the copy's host hands it the base again is decided on the roles the
 copy holds; once the base is handed to it and refused again, the copy holds again. And a member's
 batch to the workspace's own document on the old base is still decided by the old roles on that
 copy. The held writes wait where every held write waits, under that queue's bounds

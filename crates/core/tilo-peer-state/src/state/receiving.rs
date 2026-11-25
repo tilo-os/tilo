@@ -324,7 +324,7 @@ impl StatePeer {
                 .core
                 .workspace_doc
                 .as_ref()
-                .and_then(|doc| governed_owner(doc, &self.core.workspace))
+                .and_then(|doc| listed_owner(doc, &self.core.workspace))
                 == Some(self.core.owner)
     }
 
@@ -817,7 +817,7 @@ impl StatePeer {
         // instead.
         let held_owner = self.core.owner;
         let first = self.core.workspace_doc.is_none();
-        let Some(owner) = governed_owner(&candidate, &self.core.workspace) else {
+        let Some(owner) = listed_owner(&candidate, &self.core.workspace) else {
             return Err(crate::AdmissionError::malformed(
                 "the workspace's governance names no owner",
             ));
@@ -828,7 +828,7 @@ impl StatePeer {
             ));
         }
         self.core.owner = owner;
-        let metadata_changed = match self.import_governed_rows(&candidate, now) {
+        let metadata_changed = match self.import_device_rows(&candidate, now) {
             Ok(changed) => changed || self.core.owner != held_owner,
             Err(error) => {
                 self.core.owner = held_owner;
@@ -950,10 +950,7 @@ impl StatePeer {
 
 /// The owner `document`'s governance names now, as their root key: the
 /// founding owner, or whom the last transfer it replays handed it to.
-pub(super) fn governed_owner(
-    document: &super::CachedDocument,
-    workspace: &str,
-) -> Option<[u8; 32]> {
+pub(super) fn listed_owner(document: &super::CachedDocument, workspace: &str) -> Option<[u8; 32]> {
     let owner = document.workspace_policy(workspace).owner()?;
     let mut key = [0; 32];
     hex::decode_to_slice(owner, &mut key).ok()?;

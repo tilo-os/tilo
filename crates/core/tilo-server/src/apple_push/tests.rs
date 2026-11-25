@@ -32,7 +32,7 @@ use tilo_actions::remote::person_telling::{
 
 use super::*;
 use crate::workspaces::ToTell;
-use crate::workspaces::fixtures::{governor, test_host};
+use crate::workspaces::fixtures::{hosting_device, test_host};
 use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
 use crate::workspaces::model_answers::{ProviderProtocol, Spender};
 use crate::workspaces::push_addresses::{PushKey, Register};
@@ -320,7 +320,7 @@ struct Served<S> {
 async fn served() -> Served<impl Sized> {
     let apple = StandIn::start().await;
     let (state, keys) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(state.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     // Her workspace, whose vault keeps her model's key.

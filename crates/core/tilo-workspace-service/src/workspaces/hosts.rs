@@ -13,7 +13,7 @@
 //! reaches the workspace wherever it is held. Being named there is what admits
 //! a holder everywhere the workspace is held: its device holds the workspace,
 //! and its person may reach the holders that do
-//! ([`tilo_peer_state::GovernedAccess`]). Being named a key holder is what gives
+//! ([`tilo_peer_state::MemberListAccess`]). Being named a key holder is what gives
 //! it the workspace's keys ([`tilo_peer_state::PeerGovernance::key_holders`]),
 //! never a part among its members: a key holder of another person reads the
 //! workspace without changing who is in it. A device of the owner's own
@@ -35,11 +35,11 @@ use tilo_peer_state::join::{Role, TransportHint};
 use tilo_server_protocol::workspaces::WorkspaceHolder;
 use tilo_server_protocol::workspaces::{
     CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CaughtUpWorkspace, HOST_ACTIONS_PROVIDER,
-    HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, StandingPage, UNHOST_WORKSPACE,
+    HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, StandingPage, UNHOST_WORKSPACE, WorkspaceHosted,
 };
 use tilo_user_identity::DeviceCert;
 
-use super::{CollaborationError, GovernedWorkspace, Workspaces};
+use super::{CollaborationError, HostedWorkspace, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
 
@@ -121,20 +121,20 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, or this host's address cannot be
+    /// The workspace is not hosted here, or this host's address cannot be
     /// signed.
     pub async fn hosts(&self, workspace: &str) -> Result<Vec<TransportHint>, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let governed = governed.lock().await;
-        let own = self.transport_hint(&governed)?;
-        let mut hosts = governed.peer().governance().keeping_devices();
+        let hosted = self.workspace(workspace).await?;
+        let hosted = hosted.lock().await;
+        let own = self.transport_hint(&hosted)?;
+        let mut hosts = hosted.peer().governance().keeping_devices();
         if !hosts
             .iter()
             .any(|hint| hint.host.device_public_key == own.host.device_public_key)
         {
             hosts.push(own);
         }
-        drop(governed);
+        drop(hosted);
         hosts.sort_by_key(|hint| hint.host.device_public_key);
         Ok(hosts)
     }
@@ -150,15 +150,15 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<std::collections::BTreeSet<[u8; 32]>, String> {
-        let governed = self
+        let hosted = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let governed = governed.lock().await;
-        governed.peer().governance().key_holders(tilo_clock::wall())
+        let hosted = hosted.lock().await;
+        hosted.peer().governance().key_holders(tilo_clock::wall())
     }
 
-    /// Whether `governed`'s governance names this device a store of the
+    /// Whether `hosted`'s governance names this device a store of the
     /// workspace's ciphertext: it then asks for none of its keys and compacts
     /// none of what it cannot read.
     #[cfg_attr(
@@ -168,8 +168,8 @@ impl Workspaces {
             reason = "sealed histories are followed only where they are read"
         )
     )]
-    pub(super) fn holds_as_store(&self, governed: &GovernedWorkspace) -> bool {
-        governed
+    pub(super) fn holds_as_store(&self, hosted: &HostedWorkspace) -> bool {
+        hosted
             .peer()
             .governance()
             .holder_role(&self.inner.host.cert.device_public_key)
@@ -177,23 +177,23 @@ impl Workspaces {
     }
 
     /// Whether `workspace`'s governance names this device a store of its
-    /// ciphertext, which reads none of it; `false` for one not governed here.
+    /// ciphertext, which reads none of it; `false` for one not hosted here.
     pub async fn stores_only(&self, workspace: &str) -> bool {
-        let Ok(governed) = self.workspace(workspace).await else {
+        let Ok(hosted) = self.workspace(workspace).await else {
             return false;
         };
-        let governed = governed.lock().await;
-        self.holds_as_store(&governed)
+        let hosted = hosted.lock().await;
+        self.holds_as_store(&hosted)
     }
 
     /// Whether `workspace`'s governance names the device `device` among its
     /// hosts.
     pub(crate) async fn names_server(&self, workspace: &str, device: [u8; 32]) -> bool {
-        let Ok(governed) = self.workspace(workspace).await else {
+        let Ok(hosted) = self.workspace(workspace).await else {
             return false;
         };
-        let governed = governed.lock().await;
-        governed
+        let hosted = hosted.lock().await;
+        hosted
             .peer()
             .governance()
             .keeping_devices()
@@ -210,16 +210,13 @@ impl Workspaces {
     /// named. Nor does a holder its owners have not named yet, other than the
     /// device the workspace was founded on: whoever hands it the workspace
     /// names it, in the role they chose for it.
-    pub(super) async fn name_own_host(
-        &self,
-        governed: &mut GovernedWorkspace,
-    ) -> Result<(), String> {
+    pub(super) async fn name_own_host(&self, hosted: &mut HostedWorkspace) -> Result<(), String> {
         let host = &self.inner.host;
         let own = host.cert.device_public_key;
         let (others, unnamed) = {
-            let peer = governed.peer();
+            let peer = hosted.peer();
             (
-                !peer.governs_history(&host.cert.user_public_key),
+                !peer.administers_history(&host.cert.user_public_key),
                 peer.governance().holder_role(&own).is_none()
                     && peer.governance().founder() != Some(own),
             )
@@ -228,10 +225,10 @@ impl Workspaces {
             return Ok(());
         }
         let hint = self
-            .transport_hint(governed)
+            .transport_hint(hosted)
             .map_err(|error| error.to_string())?;
         let now = tilo_clock::wall();
-        let named = governed.change(
+        let named = hosted.change(
             &host.key,
             now,
             |_, candidate| {
@@ -243,12 +240,12 @@ impl Workspaces {
             |record, _| Ok(record.collaboration.clone()),
         )?;
         if named {
-            self.settle(governed).await?;
+            self.settle(hosted).await?;
         }
         Ok(())
     }
 
-    /// Name this host's own signed address in every workspace it governs,
+    /// Name this host's own signed address in every workspace it hosts,
     /// after where it answers changed: what their governance names is where
     /// members and invitees dial this host.
     pub(super) async fn name_own_hosts(&self) {
@@ -273,7 +270,7 @@ impl Workspaces {
     }
 
     /// Follow the relays this host answers through: each change of home relay
-    /// is named in the workspaces it governs, so an invitation always carries
+    /// is named in the workspaces it hosts, so an invitation always carries
     /// an address a stranger can dial. A host that has lost its relays names
     /// nothing: the address it named stays what a workspace says, and a member
     /// reaches it again through the server once it comes back.
@@ -296,7 +293,7 @@ impl Workspaces {
     }
 
     /// Change which hosts `workspace`'s governance names with `change`, as its
-    /// governor.
+    /// host.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked until its decision is committed and settled"
@@ -315,9 +312,9 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
+        let mut hosted = state.lock().await;
         let now = tilo_clock::wall();
-        let changed = governed.change(
+        let changed = hosted.change(
             &host.key,
             now,
             |_, candidate| {
@@ -327,7 +324,7 @@ impl Workspaces {
             |record, _| Ok(record.collaboration.clone()),
         )?;
         if changed {
-            self.settle(&mut governed).await?;
+            self.settle(&mut hosted).await?;
         }
         Ok(())
     }
@@ -408,7 +405,7 @@ impl Workspaces {
             Ok(answer) => answer,
             Err(error) => return Err(self.unnamed(workspace, device, named_before, error).await),
         };
-        let hosted: HostedWorkspace =
+        let hosted: WorkspaceHosted =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
         let answered: TransportHint = super::decode_hex(&hosted.host_hint)?;
         if answered != hint {
@@ -523,16 +520,16 @@ impl Workspaces {
         let Ok(state) = self.workspace(workspace).await else {
             return;
         };
-        let mut governed = state.lock().await;
-        if governed.holders.sessions.contains_key(&device) {
+        let mut hosted = state.lock().await;
+        if hosted.holders.sessions.contains_key(&device) {
             return;
         }
-        let workspace_id = governed.workspace_id();
+        let workspace_id = hosted.workspace_id();
         let Some(link) = self.inner.direct.link(workspace_id) else {
             return;
         };
-        let links = governed.holders.links.clone();
-        let name = governed.workspace().to_owned();
+        let links = hosted.holders.links.clone();
+        let name = hosted.workspace().to_owned();
         let Ok(signed) =
             tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
                 answered,
@@ -549,7 +546,7 @@ impl Workspaces {
             name,
             Arc::downgrade(&self.inner),
         ));
-        governed
+        hosted
             .holders
             .sessions
             .insert(device, super::holding::AbortOnDrop::new(dialing));
@@ -990,21 +987,21 @@ impl Workspaces {
         role: CopyRole,
     ) -> Result<TransportHint, String> {
         let (named, own) = {
-            let governed = self
+            let hosted = self
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let governed = governed.lock().await;
-            let named = governed
+            let hosted = hosted.lock().await;
+            let named = hosted
                 .peer()
                 .governance()
                 .keeping_devices()
                 .into_iter()
                 .find(|hint| host_device(hint) == device);
             let own = (device == self.inner.host.cert.device_public_key)
-                .then(|| self.transport_hint_as(&governed, role))
+                .then(|| self.transport_hint_as(&hosted, role))
                 .transpose();
-            drop(governed);
+            drop(hosted);
             (named, own.map_err(|error| error.to_string())?)
         };
         let named =
@@ -1046,11 +1043,11 @@ impl Workspaces {
     ) -> Result<(WorkspaceId, TransportHint, Map<String, Value>), String> {
         let member = &reached.certificate;
         let workspace_id = {
-            let governed = self
+            let hosted = self
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            governed.lock().await.workspace_id()
+            hosted.lock().await.workspace_id()
         };
         // The address the host signs for the workspace, asked ahead of the
         // hand-over: naming the host needs the address it signed, and the
@@ -1059,13 +1056,13 @@ impl Workspaces {
             .named_for_hand_over(reached, workspace, workspace_id, role)
             .await?;
         let (holder_hint, bootstrap) = {
-            let governed = self
+            let hosted = self
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let governed = governed.lock().await;
-            let mut bootstrap = governed
-                .governed(self.device_cert())
+            let hosted = hosted.lock().await;
+            let mut bootstrap = hosted
+                .hosted(self.device_cert())
                 .bootstrap([0; 32], member.clone(), Role::Editor)
                 .map_err(|error| error.to_string())?;
             // The host follows governance alone: records reach it over the
@@ -1073,9 +1070,9 @@ impl Workspaces {
             // within one action frame.
             bootstrap.records.clear();
             let hint = self
-                .transport_hint(&governed)
+                .transport_hint(&hosted)
                 .map_err(|error| error.to_string())?;
-            drop(governed);
+            drop(hosted);
             (hint, bootstrap)
         };
         let mut arguments = Map::new();
@@ -1150,12 +1147,12 @@ impl Workspaces {
         addr: Option<EndpointAddr>,
     ) -> Result<bool, String> {
         let (workspace_id, known) = {
-            let governed = self
+            let hosted = self
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let governed = governed.lock().await;
-            let known = governed
+            let hosted = hosted.lock().await;
+            let known = hosted
                 .peer()
                 .governance()
                 .keeping_devices()
@@ -1166,7 +1163,7 @@ impl Workspaces {
                         .map(|address| address.endpoint_addr)
                 })
                 .and_then(Result::ok);
-            (governed.workspace_id(), known)
+            (hosted.workspace_id(), known)
         };
         // Whether the server handed what it keeps on before it was taken out: it then lets the
         // workspace go itself once the change taking it out reaches it, and passes that change
@@ -1284,12 +1281,12 @@ impl Workspaces {
         workspace: &str,
     ) -> Result<bool, String> {
         let (workspace_id, owner) = {
-            let governed = self
+            let hosted = self
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let governed = governed.lock().await;
-            (governed.workspace_id(), governed.peer().owner())
+            let hosted = hosted.lock().await;
+            (hosted.workspace_id(), hosted.peer().owner())
         };
         if caller.user_public_key != owner
             && caller.user_public_key != self.inner.host.cert.user_public_key
@@ -1368,23 +1365,20 @@ impl Workspaces {
         })
     }
 
-    /// Whether `caller` chooses which hosts hold `governed`: a device of the
+    /// Whether `caller` chooses which hosts serve `hosted`: a device of the
     /// workspace's owner, who decides where it lives; or that person's server key, which
     /// acts for them from a script or a command. Never an agent's grant, and
     /// never a device for being of the person whose host this is: every
     /// holder answers it alike.
-    pub(super) fn chooses_servers(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
-        Self::speaks_for_person(governed, caller)
-            && caller.user_public_key == governed.peer().owner()
+    pub(super) fn chooses_servers(hosted: &HostedWorkspace, caller: &DeviceCert) -> bool {
+        Self::speaks_for_person(hosted, caller) && caller.user_public_key == hosted.peer().owner()
     }
 
-    /// Whether `caller` speaks for its person in `governed`: a device of theirs, or their
+    /// Whether `caller` speaks for its person in `hosted`: a device of theirs, or their
     /// server key there, never an agent's grant.
-    pub(super) fn speaks_for_person(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
+    pub(super) fn speaks_for_person(hosted: &HostedWorkspace, caller: &DeviceCert) -> bool {
         caller.capabilities.agent.is_none()
-            || caller
-                .capabilities
-                .own_key_in(governed.peer().workspace_id())
+            || caller.capabilities.own_key_in(hosted.peer().workspace_id())
     }
 
     /// The servers keeping `workspace`, as its governance names them: this
@@ -1605,7 +1599,7 @@ impl OtherHost {
             serde_json::to_value(role).map_err(|error| error.to_string())?,
         );
         let answer = self.ask(HOST_WORKSPACE, arguments).await?;
-        let hosted: HostedWorkspace =
+        let hosted: WorkspaceHosted =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
         super::decode_hex(&hosted.host_hint)
     }
@@ -1818,14 +1812,14 @@ impl Workspaces {
     /// (`tilo_delivery_protocol::workspace_join::reachable`).
     pub(super) fn transport_hint(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
         self.transport_hint_as(workspace, self.own_role(workspace))
     }
 
     /// The role this device's governance names it in `workspace`, a key
     /// holder until it names one.
-    fn own_role(&self, workspace: &GovernedWorkspace) -> CopyRole {
+    fn own_role(&self, workspace: &HostedWorkspace) -> CopyRole {
         workspace
             .peer()
             .governance()
@@ -1859,7 +1853,7 @@ impl Workspaces {
     /// The hint an invitation of `workspace` carries, signed for this device answering at `addr`.
     pub(super) fn invitation_hint(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         addr: &EndpointAddr,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
         self.signed_hint(workspace.workspace_id(), self.own_role(workspace), addr)
@@ -1869,7 +1863,7 @@ impl Workspaces {
     /// `role`: a store neither holds its keys nor takes its work.
     pub(super) fn transport_hint_as(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         role: CopyRole,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
         let addr = self.endpoint_addr();
@@ -1954,17 +1948,17 @@ impl Workspaces {
     }
 }
 
-/// Whether `governed`'s member list holds `handed`'s own row at `now`, or needs none: its person
+/// Whether `hosted`'s member list holds `handed`'s own row at `now`, or needs none: its person
 /// is no member, or the device was taken out.
 fn own_row_settled(
-    governed: &super::GovernedWorkspace,
+    hosted: &super::HostedWorkspace,
     handed: &DeviceCert,
     now: web_time::SystemTime,
 ) -> bool {
-    let peer = governed.peer();
+    let peer = hosted.peer();
     let governance = peer.governance();
     let settled = governance.removed_device(handed.device_public_key)
-        || governance.governed_access(now).is_ok_and(|access| {
+        || governance.member_list_access(now).is_ok_and(|access| {
             !access.member_user_roots.contains(&handed.user_public_key)
                 || access.member_devices.contains(&handed.device_public_key)
         });

@@ -26,7 +26,7 @@ use super::super::tests::{caller, settled};
 use super::own_tests::{create_own, let_in, open};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost;
-use crate::workspaces::tests::{governor, guest_device, test_host};
+use crate::workspaces::tests::{guest_device, hosting_device, test_host};
 
 pub(super) const ASSISTANT: &str = "assistant";
 
@@ -45,7 +45,7 @@ pub(super) struct Setup {
 impl Setup {
     pub(super) async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         let host = super::super::tests::host_dispatch(&workspaces);

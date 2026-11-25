@@ -208,7 +208,7 @@ pub enum DesktopCommand {
     },
     /// Register topology namespace `salt` to the calling device, so it can
     /// publish its own windows (a session's legacy windows) into a workspace
-    /// another device governs. Only the governor writes the registry; a
+    /// another device hosts. Only the host writes the registry; a
     /// namespace is never rebound. Placement-independent. Appended last:
     /// existing encodings are unchanged.
     ClaimNamespace {

@@ -23,12 +23,12 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
-use super::tests::{Answering, admit, answered, ask_own, caller, governed, request, settled};
+use super::tests::{Answering, admit, answered, ask_own, caller, hosted, request, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::test_host;
 use crate::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
 use crate::workspaces::model_answers::{Interaction, ModelRefusal};
-use crate::workspaces::tests::governor;
+use crate::workspaces::tests::hosting_device;
 
 const ADA_KEY: &str = "sk-ada-linked-through-settings";
 const BO_KEY: &str = "sk-bo-linked-through-settings";
@@ -100,10 +100,10 @@ async fn served(
     ServiceWorkspaceActions,
     DeviceCert,
 ) {
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir, &key, &owner).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, workspace_id, service) = governed(&workspaces).await;
+    let (workspace, workspace_id, service) = hosted(&workspaces).await;
     let ada = admit(&workspaces, &workspace, &owner, 1).await;
     (server, workspaces, workspace_id, service, ada)
 }
@@ -320,13 +320,13 @@ async fn another_workspace_links_its_own(
 #[tokio::test]
 async fn a_workspace_is_answered_by_the_one_model_it_linked_and_another_by_its_own() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     let scripted = ScriptedProvider::answering([
         Reply::text("for the workspace").costing(700),
@@ -507,10 +507,10 @@ async fn nobody_else_is_answered(
 #[tokio::test]
 async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     workspaces.call_private_model_addresses(true);
     // A provider on this machine that takes the key it holds and the one
@@ -520,9 +520,9 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
     workspaces
         .offer_models_for(&workspace_id.to_string(), &provider, &["gemini-main"])
         .unwrap();
-    let (elsewhere, _, _) = governed(workspaces).await;
+    let (elsewhere, _, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 2).await;
-    let (_, stranger) = governor();
+    let (_, stranger) = hosting_device();
     let changes = || {
         [
             (
@@ -644,13 +644,13 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
     use agent_provider_config::protocol::{ErrorKind, ModelError, ModelResponse};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     let scripted = ScriptedProvider::answering([
         Reply::text("from the server"),
@@ -735,10 +735,10 @@ async fn a_pages_ask_is_answered_as_the_model_writes_it() {
     use tilo_actions::remote::{ActionProvider as _, ReceiptStatus, UpdateMark, settle_with};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions_here) = governed(workspaces).await;
+    let (workspace, workspace_id, actions_here) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let said = "one two three four five six seven eight";
     workspaces.answer_models_with(ScriptedProvider::answering([Reply::text(said)]));
@@ -1222,10 +1222,10 @@ async fn the_member_and_their_own_computers_agent_ask_the_workspaces_model() {
     use agent_provider_config::protocol::{ModelError, ModelResponse};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let scripted = ScriptedProvider::answering([
         Reply::text("from the workspace"),
@@ -1286,15 +1286,15 @@ async fn the_member_and_their_own_computers_agent_ask_the_workspaces_model() {
 #[tokio::test]
 async fn an_agent_no_members_device_stands_behind_asks_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let scripted = ScriptedProvider::answering([Reply::text("never said")]);
     workspaces.answer_models_with(scripted.clone());
     let person = hex::encode(ada.user_public_key);
-    let (_, stranger) = governor();
+    let (_, stranger) = hosting_device();
     let outside = Caller::delegated_agent(
         "careful",
         stranger.user_public_key,
@@ -1371,10 +1371,10 @@ async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions_here) = governed(workspaces).await;
+    let (workspace, workspace_id, actions_here) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     workspaces.answer_models_with(ScriptedProvider::answering([
         Reply::text("hello there").costing(4321)

@@ -387,7 +387,7 @@ has come. An `every` period that passed while every device was off runs once whe
 and so does an `at` time that passed; a resource whose time moves to a later instant rings again
 there. The action takes the resource (`ring(r)`) or a root (`root Board`) as its arguments.
 
-The host that runs a trigger is the workspace's origin, the device that governs the workspace,
+The host that runs a trigger is the workspace's origin, the device that hosts the workspace,
 and it records in the same change what the trigger last did for the record: the period it ran
 in, or the instant it fired at. A second run of the same period or instant is refused there, so
 a trigger runs once across the workspace's devices however they sync. A trigger needs no window

@@ -22,7 +22,7 @@ fn entry(device: &crate::common::TestDevice) -> Id {
 }
 
 /// A machine planned to hold a workspace is handed it once it enrolled, by
-/// the device that governs the workspace; from then on the workspace's
+/// the device that owns the workspace; from then on the workspace's
 /// governance alone says what it holds, so taking it out there is not undone
 /// by the plan.
 /// The plan `nas` installs with, as the action takes it: a server named for it that holds
@@ -87,9 +87,9 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     servers::found(workspaces).await.unwrap();
     let workspace = workspaces.create("Notes").await.unwrap();
     let nonce = hex::encode([0x5a_u8; 16]);
@@ -146,7 +146,10 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     let named = held
         .iter()
         .any(|kept| kept.device == hex::encode(nas.device_pubkey()));
-    assert!(named, "the governor hands it the planned workspace");
+    assert!(
+        named,
+        "the workspace's owner hands it the planned workspace"
+    );
     tilo_test_env::within("the server to hold the workspace", async {
         while retained().await.is_none() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -156,7 +159,7 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     assert_eq!(
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         2,
-        "the workspace names the governor and its holder"
+        "the workspace names both its hosts"
     );
     let entry_now = servers::read(workspaces)
         .await
@@ -194,7 +197,7 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     assert_eq!(
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         1,
-        "the workspace names its governor alone"
+        "the workspace names its first host alone"
     );
 }
 

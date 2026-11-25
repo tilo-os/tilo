@@ -1272,7 +1272,7 @@ impl crate::Shared {
     /// The name the workspace's governance gives it, once this device holds the workspace: the one
     /// name every device and list of it reads, which the shell shows as its own. `None` while this
     /// device holds none of it, or it names none.
-    pub(crate) fn governing_name(&self, workspace: WorkspaceId) -> Option<String> {
+    pub(crate) fn listed_name(&self, workspace: WorkspaceId) -> Option<String> {
         let name = self.view.as_ref()?.workspace_name(workspace)?;
         let name = name.trim();
         if name.is_empty() {
@@ -1309,7 +1309,7 @@ impl crate::Shared {
             // refused says which workspace stayed away the same way, and one nothing has named is
             // the shell's own word for a workspace, never the id it is numbered by.
             let listed = self
-                .governing_name(enrolled.workspace_id)
+                .listed_name(enrolled.workspace_id)
                 .or_else(|| match &enrolled.name {
                     Some(name) => Some(name.clone()),
                     None => self.directory_store.listed_name(&key),

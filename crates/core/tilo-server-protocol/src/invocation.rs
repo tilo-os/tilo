@@ -363,7 +363,7 @@ pub fn verify_recorded(
     Ok(Some(cert))
 }
 
-/// The device that keeps a record for the workspace (its host, a governor's device), as a
+/// The device that keeps a record for the workspace (its host), as a
 /// change it signed is read: the app of the record, and the device's key. A step a called action
 /// declares it takes in that record counts only from it ([`verify_recorded`]).
 #[derive(Clone, Copy, Debug)]

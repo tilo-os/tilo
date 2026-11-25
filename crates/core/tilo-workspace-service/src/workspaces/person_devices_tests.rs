@@ -14,7 +14,9 @@ use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use super::super::Workspaces;
-use super::super::fixtures::{TestHost, device_cert, governor, invitation, test_host_holding};
+use super::super::fixtures::{
+    TestHost, device_cert, hosting_device, invitation, test_host_holding,
+};
 use super::super::person_workspace::{
     self, apply_on,
     devices::{DEVICES, Devices, OwnerSession, UnlockAnswer},
@@ -29,7 +31,7 @@ async fn desk_and_laptop(
     one: &std::path::Path,
     two: &std::path::Path,
 ) -> (TestHost, DeviceCert, TestHost, String) {
-    let (desk_key, desk_cert) = governor();
+    let (desk_key, desk_cert) = hosting_device();
     let desk = test_host_holding(one, &desk_key, &desk_cert, group_keys()).await;
     let own = person_workspace::found(desk.workspaces())
         .await
@@ -532,7 +534,7 @@ fn the_move_is_recorded(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_computer_seals_its_person_s_records_across_a_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let own = {
         let (computer, _keys) =
             super::super::fixtures::test_host_keyed(dir.path(), &key, &cert).await;
@@ -586,7 +588,7 @@ async fn a_computer_seals_its_person_s_records_across_a_restart() {
 #[tokio::test]
 async fn a_change_of_the_devices_record_names_the_app_that_keeps_it() {
     let one = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let desk = test_host_holding(one.path(), &key, &cert, group_keys()).await;
     let own = person_workspace::found(desk.workspaces())
         .await

@@ -16,7 +16,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::{IMPORT, PROVIDER, device_resource};
 use crate::workspaces::Workspaces;
-use crate::workspaces::fixtures::{TestHost, governor_with, test_host_with_app_files};
+use crate::workspaces::fixtures::{TestHost, hosting_device_with, test_host_with_app_files};
 
 const APP: &str = "so.tilo.test.notebook";
 const DEVICE: &str = "device-6b0f3c2e-8d1a-4f7e-9a52-3c4d5e6f7a8b";
@@ -28,7 +28,7 @@ const SURFACE: &str = r#"{"format":2,"resources":[{"fields":[{"path":"title","ty
 /// A device whose native apps kept their files below `home`, writing as the person's device
 /// with the notebook's surface known here, and a workspace of theirs it holds.
 async fn device(scratch: &Path, home: &Path) -> (TestHost, DeviceCert, String) {
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let host =
         test_host_with_app_files(&scratch.join("service"), &key, &cert, vec![home.to_owned()])
             .await;
@@ -95,8 +95,8 @@ async fn import(
 /// such page.
 async fn held(workspaces: &Workspaces, workspace: &str, id: &str, key: &str) -> Option<String> {
     let state = workspaces.workspace(workspace).await.unwrap();
-    let mut governed = state.lock().await;
-    let mut store = workspaces.store_of(&mut governed);
+    let mut hosted = state.lock().await;
+    let mut store = workspaces.store_of(&mut hosted);
     held_field(&mut store, id, key)
 }
 
@@ -113,8 +113,8 @@ fn held_field(store: &mut tilo_resource_store::Store, id: &str, key: &str) -> Op
 async fn held_view(workspaces: &Workspaces, workspace: &str) -> Option<(Vec<u8>, String)> {
     let view = DocumentId::window_view(DEVICE, WINDOW);
     let state = workspaces.workspace(workspace).await.unwrap();
-    let mut governed = state.lock().await;
-    let mut store = workspaces.store_of(&mut governed);
+    let mut hosted = state.lock().await;
+    let mut store = workspaces.store_of(&mut hosted);
     view_of(&mut store, view.route())
 }
 

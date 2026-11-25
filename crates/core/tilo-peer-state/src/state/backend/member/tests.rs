@@ -1,6 +1,6 @@
 use super::*;
 use crate::StatePeer;
-use crate::state::GovernedIdentity;
+use crate::state::DeviceRow;
 use crate::state::now_ns;
 use crate::verified_certificate::VerifiedCertificate;
 use automerge::ROOT;
@@ -506,7 +506,7 @@ fn a_viewers_drafts_are_signed_and_sealed_for_their_devices() {
     );
 }
 
-fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
+fn row(peer: &StatePeer, source: &[u8; 32]) -> DeviceRow {
     let workspace = peer.admitted_workspace().unwrap();
     let identities = workspace
         .get(ROOT, "peer_identities_v1")
@@ -518,7 +518,7 @@ fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
         .unwrap()
         .unwrap()
         .0;
-    GovernedIdentity::decode(raw.as_bytes().unwrap()).unwrap()
+    DeviceRow::decode(raw.as_bytes().unwrap()).unwrap()
 }
 fn replace_row(peer: &mut StatePeer, source: &[u8; 32], bytes: Vec<u8>) {
     let workspace = peer.core.workspace_doc.as_mut().unwrap();

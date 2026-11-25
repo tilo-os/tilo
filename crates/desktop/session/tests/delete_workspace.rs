@@ -32,7 +32,7 @@ fn front(session: &Session) -> String {
 }
 
 /// The name the workspace held here is founded under, which its governance keeps.
-const GOVERNED_NAME: &str = "Shared browser workspace";
+const SHARED_NAME: &str = "Shared browser workspace";
 
 /// The session's delete question, as it asks it now.
 fn asked(session: &Session) -> String {
@@ -85,7 +85,7 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
     // The workspace is named as its governance names it: the one its host founded it under.
     assert_eq!(
         asked(&session),
-        GOVERNED_NAME,
+        SHARED_NAME,
         "the question names the workspace"
     );
     assert!(delete_sheet_open(&session), "the question stands");
@@ -147,7 +147,7 @@ fn the_persons_yes_deletes_the_workspace() {
         .history()
         .iter()
         .chain(log.active().iter())
-        .any(|notice| notice.title.contains(GOVERNED_NAME));
+        .any(|notice| notice.title.contains(SHARED_NAME));
     assert!(told, "the person is told the workspace is deleted");
 }
 

@@ -242,7 +242,7 @@ fn arrival_count() -> &'static tokio::sync::watch::Sender<u64> {
 }
 
 /// Changes each time an app surface arrives here: a change held for it can
-/// be decided now. A workspace's governor replays what its server retains then
+/// be decided now. A workspace's host replays what its server retains then
 /// ([`crate::workspaces::Workspaces`]), so a held change is never let go for good.
 pub(crate) fn arrivals() -> tokio::sync::watch::Receiver<u64> {
     arrival_count().subscribe()

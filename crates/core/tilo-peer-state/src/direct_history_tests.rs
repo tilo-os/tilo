@@ -6,8 +6,8 @@
 use super::{DIRECT_ALPN, DirectSync, Replica};
 use crate::StatePeer;
 use crate::loopback::{addr, endpoint};
-use crate::owner::testing::{APP, WORKSPACE, finalize, governed_fixture_at, member_key};
-use crate::owner::{NativeWorkspaceOwner, open_file};
+use crate::owner::testing::{APP, WORKSPACE, finalize, hosted_fixture_at, member_key};
+use crate::owner::{DeviceWorkspaces, open_file};
 use crate::store::{Appetite, Store};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
@@ -62,7 +62,7 @@ fn bytes_moved() -> u64 {
 /// commits its owner made doing so, and how many of the parts it then held
 /// whole.
 fn join(parts: usize) -> (u64, u64, usize) {
-    let ((intent, bootstrap, _, _, now), governor, key) = governed_fixture_at(tilo_clock::wall());
+    let ((intent, bootstrap, _, _, now), owner_copy, key) = hosted_fixture_at(tilo_clock::wall());
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
@@ -73,8 +73,8 @@ fn join(parts: usize) -> (u64, u64, usize) {
     // The keys the host seals its parts under, and the ones the newcomer opens them with: one
     // key group, made once, so both hold the same.
     let keys = crate::sealed_records::members_keys(WORKSPACE);
-    let host = host_of(governor, &key, &keys, parts, now, &directory);
-    let generation = |owner: &NativeWorkspaceOwner| {
+    let host = host_of(owner_copy, &key, &keys, parts, now, &directory);
+    let generation = |owner: &DeviceWorkspaces| {
         owner
             .with_current(workspace, |view| Ok(view.generation()))
             .unwrap()
@@ -92,7 +92,7 @@ fn join(parts: usize) -> (u64, u64, usize) {
 /// an item at a time, every write published sealed under `keys` and kept in the
 /// host's store under `directory`.
 fn host_of(
-    mut governor: StatePeer,
+    mut owner_copy: StatePeer,
     key: &SigningKey,
     keys: &key_group::ContentKeys,
     parts: usize,
@@ -100,7 +100,7 @@ fn host_of(
     directory: &tempfile::TempDir,
 ) -> DirectSync {
     let mut written = Vec::new();
-    let person = governor.owner_certificates()[0].user_public_key;
+    let person = owner_copy.owner_certificates()[0].user_public_key;
     for part in 0..parts {
         let record = format!("part:{part}");
         let artifact = collab_types::document_artifact_id(APP, WORKSPACE, &record);
@@ -116,7 +116,7 @@ fn host_of(
         document.put(ROOT, "text", text(part)).unwrap();
         document.commit_edit("issues", "text", &person);
         written.push(
-            governor
+            owner_copy
                 .publication_mut()
                 .publish_sealed_checkpoint(APP, &record, document.save(), &mut seal, key, now)
                 .unwrap(),
@@ -129,7 +129,7 @@ fn host_of(
             document.commit_edit("issues", "items", &person);
             let changes = document.save_after(&before);
             written.push(
-                governor
+                owner_copy
                     .publication_mut()
                     .publish_sealed_incremental(APP, &record, changes, &mut seal, key, now)
                     .unwrap(),
@@ -137,7 +137,7 @@ fn host_of(
         }
     }
     let store = Arc::new(Store::open(directory.path().join("store"), Appetite::StoreAll).unwrap());
-    let host = DirectSync::over(Replica::new(governor), key.clone()).with_store(store);
+    let host = DirectSync::over(Replica::new(owner_copy), key.clone()).with_store(store);
     for frame in &written {
         host.keep(frame, false).unwrap();
     }
@@ -206,18 +206,18 @@ fn held_parts(member: &DirectSync, keys: &key_group::ContentKeys, parts: usize) 
 #[tokio::test]
 async fn a_link_does_not_report_a_frame_it_could_not_keep() {
     let now = tilo_clock::wall();
-    let (_, mut governor, key) = governed_fixture_at(now);
+    let (_, mut owner_copy, key) = hosted_fixture_at(now);
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("store");
     let store = Arc::new(Store::open(&path, Appetite::StoreAll).unwrap());
-    let link = DirectSync::over(Replica::new(governor.clone()), key.clone()).with_store(store);
+    let link = DirectSync::over(Replica::new(owner_copy.clone()), key.clone()).with_store(store);
     let mut heard = link.0.heard.subscribe();
     let mut document = AutoCommit::new();
     document.put(ROOT, "text", "first").unwrap();
     document.commit_edit(
         "issues",
         "text",
-        &governor.owner_certificates()[0].user_public_key,
+        &owner_copy.owner_certificates()[0].user_public_key,
     );
     let keys = key_group::KeyGroup::create(
         WorkspaceId::parse(WORKSPACE).unwrap(),
@@ -227,7 +227,7 @@ async fn a_link_does_not_report_a_frame_it_could_not_keep() {
     .content_keys()
     .unwrap();
     let artifact = collab_types::document_artifact_id(APP, WORKSPACE, "part:0");
-    let message = governor
+    let message = owner_copy
         .publication_mut()
         .publish_sealed_checkpoint(
             APP,
@@ -342,7 +342,7 @@ fn channel_frame(
 /// key group from. A commit the newest replaced is not handed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_newcomer_joins_each_channel_from_what_its_host_kept_at_its_store() {
-    let ((intent, bootstrap, _, _, now), governor, key) = governed_fixture_at(tilo_clock::wall());
+    let ((intent, bootstrap, _, _, now), owner_copy, key) = hosted_fixture_at(tilo_clock::wall());
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("store");
     let group = collab_types::WorkspaceId::new();
@@ -353,7 +353,8 @@ async fn a_newcomer_joins_each_channel_from_what_its_host_kept_at_its_store() {
     let request = channel_frame(&key, group, 2);
     {
         let store = Arc::new(Store::open(&path, Appetite::StoreAll).unwrap());
-        let host = DirectSync::over(Replica::new(governor.clone()), key.clone()).with_store(store);
+        let host =
+            DirectSync::over(Replica::new(owner_copy.clone()), key.clone()).with_store(store);
         let serving = super::Serving::default();
         serving.serve(host.clone()).unwrap();
         let founder_device = founder.verifying_key().to_bytes();
@@ -368,7 +369,7 @@ async fn a_newcomer_joins_each_channel_from_what_its_host_kept_at_its_store() {
     // The host starts again over its store, with nothing else of the
     // channels' history: no server's retained copy is read.
     let store = Arc::new(Store::open(&path, Appetite::StoreAll).unwrap());
-    let host = DirectSync::over(Replica::new(governor), key.clone()).with_store(store);
+    let host = DirectSync::over(Replica::new(owner_copy), key.clone()).with_store(store);
     let serving = super::Serving::default();
     serving.serve(host.clone()).unwrap();
     let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();

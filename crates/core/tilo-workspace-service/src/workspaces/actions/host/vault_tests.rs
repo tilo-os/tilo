@@ -21,11 +21,11 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed, settled, signed_from};
+use super::super::tests::{admit, caller, hosted, settled, signed_from};
 use super::turn_use_tests::asks;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{install_app, revoke_grant, test_host, test_host_holding};
-use crate::workspaces::tests::{governor, guest_device};
+use crate::workspaces::tests::{guest_device, hosting_device};
 use crate::workspaces::workspace_stores::Store;
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -241,10 +241,10 @@ pub(super) fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::pa
 #[tokio::test]
 async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_safe() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
@@ -310,7 +310,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
 
     // A member of another workspace, and a person in none of them, are
     // nobody to this workspace's vault, whether they ask for it or change it.
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     let (_, stranger) = guest_device();
     for (who, device, asking) in [
@@ -414,10 +414,10 @@ async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_sec
     const PIN: &str = "made-up-pin-7351";
     const STRONG: &str = "Made-up-Strong-Pass-0451";
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let (lines, logging) = super::web_call_tests::logged();
@@ -552,10 +552,10 @@ async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_sec
 #[tokio::test]
 async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_person() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let as_ada = caller(&ada);
@@ -734,10 +734,10 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
 async fn a_workspace_grant_writes_nothing_into_the_vault() {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let kept = ask(
@@ -843,12 +843,12 @@ impl crate::workspaces::SecretClipboard for Clipboard {
 #[tokio::test]
 async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let clipboard = Arc::new(Clipboard::default());
     workspaces.copy_secrets_to(clipboard.clone());
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     install_passwords(workspaces, &workspace).await;
@@ -1063,7 +1063,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
     }
 
     // A member of another workspace reads none of it, there or here.
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     for (action, argument) in [
         (person_vault::LIST, json!({})),
@@ -1113,10 +1113,10 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
 #[tokio::test]
 async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
 
@@ -1239,10 +1239,10 @@ async fn uses_of(
 #[tokio::test]
 async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let provider = a_provider(&service, workspace_id, (&ada, &as_ada)).await;
@@ -1403,12 +1403,12 @@ async fn nothing_was_used(
 #[tokio::test]
 async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let bo = admit(workspaces, &elsewhere, &owner, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
     let hers = (&ada, &as_ada);
@@ -1469,10 +1469,10 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
 #[tokio::test]
 async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -1534,10 +1534,10 @@ async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
 #[tokio::test]
 async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -1682,10 +1682,10 @@ fn mail_account(address: &str, server: &str) -> accounts::Account {
 #[tokio::test]
 async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let hers = (&ada, &caller(&ada));
 
@@ -1803,13 +1803,13 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
 async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
     const GRANT: &str = "an-access-token-only-the-grant-holds";
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     // Its key service keeps the workspace's document keys across a restart, as a server's does:
     // the workspace's accounts are sealed for them.
     let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
     let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
-    let (_, workspace_id, _) = governed(&workspaces).await;
+    let (_, workspace_id, _) = hosted(&workspaces).await;
     let workspace = workspace_id.to_string();
     // Its vault opened here before, so the host holds its keys as it starts, and its accounts
     // are the workspace's.
@@ -1946,7 +1946,7 @@ async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
     const KEPT: &str = "kept-for-a-test";
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     // Ada's workspace, which the host founded for her and serves.
@@ -2012,10 +2012,10 @@ async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
 #[tokio::test]
 async fn a_models_key_is_kept_and_cleared_as_the_reading_says() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (_workspace, workspace_id, service) = governed(workspaces).await;
+    let (_workspace, workspace_id, service) = hosted(workspaces).await;
     // The person managing their own workspace's providers, on a device of their own: the vault
     // they write is theirs, and the models they choose are the workspace's.
     let ada = owner.clone();
@@ -2135,10 +2135,10 @@ const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 #[tokio::test]
 async fn a_code_generators_code_reads_where_its_seed_is() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let kept = ask(
@@ -2195,10 +2195,10 @@ async fn a_code_generators_code_reads_where_its_seed_is() {
 #[tokio::test]
 async fn a_code_generator_that_names_no_hash_makes_its_codes_with_sha1() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let kept = ask(
         &service,
@@ -2222,10 +2222,10 @@ async fn a_code_generator_that_names_no_hash_makes_its_codes_with_sha1() {
 async fn an_agents_vault_write_is_the_allowed_calls_declared_step_alone() {
     use accounts::vault_items::{UseRecord, VaultChange};
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let kept = ask(
@@ -2305,10 +2305,10 @@ async fn an_agents_vault_write_is_the_allowed_calls_declared_step_alone() {
 #[tokio::test]
 async fn a_yes_admits_the_one_call_it_answered() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let provider = a_provider(&service, workspace_id, (&ada, &as_ada)).await;
@@ -2418,10 +2418,10 @@ async fn last_allowed(
 async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
     use tilo_action_policy::{ActionKind, Answer};
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, _) = governed(workspaces).await;
+    let (workspace, workspace_id, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let mail = tilo_app_id::apps::MAIL;
     let sign_ins = (Store::MAIL, person_accounts::SIGN_INS, ActionKind::Read);

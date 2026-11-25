@@ -1,6 +1,6 @@
-//! What a device asks a workspace's governor about invitations, and what it
+//! What a device asks a workspace's host about invitations, and what it
 //! answers: issuing one, cancelling one, and listing those still
-//! redeemable. The governor is whichever machine runs the workspace's
+//! redeemable. The host is whichever machine serves the workspace's
 //! governance: a server, a cloud host or the device that made the workspace.
 //!
 //! These are postcard wire formats between separately updated hosts and

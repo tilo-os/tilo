@@ -48,13 +48,13 @@ impl Session {
             // removed among them, and whoever is here named and coloured as the bar and People
             // draw them: the workspace's history names them the same way.
             if let Some((workspace, _)) = sync.front_members() {
-                let governed = self
+                let listed = self
                     .shared
                     .view
                     .as_ref()
                     .and_then(|view| view.members(&workspace).ok())
                     .unwrap_or_default();
-                let mut people: Vec<collab_types::Member> = governed.members;
+                let mut people: Vec<collab_types::Member> = listed.members;
                 for (id, name, (r, g, b)) in sync.here().borrow().persons() {
                     let person = collab_types::Person::new(id, name);
                     let colour =
@@ -91,7 +91,7 @@ impl Session {
                             }),
                     );
                 }
-                let writers = governed
+                let writers = listed
                     .devices
                     .into_iter()
                     .map(|(member, devices)| {

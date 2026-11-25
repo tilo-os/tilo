@@ -510,14 +510,14 @@ impl StatePeer {
         Ok(())
     }
 
-    /// Take in the certificates and revocations `doc`'s governed identity
+    /// Take in the certificates and revocations `doc`'s member identity
     /// rows prove.
-    pub(super) fn import_governed_rows(
+    pub(super) fn import_device_rows(
         &mut self,
         doc: &CachedDocument,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let (certificates, revocations, changed) = backend::governed::import(
+        let (certificates, revocations, changed) = backend::identities::import(
             doc,
             &self.core.certificates,
             &self.core.revocations,

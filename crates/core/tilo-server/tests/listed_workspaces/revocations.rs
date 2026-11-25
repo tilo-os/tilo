@@ -1,6 +1,6 @@
-//! A device revoked by its person's root, announced in a governed workspace by
+//! A device revoked by its person's root, announced in a hosted workspace by
 //! another device of that person, stops at the server: it is admitted to no
-//! workspace the server governs, administers none of them, and every member's
+//! workspace the server hosts, administers none of them, and every member's
 //! copy refuses it from the workspace's governance.
 use ed25519_dalek::SigningKey;
 use governance_actions::{asking, host_action};
@@ -124,8 +124,7 @@ async fn reaches(server: &Server, device: &TestDevice, host: &TestDevice) -> boo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_workspace_it_governs()
-{
+async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_workspace_it_hosts() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
@@ -136,7 +135,7 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_wo
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &host).await;
 
-    // Alice's laptop governs two workspaces through her server; her phone is in
+    // Alice's laptop administers two workspaces through her server; her phone is in
     // the first, and Bob is in it with two devices.
     let plans = create_and_enter(&server, &laptop, "Plans").await;
     let other = create_and_enter(&server, &laptop, "Other").await;

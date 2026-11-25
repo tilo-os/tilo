@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
         for answer in [Answer::Ask, Answer::Deny] {
             let (state, service, owner, mut request, tree) = broker_with_tree(true);
             // Structural owners are unrestricted by grants. Use a direct person
-            // governed by grants to exercise current policy, not owner override.
+            // whose access comes from grants to exercise current policy, not owner override.
             let person = Caller::local_person("guest").in_workspace(owner.workspace().unwrap());
             let path = TreePath::root()
                 .app("so.tilo.workspace")

@@ -377,7 +377,7 @@ impl Agents {
             .collect()
     }
 
-    /// The mark a row wears: an app's own glyph, and the people's mark where the row governs
+    /// The mark a row wears: an app's own glyph, and the people's mark where the row covers
     /// the workspace's members and settings.
     fn access_icon(app: &str) -> ui::icons::Icon {
         if app == tilo_action_policy::agent_answers::WORKSPACE_APP {

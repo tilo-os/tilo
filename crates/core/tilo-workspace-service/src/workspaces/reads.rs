@@ -1,7 +1,7 @@
 //! The resources of the workspaces a service holds, read for a device.
 //!
 //! The service's own copy of a workspace is the one its apps' Opens and the session's
-//! own reads answer with: what its governor keeps of a document whole, sealed writes opened with
+//! own reads answer with: what its host keeps of a document whole, sealed writes opened with
 //! the content keys the device the service is on holds. Every read is decided at the resource's
 //! node as a member's read is ([`tilo_peer_state::StatePeer::check_document_read`]), for the
 //! device whose certificate asks.
@@ -369,7 +369,7 @@ impl Workspaces {
     }
 
     /// The replica of `workspace` and the content keys its device holds, taken in a moment: the
-    /// governor stays free while a read opens a sealed history.
+    /// host stays free while a read opens a sealed history.
     fn replica(&self, workspace: &str) -> Option<(StatePeer, Option<DeviceKeys>)> {
         let held = self.inner.readings.held(workspace)?;
         Some((held.replica.read(StatePeer::clone), held.device))

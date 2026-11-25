@@ -34,14 +34,14 @@ The API server holds no device of anyone and no access authority over anyone.
 For each grant it generates a key, and the person's root certifies it as an
 agent's grant (`tilo_user_identity::DeviceCapabilities::agent`): scoped to
 all of the person's workspaces or one, expiring within 90 days (the API server asks
-for 89), governing nothing. A key minted for one workspace is certified by its
+for 89), administering nothing. A key minted for one workspace is certified by its
 parent grant's key. The API server acts only with these keys, each the device of
 its own session with the server:
 
 - The server admits a grant as its person's agent in exactly the workspaces its
   scope reaches where it redeemed its person's invitation, holds it to an
-  agent's role (Editor at most); what it governs, invites or administers its
-  grants in the workspace decide, asking its person first by default
+  agent's role (Editor at most); what it invites or administers its grants in the
+  workspace decide, asking its person first by default
   (`tilo_workspace_service::workspace_access`). Its certificate's expiry and
   its person's revocations, a minted grant's issuer included, are checked at
   every handshake.

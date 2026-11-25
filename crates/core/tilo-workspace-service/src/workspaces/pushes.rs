@@ -68,7 +68,7 @@ impl Workspaces {
     /// Push `hash` of `app`, content an app on this device wrote for a record
     /// of `workspace`, to the host serving this device's copy of it, and keep
     /// it going until the host says it keeps it. A workspace this device
-    /// governs itself is its own host: nothing goes anywhere.
+    /// hosts itself is its own host: nothing goes anywhere.
     pub fn push_content(&self, workspace: &str, app: &str, hash: &str) {
         let Some(host) = WorkspaceId::parse(workspace)
             .filter(|id| self.member_link(*id).is_some())

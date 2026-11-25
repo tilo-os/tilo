@@ -237,7 +237,7 @@ impl Scope {
     }
 }
 
-/// What a governor exports to its filesystem: the sandbox capabilities people
+/// What the session exports to a mount's filesystem: the sandbox capabilities people
 /// hold over shared files.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -328,9 +328,9 @@ pub enum Effect {
     /// `Restrict { Read }` means read-only. A restriction never denies
     /// [`Access::Read`].
     Restrict,
-    /// Compiled access for a member of a governed workspace file tree.
+    /// Compiled access for a member of a workspace file tree.
     WorkspaceFileAccess,
-    /// Marks a governed file tree so ordinary path capabilities cannot authorize its contents.
+    /// Marks a workspace file tree so ordinary path capabilities cannot authorize its contents.
     WorkspaceFileBoundary,
 }
 
@@ -455,7 +455,7 @@ pub enum CapDecision {
 /// May `acting` reach `resource` with `access`?
 ///
 /// A live matching grant whose access implies the request allows, unless a live
-/// matching restriction caps it below the request. Within a governed file tree, the
+/// matching restriction caps it below the request. Within a workspace file tree, the
 /// workspace must allow access. `now` in Unix milliseconds; `None` skips expiry.
 pub fn decide_capability(
     acting: &Acting,
@@ -490,7 +490,7 @@ fn decide(
     caps: &[CapOverride],
     now: Option<u64>,
 ) -> CapDecision {
-    let mut governed_files = false;
+    let mut sandboxed_files = false;
     let mut workspace_granted = false;
     let mut granted = false;
     let mut restricted = false;
@@ -500,7 +500,7 @@ fn decide(
         }
         if cap.effect == Effect::WorkspaceFileBoundary && matches!(resource, ResourceRef::FsPath(_))
         {
-            governed_files = true;
+            sandboxed_files = true;
         }
         if !cap.is_live_at(now) || !reaches(cap) {
             continue;
@@ -512,7 +512,7 @@ fn decide(
             _ => {}
         }
     }
-    let granted = if governed_files {
+    let granted = if sandboxed_files {
         workspace_granted
     } else {
         granted

@@ -24,7 +24,7 @@ impl StatePeer {
         let Some(held) = self.core.workspace_doc.clone() else {
             return Ok(false);
         };
-        if !self.governs_history(&device.user_public_key) {
+        if !self.administers_history(&device.user_public_key) {
             return Err(
                 "only a device of the workspace's owner or of an administrator compacts it".into(),
             );

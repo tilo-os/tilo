@@ -34,8 +34,8 @@ pub trait CertificateAuthority: Send + Sync {
         None
     }
     /// The certificate this host's own device holds, which it acts under itself before anyone
-    /// signs in here: in a workspace its person governs. `None` on a host whose device does not
-    /// act as itself.
+    /// signs in here: in a workspace that names its person owner or administrator. `None` on a
+    /// host whose device does not act as itself.
     fn own_device(&self) -> Option<tilo_user_identity::DeviceCert> {
         None
     }

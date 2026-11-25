@@ -43,9 +43,9 @@ pub enum ServerError {
     /// Identity file missing / malformed.
     #[error("identity: {0}")]
     Identity(String),
-    /// Governed workspace admission could not be reconciled safely.
-    #[error("governed access: {0}")]
-    GovernedAccess(String),
+    /// Member-list admission could not be reconciled safely.
+    #[error("member list: {0}")]
+    MemberListAccess(String),
     /// An additional endpoint protocol conflicts with the server router.
     #[error("protocol registration: {0}")]
     ProtocolRegistration(String),
@@ -58,10 +58,8 @@ impl From<crate::service::ServiceError> for ServerError {
             ServiceError::Identity(reason) => Self::Identity(reason),
             ServiceError::Files(error) => Self::Files(error),
             ServiceError::Io(error) => Self::Io(error),
-            ServiceError::GovernedAccess(reason) => Self::GovernedAccess(reason),
-            ServiceError::Workspaces(reason) => {
-                Self::Identity(format!("governed workspaces: {reason}"))
-            }
+            ServiceError::MemberListAccess(reason) => Self::MemberListAccess(reason),
+            ServiceError::Workspaces(reason) => Self::Identity(format!("workspaces: {reason}")),
             ServiceError::Handshake(reason) => Self::Iroh(reason),
         }
     }
@@ -164,7 +162,7 @@ pub struct Server {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// What the routes a page asks before its session answer with.
     web: Box<WebContext>,
-    /// The workspaces this server governs; absent when it hosts no workspace authority.
+    /// The workspaces this server serves; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// The Browser this host places for its workspaces' pages, when it serves
     /// Browser ([`crate::hosted_browser::HostedBrowsers::serving`]).
@@ -640,13 +638,13 @@ impl Server {
             filesystem_endpoints: Vec::new(),
         });
         let sessions = service.sessions().clone();
-        let governed = service.workspaces().clone();
+        let hosted = service.workspaces().clone();
         // The links its invitations hand over open the server's web entry. A stack on this
         // machine alone (`TILO_WORKSPACES_LOCAL`) keeps its own site: its addresses are
         // loopback, which no public page dials.
         if let Some(entry) = &cfg.web_entry {
             let local = std::env::var_os("TILO_WORKSPACES_LOCAL").is_some();
-            let _ = governed.invite_at(entry, local);
+            let _ = hosted.invite_at(entry, local);
         }
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
@@ -660,13 +658,14 @@ impl Server {
         let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
         // The pages this host serves are served their tickets by the device's one set of
         // tickets, which keeps each device a page's ticket adds in its person's record here.
-        governed.action_service().tickets().serve_pages(Arc::new(
-            crate::page_tickets::PageTickets {
+        hosted
+            .action_service()
+            .tickets()
+            .serve_pages(Arc::new(crate::page_tickets::PageTickets {
                 identity: live.clone(),
                 endpoint: endpoint.clone(),
-                records: Some(governed.downgrade()),
-            },
-        ));
+                records: Some(hosted.downgrade()),
+            }));
         let web = Box::new(WebContext {
             server: handler.clone(),
             #[cfg(feature = "web")]
@@ -701,12 +700,12 @@ impl Server {
             // One that has the workspace keeps its entry's address current.
             // One that has it not yet is handed it by a device that has it,
             // once the ticket it came in with entered it in the document.
-            if crate::servers::holds_person_workspace(&governed).await {
+            if crate::servers::holds_person_workspace(&hosted).await {
                 // Its entry names the packet relay it is reached through, beside the address
                 // it is dialled at, as its endpoint advertises it: a page has no UDP socket
                 // and reaches it only through one.
                 let relay = endpoint.addr().relay_urls().next().map(ToString::to_string);
-                crate::servers::enroll(&governed, &endpoint.addr(), relay.as_deref())
+                crate::servers::enroll(&hosted, &endpoint.addr(), relay.as_deref())
                     .await
                     .map_err(|error| {
                         ServerError::Identity(format!("Servers workspace: {error}"))
@@ -721,7 +720,7 @@ impl Server {
         push_background_task(
             &background_tasks,
             tokio::spawn(install_and_follow(
-                governed.clone(),
+                hosted.clone(),
                 endpoint.clone(),
                 cfg.state_root.clone(),
                 joined,
@@ -731,40 +730,40 @@ impl Server {
         // A server's name is its entry's in its person's admin workspace:
         // the workspaces it holds show it by that name from now on.
         if let Some(label) =
-            crate::servers::name(&governed, &identity.device_cert.device_public_key).await
+            crate::servers::name(&hosted, &identity.device_cert.device_public_key).await
         {
-            governed.name_holder(&label).await;
+            hosted.name_holder(&label).await;
         }
         // Members read what this host keeps for their workspace from its
         // content, and the files of the workspaces it holds are kept there
         // so a member that comes up after the one that wrote them left reads
         // the same bytes from this host alone. What no member holds any more
         // is let go of, so replaced files do not pile up.
-        governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
+        hosted.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
             &content,
         ))));
         // A branch of a workspace takes the content its records name.
-        governed.branch_content(Arc::new(crate::content::branch::StoresBranches(
+        hosted.branch_content(Arc::new(crate::content::branch::StoresBranches(
             Arc::clone(&content),
         )));
-        let kept = crate::kept_content::KeptContent::new(governed.clone(), Arc::clone(&content));
+        let kept = crate::kept_content::KeptContent::new(hosted.clone(), Arc::clone(&content));
         push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
         // A workspace its owner deleted takes its content and its app
         // workers with it.
         push_background_task(
             &background_tasks,
             tokio::spawn(crate::content::forget_deleted(
-                governed.clone(),
+                hosted.clone(),
                 Arc::clone(&content),
                 app_serving,
             )),
         );
         // This device's own web UI, on until its person turns it off: the host operation
-        // `web.serve` reaches it through the workspaces it governs.
+        // `web.serve` reaches it through the workspaces it serves.
         #[cfg(feature = "web")]
         let web_ui = {
             let control = Arc::new(crate::web::control::Control::default());
-            governed.serve_web_with(Arc::new(crate::web::control::Serving(Arc::clone(&control))));
+            hosted.serve_web_with(Arc::new(crate::web::control::Serving(Arc::clone(&control))));
             control
         };
         // A host that sells Linux machines places its workspaces' Browser in them: the
@@ -787,24 +786,24 @@ impl Server {
                     host: identity.device_cert.clone(),
                     host_key: identity.device_signing_key.clone(),
                     server,
-                    workspaces: Some(governed.clone()),
+                    workspaces: Some(hosted.clone()),
                     environments: handler.environments.clone(),
                     runtime: tokio::runtime::Handle::current(),
-                    hand: governed.hand(),
-                    actions: governed.action_service(),
+                    hand: hosted.hand(),
+                    actions: hosted.action_service(),
                 });
                 browsers.ask_from(
-                    governed.action_service(),
+                    hosted.action_service(),
                     endpoint.clone(),
-                    governed.clone(),
+                    hosted.clone(),
                     tokio::runtime::Handle::current(),
                 );
-                if let Some(store) = governed.asked_store() {
+                if let Some(store) = hosted.asked_store() {
                     browsers.keep_asked_in(&store);
                 }
                 // The host's one dispatch answers the workspace's open of Browser and the page
                 // actions of the window it places, as it answers every other action.
-                browsers.provide_in(&governed.providers());
+                browsers.provide_in(&hosted.providers());
                 Some(browsers)
             }
             Err(error) => {
@@ -828,7 +827,7 @@ impl Server {
                 background_tasks,
                 mesh_profile,
                 web,
-                workspaces: Some(governed),
+                workspaces: Some(hosted),
                 #[cfg(all(feature = "web", feature = "agents"))]
                 browsers,
                 content,
@@ -929,7 +928,7 @@ impl Server {
     /// its root-signed delegation against the person it acts for and confine the
     /// device to the delegated workspaces from its next envelope on, then have
     /// the agent, signing with `signer`, write its own row on the member list of each
-    /// workspace this server governs that the delegation names, as an approved
+    /// workspace this server serves that the delegation names, as an approved
     /// grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
     /// Once this returns, those workspaces admit it. Replaces an earlier
     /// delegation of the same device.
@@ -942,7 +941,7 @@ impl Server {
         not(feature = "agents"),
         allow(
             clippy::unused_async,
-            reason = "only a build with agents keeps them on governed rosters, which it awaits"
+            reason = "only a build with agents lists them in workspaces, which it awaits"
         )
     )]
     pub async fn register_agent(
@@ -957,7 +956,7 @@ impl Server {
         // Only a build with agents lists them in workspaces, where the agent signs its own row.
         #[cfg(not(feature = "agents"))]
         let _ = signer;
-        // The governed workspaces it names put it on their rosters.
+        // The workspaces it names put it on their member lists.
         #[cfg(feature = "agents")]
         if let Some(workspaces) = self.workspaces() {
             workspaces
@@ -968,7 +967,7 @@ impl Server {
     }
 
     /// This device's key service: the one place the device holds in each key group of the
-    /// workspaces it governs, which every session of this device reads and asks with. `None` when
+    /// workspaces it serves, which every session of this device reads and asks with. `None` when
     /// its certificate does not let it own workspaces.
     #[must_use]
     pub fn workspace_keys(&self) -> Option<tilo_workspace_keys::SharedKeys> {
@@ -1010,7 +1009,7 @@ impl Server {
         }
     }
 
-    /// The workspaces this server governs, when it hosts the workspace authority.
+    /// The workspaces this server serves, when it hosts the workspace authority.
     #[must_use]
     pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {
         self.workspaces.as_ref()
@@ -1111,12 +1110,12 @@ async fn install_and_follow(
 ) {
     use tokio::sync::broadcast::error::RecvError;
     let mut listed = workspaces.listing_changes();
-    let mut governed = workspaces.governance_changes();
+    let mut hosted = workspaces.governance_changes();
     while !crate::servers::holds_person_workspace(&workspaces).await {
         // A slow receiver re-reads; a closed one means the service is gone.
         let changed = tokio::select! {
             change = listed.recv() => change.map(drop),
-            change = governed.recv() => change.map(drop),
+            change = hosted.recv() => change.map(drop),
         };
         if changed == Err(RecvError::Closed) {
             return;
@@ -1767,17 +1766,17 @@ mod tests {
                 .enter(&server_workspace, (&client_cert, &client_key))
                 .await
                 .unwrap();
-            let governed = server.workspaces().unwrap();
+            let hosted = server.workspaces().unwrap();
             // Its rollback floor says which key it takes, and it never answers
             // its own request: that is its person's other devices' to sign.
             let secret_sync = tilo_seal::SecretKey::from_bytes([3; 32]);
             let made =
                 crate::servers::floor::make_key(&root, &secret_sync.public_key().unwrap()).unwrap();
-            crate::servers::floor::apply(governed, made.action)
+            crate::servers::floor::apply(hosted, made.action)
                 .await
                 .unwrap();
             assert_eq!(
-                crate::servers::read(governed)
+                crate::servers::read(hosted)
                     .await
                     .unwrap()
                     .active(&host.public_key)
@@ -1786,7 +1785,7 @@ mod tests {
                 made.public
             );
             assert_eq!(
-                crate::servers::floor::answer(governed, &secret_sync)
+                crate::servers::floor::answer(hosted, &secret_sync)
                     .await
                     .unwrap(),
                 0,
@@ -1796,7 +1795,7 @@ mod tests {
             let id = crate::servers::floor::request_id(own.as_str(), 6);
             assert!(
                 crate::servers::floor::apply(
-                    governed,
+                    hosted,
                     crate::servers::floor::Floor::APPROVE_FLOOR_ADVANCE.with((
                         id.clone(),
                         own.as_str().to_owned(),
@@ -1807,7 +1806,7 @@ mod tests {
                 .is_err(),
                 "nor may it approve it by hand"
             );
-            let pending = crate::servers::floor::read(governed).await.unwrap();
+            let pending = crate::servers::floor::read(hosted).await.unwrap();
             assert_eq!(
                 pending.requests.get(&id).unwrap().answer,
                 "",
@@ -1924,9 +1923,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let governed = server.workspaces().expect("the server holds workspaces");
+        let hosted = server.workspaces().expect("the server holds workspaces");
         tilo_test_env::within("the server to hold the Servers workspace", async {
-            while !crate::servers::holds_person_workspace(governed).await {
+            while !crate::servers::holds_person_workspace(hosted).await {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         })
@@ -1935,11 +1934,11 @@ mod tests {
         // from where it is reached: its address, and the relay beside it.
         server.shutdown().await;
         let restarted = Server::start(config, identity).await.unwrap();
-        let governed = restarted.workspaces().expect("the server holds workspaces");
+        let hosted = restarted.workspaces().expect("the server holds workspaces");
         let endpoint = serde_json::to_string(&restarted.node_addr()).unwrap();
         let named = tilo_test_env::within("the entry to name the relay", async {
             loop {
-                if let Ok(servers) = crate::servers::read(governed).await
+                if let Ok(servers) = crate::servers::read(hosted).await
                     && let Some(entry) = servers.active(&host.public_key)
                     && entry.endpoint == endpoint
                     && !entry.relay.is_empty()

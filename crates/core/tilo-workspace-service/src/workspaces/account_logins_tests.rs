@@ -30,7 +30,9 @@ use zeroize::Zeroizing;
 use super::account_logins::{
     ASKS_FIRST, AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
 };
-use super::fixtures::{TestHost, device_cert, governor, signed_pre_admission, test_host_keyed};
+use super::fixtures::{
+    TestHost, device_cert, hosting_device, signed_pre_admission, test_host_keyed,
+};
 
 use super::{MemberDevice, PreAdmitRequest, Workspaces};
 use crate::own_device::KeyService;
@@ -150,7 +152,7 @@ impl Members {
     async fn with_member(capabilities: DeviceCapabilities) -> Self {
         let owner_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
-        let (owner_key, owner_cert) = governor();
+        let (owner_key, owner_cert) = hosting_device();
         let (serving, owner_keys) =
             test_host_keyed(owner_dir.path(), &owner_key, &owner_cert).await;
         let created = serving.workspaces().create("Team").await.unwrap();
@@ -299,7 +301,7 @@ impl Members {
     async fn rule_passwords_for_the_member(&self, answer: tilo_action_policy::Answer) {
         use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
         let state = self.owner.workspace(&self.workspace).await.unwrap();
-        let mut governed = state.lock().await;
+        let mut hosted = state.lock().await;
         let refused = Grant::new(
             "no-passwords-for-the-member",
             Grantee::person(hex::encode(self.member_cert.user_public_key)),
@@ -315,18 +317,18 @@ impl Members {
         // members' devices.
         self.owner
             .administer(
-                &mut governed,
+                &mut hosted,
                 [41; 32],
                 [42; 32],
                 |peer| {
                     peer.governance_mut()
-                        .put_governed_grants(&[refused], &key, at)
+                        .put_member_grants(&[refused], &key, at)
                 },
                 now,
             )
             .await
             .unwrap();
-        drop(governed);
+        drop(hosted);
         assert!(
             self.owner
                 .using_vault(&self.workspace, &self.member_caller(), None, false)
@@ -942,7 +944,7 @@ async fn a_branch_opens_the_passwords_its_source_kept() {
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let (host, _keys) = test_host_keyed(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     workspaces

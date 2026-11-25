@@ -52825,7 +52825,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Tells everyone who reads the conversation that mail came to it: who wrote, what it is\ncalled, and which account it came to while the workspace reads several of them, opening the\nconversation. It is run once for each arrival, on the device that governs the workspace, so\neach person is told once however many of their devices are open."
+        "description": "Tells everyone who reads the conversation that mail came to it: who wrote, what it is\ncalled, and which account it came to while the workspace reads several of them, opening the\nconversation. It is run once for each arrival, on the device that hosts the workspace, so\neach person is told once however many of their devices are open."
       },
       "tl.so.tilo.mail.Thread.answer.Arguments": {
         "type": "object",
@@ -53447,6 +53447,18 @@
           "seconds"
         ],
         "description": "Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait\nat all at zero."
+      },
+      "tl.so.tilo.mail.Mail.read_more.Arguments": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Reads the page before the rows of the place `query`: what a list does as the person reaches\nits end, whichever accounts the window reads. The account whose server holds more answers;\na place that is no mailbox, or whose mail is all here, has no page before it and asks\nnothing."
       },
       "tl.so.tilo.mail.Mail.new_draft.Arguments": {
         "type": "object",
@@ -116507,6 +116519,12 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "set_hold",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.set_hold.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
+      "action": "read_more",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.read_more.Arguments"
     },
     {
       "app": "so.tilo.mail",

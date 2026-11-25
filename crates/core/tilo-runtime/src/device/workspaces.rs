@@ -2,7 +2,7 @@
 //!
 //! One service holds every workspace: the member copies of the workspaces the login takes part
 //! in, synced with the server that hosts them, and, on a computer with no login, the workspace
-//! founded here, which the service governs. The daemon keeps no replica of its own: what it reads
+//! founded here, which the service hosts. The daemon keeps no replica of its own: what it reads
 //! (a workspace's name and governance, the person the device acts for there, the people holding
 //! its keys) it reads from the service, and what it writes it commits there.
 //!
@@ -78,7 +78,7 @@ pub(crate) struct Opening<'a> {
     pub(crate) endpoint: iroh::Endpoint,
     /// What the groups' members seal is checked against: the apps' channels.
     pub(crate) seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
-    /// What answers the person's keys' record actions in a workspace governed here.
+    /// What answers the person's keys' record actions in a workspace hosted here.
     pub(crate) apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
     /// What the service keeps beyond a device's own, on a server.
     pub(crate) configure: Option<Box<dyn FnOnce(ServiceConfig) -> ServiceConfig + Send + 'a>>,
@@ -146,7 +146,7 @@ impl ServiceWorkspaces {
             itself,
         } = opening;
         // A device confined to one workspace issues no certificate, so no service key of its
-        // own: its service acts as the device itself. It makes and governs no workspace, so the
+        // own: its service acts as the device itself. It makes and hosts no workspace, so the
         // two never number changes from one count.
         let itself = itself.or_else(|| {
             super::confined::workspace_of(&identity.device_cert).map(|_| {
@@ -358,7 +358,7 @@ impl ServiceWorkspaces {
     /// workspace the desktop took part in, entered here as a member at the address its host
     /// signed. A group the key service keeps already stays as it is: the device keeps the one leaf
     /// it has in each group, and no group is founded again beside one the desktop had. The
-    /// workspaces the desktop's own service governed move here, after the groups
+    /// workspaces the desktop's own service hosted move here, after the groups
     /// ([`tilo_workspace_service::workspaces::Workspaces::move_in`]), and are answered beside
     /// the answer. When the desktop was to found its person's own workspace and had not yet, this
     /// service founds it, after the groups are in.
@@ -630,7 +630,7 @@ impl ServiceWorkspaces {
             .is_some_and(|copy| copy.member)
     }
 
-    /// Whether this device keeps `workspace` now: its member copy, or the workspace it governs
+    /// Whether this device keeps `workspace` now: its member copy, or the workspace it hosts
     /// here. Read synchronously, as [`Self::holds`] is.
     pub(crate) fn keeps_now(&self, workspace: WorkspaceId) -> bool {
         self.copies().copy_now(workspace).is_some()
@@ -651,12 +651,12 @@ impl ServiceWorkspaces {
         move || {
             copies
                 .copy_now(workspace)
-                .and_then(|copy| copy.peer.governance().governed_policy().ok())
+                .and_then(|copy| copy.peer.governance().member_policy().ok())
         }
     }
 
     /// `workspace`'s replica as this device holds it: its member copy, or the
-    /// workspace the service governs here.
+    /// workspace the service hosts here.
     pub(crate) fn peer(&self, workspace: WorkspaceId) -> Option<StatePeer> {
         self.copies().copy_now(workspace).map(|copy| copy.peer)
     }
@@ -983,7 +983,7 @@ pub(crate) struct MemberListGrants {
 
 impl WorkspaceGrants for MemberListGrants {
     // The member copy's list, sent to the device serving it, or the list of the workspace
-    // governed here.
+    // hosted here.
     fn spend(&self, workspace: &str, grant: &str) -> bool {
         self.workspaces
             .copies()
@@ -1021,7 +1021,7 @@ async fn copy_of(
 ) -> Option<(String, StatePeer)> {
     match workspaces.member_copy(workspace).await {
         Some(copy) => Some(copy),
-        None => workspaces.governed_copy(workspace).await,
+        None => workspaces.hosted_copy(workspace).await,
     }
 }
 
@@ -1042,7 +1042,7 @@ fn readers_with(path: &Path, carried: &[u8]) -> Result<Vec<u8>, String> {
 
 impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
     /// What a launch into `workspace` hands its apps: the sandbox its
-    /// governance records, whether this device governs it or holds it as a
+    /// governance records, whether this device hosts it or holds it as a
     /// member copy.
     fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants {
         let Some(id) = WorkspaceId::parse(workspace) else {
@@ -1050,7 +1050,7 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
         };
         let Some(sandbox) = self
             .peer(id)
-            .and_then(|peer| peer.governance().governed_sandbox().ok())
+            .and_then(|peer| peer.governance().member_sandbox().ok())
         else {
             return collab_types::caps::LaunchGrants::default();
         };
@@ -1072,7 +1072,7 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
 }
 
 /// The workspace replicas the runtime's own services read: the profile's own
-/// workspace through the service that governs it, and each member copy.
+/// workspace through the service that hosts it, and each member copy.
 pub(crate) struct Reads {
     pub(crate) service: Arc<WorkspaceService>,
     pub(crate) entering: Option<Arc<super::take_work::Entering>>,
@@ -1137,8 +1137,8 @@ impl Reads {
     reason = "a test fixture failing is its test failing, and its service lives as long as the fixture"
 )]
 impl ServiceWorkspaces {
-    /// A service governing `workspace` alone, on a profile of its own, with a
-    /// synthetic device its governor signed: what a test of the runtime's own
+    /// A service hosting `workspace` alone, on a profile of its own, with a
+    /// synthetic device its host signed: what a test of the runtime's own
     /// workspace starts from.
     pub(crate) async fn test_hosting(workspace: WorkspaceId) -> (Arc<Self>, tempfile::TempDir) {
         use ed25519_dalek::SigningKey;
@@ -1190,7 +1190,7 @@ impl ServiceWorkspaces {
         (workspaces, directory)
     }
 
-    /// A service governing `workspace` alone, on a profile of its own, as a machine whose person
+    /// A service hosting `workspace` alone, on a profile of its own, as a machine whose person
     /// this account holds: a real identity store, its own key service, and no login. What the
     /// stack's own person is, and what a test that founds the person's Servers workspace needs.
     /// Answers the device's key and certificate, and the key taken as the device's daemon takes

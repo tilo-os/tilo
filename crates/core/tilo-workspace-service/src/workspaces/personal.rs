@@ -43,9 +43,9 @@ fn now_ms() -> i64 {
 }
 
 impl Workspaces {
-    /// The workspaces `person`'s own list names that this server does not govern, each by
+    /// The workspaces `person`'s own list names that this server does not host, each by
     /// its id and the name the list gives it: what another server keeps for them, as a
-    /// device of theirs last said. Nothing this server governs is among them, whoever is in
+    /// device of theirs last said. Nothing this server hosts is among them, whoever is in
     /// it.
     pub async fn kept_elsewhere(&self, person: &[u8; 32]) -> Vec<(String, String)> {
         let here: std::collections::BTreeSet<String> = self

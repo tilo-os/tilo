@@ -1,7 +1,7 @@
 //! A certified holder of a person serves a workspace one of the person's devices
-//! governs: the governor attaches it, the workspace's holders name it, it admits
-//! whom the workspace's governance admits as that governance changes, carries
-//! members' changes to every other holder, and stops when detached.
+//! hosts: the device it was made on attaches it, the workspace's holders name it,
+//! it admits whom the workspace's governance admits as that governance changes,
+//! carries members' changes to every other holder, and stops when detached.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -184,14 +184,14 @@ async fn refused_soon(hosted: &Hosted, device: &TestDevice, workspace: Workspace
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() {
+async fn a_certified_host_of_the_person_serves_a_workspace_its_device_hosts() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let member = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
     let hint = workspaces
@@ -204,10 +204,14 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
         .await
         .unwrap();
     let hosts = workspaces.hosts(&workspace.workspace).await.unwrap();
-    assert_eq!(hosts.len(), 2, "the governor and the holder serving it");
+    assert_eq!(
+        hosts.len(),
+        2,
+        "the device it was made on and the holder serving it"
+    );
     assert!(
         hosts.iter().any(|held| held.host == laptop.cert),
-        "the governor holds it: {hosts:?}"
+        "the device it was made on is a host: {hosts:?}"
     );
     assert!(
         hosts.contains(&hint),
@@ -222,7 +226,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
         .unwrap();
     let on_member = member_at(&member, &phone, workspace.workspace_id).await;
 
-    // A change the phone sends the holder reaches the governor's own copy.
+    // A change the phone sends the holder reaches the laptop's own copy.
     write(
         &on_member,
         &phone,
@@ -231,7 +235,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     )
     .unwrap();
     reaches_host(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:1",
         "from the phone, through the holder",
@@ -243,9 +247,12 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     // starts once the counters stand still, so what a holder set in motion
     // before it (the change just carried, the address it names itself at)
     // is not read as the holder doing something.
-    let quiet = still(|| (governor.host.metrics(), member.host.metrics())).await;
+    let quiet = still(|| (hosting_device.host.metrics(), member.host.metrics())).await;
     tokio::time::sleep(IDLE_WINDOW).await;
-    assert_eq!((governor.host.metrics(), member.host.metrics()), quiet);
+    assert_eq!(
+        (hosting_device.host.metrics(), member.host.metrics()),
+        quiet
+    );
 
     // Detached, the holder is no longer named and admits nobody to the workspace.
     assert!(
@@ -263,23 +270,23 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
 
     drop(on_member);
     member.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_device_of_the_governing_person_holds_the_workspace_and_no_one_elses_does() {
+async fn every_device_of_the_owning_person_has_the_workspace_and_no_one_elses_does() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
     let bobs = bob.enrol("desktop", DeviceCapabilities::primary());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let own = serve_on(&alice, &desktop, WorkSetting::none()).await;
     let others = serve_on(&bob, &bobs, WorkSetting::none()).await;
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
-    // Another device of the person who governs the workspace holds it, though
+    // Another device of the person who owns the workspace holds it, though
     // it takes no work from anyone: the workspace is the person's, not the
     // device's it was made on.
     let held = workspaces
@@ -291,7 +298,7 @@ async fn every_device_of_the_governing_person_holds_the_workspace_and_no_one_els
         )
         .await;
     assert!(held.is_ok(), "{held:?}");
-    // A device of someone who does not govern it, and takes no one's work,
+    // A device of someone who does not administer it, and takes no one's work,
     // does not.
     let refused = workspaces
         .attach_server(
@@ -308,7 +315,7 @@ async fn every_device_of_the_governing_person_holds_the_workspace_and_no_one_els
     );
     others.stop().await;
     own.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// A holder the workspace's owner detaches lets the workspace go: it no longer holds it
@@ -322,9 +329,9 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let member = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     let records = member.host.workspace_documents();
     let retained = || async { records.retained(workspace.workspace_id).await.ok() };
@@ -411,7 +418,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
 
     drop(on_member);
     member.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// Every holder of a workspace carries what is written through it to all the
@@ -425,7 +432,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     clippy::too_many_lines,
     reason = "one scenario per lost holder: its steps and assertions stay together"
 )]
-async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_governed() {
+async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_listed() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
@@ -579,8 +586,8 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let workspaces = governor.host.workspaces();
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     let refusing = serve_on(&site, &server, WorkSetting::own_person()).await;
     let refused = workspaces
@@ -609,11 +616,11 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
         "the refusing holder keeps no copy"
     );
     refusing.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// A holder of another person whose operator takes the workspace holds it once
-/// its governor grants it ownership: from then on a change made through either
+/// the workspace admits that person as an owner: from then on a change made through either
 /// holder reaches the other with its author, also after that holder restarts, and
 /// detached it lets the workspace go.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -621,14 +628,14 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     clippy::too_many_lines,
     reason = "one end-to-end scenario: its setup and assertions stay together"
 )]
-async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
+async fn another_persons_host_holds_a_workspace_its_host_grants_it() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let workspaces = governor.host.workspaces();
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
         .enter(&workspace.workspace, (&phone.cert, &phone.sk))
@@ -650,20 +657,24 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
         .unwrap();
     assert_eq!(hint.host, server.cert);
     let hosts = workspaces.hosts(&workspace.workspace).await.unwrap();
-    assert_eq!(hosts.len(), 2, "the governor and the other person's holder");
+    assert_eq!(
+        hosts.len(),
+        2,
+        "the device it was made on and the other person's holder"
+    );
 
     assert!(
-        names(&governor, &workspace.workspace, &laptop).await,
-        "the governor's workspace names its own device"
+        names(&hosting_device, &workspace.workspace, &laptop).await,
+        "the workspace names the device it was made on"
     );
     let mut on_holder = member_at(&holder, &phone, workspace.workspace_id).await;
 
-    // A change made through the holder reaches the governor, and one made on
-    // the governor reaches the holder, each with its author.
-    let mut taken_in = admitted(&governor);
+    // A change made through the holder reaches the laptop, and one made on
+    // the laptop reaches the holder, each with its author.
+    let mut taken_in = admitted(&hosting_device);
     write(&on_holder, &phone, "note:phone", "from the phone").unwrap();
     reaches_host(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:phone",
         "from the phone",
@@ -672,10 +683,10 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     assert_eq!(
         admitted_author(&mut taken_in, workspace.workspace_id, "note:phone").await,
         phone.device_pubkey(),
-        "the governor reads the change as the phone's"
+        "the laptop reads the change as the phone's"
     );
     host_writes(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:laptop",
         "from the laptop",
@@ -695,10 +706,10 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let state = holder.stop_keeping().await;
     let holder = crate::common::serve_in(&site, &server, takes, state).await;
     let again = reopened_at(&on_holder, &holder, workspace.workspace_id).await;
-    let mut taken_in = admitted(&governor);
+    let mut taken_in = admitted(&hosting_device);
     write(&again, &phone, "note:restart", "after the restart").unwrap();
     reaches_host(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:restart",
         "after the restart",
@@ -707,7 +718,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     assert_eq!(
         admitted_author(&mut taken_in, workspace.workspace_id, "note:restart").await,
         phone.device_pubkey(),
-        "the governor reads the change as the phone's"
+        "the laptop reads the change as the phone's"
     );
 
     // Detached, the holder lets the workspace go: it answers them no link at all.
@@ -722,15 +733,15 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
 
     drop((again, on_holder));
     holder.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// A holder that keeps workspaces for the people it lets in takes a workspace
-/// another holder governs for an owner of it it let in, and for nobody else:
+/// another holder serves for an owner of it it let in, and for nobody else:
 /// asked before it let the owner in, it refuses and says why, and answers her
 /// device's link with no admission at all (no workspace data, members or keys);
 /// asked after, it holds the workspace and a member's change through it reaches
-/// the governor.
+/// the device it was made on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
@@ -742,8 +753,8 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let workspaces = governor.host.workspaces();
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
         .enter(&workspace.workspace, (&phone.cert, &phone.sk))
@@ -800,14 +811,14 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         2
     );
     assert!(
-        names(&governor, &workspace.workspace, &laptop).await,
-        "the governor's workspace names its own device"
+        names(&hosting_device, &workspace.workspace, &laptop).await,
+        "the workspace names the device it was made on"
     );
     let on_holder = member_at(&holder, &phone, workspace.workspace_id).await;
-    let mut taken_in = admitted(&governor);
+    let mut taken_in = admitted(&hosting_device);
     write(&on_holder, &phone, "note:site", "from the site").unwrap();
     reaches_host(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:site",
         "from the site",
@@ -816,7 +827,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     assert_eq!(
         admitted_author(&mut taken_in, workspace.workspace_id, "note:site").await,
         phone.device_pubkey(),
-        "the governor reads the change as the phone's"
+        "the laptop reads the change as the phone's"
     );
 
     // Restarted, the site still holds the workspace and follows the laptop's
@@ -826,7 +837,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let holder = crate::common::serve_in(&site, &server, WorkSetting::own_person(), state).await;
     let mut on_holder = reopened_at(&on_holder, &holder, workspace.workspace_id).await;
     host_writes(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:laptop",
         "from the laptop",
@@ -844,7 +855,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
 
     drop(on_holder);
     holder.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// A workspace moves from one server to another: the new one keeps it
@@ -1052,25 +1063,31 @@ async fn a_server_that_joined_as_a_member_holds_the_workspace_it_is_handed() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     // Alice's phone writes through the laptop, sealed with the keys her devices share.
     workspaces
         .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
-    let on_laptop = member_at(&governor, &phone, workspace.workspace_id).await;
+    let on_laptop = member_at(&hosting_device, &phone, workspace.workspace_id).await;
     let before = write_sealed_at(
         &on_laptop,
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:1",
         "before the hand-over",
     )
     .await;
-    host_holds(&governor, workspace.workspace_id, (APP, "note:1"), &before).await;
+    host_holds(
+        &hosting_device,
+        workspace.workspace_id,
+        (APP, "note:1"),
+        &before,
+    )
+    .await;
 
     // The server takes part in the workspace as one of Alice's devices: a member copy synced
     // with the laptop.
@@ -1129,7 +1146,7 @@ async fn a_server_that_joined_as_a_member_holds_the_workspace_it_is_handed() {
     host_holds(&server, workspace.workspace_id, (APP, "note:1"), &before).await;
     let after = write_sealed_at(
         &on_laptop,
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:2",
         "after the hand-over",
@@ -1143,7 +1160,7 @@ async fn a_server_that_joined_as_a_member_holds_the_workspace_it_is_handed() {
 
     drop(on_laptop);
     server.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// A device that is handed a workspace keeps its files under the
@@ -1157,12 +1174,12 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let state = tempfile::tempdir().unwrap();
     let root = state.path().to_path_buf();
     let member = crate::common::serve_in(&alice, &nas, WorkSetting::own_person(), state).await;
     let at = member.host.node_addr();
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
     // Folders a written name could point into: on a device that keeps many
@@ -1229,15 +1246,15 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
     );
 
     member.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
-/// A workspace a device holds for one governor is not taken from another.
+/// A workspace a device keeps for one host is not taken from another.
 /// Someone else who makes a workspace under the same id on a device of
 /// their own and hands that over is refused, and the people the first
-/// governor's workspace admits are admitted as before.
+/// host's workspace admits are admitted as before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_held_workspace_is_not_taken_from_another_governor() {
+async fn a_listed_workspace_is_not_taken_from_another_host() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
@@ -1245,8 +1262,8 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
     let hers = mallory.enrol("laptop", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let kept_on = site.enrol("server", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let workspaces = governor.host.workspaces();
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
         .enter(&workspace.workspace, (&phone.cert, &phone.sk))
@@ -1268,7 +1285,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
         .unwrap();
     let on_holder = member_at(&holder, &phone, workspace.workspace_id).await;
 
-    // Mallory's own device governs a workspace she made under Alice's id.
+    // Mallory's own device hosts a workspace she made under Alice's id.
     let second = serve_on(&mallory, &hers, WorkSetting::none()).await;
     let of_mallory = second.host.workspaces();
     of_mallory
@@ -1287,20 +1304,20 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
         answered
             .as_ref()
             .is_err_and(|error| error.contains("one of its holders")),
-        "a workspace held for its governor was taken from somebody else: {answered:?}"
+        "a workspace kept for its host was taken from somebody else: {answered:?}"
     );
     assert!(
         on_holder
             .reopen_hosted(&holder, workspace.workspace_id)
             .await
             .is_ok(),
-        "the member the first governor's workspace admits is admitted no more"
+        "the member the first host's workspace admits is admitted no more"
     );
 
     drop(on_holder);
     second.stop().await;
     holder.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// Wait until `holder`'s copy of `workspace` reads `done` of who holds its
@@ -1343,12 +1360,12 @@ async fn base_made_by(holder: &crate::common::Hosted, workspace: &str, maker: [u
     .await;
 }
 
-/// Whether `holder` governs `workspace`'s applications.
-async fn governs_applications(holder: &crate::common::Hosted, workspace: &str) -> bool {
+/// Whether `holder` administers `workspace`'s applications.
+async fn administers_applications(holder: &crate::common::Hosted, workspace: &str) -> bool {
     holder
         .host
         .workspaces()
-        .governs_applications(workspace)
+        .administers_applications(workspace)
         .await
         .unwrap()
 }
@@ -1365,8 +1382,8 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let workspaces = governor.host.workspaces();
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
         .enter(&workspace.workspace, (&phone.cert, &phone.sk))
@@ -1388,7 +1405,7 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
 
     // The members' devices give the server the keys, beside their own.
     key_holders_once(
-        &governor,
+        &hosting_device,
         &workspace.workspace,
         "the server holds the keys",
         |holders| {
@@ -1409,8 +1426,8 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
     // certificate and its change reaches the laptop.
     let on_holder = member_at(&holder, &phone, workspace.workspace_id).await;
     assert!(
-        names(&governor, &workspace.workspace, &laptop).await,
-        "the governor's workspace names its own device"
+        names(&hosting_device, &workspace.workspace, &laptop).await,
+        "the workspace names the device it was made on"
     );
 
     // It lets nobody in: a device it enters is in no other holder's
@@ -1422,7 +1439,7 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
         .await;
     write(&on_holder, &phone, "note:entry", "after the entry").unwrap();
     reaches_host(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:entry",
         "after the entry",
@@ -1436,7 +1453,7 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
 
     drop(on_holder);
     holder.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// A server held as a store keeps and forwards the workspace's ciphertext:
@@ -1450,9 +1467,9 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
     let watch = alice.enrol("watch", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let store = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     for device in [&phone, &tablet] {
         workspaces
@@ -1478,7 +1495,7 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
             .any(|held| held.device == nas.device_pubkey() && held.role == CopyRole::Store),
         "{status:?}"
     );
-    for at in [&governor, &store] {
+    for at in [&hosting_device, &store] {
         key_holders_once(
             at,
             &workspace.workspace,
@@ -1493,11 +1510,11 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
     // A change made on the laptop reaches the tablet through the store.
     let on_store = member_at(&store, &tablet, workspace.workspace_id).await;
     assert!(
-        names(&governor, &workspace.workspace, &laptop).await,
-        "the governor's workspace names its own device"
+        names(&hosting_device, &workspace.workspace, &laptop).await,
+        "the workspace names the device it was made on"
     );
     host_writes(
-        &governor,
+        &hosting_device,
         workspace.workspace_id,
         "note:store",
         "through the store",
@@ -1513,7 +1530,7 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
         .enter(&workspace.workspace, (&watch.cert, &watch.sk))
         .await
         .unwrap();
-    for at in [&governor, &store] {
+    for at in [&hosting_device, &store] {
         key_holders_once(
             at,
             &workspace.workspace,
@@ -1527,7 +1544,7 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
 
     drop(on_store);
     store.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// A holder's role moves both ways: made a store it leaves the key holders
@@ -1538,9 +1555,9 @@ async fn a_holders_role_moves_both_ways() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let held = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = governor.host.workspaces();
+    let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     let device = nas.device_pubkey();
     workspaces
@@ -1552,7 +1569,7 @@ async fn a_holders_role_moves_both_ways() {
         )
         .await
         .unwrap();
-    for at in [&governor, &held] {
+    for at in [&hosting_device, &held] {
         key_holders_once(at, &workspace.workspace, "it holds the keys", |holders| {
             holders.contains(&device)
         })
@@ -1564,7 +1581,7 @@ async fn a_holders_role_moves_both_ways() {
         .await
         .unwrap();
     assert_eq!(tilo_peer_state::holder_role(&hint), CopyRole::Store);
-    for at in [&governor, &held] {
+    for at in [&hosting_device, &held] {
         key_holders_once(
             at,
             &workspace.workspace,
@@ -1588,7 +1605,7 @@ async fn a_holders_role_moves_both_ways() {
         .await
         .unwrap();
     assert_eq!(tilo_peer_state::holder_role(&hint), CopyRole::KeyHolder);
-    for at in [&governor, &held] {
+    for at in [&hosting_device, &held] {
         key_holders_once(
             at,
             &workspace.workspace,
@@ -1599,13 +1616,13 @@ async fn a_holders_role_moves_both_ways() {
     }
 
     held.stop().await;
-    governor.stop().await;
+    hosting_device.stop().await;
 }
 
 /// The workspace's compacted base is made by one holder every holder agrees
 /// on: the device it was founded on, and once that one is detached the next
 /// key holder of the owner, which the remaining holders name alike; the
-/// workspace stays writable through either. That holder governs the
+/// workspace stays writable through either. That holder administers the
 /// workspace's applications too, so a server that took the workspace over
 /// from the one it was founded on sets them up once that one is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1641,11 +1658,11 @@ async fn detaching_the_base_maker_hands_the_base_to_another_key_holder() {
     for at in [&founder, &one, &other] {
         base_made_by(at, &workspace.workspace, laptop.device_pubkey()).await;
     }
-    for (at, governs) in [(&founder, true), (&one, false), (&other, false)] {
+    for (at, administers) in [(&founder, true), (&one, false), (&other, false)] {
         assert_eq!(
-            governs_applications(at, &workspace.workspace).await,
-            governs,
-            "the founding device governs the applications while it holds the workspace"
+            administers_applications(at, &workspace.workspace).await,
+            administers,
+            "the founding device administers the applications while it holds the workspace"
         );
     }
 
@@ -1660,9 +1677,9 @@ async fn detaching_the_base_maker_hands_the_base_to_another_key_holder() {
     }
     for (at, device) in [(&one, &first), (&other, &second)] {
         assert_eq!(
-            governs_applications(at, &workspace.workspace).await,
+            administers_applications(at, &workspace.workspace).await,
             device.device_pubkey() == next,
-            "the holder making the base governs the applications once the founder is gone"
+            "the holder making the base administers the applications once the founder is gone"
         );
     }
 

@@ -28,8 +28,8 @@ impl Workspaces {
         // Who this device may write for: its own person, as every write it makes names.
         let invoker = hex::encode(device.cert.user_public_key);
         let misplaced = {
-            let mut governed = std::sync::Arc::clone(&state).lock_owned().await;
-            let store = self.store_of(&mut governed);
+            let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
+            let store = self.store_of(&mut hosted);
             store.misplaced_records()
         };
         let mut first: Option<String> = None;
@@ -39,8 +39,8 @@ impl Workspaces {
                 continue;
             };
             let writes = {
-                let mut governed = std::sync::Arc::clone(&state).lock_owned().await;
-                let mut store = self.store_of(&mut governed);
+                let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
+                let mut store = self.store_of(&mut hosted);
                 repair_writes(&mut store, &kind, &id, &invoker)
             };
             let writes = match writes {
@@ -51,9 +51,9 @@ impl Workspaces {
                     continue;
                 }
             };
-            let governed = std::sync::Arc::clone(&state).lock_owned().await;
+            let hosted = std::sync::Arc::clone(&state).lock_owned().await;
             if let Err(error) = self
-                .keep_writes(governed, std::sync::Arc::clone(&device), &app, writes, None)
+                .keep_writes(hosted, std::sync::Arc::clone(&device), &app, writes, None)
                 .await
             {
                 first.get_or_insert(error);

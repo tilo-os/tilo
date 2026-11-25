@@ -7,7 +7,7 @@ use tilo_user_identity::RevocationList;
     reason = "one fixture, kept whole so every entry stays in wire order"
 )]
 fn responses() -> Vec<JoinTransportResponse> {
-    let (mut peer, governor, member_key, member, now) = crate::admission_tests::seeded();
+    let (mut peer, owner_copy, member_key, member, now) = crate::admission_tests::seeded();
     let now_ns: u64 = now
         .duration_since(web_time::SystemTime::UNIX_EPOCH)
         .unwrap()
@@ -50,7 +50,7 @@ fn responses() -> Vec<JoinTransportResponse> {
                 r#"{"endpoint":"https://localhost/join","label":"a\\b"}"#,
                 peer.owner_certificates()[0].clone(),
                 [44; 32],
-                &governor,
+                &owner_copy,
             )
             .unwrap(),
         ],
@@ -94,7 +94,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         records: peer.rows(),
         governance_messages: peer
             .publication_mut()
-            .bootstrap_messages(&governor, now)
+            .bootstrap_messages(&owner_copy, now)
             .unwrap()
             .iter()
             .map(|message| postcard::to_allocvec(message).unwrap())

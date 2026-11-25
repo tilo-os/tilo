@@ -1,7 +1,7 @@
 //! A relay host on this machine's loopback, and device keys no other run shares, so tests that let
 //! a session take part never reach the person's relays on the internet nor meet another run there.
 //! [`loopback`] is the relay such a test uses: one packet relay for the process on `127.0.0.1`.
-//! [`Host`] is a person's host governing one workspace, for the rest of a journey (an invitation,
+//! [`Host`] is a person's host serving one workspace, for the rest of a journey (an invitation,
 //! its address, the workspace it hosts). Both mint their keys fresh, because a key shared with a
 //! run beside it would make the two one Iroh node answering each other's dials, so [`signing_key`]
 //! mixes the run and the test into every key it hands out.
@@ -139,7 +139,7 @@ impl Drop for Running {
 
 impl Running {
     /// A host of `owner`'s, a device of its own, on its own thread: serving a packet relay on
-    /// loopback and — with `workspace` — governing it under that name.
+    /// loopback and — with `workspace` — serving it under that name.
     fn of(owner: &SigningKey, name: &str, workspace: Option<&str>) -> Self {
         let state = tempfile::tempdir().expect("the host's directory");
         let host_root = state.path().to_path_buf();
@@ -187,7 +187,7 @@ impl Running {
                             EndpointRelays::for_choice(&settings_store::relay::Relays::Own(url));
                         let workspaces = server
                             .workspaces()
-                            .expect("the host governs workspaces")
+                            .expect("the host serves workspaces")
                             .clone();
                         let workspace = match workspace {
                             Some(name) => Some(
@@ -237,7 +237,7 @@ pub struct Loopback {
 }
 
 impl Loopback {
-    /// A host serving a packet relay on loopback, governing no workspace.
+    /// A host serving a packet relay on loopback, serving no workspace.
     #[must_use]
     pub fn start() -> Self {
         Self {
@@ -367,12 +367,12 @@ pub async fn direct_endpoint() -> iroh::Endpoint {
         .expect("an endpoint on this machine")
 }
 
-/// A person's host on this machine's loopback, governing one workspace: what its devices relay
+/// A person's host on this machine's loopback, serving one workspace: what its devices relay
 /// through, and where they are told it is.
 pub struct Host(Running);
 
 impl Host {
-    /// A host of the person `owner`, governing the workspace `name`.
+    /// A host of the person `owner`, serving the workspace `name`.
     #[must_use]
     pub fn of(owner: &SigningKey, name: &str) -> Self {
         Self(Running::of(owner, "The test host", Some(name)))
@@ -407,14 +407,14 @@ impl Host {
         self.0.addr.clone()
     }
 
-    /// The workspaces this host governs through, for a test that hands one of them a package as
+    /// The workspaces this host serves, for a test that hands one of them a package as
     /// a developer does, without a device's session.
     #[must_use]
     pub fn workspaces(&self) -> &tilo_server::workspaces::Workspaces {
         &self.0.workspaces
     }
 
-    /// The workspace this host governs.
+    /// The workspace this host serves.
     #[must_use]
     pub fn workspace(&self) -> &str {
         self.0
@@ -439,7 +439,7 @@ impl Host {
         self.invitation_to(self.workspace(), person, request)
     }
 
-    /// An invitation to `workspace`, one this host governs, that only `person`'s devices redeem.
+    /// An invitation to `workspace`, one this host serves, that only `person`'s devices redeem.
     #[must_use]
     pub fn invitation_to(&self, workspace: &str, person: [u8; 32], request: u8) -> String {
         let issued = self
@@ -461,7 +461,7 @@ impl Host {
         tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
     }
 
-    /// Take `person` and every device of theirs out of `workspace`, one this host governs, as its
+    /// Take `person` and every device of theirs out of `workspace`, one this host serves, as its
     /// administrator does.
     pub fn remove(&self, workspace: &str, person: [u8; 32], request: u8) {
         self.0

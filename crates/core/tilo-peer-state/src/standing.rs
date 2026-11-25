@@ -233,7 +233,7 @@ fn stored(
                 return Err(NOT_A_CUT.into());
             };
             values.push((
-                crate::governed_routes::exact::<Stored>(bytes).ok_or(NOT_A_CUT)?,
+                crate::route_maps::exact::<Stored>(bytes).ok_or(NOT_A_CUT)?,
                 op,
             ));
         }
@@ -410,7 +410,7 @@ pub fn subjects_cut(before: &AutoCommit, after: &AutoCommit) -> Result<BTreeSet<
 /// members decodes no more than one in a small one.
 pub(crate) fn newly_withdrawn(before: &AutoCommit, after: &AutoCommit) -> BTreeSet<[u8; 32]> {
     let withdrawn = |bytes: &[u8]| {
-        match crate::state::GovernedIdentity::decode(bytes) {
+        match crate::state::DeviceRow::decode(bytes) {
             Ok(identity) => Some(identity),
             // An agent the row withdrew for would act with its standing if the row were
             // read as one that withdrew nothing, so a row that does not decode is said.

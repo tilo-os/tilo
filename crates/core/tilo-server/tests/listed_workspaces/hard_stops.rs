@@ -23,7 +23,7 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_keeps_it() {
+async fn a_write_the_server_committed_survives_a_hard_stop_before_the_host_keeps_it() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());

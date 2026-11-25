@@ -320,7 +320,7 @@ mod tests {
                 named_rows
                     .iter()
                     .any(|row| row.contains(&name) && row.contains("/home/user/notes")),
-                "a governed row names the workspace it governs: {named_rows:?}"
+                "a governance row names the workspace it belongs to: {named_rows:?}"
             );
         }
 
@@ -1407,7 +1407,7 @@ mod tests {
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         show_summary(&mut pane);
-        // A row of the layout's own document: a governed row is read-only, and offers neither.
+        // A row of the layout's own document: a governance row is read-only, and offers neither.
         let idx = (0..pane.timeline.row_count())
             .find(|&i| {
                 pane.timeline
@@ -1472,8 +1472,8 @@ mod tests {
         );
     }
 
-    /// A second workspace with its own governance: each workspace governs itself in a document of
-    /// its own.
+    /// A second workspace with its own governance: each workspace keeps its governance in a
+    /// document of its own.
     fn two_workspace_tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
         let (mut tree, first, user) = busy_workspace();
         let second = tree.append_empty_workspace("Research");

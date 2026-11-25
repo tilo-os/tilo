@@ -30,13 +30,13 @@ use tilo_dav::discovery::CalendarCollection;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, caller, hosted};
 use super::turn_use_tests::asks;
 use super::vault_tests::ask_at;
 use super::waiting::answered_by;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// Her user name at her calendar server.
 const ADA: &str = "ada@example.test";
@@ -68,7 +68,7 @@ struct Hers {
 impl Hers {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let host = test_host(dir.path(), &key, &owner).await;
         let workspaces = host.workspaces().clone();
         let asked: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
@@ -89,7 +89,7 @@ impl Hers {
                 })
                 .collect())
         });
-        let (workspace, workspace_id, service) = governed(&workspaces).await;
+        let (workspace, workspace_id, service) = hosted(&workspaces).await;
         let ada = admit(&workspaces, &workspace, &owner, 1).await;
         Self {
             workspaces,

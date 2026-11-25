@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
         assert!(
             !peer
                 .governance()
-                .governed_device_access(now)
+                .member_device_access(now)
                 .unwrap()
                 .contains_key(&device)
         );

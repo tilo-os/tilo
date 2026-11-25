@@ -3,12 +3,12 @@
 //! device holds) gets its answer while a task of that runtime holds a workspace's lock, rather
 //! than waiting on a lock that only that runtime can let go.
 
-use super::fixtures::{governor, test_host as test_holder};
+use super::fixtures::{hosting_device, test_host as test_holder};
 
 #[tokio::test]
 async fn a_workspace_kept_here_reads_while_its_lock_and_the_registry_are_held() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_holder(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Company").await.unwrap().workspace;
@@ -16,13 +16,13 @@ async fn a_workspace_kept_here_reads_while_its_lock_and_the_registry_are_held() 
     let id = state.lock().await.workspace_id();
 
     // Held as a long change holds them: the workspace's own lock and the service's list.
-    let governed = state.lock().await;
+    let hosted = state.lock().await;
     let listed = workspaces.inner.workspaces.lock().await;
     let copy = workspaces
         .copy_now(id)
         .expect("the workspace reads while its lock is held");
     assert_eq!(copy.name, "Company");
-    assert!(!copy.member, "governed here, not a member copy");
+    assert!(!copy.member, "hosted here, not a member copy");
     assert_eq!(
         copy.peer.governance().workspace_name().as_deref(),
         Some("Company")
@@ -33,7 +33,7 @@ async fn a_workspace_kept_here_reads_while_its_lock_and_the_registry_are_held() 
         .map(|(held, _)| held)
         .collect();
     assert_eq!(all, vec![id]);
-    drop((listed, governed));
+    drop((listed, hosted));
 
     // A workspace this service does not hold reads as none.
     assert!(

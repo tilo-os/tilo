@@ -1,6 +1,6 @@
-//! Exact-source discovery using the governor's already-owned channel state.
+//! Exact-source discovery using the host's already-owned channel state.
 use super::readings::Governance;
-use super::{GovernedWorkspace, SystemTime, Workspaces};
+use super::{HostedWorkspace, SystemTime, Workspaces};
 use tilo_action_policy::MemberAccess;
 use tilo_actions::remote::Caller;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -11,7 +11,7 @@ use tilo_server_protocol::WorkspaceId;
 /// (what an authority's expiry is read against).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewReadPolicy {
-    /// The governed workspace whose current policy authorized the exact source record.
+    /// The hosted workspace whose current policy authorized the exact source record.
     pub workspace: String,
     /// The certified caller's current member access in the workspace.
     pub access: MemberAccess,
@@ -75,7 +75,7 @@ impl Governance<'_> {
     /// every record's policy holds before the record's own read is checked.
     fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
         let access = self.admitted(caller)?;
-        let sandbox = self.peer.governance().governed_sandbox().ok()?;
+        let sandbox = self.peer.governance().member_sandbox().ok()?;
         Some(ViewReadPolicy {
             workspace: self.workspace.to_owned(),
             access,
@@ -101,8 +101,8 @@ impl Governance<'_> {
     }
 }
 
-impl GovernedWorkspace {
-    /// Called while holding this governed workspace's lock, including before keys.
+impl HostedWorkspace {
+    /// Called while holding this hosted workspace's lock, including before keys.
     fn view_read_policy(
         &self,
         caller: &Caller,
@@ -118,8 +118,8 @@ impl GovernedWorkspace {
 }
 
 impl Workspaces {
-    /// Whether the workspace `workspace` governs here admits `caller`: false
-    /// for a workspace it does not govern, and for anyone its governance does
+    /// Whether the workspace `workspace` hosts here admits `caller`: false
+    /// for a workspace it does not host, and for anyone its governance does
     /// not certify a device for.
     pub async fn admits(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
         self.governing(workspace, |runtime| runtime.admits(caller))
@@ -127,8 +127,8 @@ impl Workspaces {
             .unwrap_or(false)
     }
 
-    /// Whether the workspace `workspace` governs here keeps `caller`'s key as revoked: false
-    /// for a workspace it does not govern.
+    /// Whether the workspace `workspace` hosts here keeps `caller`'s key as revoked: false
+    /// for a workspace it does not host.
     pub async fn key_revoked(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
         self.governing(workspace, |runtime| runtime.key_revoked(caller))
             .await
@@ -149,7 +149,7 @@ impl Workspaces {
         .flatten()
     }
 
-    /// `caller`'s access across the workspace `workspace` governed here,
+    /// `caller`'s access across the workspace `workspace` hosted here,
     /// with no record's read checked: what a workspace's content and its new
     /// records are decided by.
     pub async fn workspace_policy(
@@ -188,10 +188,10 @@ impl Workspaces {
             Some(Ok(keys)) => Some(keys),
             _ => None,
         };
-        let primary_governor = (source.document.is_empty()
+        let primary_host = (source.document.is_empty()
             && runtime.peer().holds_document(&source.app_id, ""))
         .then_some(runtime.record.owner.device_public_key);
-        if keys.is_none() && primary_governor.is_none() {
+        if keys.is_none() && primary_host.is_none() {
             return Err(if runtime.seals() {
                 "source channel keys unavailable".into()
             } else {
@@ -207,7 +207,7 @@ impl Workspaces {
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;
-        let bytes = replay_source(source, keys.as_ref(), primary_governor, retained)?;
+        let bytes = replay_source(source, keys.as_ref(), primary_host, retained)?;
         runtime
             .view_read_policy(caller, &source.app_id, &source.document)
             .ok_or("resource read not permitted")?;
@@ -223,7 +223,7 @@ impl Workspaces {
 fn replay_source(
     source: &DocumentRoute,
     keys: Option<&key_group::ContentKeys>,
-    primary_governor: Option<[u8; 32]>,
+    primary_host: Option<[u8; 32]>,
     retained: Vec<crate::workspace_documents::RetainedBody>,
 ) -> Result<Vec<u8>, String> {
     let mut transfers = tilo_peer_state::document_frame::Transfers::default();
@@ -238,7 +238,7 @@ fn replay_source(
             envelope,
             ..
         }) = tilo_failure::ignored!(
-            "a retained write that does not decode is reported where the governor takes it in",
+            "a retained write that does not decode is reported where the host takes it in",
             neighbour_wire::NeighbourMsg::decode(&retained.body)
         )
         else {
@@ -252,7 +252,7 @@ fn replay_source(
         }
         match envelope.encryption.as_ref() {
             Some(_) => {}
-            None if primary_governor == Some(retained.author) => {}
+            None if primary_host == Some(retained.author) => {}
             _ => return Err("source encrypted channel mismatch".into()),
         }
         bytes = bytes

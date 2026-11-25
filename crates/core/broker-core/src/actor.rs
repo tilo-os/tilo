@@ -25,7 +25,7 @@ pub fn person_id_for_root(user_public_key: [u8; 32]) -> String {
 pub struct BrokerActor {
     /// Who acts: a member, or an app acting by itself with only the grants that name it.
     actor: Actor,
-    /// A person acting from a foreign device in a workspace it does not govern.
+    /// A person acting from a device the workspace does not admit.
     pub capped: bool,
     /// The person an agent acts for, when one delegated it: the agent then
     /// may do only what both may.
@@ -394,7 +394,7 @@ impl BrokerActor {
     }
 
     /// The person this actor is, when a person acts from their own device:
-    /// the only actor a host lets govern a workspace.
+    /// the only actor a host lets administer a workspace.
     #[must_use]
     pub fn direct_person(&self) -> Option<&str> {
         self.direct()
@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(actor.actor(), &app);
         assert_eq!(actor.acting().by, app);
         assert_eq!(actor.shown().by, app);
-        assert_eq!(actor.direct_person(), None, "an app governs nothing");
+        assert_eq!(actor.direct_person(), None, "an app decides nothing");
 
         let for_ada = BrokerActor::for_caller(
             &tilo_actions::remote::Caller::local_app("so.tilo.discord").acting_for("ada"),

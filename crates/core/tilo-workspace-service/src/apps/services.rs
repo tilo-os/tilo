@@ -21,7 +21,7 @@ pub type WorkspaceStatusFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = runtime_collab::WorkspaceStatus> + Send>>;
 
 /// Native workspace membership owner. Public callers choose only a closed typed
-/// command; this host service supplies the private governor signing ownership.
+/// command; this host service supplies the private signing keys the host owns.
 pub trait WorkspaceMemberships: Send + Sync {
     fn requires_workspace(&self, workspace: &str) -> bool;
 
@@ -99,7 +99,7 @@ pub struct ShortcutLibraryRequest {
 }
 
 /// A shortcut change on its way into its workspace: done once the workspace's
-/// governor committed it and this device holds it, or failed with why.
+/// host committed it and this device holds it, or failed with why.
 pub type ShortcutStore =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
@@ -482,7 +482,7 @@ pub struct ResourceRequestContext {
     /// The record the route's channel opened, whose changes `RecordChanges` reads and
     /// `RecordChange` makes.
     record: Option<String>,
-    /// Why the caller may not found the route's record in a workspace this device governs.
+    /// Why the caller may not found the route's record in a workspace this device hosts.
     founding_refusal: Option<String>,
     /// The kind of the record the route's channel opened, as the app joined it.
     kind: Option<String>,
@@ -537,7 +537,7 @@ impl ResourceRequestContext {
         self.kind.as_deref()
     }
 
-    /// The context of a route whose caller may not found its record where this device governs
+    /// The context of a route whose caller may not found its record where this device hosts
     /// the workspace, and why.
     #[must_use]
     pub fn refusing_founding(mut self, refusal: Option<String>) -> Self {
@@ -545,7 +545,7 @@ impl ResourceRequestContext {
         self
     }
 
-    /// Why the caller may not found the route's record where this device governs the workspace.
+    /// Why the caller may not found the route's record where this device hosts the workspace.
     #[must_use]
     pub fn founding_refusal(&self) -> Option<&str> {
         self.founding_refusal.as_deref()
@@ -842,7 +842,7 @@ pub struct ProcessServices {
     pub app_action_access: Option<crate::apps::app_actions::AppActionAccessResolver>,
     /// The resource kinds each application declared; without it no app's reach is known.
     pub app_resource_kinds: Option<crate::apps::app_actions::AppResourceKindsResolver>,
-    /// Which kinds an app may found records in, in a workspace this device governs; without it
+    /// Which kinds an app may found records in, in a workspace this device hosts; without it
     /// an app founds records in any kind.
     pub record_founding: Option<RecordFounding>,
     /// Where this host records the answers a person gave for its workspaces'

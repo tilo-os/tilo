@@ -16,10 +16,10 @@ use tilo_action_policy::roles::{self, governance};
 use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
-use super::{StatePeer, SystemTime, err, governed_map, now_ns, person_of};
+use super::{StatePeer, SystemTime, err, now_ns, person_of, workspace_map};
 use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
-/// The governed map that keeps the workspace's app versions, by app id.
+/// The governance map that keeps the workspace's app versions, by app id.
 pub(super) const APP_VERSIONS: &str = "app_versions_v1";
 
 /// An app version the workspace runs, as its governance keeps it.
@@ -127,7 +127,7 @@ impl StatePeer {
         Ok(person_of(&member)?.to_owned())
     }
 
-    /// Write or remove the version of `app` in one governed commit, with `grant`, the grant
+    /// Write or remove the version of `app` in one governance commit, with `grant`, the grant
     /// installing gives the app or uninstalling takes back, recorded in the same change as the
     /// caller's change to the workspace's grants: every member admits it as they admit any.
     fn put_app_version(
@@ -145,7 +145,7 @@ impl StatePeer {
             .ok_or("workspace governance missing")?;
         let before = doc.get_heads();
         doc.set_actor(self.workspace_actor_of(key));
-        let versions = governed_map(&doc, APP_VERSIONS)?;
+        let versions = workspace_map(&doc, APP_VERSIONS)?;
         match row {
             Some(row) => doc
                 .put(

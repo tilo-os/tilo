@@ -382,7 +382,7 @@ mod tests {
     async fn settings_shares_a_passphrase_and_this_device_joins_with_it() {
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let dir = tempfile::tempdir().expect("a state directory");
-        let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
+        let (key, cert) = tilo_workspace_service::workspaces::fixtures::hosting_device();
         let host =
             tilo_workspace_service::workspaces::fixtures::test_host(dir.path(), &key, &cert).await;
         let workspaces = host.workspaces().clone();

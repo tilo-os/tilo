@@ -24,8 +24,8 @@ struct Route {
     /// The workspace's host is this device's own: its link stays in process.
     local: bool,
 }
-/// A governed workspace's link is not up (yet): the caller may retry.
-pub const NOT_CONNECTED: &str = "the governed workspace is not connected";
+/// A workspace's link is not up (yet): the caller may retry.
+pub const NOT_CONNECTED: &str = "the workspace is not connected";
 
 impl Drop for Route {
     fn drop(&mut self) {
@@ -172,7 +172,7 @@ impl Sending {
     /// The ownership record cannot be written after a frame went.
     fn drive(
         &mut self,
-        owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+        owner: &tilo_peer_state::owner::DeviceWorkspaces,
         workspace: WorkspaceId,
         mut took: impl FnMut(&[u8]) -> Result<(), String>,
         mut deliver: impl FnMut(&[u8]) -> bool,
@@ -236,7 +236,7 @@ impl Drop for NativeLink {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Carried {
     /// Over the link itself, as this device's own: a sealed write, which the
-    /// workspace's governor never admits and its host keeps for the record's
+    /// workspace's host never admits and keeps for the record's
     /// channel members, the workspace's channel governance, which the host
     /// takes in and sends on to the other members, and an ask for a record's
     /// content, which the host answers or hands to the member keeping it.

@@ -12,7 +12,7 @@ use tilo_action_policy::roles::governance;
 use tilo_action_policy::{Actor, MemberId, PersonId};
 use tilo_peer_state::join::Role;
 
-use super::tests::{governor, guest_device, test_host};
+use super::tests::{guest_device, hosting_device, test_host};
 use super::*;
 
 /// The heads the workspace's governance stands at.
@@ -99,7 +99,7 @@ async fn made_workspace(workspaces: &Workspaces, name: &str) -> String {
 )]
 async fn each_member_action_stamps_the_members_change_it_makes() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let by = actor(owner.user_public_key);
@@ -237,7 +237,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
 #[tokio::test]
 async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = made_workspace(workspaces, "Moderated").await;
@@ -301,7 +301,7 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
 #[tokio::test]
 async fn a_refused_member_action_stamps_no_members_change() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = made_workspace(workspaces, "Refused").await;
@@ -362,7 +362,7 @@ fn listed_by(peer: &tilo_peer_state::StatePeer) -> Vec<(collab_types::Stamp, i64
 #[tokio::test]
 async fn a_base_keeps_every_action_the_history_before_it_took() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let by = actor(owner.user_public_key);
@@ -485,7 +485,7 @@ fn feed_after(
 #[tokio::test]
 async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_when() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let by = collab_types::Stamp::by(&actor(owner.user_public_key));
@@ -571,7 +571,7 @@ async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_w
 async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
     use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = made_workspace(workspaces, "Joined").await;
@@ -671,7 +671,7 @@ async fn members_read(workspaces: &Workspaces, workspace: &str, reader: &str) ->
 #[tokio::test]
 async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let reader = person(owner.user_public_key);

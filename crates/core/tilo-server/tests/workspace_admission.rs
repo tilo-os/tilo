@@ -17,8 +17,8 @@ use crate::common::{
 };
 use tilo_server::WorkspaceId;
 
-/// The member's own workspace, governed natively on this host.
-const GOVERNED: WorkspaceId = WorkspaceId::from_u128(801);
+/// The member's own workspace, made by its owner on this host.
+const LISTED: WorkspaceId = WorkspaceId::from_u128(801);
 /// The owner's workspace, made on their server.
 const OWNERS: WorkspaceId = WorkspaceId::from_u128(802);
 /// A workspace the server does not hold.
@@ -29,7 +29,7 @@ struct HomeHost {
     state: tempfile::TempDir,
     owner: TestUser,
     bob: TestUser,
-    /// The server's own device, which governors the workspaces it makes.
+    /// The server's own device, which hosts the workspaces it makes.
     server_dev: TestDevice,
 }
 
@@ -83,20 +83,20 @@ async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
     let bob_laptop = host.bob.enrol("bob-laptop", DeviceCapabilities::primary());
     let bob_key = bob_laptop.device_pubkey();
     let workspaces = host.server.workspaces().unwrap();
-    hold_workspace(&host.server, GOVERNED, &[]).await;
+    hold_workspace(&host.server, LISTED, &[]).await;
     let issued = invitation(
         workspaces,
         &host.server_dev,
-        &GOVERNED.to_string(),
+        &LISTED.to_string(),
         Role::Editor,
         &bob_laptop,
     )
     .await;
     redeem(&bob_laptop, &issued).await.unwrap();
 
-    // The governed workspace's root lets Bob's laptop through the handshake,
+    // The workspace's root lets Bob's laptop through the handshake,
     // and into the workspace that admits it.
-    let bob = Linked::open(&host.server, &bob_laptop, GOVERNED).await;
+    let bob = Linked::open(&host.server, &bob_laptop, LISTED).await;
     assert!(
         bob.is_ok(),
         "the workspace that admits Bob's device opens its link"

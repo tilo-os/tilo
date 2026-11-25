@@ -7,7 +7,7 @@
 //! are bound to its identity and its channels' keys, and its governance is signed
 //! for it. The host copies what it reads instead, as a device that branches a
 //! workspace does, since it is a member of every channel of the workspaces it
-//! governs:
+//! hosts:
 //!
 //! 1. Every record of the source's store is read whole, but what stays
 //!    behind ([`tilo_desktop_model::branch::stays`]: the conversations in Chat,
@@ -15,7 +15,7 @@
 //!    desktop's layout of everyone's), records whose owner is unknown, and
 //!    records that belong to a member. A remaining record that does not read
 //!    whole stops the branch before anything is made.
-//! 2. The branch is made as any workspace of the person's own is: governed here,
+//! 2. The branch is made as any workspace of the person's own is: hosted here,
 //!    its governance new, the person its only member and its administrator, its
 //!    channels with keys of their own the first time a record of it is sealed.
 //! 3. Each record is founded in the branch's store as it reads now, its history left with the
@@ -55,7 +55,7 @@ pub enum BranchFileKeys {
     SourceAndDestination,
 }
 
-/// What keeps the content of the workspaces this host governs, as it copies a
+/// What keeps the content of the workspaces this host serves, as it copies a
 /// source's content into a branch of it.
 pub trait BranchContent: Send + Sync {
     /// Copy into `branch` every item the workspace `source` keeps that `records`
@@ -240,9 +240,9 @@ mod copy {
                 .workspace(source)
                 .await
                 .map_err(|error| NotMade::of("the workspace")(error.to_string()))?;
-            let mut governed = state.lock().await;
-            let stored = self.stored_documents(&mut governed, None, true);
-            drop(governed);
+            let mut hosted = state.lock().await;
+            let stored = self.stored_documents(&mut hosted, None, true);
+            drop(hosted);
             let (mut documents, mut kinds) = (Vec::new(), BTreeMap::new());
             for ((app, record), kind, read) in stored {
                 // A record whose app this device knows nothing of stays behind with it.

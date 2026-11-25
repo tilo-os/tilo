@@ -1,6 +1,6 @@
 //! Seeding a workspace document from nothing: the governance rows a founder
 //! installs, and the shared desktop every member's layout lands in.
-use super::GovernedIdentity;
+use super::DeviceRow;
 use super::err;
 use super::{SeedDocument, SeedState, SystemTime};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
@@ -10,7 +10,7 @@ use tilo_user_identity::DeviceCert;
 /// ([`crate::PeerGovernance::founder`]).
 pub(crate) const FOUNDER: &str = "founder";
 
-/// A new workspace governed by `authority`: its governance
+/// A new workspace founded by `authority`: its governance
 /// ([`seed_workspace`]), named `name`, with no windows and no app records.
 ///
 /// # Errors
@@ -102,7 +102,7 @@ fn changes_of(doc: &mut AutoCommit) -> Vec<Vec<u8>> {
 
 /// The governance rows a founding installs in `doc`: the workspace it is, its
 /// `name`, its owner `person`, its `founder`, the maps every device and
-/// governor adds to, and the `roster`'s certificates.
+/// administrator adds to, and the `roster`'s certificates.
 fn founding_rows(
     doc: &mut AutoCommit,
     workspace: &str,
@@ -122,8 +122,8 @@ fn founding_rows(
     for rows in super::device_rows::FOUNDED {
         doc.put_object(ROOT, rows, ObjType::Map).map_err(err)?;
     }
-    // So are the maps of governance rows each governor adds to, and of rows
-    // each device keeps for itself in its person's name.
+    // So are the maps of governance rows each administrator adds to, and of
+    // rows each device keeps for itself in its person's name.
     for rows in [
         collab_types::workspace_grant::WORKSPACE_GRANTS_KEY,
         super::keeping_devices::WORKSPACE_KEEPING_DEVICES_KEY,
@@ -156,7 +156,7 @@ fn founding_rows(
         let id = hex::encode(certificate.device_public_key);
         // The person, not their device: the label stays in the certificate.
         doc.put(&names, &id, "").map_err(err)?;
-        let identity = GovernedIdentity {
+        let identity = DeviceRow {
             device_cert: certificate.clone(),
             revocations: vec![],
             admission: None,

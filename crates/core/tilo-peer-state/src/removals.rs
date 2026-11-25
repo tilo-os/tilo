@@ -114,7 +114,7 @@ fn stored(doc: &AutoCommit, maps: &[ObjId], key: &str) -> Result<Vec<Stored>, St
                 return Err("a cut of a device removal is not bytes".into());
             };
             values.push(
-                crate::governed_routes::exact::<Stored>(bytes)
+                crate::route_maps::exact::<Stored>(bytes)
                     .ok_or("a cut of a device removal does not decode")?,
             );
         }
@@ -193,7 +193,7 @@ pub(crate) fn write(
     if stored(doc, &maps(doc)?, &device_key(device))?.contains(&Stored::Recorded) {
         return Ok(false);
     }
-    let map = crate::state::governed_map(doc, FIELD_V1)?;
+    let map = crate::state::workspace_map(doc, FIELD_V1)?;
     let mut put = |key: String, value: Stored| -> Result<(), String> {
         let bytes = postcard::to_allocvec(&value).map_err(|error| error.to_string())?;
         doc.put(&map, key, ScalarValue::Bytes(bytes))

@@ -850,7 +850,7 @@ mod tests {
         daemon.found(workspace, "Studio");
         let _session = session(state.path(), &daemon);
         // The person's own automation: the daemon runs the turn as the person whose workspace it
-        // governs, which the workspaces it holds admit without an agent engine of their own.
+        // hosts, which the daemon's workspaces admit without an agent engine of their own.
         let person = hex::encode(daemon.certificate().user_public_key);
         let device = daemon.certificate().device_public_key;
         let turn = Turn::once(

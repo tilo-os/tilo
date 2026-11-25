@@ -1,4 +1,4 @@
-//! A workspace a server governs, its files held by the member that takes the
+//! A workspace a server hosts, its files held by the member that takes the
 //! workspace's work and by a person's device, each a runtime of its own; and
 //! the same files read by a device that joins once the member that wrote them
 //! has left, from what the server kept of them.
@@ -83,11 +83,11 @@ fn certificate(
     cert
 }
 
-/// The server tilo.sh runs: a certified host of its operator, governing the
+/// The server tilo.sh runs: a certified host of its operator, hosting the
 /// workspaces it creates.
 async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
     let key = SigningKey::from_bytes(&tilo_test_env::node_key());
-    // It owns the workspaces it governs, so it takes part in their channels
+    // It owns the workspaces it hosts, so it takes part in their channels
     // and their records are sealed.
     let cert = certificate(
         operator,
@@ -269,7 +269,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
         tilo_identity::trusted_device::current(&member.workspace().expect("the workspace"))
             .unwrap();
 
-    // The server governs the workspace; its operator's shell owns it.
+    // The server hosts the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[41; 32]);
     let shell = certificate(
         &operator,
@@ -412,7 +412,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let (_, member_device) =
         tilo_identity::trusted_device::current(&member.workspace().unwrap()).unwrap();
 
-    // The server governs the workspace; its operator's shell owns it.
+    // The server hosts the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[51; 32]);
     let shell = certificate(
         &operator,

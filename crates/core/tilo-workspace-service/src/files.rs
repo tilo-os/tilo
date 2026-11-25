@@ -88,9 +88,9 @@ pub async fn start(
     store: Option<Arc<tilo_fs::ContentStore>>,
     content: Option<Arc<RouteContent>>,
 ) -> std::io::Result<TreeSync> {
-    // A workspace this device governs has no device serving it: its copy here is the workspace.
-    let governed = workspaces.governs(workspace).await;
-    let backend = Backend::of(workspaces, workspace, content, governed);
+    // A workspace this device hosts has no device serving it: its copy here is the workspace.
+    let hosted = workspaces.hosts_here(workspace).await;
+    let backend = Backend::of(workspaces, workspace, content, hosted);
     TreeSync::start(tilo_fs::tree_sync::Config {
         workspace: backend.copy.name.clone(),
         device,
@@ -119,14 +119,14 @@ impl Backend {
         workspaces: &Workspaces,
         workspace: WorkspaceId,
         content: Option<Arc<RouteContent>>,
-        governed: bool,
+        hosted: bool,
     ) -> Self {
         let copy = Arc::new(Copy {
             workspaces: workspaces.clone(),
             documents: ServiceDocuments::of(workspaces.clone()),
             writes: ServiceWrites::of(workspaces.clone()),
             workspace,
-            governed,
+            hosted,
             name: workspace.to_string(),
             answers: Mutex::new(BTreeMap::new()),
             unserved: Arc::new(AtomicUsize::new(0)),
@@ -154,16 +154,16 @@ impl Backend {
     }
 }
 
-/// This device's copy of one workspace, a member copy or the one it governs, as its tree's sync
+/// This device's copy of one workspace, a member copy or the one it hosts, as its tree's sync
 /// reads and writes it.
 struct Copy {
     workspaces: Workspaces,
     documents: ServiceDocuments,
     writes: ServiceWrites,
     workspace: WorkspaceId,
-    /// Whether this device governs the workspace: then what the copy holds is what the
+    /// Whether this device hosts the workspace: then what the copy holds is what the
     /// workspace holds, with no serving device to catch up with.
-    governed: bool,
+    hosted: bool,
     name: String,
     /// The records of the tree the sync opened, each with what the copy answered of it: `None`
     /// until it can say.
@@ -184,7 +184,7 @@ impl Copy {
     /// holds it once the copy does and the serving device holds every write of this device's to
     /// it.
     fn answer_now(&self, chunk: TreeChunk) -> Option<DocumentAnswer> {
-        let caught_up = self.governed
+        let caught_up = self.hosted
             || self
                 .workspaces
                 .member_caught_up(self.workspace)
@@ -302,9 +302,9 @@ impl tilo_fs::tree_sync::TreePeer for Copy {
 
     /// The folder waits for the workspace until this device takes it in as a member copy:
     /// the same link, kept up or not, whose answers [`Self::answer_now`] reads. A workspace this
-    /// device governs is here from the start.
+    /// device hosts is here from the start.
     fn holds_workspace(&self) -> Option<bool> {
-        Some(self.governed || self.workspaces.member_caught_up(self.workspace).is_some())
+        Some(self.hosted || self.workspaces.member_caught_up(self.workspace).is_some())
     }
 }
 
@@ -348,10 +348,10 @@ impl tilo_fs::tree_sync::TreeWriter for Writer {
 }
 
 /// Resolves once the serving device holds every earlier write of this device's to `chunks` in
-/// `copy`, or with why not. A workspace this device governs kept them in its own store as they
+/// `copy`, or with why not. A workspace this device hosts kept them in its own store as they
 /// were made: that answers at once, so the records that name them go out.
 fn served(copy: &Copy, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Served> {
-    if copy.governed {
+    if copy.hosted {
         return Some(Box::pin(std::future::ready(Ok(()))));
     }
     let documents: Vec<String> = chunks
@@ -440,8 +440,8 @@ async fn follow(
 ) {
     let mut answered = copy.workspaces.member_writes_answered();
     let mut caught_up: Option<tokio::sync::watch::Receiver<bool>> = None;
-    let mut was_caught_up = copy.governed;
-    if copy.governed && wakes.send(Wake::HostReady).is_err() {
+    let mut was_caught_up = copy.hosted;
+    if copy.hosted && wakes.send(Wake::HostReady).is_err() {
         return;
     }
     // What is still going to the holders is read now and then, and the sync told only when it
@@ -481,7 +481,7 @@ async fn follow(
             // Held as a member copy only once the device took the workspace in.
             caught_up = copy.workspaces.member_caught_up(copy.workspace);
         }
-        let now_caught_up = copy.governed
+        let now_caught_up = copy.hosted
             || caught_up
                 .as_ref()
                 .is_some_and(|caught_up| *caught_up.borrow());

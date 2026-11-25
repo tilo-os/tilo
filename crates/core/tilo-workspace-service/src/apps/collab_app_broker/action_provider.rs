@@ -3397,7 +3397,7 @@ mod foreign_caller_tests {
     use tilo_actions::remote::Caller;
 
     tilo_test_env::scenario! {
-        fn a_foreign_caller_is_confined_to_what_its_device_governs;
+        fn a_foreign_caller_is_confined_to_what_its_device_administers;
 
         phase an_admitted_bot_sees_only_its_confined_workspace;
         {

@@ -139,7 +139,7 @@ impl Hydrator {
         self
     }
 
-    /// Require governed content keys for new file versions.
+    /// Require workspace content keys for new file versions.
     #[must_use]
     pub fn with_file_keys(mut self, keys: FileKeys) -> Self {
         self.file_keys = Some(keys);

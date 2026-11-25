@@ -597,7 +597,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         false,
     )
     .await;
-    // The laptop is the machine here: its controls govern the server's workspaces, and its
+    // The laptop is the machine here: its controls serve the server's workspaces, and its
     // root helper answers where its state is kept.
     let machine = tempfile::tempdir().unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
@@ -1031,7 +1031,7 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
         "servers add wrote Carol's grant on the laptop"
     );
 
-    // The machine's controls are the laptop's daemon's, which governs the studio as it is
+    // The machine's controls are the laptop's daemon's, which hosts the studio as it is
     // handed over.
     let machine = tempfile::tempdir().unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
@@ -1087,12 +1087,12 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
             .workspace_mut()
             .report_copy(&laptop_cert, &held, std::time::SystemTime::now())
     };
-    let mut governed = hosted
+    let mut studio_peer = hosted
         .state(&studio)
         .await
-        .expect("the studio is governed here");
+        .expect("the studio is hosted here");
     assert!(
-        says_where_it_stands(&mut governed).is_ok(),
+        says_where_it_stands(&mut studio_peer).is_ok(),
         "a server named as keeping the studio writes its copy's row"
     );
 
@@ -1143,14 +1143,14 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
 
     // The removed server's later write into the studio is refused: it left the workspace's
     // roster with the serving.
-    let mut governed = hosted
+    let mut studio_peer = hosted
         .state(&studio)
         .await
-        .expect("the studio is governed here");
-    let later = says_where_it_stands(&mut governed)
+        .expect("the studio is hosted here");
+    let later = says_where_it_stands(&mut studio_peer)
         .expect_err("the studio refuses the removed server's write");
     assert!(
-        later.contains("absent from governed roster"),
+        later.contains("absent from the member list"),
         "the studio no longer holds the removed server as one of its devices: {later}"
     );
 
@@ -1246,11 +1246,11 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
             .is_ok(),
         "the copy the removed server kept still takes its write"
     );
-    let mut governed = hosted
+    let mut studio_peer = hosted
         .state(&studio)
         .await
-        .expect("the studio is governed here");
-    let refused = governed
+        .expect("the studio is hosted here");
+    let refused = studio_peer
         .receive_from(
             TransportOrigin::ServerDelta(laptop_cert.device_public_key),
             away.workspace_message(),
@@ -1260,7 +1260,7 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
     // Its row stays on the member list, marked removed, for what history names: the studio
     // holds it as no device of its own.
     assert!(
-        governed
+        studio_peer
             .permissions(laptop_cert.device_public_key, std::time::SystemTime::now())
             .is_err(),
         "the removed server is no device of the studio: {refused}"
@@ -1272,16 +1272,16 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
         .enter(&studio, (&phone_cert, &phone_key))
         .await
         .expect("a device of the owner enters the studio");
-    let mut governed = hosted
+    let mut studio_peer = hosted
         .state(&studio)
         .await
-        .expect("the studio is governed here");
+        .expect("the studio is hosted here");
     let phone = tilo_peer_state::HeldCopy {
         catching_up_from: [[9; 32]].into(),
         ..tilo_peer_state::HeldCopy::default()
     };
     assert!(
-        governed
+        studio_peer
             .workspace_mut()
             .report_copy(&phone_cert, &phone, std::time::SystemTime::now())
             .is_ok(),
@@ -1363,7 +1363,7 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .permissions(device, now())
             .is_ok(),
         "the laptop is one of the studio's devices while it serves it"
@@ -1378,7 +1378,7 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .permissions(device, now())
             .is_err(),
         "the removed server left the studio's roster"
@@ -1417,7 +1417,7 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .permissions(device, now())
             .is_err(),
         "the refused reconnection wrote nothing of the removed server back"
@@ -1449,21 +1449,21 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .permissions(device, now())
             .is_ok(),
         "the laptop is one of the studio's devices again"
     );
-    let mut governed = hosted
+    let mut studio_peer = hosted
         .state(&studio)
         .await
-        .expect("the studio is governed here");
+        .expect("the studio is hosted here");
     let held = tilo_peer_state::HeldCopy {
         catching_up_from: [[7; 32]].into(),
         ..tilo_peer_state::HeldCopy::default()
     };
     assert!(
-        governed
+        studio_peer
             .workspace_mut()
             .report_copy(&laptop_cert, &held, now())
             .is_ok(),
@@ -1570,7 +1570,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .permissions(device, now())
             .is_ok(),
         "the removed machine's row stays for the history it carries"
@@ -1590,7 +1590,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
     let refused = hosted
         .state(&studio)
         .await
-        .expect("the studio is governed here")
+        .expect("the studio is hosted here")
         .receive_from(
             TransportOrigin::ServerDelta(device),
             away.workspace_message(),
@@ -1598,7 +1598,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         )
         .expect_err("the studio refuses the removed machine's write, marked row and all");
     assert!(
-        refused.to_string().contains("absent from governed roster"),
+        refused.to_string().contains("absent from the member list"),
         "the marked row is no membership: {refused}"
     );
 
@@ -1678,7 +1678,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .workspace_mut()
             .report_copy(&server_cert, &held(3), now())
             .is_ok(),
@@ -1692,7 +1692,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .workspace_mut()
             .report_copy(&phone_cert, &held(9), now())
             .is_ok(),
@@ -1724,7 +1724,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .permissions(device, now())
             .is_ok(),
         "the machine is one of the studio's devices again"
@@ -1733,7 +1733,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .workspace_mut()
             .report_copy(&laptop_cert, &held(4), now())
             .is_ok(),
@@ -1759,7 +1759,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         hosted
             .state(&studio)
             .await
-            .expect("the studio is governed here")
+            .expect("the studio is hosted here")
             .workspace_mut()
             .report_copy(&laptop_cert, &held(5), now())
             .is_ok(),

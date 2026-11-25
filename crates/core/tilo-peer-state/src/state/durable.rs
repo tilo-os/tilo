@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     AcceptedCheckpoint, CachedDocument, DecodedCheckpoint, DeviceCert, Document, Ed25519PublicKey,
     ExactAdmissions, InboundState, PeerCore, RevocationList, Route, Shared, StatePeer, SystemTime,
-    backend, check_governed_snapshot, err, held, now_ns, process_default,
+    backend, check_coverage_snapshot, err, held, now_ns, process_default,
 };
 use super::{DurableDocument, SealedHistory};
 use crate::NeighbourMsg;
@@ -390,7 +390,7 @@ fn loaded(bytes: &[u8], what: &str) -> Result<CachedDocument, String> {
 }
 
 impl StatePeer {
-    /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
+    /// A coverage assertion alone is insufficient: bind it to the accepted exact checkpoint.
     pub fn durable_coverage(
         &self,
         app: &str,
@@ -897,7 +897,7 @@ impl StatePeer {
         // every part in turn.
         let decoded = decode_documents(&durable.documents);
         for (document, decoded) in durable.documents.into_iter().zip(decoded) {
-            check_governed_snapshot(
+            check_coverage_snapshot(
                 peer.core.workspace_doc.as_deref(),
                 &document.route,
                 &document.covered,

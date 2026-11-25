@@ -8,7 +8,7 @@ use automerge::{Change as AmChange, ChangeHash};
 use collab_types::store::wire::{Bytes, Command, Reply};
 use tilo_resource_store::Stamp;
 
-use super::super::{GovernedWorkspace, Workspaces};
+use super::super::{HostedWorkspace, Workspaces};
 
 /// The kind `app`'s record `record` is in `store`: `kind` when the route named one the app
 /// declares, else whichever of the app's kinds holds it. `None` for a record the store holds
@@ -135,8 +135,8 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let mut store = self.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let mut store = self.store_of(&mut hosted);
         let Some(kind) = kind_of(&self.inner.host.surfaces, &store, app, kind, record) else {
             return Ok(nothing(false));
         };
@@ -161,7 +161,7 @@ impl Workspaces {
             .map(ToString::to_string)
             .collect();
         drop(store);
-        drop(governed);
+        drop(hosted);
         Reply::record_page(&changes, heads, from)
             .ok_or_else(|| "the page starts past the record's changes".to_owned())
     }
@@ -177,8 +177,8 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let store = self.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let store = self.store_of(&mut hosted);
         Ok(self
             .inner
             .host
@@ -212,8 +212,8 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let store = self.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let store = self.store_of(&mut hosted);
         let mut records = Vec::new();
         for (app, kind) in self.inner.host.surfaces.kinds() {
             records.extend(store.ids_of(&kind).map(|id| (app.clone(), id.to_owned())));
@@ -250,8 +250,8 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let mut store = self.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let mut store = self.store_of(&mut hosted);
         let Some(kind) = kind_of(&self.inner.host.surfaces, &store, app, None, record) else {
             return Ok(None);
         };
@@ -315,10 +315,10 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = std::sync::Arc::clone(&state).lock_owned().await;
+        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
         let held = kind_of(
             &self.inner.host.surfaces,
-            &self.store_of(&mut governed),
+            &self.store_of(&mut hosted),
             app,
             kind,
             record,
@@ -337,9 +337,9 @@ impl Workspaces {
                 (kind.to_owned(), true)
             }
         };
-        let held = governed.held_action_documents();
+        let held = hosted.held_action_documents();
         let (writes, action) = {
-            let mut store = self.store_of(&mut governed);
+            let mut store = self.store_of(&mut hosted);
             // A new record is founded by the writes that hold its first changes: in an action,
             // it is founded with the action, or not at all.
             let writes = if founding {
@@ -398,16 +398,16 @@ impl Workspaces {
             drop(store);
             (writes, action)
         };
-        self.keep_record_writes(governed, device, app, writes, action)
+        self.keep_record_writes(hosted, device, app, writes, action)
             .await
     }
 
     /// Keep `writes`, a record's content and the placement that founds it, as `device`'s writes
-    /// for `app` under `governed`'s lock: as the parts of `action` when the changes came as one,
+    /// for `app` under `hosted`'s lock: as the parts of `action` when the changes came as one,
     /// or else with the placement kept first.
     async fn keep_record_writes(
         &self,
-        governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
         device: std::sync::Arc<super::super::MemberDevice>,
         app: &str,
         writes: Vec<tilo_resource_store::Written>,
@@ -415,10 +415,10 @@ impl Workspaces {
     ) -> Result<(), String> {
         match action {
             Some(action) => self
-                .keep_writes(governed, device, app, writes, Some(action))
+                .keep_writes(hosted, device, app, writes, Some(action))
                 .await
                 .map(drop),
-            None => self.keep_founded(governed, (device, app), writes).await,
+            None => self.keep_founded(hosted, (device, app), writes).await,
         }
     }
 
@@ -427,7 +427,7 @@ impl Workspaces {
     /// store holds.
     async fn keep_founded(
         &self,
-        governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
         (device, app): (std::sync::Arc<super::super::MemberDevice>, &str),
         mut writes: Vec<tilo_resource_store::Written>,
     ) -> Result<(), String> {
@@ -436,15 +436,15 @@ impl Workspaces {
             .take_while(|write| tilo_resource_store::content_resource(&write.doc).is_none())
             .count();
         let content = writes.split_off(placed);
-        let state = std::sync::Arc::clone(tokio::sync::OwnedMutexGuard::mutex(&governed));
-        let governed = if writes.is_empty() {
-            governed
+        let state = std::sync::Arc::clone(tokio::sync::OwnedMutexGuard::mutex(&hosted));
+        let hosted = if writes.is_empty() {
+            hosted
         } else {
-            self.keep_writes(governed, std::sync::Arc::clone(&device), app, writes, None)
+            self.keep_writes(hosted, std::sync::Arc::clone(&device), app, writes, None)
                 .await?;
             state.lock_owned().await
         };
-        self.keep_writes(governed, device, app, content, None)
+        self.keep_writes(hosted, device, app, content, None)
             .await
             .map(drop)
     }
@@ -481,8 +481,8 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let (kind, held, removal) = {
-            let mut governed = source.lock().await;
-            let mut store = self.store_of(&mut governed);
+            let mut hosted = source.lock().await;
+            let mut store = self.store_of(&mut hosted);
             let kind = kind_of(&self.inner.host.surfaces, &store, app, None, record)
                 .ok_or_else(|| format!("{app} keeps no record {record} in {from}"))?;
             let held = store
@@ -497,7 +497,7 @@ impl Workspaces {
             let removal = tilo_resource_store::wire::draft(&mut store, removal)
                 .map_err(|refused| refused.error.to_string())?;
             drop(store);
-            self.would_keep(&mut governed, (caller, author), (app, &kind), &removal)
+            self.would_keep(&mut hosted, (caller, author), (app, &kind), &removal)
                 .map_err(|refused| format!("{from} refuses the record leaving: {refused}"))?;
             (kind, held, removal)
         };
@@ -527,8 +527,8 @@ impl Workspaces {
             (caller, author),
         )
         .await?;
-        let governed = std::sync::Arc::clone(&source).lock_owned().await;
-        self.keep_writes(governed, device, app, removal, None)
+        let hosted = std::sync::Arc::clone(&source).lock_owned().await;
+        self.keep_writes(hosted, device, app, removal, None)
             .await
             .map(drop)
     }
@@ -539,7 +539,7 @@ impl Workspaces {
     async fn found_moved(
         &self,
         (destination, device): (
-            std::sync::Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+            std::sync::Arc<tokio::sync::Mutex<HostedWorkspace>>,
             std::sync::Arc<super::super::MemberDevice>,
         ),
         (app, to): (&str, &str),
@@ -547,18 +547,18 @@ impl Workspaces {
         (stamp, content): (Stamp, Vec<AmChange>),
         (caller, author): (&tilo_actions::remote::Caller, [u8; 32]),
     ) -> Result<(), String> {
-        let mut governed = std::sync::Arc::clone(&destination).lock_owned().await;
+        let mut hosted = std::sync::Arc::clone(&destination).lock_owned().await;
         let founding = tilo_resource_store::wire::found(
-            &mut self.store_of(&mut governed),
+            &mut self.store_of(&mut hosted),
             (kind, target),
             collab_types::EVERY_MEMBER,
             stamp,
             content,
         )
         .map_err(|refused| refused.error.to_string())?;
-        self.would_keep(&mut governed, (caller, author), (app, kind), &founding)
+        self.would_keep(&mut hosted, (caller, author), (app, kind), &founding)
             .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
-        self.keep_founded(governed, (device, app), founding).await
+        self.keep_founded(hosted, (device, app), founding).await
     }
 
     /// Found `app`'s record `id` of `kind` in `workspace`'s store as this device's person moving
@@ -581,10 +581,10 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = std::sync::Arc::clone(&state).lock_owned().await;
+        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
         if kind_of(
             &self.inner.host.surfaces,
-            &self.store_of(&mut governed),
+            &self.store_of(&mut hosted),
             app,
             None,
             id,
@@ -606,7 +606,7 @@ impl Workspaces {
             ..Stamp::default()
         };
         // Read by whom its type names, when it names anyone; else as the move asks.
-        let readers = if self.store_of(&mut governed).reads_by_rule(kind) {
+        let readers = if self.store_of(&mut hosted).reads_by_rule(kind) {
             String::new()
         } else if private {
             collab_types::Readers::people([device.cert.user_public_key])
@@ -622,14 +622,14 @@ impl Workspaces {
         );
         let content = moved.get_changes(&[]).into_iter().collect();
         let writes = tilo_resource_store::wire::found(
-            &mut self.store_of(&mut governed),
+            &mut self.store_of(&mut hosted),
             (kind, id),
             &readers,
             stamp,
             content,
         )
         .map_err(|refused| refused.error.to_string())?;
-        self.keep_founded(governed, (device, app), writes)
+        self.keep_founded(hosted, (device, app), writes)
             .await
             .map(|()| true)
     }
@@ -653,8 +653,8 @@ impl Workspaces {
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let mut governed = state.lock().await;
-            let mut store = self.store_of(&mut governed);
+            let mut hosted = state.lock().await;
+            let mut store = self.store_of(&mut hosted);
             let held = match store.index().get(kind, record) {
                 Some(_) => store
                     .content_document(kind, record)
@@ -747,27 +747,27 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Whether `writes` of a move of `app`'s record of `kind`, drafted against `governed`'s
+    /// Whether `writes` of a move of `app`'s record of `kind`, drafted against `hosted`'s
     /// store, would be kept there as the device `author`'s writes for `caller`, judged without
     /// keeping any of them.
     fn would_keep(
         &self,
-        governed: &mut GovernedWorkspace,
+        hosted: &mut HostedWorkspace,
         (caller, author): (&tilo_actions::remote::Caller, [u8; 32]),
         (app, kind): (&str, &str),
         writes: &[tilo_resource_store::Written],
     ) -> Result<(), String> {
         super::caller_may(
-            governed,
+            hosted,
             caller,
             app,
             &[(kind.to_owned(), tilo_resource_store::MOVE_VERB.to_owned())],
         )?;
         let now = tilo_clock::wall();
         for write in writes {
-            governed.may_start(author, (app, &write.doc), now)?;
+            hosted.may_start(author, (app, &write.doc), now)?;
         }
-        self.store_of(governed)
+        self.store_of(hosted)
             .check_batch(writes, author)
             .map_err(|refusal| format!("{refusal:?}"))
     }
@@ -790,7 +790,7 @@ mod tests {
     use tilo_resource_store::Stamp;
 
     use crate::apps::services::ResourceRequestContext;
-    use crate::workspaces::fixtures::{TestHost, governor_with, test_host_holding};
+    use crate::workspaces::fixtures::{TestHost, hosting_device_with, test_host_holding};
     use crate::workspaces::{OwnWorkspaceOffer, Workspaces};
 
     const NOTES: &str = "tilo.notes";
@@ -818,7 +818,7 @@ mod tests {
             .collect()
     }
 
-    /// A workspace this service governs and writes in as the person's device, as a desktop's
+    /// A workspace this service hosts and writes in as the person's device, as a desktop's
     /// does, with the notes app's surface known here.
     async fn kitchen(dir: &std::path::Path) -> (TestHost, String) {
         let (host, workspace, _) = kitchen_kept(dir).await;
@@ -834,7 +834,7 @@ mod tests {
 
     /// [`kitchen`], with what the device starts again with ([`started`]).
     async fn kitchen_kept(dir: &std::path::Path) -> (TestHost, String, Device) {
-        let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+        let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
         let device = (key, cert, std::sync::Arc::default());
         let host = started(dir, &device).await;
         host.workspaces()
@@ -1444,8 +1444,8 @@ mod tests {
     async fn title_in(workspaces: &Workspaces, workspace: &str, record: &str) -> Option<String> {
         use automerge::ReadDoc as _;
         let state = workspaces.workspace(workspace).await.unwrap();
-        let mut governed = state.lock().await;
-        let mut store = workspaces.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let mut store = workspaces.store_of(&mut hosted);
         store.index().get(NOTE, record)?;
         let doc = store.content_document(NOTE, record).unwrap()?;
         let title = doc
@@ -1575,8 +1575,8 @@ mod tests {
     async fn items_in(workspaces: &Workspaces, workspace: &str, record: &str) -> Vec<String> {
         use automerge::ReadDoc as _;
         let state = workspaces.workspace(workspace).await.unwrap();
-        let mut governed = state.lock().await;
-        let mut store = workspaces.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let mut store = workspaces.store_of(&mut hosted);
         let Some(doc) = store.content_document(NOTE, record).unwrap() else {
             return Vec::new();
         };

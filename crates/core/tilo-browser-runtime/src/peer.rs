@@ -563,7 +563,7 @@ pub async fn channel_vault(namespace: String) -> Result<Vec<u8>, JsError> {
 
 /// Certify `devicePublicKeyHex` with the user root the page holds (`root`:
 /// `{publicKey, sign}` from `identity.mjs`) as `role`: `browser` (a
-/// member, 30 days), `node` (hosts and governs the person's workspaces,
+/// member, 30 days), `node` (hosts and administers the person's workspaces,
 /// admits no devices) or `session` (the session beside a node that runs
 /// the person's apps and agents: a member, one year). Resolves to the
 /// certificate JSON.
@@ -1307,7 +1307,7 @@ impl WasmPeer {
     }
 
     /// This page's channel state as text: whom each workspace follows, which
-    /// senders may govern it, and each route's membership.
+    /// senders may administer it, and each route's membership.
     #[wasm_bindgen(js_name = channelDiagnostics)]
     pub fn channel_diagnostics(&self) -> String {
         self.handle.status().key_state
@@ -1318,7 +1318,7 @@ impl WasmPeer {
         self.listeners.borrow_mut().push(listener);
     }
 
-    /// Join a workspace (uuid). The page joins it once its host governs it,
+    /// Join a workspace (uuid). The page joins it once its host serves it,
     /// creating it there as `name` (the workspace's name, `Workspace` when the
     /// page knows none) unless the host has it.
     #[wasm_bindgen(js_name = joinWorkspace)]

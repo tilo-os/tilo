@@ -1284,7 +1284,7 @@ impl SessionSearch {
         use ui::floating_surface::Recipient;
         use ui::floating_surface::RecipientKind::{Agent, Conversation, Person};
         let members = self.members.borrow();
-        let governed = members
+        let listed_people = members
             .iter()
             .filter(|(held, _)| held == workspace)
             .flat_map(|(_, people)| people)
@@ -1297,7 +1297,7 @@ impl SessionSearch {
             .filter(|here| here.workspace == workspace)
             .flat_map(|here| &here.people)
             .map(|person| (person.agent, person.id.clone(), person.name.as_str()))
-            .chain(governed.clone().map(|member| {
+            .chain(listed_people.clone().map(|member| {
                 let id = if member.id.is_agent() {
                     crate::search::recipient_id(&member.id)
                 } else {

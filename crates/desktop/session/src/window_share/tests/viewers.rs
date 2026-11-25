@@ -703,7 +703,7 @@ fn the_persons_own_other_device_viewing_a_window_goes_by_its_device_name() {
     let salt = Options::default().salt;
     let mut host = member_as(
         0x58,
-        governed(own_shell(), &own, &[]),
+        with_member_list(own_shell(), &own, &[]),
         salt,
         Some(own.clone()),
     );
@@ -712,7 +712,7 @@ fn the_persons_own_other_device_viewing_a_window_goes_by_its_device_name() {
     share(&mut host, APP, tab);
     let mut viewer = member_as(
         0x59,
-        governed(showing(host.sync.publisher(), APP, tab), &own, &[]),
+        with_member_list(showing(host.sync.publisher(), APP, tab), &own, &[]),
         salt,
         Some(own),
     );

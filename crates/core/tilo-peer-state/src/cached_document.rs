@@ -27,7 +27,7 @@ pub(crate) struct CachedDocument {
     since_checked: Option<Arc<Vec<automerge::Change>>>,
     /// [`Self::redemptions`], once read.
     redemptions: Arc<OnceLock<Result<Redemptions, String>>>,
-    /// [`PolicyData::workspace_policy`] of the workspace the document governs.
+    /// [`PolicyData::workspace_policy`] of the workspace the document belongs to.
     workspace_policy: Arc<OnceLock<tilo_action_policy::WorkspacePolicy>>,
     /// The views of the state this one was changed from, when they were
     /// read: a change to a workspace of hundreds touches a row or two, so the
@@ -159,15 +159,15 @@ struct Views {
     identities: Arc<OnceLock<IdentityViews>>,
     certificates: Arc<OnceLock<IdentityCertificates>>,
 }
-/// The device certificate of each governed identity row whose signature
-/// verifies, keyed like [`PolicyData::identities`].
+/// The device certificate of each identity row of the governance whose
+/// signature verifies, keyed like [`PolicyData::identities`].
 pub(crate) type IdentityCertificates =
     std::collections::BTreeMap<String, crate::verified_certificate::VerifiedCertificate>;
-/// Each governed identity row decoded, keyed like
+/// Each identity row of the governance decoded, keyed like
 /// [`PolicyData::identities`]; an undecodable row keeps its decode error.
 pub(crate) type IdentityViews = std::collections::BTreeMap<
     String,
-    Result<crate::state::GovernedIdentity, std::sync::Arc<crate::state::RowError>>,
+    Result<crate::state::DeviceRow, std::sync::Arc<crate::state::RowError>>,
 >;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PolicyData {
@@ -242,9 +242,8 @@ impl CachedDocument {
     pub(crate) fn same_state(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.doc, &b.doc)
     }
-    /// The authority the document records for `workspace`, the one it
-    /// governs: built once per document state, not on every member's
-    /// lookup.
+    /// The authority the document records for `workspace`: built once per
+    /// document state, not on every member's lookup.
     pub(crate) fn workspace_policy(&self, workspace: &str) -> &tilo_action_policy::WorkspacePolicy {
         let policy = self.workspace_policy.get_or_init(|| {
             #[cfg(test)]
@@ -260,7 +259,7 @@ impl CachedDocument {
         });
         debug_assert_eq!(
             policy.workspace, workspace,
-            "a document governs one workspace"
+            "a document names one workspace"
         );
         policy
     }
@@ -300,11 +299,11 @@ impl CachedDocument {
                 .filter(|secs| *secs > 0)
         })
     }
-    /// This state read as governing by `policy` instead of the policy its
-    /// operations replay to: what judges a write by the standing a cut kept
+    /// This state read under `policy` instead of the policy its operations
+    /// replay to: what judges a write by the standing a cut kept
     /// ([`crate::standing::Standing::held_in`]). Every other view of the state
     /// is the state's own.
-    pub(crate) fn governing_by(mut self, policy: tilo_action_policy::WorkspacePolicy) -> Self {
+    pub(crate) fn under_policy(mut self, policy: tilo_action_policy::WorkspacePolicy) -> Self {
         self.workspace_policy = Arc::new(OnceLock::from(policy));
         self
     }
@@ -401,8 +400,7 @@ impl CachedDocument {
         &self,
         key: &str,
         bytes: &[u8],
-    ) -> Option<&Result<crate::state::GovernedIdentity, std::sync::Arc<crate::state::RowError>>>
-    {
+    ) -> Option<&Result<crate::state::DeviceRow, std::sync::Arc<crate::state::RowError>>> {
         let earlier = self.earlier.as_deref()?;
         (earlier.policy.get()?.identities.get(key)? == bytes)
             .then(|| earlier.identities.get()?.get(key))
@@ -434,7 +432,7 @@ impl CachedDocument {
         self.policy
             .get_or_init(|| crate::workspace::policy::read(&self.doc))
     }
-    /// The governed identity rows of [`Self::policy`], each decoded once per
+    /// The identity rows of [`Self::policy`], each decoded once per
     /// document state rather than on every membership lookup. Data only, like
     /// `policy`: certificate, revocation and role checks still run per call.
     pub(crate) fn identities(&self) -> &IdentityViews {
@@ -449,7 +447,7 @@ impl CachedDocument {
                     #[cfg(test)]
                     IDENTITY_DECODES.with(|count| count.set(count.get().saturating_add(1)));
                     let identity =
-                        crate::state::GovernedIdentity::decode(bytes).map_err(std::sync::Arc::new);
+                        crate::state::DeviceRow::decode(bytes).map_err(std::sync::Arc::new);
                     (key.clone(), identity)
                 })
                 .collect()
@@ -463,7 +461,7 @@ impl CachedDocument {
         &self,
         key: &str,
         bytes: &[u8],
-    ) -> Option<&crate::state::GovernedIdentity> {
+    ) -> Option<&crate::state::DeviceRow> {
         if self.policy().identities.get(key).map(Vec::as_slice) != Some(bytes) {
             return None;
         }

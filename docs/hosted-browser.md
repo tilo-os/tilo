@@ -108,7 +108,7 @@ open before anything is installed.
   page, and those the workspace lets edit drive it with their
   keyboard and pointer. The session does not write the share itself: it asks
   the server (`tilo_actions::remote::environment_device`), which writes the
-  share's grants as the workspace's governor, as it writes a web page's share,
+  share's grants as the workspace's host, as it writes a web page's share,
   once it has checked the window's id was minted under that device's own
   salt — a confined device shares its own windows and nobody else's. Its frames travel the
   workspace's live session, the same MoQ path a call's pictures take, through

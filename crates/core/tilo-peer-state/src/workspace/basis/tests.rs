@@ -9,7 +9,7 @@ fn fixture() -> (AutoCommit, SigningKey, String) {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Governor".into(),
+        device_label: "Host".into(),
         capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
@@ -66,7 +66,7 @@ tilo_test_env::scenario! {
         let (mut doc, root, device) = fixture();
         let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
         let original = super::strict_bytes(&doc, &identities, &device).unwrap();
-        let mut row = crate::state::GovernedIdentity::decode(&original).unwrap();
+        let mut row = crate::state::DeviceRow::decode(&original).unwrap();
         row.revocations = vec![revocation(&root, 20), revocation(&root, 10)];
         doc.put(
             &identities,
@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
                 _ => {
                     let ids = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
                     let bytes = super::strict_bytes(&doc, &ids, &device).unwrap();
-                    let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
+                    let mut row = crate::state::DeviceRow::decode(&bytes).unwrap();
                     row.device_cert.signature[0] ^= 1;
                     doc.put(&ids, &device, ScalarValue::Bytes(row.encode().unwrap()))
                         .unwrap();
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
         let (mut doc, root, device) = fixture();
         let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
         let bytes = super::strict_bytes(&doc, &identities, &device).unwrap();
-        let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
+        let mut row = crate::state::DeviceRow::decode(&bytes).unwrap();
         row.device_cert.device_label = "escaped \" \\ \n".repeat(1024);
         tilo_user_identity::sign_device_cert(&mut row.device_cert, &root).unwrap();
         let proof = crate::state::RedemptionReceipt {
@@ -226,8 +226,7 @@ fn historical_basis(
     let mut revocations = Vec::new();
     for key in doc.keys(&identities) {
         let bytes = strict_bytes(doc, &identities, &key)?;
-        let row =
-            crate::state::GovernedIdentity::decode(&bytes).map_err(|_| BasisError::Malformed)?;
+        let row = crate::state::DeviceRow::decode(&bytes).map_err(|_| BasisError::Malformed)?;
         let device = canonical_key(&key)?;
         if device != row.device_cert.device_public_key {
             return Err(BasisError::Identity);

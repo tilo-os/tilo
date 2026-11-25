@@ -15,7 +15,7 @@ and, if a peer is offline, its deltas are store-and-forwarded.
   canonical types live in `tilo-user-identity`.
 - Fans out incoming Automerge deltas to every other subscribed
   peer for the same workspace.
-- A server holds the workspaces made on it and the ones a governor hands
+- A server holds the workspaces made on it and the ones a hosting device hands
   over; it never takes one into being on a device's Subscribe. A workspace it
   does not hold refuses the subscription until it is handed over or made there.
 - Enqueues deltas for offline members under
@@ -35,7 +35,7 @@ The headless home-peer deployment runs `tilo-server` with the authenticated
 filesystem replica. It retains workspace/app collaboration records,
 checkpoints, offline queues, and all filesystem blobs, media/book bytes, and
 thumbnails for every workspace in `/etc/tilo/home-peer.toml`. Which workspaces it
-holds is up to the workspaces: a workspace's governor adds the home peer as one of the
+holds is up to the workspaces: a workspace's administrators add the home peer as one of the
 workspace's hosts.
 
 `ReplicationIntent::FullWorkspace` is backed by the composite host. The server

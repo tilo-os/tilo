@@ -1,4 +1,4 @@
-//! People who arrive one after another in a Lounge whose host governs it and
+//! People who arrive one after another in a Lounge whose host serves it and
 //! takes part in its channels. The first person's page opens the workspace's
 //! records, so the host opens their channels; someone who comes later is
 //! handed the workspace's whole history under those channels and must find

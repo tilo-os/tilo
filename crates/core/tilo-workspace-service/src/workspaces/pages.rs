@@ -29,7 +29,7 @@ use super::authority::WorkspaceOp;
 use super::collaboration::carried;
 use super::hosts::holders_of;
 use super::{
-    CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
+    CancelInvitationRequest, CollaborationError, HostedWorkspace, IssueInvitationRequest,
     IssuedInvitation, WorkspaceSummary, Workspaces, system_time,
 };
 use crate::service_authority::ServiceOperation;
@@ -106,12 +106,12 @@ impl Presented {
     /// still holds redeemable, at the device answering for it.
     pub(super) fn redeem(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         answering: &DeviceCert,
         now: u64,
     ) -> Result<VerifiedRedemption, CollaborationError> {
         workspace.collaboration().redeem_on_connection(
-            &workspace.governed(answering),
+            &workspace.hosted(answering),
             &self.invitation,
             &self.cert,
             self.request_id,
@@ -184,8 +184,8 @@ impl Workspaces {
     /// Answer one workspace administration request of `device`, on the
     /// action `caller` asks as: admitted first as an agent's requests are
     /// ([`Workspaces::admit_page`]), then decided as the workspace each
-    /// request names decides it. A host that governs no workspace refuses
-    /// rather than staying silent.
+    /// request names decides it. A host with no workspaces refuses rather than
+    /// staying silent.
     pub async fn answer_administration(
         &self,
         device: &DeviceCert,
@@ -480,7 +480,7 @@ impl Workspaces {
             && workspace
                 .peer()
                 .governance()
-                .governed_members(at)
+                .member_list(at)
                 .map_err(CollaborationError::new)?
                 .members
                 .iter()
@@ -522,13 +522,13 @@ impl Workspaces {
             .parse()
             .map_err(|_| CollaborationError::new("not a node of the workspace's tree"))?;
         let state = self.workspace(workspace).await?;
-        let governed = state.lock().await;
-        if node.workspace_id() != Some(governed.workspace()) {
+        let hosted = state.lock().await;
+        if node.workspace_id() != Some(hosted.workspace()) {
             return Err(CollaborationError::new("the node is not in this workspace"));
         }
         let now = system_time(tilo_clock::unix_now_ns());
-        let member = governed.peer().permissions(device.device_public_key, now)?;
-        drop(governed);
+        let member = hosted.peer().permissions(device.device_public_key, now)?;
+        drop(hosted);
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
     }
 
@@ -544,11 +544,9 @@ impl Workspaces {
         // Which servers keep a workspace is its owner's to read, as the
         // workspace's own `server.*` actions decide it.
         let chooses = {
-            let governed = self.workspace(workspace).await?;
-            let mut governed = governed.lock().await;
-            self.hand_kept_workspace_to(&mut governed, device.user_public_key)
-                .await;
-            Self::chooses_servers(&governed, device)
+            let hosted = self.workspace(workspace).await?;
+            let hosted = hosted.lock().await;
+            Self::chooses_servers(&hosted, device)
         };
         if !chooses {
             return Err(CollaborationError::new(
@@ -575,7 +573,7 @@ impl Workspaces {
     /// A page's deletion of `workspace`, a workspace of the calling device's
     /// person with nobody else in it: final, with everything this server keeps
     /// of it. Whose a workspace is, the same check answers as for making one,
-    /// and the server's own person deletes any it governs.
+    /// and the server's own person deletes any it hosts.
     async fn page_delete(
         &self,
         device: &DeviceCert,
@@ -590,9 +588,9 @@ impl Workspaces {
             ));
         }
         {
-            let governed = self.workspace(workspace).await?;
-            let governed = governed.lock().await;
-            if self.people(&governed).people() > 1 {
+            let hosted = self.workspace(workspace).await?;
+            let hosted = hosted.lock().await;
+            if self.people(&hosted).people() > 1 {
                 return Err(CollaborationError::new("other people are in the workspace"));
             }
         }
@@ -706,7 +704,7 @@ impl Workspaces {
         self.page_workspace(&created.workspace, device).await
     }
 
-    /// Govern `workspace` here unless this host does, created as `name`. The
+    /// Host `workspace` here unless this host does, created as `name`. The
     /// device lists itself there on its entry, signing its own row; this host
     /// signs nothing for it.
     async fn page_place(
@@ -802,22 +800,22 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let address = self.invitation_addr().await;
         let issued = {
-            let governed = self.workspace(workspace).await?;
-            let mut governed = governed.lock().await;
+            let hosted = self.workspace(workspace).await?;
+            let mut hosted = hosted.lock().await;
             self.authorize(
                 device,
-                Some(&governed),
+                Some(&hosted),
                 WorkspaceOp::admit(request.role, administrator),
                 now,
             )?;
-            if !governed.wait_list.has(entry, now) {
+            if !hosted.wait_list.has(entry, now) {
                 return Err(CollaborationError::new(
                     "that address is no longer on the wait list",
                 ));
             }
             let issued =
-                self.stage_issue(&mut governed, device, request, administrator, &address, now)?;
-            governed
+                self.stage_issue(&mut hosted, device, request, administrator, &address, now)?;
+            hosted
                 .wait_list
                 .invited(entry, issued.invite_id, now)
                 .map_err(CollaborationError::new)?;
@@ -892,17 +890,17 @@ impl Workspaces {
         device: &DeviceCert,
         now: u64,
     ) -> Result<Vec<WaitListEntry>, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
         self.authorize(
             device,
-            Some(&governed),
+            Some(&hosted),
             WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
         // Whoever joined by a way that did not take them off already.
-        governed.forget_joined_wait_list();
-        Ok(governed.wait_list.entries(now))
+        hosted.forget_joined_wait_list();
+        Ok(hosted.wait_list.entries(now))
     }
 
     /// Take the address `request_id` off `workspace`'s wait list, for someone the
@@ -914,22 +912,22 @@ impl Workspaces {
         request_id: [u8; 32],
         now: u64,
     ) -> Result<(), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
         self.authorize(
             device,
-            Some(&governed),
+            Some(&hosted),
             WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
-        if !governed
+        if !hosted
             .wait_list
             .remove(request_id, now)
             .map_err(CollaborationError::new)?
         {
             return Err(CollaborationError::new("no such address on the wait list"));
         }
-        drop(governed);
+        drop(hosted);
         tracing::info!(%workspace, "an address was taken off the wait list");
         Ok(())
     }
@@ -953,24 +951,24 @@ impl Workspaces {
                 "only an invitation on this entry is mailed",
             ));
         }
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
         self.authorize(
             device,
-            Some(&governed),
+            Some(&hosted),
             WorkspaceOp::Govern(governance::ADD_MEMBER),
             now,
         )?;
-        let (to, removal) = governed
+        let (to, removal) = hosted
             .wait_list
             .mail_invite(request_id, now)
             .map_err(CollaborationError::new)?
             .map_err(CollaborationError::new)?;
         // The invitation says who asked the person in, by the name the workspace shows them by.
         let inviter = self
-            .member_name_by_root(&governed, device.user_public_key)
+            .member_name_by_root(&hosted, device.user_public_key)
             .unwrap_or_default();
-        drop(governed);
+        drop(hosted);
         let (queued, accepted) = tokio::sync::oneshot::channel();
         let sent = mail
             .send(super::WaitListMail {
@@ -991,15 +989,15 @@ impl Workspaces {
         };
         if accepted == Some(false) {
             use sha2::Digest as _;
-            let mut governed = self.workspace(workspace).await?.lock_owned().await;
-            governed
+            let mut hosted = self.workspace(workspace).await?.lock_owned().await;
+            hosted
                 .wait_list
                 .mail_failed(
                     sha2::Sha256::digest(removal).into(),
                     tilo_clock::unix_now_ns(),
                 )
                 .map_err(CollaborationError::new)?;
-            drop(governed);
+            drop(hosted);
             return Err(CollaborationError::new(
                 "the entry did not accept the invitation mail",
             ));
@@ -1038,13 +1036,13 @@ impl Workspaces {
     ) -> Result<super::WaitListed, CollaborationError> {
         let contact = tilo_server_protocol::workspaces::contact_address(contact)
             .map_err(CollaborationError::new)?;
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        let kept = governed
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
+        let kept = hosted
             .wait_list
             .keep(&contact, secrets, language, tilo_clock::unix_now_ns(), max)
             .map_err(CollaborationError::new)?;
-        drop(governed);
+        drop(hosted);
         tracing::info!(%workspace, outcome = ?kept, "a request was left at the entry");
         Ok(kept)
     }
@@ -1060,13 +1058,13 @@ impl Workspaces {
         workspace: &str,
         confirm: [u8; 32],
     ) -> Result<bool, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        let confirmed = governed
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
+        let confirmed = hosted
             .wait_list
             .confirm(confirm, tilo_clock::unix_now_ns())
             .map_err(CollaborationError::new)?;
-        drop(governed);
+        drop(hosted);
         if confirmed {
             tracing::info!(%workspace, "an address on the wait list was confirmed");
         }
@@ -1084,10 +1082,10 @@ impl Workspaces {
         workspace: &str,
         removal: [u8; 32],
     ) -> Result<tilo_server_protocol::operator::WaitListStatus, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        governed.forget_joined_wait_list();
-        Ok(governed.wait_list.state(removal, tilo_clock::unix_now_ns()))
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
+        hosted.forget_joined_wait_list();
+        Ok(hosted.wait_list.state(removal, tilo_clock::unix_now_ns()))
     }
 
     /// Forget the addresses on `workspace`'s wait list that were not confirmed
@@ -1097,13 +1095,13 @@ impl Workspaces {
     ///
     /// The workspace is unknown, or its wait list could not be written.
     pub async fn expire_wait_list(&self, workspace: &str) -> Result<(), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        let expired = governed
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
+        let expired = hosted
             .wait_list
             .expire(tilo_clock::unix_now_ns())
             .map_err(CollaborationError::new)?;
-        drop(governed);
+        drop(hosted);
         if expired > 0 {
             tracing::info!(%workspace, expired, "unconfirmed addresses left the wait list");
         }
@@ -1140,15 +1138,15 @@ impl Workspaces {
         workspace: &str,
         removal: [u8; 32],
     ) -> Result<(Option<super::Mailbox>, Option<[u8; 32]>), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
         let now = tilo_clock::unix_now_ns();
-        let contact = governed.wait_list.removal_contact(removal, now);
-        let told = governed
+        let contact = hosted.wait_list.removal_contact(removal, now);
+        let told = hosted
             .wait_list
             .leave(removal, now)
             .map_err(CollaborationError::new)?;
-        drop(governed);
+        drop(hosted);
         if contact.is_some() {
             tracing::info!(%workspace, "someone took their address off the wait list");
         }
@@ -1219,7 +1217,7 @@ impl Workspaces {
             let governance = peer.governance();
             let name = governance.workspace_name().unwrap_or_default();
             let listed = governance
-                .governed_members(tilo_clock::wall())
+                .member_list(tilo_clock::wall())
                 .unwrap_or_default()
                 .members;
             let own = self.own().is_some();
@@ -1328,7 +1326,7 @@ impl Workspaces {
     /// What a device the workspace just admitted hears: the workspace it is in
     /// and the part it holds there.
     pub(super) fn admitted(
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         device: [u8; 32],
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
@@ -1406,8 +1404,8 @@ impl Workspaces {
         let locking = crate::timing::start();
         // Redemptions that arrive while the workspace commits another change wait for the next
         // pass together: it starts once the workspace is free.
-        if let Ok(governed) = self.workspace(&identity).await {
-            drop(governed.lock().await);
+        if let Ok(hosted) = self.workspace(&identity).await {
+            drop(hosted.lock().await);
         }
         let queued = self
             .inner

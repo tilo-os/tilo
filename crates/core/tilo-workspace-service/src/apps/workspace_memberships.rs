@@ -1,4 +1,4 @@
-//! Governed agent membership through the ordinary durable invocation surface.
+//! Agent membership through the ordinary durable invocation surface.
 //! Public arguments select only a closed command; caller ownership and signing
 //! authority remain host-owned.
 use super::published_service::{ServiceOutcome, refused};
@@ -1208,7 +1208,7 @@ mod tests {
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
                         tilo_desktop_model::WorkspaceId::from_u128(1),
-                        "Governed",
+                        "Hosted",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
@@ -1263,7 +1263,7 @@ mod tests {
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
                         tilo_desktop_model::WorkspaceId::from_u128(1),
-                        "Governed",
+                        "Hosted",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();

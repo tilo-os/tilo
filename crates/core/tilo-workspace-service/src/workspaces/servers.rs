@@ -36,15 +36,15 @@
 //! Why the person's servers are a workspace, and not part of the person's own
 //! store beside their devices and workspace list: the servers restart into an
 //! update one at a time under a lease of this workspace (`tilo_server::rollout`),
-//! exactly-once work that only a governed workspace orders, and a server takes
+//! exactly-once work that only a hosted workspace orders, and a server takes
 //! no part in the person's own store.
 //!
 //! Which workspaces a server holds, and how, is each workspace's governance
 //! alone: its holders list names the server, as a store or a key holder, and
 //! the workspace's own actions add, move and remove it. The document keeps no
 //! copy of it. What it keeps is what the governance cannot name yet: the
-//! workspaces a planned machine is to hold once it exists, which a device of
-//! the person governing each hands it once, when it enrolled ([`attach`]).
+//! workspaces a planned machine is to keep once it exists, which a device of
+//! the person hosting each hands it once, when it enrolled ([`attach`]).
 //! Each server applies its own entry's offer to what it answers devices, its
 //! update policy to what it follows, and a retired server lets go of
 //! everything it holds.
@@ -104,7 +104,7 @@ pub struct Server {
     pub web: String,
     /// Gigabytes of storage it offers its workspaces.
     pub storage_gb: u64,
-    /// Bytes of kept content each workspace it governs may take; 0 for no
+    /// Bytes of kept content each workspace it hosts may take; 0 for no
     /// limit it sets itself.
     pub kept_bytes: u64,
     /// Whether it does its workspaces' actions and jobs.
@@ -598,7 +598,7 @@ impl Servers {
     }
 
     /// Set how many bytes of kept content a server lets each workspace it
-    /// governs take; 0 for no limit it sets itself.
+    /// hosts take; 0 for no limit it sets itself.
     #[action(external)]
     pub fn set_kept_bytes(&mut self, device: Id, bytes: u64) -> Result<(), Refusal> {
         self.server(&device)?.kept_bytes = bytes;
@@ -606,7 +606,7 @@ impl Servers {
     }
 
     /// The bytes of kept content `device`, one of the person's servers, lets
-    /// each workspace it governs take; `None` when it holds no entry or set
+    /// each workspace it hosts take; `None` when it holds no entry or set
     /// none, which is no limit of its own.
     #[must_use]
     pub fn kept_bytes_of(&self, device: &[u8; 32]) -> Option<u64> {
@@ -1089,7 +1089,7 @@ fn validate_label(label: &str) -> Result<String, Refusal> {
 }
 
 /// Apply `action` to the Servers workspace's [`SERVERS`] document as this device,
-/// which governs the workspace.
+/// which hosts the workspace.
 ///
 /// # Errors
 /// The action was refused, or the document could not be written.

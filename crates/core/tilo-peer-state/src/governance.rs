@@ -1,18 +1,18 @@
-//! Owner-neutral transactions over the canonical workspace governance document.
+//! Owner-neutral transactions over the canonical workspace governance.
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use web_time::SystemTime;
 
-use crate::state::{GovernedIdentity, RedemptionReceipt};
+use crate::state::{DeviceRow, RedemptionReceipt};
 
-/// How many later redemption receipts one governed identity row keeps beside
-/// its first (`GovernedIdentity::admission`).
+/// How many later redemption receipts one identity row keeps beside
+/// its first (`DeviceRow::admission`).
 ///
 /// The row is a single JSON blob rewritten on every redemption, so an
 /// unbounded list makes each later admission, roster read and workspace sync pay
 /// for the device's whole redemption history. The first receipt is kept for
 /// good: it is the admission evidence membership reads (`has_admission`, the
-/// governed member list). Only the oldest of the later receipts are dropped,
+/// member list). Only the oldest of the later receipts are dropped,
 /// and nothing they prove is lost: [`admit_invited_member`] copies every
 /// receipt it has seen into the per-invite `invitation_receipts_v1` log in
 /// the same transaction that drops one, and that log is what refuses a
@@ -24,8 +24,8 @@ pub const MAX_RETAINED_IDENTITY_ADMISSIONS: usize = 8;
 #[must_use]
 pub fn device_row_label(row: &[u8]) -> Option<String> {
     tilo_failure::ignored!(
-        "governance bytes that are not a governed identity name no device",
-        GovernedIdentity::decode(row).ok()
+        "governance bytes that are not a member's identity name no device",
+        DeviceRow::decode(row).ok()
     )
     .map(|identity| identity.device_cert.device_label)
 }
@@ -78,7 +78,7 @@ pub(crate) fn admit_invited_member(
         .get(ROOT, "workspace")
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
-        .ok_or("governed workspace id is missing")?;
+        .ok_or("the workspace id is missing")?;
     // Read once per governance state, not once per admission.
     let policy = held.workspace_policy(&declared_workspace);
     // The owner's device comes in on its certificate, as every receiver judges it
@@ -144,22 +144,22 @@ pub(crate) fn admit_invited_member(
     if prior.as_ref().is_some_and(|old| {
         old.device_cert != *cert && !crate::state::supersedes(&old.device_cert, cert)
     }) {
-        return Err("governed certificate conflict".into());
+        return Err("certificate conflict".into());
     }
     let mut candidate = document.clone();
     let before = candidate.get_heads();
     let identities = candidate
         .get(ROOT, "peer_identities_v1")
         .map_err(|error| error.to_string())?
-        .ok_or("governed identities missing")?
+        .ok_or("member identities missing")?
         .1;
     let names = candidate
         .get(ROOT, "peers")
         .map_err(|error| error.to_string())?
-        .ok_or("governed peers missing")?
+        .ok_or("peer names missing")?
         .1;
     let log =
-        crate::state::governed_map(&candidate, crate::state::invitation_receipts::RECEIPTS_KEY)?;
+        crate::state::workspace_map(&candidate, crate::state::invitation_receipts::RECEIPTS_KEY)?;
     // The invitation goes into the log with its issuer's certificate and
     // transport details named by digest, kept once for every receipt of an
     // invitation they signed alike ([`crate::state::invitation_receipts`]).
@@ -197,7 +197,7 @@ pub(crate) fn admit_invited_member(
         admissions.push(receipt);
         retain_latest_admissions(&mut admissions);
     }
-    let identity = GovernedIdentity {
+    let identity = DeviceRow {
         device_cert: cert.clone(),
         revocations,
         admission,
@@ -297,7 +297,7 @@ pub(crate) fn admit_entered_member(
         .get(ROOT, "workspace")
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
-        .ok_or("governed workspace id is missing")?;
+        .ok_or("the workspace id is missing")?;
     let policy = held.workspace_policy(&declared_workspace);
     let current = held.workspace_entry();
     if crate::state::entry_digest(&current)? != entry {
@@ -318,7 +318,7 @@ pub(crate) fn admit_entered_member(
     if prior.as_ref().is_some_and(|old| {
         old.device_cert != *cert && !crate::state::supersedes(&old.device_cert, cert)
     }) {
-        return Err("governed certificate conflict".into());
+        return Err("certificate conflict".into());
     }
     let receipt = crate::state::EntryReceipt {
         entry,
@@ -342,7 +342,7 @@ pub(crate) fn admit_entered_member(
             )
         },
     );
-    let identity = GovernedIdentity {
+    let identity = DeviceRow {
         device_cert: cert.clone(),
         revocations,
         admission,
@@ -357,12 +357,12 @@ pub(crate) fn admit_entered_member(
     let identities = candidate
         .get(ROOT, "peer_identities_v1")
         .map_err(|error| error.to_string())?
-        .ok_or("governed identities missing")?
+        .ok_or("member identities missing")?
         .1;
     let names = candidate
         .get(ROOT, "peers")
         .map_err(|error| error.to_string())?
-        .ok_or("governed peers missing")?
+        .ok_or("peer names missing")?
         .1;
     candidate
         .put(
@@ -391,7 +391,7 @@ pub(crate) fn admit_entered_member(
     Ok(AdmissionOutcome::Applied { changes })
 }
 
-/// A governed member name, bounded as every host keeps one
+/// A member name, bounded as every host keeps one
 /// ([`tilo_user_identity::display_name`]): self-asserted text, never authority.
 fn bounded_display_name(value: &str) -> Option<&str> {
     tilo_user_identity::display_name(value).ok()
@@ -584,12 +584,12 @@ mod display_name_tests {
             );
             let member = peer
                 .governance()
-                .governed_members(now)
+                .member_list(now)
                 .unwrap()
                 .members
                 .into_iter()
                 .find(|member| member.root() == Some(guest_cert.user_public_key))
-                .expect("admitted guest is a governed member");
+                .expect("admitted guest is a member");
             assert_eq!(member.name, "Guest Tester", "the invitation's name, never the device label");
             assert_eq!(member.role, Some(Role::Editor));
         }
@@ -758,7 +758,7 @@ mod retention_tests {
         verify_join_proof(&proof, &challenge, cert, &RevocationList::new(), now_ns).unwrap()
     }
 
-    /// The workspace governance document the peer sends.
+    /// The workspace's governance the peer sends.
     fn governance(peer: &StatePeer) -> crate::workspace::WorkspaceGovernance {
         let NeighbourMsg::SyncResp { changes, .. } = peer.workspace_message() else {
             panic!("workspace message is a SyncResp")
@@ -841,9 +841,9 @@ mod retention_tests {
                 );
             }
             let invite = |r: &VerifiedRedemption| r.join().invite_id();
-            let governed = governance(&peer);
+            let hosted = governance(&peer);
             let row =
-                GovernedIdentity::decode(&governed.identities[&hex::encode(guest.1.device_public_key)])
+                DeviceRow::decode(&hosted.identities[&hex::encode(guest.1.device_public_key)])
                     .unwrap();
             assert_eq!(
                 row.admission.as_ref().map(|r| r.invite_id),
@@ -863,7 +863,7 @@ mod retention_tests {
             );
             for redemption in &redemptions {
                 assert!(
-                    governed
+                    hosted
                         .invitation_receipts
                         .contains_key(&hex::encode(invite(redemption))),
                     "every receipt, pruned or not, stays in the per-invite log"

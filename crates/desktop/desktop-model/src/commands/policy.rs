@@ -2,15 +2,14 @@
 //! before it offers a control and again before it applies the change, on
 //! native and in the browser alike.
 //!
-//! A workspace belongs to whoever governs it, its owner and moderators:
-//! they name it and manage its strips. Everyone who writes in the
-//! workspace opens windows, and closes, moves and arranges the strips they
-//! made. Its windows are shared: every member who writes there closes, moves
-//! and arranges any of them, whoever opened it. A strip someone else made is
-//! theirs, or a moderator's, to change ([`crate::ownership`]). A visitor of a
+//! A workspace belongs to its owner and moderators: they name it and manage
+//! its strips. Everyone who writes in the workspace opens windows, and closes,
+//! moves and arranges the strips they made. Its windows are shared: every
+//! member who writes there closes, moves and arranges any of them, whoever
+//! opened it. A strip someone else made is theirs, or a moderator's, to change ([`crate::ownership`]). A visitor of a
 //! public workspace who is not one of its members writes in it too, but
 //! closes and moves only the windows they opened, and leaves its name and
-//! strips to whoever governs it.
+//! strips to its owner and moderators.
 //!
 //! Commands outside the workspace's topology (shortcuts, grant sets,
 //! receipts, namespace claims) are decided by their own governance checks
@@ -37,9 +36,9 @@ pub struct Requester<'a> {
 }
 
 impl Requester<'_> {
-    /// Whether they govern the workspace: its owner or a moderator.
+    /// Whether they may manage the workspace: its owner or a moderator.
     #[must_use]
-    pub fn governs(&self) -> bool {
+    pub fn administers(&self) -> bool {
         self.role.is_some_and(|role| role.includes(Role::Moderator))
     }
 
@@ -59,9 +58,9 @@ pub fn writes(role: Option<Role>) -> bool {
     role.is_some_and(|role| role.includes(Role::Editor))
 }
 
-/// What a workspace's governors alone may change.
+/// What only a workspace's owner and moderators may change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Governed {
+pub enum OwnersOnly {
     /// The workspace's name.
     Name,
     /// Its strips: adding them, and renaming, moving or removing the ones
@@ -75,7 +74,7 @@ pub enum Governed {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// Only the workspace's owner and moderators change this.
-    Governed(Governed),
+    OwnersOnly(OwnersOnly),
     /// The window or strip `id` is someone else's: `owner` opened or made
     /// it (`None`: the workspace itself lists it).
     Others { id: u64, owner: Option<String> },
@@ -86,13 +85,13 @@ pub enum Refusal {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Governed(Governed::Name) => {
+            Self::OwnersOnly(OwnersOnly::Name) => {
                 "Only the workspace's owner and moderators can rename it"
             }
-            Self::Governed(Governed::Strips) => {
+            Self::OwnersOnly(OwnersOnly::Strips) => {
                 "Only the workspace's owner and moderators manage its strips"
             }
-            Self::Governed(Governed::Workspaces) => {
+            Self::OwnersOnly(OwnersOnly::Workspaces) => {
                 "Only the workspace's owner and moderators add workspaces"
             }
             Self::Others { .. } => {
@@ -105,11 +104,11 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-fn govern(requester: &Requester<'_>, what: Governed) -> Result<(), Refusal> {
-    if requester.governs() {
+fn owners_only(requester: &Requester<'_>, what: OwnersOnly) -> Result<(), Refusal> {
+    if requester.administers() {
         Ok(())
     } else {
-        Err(Refusal::Governed(what))
+        Err(Refusal::OwnersOnly(what))
     }
 }
 
@@ -123,8 +122,8 @@ fn write(requester: &Requester<'_>) -> Result<(), Refusal> {
 
 /// Whether `requester` may close, move or reorder the window `tab`: they
 /// opened it, they are a member who writes in the workspace (its windows are
-/// every member's), whoever opened it has left the workspace, or they govern
-/// the workspace.
+/// every member's), whoever opened it has left the workspace, or they are its
+/// owner or a moderator.
 ///
 /// # Errors
 ///
@@ -136,7 +135,7 @@ pub fn may_rearrange_window(
     authors: &Authors,
     tab: u64,
 ) -> Result<(), Refusal> {
-    if requester.governs()
+    if requester.administers()
         || made_by(authors, tab, requester.person)
         || (requester.writes()
             && (shares_windows(requester.person, requester.members)
@@ -152,11 +151,12 @@ pub fn may_rearrange_window(
 }
 
 /// Whether `requester` may rename, move or remove the strip `strip`: they
-/// made it, whoever did has left the workspace, or they govern the workspace.
+/// made it, whoever did has left the workspace, or they are its owner or a
+/// moderator.
 ///
 /// # Errors
 ///
-/// [`Refusal::Governed`] for a strip they did not make.
+/// [`Refusal::OwnersOnly`] for a strip they did not make.
 pub fn may_manage_strip(
     requester: &Requester<'_>,
     authors: &Authors,
@@ -167,14 +167,14 @@ pub fn may_manage_strip(
     {
         Ok(())
     } else {
-        govern(requester, Governed::Strips)
+        owners_only(requester, OwnersOnly::Strips)
     }
 }
 
 /// Whether `requester` may set the state of window `tab` ([`crate::window_state`]): it is the
 /// window's person's, so they may, and so may their agents, which ask as them. Anyone else among
 /// the state's `readers` (a reader set's text) may too, when the one deciding holds them: the
-/// device that opened the window does, from the record. A moderator governs the window's place,
+/// device that opened the window does, from the record. A moderator decides the window's place,
 /// not what its person sees in it.
 ///
 /// # Errors
@@ -209,14 +209,14 @@ pub fn may_set_window_state(
     }
 }
 
-/// Whether `requester` may add a workspace beside this one: whoever governs it,
-/// as for its strips.
+/// Whether `requester` may add a workspace beside this one: its owner and
+/// moderators, as for its strips.
 ///
 /// # Errors
 ///
 /// The [`Refusal`] to show the person.
 pub fn may_create_workspace(requester: &Requester<'_>) -> Result<(), Refusal> {
-    govern(requester, Governed::Workspaces)
+    owners_only(requester, OwnersOnly::Workspaces)
 }
 
 /// Whether `requester` may ask for `command` on `workspace`, whose strips
@@ -233,11 +233,11 @@ pub fn may_command(
     command: &DesktopCommand,
 ) -> Result<(), Refusal> {
     match command {
-        DesktopCommand::RenameWorkspace { .. } => govern(requester, Governed::Name),
+        DesktopCommand::RenameWorkspace { .. } => owners_only(requester, OwnersOnly::Name),
         // How the workspace lays out its windows is everyone's: as much
         // the workspace's layout as its strips.
         DesktopCommand::CreateStrip { .. } | DesktopCommand::SetLayout { .. } => {
-            govern(requester, Governed::Strips)
+            owners_only(requester, OwnersOnly::Strips)
         }
         DesktopCommand::RenameStrip { strip, .. }
         | DesktopCommand::RemoveStrip { strip }
@@ -369,11 +369,11 @@ mod tests {
             };
             assert_eq!(
                 asks(&GUEST, &rename),
-                Err(Refusal::Governed(Governed::Name))
+                Err(Refusal::OwnersOnly(OwnersOnly::Name))
             );
             assert_eq!(
                 asks(&MEMBER, &rename),
-                Err(Refusal::Governed(Governed::Name))
+                Err(Refusal::OwnersOnly(OwnersOnly::Name))
             );
             assert_eq!(asks(&MODERATOR, &rename), Ok(()));
             assert_eq!(asks(&OWNER, &rename), Ok(()));
@@ -399,11 +399,11 @@ mod tests {
             for command in [&add, &rename, &remove] {
                 assert_eq!(
                     asks(&GUEST, command),
-                    Err(Refusal::Governed(Governed::Strips))
+                    Err(Refusal::OwnersOnly(OwnersOnly::Strips))
                 );
                 assert_eq!(
                     asks(&MEMBER, command),
-                    Err(Refusal::Governed(Governed::Strips))
+                    Err(Refusal::OwnersOnly(OwnersOnly::Strips))
                 );
                 assert_eq!(asks(&MODERATOR, command), Ok(()));
                 assert_eq!(asks(&OWNER, command), Ok(()));
@@ -496,7 +496,7 @@ mod tests {
         // The workspace's windows are shared: a member who writes there
         // closes, moves and reorders a window another member opened, and one
         // the workspace itself lists. Someone who only looks still changes
-        // nothing, and its strips stay whoever governs it's.
+        // nothing, and its strips stay its owner's and moderators'.
         {
             let members: std::collections::BTreeSet<String> =
                 ["guest", OTHER_GUEST].map(str::to_owned).into();
@@ -536,7 +536,7 @@ mod tests {
             assert!(asks(&viewer, &theirs).is_err(), "someone who only looks closes nothing");
             assert_eq!(
                 asks(&member, &DesktopCommand::RemoveStrip { strip: 10 }),
-                Err(Refusal::Governed(Governed::Strips))
+                Err(Refusal::OwnersOnly(OwnersOnly::Strips))
             );
         }
 
@@ -545,7 +545,7 @@ mod tests {
             for requester in [GUEST, MEMBER] {
                 assert_eq!(
                     may_create_workspace(&requester),
-                    Err(Refusal::Governed(Governed::Workspaces))
+                    Err(Refusal::OwnersOnly(OwnersOnly::Workspaces))
                 );
             }
             assert_eq!(may_create_workspace(&MODERATOR), Ok(()));
@@ -585,9 +585,9 @@ mod tests {
         phase every_refusal_says_why_in_words;
         {
             for refusal in [
-                Refusal::Governed(Governed::Name),
-                Refusal::Governed(Governed::Strips),
-                Refusal::Governed(Governed::Workspaces),
+                Refusal::OwnersOnly(OwnersOnly::Name),
+                Refusal::OwnersOnly(OwnersOnly::Strips),
+                Refusal::OwnersOnly(OwnersOnly::Workspaces),
                 Refusal::Others { id: 2, owner: None },
                 Refusal::ReadOnly,
             ] {

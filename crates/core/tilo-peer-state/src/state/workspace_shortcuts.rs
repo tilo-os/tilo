@@ -72,7 +72,7 @@ impl PeerWorkspaceMut<'_> {
         let mut candidate = workspace.clone();
         let before = candidate.get_heads();
         candidate.set_actor(automerge::ActorId::from(caller.device_public_key.to_vec()));
-        let map = super::governed_map(&candidate, WORKSPACE_AUTOMATIONS_KEY)?;
+        let map = super::workspace_map(&candidate, WORKSPACE_AUTOMATIONS_KEY)?;
         let changed = match change {
             ShortcutChange::Save(shortcut) => {
                 if let Some(saver) = &shortcut.saved_by {

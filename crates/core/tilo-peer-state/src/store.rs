@@ -11,9 +11,9 @@
 //!
 //! A retired frame is named by a record of its own after it, and a segment
 //! whose bytes are mostly retired is written again with only what it still
-//! holds. A store kept one file per frame before segments, and its frames
-//! in an earlier layout before version 5 ([`FRAMES_VERSION`]); opening one
-//! moves its frames into segments, each as this build writes it, once.
+//! holds. A store whose frames another build kept in another layout
+//! ([`FRAMES_VERSION`]) is refused as it opens, by its version; one of a version from
+//! [`RELABELLED_FRAMES`] on reads as this build's and is relabelled.
 //!
 //! Beside its frames, a store keeps each workspace's governance: for each
 //! route a channel's group frames take ([`neighbour_wire::retention`]), the
@@ -104,9 +104,13 @@ pub enum StoreError {
     /// A stored frame is not one a store keeps.
     #[error("frame: {0}")]
     Refused(#[from] Refusal),
-    /// The store's frames were kept by a later build, in a layout this one does not read.
-    #[error("the store's frames are version {0}; this build reads up to {FRAMES_VERSION}")]
-    Newer(u32),
+    /// The store's frames were kept by another build, in a layout this one does not read: one
+    /// before [`RELABELLED_FRAMES`] or after [`FRAMES_VERSION`].
+    #[error(
+        "the store's frames are version {0}; this build reads versions {RELABELLED_FRAMES} to \
+         {FRAMES_VERSION}"
+    )]
+    Version(u32),
 }
 
 /// The frames retired from a store: what a compacting pass removed and what
@@ -546,24 +550,6 @@ fn records(bytes: &[u8]) -> (Vec<(u64, u64, Record<'_>)>, u64) {
     (found, at as u64)
 }
 
-/// Set `root`'s segments of a layout earlier than `kept` aside, to be packed again as this build
-/// writes them, and name where they are kept.
-fn set_aside_earlier(disk: &Disk, kept: u32) -> Result<PathBuf, StoreError> {
-    let root = &disk.root;
-    let earlier = root.join(EARLIER_SEGMENTS);
-    if (SEGMENTS_VERSION..RELABELLED_FRAMES).contains(&kept) {
-        if disk.is_dir(&earlier) {
-            if disk.is_dir(&root.join(WORKSPACES)) {
-                disk.remove_all(&root.join(WORKSPACES))?;
-            }
-        } else if disk.is_dir(&root.join(WORKSPACES)) {
-            disk.create_dir_all(&earlier)?;
-            disk.rename(&root.join(WORKSPACES), &earlier.join(WORKSPACES))?;
-        }
-    }
-    Ok(earlier)
-}
-
 /// Say that two frames with other bytes share one author's sequence number, which the store
 /// keeps and serves both of.
 fn beside(workspace: WorkspaceId, frame: &Frame) {
@@ -610,12 +596,9 @@ impl Store {
     fn open_with(disk: Disk, appetite: Appetite, limits: Limits) -> Result<Self, StoreError> {
         let root = disk.root.clone();
         let kept = frames_version(&disk)?;
-        if kept > FRAMES_VERSION {
-            return Err(StoreError::Newer(kept));
+        if !(RELABELLED_FRAMES..=FRAMES_VERSION).contains(&kept) {
+            return Err(StoreError::Version(kept));
         }
-        // Segments of an earlier layout are set aside, and their frames packed again as this
-        // build writes them. A packing a crash cut short starts again from what was set aside.
-        let earlier = set_aside_earlier(&disk, kept)?;
         disk.create_dir_all(&root.join(WORKSPACES))?;
         let store = Self {
             disk,
@@ -643,10 +626,6 @@ impl Store {
                     .channels
                     .insert(route, channel);
             }
-            if kept < RELABELLED_FRAMES {
-                store.pack_frame_files(&mut held)?;
-                store.pack_earlier_segments(&mut held, &earlier)?;
-            }
             for (workspace, device, cursors) in holders {
                 held.workspaces
                     .entry(workspace)
@@ -667,10 +646,6 @@ impl Store {
                 &root.join(FRAMES_VERSION_FILE),
                 FRAMES_VERSION.to_string().as_bytes(),
             )?;
-        }
-        store.remove_frame_files()?;
-        if store.disk.is_dir(&earlier) {
-            store.disk.remove_all(&earlier)?;
         }
         Ok(store)
     }
@@ -1707,153 +1682,6 @@ impl Store {
         }
         Ok(())
     }
-
-    /// Move the frames a store kept one file each, before segments, into
-    /// segments, each as this build writes it ([`FRAMES_VERSION`]).
-    fn pack_frame_files(&self, held: &mut Held) -> Result<(), StoreError> {
-        let mut moved = 0_u64;
-        for dir in self.disk.directories(&self.disk.root.join(WORKSPACES))? {
-            let Some(workspace) = dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(WorkspaceId::parse)
-            else {
-                continue;
-            };
-            for record in self.disk.directories(&dir)? {
-                for author in self.disk.directories(&record)? {
-                    for file in self.disk.files(&author)? {
-                        if self.pack(held, workspace, &self.disk.read(&file)?, &file)? {
-                            moved = moved.saturating_add(1);
-                        }
-                    }
-                }
-            }
-        }
-        sync_writers(held)?;
-        if moved > 0 {
-            tracing::info!(
-                moved,
-                "the store moved the frames it kept one file each into segments"
-            );
-        }
-        Ok(())
-    }
-
-    /// Move the frames of the segments an earlier version wrote, set aside at
-    /// `earlier`, into segments, each as this build writes it: what a frame
-    /// retired there is not moved.
-    fn pack_earlier_segments(&self, held: &mut Held, earlier: &Path) -> Result<(), StoreError> {
-        if !self.disk.is_dir(earlier) {
-            return Ok(());
-        }
-        let set_aside = Self {
-            disk: Disk {
-                backend: Arc::clone(&self.disk.backend),
-                root: earlier.to_path_buf(),
-            },
-            appetite: self.appetite,
-            held: std::sync::Mutex::new(Held {
-                bytes: 0,
-                workspaces: BTreeMap::new(),
-                writers: 0,
-                appends: 0,
-                limits: held.limits,
-                channel_order: 0,
-            }),
-            reach: crate::reach::Ledgers::default(),
-        };
-        let mut kept = set_aside.held.lock_recover();
-        set_aside.read_segments(&mut kept)?;
-        let mut reading = Reading::default();
-        let mut moved = 0_u64;
-        for (workspace, stored) in &kept.workspaces {
-            for entry in stored.lineages.values().flatten() {
-                let bytes = reading.bytes(&set_aside.disk, *workspace, stored, *entry)?;
-                let generation = stored
-                    .segments
-                    .get(&entry.segment)
-                    .map_or(0, |segment| segment.generation);
-                let at = segment_path(earlier, *workspace, entry.segment, generation);
-                if self.pack(held, *workspace, &bytes, &at)? {
-                    moved = moved.saturating_add(1);
-                }
-            }
-        }
-        drop(kept);
-        sync_writers(held)?;
-        tracing::info!(
-            moved,
-            "the store moved the frames of an earlier layout into segments as it writes them"
-        );
-        Ok(())
-    }
-
-    /// Append the frame `bytes` an earlier version kept, read at `from`, as
-    /// this build writes it, unless the store holds it already: whether it
-    /// was appended. One that does not read as a frame is logged and left.
-    fn pack(
-        &self,
-        held: &mut Held,
-        workspace: WorkspaceId,
-        bytes: &[u8],
-        from: &Path,
-    ) -> Result<bool, StoreError> {
-        let message = match crate::before_own_removal::frame(bytes) {
-            Ok(message) => message,
-            Err(error) => {
-                tracing::warn!(path = %from.display(), %error, "a stored frame does not decode; it is not served");
-                return Ok(false);
-            }
-        };
-        let frame = match Frame::of(&message) {
-            Ok(frame) => frame,
-            Err(error) => {
-                tracing::warn!(path = %from.display(), %error, "a stored file is not a frame a store keeps; it is not served");
-                return Ok(false);
-            }
-        };
-        let today = postcard::to_allocvec(&message)?;
-        let packed = frame_record(&frame, &today)?;
-        let check = record_check(&packed);
-        if held.workspaces.get(&workspace).is_some_and(|stored| {
-            stored.lineages.get(&frame.lineage).is_some_and(|entries| {
-                entries
-                    .iter()
-                    .any(|entry| entry.seq == frame.seq && entry.check == check)
-            })
-        }) {
-            return Ok(false);
-        }
-        let (writer, at) = append(&self.disk, workspace, held, &packed)?;
-        add(
-            held,
-            workspace,
-            frame.lineage,
-            Entry {
-                seq: frame.seq,
-                bytes: today.len() as u64,
-                authored_at_ns: frame.authored_at_ns,
-                retention: frame.retention,
-                from_link: false,
-                segment: writer.segment,
-                at,
-                check,
-            },
-        );
-        Ok(true)
-    }
-
-    /// Remove the directories of frames kept one file each, once every frame
-    /// in them is in a segment and the version file says so.
-    fn remove_frame_files(&self) -> io::Result<()> {
-        for dir in self.disk.directories(&self.disk.root.join(WORKSPACES))? {
-            for record in self.disk.directories(&dir)? {
-                self.disk.remove_all(&record)?;
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Sync every segment open for appending.
@@ -2138,45 +1966,25 @@ pub fn gaps(cursors: &[Cursor], replay: &Replay) -> Vec<Floor> {
 
 const WORKSPACES: &str = "workspaces";
 
-/// The layout of the frames a store keeps. Up to version 3 one postcard [`NeighbourMsg`] per
-/// file: version 1 kept a document write without the reader set it is sealed for, which version 2
-/// ends it with ([`NeighbourMsg::AppDocument`]), and version 3 is the frames a document write may
-/// name its own content key in ([`collab_types::EncryptionScheme::DocumentContentKey`]). Version 4
-/// keeps them in segments, each frame as version 3 writes it. Version 5 is the frames whose
-/// document writes no longer name the member's own record they were. Version 6 is version 5's
-/// layout, whose identity hello names a certificate whose capabilities carry the retired grants
-/// they already wrote in their binary form
-/// ([`tilo_user_identity::DeviceCapabilities`]). Version 7 is the frames whose claims carry the
-/// caller's signed call, which the claim's signature covers. Version 8 is version 7's layout,
-/// whose identity hello may name a placed device's certificate or a placement grant
-/// ([`tilo_user_identity::DeviceCapabilities::records`]), which a build of version 7 refuses. Version
-/// 9 is version 8's layout, whose messages may be the content asked for and answered with many at a
-/// time ([`NeighbourMsg::DocumentContentWants`] and [`NeighbourMsg::DocumentContentPieces`]), which
-/// a build of version 8 refuses. Version 10 is version 9's layout, whose messages may be the word
-/// that pushed content is kept or let go of ([`NeighbourMsg::DocumentContentKept`] and
-/// [`NeighbourMsg::DocumentContentReleased`]), which a build of version 9 refuses: a store of
-/// version 7 to 9 is relabelled as it opens
-/// ([`RELABELLED_FRAMES`]), its frames left as they are. A build before a version refuses
-/// the store by version instead of reading what it cannot; a store opening an earlier version
-/// moves its frames into segments, each written as today
-/// ([`crate::before_own_removal::frame`]), before it records the version it keeps.
-///
-/// A frame of version 6 or before cannot be written again as version 7: its author signed claim
-/// bytes that name no call, and this build writes every claim with one. The store drops such a
-/// frame as it opens, and the workspace's devices answer for what it lost on the next replay
-/// ([`gaps`]).
+/// The layout of the frames a store keeps: segments of records, each frame one
+/// [`NeighbourMsg`] whose claims carry the caller's signed call, which the claim's signature
+/// covers, and whose identity hello may name a placed device's certificate or a placement grant
+/// ([`tilo_user_identity::DeviceCapabilities::records`]). Version 10 is version 9's layout, whose
+/// messages may be the word that pushed content is kept or let go of
+/// ([`NeighbourMsg::DocumentContentKept`] and [`NeighbourMsg::DocumentContentReleased`]), which a
+/// build of version 9 refuses; version 9 is version 8's, whose messages may be the content asked
+/// for and answered with many at a time ([`NeighbourMsg::DocumentContentWants`] and
+/// [`NeighbourMsg::DocumentContentPieces`]); version 8 is version 7's, whose identity hello a
+/// build of version 7 refuses. A store of version 7 to 9 is relabelled as it opens
+/// ([`RELABELLED_FRAMES`]), its frames left as they are. A store of any other version is refused
+/// as it opens, by its version, and left as it is.
 pub(crate) const FRAMES_VERSION: u32 = 10;
 /// The oldest version whose frames read as this build's: a store of it or a later one records
 /// the newer version and keeps its segments as they are.
 const RELABELLED_FRAMES: u32 = 7;
-/// The first version that kept frames in segments.
-const SEGMENTS_VERSION: u32 = 4;
-/// Where a store opening segments of an earlier version sets them aside while it packs their
-/// frames again.
-const EARLIER_SEGMENTS: &str = "earlier-segments";
 
 /// Where a store records the version of the frames it keeps: no file is version 1, kept before
-/// a store recorded one.
+/// a store recorded one, and refused.
 const FRAMES_VERSION_FILE: &str = "frames-version";
 
 /// The version of the frames kept at `root` ([`FRAMES_VERSION`]): the one recorded there, version
@@ -2671,7 +2479,7 @@ mod tests {
         ArtifactId, AttestationId, Ed25519PublicKey, EncryptionMetadata, OpKind, SealedCompaction,
         SignedOp, sign_op,
     };
-    use ed25519_dalek::{Signer as _, SigningKey, Verifier as _};
+    use ed25519_dalek::SigningKey;
     use neighbour_wire::peer_handle;
     use std::fs;
     use std::time::Duration;
@@ -2692,11 +2500,6 @@ mod tests {
             .into_iter()
             .map(|file| dir.join(file))
             .collect())
-    }
-
-    /// The directories inside `dir`, sorted, or none when it does not exist.
-    fn directories(dir: &Path) -> io::Result<Vec<PathBuf>> {
-        on_disk(dir).directories(Path::new(""))
     }
 
     fn workspace() -> WorkspaceId {
@@ -3506,77 +3309,6 @@ mod tests {
             );
         }
 
-        phase frames_kept_one_file_each_move_into_segments_once;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let key = device(2);
-            let frames: Vec<Frame> = (1..=3)
-                .map(|seq| frame(&key, seq, ContentRetention::Delta))
-                .collect();
-            for frame in &frames {
-                let path = workspace_dir(dir.path(), workspace())
-                    .join(hex::encode(frame.lineage.record))
-                    .join(hex::encode(frame.lineage.author))
-                    .join(format!("{:016x}.d", frame.seq));
-                fs::create_dir_all(path.parent().unwrap()).unwrap();
-                fs::write(&path, kept_bytes(&frame.message)).unwrap();
-            }
-            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"3").unwrap();
-
-            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-            let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
-            assert_eq!(
-                replay.frames,
-                frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
-                "every frame is served byte for byte"
-            );
-            assert_eq!(
-                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
-                FRAMES_VERSION.to_string()
-            );
-            assert!(
-                directories(&workspace_dir(dir.path(), workspace())).unwrap().is_empty(),
-                "the one-file frames are gone"
-            );
-            assert_eq!(pack_files(dir.path()).len(), 1);
-            drop(store);
-            let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-            assert_eq!(again.replay(workspace(), &[], Budget::default()).unwrap().frames, replay.frames);
-        }
-
-        phase frames_of_earlier_segments_are_packed_again_as_today_once;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let key = device(3);
-            let frames: Vec<Frame> = (1..=3)
-                .map(|seq| frame(&key, seq, ContentRetention::Delta))
-                .collect();
-            let mut segment = Vec::new();
-            for frame in &frames {
-                segment.extend(frame_record(frame, &kept_bytes(&frame.message)).unwrap());
-            }
-            let path = segment_path(dir.path(), workspace(), 0, 0);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, segment).unwrap();
-            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"4").unwrap();
-
-            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-            let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
-            assert_eq!(
-                replay.frames,
-                frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
-                "every frame is served as this build writes it"
-            );
-            assert_eq!(
-                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
-                FRAMES_VERSION.to_string()
-            );
-            assert!(!dir.path().join(EARLIER_SEGMENTS).exists(), "what was set aside is gone");
-            drop(store);
-            let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-            assert_eq!(again.replay(workspace(), &[], Budget::default()).unwrap().frames, replay.frames);
-        }
-
         phase a_store_of_version_7_is_relabelled_and_keeps_its_segments;
         {
             // Version 7's frames read as this build's: the store records the newer version and
@@ -3612,7 +3344,6 @@ mod tests {
                 segment,
                 "the segment is kept as version 7 wrote it"
             );
-            assert!(!dir.path().join(EARLIER_SEGMENTS).exists(), "nothing was set aside");
         }
 
         phase a_store_of_version_8_is_relabelled_and_keeps_its_segments;
@@ -3652,209 +3383,49 @@ mod tests {
                 segment,
                 "the segment is kept as version 8 wrote it"
             );
-            assert!(!dir.path().join(EARLIER_SEGMENTS).exists(), "nothing was set aside");
         }
 
-        phase frames_of_version_6_are_not_served_again;
+
+        phase a_store_older_or_newer_than_this_build_reads_is_refused_and_left_whole;
         {
-            // Version 6's build wrote each claim without a call and signed exactly those claim
-            // bytes. Version 7 writes every claim with its call, which its signature covers, so
-            // such a frame cannot be written again with a signature that still verifies.
-            let dir = tempfile::tempdir().unwrap();
-            let key = device(4);
-            let (bytes, signed) = before_call_frame(&key);
-            let (read, rest) = postcard::take_from_bytes::<BeforeCallFrame>(&bytes[1..]).unwrap();
-            assert!(rest.is_empty(), "the fixture is one whole frame");
-            let verifier = key.verifying_key();
-            assert!(
-                verifier
-                    .verify(
-                        &signed,
-                        &ed25519_dalek::Signature::from_bytes(&read.envelope.signature.0),
-                    )
-                    .is_ok(),
-                "a version 6 frame's claim signature verifies over version 6's bytes"
-            );
-            assert!(
-                read.envelope.claims.iter().all(|run| !run.changes.is_empty()),
-                "the fixture's claims name their changes and no call"
-            );
-
-            let frame = frame(&key, 9, ContentRetention::Delta);
-            let record = frame_record(&frame, &bytes).unwrap();
-            let path = segment_path(dir.path(), workspace(), 0, 0);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, record).unwrap();
-            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"6").unwrap();
-
-            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-            assert!(
+            // Versions 7 and 8 are the earlier versions this build reads. A store of any other
+            // version, the frames before version 7 included, is refused by its version as it
+            // opens: not one frame of it is read, rewritten or set aside.
+            for version in [3u32, 4, 6, FRAMES_VERSION + 1] {
+                let dir = tempfile::tempdir().unwrap();
+                let key = device(4);
+                let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
                 store
-                    .replay(workspace(), &[], Budget::default())
-                    .unwrap()
-                    .frames
-                    .is_empty(),
-                "a frame of version 6 is not served: its claim bytes cannot be written again as this build writes them"
-            );
-            assert_eq!(
-                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
-                FRAMES_VERSION.to_string()
-            );
-            assert!(!dir.path().join(EARLIER_SEGMENTS).exists(), "what was set aside is dropped");
+                    .retain(workspace(), &frame(&key, 1, ContentRetention::Delta))
+                    .unwrap();
+                drop(store);
+                fs::write(dir.path().join(FRAMES_VERSION_FILE), version.to_string()).unwrap();
+                let packs = pack_files(dir.path());
+                let bytes: Vec<Vec<u8>> = packs.iter().map(|pack| fs::read(pack).unwrap()).collect();
+
+                let refused = Store::open(dir.path(), Appetite::StoreAll);
+                assert!(
+                    matches!(refused, Err(StoreError::Version(kept)) if kept == version),
+                    "a store of version {version} is refused by its version"
+                );
+                assert_eq!(
+                    refused.err().unwrap().to_string(),
+                    format!(
+                        "the store's frames are version {version}; this build reads versions \
+                         {RELABELLED_FRAMES} to {FRAMES_VERSION}"
+                    )
+                );
+                assert_eq!(
+                    fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
+                    version.to_string(),
+                    "the store keeps the version it was written at"
+                );
+                assert_eq!(pack_files(dir.path()), packs, "no segment is added or taken away");
+                for (pack, bytes) in packs.iter().zip(&bytes) {
+                    assert_eq!(&fs::read(pack).unwrap(), bytes, "every segment is left whole");
+                }
+            }
         }
-    }
-
-    /// A link's claims as version 6 wrote them: one run per shared action, and no call for the
-    /// run or for the claim the op's signature covers.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct BeforeCallRun {
-        changes: Vec<[u8; 32]>,
-        action: collab_types::ClaimedAction,
-        units: Vec<collab_types::UnitPath>,
-        invoker: Option<String>,
-    }
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct BeforeCallClaim {
-        change: [u8; 32],
-        action: collab_types::ClaimedAction,
-        units: Vec<collab_types::UnitPath>,
-        invoker: Option<String>,
-    }
-
-    /// What version 6's build signed: the op's fields, its claims naming no call.
-    #[derive(serde::Serialize)]
-    struct BeforeCallSigning {
-        #[serde(with = "serde_bytes")]
-        payload: Vec<u8>,
-        artifact: ArtifactId,
-        author: Ed25519PublicKey,
-        attestation_id: AttestationId,
-        kind: OpKind,
-        timestamp: SystemTime,
-        seq: u64,
-        encryption: Option<EncryptionMetadata>,
-        claims: Vec<BeforeCallClaim>,
-        surface: Option<[u8; 32]>,
-        governance: Vec<[u8; 4]>,
-    }
-
-    /// Version 6's signed op, as it kept it in a frame.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct BeforeCallEnvelope {
-        #[serde(with = "serde_bytes")]
-        payload: Vec<u8>,
-        artifact: ArtifactId,
-        author: Ed25519PublicKey,
-        attestation_id: AttestationId,
-        kind: OpKind,
-        timestamp: SystemTime,
-        seq: u64,
-        encryption: Option<EncryptionMetadata>,
-        claims: Vec<BeforeCallRun>,
-        surface: Option<[u8; 32]>,
-        governance: Vec<[u8; 4]>,
-        signature: collab_types::Signature,
-    }
-
-    /// Version 6's frame: one `AppDocument` as it wrote it, tagged as today tags it.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct BeforeCallFrame {
-        peer: neighbour_wire::PeerId,
-        app_id: String,
-        cluster_id: String,
-        document_id: String,
-        envelope: BeforeCallEnvelope,
-        readers: Option<String>,
-    }
-
-    /// `key`'s version 6 frame, and the bytes its claim signature covers: built from version 6's
-    /// layout, not from this build's types.
-    fn before_call_frame(key: &SigningKey) -> (Vec<u8>, Vec<u8>) {
-        let acting = tilo_action_policy::Acting {
-            by: tilo_action_policy::Actor::member(tilo_action_policy::MemberId::person("ana")),
-            app: None,
-            agent_session: None,
-            cause: None,
-            foreign_device: false,
-            handed: false,
-            acted_for: Vec::new(),
-        };
-        let command = serde_json::to_string(&acting).unwrap();
-        let change = [9_u8; 32];
-        let action = collab_types::ClaimedAction::whole_resource_edit(String::new());
-        let units = vec![Vec::new()];
-        let payload = vec![7_u8; 64];
-        let artifact = ArtifactId::new();
-        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-        let attestation_id = AttestationId::new();
-        let timestamp = at(9);
-        let encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
-        let signed = postcard::to_allocvec(&BeforeCallSigning {
-            payload: payload.clone(),
-            artifact,
-            author,
-            attestation_id,
-            kind: OpKind::Change,
-            timestamp,
-            seq: 9,
-            encryption,
-            claims: vec![BeforeCallClaim {
-                change,
-                action: action.clone(),
-                units: units.clone(),
-                invoker: Some(command.clone()),
-            }],
-            surface: None,
-            governance: Vec::new(),
-        })
-        .unwrap();
-        let signature = key.sign(&signed);
-        let mut bytes = vec![NeighbourMsg::APP_DOCUMENT_TAG];
-        bytes.extend(
-            postcard::to_allocvec(&BeforeCallFrame {
-                peer: peer_handle(&key.verifying_key().to_bytes()),
-                app_id: APP.into(),
-                cluster_id: CLUSTER.into(),
-                document_id: RECORD.into(),
-                envelope: BeforeCallEnvelope {
-                    payload,
-                    artifact,
-                    author,
-                    attestation_id,
-                    kind: OpKind::Change,
-                    timestamp,
-                    seq: 9,
-                    encryption,
-                    claims: vec![BeforeCallRun {
-                        changes: vec![change],
-                        action,
-                        units,
-                        invoker: Some(command),
-                    }],
-                    surface: None,
-                    governance: Vec::new(),
-                    signature: collab_types::Signature::from_bytes(signature.to_bytes()),
-                },
-                readers: None,
-            })
-            .unwrap(),
-        );
-        (bytes, signed)
-    }
-
-    /// `message` as a store kept it before version 5: a document write names the member's own
-    /// record it was before its reader set.
-    fn kept_bytes(message: &NeighbourMsg) -> Vec<u8> {
-        let mut bytes = postcard::to_allocvec(message).unwrap();
-        assert_eq!(
-            bytes.pop(),
-            Some(0),
-            "a write naming no reader set ends with none"
-        );
-        bytes.extend(postcard::to_allocvec(&Some(("notes.page".to_owned(), [7_u8; 32]))).unwrap());
-        bytes.push(0);
-        bytes
     }
 
     /// A host keeping a workspace of 10k resources: every resource written,

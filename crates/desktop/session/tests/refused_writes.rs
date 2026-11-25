@@ -178,7 +178,7 @@ fn a_window_a_member_opens_stays_while_another_member_changes_the_shell() {
             history holds: a change the device never kept has no row to carry it, so the \
             feed names none. The test states what the feed is to show once it can."]
 fn a_member_reads_where_their_refused_change_is_not() {
-    // Ada's site governs her workspace, hosts it, and keeps what its people record while they are
+    // Ada's site hosts her workspace, and keeps what its people record while they are
     // away. Ada's own device writes the workspace's shell, and Bob's device is a member that reads
     // it and refuses what he writes before any of it is sent.
     let (site, _ada, bob, ada_laptop, mut bob_laptop) = two_people_at_a_site();

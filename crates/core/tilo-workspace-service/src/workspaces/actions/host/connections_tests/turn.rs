@@ -33,7 +33,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::turn_use_tests::{approved, asks, dispatched, fact, narrowed_elsewhere, on_turn};
 use super::super::vault_tests::ask_at;
-use super::{Refused, Served, admit, caller, governed, governor, start_serving};
+use super::{Refused, Served, admit, caller, hosted, hosting_device, start_serving};
 use crate::connections::DEFINED_ANEW;
 use crate::connections::stand_in::StandIn;
 use crate::workspaces::Workspaces;
@@ -192,7 +192,7 @@ struct Team<'a> {
 impl<'a> Team<'a> {
     async fn on(workspaces: &'a Workspaces, owner: &DeviceCert) -> Self {
         workspaces.call_private_model_addresses(true);
-        let (workspace, workspace_id, actions) = governed(workspaces).await;
+        let (workspace, workspace_id, actions) = hosted(workspaces).await;
         let ada = admit(workspaces, &workspace, owner, 1).await;
         let bo = admit(workspaces, &workspace, owner, 2).await;
         Self {
@@ -506,7 +506,7 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
 #[tokio::test]
 async fn a_turn_with_no_device_reads_the_workspaces_connections_and_no_other_caller_does() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let service = StandIn::start("plain");
@@ -559,7 +559,7 @@ async fn it_asks_and_calls_nothing(team: &Team<'_>, service: &StandIn, id: &str)
 #[tokio::test]
 async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let service = StandIn::start("plain");
@@ -596,7 +596,7 @@ async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls
 #[tokio::test]
 async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried_out_once() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     // The device keeps its channel keys across the restart, as a device's key service does.
     let keys = Arc::new(TestGroupKeys::default());
     let service = StandIn::start("plain");
@@ -665,7 +665,7 @@ async fn always_lets_it_go_ahead_unasked(
 #[tokio::test]
 async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_back() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     // The device keeps its channel keys across the restart, as a device's key service does.
     let keys = Arc::new(TestGroupKeys::default());
     let started = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
@@ -747,7 +747,7 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
 #[tokio::test]
 async fn a_command_its_service_defines_anew_asks_again_also_after_always() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     // This service lists `plant_tree` as changing something the first
@@ -864,7 +864,7 @@ fn rules_that_do_not_reach(
 #[tokio::test]
 async fn a_narrowed_agent_reaches_only_a_connection_a_rule_of_its_own_names() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let (service, another) = (StandIn::start("plain"), StandIn::start("plain"));
@@ -971,7 +971,7 @@ async fn a_proposal_asks_and_adds_nothing(team: &Team<'_>, service: &StandIn) ->
 #[tokio::test]
 async fn an_agent_proposes_a_connection_and_only_its_persons_yes_adds_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let (service, signing) = (StandIn::start("plain"), StandIn::start("signing-in"));
@@ -1084,7 +1084,7 @@ async fn no_token_of_a_connection_is_anywhere_a_turn_a_question_or_a_reader_look
     tracing::info!("the log is being read");
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let service = StandIn::start("signing-in");

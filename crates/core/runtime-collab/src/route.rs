@@ -72,7 +72,7 @@ pub enum KeyAccessState {
     /// This device was removed from the channel.
     Removed,
     /// This device cannot join the channel right now: the workspace's
-    /// governor is unknown here. Edits wait on the device.
+    /// host is unknown here. Edits wait on the device.
     Unavailable,
     /// This device has no secret store open, so it cannot hold keys of a
     /// workspace hosted elsewhere. Edits wait on the device.

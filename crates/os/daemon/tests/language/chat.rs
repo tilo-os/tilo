@@ -1,4 +1,4 @@
-//! A person's Chat in the workspace their computer daemon governs: an agent's session joined
+//! A person's Chat in the workspace their computer daemon hosts: an agent's session joined
 //! before the chat was made lists it and posts into it, a chat the workspace began with is
 //! posted into the same way, a batch of posts is one step a single undo takes back, and what
 //! the agent posted is held in the workspace's records.

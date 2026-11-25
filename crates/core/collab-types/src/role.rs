@@ -13,11 +13,11 @@ pub use tilo_action_policy::Role;
 pub enum OpKind {
     /// Changes to a record, each named by its claim.
     Change,
-    /// A compaction checkpoint the workspace's governor publishes; payload is a
+    /// A compaction checkpoint the workspace's host publishes; payload is a
     /// [`crate::compaction::CompactionCheckpoint`] via
     /// [`crate::canonical::canonical_bytes`].
     Compaction,
-    /// Cooperative cryptographic redaction the workspace's governor declares;
+    /// Cooperative cryptographic redaction the workspace's host declares;
     /// payload is a [`crate::redaction::RedactRequest`] via
     /// [`crate::canonical::canonical_bytes`]. A redaction of a redaction is
     /// refused ([`crate::validator::ValidationError::RecursiveRedaction`]).

@@ -565,7 +565,7 @@ impl RecordReads {
     }
 
     /// Whether `caller` may take `kind` at `address` as the actor it is in the workspace the
-    /// address names, by that workspace's governed policy: an app acting for a person, bounded by
+    /// address names, by the workspace's policy: an app acting for a person, bounded by
     /// the kinds it declares, an agent for its person, each the smaller of its own grant and
     /// theirs. A caller inside this device that the workspace did not admit as a device reads as
     /// the apps here name it (the person signed in, or before anyone signs in, this device in the
@@ -873,7 +873,7 @@ impl RecordReads {
             .await
             .and_then(|state| {
                 let governance = state.governance();
-                let role = governance.governed_policy().ok()?.active_role(person)?;
+                let role = governance.member_policy().ok()?.active_role(person)?;
                 Some(serde_json::json!({
                     "role": role.key(),
                     "made_at_ms": governance.made_at_ms(),

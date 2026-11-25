@@ -753,7 +753,7 @@ fi
 # discards the development person and their desktop; the device daemon founds a new one below.
 identity_dir=$XDG_CONFIG_HOME/tilo/identity
 if ((reset_identity)); then
-    # A new identity is a new person: the native workspace the old one governs belongs to
+    # A new identity is a new person: the workspace the old one owns belongs to
     # someone else now.
     say "discarding the development identity and its desktop"
     rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" "$HOME/.local/state/tilo/runtime" \

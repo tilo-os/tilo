@@ -9,7 +9,7 @@
 //! ([`AppPages`]), and each click or edit the person makes comes back as one
 //! [`PageAsk::Act`], answered with the elements that changed.
 //!
-//! A page is shown only where this server reads the workspace: it governs it
+//! A page is shown only where this server reads the workspace: it hosts it
 //! and holds its keys, or holds it unsealed. While the keys are on their way
 //! the page is told it is loading; a server that only stores the workspace's
 //! ciphertext refuses it ([`PageRefusal::StoredCopy`]).

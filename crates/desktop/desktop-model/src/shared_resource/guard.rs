@@ -18,7 +18,7 @@
 //! identity, so not even its maker rebinds it. Nor does it change the state of
 //! a window someone else opened, which is that person's alone. Whoever holds the
 //! record decides a write with it before taking it in: a server at its api,
-//! a governor admitting it, and every device that receives it.
+//! a host admitting it, and every device that receives it.
 
 use std::collections::BTreeSet;
 

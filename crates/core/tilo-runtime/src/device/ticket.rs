@@ -866,7 +866,7 @@ pub(super) async fn server_entry(
 
 /// Record the certified `cert` on the plan's entry, as one of the person's own devices does when
 /// it approves a machine: the entry becomes the machine's under its key, and the device that
-/// governs the Servers workspace hands it over from there.
+/// hosts the Servers workspace hands it over from there.
 pub(super) async fn plan_entry(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
     session: Option<&Entered>,

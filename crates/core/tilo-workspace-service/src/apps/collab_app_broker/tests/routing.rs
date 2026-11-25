@@ -1156,7 +1156,7 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_members_picture_reaches_another_member_through_the_daemons_member_list() {
     use crate::workspaces::PersonNames;
-    use crate::workspaces::fixtures::{governor, test_host};
+    use crate::workspaces::fixtures::{hosting_device, test_host};
 
     /// A picture a profile keeps: a 1-by-1 PNG.
     const PHOTO: &[u8] = b"\x89PNG\r\n\x1a\n\x1a\n\x00\x00\x00\rIHDR";
@@ -1179,7 +1179,7 @@ async fn a_members_picture_reaches_another_member_through_the_daemons_member_lis
 
     // The hosted daemon: a workspace service keeping its member's profile.
     let dir = tempfile::tempdir().expect("a state directory");
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     host.workspaces()
         .person_names(Arc::new(KeptPhotos(cert.user_public_key)));

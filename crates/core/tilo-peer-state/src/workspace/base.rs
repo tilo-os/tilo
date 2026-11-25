@@ -366,7 +366,7 @@ pub(crate) enum Lineage {
     /// not shown to belong to another history. The base is built once, here,
     /// where its generation is read: a newcomer's base holds the whole
     /// workspace, and building it a second time to admit it was a second load
-    /// of everything a workspace of hundreds governs.
+    /// of everything a workspace of hundreds contains.
     Newer {
         base: Box<AutoCommit>,
         changes: Vec<Vec<u8>>,
@@ -398,7 +398,7 @@ fn founder(doc: &AutoCommit) -> Option<String> {
 /// dropped once `before` has a base, since applied beside it, an older
 /// history would merge back what the base left behind.
 ///
-/// A governor writes each base's history afresh under its own actor, so the
+/// A host writes each base's history afresh under its own actor, so the
 /// history a base replaced numbers its changes as the new one does. A change
 /// of the replaced history waiting for what it builds on holds its actor's
 /// sequence number, and the change of the current history at that number
@@ -793,11 +793,11 @@ mod tests {
             ));
         }
 
-        phase a_change_of_the_history_a_base_replaced_never_holds_back_the_governors_next;
-        // The governor writes each base's history afresh under its own actor,
+        phase a_change_of_the_history_a_base_replaced_never_holds_back_the_owners_next;
+        // The host writes each base's history afresh under its own actor,
         // so the history a base replaced numbers its changes as the new one
         // does. A change of the old history that reaches a member after the
-        // base, or with it, never holds the governor's change at its sequence
+        // base, or with it, never holds the host's change at its sequence
         // number back: once a change built on the base holds that number, the
         // old one is dropped, waiting or arriving.
         {
@@ -813,12 +813,12 @@ mod tests {
             assert_eq!(
                 (seq(&old_third[0]), seq(&new_history[1])),
                 (3, 3),
-                "both histories hold the governor's third change"
+                "both histories hold the host's third change"
             );
 
-            // The old change after the base, before the governor's third: it
-            // may yet be of the base's history, so it waits. The governor's
-            // third change, built on the base, shows it is not, and it goes.
+            // The old change after the base, before the host's third: it
+            // may yet be of the base's history, so it waits. The host's third
+            // change, built on the base, shows it is not, and it goes.
             let member = take(None, &base);
             let member = take(Some(&member), &old_third);
             assert_eq!(member.committed_document().queued_changes().count(), 1);
@@ -830,7 +830,7 @@ mod tests {
                 Some("agent")
             );
 
-            // The old change after the governor's third: left out, the batch
+            // The old change after the host's third: left out, the batch
             // is not refused.
             let late = take(Some(&member), &old_third);
             assert_eq!(late.committed_heads(), based.committed_heads());
@@ -838,7 +838,7 @@ mod tests {
 
             // The old change with what is left of its history, in the same batch
             // as the base: only what builds on the base is applied, and the old
-            // changes go once the governor's history claims their numbers.
+            // changes go once the host's history claims their numbers.
             let mut batch = history[1..].to_vec();
             batch.extend(base.iter().cloned());
             let member = take(Some(&old), &batch);
@@ -898,8 +898,8 @@ mod tests {
         automerge::Change::try_from(bytes).unwrap()
     }
 
-    /// A governor's workspace before and after a base, as `GovernedWorkspace::commit`
-    /// makes it: the base is the governor's first change, and its history
+    /// A host's workspace before and after a base, as `HostedWorkspace::commit`
+    /// makes it: the base is the host's first change, and its history
     /// goes on under the same actor.
     struct RebasedWorkspace {
         /// The workspace before the base.
@@ -915,14 +915,14 @@ mod tests {
     }
 
     fn rebased_workspace() -> RebasedWorkspace {
-        let governor = ActorId::from(vec![7; 32]);
-        let mut old = AutoCommit::new().with_actor(governor.clone());
+        let owner_copy = ActorId::from(vec![7; 32]);
+        let mut old = AutoCommit::new().with_actor(owner_copy.clone());
         for (key, value) in [("name", "Team"), ("invited", "grace"), ("grace", "invited")] {
             old.put(ROOT, key, value).unwrap();
             old.commit();
         }
         let history = changes(&mut old, &[]);
-        let mut based = rebase(&old, governor).unwrap();
+        let mut based = rebase(&old, owner_copy).unwrap();
         let base = changes(&mut based, &[]);
         let heads = based.get_heads();
         for value in ["viewer", "removed", "agent"] {

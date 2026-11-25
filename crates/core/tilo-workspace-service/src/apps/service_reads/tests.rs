@@ -8,7 +8,7 @@ use super::*;
 use crate::apps::route::CrdtRoute;
 use crate::workspace_documents::DocumentRead;
 use crate::workspaces::fixtures::{
-    TestHost, device_cert, governor, record_kind, test_host, write_record,
+    TestHost, device_cert, hosting_device, record_kind, test_host, write_record,
 };
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
@@ -32,7 +32,7 @@ fn context(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resource_the_service_holds_reads_from_it() {
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Reads").await.unwrap();
     let workspace = created.workspace;
@@ -125,7 +125,7 @@ async fn a_resource_the_service_holds_reads_from_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Reads").await.unwrap();
     let workspace = created.workspace;
@@ -145,7 +145,7 @@ async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
     ));
     assert!(
         reads
-            .await_arriving_document(&context(&workspace, "another-note", governor().1))
+            .await_arriving_document(&context(&workspace, "another-note", hosting_device().1))
             .is_none(),
         "the service keeps every resource of its workspaces, so nothing is waited for"
     );
@@ -155,7 +155,7 @@ async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_chains_head_names_no_part_of_a_store() {
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Reads").await.unwrap();
     let workspace = created.workspace;
@@ -186,7 +186,7 @@ async fn a_chains_head_names_no_part_of_a_store() {
 }
 
 /// A service holding `RESOURCE` of `APP` in a new workspace it authorizes as its own device: the
-/// workspace, its governor's certificate, the revision and heads its first whole read names, and
+/// workspace, its host's certificate, the revision and heads its first whole read names, and
 /// the document those bytes are.
 async fn authored(
     scratch: &std::path::Path,
@@ -198,7 +198,7 @@ async fn authored(
     Vec<[u8; 32]>,
     automerge::AutoCommit,
 ) {
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(scratch, &key, &cert).await;
     let created = server.workspaces().create("Own reads").await.unwrap();
     let workspace = created.workspace;

@@ -8,7 +8,7 @@
 //! answered.
 
 use crate::AdmissionError;
-use crate::owner::{NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, stored};
+use crate::owner::{DeviceWorkspaces, NeighbourMsg, SystemTime, WorkspaceId, stored};
 use collab_types::signer::DeviceSigner;
 use std::sync::Arc;
 
@@ -314,7 +314,7 @@ impl DueFrames {
     }
 }
 
-impl NativeWorkspaceOwner {
+impl DeviceWorkspaces {
     /// Keep this device's verdicts on the document writes `heard` names, each with what
     /// [`Self::receive`] answered for it, in its own slice of `workspace`, signed by `signer`: a
     /// refused write reaches its author, as the next sync carries the verdict back, and a write

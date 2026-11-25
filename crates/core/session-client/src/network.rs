@@ -157,7 +157,7 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     }
 
     /// Take part in workspace `workspace` (its UUID) of this device's person, named `name`, once the
-    /// host governs it ([`Cmd::JoinPlaced`]).
+    /// host serves it ([`Cmd::JoinPlaced`]).
     ///
     /// # Errors
     /// The transport is gone.
@@ -440,7 +440,7 @@ pub enum Cmd {
         devices: Vec<RosterDevice>,
     },
     /// Take part in a workspace of this device's person (its UUID), named as given, once the host
-    /// governs it: a host first asked to govern it creates it unless it does.
+    /// serves it: a host first asked to serve it creates it unless it does.
     JoinPlaced(String, String),
     /// Open a route, an on-demand record of the joined workspace on the topic that a join does not
     /// replay: its history lands, then [`Event::DocumentOpened`], and it is opened again on every

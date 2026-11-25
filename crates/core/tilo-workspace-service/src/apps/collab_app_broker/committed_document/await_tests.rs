@@ -627,11 +627,11 @@ async fn an_idle_held_read_body() {
     const RECORD: &str = "note-1";
     use crate::apps::route::CrdtRoute;
     use crate::apps::test_support::{Workspace, WorkspaceTree};
-    use crate::workspaces::fixtures::{governor, test_host, write_record};
+    use crate::workspaces::fixtures::{hosting_device, test_host, write_record};
     use std::time::Instant;
 
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Held").await.unwrap();
     let workspace = created.workspace;

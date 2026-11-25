@@ -6,7 +6,7 @@
 //! - [`pairing`] — the revocations a person's root signs;
 //! - [`login`] — the signed-in device, and the workspace entry;
 //! - [`sign_in`] — a device proving its person to a service that asks;
-//! - [`invite`] — joining a workspace another server governs;
+//! - [`invite`] — joining a workspace another server hosts;
 //! - [`signer`] — the device key as a signer, so a browser's
 //!   non-extractable key can authenticate;
 //! - [`error`] — why a call to a server failed, and why a server turned a device

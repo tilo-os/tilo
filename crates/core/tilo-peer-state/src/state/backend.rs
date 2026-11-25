@@ -1,13 +1,13 @@
 //! The peer's one in-memory representation.
 use super::{
-    AcceptedCheckpoint, BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity,
+    AcceptedCheckpoint, BTreeMap, CachedDocument, DeviceCert, DeviceRow, ExactAdmissions,
     InboundState, NeighbourMsg, RedemptionReceipt, RevocationList, Role, Route, SystemTime,
     VecDeque, VerifiedCertificate, err, now_ns,
 };
 use crate::shared::Shared;
 use std::sync::{Arc, OnceLock};
 pub(super) mod access;
-pub(super) mod governed;
+pub(super) mod identities;
 pub(super) mod member;
 mod pending;
 pub(super) use pending::validate as validate_pending;
@@ -21,7 +21,7 @@ pub(super) struct PeerDocument {
     pub(super) channel: InboundState,
     pub(super) encryption_required: bool,
     /// The highest write of each writer, by its hex key, that this record's
-    /// content carries: the watermarks of a governed checkpoint, and every
+    /// content carries: the watermarks of a covered checkpoint, and every
     /// write admitted in the clear, which its own document holds.
     pub(super) covered: BTreeMap<String, u64>,
     pub(super) covered_snapshot: Option<AcceptedCheckpoint>,
@@ -514,7 +514,7 @@ pub(super) struct PeerCore {
     /// The device this replica was made on or joined through. A device on
     /// an operating system Tilo does not control is held to the foreign
     /// bound in the workspace, except this one: a workspace made on such a device is
-    /// governed from it.
+    /// administered from it.
     pub(super) origin: [u8; 32],
     pub(super) certificates: Shared<BTreeMap<[u8; 32], VerifiedCertificate>>,
     /// The devices placed for records of this workspace alone, each by the

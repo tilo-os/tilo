@@ -42,11 +42,7 @@ use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
-use super::{CollaborationError, GovernedWorkspace, Workspaces, wait_list};
-
-/// Where a server kept its public workspaces' listings before a workspace's
-/// entry was part of its governance ([`Workspaces::adopt_listings_file`]).
-const LISTINGS_FILE: &str = "listings.json";
+use super::{CollaborationError, HostedWorkspace, Workspaces, wait_list};
 
 /// Why a public workspace's entry turns a person away.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,18 +205,18 @@ impl Workspaces {
     /// every device again. A public workspace is one anyone may walk into:
     /// what a newcomer waits for is its governance and its shared desktop,
     /// not every record its crowd ever wrote.
-    /// The entry `governed` holds, as its governance records it.
-    pub(super) fn entry_of(governed: &GovernedWorkspace) -> EntryPolicy {
-        governed.peer().governance().governed_entry()
+    /// The entry `hosted` keeps, as its governance records it.
+    pub(super) fn entry_of(hosted: &HostedWorkspace) -> EntryPolicy {
+        hosted.peer().governance().workspace_entry()
     }
 
     /// The entry `workspace`'s governance records here now: whether a directory
     /// lists it, whom it lets in, and how many requests it keeps. `None` when
-    /// this host does not govern the workspace.
+    /// this device does not host the workspace.
     pub async fn entry_policy(&self, workspace: &str) -> Option<EntryPolicy> {
-        let governed = self.workspace(workspace).await.ok()?;
-        let governed = governed.lock().await;
-        Some(Self::entry_of(&governed))
+        let hosted = self.workspace(workspace).await.ok()?;
+        let hosted = hosted.lock().await;
+        Some(Self::entry_of(&hosted))
     }
 
     /// Whether a directory lists `workspace` here now.
@@ -242,36 +238,36 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let key = self.inner.host.key.clone();
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
+        let mut hosted = state.lock().await;
         self.authorize(
             device,
-            Some(&governed),
+            Some(&hosted),
             WorkspaceOp::Govern(governance::SETTINGS),
             now,
         )?;
-        let mut entry = Self::entry_of(&governed);
+        let mut entry = Self::entry_of(&hosted);
         change(&mut entry);
         let entry = entry
             .checked()
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if entry == Self::entry_of(&governed) {
+        if entry == Self::entry_of(&hosted) {
             return Ok(entry);
         }
         let digest = request_digest(&("the workspace's entry", &entry))
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         self.administer(
-            &mut governed,
+            &mut hosted,
             rand::random(),
             digest,
             |peer| {
                 peer.governance_mut()
-                    .put_governed_entry(&entry, &key, super::system_time(now))
+                    .put_workspace_entry(&entry, &key, super::system_time(now))
             },
             now,
         )
         .await?;
         let listed = entry.is_listed();
-        drop(governed);
+        drop(hosted);
         self.inner.directory.announce(workspace);
         tracing::info!(%workspace, listed, "the workspace's entry settled");
         Ok(entry)
@@ -280,14 +276,14 @@ impl Workspaces {
     /// The content policy `workspace`'s governance records here now: the
     /// largest file a host keeps, and what one member's files may take, now
     /// and in any hour. The defaults when its owners set none. `None` when this
-    /// host does not govern the workspace.
+    /// device does not host the workspace.
     pub async fn content_policy(
         &self,
         workspace: &str,
     ) -> Option<tilo_action_policy::ContentPolicy> {
-        let governed = self.workspace(workspace).await.ok()?;
-        let governed = governed.lock().await;
-        Some(governed.peer().governance().content_policy())
+        let hosted = self.workspace(workspace).await.ok()?;
+        let hosted = hosted.lock().await;
+        Some(hosted.peer().governance().content_policy())
     }
 
     /// Settle `workspace`'s content policy as `policy`, as `device`: the
@@ -308,20 +304,20 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let key = self.inner.host.key.clone();
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
+        let mut hosted = state.lock().await;
         self.authorize(
             device,
-            Some(&governed),
+            Some(&hosted),
             WorkspaceOp::Govern(governance::SETTINGS),
             now,
         )?;
-        if governed.peer().governance().content_policy() == policy {
+        if hosted.peer().governance().content_policy() == policy {
             return Ok(policy);
         }
         let digest = request_digest(&("the workspace's content policy", &policy))
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         self.administer(
-            &mut governed,
+            &mut hosted,
             rand::random(),
             digest,
             |peer| {
@@ -456,7 +452,7 @@ impl Workspaces {
     }
 
     /// The authority `workspace` records, as this service reads it: as the device it is
-    /// certified as, whose one key governs the workspaces it holds and acts in the ones it
+    /// certified as, whose one key administers the workspaces it keeps and acts in the ones it
     /// joins. The one policy lookup the entry, the directory and a member's role answer from.
     pub async fn policy_of(&self, workspace: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
         let reader = self.own_reader();
@@ -494,7 +490,7 @@ impl Workspaces {
         state
             .peer()
             .governance()
-            .governed_sandbox()
+            .member_sandbox()
             .unwrap_or_default()
     }
 
@@ -537,83 +533,6 @@ impl Workspaces {
         listed
     }
 
-    /// Take over the listings a server kept in [`LISTINGS_FILE`] before a
-    /// workspace's entry was part of its governance: each workspace that file
-    /// lists, whose entry lists nothing yet, is listed again as its owner listed
-    /// it, settled by this host as the workspace's governor. The file then
-    /// moves beside the records as `listings.json.v1`, so going back to the
-    /// build that wrote it still finds it. Nothing to do when there is none.
-    ///
-    /// A listing whose workspace is gone, or whose entry this host may not
-    /// settle, is left out and said; the rest are still taken over.
-    ///
-    /// # Errors
-    ///
-    /// The file cannot be read, does not parse, or cannot be moved.
-    pub(super) async fn adopt_listings_file(&self) -> Result<(), String> {
-        #[derive(serde::Deserialize)]
-        struct Kept {
-            /// Each public workspace's listing, by workspace UUID.
-            workspaces: BTreeMap<String, KeptListing>,
-        }
-        /// A listing as the file holds it.
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct KeptListing {
-            description: String,
-            default_role: KeptRole,
-        }
-        /// A role as the builds that wrote the file named it: each by its
-        /// variant's own name ("Editor"), where this build's role is in snake
-        /// case.
-        #[derive(Clone, Copy, serde::Deserialize)]
-        enum KeptRole {
-            Viewer,
-            Commenter,
-            Editor,
-            Moderator,
-        }
-        impl From<KeptListing> for Listing {
-            fn from(kept: KeptListing) -> Self {
-                Self {
-                    description: kept.description,
-                    default_role: match kept.default_role {
-                        KeptRole::Viewer => Role::Viewer,
-                        KeptRole::Commenter => Role::Commenter,
-                        KeptRole::Editor => Role::Editor,
-                        KeptRole::Moderator => Role::Moderator,
-                    },
-                }
-            }
-        }
-        let path = self.inner.dir.join(LISTINGS_FILE);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(format!("{}: {error}", path.display())),
-        };
-        let kept: Kept = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let host = self.inner.host.cert.clone();
-        for (workspace, listing) in kept.workspaces {
-            if self.entry_policy(&workspace).await.is_none() {
-                tracing::warn!(%workspace, "a listing kept before the entry names a workspace this host no longer keeps");
-                continue;
-            }
-            if self.is_listed(&workspace).await {
-                continue;
-            }
-            match self.publish(&workspace, &host, listing.into()).await {
-                Ok(_) => tracing::info!(%workspace, "listed again as it was before the entry"),
-                Err(error) => {
-                    tracing::error!(%workspace, %error, "a listing kept before the entry was not taken over");
-                }
-            }
-        }
-        std::fs::rename(&path, path.with_file_name(format!("{LISTINGS_FILE}.v1")))
-            .map_err(|error| format!("{}: {error}", path.display()))
-    }
-
     /// The workspace UUID after each change of a workspace's entry.
     #[must_use]
     pub fn listing_changes(&self) -> tokio::sync::broadcast::Receiver<String> {
@@ -621,7 +540,7 @@ impl Workspaces {
     }
 
     /// Keep the directory's activity hint: each member write marks its workspace
-    /// active, for as long as the workspaces are governed here.
+    /// active, for as long as the workspaces are hosted here.
     pub(super) fn follow_activity(&self) {
         let mut writes = self.document_writes();
         let workspaces = std::sync::Arc::downgrade(&self.inner);
@@ -739,20 +658,20 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let listed = {
             let state = self.workspace(workspace).await.map_err(refused)?;
-            let governed = state.lock().await;
-            let policy = governed
+            let hosted = state.lock().await;
+            let policy = hosted
                 .peer()
                 .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
                 .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
-            let entry = Self::entry_of(&governed);
+            let entry = Self::entry_of(&hosted);
             if entry.listing.is_none() {
                 return Err(EntryRefusal::refused("that workspace is not public"));
             }
             if policy.is_blocked(&hex::encode(user)) {
                 return Err(EntryRefusal::Banned);
             }
-            if governed.removals.refuses(user, now) {
+            if hosted.removals.refuses(user, now) {
                 return Err(EntryRefusal::Removed);
             }
             // A person the workspace has in it brings another device in as
@@ -772,7 +691,7 @@ impl Workspaces {
                 // An invitation the workspace holds for this person is the
                 // member's decision: the entry hands it to the person it
                 // names, and the host issues none of its own.
-                let Some(issued) = governed.invitation_for(user, now) else {
+                let Some(issued) = hosted.invitation_for(user, now) else {
                     return Err(EntryRefusal::InvitationOnly);
                 };
                 return Ok(Listed::Invited(issued));
@@ -841,10 +760,10 @@ impl Workspaces {
         }
         let reporter = person(&report.reporter_user_public_key)?;
         let reason = report.reason().map_err(CollaborationError::new)?.to_owned();
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
         tracing::warn!(%workspace, reporter = %hex::encode(reporter), %reason, "a public workspace was reported");
-        governed
+        hosted
             .admissions
             .notice(WorkspaceNotice::Reported {
                 user_public_key: reporter,
@@ -906,7 +825,7 @@ pub(crate) mod entry_tests {
     use crate::workspaces::EntryRefusal;
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::signed_pre_admission;
-    use crate::workspaces::tests::{governor, guest_device, test_host};
+    use crate::workspaces::tests::{guest_device, hosting_device, test_host};
     use crate::workspaces::{AddMemberRequest, MemberPlace};
 
     async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
@@ -1022,7 +941,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn an_open_entry_admits_a_guest_at_the_role_it_lists() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -1068,7 +987,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_second_device_is_told_to_be_added_from_the_one_already_in() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -1118,7 +1037,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn an_admission_signed_before_the_entry_closed_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -1171,7 +1090,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_guest_admitted_while_open_stays_a_member_after_the_owner_closes_the_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let workspace;
         let guest_person;
         {
@@ -1224,7 +1143,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn whoever_joins_a_public_workspace_gets_the_default_role_its_owner_set() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let summary = workspaces.create("Coffee").await.unwrap();
@@ -1297,7 +1216,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn the_owners_set_what_members_may_post_and_the_host_keeps_to_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let summary = workspaces.create("Lobby").await.unwrap();
@@ -1410,7 +1329,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_person_who_joined_a_public_workspace_writes_in_its_chat_as_their_role_allows() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -1460,7 +1379,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_pruned_guest_comes_back_through_the_entry_with_the_same_device() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -1524,7 +1443,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_person_moderation_removed_is_refused_at_the_entry_for_the_day() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
@@ -1670,7 +1589,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_banned_person_is_not_let_in_again_by_being_added_or_invited() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Hearth").await.unwrap().workspace;
@@ -1770,69 +1689,10 @@ pub(crate) mod entry_tests {
         server.shutdown().await;
     }
 
-    /// A server that kept its listings in a file of their own, before a
-    /// workspace's entry was part of its governance, lists the same workspaces
-    /// after the upgrade: each is listed again as its owner listed it, and the
-    /// old file stays beside the records.
-    #[tokio::test]
-    async fn a_listing_kept_before_the_entry_lists_its_workspace_after_the_upgrade() {
-        let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
-        let server = test_host(dir.path(), &key, &owner).await;
-        let workspace = server
-            .workspaces()
-            .create("Sketches")
-            .await
-            .unwrap()
-            .workspace;
-        server.shutdown().await;
-        let file = dir.path().join("workspaces").join(super::LISTINGS_FILE);
-        let kept = serde_json::json!({"workspaces": {
-            workspace.clone(): {"description": "Open to look at", "defaultRole": "Viewer"},
-            "00000000-0000-4000-8000-000000000000": {"description": "Gone", "defaultRole": "Editor"},
-        }})
-        .to_string();
-        std::fs::write(&file, &kept).unwrap();
-
-        let server = test_host(dir.path(), &key, &owner).await;
-        let workspaces = server.workspaces().clone();
-        assert_eq!(
-            workspaces.listing(&workspace).await,
-            Some(Listing {
-                description: "Open to look at".into(),
-                default_role: Role::Viewer,
-            })
-        );
-        assert_eq!(
-            workspaces.published_workspaces().await,
-            vec![workspace.clone()]
-        );
-        assert!(!file.exists(), "taken over once");
-        assert_eq!(
-            std::fs::read_to_string(file.with_file_name("listings.json.v1")).unwrap(),
-            kept,
-            "the old file stays beside the records"
-        );
-        server.shutdown().await;
-
-        // The workspace's entry is its governance from then on: unlisted, it
-        // stays unlisted across a restart.
-        let server = test_host(dir.path(), &key, &owner).await;
-        server
-            .workspaces()
-            .unpublish(&workspace, &owner)
-            .await
-            .unwrap();
-        server.shutdown().await;
-        let server = test_host(dir.path(), &key, &owner).await;
-        assert!(server.workspaces().published_workspaces().await.is_empty());
-        server.shutdown().await;
-    }
-
     #[tokio::test]
     async fn a_private_workspace_has_no_entry_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let summary = workspaces.create("Team").await.unwrap();
@@ -1891,7 +1751,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_banned_person_is_turned_away_at_the_entry_and_others_cannot_publish() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
@@ -1952,7 +1812,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn an_invitation_only_entry_refuses_a_stranger_and_admits_an_invited_person() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -2102,7 +1962,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn an_invitation_only_entry_admits_whom_the_operator_declares() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -2199,7 +2059,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_kept_workspace_founded_open_admits_a_guest_at_the_default_role() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -2258,7 +2118,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_kept_workspace_founded_invite_refuses_a_guest_and_admits_an_invited_person() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -2338,7 +2198,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_kept_workspace_keeps_its_owners_later_entry_change_across_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -2396,7 +2256,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn a_servers_device_key_settles_no_entry_of_a_workspace_it_only_keeps() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -2433,7 +2293,7 @@ pub(crate) mod entry_tests {
 }
 
 impl Workspaces {
-    /// The listing of each of `wanted`'s workspaces this server governs, taken in one pass over
+    /// The listing of each of `wanted`'s workspaces this server hosts, taken in one pass over
     /// the registry: a person's whole list is built without a registry lock per workspace and
     /// without reading any document but the ones named.
     pub async fn listings_of(
@@ -2441,7 +2301,7 @@ impl Workspaces {
         wanted: &std::collections::HashSet<String>,
     ) -> std::collections::HashMap<String, WorkspaceListing> {
         let held = self.inner.workspaces.lock().await;
-        let named: Vec<(String, Arc<tokio::sync::Mutex<GovernedWorkspace>>)> = held
+        let named: Vec<(String, Arc<tokio::sync::Mutex<HostedWorkspace>>)> = held
             .iter()
             .filter(|(workspace, _)| wanted.contains(*workspace))
             .map(|(workspace, held)| (workspace.clone(), Arc::clone(held)))

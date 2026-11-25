@@ -244,7 +244,7 @@ impl StatePeer {
                     judged.workspace_policy(&self.core.workspace).clone(),
                     &hex::encode(person),
                 );
-                judged = judged.governing_by(policy);
+                judged = judged.under_policy(policy);
             }
             _ if matches!(written, Written::Unnamed) => return Ok(Under::Now),
             _ if matches!(written, Written::Unresolved) => return Ok(Under::Unresolved(None)),
@@ -262,8 +262,7 @@ impl StatePeer {
     /// take in, which a judgement does not read.
     fn judging_by(&self, judged: CachedDocument) -> Self {
         let workspace = self.core.workspace.clone();
-        let owner =
-            super::receiving::governed_owner(&judged, &workspace).unwrap_or(self.core.owner);
+        let owner = super::receiving::listed_owner(&judged, &workspace).unwrap_or(self.core.owner);
         Self {
             core: PeerCore {
                 workspace,

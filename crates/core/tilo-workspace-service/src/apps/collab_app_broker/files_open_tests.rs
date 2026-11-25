@@ -110,7 +110,7 @@ struct Fixture {
     _home: tempfile::TempDir,
 }
 
-/// A workspace its owner governs, with a member who may read but not write its files, and an
+/// A workspace with an owner, and a member who may read but not write its files, and an
 /// agent the workspace lets write the folder.
 fn fixture() -> Fixture {
     let home = tempfile::tempdir().unwrap();

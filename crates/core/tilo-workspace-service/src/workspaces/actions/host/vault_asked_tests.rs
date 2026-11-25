@@ -21,14 +21,14 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeReques
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, caller, hosted};
 use super::turn_use_tests::asks;
 use super::vault_tests::{ask, files_holding};
 use super::waiting::{answered_by, at_once};
 use super::web_call_tests::logged;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{TestGroupKeys, test_host_holding};
-use crate::workspaces::tests::governor;
+use crate::workspaces::tests::hosting_device;
 
 /// A made-up password: no site ever issued it.
 const SECRET: &str = "made-up-vault-secret-5521";
@@ -194,11 +194,11 @@ async fn entry_titled(
 #[tokio::test]
 async fn an_asked_vault_addition_keeps_its_secret_in_memory_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let keys = Arc::new(TestGroupKeys::default());
     let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let agent = caller(&ada).delegated_to("assistant");
     let (lines, logging) = logged();
@@ -378,7 +378,7 @@ async fn kept_accounts(
 #[tokio::test]
 async fn an_asked_mail_account_keeps_its_password_in_memory_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let keys = Arc::new(TestGroupKeys::default());
     let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = server.workspaces();
@@ -389,7 +389,7 @@ async fn an_asked_mail_account_keeps_its_password_in_memory_alone() {
             Err("IMAP server rejected the credential".into())
         }
     });
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let agent = caller(&ada).delegated_to(tilo_actions::remote::device_agent_id(
         &ada.user_public_key,
@@ -466,7 +466,7 @@ async fn an_action_listed_only_as_it_is_asked_is_taken_for_all_secret() {
     use tilo_actions::remote::{CataloguePage, RemoteActionTarget, TestProvider};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host_holding(dir.path(), &key, &owner, Arc::default()).await;
     let workspaces = server.workspaces();
     let mut row = person_vault::call_rows().remove(0);

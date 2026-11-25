@@ -10,7 +10,7 @@ use tilo_actions::remote::{
 };
 
 use crate::workspaces::OwnWorkspaceOffer;
-use crate::workspaces::fixtures::{answer_grant, governor, record_grants, test_host};
+use crate::workspaces::fixtures::{answer_grant, hosting_device, record_grants, test_host};
 
 /// The contact directory's type, as every caller names its record.
 const CONTACTS: &str = "tilo.contacts.identities";
@@ -72,7 +72,7 @@ fn refused(status: &ReceiptStatus) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_the_shell_names_is_decided_as_itself_not_as_its_person() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     workspaces

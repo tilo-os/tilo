@@ -456,7 +456,7 @@ fn row_written_by(
     let mut doc = peer.core.workspace_doc.clone().unwrap();
     let before = doc.get_heads();
     doc.set_actor(peer.workspace_actor_of(key));
-    let row = GovernedIdentity {
+    let row = DeviceRow {
         device_cert: listed.clone(),
         revocations: Vec::new(),
         admission: None,
@@ -598,8 +598,7 @@ fn removal_mark(
     let before = doc.get_heads();
     let key = hex::encode(device);
     let mut row =
-        GovernedIdentity::decode(&crate::workspace::governance_of(Some(&doc)).identities[&key])
-            .unwrap();
+        DeviceRow::decode(&crate::workspace::governance_of(Some(&doc)).identities[&key]).unwrap();
     row.removed = true;
     doc.set_actor(peer.workspace_actor_of(writer));
     let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;

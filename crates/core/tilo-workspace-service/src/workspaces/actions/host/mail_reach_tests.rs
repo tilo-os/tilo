@@ -12,9 +12,9 @@ use serde_json::json;
 use tilo_actions::remote::ActionProvider as _;
 use tilo_actions::remote::person_accounts;
 
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, caller, hosted, settled};
 use super::accounts_tests::asking;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// What the judge of addresses says of a name it refuses.
 const INSIDE: &str = "answers with an address of this machine or its network";
@@ -32,10 +32,10 @@ fn connections(listener: &TcpListener) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mail_server_whose_name_answers_inside_is_refused_and_connected_to_by_nobody() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, workspace_id, actions) = governed(&workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(&workspaces).await;
     let device = admit(&workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let caller = caller(&device);

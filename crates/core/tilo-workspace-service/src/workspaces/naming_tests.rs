@@ -4,17 +4,17 @@
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 
-use super::fixtures::{governor, test_host as test_holder};
+use super::fixtures::{hosting_device, test_host as test_holder};
 use super::tests::admitted_member;
 
-/// A member device other than the governor renames the workspace in its own
+/// A member device other than the host renames the workspace in its own
 /// replica and publishes the change: the host takes it in, and every list it
 /// answers names the workspace what that device wrote, as every member reads
 /// it.
 #[tokio::test]
 async fn a_rename_another_device_writes_is_what_the_hosts_lists_name() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_holder(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -29,15 +29,15 @@ async fn a_rename_another_device_writes_is_what_the_hosts_lists_name() {
         .workspace_id();
     let body = {
         let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        let mut written = governed.peer().clone();
+        let hosted = state.lock().await;
+        let mut written = hosted.peer().clone();
         let heads = written.workspace_heads().unwrap();
         written
             .governance_mut()
             .author_workspace_name("Tilo", &writer_key, SystemTime::now())
             .unwrap();
         let changes = written.workspace_changes_since(&heads);
-        drop(governed);
+        drop(hosted);
         postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
             changes,
             workspace: workspace.clone(),

@@ -143,9 +143,12 @@ impl Journaled {
             // The layout the snapshot names: one this build writes reads as it
             // is, and an earlier one is brought up, the next publication writing
             // a snapshot of this build's version. A journal is a delta of the
-            // snapshot beside it, as that version's bytes: one beside an earlier
-            // snapshot is replayed as that build wrote it, and one whose entries
-            // a later build appended is refused where it is read.
+            // snapshot beside it, as that version's bytes. One beside a
+            // snapshot of the build before this one replays too: it is a delta
+            // of the ownership that snapshot held, which its step drops, so that
+            // is read first. One beside an older snapshot is refused.
+            let ownership = journal::ownership_before(&snapshot)
+                .map_err(|error| format!("{workspace}'s snapshot does not read: {error}"))?;
             let snapshot_version = stored_version(&name, &snapshot)?;
             let snapshot = parts.bring_up_part(&name, snapshot, snapshot_version)?;
             let mut size = snapshot.len();
@@ -185,8 +188,9 @@ impl Journaled {
                 written.insert(log);
                 whole = whole && journal::read_whole(&entries);
                 appended = entries.len();
-                let (replayed, newest) = journal::replay(stored, &entries, snapshot_version)
-                    .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
+                let (replayed, newest) =
+                    journal::replay(stored, &entries, snapshot_version, ownership.as_ref())
+                        .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
                 stored = replayed;
                 revision = revision.max(newest.unwrap_or(0));
             }
@@ -210,12 +214,11 @@ impl Journaled {
             }
             workspaces.insert(workspace, stored);
         }
-        let mut record = NativeAuthorityStorage {
+        let record = NativeAuthorityStorage {
             revision,
             workspaces,
             pending: index.pending.clone(),
         };
-        drop_recovery_projections(&mut record);
         Ok(Some((
             Self {
                 index,
@@ -249,7 +252,7 @@ impl Journaled {
     /// read, as they encode themselves: the next write of each appends what
     /// it changed. One whose replica encodes other bytes writes a snapshot
     /// first.
-    pub fn resume(&mut self, owner: &super::NativeWorkspaceOwner) {
+    pub fn resume(&mut self, owner: &super::DeviceWorkspaces) {
         self.kept
             .retain(|workspace, kept| owner.resume_journal(*workspace, &mut kept.written));
     }
@@ -496,18 +499,6 @@ fn stored_version(name: &str, bytes: &[u8]) -> Result<u32, String> {
         .map_err(|error| format!("{name}: {error}"))
 }
 
-/// A recovery projection is a re-signed copy of frames this build re-sends
-/// as their signed originals. A record that holds one still loads; the copy
-/// is dropped here, and the record keeps its originals held until the
-/// workspace retires them.
-fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
-    record.workspaces.values_mut().for_each(|workspace| {
-        if let Some(publication) = workspace.publication.as_mut() {
-            publication.projection.clear();
-        }
-    });
-}
-
 /// The digests a snapshot's list of chunks holds, in order.
 fn read_list(bytes: &[u8]) -> Result<Vec<[u8; DIGEST]>, String> {
     let (digests, rest) = bytes.as_chunks::<DIGEST>();
@@ -630,7 +621,6 @@ mod tests {
             peer: crate::owner::stored::DurablePeer::read(peer),
             generation: 0,
             continuity: 0,
-            publication: None,
             frames: crate::owner::stored::Frames::default(),
         };
         let mut record = NativeAuthorityStorage {
@@ -865,6 +855,164 @@ mod tests {
                 .iter()
                 .all(|(name, bytes)| name == INDEX_NAME || bytes.is_empty()),
             "every part of the released workspace is let go",
+        )?;
+        Ok(())
+    }
+
+    /// A record a version 10 build kept: its snapshot, holding the ownership a build before it
+    /// kept, and an entry that build appended beside it. This build opens it with the entry's
+    /// change, the ownership gone, and its next publication writes a snapshot of its own layout.
+    #[test]
+    fn a_record_the_build_before_kept_opens_with_its_journal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde::Serialize;
+        /// One run of an entry's bytes, as a version 10 build framed it.
+        #[derive(Serialize)]
+        enum Run {
+            Copy { from: u64, len: u64 },
+            Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
+        }
+        /// A stretch of ownership's writes the snapshot held.
+        #[derive(Serialize)]
+        enum KeptWrites {
+            Kept { from: u32, len: u32 },
+        }
+        /// An entry in that build's layout. Its answers and the writes its server had not taken
+        /// are units here: an entry that carries one is what the last case refuses.
+        #[derive(Serialize)]
+        struct Appended {
+            revision: u64,
+            fields: Vec<Run>,
+            answered: Vec<()>,
+            unanswered: Vec<()>,
+            writes: [Vec<KeptWrites>; 3],
+            frames: Vec<()>,
+            head: Vec<Run>,
+            documents: Vec<()>,
+            tail: Vec<Run>,
+        }
+        let framed = |entry: &Appended| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let payload = postcard::to_allocvec(entry)?;
+            let mut framed = u32::try_from(payload.len())?.to_le_bytes().to_vec();
+            framed.extend_from_slice(blake3::hash(&payload).as_bytes());
+            framed.extend_from_slice(&payload);
+            Ok(framed)
+        };
+        let golden: Vec<u8> = include_str!("../../golden/owner-workspace-document/v10.hex")
+            .split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16))
+            .collect::<Result<_, _>>()?;
+        let workspace = WorkspaceId::parse("40267648-f762-4c8d-89ad-c5ab27aa13b8")
+            .ok_or("the golden entry's workspace")?;
+        let parts = Memory::default();
+        let mut held = serde_json::Map::new();
+        held.insert(workspace.to_string(), 1.into());
+        let index = serde_json::json!({ "version": INDEX_VERSION, "revision": 1, "held": held });
+        parts.write_part(INDEX_NAME, &serde_json::to_vec(&index)?)?;
+        parts.write_part(&snapshot_name(workspace, 1), &golden)?;
+        let alone = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
+        let held = alone.stored(workspace).ok_or("the snapshot's workspace")?;
+        check(held.generation == 1, "the golden entry is of generation 1")?;
+        let layout = held.peer.layout();
+        let length =
+            |parts: &[std::sync::Arc<[u8]>]| -> usize { parts.iter().map(|part| part.len()).sum() };
+        let wide = |len: usize| u64::try_from(len).unwrap_or(u64::MAX);
+        let kept = |len: usize| {
+            if len == 0 {
+                Vec::new()
+            } else {
+                vec![Run::Copy {
+                    from: 0,
+                    len: wide(len),
+                }]
+            }
+        };
+
+        // That build's entry is a delta of the fields it split from the snapshot: the snapshot's
+        // own, without its replica, the ownership last.
+        let mut split: serde_json::Value = serde_json::from_slice(&golden)?;
+        split["peer"] = serde_json::to_value(crate::owner::stored::DurablePeer::default())?;
+        let split = serde_json::to_vec(&split)?;
+        let at = split
+            .windows(b"\"generation\":1,".len())
+            .position(|window| window == b"\"generation\":1,")
+            .ok_or("the split names its generation")?
+            + b"\"generation\":".len();
+        let entry = |answered: Vec<()>| Appended {
+            revision: 2,
+            fields: vec![
+                Run::Copy {
+                    from: 0,
+                    len: wide(at),
+                },
+                Run::Bytes(b"7".to_vec()),
+                Run::Copy {
+                    from: wide(at + 1),
+                    len: wide(split.len() - at - 1),
+                },
+            ],
+            answered,
+            unanswered: Vec::new(),
+            writes: [
+                vec![KeptWrites::Kept { from: 0, len: 0 }],
+                Vec::new(),
+                Vec::new(),
+            ],
+            frames: Vec::new(),
+            head: kept(length(&layout.head)),
+            documents: Vec::new(),
+            tail: kept(length(&layout.tail)),
+        };
+        parts.write_part(&journal_name(workspace, 1), &framed(&entry(Vec::new()))?)?;
+        let (mut journaled, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
+        let stored = read.stored(workspace).ok_or("the journal's workspace")?;
+        check(stored.generation == 7, "the entry's change is read")?;
+        check(
+            stored.version == crate::owner::stored::WORKSPACE_VERSION,
+            "the record reads as this build's",
+        )?;
+        check(
+            peer_of(&read, workspace)? == peer_of(&alone, workspace)?,
+            "the replica is the snapshot's",
+        )?;
+
+        journaled.publish(
+            &parts,
+            &read,
+            &Change::Workspace {
+                workspace,
+                shown: false,
+            },
+        )?;
+        let again = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
+        check(
+            again.stored(workspace).map(|stored| stored.generation) == Some(7),
+            "the next publication keeps what the entry changed",
+        )?;
+        let (_, kept_now) = parts
+            .parts
+            .lock()
+            .map_err(|error| error.to_string())?
+            .iter()
+            .filter(|(name, _)| name.starts_with('w'))
+            .map(|(name, bytes)| (name.clone(), bytes.clone()))
+            .next_back()
+            .ok_or("a snapshot is kept")?;
+        check(
+            crate::owner::stored::format::stored_version(&kept_now)?
+                == crate::owner::stored::WORKSPACE_VERSION
+                && !String::from_utf8_lossy(&kept_now).contains("\"publication\""),
+            "the next publication writes a snapshot of this build's layout, without ownership",
+        )?;
+
+        // An entry of that build that carries an answer is refused, never read past.
+        let parts_with_answer = Memory::default();
+        parts_with_answer.write_part(INDEX_NAME, &serde_json::to_vec(&index)?)?;
+        parts_with_answer.write_part(&snapshot_name(workspace, 1), &golden)?;
+        parts_with_answer.write_part(&journal_name(workspace, 1), &framed(&entry(vec![()]))?)?;
+        check(
+            Journaled::open(&parts_with_answer).is_err(),
+            "an entry carrying ownership's answer is refused",
         )?;
         Ok(())
     }

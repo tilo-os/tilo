@@ -46,7 +46,7 @@ fn empty_workspace(workspace_id: WorkspaceId, name: &str, strips: Vec<Strip>) ->
 }
 
 /// A workspace document as its founding leaves it: the maps devices and
-/// governors write their own rows into exist before any of them writes.
+/// hosts write their own rows into exist before any of them writes.
 fn founded_governance() -> AutoCommit {
     use automerge::{ObjType, ROOT, transaction::Transactable as _};
     use tilo_desktop_model::projection::{
@@ -72,7 +72,7 @@ pub(crate) struct TestTree {
     pub desktop: Layout,
     /// The layout of the workspace in front, as its record holds it.
     pub doc: AutoCommit,
-    /// Each workspace's own document: what it governs, and never a device's copy of it.
+    /// Each workspace's own document: what its governance says, and never a device's copy of it.
     pub governance: HashMap<WorkspaceId, AutoCommit>,
 }
 
@@ -191,8 +191,8 @@ impl TestTree {
         wrote
     }
 
-    /// Write what `workspace_id` 's workspace governs into its own document, as one change: its name, its
-    /// owner, and the grants it makes. Nothing that did not change is written.
+    /// Write the governance of `workspace_id` 's workspace into its own document, as one change: its
+    /// name, its owner, and the grants it makes. Nothing that did not change is written.
     pub fn govern(&mut self, workspace_id: WorkspaceId) {
         if self.write_governance(workspace_id) {
             self.commit_governance_change(workspace_id);
@@ -391,7 +391,7 @@ impl TestTree {
         cap_id: &str,
     ) -> bool {
         let allowed = {
-            let Some(governed) = self
+            let Some(listed) = self
                 .desktop
                 .workspaces
                 .iter_mut()
@@ -400,8 +400,8 @@ impl TestTree {
                 return false;
             };
             collab_types::caps::sandbox::revoke_as_at(
-                &governed.policy,
-                &mut governed.sandbox,
+                &listed.policy,
+                &mut listed.sandbox,
                 revoker,
                 cap_id,
                 tilo_clock::unix_now(),

@@ -22,9 +22,9 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
-use super::tests::{Answering, admit, answered, ask_own, governed, request, settled};
+use super::tests::{Answering, admit, answered, ask_own, hosted, request, settled};
 use crate::workspaces::OpenAiSignIn;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 fn asking(text: &str) -> Value {
     serde_json::to_value(ModelRequest {
@@ -213,12 +213,12 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
     // Access tokens expired at once: every ask finds one to refresh.
     fake.set_token_lifetime(1);
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces.call_private_model_addresses(true);
     workspaces.sign_in_to_openai_at(at_fake(&fake));
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     let SignInState::Done { provider } =
@@ -298,12 +298,12 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
 async fn signing_in_for_api_usage_keeps_an_issued_key() {
     let fake = FakeProviders::start().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces.call_private_model_addresses(true);
     workspaces.sign_in_to_openai_at(at_fake(&fake));
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     fake.set_api_key_exchange(false);

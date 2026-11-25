@@ -43,7 +43,7 @@ use tilo_workspace_keys::{
 use tilo_workspace_keys::{GovernancePump, KeysConfig, SealCheckRegistry, WorkspaceKeys};
 
 use crate::engine::Engine;
-use tilo_peer_state::owner::NativeWorkspaceOwner;
+use tilo_peer_state::owner::DeviceWorkspaces;
 
 pub mod vault;
 pub use vault::MlsVault;
@@ -367,7 +367,7 @@ impl KeyLink {
         })
     }
 
-    /// Take what a workspace's governor never admits into its replica: the groups' governance,
+    /// Take what a workspace's host never admits into its copy: the groups' governance,
     /// which the workspace's devices settle their groups with between each other. Says whether
     /// `message` was one of them, and so never reaches the workspace's state.
     pub fn dispatch(&self, message: &NeighbourMsg) -> bool {
@@ -585,7 +585,7 @@ impl Rosters {
 /// The workspace's access policy as this device's own workspaces hold it: which devices the
 /// workspace lets read each group.
 pub struct OwnerDirectory {
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     /// A reader also follows what the host it joined a workspace through and it itself sign: the
     /// host vouched for the workspace it was let into.
     reader: bool,
@@ -594,7 +594,7 @@ pub struct OwnerDirectory {
 impl OwnerDirectory {
     /// The directory of a device that settles its groups.
     #[must_use]
-    pub const fn member(owner: NativeWorkspaceOwner) -> Self {
+    pub const fn member(owner: DeviceWorkspaces) -> Self {
         Self {
             owner,
             reader: false,
@@ -603,7 +603,7 @@ impl OwnerDirectory {
 
     /// The directory of a [`tilo_workspace_keys::KeyRole::Follower`] device.
     #[must_use]
-    pub const fn reader(owner: NativeWorkspaceOwner) -> Self {
+    pub const fn reader(owner: DeviceWorkspaces) -> Self {
         Self {
             owner,
             reader: true,
@@ -734,7 +734,7 @@ impl KeyDirectory for OwnerDirectory {
 /// The first second after `now` at which who may read `workspace`'s records can change with
 /// nothing written: a capability or a device certificate expiring.
 pub fn next_policy_change(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     workspace: ModelWorkspaceId,
     now: u64,
 ) -> Option<u64> {
@@ -802,7 +802,7 @@ pub fn admitted_devices(peer: &tilo_peer_state::StatePeer) -> Result<Vec<Device>
     let now = tilo_clock::wall();
     let admitted: BTreeSet<[u8; 32]> = peer
         .governance()
-        .governed_access(now)?
+        .member_list_access(now)?
         .member_devices
         .into_iter()
         .collect();

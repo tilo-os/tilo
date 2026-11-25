@@ -1,4 +1,4 @@
-//! Deleting a governed workspace, as its owner asks
+//! Deleting a hosted workspace, as its owner asks
 //! ([`tilo_server_protocol::workspaces::DELETE_WORKSPACE`]): final, and with
 //! everything this host keeps of it.
 //!
@@ -49,7 +49,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, its Linux machine could not be
+    /// The workspace is not hosted here, its Linux machine could not be
     /// deleted, or the deletion could not be recorded. Once recorded, what is
     /// left of it is removed when the host opens again.
     pub async fn delete(&self, workspace: &str) -> Result<(), String> {
@@ -57,7 +57,7 @@ impl Workspaces {
             .own()
             .and_then(|own| own.owner_of(workspace))
             .unwrap_or_else(|| self.device_cert().user_public_key);
-        let governed = self
+        let hosted = self
             .inner
             .workspaces
             .lock()
@@ -68,12 +68,12 @@ impl Workspaces {
         // Before the workspace is held: its machine's host enters it to be
         // asked, which takes the workspace's lock.
         self.delete_machine(workspace).await?;
-        let governed = governed.lock().await;
-        let workspace_id = governed.workspace_id();
+        let hosted = hosted.lock().await;
+        let workspace_id = hosted.workspace_id();
         // Recorded first: a host stopped halfway finishes when it opens.
         // Written off the runtime's threads: a sync of a new file is disk
         // latency, which every other request on this runtime would wait for.
-        let marker = governed.path.with_extension(DELETED);
+        let marker = hosted.path.with_extension(DELETED);
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             let file = std::fs::File::create(&marker).map_err(|error| error.to_string())?;
             file.sync_all().map_err(|error| error.to_string())?;
@@ -96,9 +96,9 @@ impl Workspaces {
         // ([`tilo_peer_state::direct::Serving::delete`]), told why; nobody is
         // let in again.
         self.stop_serving(workspace_id).await;
-        drop(governed);
+        drop(hosted);
         self.forget_deleted(workspace, workspace_id).await;
-        tracing::info!(%workspace, workspace_id = %workspace_id, "governed workspace deleted");
+        tracing::info!(%workspace, workspace_id = %workspace_id, "hosted workspace deleted");
         let _ = self
             .inner
             .deletions
@@ -121,16 +121,16 @@ impl Workspaces {
         workspace: &str,
         workspace_id: WorkspaceId,
     ) -> Result<(), String> {
-        let governed = self.inner.workspaces.lock().await.get(workspace).cloned();
-        if let Some(governed) = governed {
-            let governed = governed.lock().await;
+        let hosted = self.inner.workspaces.lock().await.get(workspace).cloned();
+        if let Some(hosted) = hosted {
+            let hosted = hosted.lock().await;
             self.inner.workspaces.lock().await.remove(workspace);
             self.inner.readings.forget(workspace);
             self.inner.memberships.forget(workspace);
             // Served no more, and not refused as deleted: it can come again.
             self.inner.direct.release(workspace_id);
             self.stop_serving(workspace_id).await;
-            drop(governed);
+            drop(hosted);
         }
         self.forget_deleted(workspace, workspace_id).await;
         Ok(())

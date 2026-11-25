@@ -458,7 +458,7 @@ fn failure(why: String, attempt: u32, attempts: u32) -> ActionCallError {
 async fn governs(workspaces: &Workspaces, caller: &Caller) -> Result<String, ActionCallError> {
     let workspace = caller.workspace().ok_or(ActionCallError::NotPermitted)?;
     let id = WorkspaceId::parse(workspace).ok_or(ActionCallError::NotPermitted)?;
-    if !workspaces.governs(id).await {
+    if !workspaces.hosts_here(id).await {
         return Err(ActionCallError::Refused {
             reason: "a webhook is posted by the device that keeps its workspace".into(),
         });

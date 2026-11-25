@@ -19,12 +19,12 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::person_vault::{self, DeviceKey};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 
-use super::super::tests::{caller, governed};
+use super::super::tests::{caller, hosted};
 use super::turn_use_tests::on_turn;
 use super::vault_tests::{ask_at, files_holding};
 use crate::work::{HostConnections, Order, Turn, takes_turn_in};
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 use crate::workspaces::vault_release::{self as release, AppProcess};
 
 /// The app whose own process asks for its key.
@@ -109,10 +109,10 @@ fn refusal<T: std::fmt::Debug>(taken: Result<T, ActionCallError>) -> String {
 #[tokio::test]
 async fn a_device_holds_one_key_per_app_and_purpose_answered_to_the_apps_own_process_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let records = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
     records.keep_no_secrets(workspaces.secret_parameters());
     workspaces.serve_invocations(Arc::clone(&records));
@@ -267,12 +267,12 @@ async fn a_device_holds_one_key_per_app_and_purpose_answered_to_the_apps_own_pro
 #[tokio::test]
 async fn another_device_holds_another_key() {
     let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let (key, owner) = governor();
-    let (other_key, other_owner) = governor();
+    let (key, owner) = hosting_device();
+    let (other_key, other_owner) = hosting_device();
     assert_eq!(owner.user_public_key, other_owner.user_public_key);
     let server = test_host(dir.path(), &key, &owner).await;
     let other = test_host(other_dir.path(), &other_key, &other_owner).await;
-    let (workspace, _, _) = governed(server.workspaces()).await;
+    let (workspace, _, _) = hosted(server.workspaces()).await;
     let own = AppProcess::OwnTilolang;
     let here = key_of(server.workspaces(), (BRIDGE, &workspace), &own, PURPOSE)
         .await

@@ -33,7 +33,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::{SERVERS, person_workspace_id, read};
 use crate::workspaces::person_workspace::{self, holds_person_workspace};
-use crate::workspaces::{GovernedWorkspace, RELEASED, Workspaces};
+use crate::workspaces::{HostedWorkspace, RELEASED, Workspaces};
 
 /// What one pass over the person's list did, by workspace id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -168,10 +168,10 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
     if !released.exists() {
         return Ok(false);
     }
-    let governed = GovernedWorkspace::open(path, workspaces.device_keys().as_ref())?;
+    let hosted = HostedWorkspace::open(path, workspaces.device_keys().as_ref())?;
     let own = workspaces.device_cert().device_public_key;
-    if governed.member.is_some()
-        || !governed
+    if hosted.member.is_some()
+        || !hosted
             .peer()
             .governance()
             .keeping_devices()
@@ -181,9 +181,9 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
         return Ok(false);
     }
     std::fs::remove_file(&released).map_err(|error| error.to_string())?;
-    workspaces.serve_direct(&governed)?;
-    let reading = governed.reading();
-    let state = Arc::new(AsyncMutex::new(governed));
+    workspaces.serve_direct(&hosted)?;
+    let reading = hosted.reading();
+    let state = Arc::new(AsyncMutex::new(hosted));
     workspaces.inner.readings.hold(workspace, &state, reading);
     workspaces
         .inner

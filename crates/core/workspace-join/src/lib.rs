@@ -3,7 +3,7 @@
 //! The invitation, join and membership contract a workspace speaks before any
 //! workspace state is exchanged: signed invitations and their text form, join
 //! and membership proofs, owner transport hints, and the rows a join bootstrap
-//! and the governed member list carry. Pure types and
+//! and the member list carry. Pure types and
 //! signature checks over [`tilo_user_identity`] certificates: no Automerge, no
 //! admission, no transport. `tilo-peer-state` re-exports this crate as
 //! `tilo_peer_state::join`.

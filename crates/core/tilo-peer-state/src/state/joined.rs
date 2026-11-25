@@ -1,4 +1,4 @@
-//! A replica of a workspace another device governs, from its join's answer.
+//! A replica of a workspace another device hosts, from its join's answer.
 
 use super::{DeviceCert, NeighbourMsg, RevocationList, StatePeer, SystemTime, err, peer_handle};
 use crate::TransportOrigin;
@@ -132,7 +132,7 @@ impl StatePeer {
         }
         .map_err(err)?;
         let document: super::CachedDocument = document.into();
-        peer.core.owner = super::receiving::governed_owner(&document, &peer.core.workspace)
+        peer.core.owner = super::receiving::listed_owner(&document, &peer.core.workspace)
             .ok_or("the workspace's governance names no owner")?;
         // The device holds its own certificate only where the workspace lists
         // it: a device it does not list yet writes its own row.
@@ -151,7 +151,7 @@ impl StatePeer {
                 .certificates
                 .insert(row.device_cert.device_public_key, held);
         }
-        peer.import_governed_rows(&document, now)?;
+        peer.import_device_rows(&document, now)?;
         peer.core.workspace_doc = Some(document);
         Ok(peer)
     }

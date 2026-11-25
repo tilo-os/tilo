@@ -24,19 +24,19 @@ tilo_test_env::scenario! {
 
     phase a_members_own_device_saves_and_removes_its_shortcut_in_the_workspace;
     {
-        let (mut governor, _, device, cert, now) = crate::admission_tests::seeded();
-        let workspace = governor.core.workspace.clone();
+        let (mut owner_copy, _, device, cert, now) = crate::admission_tests::seeded();
+        let workspace = owner_copy.core.workspace.clone();
         let water = signed(&workspace, "water", &cert, &device);
         let save = ShortcutChange::Save(Box::new(water.clone()));
         assert_eq!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_shortcut_change(&cert, &save, &device, now),
             Ok(true)
         );
-        assert_eq!(saved(&governor), vec![water]);
+        assert_eq!(saved(&owner_copy), vec![water]);
         assert_eq!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_shortcut_change(&cert, &save, &device, now),
             Ok(false),
@@ -44,14 +44,14 @@ tilo_test_env::scenario! {
         );
         let delete = ShortcutChange::Delete("water".into());
         assert_eq!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_shortcut_change(&cert, &delete, &device, now),
             Ok(true)
         );
-        assert!(saved(&governor).is_empty());
+        assert!(saved(&owner_copy).is_empty());
         assert!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_shortcut_change(&cert, &delete, &device, now)
                 .is_err(),
@@ -61,11 +61,11 @@ tilo_test_env::scenario! {
 
     phase a_shortcut_change_is_signed_by_its_callers_own_device;
     {
-        let (mut governor, authority, device, cert, now) = crate::admission_tests::seeded();
-        let workspace = governor.core.workspace.clone();
+        let (mut owner_copy, authority, device, cert, now) = crate::admission_tests::seeded();
+        let workspace = owner_copy.core.workspace.clone();
         let water = signed(&workspace, "water", &cert, &device);
         assert!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_shortcut_change(
                     &cert,
@@ -76,14 +76,14 @@ tilo_test_env::scenario! {
                 .is_err(),
             "another device, the owner's included, does not write it for the caller"
         );
-        assert!(saved(&governor).is_empty());
+        assert!(saved(&owner_copy).is_empty());
     }
 
     phase a_member_saves_only_as_themselves;
     {
-        let (mut governor, authority, device, cert, now) = crate::admission_tests::seeded();
-        let workspace = governor.core.workspace.clone();
-        let (editor, _) = crate::admission_tests::add_editor(&mut governor, &authority, now);
+        let (mut owner_copy, authority, device, cert, now) = crate::admission_tests::seeded();
+        let workspace = owner_copy.core.workspace.clone();
+        let (editor, _) = crate::admission_tests::add_editor(&mut owner_copy, &authority, now);
         let editor_key = SigningKey::from_bytes(&[6; 32]);
 
         // The editor names the owner's person, under either device's proof.
@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
         forged.saved_by = Some(hex::encode(cert.user_public_key));
         for shortcut in [forged, signed(&workspace, "water", &cert, &device)] {
             assert!(
-                governor
+                owner_copy
                     .workspace_mut()
                     .apply_shortcut_change(
                         &editor,
@@ -106,7 +106,7 @@ tilo_test_env::scenario! {
         let mut unproven = shortcut("water");
         unproven.saved_by = Some(hex::encode(editor.user_public_key));
         assert!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_shortcut_change(
                     &editor,
@@ -116,11 +116,11 @@ tilo_test_env::scenario! {
                 )
                 .is_err()
         );
-        assert!(saved(&governor).is_empty());
+        assert!(saved(&owner_copy).is_empty());
 
         let own = signed(&workspace, "water", &editor, &editor_key);
         assert_eq!(
-            governor.workspace_mut().apply_shortcut_change(
+            owner_copy.workspace_mut().apply_shortcut_change(
                 &editor,
                 &ShortcutChange::Save(Box::new(own.clone())),
                 &editor_key,
@@ -128,21 +128,21 @@ tilo_test_env::scenario! {
             ),
             Ok(true)
         );
-        assert_eq!(saved(&governor), vec![own]);
+        assert_eq!(saved(&owner_copy), vec![own]);
     }
 
-    phase a_member_sees_a_saved_shortcut_and_never_the_governors_forgery;
+    phase a_member_sees_a_saved_shortcut_and_never_the_owners_forgery;
     {
-        let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
-        let workspace = governor.core.workspace.clone();
-        let (editor, _) = crate::admission_tests::add_editor(&mut governor, &authority, now);
+        let (mut owner_copy, authority, _, _, now) = crate::admission_tests::seeded();
+        let workspace = owner_copy.core.workspace.clone();
+        let (editor, _) = crate::admission_tests::add_editor(&mut owner_copy, &authority, now);
         let editor_key = SigningKey::from_bytes(&[6; 32]);
-        let governor_device = authority.verifying_key().to_bytes();
-        let mut member = governor.clone();
+        let owner_copy_device = authority.verifying_key().to_bytes();
+        let mut member = owner_copy.clone();
 
         // The editor's save, relayed by the owner's device, reaches the member.
         let own = signed(&workspace, "water", &editor, &editor_key);
-        governor
+        owner_copy
             .workspace_mut()
             .apply_shortcut_change(
                 &editor,
@@ -152,15 +152,15 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         member
-            .receive(governor_device, governor.workspace_message(), now)
+            .receive(owner_copy_device, owner_copy.workspace_message(), now)
             .unwrap();
         assert_eq!(saved(&member), vec![own.clone()]);
 
-        // The governor writing a shortcut that names the editor, with no device
-        // of the editor's having signed it, is refused where it arrives.
+        // The owner's device writing a shortcut that names the editor, with no
+        // device of the editor's having signed it, is refused where it arrives.
         let mut forged = shortcut("ferns");
         forged.saved_by = Some(hex::encode(editor.user_public_key));
-        let mut document = governor.admitted_workspace().unwrap().clone();
+        let mut document = owner_copy.admitted_workspace().unwrap().clone();
         tilo_desktop_model::projection::project_workspace_shortcuts(
             &mut document,
             &[
@@ -170,8 +170,8 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         document.commit();
-        governor.core.workspace_doc = Some(document.into());
-        let _ = member.receive(governor_device, governor.workspace_message(), now);
+        owner_copy.core.workspace_doc = Some(document.into());
+        let _ = member.receive(owner_copy_device, owner_copy.workspace_message(), now);
         assert_eq!(saved(&member), vec![own], "the forgery never lands");
     }
 
@@ -179,22 +179,22 @@ tilo_test_env::scenario! {
     {
         use crate::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
-        let (mut governor, _, device, cert, now) = crate::admission_tests::seeded();
-        let workspace = governor.core.workspace.clone();
+        let (mut owner_copy, _, device, cert, now) = crate::admission_tests::seeded();
+        let workspace = owner_copy.core.workspace.clone();
         let water = signed(&workspace, "water", &cert, &device);
         // What the session's action API writes when a person saves a shortcut.
         let save = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
             ShortcutChange::Save(Box::new(water.clone())),
         ));
         assert_eq!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_workspace_membership_command(&cert, &save, &device, now),
             Ok(true)
         );
-        assert_eq!(saved(&governor), vec![water.clone()]);
+        assert_eq!(saved(&owner_copy), vec![water.clone()]);
         assert_eq!(
-            governor.workspace().workspace_shortcuts(),
+            owner_copy.workspace().workspace_shortcuts(),
             vec![tilo_automation::SavedShortcut::encode(&water)],
             "the shell and every reader see the shortcut the workspace holds"
         );
@@ -203,11 +203,11 @@ tilo_test_env::scenario! {
             ShortcutChange::Delete("water".into()),
         ));
         assert_eq!(
-            governor
+            owner_copy
                 .workspace_mut()
                 .apply_workspace_membership_command(&cert, &delete, &device, now),
             Ok(true)
         );
-        assert!(saved(&governor).is_empty());
+        assert!(saved(&owner_copy).is_empty());
     }
 }

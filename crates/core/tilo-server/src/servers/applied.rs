@@ -5,7 +5,7 @@
 //! one applies the document it reads:
 //!
 //! - Which workspaces a server holds is each workspace's governance. A device
-//!   that governs a workspace hands a planned machine the workspaces its plan
+//!   that administers a workspace hands a planned machine the workspaces its plan
 //!   names once, and takes a retired server out; every enrolled server takes
 //!   part in the Servers workspace. Every holder of the Servers workspace does
 //!   that, server or desktop alike ([`super::attach::attach_named`]).
@@ -88,7 +88,7 @@ pub struct Applied {
 }
 
 /// Apply the admin workspace's [`SERVERS`] document as it stands: attach and
-/// detach the servers of the workspaces this device governs, and apply this
+/// detach the servers of the workspaces this device hosts, and apply this
 /// device's own entry.
 ///
 /// # Errors

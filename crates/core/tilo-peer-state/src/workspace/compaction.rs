@@ -39,7 +39,7 @@ pub enum CompactionRefusal {
     Unproven(String),
     /// The device that made the base is of a person the base's member list
     /// does not name as the workspace's owner or one of its administrators.
-    NotGoverning,
+    NotAdministrator,
     /// The document starts neither at the workspace's founding by its owner
     /// nor at a base.
     NotFounded,
@@ -52,7 +52,7 @@ impl std::fmt::Display for CompactionRefusal {
             Self::Unproven(reason) => {
                 write!(f, "the workspace's base does not prove its maker: {reason}")
             }
-            Self::NotGoverning => f.write_str(
+            Self::NotAdministrator => f.write_str(
                 "the workspace's base was made by a device of someone who is neither its owner \
                  nor one of its administrators",
             ),
@@ -168,8 +168,8 @@ fn compacted_under(
         .fork_at(&[base])
         .map_err(|error| CompactionRefusal::Unproven(error.to_string()))?;
     let person = signed.author.user_public_key;
-    if !governs(&at_base, workspace, owner, &person) {
-        return Err(CompactionRefusal::NotGoverning);
+    if !administers(&at_base, workspace, owner, &person) {
+        return Err(CompactionRefusal::NotAdministrator);
     }
     Ok(person)
 }
@@ -179,7 +179,12 @@ fn compacted_under(
 /// knows, if it knows one: the list replays from `owner`, or moved to its
 /// owner from them by the transfers it carries, which only an owner's device
 /// signs.
-fn governs(doc: &AutoCommit, workspace: &str, owner: Option<&[u8; 32]>, person: &[u8; 32]) -> bool {
+fn administers(
+    doc: &AutoCommit,
+    workspace: &str,
+    owner: Option<&[u8; 32]>,
+    person: &[u8; 32],
+) -> bool {
     let policy = crate::members::replay(doc, workspace);
     if !known_owner(doc, &policy, owner) {
         return false;

@@ -5,7 +5,7 @@
 //! each member holds it on, its name and saved grant sets, its apps' sandbox
 //! capabilities, its media policy, checkpoints and hosts) is changed by a batch
 //! that carries an operation naming each part it changes
-//! ([`admit_operations`]). Each part is judged by the action that governs it,
+//! ([`admit_operations`]). Each part is judged by the action that decides it,
 //! against its writer's role where they made the batch: a role holds what it
 //! is given, so the owner's role holds every part by default, and anyone else
 //! writes what their role and grants let them ([`settings`], [`sandbox`]).
@@ -27,7 +27,7 @@ use tilo_action_policy::{Context, Role, WorkspacePolicy, roles::governance};
 
 use super::{GovernanceRow, WorkspaceGovernance, governance_of};
 use crate::members::{MembershipOpCommand, SignedMembershipOp};
-use crate::state::GovernedIdentity;
+use crate::state::DeviceRow;
 
 /// How far ahead of a receiver's clock an admission may say it was made:
 /// devices' clocks differ, and a receiver judges an invitation's expiry at
@@ -140,8 +140,8 @@ pub fn position(
 }
 
 /// Whether a batch that adds operations changes only what they admit: every
-/// governed part it changes is one an operation it adds names, and its
-/// author's role permits it.
+/// part of the governance it changes is one an operation it adds names, and
+/// its author's role permits it.
 ///
 /// # Errors
 /// A part is changed without an operation naming it, or by an author whose role
@@ -157,8 +157,8 @@ pub fn admit_operations(
     workspace: &str,
     (now_ns, keeps_checkpoints): (u64, bool),
 ) -> Result<(), MembershipRefusal> {
-    // A workspace this device does not hold yet is its governor's to send: the
-    // operations of a first answer from anyone else govern nothing here.
+    // A workspace this device does not hold yet is its host's to send: the
+    // operations of a first answer from anyone else change nothing here.
     let Some(before) = before else {
         return Err(MembershipRefusal::NotMembership);
     };
@@ -200,9 +200,10 @@ pub fn admit_base_operations(
     )
 }
 
-/// Whether every governed part `candidate` changes from `before` is one an operation it adds
-/// names, permitted to its author from `at` to `after`. `written` is what the batch wrote on
-/// `before`, read where it wrote it; with none, both are read whole.
+/// Whether every part of the governance `candidate` changes from `before` is one an
+/// operation it adds names, permitted to its author from `at` to `after`. `written` is
+/// what the batch wrote on `before`, read where it wrote it; with none, both are read
+/// whole.
 fn operations_name_rows(
     (before, candidate): (&AutoCommit, &AutoCommit),
     (at, after): (&AutoCommit, &AutoCommit),
@@ -511,7 +512,7 @@ fn added_ops(
         .filter_map(|bytes| {
             tilo_failure::ignored!(
                 "an operation that does not prove its author, or cannot be keyed by its own \
-                 id, governs nothing",
+                 id, changes nothing",
                 SignedMembershipOp::verified_stored(&bytes).ok()
             )
         })
@@ -676,8 +677,8 @@ fn entered(
     else {
         return Err(refused(ENTRY_NAMES_ANOTHER_DEVICE));
     };
-    let identity = GovernedIdentity::decode(row)
-        .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
+    let identity =
+        DeviceRow::decode(row).map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
     let Some(receipt) = identity.entry else {
         return Err(refused(ENTRY_NAMES_ANOTHER_DEVICE));
     };
@@ -1110,7 +1111,7 @@ fn redemptions(
             let row = written
                 .identities
                 .get(&device)
-                .map(|bytes| GovernedIdentity::decode(bytes))
+                .map(|bytes| DeviceRow::decode(bytes))
                 .transpose()
                 .map_err(|error| malformed(error.to_string()))?;
             if !row.is_some_and(|row| {
@@ -1214,8 +1215,7 @@ fn identities(
     elsewhere: &[String],
 ) -> Result<(), MembershipRefusal> {
     let decoded = |bytes: &[u8]| {
-        GovernedIdentity::decode(bytes)
-            .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
+        DeviceRow::decode(bytes).map_err(|error| MembershipRefusal::Malformed(error.to_string()))
     };
     let person_of =
         |bytes: &[u8]| decoded(bytes).map(|row| hex::encode(row.device_cert.user_public_key));
@@ -1311,10 +1311,9 @@ fn readmits(
         })?;
     let key = hex::encode(device);
     let decoded = |bytes: &[u8]| {
-        GovernedIdentity::decode(bytes)
-            .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
+        DeviceRow::decode(bytes).map_err(|error| MembershipRefusal::Malformed(error.to_string()))
     };
-    let encoded = |row: &GovernedIdentity| {
+    let encoded = |row: &DeviceRow| {
         row.encode()
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
     };
@@ -1365,10 +1364,7 @@ fn readmits(
 /// device out: it marks the row removed, records revocations or withdraws an
 /// agent's delegation, and gives the device nothing `held` did not, whether a
 /// certificate, an admission or a delegation.
-fn takes_out(
-    held: &GovernedIdentity,
-    mut written: GovernedIdentity,
-) -> Result<bool, MembershipRefusal> {
+fn takes_out(held: &DeviceRow, mut written: DeviceRow) -> Result<bool, MembershipRefusal> {
     if held.removed && !written.removed {
         return Ok(false);
     }
@@ -1391,7 +1387,7 @@ fn takes_out(
     }
     written.removed = held.removed;
     written.revocations.clone_from(&held.revocations);
-    let encoded = |row: &GovernedIdentity| {
+    let encoded = |row: &DeviceRow| {
         row.encode()
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
     };

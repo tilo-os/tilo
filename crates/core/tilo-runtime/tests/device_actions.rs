@@ -259,7 +259,7 @@ impl B {
         let now = tilo_clock::wall();
         assert!(
             self.workspace
-                .write(|peer| peer.governance_mut().publish_governed_revocations(
+                .write(|peer| peer.governance_mut().publish_member_revocations(
                     &[entry],
                     &self.key.0,
                     now

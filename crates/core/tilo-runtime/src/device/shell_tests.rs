@@ -37,7 +37,7 @@ fn policy(
         .peer(workspace)
         .expect("this device keeps the workspace")
         .governance()
-        .governed_policy()
+        .member_policy()
         .expect("the workspace's policy reads")
 }
 

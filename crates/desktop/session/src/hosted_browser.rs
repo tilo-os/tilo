@@ -87,7 +87,7 @@ pub struct HostedBrowser {
     /// Whether it asks its daemon for launches yet.
     asking: bool,
     /// Whether its window shares are written by the workspace's host yet.
-    governed: bool,
+    shares_through_host: bool,
     /// Whether Browser's vault items are asked of the host yet.
     lends_items: bool,
     /// The records Browser was launched on and has not opened yet.
@@ -122,14 +122,14 @@ enum Window {
     Failed,
 }
 
-/// The window shares' governor: the workspace's host writes each share of this device's windows,
-/// asked through the daemon.
-struct HostGoverns {
+/// Writes this session's window shares through the workspace's host: it writes each share of this
+/// device's windows, asked through the daemon.
+struct HostShares {
     dispatch: Dispatch,
     caller: Caller,
 }
 
-impl crate::window_share::ShareGovernor for HostGoverns {
+impl crate::window_share::ShareSource for HostShares {
     fn share(&self, workspace: &str, app_id: &str, tab: u64, shared: bool) {
         if Some(workspace) != self.caller.workspace() {
             return;
@@ -216,7 +216,7 @@ impl HostedBrowser {
             arrived,
             sender,
             asking: false,
-            governed: false,
+            shares_through_host: false,
             lends_items: false,
             records: Vec::new(),
             launches: Vec::new(),
@@ -305,7 +305,7 @@ impl HostedBrowser {
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived();
         self.ask_for_launches();
-        self.govern(shared);
+        self.share_through_host(shared);
         if !held(shared, &self.workspace) {
             return;
         }
@@ -405,18 +405,18 @@ impl HostedBrowser {
 
     /// Have the workspace's host write this session's window shares, before any window is shared:
     /// a share the session wrote itself would be dropped.
-    fn govern(&mut self, shared: &Shared) {
-        if self.governed {
+    fn share_through_host(&mut self, shared: &Shared) {
+        if self.shares_through_host {
             return;
         }
         let Some(dispatch) = self.dispatch.clone() else {
             return;
         };
-        self.governed = true;
+        self.shares_through_host = true;
         shared
             .window_shares
             .borrow_mut()
-            .governed_by(std::rc::Rc::new(HostGoverns {
+            .shares_from(std::rc::Rc::new(HostShares {
                 dispatch,
                 caller: self.caller(),
             }));

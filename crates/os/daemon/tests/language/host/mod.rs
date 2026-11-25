@@ -2,7 +2,7 @@
 //! reach it the ways production reaches it.
 //!
 //! [`run`] starts the daemon (`tilo-runtime`'s [`Daemon`]) exactly as a computer starts it: the
-//! person is founded in an identity store of the test's own, and the daemon governs their
+//! person is founded in an identity store of the test's own, and the daemon serves their
 //! workspace, answers its device's dispatch on its endpoint (`tilo-actions/1`), takes its
 //! keys' sessions and runs its workspaces' agents and triggers. Everything a test does goes
 //! through the paths a person, an SDK, an agent or another device uses:

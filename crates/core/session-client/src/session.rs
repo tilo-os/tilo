@@ -48,7 +48,7 @@ use crate::membership_check::PeerStore;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::direct::{self, Answered, DirectSync, Kept as Answer};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_peer_state::owner::{NativeCommittedView, NativeWorkspaceOwner};
+use tilo_peer_state::owner::{DeviceWorkspaces, NativeCommittedView};
 use tilo_peer_state::transport::Transport;
 use tilo_server_client::LinkError;
 use tilo_server_client::link::Purpose;
@@ -442,7 +442,7 @@ fn session_task(
 fn session_engine(
     config: &PeerConfig,
     signer: &Arc<dyn tilo_server_client::DeviceSigner>,
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
 ) -> Arc<crate::engine::Engine> {
     Arc::new(crate::engine::Engine::holding(
         owner.clone(),
@@ -566,7 +566,7 @@ struct Task {
     live_sessions: live_session::LiveSessions,
     record: crate::membership_check::PeerEntry,
     /// The device's replica of every workspace it holds, which the links own.
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     /// This device's side of the workspaces' encrypted channels: the engine every member runs,
     /// here as a reader that asks for access and follows the members' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,
@@ -1676,7 +1676,7 @@ impl Task {
                 if places_workspaces(&self.config.cert, &self.config.server_cert) {
                     // A workspace of this device's person is the host's to place: its
                     // `workspace.administer` action creates it under `name` unless the host
-                    // governs it already, and admits this device as its owner. The session
+                    // already has it, and admits this device as its owner. The session
                     // joins it once the host answers, whatever it answers; the workspace's
                     // admission decides.
                     if !self.placing.contains_key(&workspace_id) {
@@ -1946,7 +1946,7 @@ impl Task {
     }
 
     /// Ask the host to place the workspace this session was told to join ([`Cmd::JoinPlaced`]):
-    /// it creates the workspace under the name given unless it governs it already, and admits
+    /// it creates the workspace under the name given unless it has it already, and admits
     /// this device as its owner. The workspace joins when the host answers, whatever it
     /// answers, so a session with no actions link asks again on its next connection
     /// ([`Self::dial_all`]).
@@ -2401,10 +2401,10 @@ impl Task {
     }
 }
 
-/// Governs `owner`'s channels as a reader: their state sealed under `vault`, signed by its
+/// Opens `owner`'s channels as a reader: their state sealed under `vault`, signed by its
 /// ownership, and their readers its workspaces'.
 fn open_keys(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     state: &crate::membership_check::StoredKeys,
     vault: [u8; 32],
     signer: &Arc<dyn tilo_server_client::DeviceSigner>,
@@ -2433,7 +2433,7 @@ fn open_keys(
 /// The key service of a session beside its device's own that was handed none of the device's
 /// ([`start_session_lent`]): it holds no keys and asks for none.
 fn keyless_keys(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     checks: &Arc<tilo_workspace_keys::SealChecks>,
 ) -> tilo_workspace_keys::WorkspaceKeys {
     tilo_workspace_keys::WorkspaceKeys::without_store(
@@ -4417,10 +4417,7 @@ impl Task {
     /// What `workspace_id`'s governance calls each of its people, by person (root key, hex).
     fn member_names(&self, workspace_id: WorkspaceId) -> Option<BTreeMap<String, String>> {
         self.with_workspace(workspace_id, |view| {
-            let list = view
-                .peer()
-                .governance()
-                .governed_members(tilo_clock::wall())?;
+            let list = view.peer().governance().member_list(tilo_clock::wall())?;
             Ok(list
                 .members
                 .iter()
@@ -4438,10 +4435,7 @@ impl Task {
     /// (hex) to person (root key, hex).
     fn member_devices(&self, workspace_id: WorkspaceId) -> Option<BTreeMap<String, String>> {
         self.with_workspace(workspace_id, |view| {
-            let list = view
-                .peer()
-                .governance()
-                .governed_members(tilo_clock::wall())?;
+            let list = view.peer().governance().member_list(tilo_clock::wall())?;
             Ok(list
                 .members
                 .iter()

@@ -25,7 +25,7 @@ lost = "The Rust Canvas app's artworks, which its own surface held. The tilolang
 kind = "chat.agent"
 app = "chat"
 change = "removed"
-conversion = "crates/core/tilo-workspace-service/src/workspaces/agent_roster.rs:copy_agents"
+lost = "The agents a workspace kept under Chat's own chat.agent document before its agents were the workspace's. Builds since copied them into the workspace's list once as it opened; this build no longer reads the old document, so a workspace last opened before that copy starts with the agents its list holds and none of the old ones."
 
 [[change]]
 kind = "canvas.recent-artworks"

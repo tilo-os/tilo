@@ -1,14 +1,14 @@
-//! Per-route storage of the governor's checkpoint coverage and durability
+//! Per-route storage of the workspace's checkpoint coverage and durability
 //! receipts in the workspace CRDT.
 //!
-//! Each governed value is a map object keyed by route whose values are the
+//! Each stored value is a map object keyed by route whose values are the
 //! route's own canonical postcard bytes, so a commit rewrites only the routes
 //! it changed instead of growing the workspace history by the whole map.
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
 
-/// The layout of one governed route map: its workspace map key.
+/// The layout of one route map: its workspace map key.
 #[derive(Clone, Copy)]
 pub(crate) struct Layout {
     pub(crate) routes: &'static str,
@@ -18,7 +18,7 @@ fn routes_object(doc: &AutoCommit, layout: Layout) -> Result<Option<ObjId>, Stri
     match doc.get(ROOT, layout.routes).map_err(|e| e.to_string())? {
         None => Ok(None),
         Some((Value::Object(ObjType::Map), id)) => Ok(Some(id)),
-        Some(_) => Err(format!("governed {} is not a route map", layout.routes)),
+        Some(_) => Err(format!("{} is not a route map", layout.routes)),
     }
 }
 
@@ -37,15 +37,15 @@ pub(crate) fn route_bytes(
                 ScalarValue::Bytes(bytes) => {
                     rows.insert(key, bytes.clone());
                 }
-                _ => return Err(format!("governed {} route is not bytes", layout.routes)),
+                _ => return Err(format!("{} route is not bytes", layout.routes)),
             },
-            _ => return Err(format!("governed {} route is not bytes", layout.routes)),
+            _ => return Err(format!("{} route is not bytes", layout.routes)),
         }
     }
     Ok(Some(rows))
 }
 
-/// Deterministic identity of the whole governed value, for "did governance
+/// Deterministic identity of the whole map, for "did governance
 /// change" comparisons. `None` when the map is absent.
 pub(crate) fn identity(doc: &AutoCommit, layout: Layout) -> Option<Vec<u8>> {
     let routes = match route_bytes(doc, layout) {

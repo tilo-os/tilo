@@ -28,13 +28,13 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId};
 
-use super::super::tests::{caller, governed};
+use super::super::tests::{caller, hosted};
 use super::turn_use_tests::on_turn;
 use super::vault_tests::{ask, ask_at, files_holding};
 use super::web_call_tests::logged;
 use crate::work::{HostConnections, Order, Turn, takes_turn_in};
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 use crate::workspaces::vault_release::{self as release, AppProcess};
 
 /// The app whose connection is released a token.
@@ -174,10 +174,10 @@ const AT_ONCE: Order = Order {
 #[tokio::test]
 async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let token = kept(&service, workspace_id, &owner, (GATEWAY, TOKEN)).await;
     let other = kept(
         &service,
@@ -387,10 +387,10 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
 #[tokio::test]
 async fn every_other_caller_is_refused_a_release_saying_why() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let token = kept(&service, workspace_id, &owner, (GATEWAY, TOKEN)).await;
     let through_the_vault = |caller: Caller| {
         let service = &service;
@@ -512,10 +512,10 @@ fn find_of(app: &str, purpose: &str) -> InvokeRequest {
 #[tokio::test]
 async fn a_kept_secret_is_adopted_once_tagged_found_and_asked_before_its_release() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _workspace_id, _service) = governed(workspaces).await;
+    let (workspace, _workspace_id, _service) = hosted(workspaces).await;
     let person = hex::encode(owner.user_public_key);
     let (lines, _guard) = logged();
 
@@ -658,10 +658,10 @@ async fn a_kept_secret_is_adopted_once_tagged_found_and_asked_before_its_release
 #[tokio::test]
 async fn entries_of_one_purpose_are_each_adopted() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _workspace_id, _service) = governed(workspaces).await;
+    let (workspace, _workspace_id, _service) = hosted(workspaces).await;
     let person = hex::encode(owner.user_public_key);
 
     let first = workspaces
@@ -778,10 +778,10 @@ fn keep_of(purpose: &str, value: &str, replacing: Option<&ItemRef>) -> InvokeReq
 #[tokio::test]
 async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     workspaces.run_connections(Arc::new(BridgeAndReader));
     for app in [BRIDGE, READER] {
         takes_turn_in(
@@ -983,10 +983,10 @@ async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
 #[tokio::test]
 async fn every_other_caller_is_refused_a_keep_saying_why() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let persons = kept(&service, workspace_id, &owner, (GATEWAY, OTHER)).await;
     let through_the_vault = |caller: Caller| {
         let service = &service;
@@ -1099,10 +1099,10 @@ async fn every_other_caller_is_refused_a_keep_saying_why() {
 #[tokio::test]
 async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_kept() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let records = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
     records.keep_no_secrets(workspaces.secret_parameters());
     workspaces.serve_invocations(Arc::clone(&records));
@@ -1309,10 +1309,10 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
 #[tokio::test]
 async fn a_read_given_once_releases_the_item_once() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let token = kept(&service, workspace_id, &owner, (GATEWAY, TOKEN)).await;
     workspaces.run_connections(Arc::new(Bridge));
     takes_turn_in(

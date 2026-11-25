@@ -902,7 +902,7 @@ holds and what the host reads from it.
   and the change is committed as the app acting by itself (`Actor::App`). A second run of the
   same period or instant is refused where changes are applied in order, so two devices cannot
   both count a run.
-- **One device runs them: the workspace's origin.** Only the replica that governs the workspace
+- **One device runs them: the workspace's origin.** Only the device that hosts the workspace
   (the same one that runs migrations) invokes triggers, so nothing has to be elected and no
   device depends on being asked. A device that opens the app later reads the marks and finds
   nothing due.

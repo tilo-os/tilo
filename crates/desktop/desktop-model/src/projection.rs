@@ -423,7 +423,7 @@ pub fn localise_tile(
                 note: String::new(),
             },
         },
-        // A governed workspace's owner places in-process kinds; a member that bound
+        // A workspace's owner places in-process kinds; a member that bound
         // its own instance of that app to the tab keeps it, as does a device whose
         // window of that app waits for the app to open it.
         placeholder @ (TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }) => {

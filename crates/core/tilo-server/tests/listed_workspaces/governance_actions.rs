@@ -1,4 +1,4 @@
-//! A governed workspace's administration answers as `tilo.workspace` actions over
+//! A hosted workspace's administration answers as `tilo.workspace` actions over
 //! the device action service, by the same decision as its wire entries: the owner's
 //! device invites; a member the workspace grants nothing is not offered the action. The
 //! host's own operations answer the same way as `tilo.host` actions, to the server's own

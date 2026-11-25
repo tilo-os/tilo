@@ -36,8 +36,8 @@ pub type HeldOps = BTreeMap<OpId, std::sync::Arc<SignedMembershipOp>>;
 
 /// Every operation `doc` holds, by id, that proves its author. A blob that
 /// does not decode, or whose signature is not its author device's, is kept in
-/// the document and ignored here: admission refuses such a blob, and a device
-/// that was sent one another way is still never governed by it.
+/// the document and ignored here: admission refuses such a blob, and one sent
+/// another way still never counts.
 #[must_use]
 pub fn ops(doc: &AutoCommit) -> HeldOps {
     raw(doc)
@@ -45,7 +45,7 @@ pub fn ops(doc: &AutoCommit) -> HeldOps {
         .filter_map(|bytes| {
             tilo_failure::ignored!(
                 "an operation that does not prove its author, or cannot be keyed by its own id, \
-                 governs nothing",
+                 counts for nothing",
                 SignedMembershipOp::verified_stored(&bytes).ok()
             )
         })
@@ -253,7 +253,7 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
         .filter_map(|bytes| {
             tilo_failure::ignored!(
                 "an operation that does not prove its author, or cannot be keyed by its own id, \
-                 governs nothing",
+                 counts for nothing",
                 SignedMembershipOp::verified_stored(&bytes).ok()
             )
         })
@@ -685,7 +685,7 @@ pub fn replay_declared(doc: &AutoCommit) -> WorkspacePolicy {
     replay(doc, &workspace)
 }
 
-/// The people the workspace `doc` governs lists as its owner and members, by
+/// The people the workspace `doc` names in its governance as its owner and members, by
 /// person id: who still holds what they made on its desktop
 /// ([`tilo_desktop_model::ownership::released`]). `None` when it lists nobody
 /// (not heard yet), so nothing is taken as released before the list arrives.

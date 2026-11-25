@@ -18,7 +18,7 @@ use tilo_actions::remote::{ActionCallError, Caller};
 use super::accounts_tests::asking;
 use super::turn_use_tests::{dispatched, narrowed_elsewhere, narrowing, on_turn};
 use crate::workspaces::hosted_use::HostedTurn;
-use crate::workspaces::tests::{governor, test_host as test_server};
+use crate::workspaces::tests::{hosting_device, test_host as test_server};
 use crate::workspaces::{WorkspaceId, Workspaces};
 
 const ACCOUNT: &str = "caldav:ada@calendar.example.test";
@@ -101,11 +101,11 @@ async fn on_show(workspaces: &Workspaces, workspace: &str) -> Vec<String> {
 #[tokio::test]
 async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_server(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let (workspace, workspace_id, _service) =
-        crate::workspaces::actions::tests::governed(&workspaces).await;
+        crate::workspaces::actions::tests::hosted(&workspaces).await;
     let ada = crate::workspaces::actions::tests::admit(&workspaces, &workspace, &owner, 1).await;
     keep_the_calendar(&workspaces, &workspace).await;
 
@@ -194,11 +194,11 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
 #[tokio::test]
 async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_server(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let (workspace, workspace_id, _service) =
-        crate::workspaces::actions::tests::governed(&workspaces).await;
+        crate::workspaces::actions::tests::hosted(&workspaces).await;
     let ada = crate::workspaces::actions::tests::admit(&workspaces, &workspace, &owner, 1).await;
     let bo = crate::workspaces::actions::tests::admit(&workspaces, &workspace, &owner, 2).await;
 

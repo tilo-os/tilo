@@ -1,4 +1,4 @@
-//! Governor-authenticated replay floors for exact retained checkpoints.
+//! Host-authenticated replay floors for exact retained checkpoints.
 //! Carried in the existing workspace CRDT; this does not change neighbour v1 bytes.
 pub(crate) mod read;
 use automerge::AutoCommit;
@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 /// Per-route map: a commit rewrites only the routes it changed.
 pub const FIELD_V2: &str = "document_checkpoint_coverage_v2";
-pub(crate) const LAYOUT: crate::governed_routes::Layout =
-    crate::governed_routes::Layout { routes: FIELD_V2 };
+pub(crate) const LAYOUT: crate::route_maps::Layout = crate::route_maps::Layout { routes: FIELD_V2 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coverage {
     pub workspace: String,
@@ -19,10 +18,10 @@ pub struct Coverage {
     pub sequence: u64,
     pub watermarks: BTreeMap<String, u64>,
 }
-/// Identity of the whole governed coverage for "unchanged"
+/// Identity of the workspace's whole coverage for "unchanged"
 /// comparisons; `None` when the workspace carries none.
-pub fn governed_bytes(doc: &AutoCommit) -> Option<Vec<u8>> {
-    crate::governed_routes::identity(doc, LAYOUT)
+pub fn coverage_bytes(doc: &AutoCommit) -> Option<Vec<u8>> {
+    crate::route_maps::identity(doc, LAYOUT)
 }
 
 /// One route value. `Compact` drops what the route key and fixed-width
@@ -109,7 +108,7 @@ pub(crate) fn encode_route(key: &str, coverage: &Coverage) -> Result<Vec<u8>, St
 }
 /// One stored route value.
 pub(crate) fn decode_value(bytes: &[u8]) -> Result<RouteValue, String> {
-    if let Some(value) = crate::governed_routes::exact::<RouteValue>(bytes) {
+    if let Some(value) = crate::route_maps::exact::<RouteValue>(bytes) {
         return Ok(value);
     }
     Err(format!(
@@ -128,7 +127,7 @@ fn stored_as(key: &str, row: &Coverage, bytes: &[u8]) -> bool {
 }
 /// Raw route values of the workspace (empty without the map).
 pub(crate) fn route_values(doc: &AutoCommit) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    Ok(crate::governed_routes::route_bytes(doc, LAYOUT)?.unwrap_or_default())
+    Ok(crate::route_maps::route_bytes(doc, LAYOUT)?.unwrap_or_default())
 }
 /// The coverage rows recorded in `doc`.
 pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, Coverage>, String> {
@@ -155,7 +154,7 @@ pub fn put(doc: &mut AutoCommit, coverage: Coverage) -> Result<(), String> {
     put_all(doc, vec![coverage])
 }
 /// Publish `coverages` and, in the SAME workspace change, the complete durable
-/// receipt set `receipts(new coverage rows)` (the governor's durable publish).
+/// receipt set `receipts(new coverage rows)` (the host's durable publish).
 /// One change per durable publication instead of a coverage change plus a
 /// receipt change, and receipts for the just-published coverage store only
 /// their generation.
@@ -168,7 +167,7 @@ pub(crate) fn put_all_with_receipts(
 ) -> Result<(), String> {
     let (rows, next) = next_rows(doc, coverages)?;
     let receipts = crate::durability::encode_all(&receipts(&rows)?, &rows)?;
-    crate::governed_routes::write_raw(
+    crate::route_maps::write_raw(
         doc,
         &[(LAYOUT, &next), (crate::durability::LAYOUT, &receipts)],
     )?;
@@ -202,11 +201,11 @@ pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<
     // change, before that route's coverage changes.
     let pinned = crate::durability::pin_before_coverage_change(doc, &next)?;
     match pinned {
-        Some(receipts) => crate::governed_routes::write_raw(
+        Some(receipts) => crate::route_maps::write_raw(
             doc,
             &[(LAYOUT, &next), (crate::durability::LAYOUT, &receipts)],
         )?,
-        None => crate::governed_routes::write_raw(doc, &[(LAYOUT, &next)])?,
+        None => crate::route_maps::write_raw(doc, &[(LAYOUT, &next)])?,
     };
     Ok(())
 }

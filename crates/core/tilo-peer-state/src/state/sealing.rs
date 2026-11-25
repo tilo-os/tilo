@@ -26,7 +26,7 @@ impl StatePeer {
             workspace: self.core.workspace.clone(),
         }
     }
-    /// Install the governed seed workspace and documents as the authority.
+    /// Install the signed seed workspace and documents as the authority.
     pub fn install_seed(
         &mut self,
         seed: SeedState,
@@ -82,12 +82,12 @@ impl StatePeer {
         self.receive(key.device_public_key(), message.clone(), now)?;
         Ok(message)
     }
-    /// Govern the checkpoint `envelope`, this device's whole-record write of `(app, record)`,
+    /// Cover the checkpoint `envelope`, this device's whole-record write of `(app, record)`,
     /// before it is admitted: record the coverage row saying which history the workspace
     /// acknowledges it keeps, as [`Self::prepare_signed_mutation`] records it for a snapshot it
     /// publishes itself. A write this device committed through the workspace's ordered
     /// persistence reaches the replica without passing that publication, and the replica holds
-    /// a checkpoint back until its coverage is governed
+    /// a checkpoint back until its coverage is recorded
     /// ([`crate::state::StatePeer::receive_from`]'s `CheckpointCoverage`).
     ///
     /// Nothing is written for a write that is no whole record, for one another device signed,
@@ -122,11 +122,11 @@ impl StatePeer {
         if !self.core.documents.contains_key(&route) && empty_genesis(bytes) {
             return Ok(());
         }
-        if !self.signed_by_governor(&author) {
+        if !self.signed_by_administrator(&author) {
             return Ok(());
         }
         if self
-            .governed_coverage(&route)?
+            .checkpoint_coverage(&route)?
             .is_some_and(|row| row.author != author)
         {
             return Ok(());
@@ -216,18 +216,18 @@ impl StatePeer {
             if !self.core.documents.contains_key(&route) && empty_genesis(bytes) {
                 return Ok((message, None));
             }
-            // The workspace governs the checkpoints its owner's devices
+            // The workspace covers the checkpoints its owner's devices
             // publish, and only theirs: a record any other writer publishes
             // is that writer's own change, merged into what a device holds.
-            if !self.signed_by_governor(author.as_bytes()) {
+            if !self.signed_by_administrator(author.as_bytes()) {
                 return Ok((message, None));
             }
-            // And of a route, the workspace governs the one its coverage row
+            // And of a route, the workspace covers the one its coverage row
             // names: the first of the owner's devices to cover it. Another of
             // their devices publishing the record as it holds it is that
             // device's own change too, so the row stays one writer's.
             if self
-                .governed_coverage(&route)?
+                .checkpoint_coverage(&route)?
                 .is_some_and(|row| row.author != *author.as_bytes())
             {
                 return Ok((message, None));
@@ -269,7 +269,7 @@ impl StatePeer {
         };
         Ok((message, coverage))
     }
-    /// An encrypted record this replica keeps as sealed history: no governed
+    /// An encrypted record this replica keeps as sealed history: no signed
     /// snapshot can carry it, since a cleartext checkpoint would downgrade it.
     pub(super) fn sealed_route(&self, route: &Route) -> bool {
         self.core
@@ -277,7 +277,7 @@ impl StatePeer {
             .get(route)
             .is_some_and(|document| document.encryption_required)
     }
-    /// The governor's receipt for `route`'s sealed history: its last
+    /// The receipt for `route`'s sealed history: its last
     /// checkpoint coverage in `rows`, acknowledging every sealed write this
     /// replica durably holds through the record's sequence watermarks.
     /// `None` for a record without checkpoint coverage.

@@ -443,7 +443,7 @@ class Thread(Resource):
         return self.action("mark_read", **args)
 
     def announce(self) -> None:
-        """Tells everyone who reads the conversation that mail came to it: who wrote, what it is called, and which account it came to while the workspace reads several of them, opening the conversation. It is run once for each arrival, on the device that governs the workspace, so each person is told once however many of their devices are open."""
+        """Tells everyone who reads the conversation that mail came to it: who wrote, what it is called, and which account it came to while the workspace reads several of them, opening the conversation. It is run once for each arrival, on the device that hosts the workspace, so each person is told once however many of their devices are open."""
         return self.action("announce")
 
     def announce_many(self, items: list[AnnounceArgs]) -> list[dict[str, Any]]:

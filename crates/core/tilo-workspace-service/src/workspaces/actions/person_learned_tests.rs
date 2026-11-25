@@ -22,9 +22,9 @@ use tilo_actions::remote::{
 };
 use tilo_user_identity::DeviceCert;
 
-use super::tests::{Answering, admit, answered, caller, governed, request, settled};
+use super::tests::{Answering, admit, answered, caller, hosted, request, settled};
 use crate::workspaces::person_learned::{self, CORRECT, FORGET, Facts, LEARN, LIST};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// The agent that works for a person on the server, by its id.
 const SCOUT: &str = "scout";
@@ -108,10 +108,10 @@ fn scout_keeps(
 macro_rules! stage {
     ($dir:ident, $served:ident, $workspaces:ident, $workspace:ident, $provider:ident, $ada:ident, $bo:ident) => {
         let $dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let $served = test_host($dir.path(), &key, &owner).await;
         let $workspaces = $served.workspaces();
-        let ($workspace, workspace_id, server) = governed($workspaces).await;
+        let ($workspace, workspace_id, server) = hosted($workspaces).await;
         let $provider = Asking {
             server: &server,
             workspace: workspace_id,
@@ -403,19 +403,19 @@ async fn nobody_else_reaches_it(
 #[tokio::test]
 async fn nobody_outside_the_workspace_reaches_what_was_learned() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let served = test_host(dir.path(), &key, &owner).await;
     let workspaces = served.workspaces();
-    let (workspace, here_id, service) = governed(workspaces).await;
+    let (workspace, here_id, service) = hosted(workspaces).await;
     let provider = Asking {
         server: &service,
         workspace: here_id,
     };
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let (elsewhere, _, _) = governed(workspaces).await;
+    let (elsewhere, _, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
-    let (_, stranger) = governor();
+    let (_, stranger) = hosting_device();
     scout_keeps(
         workspaces,
         &ada.user_public_key,

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_peer_state::owner::NativeWorkspaceOwner;
+use tilo_peer_state::owner::DeviceWorkspaces;
 use tilo_user_identity::DeviceCert;
 
 /// The durable part of a device's session.
@@ -48,7 +48,7 @@ pub trait PeerStore: tilo_server_client::MaybeSendSync {
         Ok(())
     }
     /// The stored record of the workspaces this device holds
-    /// ([`tilo_peer_state::owner::NativeWorkspaceOwner`]), if any. A store
+    /// ([`tilo_peer_state::owner::DeviceWorkspaces`]), if any. A store
     /// without it holds them for the session only.
     fn load_workspaces(&self) -> Option<Vec<u8>> {
         None
@@ -78,17 +78,6 @@ pub trait PeerStore: tilo_server_client::MaybeSendSync {
     fn keeps_workspaces_parts(&self) -> bool {
         false
     }
-    /// Keep `bytes` under `name` beside the record of the workspaces this device holds: a run of
-    /// a workspace's outgoing ownership waiting behind what the record keeps itself
-    /// ([`tilo_peer_state::owner::Store::put_ownership`]). `None` lets it go. A store without
-    /// them holds them for the session only.
-    fn save_workspaces_run(&self, _name: &str, _bytes: Option<&[u8]>) -> Result<(), String> {
-        Ok(())
-    }
-    /// The run [`Self::save_workspaces_run`] keeps under `name`, if any.
-    fn load_workspaces_run(&self, _name: &str) -> Option<Vec<u8>> {
-        None
-    }
     /// Whether [`Self::save_workspaces`] keeps what it is handed for a later session. A store that
     /// keeps nothing is handed nothing: the record of a device's workspaces holds every record it
     /// replicates, and making it after each write costs as much as all of them.
@@ -111,7 +100,6 @@ pub struct MemoryPeerStore(
     Mutex<Option<Vec<u8>>>,
     [u8; 32],
     Mutex<Option<Vec<u8>>>,
-    Mutex<BTreeMap<String, Vec<u8>>>,
     bool,
     /// The parts of the record of the workspaces this device holds, by name.
     Mutex<BTreeMap<String, Vec<u8>>>,
@@ -123,7 +111,6 @@ impl Default for MemoryPeerStore {
             Mutex::default(),
             Mutex::default(),
             rand::random(),
-            Mutex::default(),
             Mutex::default(),
             true,
             Mutex::default(),
@@ -137,7 +124,7 @@ impl MemoryPeerStore {
     #[must_use]
     pub fn for_session() -> Self {
         Self {
-            5: false,
+            4: false,
             ..Self::default()
         }
     }
@@ -175,38 +162,23 @@ impl PeerStore for MemoryPeerStore {
         Ok(())
     }
 
-    fn save_workspaces_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
-        match bytes {
-            Some(bytes) => self
-                .4
-                .lock_recover()
-                .insert(name.to_owned(), bytes.to_vec()),
-            None => self.4.lock_recover().remove(name),
-        };
-        Ok(())
-    }
-
-    fn load_workspaces_run(&self, name: &str) -> Option<Vec<u8>> {
-        self.4.lock_recover().get(name).cloned()
-    }
-
     fn keeps_workspaces(&self) -> bool {
-        self.5
+        self.4
     }
 
     fn load_workspaces_part(&self, name: &str) -> Option<Vec<u8>> {
-        self.6.lock_recover().get(name).cloned()
+        self.5.lock_recover().get(name).cloned()
     }
 
     fn save_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        self.6
+        self.5
             .lock_recover()
             .insert(name.to_owned(), bytes.to_vec());
         Ok(())
     }
 
     fn append_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        self.6
+        self.5
             .lock_recover()
             .entry(name.to_owned())
             .or_default()
@@ -244,55 +216,16 @@ struct SavedKeys {
     held: Vec<(DocumentRoute, collab_types::DocumentMutation)>,
 }
 
-/// Channel state as "tilo.browser-keys.v8" kept it, when held writes were raw document frames:
-/// the peers and reader scopes are read, and each app writes again what it wrote then.
-#[derive(Deserialize)]
-struct KeySnapshotBeforeTypedWrites {
-    keys: SavedKeysBeforeTypedWrites,
-    scopes: BTreeMap<WorkspaceId, String>,
-}
-
-#[derive(Deserialize)]
-struct SavedKeysBeforeTypedWrites {
-    peers: BTreeMap<WorkspaceId, Vec<u8>>,
-    /// Raw frames of an earlier build's held writes: what an app wrote then is written again by
-    /// its app now, so they are read and let go.
-    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
-}
-
 /// Tags stored channel state of this format: state of an earlier format does not open, and the
 /// device asks for its channels again.
 const SAVED_KEYS_TAG: &[u8] = b"tilo.browser-keys.v9";
-const SAVED_KEYS_FRAMES: &[u8] = b"tilo.browser-keys.v8";
-const SAVED_KEYS_WITHOUT_SCOPES: &[u8] = b"tilo.browser-channels.v7";
 
 impl StoredKeys {
     /// What `store` kept.
     pub(crate) fn load(store: &dyn PeerStore) -> Self {
         let saved = store
             .load_channels()
-            .and_then(|bytes| {
-                if let Some(current) = bytes.strip_prefix(SAVED_KEYS_TAG) {
-                    return postcard::from_bytes(current).ok();
-                }
-                if let Some(frames) = bytes.strip_prefix(SAVED_KEYS_FRAMES) {
-                    let older: KeySnapshotBeforeTypedWrites = postcard::from_bytes(frames).ok()?;
-                    let _ = older.keys.held.len();
-                    return Some(KeySnapshot {
-                        keys: SavedKeys {
-                            peers: older.keys.peers,
-                            held: Vec::new(),
-                        },
-                        scopes: older.scopes,
-                    });
-                }
-                let keys =
-                    postcard::from_bytes(bytes.strip_prefix(SAVED_KEYS_WITHOUT_SCOPES)?).ok()?;
-                Some(KeySnapshot {
-                    keys,
-                    scopes: BTreeMap::new(),
-                })
-            })
+            .and_then(|bytes| postcard::from_bytes(bytes.strip_prefix(SAVED_KEYS_TAG)?).ok())
             .unwrap_or_default();
         Self(Arc::new(Stored {
             saved: Mutex::new(saved),
@@ -403,9 +336,6 @@ impl key_group::PeerStates for StoredKeys {
 struct WorkspaceStore {
     store: Arc<dyn PeerStore>,
     healthy: AtomicBool,
-    /// The runs of ownership this page keeps beside its record, by name: those the record it last
-    /// kept names, and those put since. A store without runs of its own reads them from here.
-    runs: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
     /// The record kept as an index and per-workspace parts, so a publication
     /// writes what it changed rather than the record. `None` when the store
     /// keeps the record whole ([`PeerStore::keeps_workspaces_parts`]).
@@ -441,7 +371,6 @@ impl WorkspaceStore {
         Self {
             store,
             healthy: AtomicBool::new(true),
-            runs: std::sync::Mutex::default(),
             journaled: std::sync::Mutex::default(),
             keeps,
             parts,
@@ -490,27 +419,6 @@ impl tilo_peer_state::owner::Store for WorkspaceStore {
         false
     }
 
-    fn put_ownership(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
-        let hash = *blake3::hash(bytes).as_bytes();
-        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
-        if self.store.keeps_workspaces() {
-            self.store.save_workspaces_run(&name, Some(bytes))?;
-        }
-        self.runs.lock_recover().insert(name, Some(bytes.to_vec()));
-        Ok(hash)
-    }
-
-    fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
-        let kept = self.runs.lock_recover().get(&name).cloned().flatten();
-        if let Some(bytes) = kept {
-            return Ok(bytes);
-        }
-        self.store
-            .load_workspaces_run(&name)
-            .ok_or_else(|| format!("the run of ownership {name} is not kept"))
-    }
-
     fn publish(
         &self,
         next: &tilo_peer_state::owner::NativeAuthorityStorage,
@@ -539,41 +447,18 @@ impl tilo_peer_state::owner::Store for WorkspaceStore {
             return Err(error);
         }
         install();
-        // A run the record no longer names moved to ownership's head.
-        let named: std::collections::BTreeSet<String> = next.ownership_runs().collect();
-        let gone: Vec<String> = {
-            let mut runs = self.runs.lock_recover();
-            let gone = runs
-                .keys()
-                .filter(|name| !named.contains(*name))
-                .cloned()
-                .collect();
-            runs.retain(|name, _| named.contains(name));
-            gone
-        };
-        for name in gone.into_iter().filter(|_| self.keeps) {
-            if let Err(error) = self.store.save_workspaces_run(&name, None) {
-                tracing::warn!(%error, "a run of ownership the record no longer names was kept");
-            }
-        }
         Ok(())
     }
 }
 
 /// The owner holding the workspaces `device`'s session keeps in `store`, as the store last kept
 /// them. A record that no longer restores is let go: the links bring its workspaces back.
-pub(crate) fn open_owner(device: &DeviceCert, store: Arc<dyn PeerStore>) -> NativeWorkspaceOwner {
+pub(crate) fn open_owner(device: &DeviceCert, store: Arc<dyn PeerStore>) -> DeviceWorkspaces {
     let now = tilo_clock::wall();
     let workspaces = Arc::new(WorkspaceStore::new(store));
     let kept = workspaces.kept();
-    let runs = kept
-        .iter()
-        .flat_map(tilo_peer_state::owner::NativeAuthorityStorage::ownership_runs)
-        .map(|name| (name, None))
-        .collect();
-    *workspaces.runs.lock_recover() = runs;
     let owner = kept
-        .and_then(|kept| NativeWorkspaceOwner::restore(workspaces.clone(), kept, now).ok())
+        .and_then(|kept| DeviceWorkspaces::restore(workspaces.clone(), kept, now).ok())
         .filter(|owner| {
             owner.storage().held().all(|(workspace, _)| {
                 owner
@@ -586,13 +471,11 @@ pub(crate) fn open_owner(device: &DeviceCert, store: Arc<dyn PeerStore>) -> Nati
     {
         journaled.resume(owner);
     }
-    owner.unwrap_or_else(|| NativeWorkspaceOwner::empty(workspaces))
+    owner.unwrap_or_else(|| DeviceWorkspaces::empty(workspaces))
 }
 
 /// The workspaces `owner` holds, as its session joined them.
-pub(crate) fn held_workspaces(
-    owner: &NativeWorkspaceOwner,
-) -> std::collections::BTreeSet<WorkspaceId> {
+pub(crate) fn held_workspaces(owner: &DeviceWorkspaces) -> std::collections::BTreeSet<WorkspaceId> {
     owner
         .storage()
         .held()
@@ -603,33 +486,6 @@ pub(crate) fn held_workspaces(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn saved_keys_without_document_routes_still_open() -> Result<(), Box<dyn std::error::Error>> {
-        let store = MemoryPeerStore::default();
-        let workspace = WorkspaceId::new();
-        let mut encoded = SAVED_KEYS_WITHOUT_SCOPES.to_vec();
-        postcard::to_io(
-            &SavedKeys {
-                peers: BTreeMap::from([(workspace, b"old sealed keys".to_vec())]),
-                held: Vec::new(),
-            },
-            &mut encoded,
-        )?;
-        store.save_channels(&encoded)?;
-        let reopened = StoredKeys::load(&store);
-        if tilo_workspace_keys::KeyStorage::peers(&reopened)
-            .read(workspace)?
-            .as_deref()
-            != Some(b"old sealed keys")
-        {
-            return Err("the earlier keys changed on reopen".into());
-        }
-        if !tilo_workspace_keys::KeyStorage::scopes(&reopened).is_empty() {
-            return Err("the earlier keys unexpectedly have document scopes".into());
-        }
-        Ok(())
-    }
 
     #[test]
     fn channel_state_and_held_edits_survive_reopen() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,13 +1,13 @@
 //! A member sharing one record, or one item of it, with a workspace this server
-//! governs ([`tilo_action_policy::share`]).
+//! hosts ([`tilo_action_policy::share`]).
 //!
 //! A share is grants on the shared resource's node. A member's device
 //! writes its own shares into the workspace; a page, which holds no copy of the
 //! workspace, asks this host through its `/workspaces` requests (`super::pages`), and
-//! the host writes the same grants as the workspace's governor, decided as every
+//! the host writes the same grants as the workspace's host, decided as every
 //! receiver decides a device's share ([`tilo_peer_state::workspace::share`]): it
 //! gives only what the sharer holds on that node, and only they (or whoever
-//! may govern `revoke`) end it.
+//! may revoke) end it.
 
 use tilo_action_policy::share::ShareAccess;
 use tilo_action_policy::{Context, TreePath};
@@ -49,8 +49,8 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let at = system_time(now);
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        let member = governed.peer().permissions(device.device_public_key, at)?;
+        let mut hosted = state.lock().await;
+        let member = hosted.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
         let device_key = hex::encode(device.device_public_key);
         let person = member
@@ -74,10 +74,10 @@ impl Workspaces {
         let digest = request_digest(&("resource.share", &grants))?;
         let key = self.inner.host.key.clone();
         self.administer(
-            &mut governed,
+            &mut hosted,
             fresh_request()?,
             digest,
-            |peer| peer.governance_mut().put_governed_grants(&grants, &key, at),
+            |peer| peer.governance_mut().put_member_grants(&grants, &key, at),
             now,
         )
         .await?;
@@ -85,8 +85,8 @@ impl Workspaces {
     }
 
     /// End `device`'s person's share `share` in `workspace`: revoke its grants
-    /// they gave, or any of its grants for a person who may govern
-    /// `revoke`. Answers how many were revoked; none is no error.
+    /// they gave, or any of its grants for a person who may revoke. Answers how
+    /// many were revoked; none is no error.
     ///
     /// # Errors
     /// A device that is no current member's, or a change that could not
@@ -104,8 +104,8 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let at = system_time(now);
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        let member = governed.peer().permissions(device.device_public_key, at)?;
+        let mut hosted = state.lock().await;
+        let member = hosted.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
         let person = member
             .person_id()
@@ -118,10 +118,10 @@ impl Workspaces {
         let digest = request_digest(&("resource.unshare", &ids))?;
         let key = self.inner.host.key.clone();
         self.administer(
-            &mut governed,
+            &mut hosted,
             fresh_request()?,
             digest,
-            |peer| peer.governance_mut().remove_governed_grants(&ids, &key, at),
+            |peer| peer.governance_mut().remove_member_grants(&ids, &key, at),
             now,
         )
         .await?;
@@ -151,8 +151,8 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let at = system_time(now);
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        let member = governed.peer().permissions(device.device_public_key, at)?;
+        let mut hosted = state.lock().await;
+        let member = hosted.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
         let person = member
             .person_id()
@@ -174,16 +174,16 @@ impl Workspaces {
         let digest = request_digest(&("resource.reading", &change))?;
         let key = self.inner.host.key.clone();
         self.administer(
-            &mut governed,
+            &mut hosted,
             fresh_request()?,
             digest,
             |peer| match change {
-                tilo_action_policy::Change::Grant(grant) => peer
-                    .governance_mut()
-                    .put_governed_grants(&[grant], &key, at),
-                tilo_action_policy::Change::Revoke(id) => peer
-                    .governance_mut()
-                    .remove_governed_grants(&[id], &key, at),
+                tilo_action_policy::Change::Grant(grant) => {
+                    peer.governance_mut().put_member_grants(&[grant], &key, at)
+                }
+                tilo_action_policy::Change::Revoke(id) => {
+                    peer.governance_mut().remove_member_grants(&[id], &key, at)
+                }
                 _ => Ok(false),
             },
             now,

@@ -299,7 +299,7 @@ async fn device_carrying(live: Option<crate::apps::shell::LiveLinks>) -> Device 
     tree.workspaces.push(workspace);
     let membership = tree.shared();
     let trusted = || Some(Arc::new(vec![device(3).verifying_key().to_bytes()]));
-    let (key, cert) = crate::workspaces::fixtures::governor();
+    let (key, cert) = crate::workspaces::fixtures::hosting_device();
     let host = crate::workspaces::fixtures::test_host(&dir.path().join("host"), &key, &cert).await;
 
     let daemon_socket = dir.path().join("daemon.sock");

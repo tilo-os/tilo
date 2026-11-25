@@ -44,7 +44,7 @@ impl<'peer> PeerPublication<'peer> {
     /// keys' current epoch with [`ContentRetention::Checkpoint`] retention.
     /// The compaction replaces exactly the writes it covers, and its admission
     /// applies the checks every keyless replica applies, so `author` must be a
-    /// device the record admits as a writer of it (or the workspace's governor,
+    /// device the record admits as a writer of it (or the workspace's host,
     /// compacting by its `compact` governance action).
     ///
     /// # Errors

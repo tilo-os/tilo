@@ -8,7 +8,7 @@
 use crate::StatePeer;
 use crate::join::{JoinTransportResponse, Role};
 use crate::owner::stored::{StoredVouch, StoredWorkspace};
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner};
+use crate::owner::{DeviceWorkspaces, NativeCommittedView};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
@@ -76,7 +76,7 @@ pub(crate) fn validate(
     Ok(())
 }
 
-impl NativeWorkspaceOwner {
+impl DeviceWorkspaces {
     /// Hold the workspace of `workspace_id` as this device's host vouched for
     /// it: `bootstrap` is the membership answer (a postcard
     /// [`JoinTransportResponse`]) the host sent `device` over its
@@ -163,7 +163,6 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
-            publication: None,
             frames: crate::owner::stored::Frames::default(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
@@ -252,7 +251,6 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
-            publication: None,
             frames: crate::owner::stored::Frames::default(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;

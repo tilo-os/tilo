@@ -100,7 +100,7 @@ pub fn role_capability_preview(role: CapRole) -> String {
     })
 }
 
-/// What an administrator is called: an Editor who also governs the workspace.
+/// What an administrator is called: an Editor who also administers the workspace.
 #[must_use]
 pub fn administrator_label() -> String {
     t("workspace-settings-role-administrator")
@@ -326,8 +326,8 @@ pub fn granted_by_parts(
 }
 
 /// Whether `person` may take `grant` back now: the one who gave an app grant, or whoever the
-/// workspace lets revoke grants, unless they are barred from governing. What the host then decides
-/// when the change is written.
+/// workspace lets revoke grants, unless they are barred from administering. What the host then
+/// decides when the change is written.
 #[must_use]
 pub fn may_revoke(
     ws: &Workspace,
@@ -750,7 +750,7 @@ pub fn set_member_role(
 /// The workspace refused the removal, saying why.
 pub fn remove_member(ws: &mut Workspace, actor: &str, member: &str) -> Result<PolicyEdit, Refusal> {
     // The owner is the workspace's root of trust; removing them would leave a workspace nobody
-    // governs.
+    // administers.
     if ws.policy.is_owner(member) {
         return Err(Refusal::Owner);
     }
@@ -853,10 +853,10 @@ fn person_name(ws: &Workspace, local_user: &str, id: &MemberId) -> String {
     member_name_or_short_id(ws, id)
 }
 
-/// What the People tab says about who may change a member's role, to a viewer who governs none
-/// of them.
-pub fn members_authority_note(governs: bool) -> Option<String> {
-    (!governs).then(|| t("workspace-settings-owner-only"))
+/// What the People tab says about who may change a member's role, to a viewer who administers
+/// none of them.
+pub fn members_authority_note(administers: bool) -> Option<String> {
+    (!administers).then(|| t("workspace-settings-owner-only"))
 }
 
 /// One entry the Permissions tab lists: a sandbox capability an app holds,

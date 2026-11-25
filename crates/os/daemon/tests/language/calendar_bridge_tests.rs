@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_workspace_service::workspaces::MemberDevice;
-use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, hosting_device, test_host_holding,
+};
 use tilolang_calendar::test_support::Rig;
 use tilolang_calendar::test_support::fake_caldav::Server;
 
@@ -23,7 +25,7 @@ async fn a_connected_calendar_account_is_kept_where_the_bridge_reads_it() {
     // The workspace's own store, with no window and no app's package: what the account is kept
     // in is the one record, and the bridge reads it there.
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -166,7 +168,7 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
     icloud.add_calendar("family", "Family");
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {

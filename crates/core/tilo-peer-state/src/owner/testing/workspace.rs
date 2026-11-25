@@ -5,7 +5,7 @@
 //! the workspace does: the challenge binds the authenticated endpoint,
 //! completion admits the member and returns the workspace's state.
 use crate::{
-    GovernedAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
+    MemberListAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
     join::{
         self, JoinBootstrap, JoinChallenge, JoinChallengeResponse, JoinInspection,
         JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
@@ -288,8 +288,8 @@ impl TestWorkspace {
             .into_iter()
     }
 
-    pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
-        self.peer.governance().governed_access(now)
+    pub fn member_list_access(&self, now: SystemTime) -> Result<MemberListAccess, String> {
+        self.peer.governance().member_list_access(now)
     }
 
     /// Let `person` exercise the governance `action` of this workspace, as an
@@ -306,7 +306,7 @@ impl TestWorkspace {
             tilo_action_policy::Grantee::person(hex::encode(self.peer.owner())),
         );
         let mut candidate = self.peer.clone();
-        candidate.governance_mut().put_governed_grants(
+        candidate.governance_mut().put_member_grants(
             std::slice::from_ref(&grant),
             &self.key,
             now,

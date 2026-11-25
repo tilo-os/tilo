@@ -49,7 +49,7 @@ impl PeerGovernanceMut<'_> {
                 .remove_member(user_public_key, key, now)?;
             let blocked = peer
                 .governance_mut()
-                .put_governed_grants(&[block], key, now)?;
+                .put_member_grants(&[block], key, now)?;
             Ok::<_, String>((removed, blocked))
         })?;
         *self.peer = candidate;
@@ -69,8 +69,7 @@ impl PeerGovernanceMut<'_> {
         let id = roles::block_grant_id(&hex::encode(user_public_key));
         let stamp = self.peer.own_action(roles::governance::UNBAN, key, now);
         self.peer.naming(stamp, |peer| {
-            peer.governance_mut()
-                .remove_governed_grants(&[id], key, now)
+            peer.governance_mut().remove_member_grants(&[id], key, now)
         })
     }
 }

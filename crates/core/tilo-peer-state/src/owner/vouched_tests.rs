@@ -6,7 +6,7 @@ use crate::join::JoinTransportResponse;
 struct Vouched {
     _directory: tempfile::TempDir,
     path: PathBuf,
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     workspace: WorkspaceId,
     now: SystemTime,
 }
@@ -16,7 +16,7 @@ fn vouched() -> Vouched {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("joined-workspaces.json");
     let owner = open_file(&path).unwrap();
-    let (_, bootstrap, messages, governor, now) = raw_fixture();
+    let (_, bootstrap, messages, owner_copy, now) = raw_fixture();
     let device = bootstrap.device_cert.clone();
     let workspace = bootstrap.workspace_id;
     let answer =
@@ -37,7 +37,7 @@ fn vouched() -> Vouched {
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedServerDelta(governor),
+                TransportOrigin::RetainedServerDelta(owner_copy),
                 message,
                 now,
             )
@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
     phase a_workspace_its_host_vouches_for_admits_its_replay_and_reopens;
     {
         let held = vouched();
-        let basis = |owner: &NativeWorkspaceOwner| {
+        let basis = |owner: &DeviceWorkspaces| {
             owner
                 .with_current(held.workspace, |view| {
                     view.peer()

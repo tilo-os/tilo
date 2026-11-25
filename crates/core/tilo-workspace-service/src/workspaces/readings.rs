@@ -1,4 +1,4 @@
-//! A governed workspace as it is read without holding its lock: the replica
+//! A hosted workspace as it is read without holding its lock: the replica
 //! every change is made in, the workspace's name, the keys of the device it
 //! is held on and the invitations its join log and its entry's addresses left
 //! it. A workspace's lock is held across what takes long — asking the key
@@ -13,9 +13,9 @@ use tilo_server_protocol::WorkspaceId;
 
 use tilo_peer_state::direct::Replica;
 
-use super::{DeviceKeys, GovernedWorkspace, StatePeer, Workspaces};
+use super::{DeviceKeys, HostedWorkspace, StatePeer, Workspaces};
 
-/// What a governed workspace is read through without its lock.
+/// What a hosted workspace is read through without its lock.
 #[derive(Clone)]
 pub(super) struct Reading {
     pub(super) replica: Replica,
@@ -38,7 +38,7 @@ pub(super) struct Reading {
 /// A workspace this service holds, as [`Workspaces::copy_now`] reads it.
 #[derive(Clone)]
 pub struct HeldCopy {
-    /// Held as a member copy, not governed here.
+    /// Kept as a member copy, not hosted here.
     pub member: bool,
     /// The name its governance gives it.
     pub name: String,
@@ -106,14 +106,14 @@ impl Invitations {
     }
 }
 
-type Governed = std::sync::Weak<tokio::sync::Mutex<GovernedWorkspace>>;
+type Listed = std::sync::Weak<tokio::sync::Mutex<HostedWorkspace>>;
 
-/// The [`Reading`] of each workspace governed here, kept from the moment it is held. A read of a
+/// The [`Reading`] of each workspace hosted here, kept from the moment it is kept. A read of a
 /// session's own reads only this: such a read often waits with its whole thread, and a task of
 /// that thread queued for a workspace's lock, or for the registry's, would be handed the lock's
 /// next turn and never be polled to take it.
 pub(super) struct Readings(
-    pub(super) std::sync::Mutex<HashMap<WorkspaceId, (Governed, Reading)>>,
+    pub(super) std::sync::Mutex<HashMap<WorkspaceId, (Listed, Reading)>>,
     /// Moves whenever a workspace is held here that was not before.
     tokio::sync::watch::Sender<u64>,
 );
@@ -131,23 +131,23 @@ impl Readings {
     pub(super) fn of(
         &self,
         workspace: WorkspaceId,
-        governed: &std::sync::Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+        hosted: &std::sync::Arc<tokio::sync::Mutex<HostedWorkspace>>,
     ) -> Option<Reading> {
         let (of, reading) = self.0.lock_recover().get(&workspace)?.clone();
         // A workspace opened again is read through its new replica.
-        (of.as_ptr() == std::sync::Arc::as_ptr(governed)).then_some(reading)
+        (of.as_ptr() == std::sync::Arc::as_ptr(hosted)).then_some(reading)
     }
 
     pub(super) fn keep(
         &self,
         workspace: WorkspaceId,
-        governed: &std::sync::Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+        hosted: &std::sync::Arc<tokio::sync::Mutex<HostedWorkspace>>,
         reading: Reading,
     ) {
         let mut known = self.0.lock_recover();
         known.retain(|_, (of, _)| of.strong_count() > 0);
         let held = known
-            .insert(workspace, (std::sync::Arc::downgrade(governed), reading))
+            .insert(workspace, (std::sync::Arc::downgrade(hosted), reading))
             .is_none();
         drop(known);
         if held {
@@ -160,15 +160,15 @@ impl Readings {
         self.1.subscribe()
     }
 
-    /// Read `governed`, held here as `workspace`, from now on.
+    /// Read `hosted`, kept here as `workspace`, from now on.
     pub(super) fn hold(
         &self,
         workspace: &str,
-        governed: &std::sync::Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+        hosted: &std::sync::Arc<tokio::sync::Mutex<HostedWorkspace>>,
         reading: Reading,
     ) {
         if let Some(workspace) = WorkspaceId::parse(workspace) {
-            self.keep(workspace, governed, reading);
+            self.keep(workspace, hosted, reading);
         }
     }
 
@@ -210,7 +210,7 @@ impl Readings {
     }
 }
 
-impl GovernedWorkspace {
+impl HostedWorkspace {
     /// What this workspace is read through without its lock.
     pub(super) fn reading(&self) -> Reading {
         Reading {
@@ -225,8 +225,8 @@ impl GovernedWorkspace {
 }
 
 impl Workspaces {
-    /// What the workspace `workspace` governed here is read through without
-    /// its lock; `None` for a workspace not governed here. Only the first read
+    /// What the workspace `workspace` hosted here is read through without
+    /// its lock; `None` for a workspace not hosted here. Only the first read
     /// of a workspace opened here waits for its lock.
     /// `workspace` as this service holds it now, read without waiting on it: a caller on the
     /// runtime that serves the workspaces waits on nothing that runtime has to run. A wait on the
@@ -258,31 +258,28 @@ impl Workspaces {
     }
 
     pub(super) async fn reading(&self, workspace: WorkspaceId) -> Option<Reading> {
-        let governed = self.held(workspace).await?;
-        if let Some(reading) = self.inner.readings.of(workspace, &governed) {
+        let hosted = self.held(workspace).await?;
+        if let Some(reading) = self.inner.readings.of(workspace, &hosted) {
             return Some(reading);
         }
-        let reading = governed.lock().await.reading();
+        let reading = hosted.lock().await.reading();
         self.inner
             .readings
-            .keep(workspace, &governed, reading.clone());
+            .keep(workspace, &hosted, reading.clone());
         Some(reading)
     }
 
     /// Keep what `workspace`, held here, is read through without its lock: a
     /// page's first read of it then needs no turn at the workspace's own.
-    pub(super) async fn keep_reading(
-        &self,
-        workspace: &Arc<tokio::sync::Mutex<GovernedWorkspace>>,
-    ) {
+    pub(super) async fn keep_reading(&self, workspace: &Arc<tokio::sync::Mutex<HostedWorkspace>>) {
         let held = workspace.lock().await;
         let (workspace_id, reading) = (held.workspace_id(), held.reading());
         drop(held);
         self.inner.readings.keep(workspace_id, workspace, reading);
     }
 
-    /// `answer` of the governance of the workspace `workspace` governed here,
-    /// as its replica holds it now; `None` for a workspace not governed here.
+    /// `answer` of the governance of the workspace `workspace` hosted here,
+    /// as its replica holds it now; `None` for a workspace not hosted here.
     pub(super) async fn governing<T>(
         &self,
         workspace: WorkspaceId,
@@ -298,7 +295,7 @@ impl Workspaces {
     }
 }
 
-/// A governed workspace's governance as its replica holds it now: what every
+/// A hosted workspace's governance as its replica holds it now: what every
 /// decision of who reads what is made against.
 pub(super) struct Governance<'a> {
     pub(super) peer: &'a StatePeer,

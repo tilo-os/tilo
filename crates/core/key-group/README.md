@@ -209,15 +209,15 @@ plaintext path.
   broker admitted it before plaintext was closed off. Live plaintext on an encrypted
   route is refused as a downgrade.
 - **Access policy** (`shell/group_policy.rs`). A workspace is readable by:
-  - every person on the workspace's roster, or named by a grant (a share, a
+  - every person on the workspace's member list, or named by a grant (a share, a
     time-limited reader), who may Read the workspace node now, through each
     of their certified devices (root-signed, unexpired, not revoked, admitted
-    by the workspace's governor);
-  - the governing identity's own fleet;
+    by the workspace's host);
+  - the hosting identity's own devices;
   - live service members (below).
 
   Always-on host certificates are never a person's reading device. The
-  workspace's governor is a key holder of every workspace of the workspace.
+  workspace's host is a member of every group the workspace has.
   Every key holder reconciles the group with this set on every policy
   change and every new request. Invites, removals, role changes that end
   reading, and device enrolment or revocation all become commits.
@@ -259,12 +259,12 @@ plaintext path.
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
   as a service member.
-- **Workspaces a node governs** have no committed routes. A node is a server
-  whose certificate lets it host and own workspaces; it takes part in the
-  workspaces of the workspaces it governs. A desktop session enrolled in such a
+- **Workspaces a node hosts** have no committed routes. A node is a server
+  whose certificate lets it host and own workspaces; it takes part in every
+  workspace it hosts. A desktop session enrolled in such a
   workspace serves each route as a workspace: its apps ask for keys, seal and
   open, and its sealed writes go to the server as the device's own, never
-  through the governor. A company node's own session is such a member: a
+  through the node's host. A company node's own session is such a member: a
   device of the node's person with its own key and certificate, which enters
   every workspace of the person's workspace list the node hosts, as the list
   brings it.
@@ -315,7 +315,7 @@ ciphertext and MLS control material without decoding either.
   device keeps the same one.
 - **Forward secrecy applies to membership, not to history**, as described
   above.
-- **Known limits.** Only the governing device creates a workspace's group:
+- **Known limits.** Only the workspace's host creates its group:
   if it is lost, existing workspaces go on and any key holder admits and
   removes devices, but a workspace nobody opened before stays closed until
   governance is re-established. Content a device sealed under a commit that
@@ -334,14 +334,14 @@ certifies a **new** device key for that machine. Workspace access comes back
 through the normal paths:
 
 1. The new device announces its root-signed certificate. Once the
-   workspace's governor has admitted it, the policy allows it.
+   workspace's host has admitted it, the policy allows it.
 2. A key holder admits it, and its key history opens every earlier content
    key, so the whole workspace history reads again
    (`a_restored_identity_regains_the_whole_group_on_its_new_device`).
 3. Revoking the lost device (fleet revocation) makes the next reconcile
    remove it, so it cannot read anything written afterwards.
 
-If the lost machine was the workspace's governor, see the known limits above.
+If the lost machine was the workspace's host, see the known limits above.
 
 ## Remaining work
 

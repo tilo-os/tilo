@@ -15,7 +15,7 @@ use super::Engine;
 impl Engine {
     /// This device's documents, written as the device its identity certifies: each write is
     /// drafted, sealed and signed into the replica this engine owns, and kept as a frame its
-    /// links carry ([`tilo_peer_state::owner::NativeWorkspaceOwner::write_local`]).
+    /// links carry ([`tilo_peer_state::owner::DeviceWorkspaces::write_local`]).
     ///
     /// A write the engine holds no replica of `workspace` for is refused, as is one whose
     /// workspace has not admitted what it needs here yet ([`WriteRefusal::Waiting`]): the caller

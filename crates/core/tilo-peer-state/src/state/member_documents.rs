@@ -27,7 +27,7 @@ impl StatePeer {
         mutation: Option<&DocumentMutation>,
         author: &[u8; 32],
     ) -> bool {
-        held && !self.signed_by_governor(author)
+        held && !self.signed_by_administrator(author)
             && matches!(mutation, Some(DocumentMutation::Snapshot(bytes)) if empty_genesis(bytes))
     }
 }

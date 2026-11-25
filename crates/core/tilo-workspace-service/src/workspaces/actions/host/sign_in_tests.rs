@@ -11,12 +11,12 @@ use serde_json::{Value, json};
 use tilo_actions::remote::person_accounts::{self, MailAccounts, SignInStep};
 use tilo_actions::remote::{ActionProvider as _, InvocationReceipt, ReceiptStatus};
 
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, caller, hosted, settled};
 use super::accounts_tests::asking;
 use tilo_server_protocol::WorkspaceId;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// What an action answered.
 fn answered<T: serde::de::DeserializeOwned>(receipt: InvocationReceipt) -> T {
@@ -118,11 +118,11 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     let (responder, _base) = nextcloud_server(&completes);
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces.call_private_model_addresses(true);
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
@@ -177,7 +177,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     assert_eq!(listed.signing_in.len(), 1);
 
     // Another workspace's member shows none of it, and can stop none of it.
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let bob_device = admit(workspaces, &elsewhere, &owner, 2).await;
     let bob_page = actions.device_page(elsewhere_id, &bob_device);
     let theirs: MailAccounts = answered(
@@ -221,10 +221,10 @@ async fn a_nextcloud_sign_in_to_an_inside_address_is_refused_and_touches_nobody(
     let silent = test_http::Responder::silent();
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
@@ -320,10 +320,10 @@ async fn kept_reading(workspaces: &Workspaces, workspace: &WorkspaceId) -> Value
 #[tokio::test]
 async fn an_icloud_drive_waits_for_the_code_apple_sends() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
@@ -432,10 +432,10 @@ async fn a_drive_is_kept_once_its_provider_page_approves_it() {
     use account_credentials::{CredentialStore, OAuthCloud};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
@@ -492,10 +492,10 @@ async fn a_drive_is_kept_once_its_provider_page_approves_it() {
 #[tokio::test]
 async fn a_webdav_server_is_kept_from_what_its_person_typed() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
@@ -559,10 +559,10 @@ async fn a_mail_account_is_kept_once_google_s_page_approves_it() {
     use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
@@ -641,10 +641,10 @@ async fn a_microsoft_mail_account_keeps_the_address_its_person_typed() {
     use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);

@@ -23,7 +23,7 @@ impl StatePeer {
             .map(AsRef::as_ref)
             != Some(cert)
         {
-            return Err("membership certificate is absent from governed state".into());
+            return Err("membership certificate is absent from the member list".into());
         }
         self.certificate(&cert.device_public_key, now)
             .map_err(|error| error.to_string())?;
@@ -31,7 +31,7 @@ impl StatePeer {
         // not as a stranger.
         match self.role(&cert.device_public_key, now) {
             Ok(role) => Ok(role),
-            Err(MembershipError::NoMembership) if self.has_governed_admission(cert) => {
+            Err(MembershipError::NoMembership) if self.has_listed_admission(cert) => {
                 Err("member has been removed".into())
             }
             Err(error) => Err(error.to_string()),

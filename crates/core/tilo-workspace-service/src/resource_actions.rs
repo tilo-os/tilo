@@ -160,22 +160,22 @@ fn deciding_actor(
     })
 }
 
-/// `workspace` as its policy `policy` governs it, for deciding a call there: without the grants
+/// `workspace` under its policy `policy`, for deciding a call there: without the grants
 /// that last one use, which a call decided here never spends.
-fn governed(
+fn under_policy(
     workspace: &str,
     policy: &tilo_action_policy::WorkspacePolicy,
 ) -> Option<tilo_desktop_model::Workspace> {
-    let mut governed = tilo_desktop_model::Workspace::new(
+    let mut scoped = tilo_desktop_model::Workspace::new(
         tilo_desktop_model::WorkspaceId::parse(workspace)?,
         String::new(),
     );
-    governed.policy = policy.clone();
-    governed
+    scoped.policy = policy.clone();
+    scoped
         .policy
         .grants
         .retain(|grant| grant.lifetime != tilo_action_policy::Lifetime::Once);
-    Some(governed)
+    Some(scoped)
 }
 
 /// A call refused for `error`.
@@ -216,7 +216,7 @@ struct Asked<'a> {
     declared: &'a Declared,
     request: &'a InvokeRequest,
     arguments: &'a Map<String, serde_json::Value>,
-    governed: &'a tilo_desktop_model::Workspace,
+    workspace_policy: &'a tilo_desktop_model::Workspace,
     decider: &'a tilo_broker_core::BrokerActor,
     permissions: &'a collaboration::permissions::PermissionContext,
     unix_time: u64,
@@ -240,7 +240,7 @@ impl Asked<'_> {
             .map_err(Box::new)?;
         let app = declared.kind.declaring_app();
         let (verdict, _) = self.decider.action_verdict_in(
-            self.governed,
+            self.workspace_policy,
             app,
             (&resource.kind, resource.id.as_str(), &action.id),
             &action.need_for(Some(self.arguments), None),
@@ -329,7 +329,7 @@ impl ResourceActions {
             (&person, &policy.access.policy, policy.unix_time),
         )
         .ok_or_else(|| rejected(ActionCallError::NotPermitted))?;
-        let governed = governed(&workspace, &policy.access.policy)
+        let workspace_policy = under_policy(&workspace, &policy.access.policy)
             .ok_or_else(|| invalid("that is not a workspace"))?;
         // What this device itself may do here bounds every call it carries.
         let permissions = collaboration::permissions::PermissionContext::new(
@@ -355,7 +355,7 @@ impl ResourceActions {
             declared,
             request,
             arguments: &arguments,
-            governed: &governed,
+            workspace_policy: &workspace_policy,
             decider: &decider,
             permissions: &permissions,
             unix_time: policy.unix_time,

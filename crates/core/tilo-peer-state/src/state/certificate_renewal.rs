@@ -1,9 +1,9 @@
 //! A member's renewed device certificate. A certificate that expires is
 //! renewed by its person's root before it runs out; the workspace keeps the
-//! device as the same member, with the same role and grants, once its
-//! governor replaces the certificate it holds with the renewed one.
+//! device as the same member, with the same role and grants, once an
+//! administrator replaces the certificate it holds with the renewed one.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{DeviceCert, GovernedIdentity, ROOT, ReadDoc, SystemTime, err, now_ns};
+use super::{DeviceCert, DeviceRow, ROOT, ReadDoc, SystemTime, err, now_ns};
 use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
 
@@ -30,7 +30,7 @@ impl PeerGovernance<'_> {
             .certificates
             .get(&renewed.device_public_key)
             .map(|held| held.as_ref().clone())
-            .ok_or("membership certificate is absent from governed state")?;
+            .ok_or("membership certificate is absent from the member list")?;
         if &held == renewed {
             return Ok(None);
         }
@@ -81,12 +81,12 @@ impl PeerGovernanceMut<'_> {
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
-            .ok_or("governed identities missing")?
+            .ok_or("member identities missing")?
             .1;
         doc.set_actor(self.peer.workspace_actor_of(key));
         let mut changed = false;
         for (id, bytes) in rows {
-            let mut identity = GovernedIdentity::decode(&bytes).map_err(err)?;
+            let mut identity = DeviceRow::decode(&bytes).map_err(err)?;
             if identity.device_cert != held {
                 continue;
             }
@@ -97,7 +97,7 @@ impl PeerGovernanceMut<'_> {
             changed = true;
         }
         if !changed {
-            return Err("the renewed device has no governed identity".into());
+            return Err("the renewed device has no row in the member list".into());
         }
         self.peer.write_governance(doc, &before, key, now)?;
         Ok(true)

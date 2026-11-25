@@ -15,21 +15,21 @@ use tilo_user_identity::DeviceCert;
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, settled};
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// The agent that asks here, by its id in the workspace.
 const AGENT: &str = "scout";
 
-/// A workspace of `workspaces` and the dispatch that governs it here: a host keeps one store of
+/// A workspace of `workspaces` and the dispatch that serves it here: a host keeps one store of
 /// the calls that wait for a person's yes and hands its approve back to its one dispatch, so a
 /// call that waits is followed through that one and never through a second made beside it.
-async fn governed(workspaces: &Workspaces) -> (String, WorkspaceId, ServiceWorkspaceActions) {
+async fn hosted(workspaces: &Workspaces) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
     let service = workspaces
         .inner
         .jobs
         .governance()
-        .expect("the host's own dispatch governs its workspaces");
+        .expect("the host's own dispatch serves its workspaces");
     (summary.workspace, summary.workspace_id, service)
 }
 
@@ -176,13 +176,13 @@ async fn places(
 #[tokio::test]
 async fn a_call_that_waits_is_its_persons_alone_and_their_approve_carries_it_out_once() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let store = workspaces
         .asked_store()
         .expect("the host keeps one store of the calls that wait");
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
@@ -283,13 +283,13 @@ async fn a_call_that_waits_is_its_persons_alone_and_their_approve_carries_it_out
 #[tokio::test]
 async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let store = workspaces
         .asked_store()
         .expect("the host keeps one store of the calls that wait");
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let agent = as_ada.clone().delegated_to(AGENT);
@@ -349,13 +349,13 @@ async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
 async fn an_answer_that_meets_the_record_is_carried_out() {
     for approve in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let store = workspaces
             .asked_store()
             .expect("the host keeps one store of the calls that wait");
-        let (workspace, workspace_id, service) = governed(workspaces).await;
+        let (workspace, workspace_id, service) = hosted(workspaces).await;
         let ada = admit(workspaces, &workspace, &owner, 1).await;
         let as_ada = caller(&ada);
         let agent = as_ada.clone().delegated_to(AGENT);
@@ -485,13 +485,13 @@ fn forged(answer: &Result<InvocationReceipt, ActionCallError>) -> bool {
 #[tokio::test]
 async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let store = workspaces
         .asked_store()
         .expect("the host keeps one store of the calls that wait");
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let her = (&ada, &as_ada);

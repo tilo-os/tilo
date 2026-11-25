@@ -56,7 +56,7 @@ async fn listed_names(workspaces: &tilo_server::workspaces::Workspaces) -> Vec<S
 /// Have `device` take in `workspace`, which `site` keeps, as a device of the person's does for
 /// each workspace it takes part in: it proves its membership at the address the site signs for
 /// it, and holds the copy from then on. Taking one in lists it in the person's own list, written
-/// by the device that governs that workspace.
+/// by the device that hosts that workspace.
 async fn take_in(
     device: &tilo_server::workspaces::Workspaces,
     site: &tilo_server::workspaces::Workspaces,
@@ -207,7 +207,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // Bob's computer takes in the Lounge his tab entered, which is Alice's and only let him in,
     // and the workspace the site just made him, which is his own. Taking one in lists it in the
     // record of his own workspace only when it is his: the one the site made for him, written
-    // by the device that governs that record.
+    // by the device that hosts that record.
     take_in(bob_workspaces, workspaces, &lounge.workspace).await;
     take_in(bob_workspaces, workspaces, &own.workspace).await;
     let names = listed_names(bob_workspaces).await;

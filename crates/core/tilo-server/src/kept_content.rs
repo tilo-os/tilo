@@ -1,4 +1,4 @@
-//! The content the members of the workspaces this host governs push to it,
+//! The content the members of the workspaces this host serves push to it,
 //! kept so that a member which comes up later reads it from this host alone.
 //!
 //! A record never carries its binaries: a picture, an attachment, a file's
@@ -96,7 +96,7 @@ struct Limits {
     /// Bytes of kept content each workspace may take; `None` when its person
     /// set no budget, which is no limit of its own.
     workspace_bytes: Option<u64>,
-    /// The policy each governed workspace set, by workspace; the default for
+    /// The policy each hosted workspace set, by workspace; the default for
     /// one whose owners set none.
     policies: BTreeMap<String, ContentPolicy>,
 }
@@ -204,7 +204,7 @@ struct State {
     people: BTreeMap<String, People>,
 }
 
-/// The content a governed workspace's members push to the host that governs
+/// The content a hosted workspace's members push to the host that serves
 /// it.
 pub struct KeptContent {
     workspaces: Workspaces,
@@ -256,8 +256,8 @@ impl KeptContent {
         })
     }
 
-    /// Keep what the members of the workspaces this host governs push, until
-    /// the workspaces are no longer governed here.
+    /// Keep what the members of the workspaces this host serves push, until
+    /// the workspaces are no longer hosted here.
     pub async fn keep_content(self: Arc<Self>) {
         let keeper: Arc<dyn ContentKeeper> = self.clone();
         self.workspaces.keep_content(&keeper);

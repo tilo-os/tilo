@@ -1,7 +1,7 @@
-//! The governor's own reads and writes of documents its members write sealed.
+//! The host's own reads and writes of documents its members write sealed.
 //!
 //! In a workspace whose channels this server takes part in, members seal every
-//! write of a document, and the governor's copy keeps those writes as the
+//! write of a document, and the host's copy keeps those writes as the
 //! document's ciphertext history
 //! ([`tilo_peer_state::PeerPublication::is_sealed_document`]). As a member of
 //! the channels the server holds their content keys: it reads such a document by
@@ -11,7 +11,7 @@
 //! workspace keeps writing. Every other device taking part in a channel does the
 //! same with its own copy and publishes the checkpoint
 //! ([`tilo_peer_state::PeerPublication::draft_sealed_compaction`]): the
-//! governor's copy follows that checkpoint like any other member write, and
+//! host's copy follows that checkpoint like any other member write, and
 //! no device's history waits for someone else to fold it.
 
 use collab_types::{ContentRetention, SignedOp};
@@ -23,7 +23,7 @@ use tilo_user_identity::DeviceCert;
 
 use tilo_peer_state::UnmergedReason;
 
-use super::{CollaborationError, GovernedWorkspace, SystemTime, Workspaces};
+use super::{CollaborationError, HostedWorkspace, SystemTime, Workspaces};
 
 /// Member writes followed before a failed compaction is tried again. A
 /// record whose history does not merge yet does not compact; trying on every
@@ -140,7 +140,7 @@ impl DocumentKeys {
 impl DocumentKeys {
     /// `record` of `app` as it reads without the writes of its history stuck behind a change
     /// their own writer never sent, when those are all its history leaves out besides a writer's
-    /// second change of one sequence: what the governor, the record's store, compacts it into, so
+    /// second change of one sequence: what the host, the record's store, compacts it into, so
     /// its history folds again rather than holding them until it fills. `None` when its history
     /// holds no such write, and merges or waits as any other.
     fn without_unsent(
@@ -185,7 +185,7 @@ impl DocumentKeys {
                     writer = %hex::encode(write.author),
                     seq = write.seq,
                     ?missing,
-                    "the governor compacts a sealed record without a write built on a change its writer never sent"
+                    "the host compacts a sealed record without a write built on a change its writer never sent"
                 );
             }
         }
@@ -193,7 +193,7 @@ impl DocumentKeys {
     }
 }
 
-impl GovernedWorkspace {
+impl HostedWorkspace {
     /// The workspace's content keys as the device this host runs on holds
     /// them, without opening a group it has none of: `None` when this host
     /// runs on a device that takes part in no group of the workspace.
@@ -300,7 +300,7 @@ fn merged_or_named(
 }
 
 /// `record` of `app` of `workspace` with every write of its history, saved,
-/// read from `peer`, a copy of the governor's state, and opened with
+/// read from `peer`, a copy of the host's state, and opened with
 /// `device`'s keys where it is sealed: what a reader that must see all of a
 /// record reads without holding the workspace while it does.
 ///
@@ -523,7 +523,7 @@ impl Workspaces {
             // has no group yet, and a document's group is founded by whichever
             // of its devices first needs its keys. This host reads the
             // document, so it opens the group as its own reads of it do
-            // (`GovernedWorkspace::document_keys`): the policy names the devices
+            // (`HostedWorkspace::document_keys`): the policy names the devices
             // the group admits, and this device is among them.
             Err(_) if !create => match device.group_keys(&scope, readers, true).await? {
                 Ok(keys) => keys,
@@ -610,7 +610,7 @@ pub(super) async fn wait_for_group_keys(device: &DeviceKeys, workspace: &str) ->
 }
 
 impl Workspaces {
-    /// Everything the governor's copy holds of `record` of `app` in
+    /// Everything the host's copy keeps of `record` of `app` in
     /// `workspace`: its cleartext base and, for a sealed record, every write
     /// of its history opened with the channel's keys this server holds, none
     /// merged. What an operator repairing a record that does not read whole
@@ -618,7 +618,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, or the record is sealed and its
+    /// The workspace is not hosted here, or the record is sealed and its
     /// channel's keys are not here.
     pub async fn document_history(
         &self,
@@ -627,25 +627,23 @@ impl Workspaces {
         record: &str,
     ) -> Result<Option<tilo_peer_state::OpenedHistory>, CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let governed = state.lock().await;
-        let keys = governed
+        let hosted = state.lock().await;
+        let keys = hosted
             .document_keys(app, record)
             .await
             .map_err(CollaborationError::new)?;
         let mut sealed_shut = |_: &SignedOp| Err("this host holds no keys of it".to_owned());
         let history = match &keys {
-            Some(keys) => {
-                governed
-                    .peer()
-                    .publication()
-                    .opened_history(app, record, &mut keys.open())
-            }
-            None => governed
+            Some(keys) => hosted
+                .peer()
+                .publication()
+                .opened_history(app, record, &mut keys.open()),
+            None => hosted
                 .peer()
                 .publication()
                 .opened_history(app, record, &mut sealed_shut),
         };
-        drop(governed);
+        drop(hosted);
         Ok(history)
     }
 
@@ -658,7 +656,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, the record is held in the clear or
+    /// The workspace is not hosted here, the record is held in the clear or
     /// its channel's keys are not here, or the compaction could not be made,
     /// committed or published.
     pub async fn compact_document_into(
@@ -669,14 +667,14 @@ impl Workspaces {
         rebuilt: Vec<u8>,
     ) -> Result<(), CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        let keys = governed
+        let mut hosted = state.lock().await;
+        let keys = hosted
             .document_keys(app, record)
             .await
             .map_err(CollaborationError::new)?
             .ok_or_else(|| CollaborationError::new("the record is held in the clear"))?;
         let now = tilo_clock::wall();
-        let mut candidate = governed.peer().clone();
+        let mut candidate = hosted.peer().clone();
         let written = keys
             .compact(
                 &mut candidate,
@@ -686,17 +684,17 @@ impl Workspaces {
                 now,
             )
             .map_err(CollaborationError::new)?;
-        let collaboration = governed.collaboration().clone();
-        governed.keep(candidate, &self.inner.host.key, now, |_, _| {
+        let collaboration = hosted.collaboration().clone();
+        hosted.keep(candidate, &self.inner.host.key, now, |_, _| {
             Ok(collaboration)
         })?;
-        self.settle(&mut governed).await?;
-        self.carry_written(governed.workspace_id(), &written)?;
-        drop(governed);
+        self.settle(&mut hosted).await?;
+        self.carry_written(hosted.workspace_id(), &written)?;
+        drop(hosted);
         Ok(())
     }
 
-    /// The keys the governor writes `record` of `app` with: in a workspace whose
+    /// The keys the host writes `record` of `app` with: in a workspace whose
     /// channels this server takes part in every new record is sealed from its
     /// first write, so its channel is opened first when it has none (its
     /// genesis, published before anything is written there). A record it
@@ -705,10 +703,10 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// As [`GovernedWorkspace::document_keys`], or the channel cannot be opened.
+    /// As [`HostedWorkspace::document_keys`], or the channel cannot be opened.
     pub(super) async fn sealing_keys(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         app: &str,
         document: &str,
     ) -> Result<Option<DocumentKeys>, String> {
@@ -762,7 +760,7 @@ impl Workspaces {
     #[cfg(feature = "device-keys")]
     pub(super) async fn check_leading_checkpoint(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         (app, record): (&str, &str),
     ) -> Result<(), String> {
         let Some(checkpoint) = workspace
@@ -808,7 +806,7 @@ impl Workspaces {
     #[cfg(feature = "device-keys")]
     pub(super) fn keep_checkpoint_check(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         (app, record): (&str, &str),
         checkpoint: &collab_types::SignedOp,
     ) -> Result<(), String> {
@@ -852,7 +850,7 @@ impl Workspaces {
     )]
     pub(super) async fn compact_sealed_histories(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
     ) -> Result<(), String> {
         let due = workspace.peer().publication().sealed_to_compact();
         if due.is_empty() || self.holds_as_store(workspace) {

@@ -34,7 +34,7 @@ use tilo_peer_state::owner::enroll::{admit_as_member, prepare_and_complete};
 use tilo_peer_state::owner::session::{
     CannotDial, Connect, Holder, Link, Linked, OwnHost, Reach, Scope,
 };
-use tilo_peer_state::owner::{NativeWorkspaceOwner, open_file};
+use tilo_peer_state::owner::{DeviceWorkspaces, open_file};
 use tilo_peer_state::{CLOCK_SKEW_NS, CopyRole, unranked};
 use tilo_server::Reaching;
 use tilo_server::service::{ServiceConfig, WorkspaceService};
@@ -66,7 +66,7 @@ fn workspace() -> tilo_desktop_model::WorkspaceId {
 struct Desktop {
     cert: DeviceCert,
     key: SigningKey,
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     endpoint: Endpoint,
     service: Arc<WorkspaceService>,
     /// The device's key service, kept open beside its workspace service.

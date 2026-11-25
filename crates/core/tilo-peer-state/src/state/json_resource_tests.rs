@@ -3,7 +3,7 @@
 
 use super::*;
 
-pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
+pub(crate) fn identity_fixture() -> (DeviceRow, SystemTime) {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let workspace = peer.admitted_workspace().unwrap();
     let identities = workspace
@@ -24,7 +24,7 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
         panic!("actual seeded identity is not bytes")
     };
-    let mut identity = GovernedIdentity::decode(bytes).unwrap();
+    let mut identity = DeviceRow::decode(bytes).unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
     identity.device_cert.device_label = "Tower 🦀\n\"Workspace\"\\".into();
     identity.device_cert.expires_at_ns = Some(u64::MAX);
@@ -57,7 +57,7 @@ pub(crate) fn grant_fixture() -> tilo_action_policy::Grant {
     .with_lifetime(Lifetime::Until(u64::MAX))
 }
 
-fn verify_identity(identity: &GovernedIdentity, now: SystemTime) {
+fn verify_identity(identity: &DeviceRow, now: SystemTime) {
     tilo_user_identity::verify_device_cert_at(&identity.device_cert, now_ns(now)).unwrap();
     for entry in &identity.revocations {
         tilo_user_identity::verify_revocation_entry(entry).unwrap();
@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
         let (identity, now) = identity_fixture();
         verify_identity(&identity, now);
         let wire = identity.encode().unwrap();
-        let decoded = GovernedIdentity::decode(&wire).unwrap();
+        let decoded = DeviceRow::decode(&wire).unwrap();
         assert_eq!(decoded.encode().unwrap(), wire);
         assert_eq!(decoded.device_cert, identity.device_cert);
         assert_eq!(decoded.revocations, identity.revocations);

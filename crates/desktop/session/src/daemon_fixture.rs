@@ -26,7 +26,7 @@ use tilo_workspace_service::apps::shell::{
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host,
+    TestGroupKeys, TestHost, device_cert, hosting_device, signed_pre_admission, test_host,
     test_host_holding,
 };
 
@@ -80,7 +80,7 @@ impl TestDaemon {
     /// open the session's link to it. The daemon carries out the shell's window steps on the
     /// apps it admits, as a device's daemon does.
     pub(crate) fn launching(launcher: Option<Arc<dyn LauncherServices>>) -> Self {
-        Self::start_as(governor(), None, launcher)
+        Self::start_as(hosting_device(), None, launcher)
     }
 
     /// The person's two devices, each with its daemon: the first founds `workspace` as `name`
@@ -88,7 +88,7 @@ impl TestDaemon {
     /// first, so the two daemons carry each other's writes to it. Both hold the workspace's keys.
     pub(crate) fn two_devices(workspace: WorkspaceId, name: &str) -> (Self, Self) {
         let keys = Arc::new(TestGroupKeys::default());
-        let first = Self::start_as(governor(), Some(Arc::clone(&keys)), None);
+        let first = Self::start_as(hosting_device(), Some(Arc::clone(&keys)), None);
         first.found(workspace, name);
         let person = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
         let second = Self::start_as(
@@ -368,13 +368,13 @@ impl TestDaemon {
         self.read_standing(workspace);
     }
 
-    /// The daemon's copy of `workspace`: the one it governs, or the one it holds as a member.
+    /// The daemon's copy of `workspace`: the one it hosts, or the one it has as a member.
     pub(crate) fn copy(&self, workspace: WorkspaceId) -> tilo_peer_state::StatePeer {
         let workspaces = self.host.workspaces().clone();
         tilo_rt::app()
             .block_on(async move {
-                match workspaces.governed_copy(workspace).await {
-                    Some(governed) => Some(governed),
+                match workspaces.hosted_copy(workspace).await {
+                    Some(listed) => Some(listed),
                     None => workspaces.member_copy(workspace).await,
                 }
             })

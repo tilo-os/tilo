@@ -942,7 +942,7 @@ toolkit change.
 
 ## 9. The shell chrome design language
 
-Sections 1–8 govern **apps**. This section governs the **shell** — the surfaces
+Sections 1–8 apply to **apps**. This section applies to the **shell** — the surfaces
 the OS itself paints around and between apps: the top bar, window decorations
 and tab pills, the workspace disc, the strip indicator, quick settings, the
 command palette, and the member invite/roster surfaces.

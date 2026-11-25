@@ -1,7 +1,7 @@
-//! Building a replica, and admitting a device into its governed history.
+//! Building a replica, and admitting a device into its history.
 
 use super::{
-    BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, Grantee, PeerCore,
+    BTreeMap, CachedDocument, DeviceCert, DeviceRow, ExactAdmissions, Grantee, PeerCore,
     PeerGovernanceMut, ROOT, RevocationList, Role, Shared, StatePeer, SystemTime, VecDeque,
     VerifiedCertificate, administrator_grant_id, err, held, now_ns, process_default,
 };
@@ -104,13 +104,13 @@ impl StatePeer {
             action_stamp: None,
         })
     }
-    /// Write `identity`'s governed row and roster name into `doc`, this
+    /// Write `identity`'s member row and roster name into `doc`, this
     /// workspace's governance, as the pinned authority `key`, and take the change
     /// in as every member will.
     pub(super) fn put_identity(
         &mut self,
         mut doc: CachedDocument,
-        identity: &GovernedIdentity,
+        identity: &DeviceRow,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -119,12 +119,12 @@ impl StatePeer {
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
-            .ok_or("governed identities missing")?
+            .ok_or("member identities missing")?
             .1;
         let names = doc
             .get(ROOT, "peers")
             .map_err(err)?
-            .ok_or("governed peers missing")?
+            .ok_or("peer names missing")?
             .1;
         doc.set_actor(self.workspace_actor_of(key));
         let before = doc.get_heads();
@@ -208,13 +208,13 @@ impl StatePeer {
         if admitted
             && !held.members.contains_key(&person)
             && !policy.identities.values().any(|bytes| {
-                GovernedIdentity::decode(bytes).is_ok_and(|identity| {
+                DeviceRow::decode(bytes).is_ok_and(|identity| {
                     identity.device_cert.user_public_key == user_public_key
                         && identity.has_admission()
                 })
             })
         {
-            return Err("member is absent from governed admission history".into());
+            return Err("member is absent from the admission history".into());
         }
         let admin_id = administrator_grant_id(user_public_key);
         let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);

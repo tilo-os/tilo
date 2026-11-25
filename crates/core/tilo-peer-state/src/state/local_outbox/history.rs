@@ -17,7 +17,7 @@ use std::sync::Mutex;
 #[cfg(not(test))]
 use tilo_lock::MutexRecover as _;
 
-/// Histories kept: one per publication the governor has not yet
+/// Histories kept: one per publication the host has not yet
 /// acknowledged, for a few records at a time.
 const REMEMBERED_HISTORIES: usize = 32;
 /// Their combined size in ops: each is a whole copy of its record.

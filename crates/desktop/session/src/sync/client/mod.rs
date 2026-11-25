@@ -959,7 +959,7 @@ impl Roster {
 
 #[cfg(target_os = "linux")]
 impl Host for Hosting {
-    fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
+    fn admitted_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
         // The call gate names whose each of the workspace's member devices is.
         let (_, persons) = self.local.view()?.call_gate(workspace);
         persons.get(device.as_bytes()).cloned()

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::{GovernedWorkspace, RELEASED, delete};
+use super::{HostedWorkspace, RELEASED, delete};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::workspaces::WorkspaceSummary;
 
@@ -54,7 +54,7 @@ impl Creating {
 }
 
 impl super::Workspaces {
-    /// Create a new governed workspace named `name`.
+    /// Create a new hosted workspace named `name`.
     ///
     /// # Errors
     ///
@@ -67,7 +67,7 @@ impl super::Workspaces {
         Ok(summary)
     }
 
-    /// Create a governed workspace named `name`, under the identity `workspace` when
+    /// Create a hosted workspace named `name`, under the identity `workspace` when
     /// given: a workspace moving here keeps the workspace it is. Refused when
     /// this host holds that workspace already.
     ///
@@ -88,7 +88,7 @@ impl super::Workspaces {
         Box::pin(self.make_workspace(name, workspace, None, true)).await
     }
 
-    /// Create a governed workspace under the identity `workspace` that keeps the apps it
+    /// Create a hosted workspace under the identity `workspace` that keeps the apps it
     /// already has: a branch, or a workspace placed here from another device. It records no
     /// default apps, so what it runs stays what its source runs.
     ///
@@ -154,7 +154,7 @@ impl super::Workspaces {
             (Vec::new(), Vec::new())
         };
         let workspace = match workspace {
-            Some(workspace) => GovernedWorkspace::create_in(
+            Some(workspace) => HostedWorkspace::create_in(
                 &self.inner.dir,
                 workspace,
                 name,
@@ -163,7 +163,7 @@ impl super::Workspaces {
                 (&registries, &defaults),
                 tilo_clock::wall(),
             )?,
-            None => GovernedWorkspace::create(
+            None => HostedWorkspace::create(
                 &self.inner.dir,
                 name,
                 &self.inner.host.cert,
@@ -185,16 +185,16 @@ impl super::Workspaces {
             .lock()
             .await
             .insert(summary.workspace.clone(), Arc::clone(&workspace));
-        let mut governed = workspace.lock().await;
-        self.settle(&mut governed).await?;
-        self.name_own_host(&mut governed).await?;
+        let mut hosted = workspace.lock().await;
+        self.settle(&mut hosted).await?;
+        self.name_own_host(&mut hosted).await?;
         if let Some(person) = person {
-            self.give_ownership(&mut governed, person, None).await?;
+            self.give_ownership(&mut hosted, person, None).await?;
         }
-        self.serve_direct(&governed)?;
-        drop(governed);
+        self.serve_direct(&hosted)?;
+        drop(hosted);
         self.keep_reading(&workspace).await;
-        tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "governed workspace created");
+        tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "hosted workspace created");
         // The person's list names the workspace they now have, where this device holds their own
         // list: a daemon that makes one for them writes it without a desktop session.
         if let Some(person) = person {

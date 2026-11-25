@@ -17,7 +17,7 @@ pub(crate) struct PageTickets {
     pub(crate) identity: LiveIdentity,
     /// Where the host is dialled.
     pub(crate) endpoint: iroh::Endpoint,
-    /// The workspaces this host governs, whose records keep each person's devices: held
+    /// The workspaces this host serves, whose records keep each person's devices: held
     /// without keeping them alive, since the device's one set of tickets lives in them.
     pub(crate) records: Option<WeakWorkspaces>,
 }

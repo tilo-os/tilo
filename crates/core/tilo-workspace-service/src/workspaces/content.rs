@@ -1,4 +1,4 @@
-//! Content a governed workspace's records reference that this host keeps: what
+//! Content a hosted workspace's records reference that this host keeps: what
 //! its bots fetched from outside (a bridged person's avatar, a file posted
 //! elsewhere), the surfaces of the apps it decided changes with, whichever
 //! version those changes were written by, which members decide the host's
@@ -237,42 +237,42 @@ impl Workspaces {
         }
     }
 
-    /// The workspace `workspace` governed here, spelled as its listings and
-    /// files name it; `None` for one not governed here.
+    /// `workspace`'s name as this host's listings and files spell it; `None`
+    /// for one not hosted here.
     pub async fn workspace_identity(&self, workspace: WorkspaceId) -> Option<String> {
         self.held(workspace).await.map(|_| workspace.to_string())
     }
 
-    /// The workspace governed here under `workspace`: the host keeps each
+    /// The workspace hosted here under `workspace`: the host keeps each
     /// under its id spelled out, so this is one lookup, never a walk.
     pub(super) async fn held(
         &self,
         workspace: WorkspaceId,
-    ) -> Option<Arc<tokio::sync::Mutex<super::GovernedWorkspace>>> {
+    ) -> Option<Arc<tokio::sync::Mutex<super::HostedWorkspace>>> {
         let held = self.inner.workspaces.lock().await;
         held.get(&workspace.to_string()).cloned()
     }
 
-    /// The name of the workspace governed here whose channels are
-    /// `workspace`; `None` for one not governed here.
+    /// The name of the workspace hosted here whose channels are
+    /// `workspace`; `None` for one not hosted here.
     pub async fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
-        let governed = self.held(workspace).await?;
-        let name = governed.lock().await.name();
+        let hosted = self.held(workspace).await?;
+        let name = hosted.lock().await.name();
         Some(name)
     }
 
-    /// The name the workspace governed here under `workspace` shows for the
-    /// member whose root is `root`; `None` for one not governed here or a
+    /// The name the workspace hosted here under `workspace` shows for the
+    /// member whose root is `root`; `None` for one not hosted here or a
     /// member who chose no name.
     pub async fn name_of_member(&self, workspace: WorkspaceId, root: [u8; 32]) -> Option<String> {
-        let governed = self.held(workspace).await?;
-        let governed = governed.lock().await;
-        self.member_name_by_root(&governed, root)
+        let hosted = self.held(workspace).await?;
+        let hosted = hosted.lock().await;
+        self.member_name_by_root(&hosted, root)
     }
 
     /// The bytes named `hash` this host keeps for the workspace of `workspace`
-    /// governed here, checked against the hash: what its bots fetched and
-    /// the files it keeps for members. `None` for a workspace not governed here
+    /// hosted here, checked against the hash: what its bots fetched and
+    /// the files it keeps for members. `None` for a workspace not hosted here
     /// or content it does not keep.
     pub async fn kept_content(&self, workspace: WorkspaceId, hash: &str) -> Option<Vec<u8>> {
         self.kept_record_content(workspace, "", hash).await
@@ -312,10 +312,10 @@ impl Workspaces {
         })
     }
 
-    /// Every record of `workspace` the governor's copy holds (or of `only`
+    /// Every record of `workspace` the host's copy keeps (or of `only`
     /// among them), each saved with all of its history: what tells a host
     /// which content the workspace still references, now or in a version it
-    /// can go back to. Read from a copy of the governor's state, taken in a
+    /// can go back to. Read from a copy of the host's state, taken in a
     /// moment: the workspace takes writes while its records are read.
     /// A record that cannot be read whole (sealed for a channel this host has
     /// no keys of, or with sealed writes that do not open or merge yet) is
@@ -326,7 +326,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here.
+    /// The workspace is not hosted here.
     pub async fn whole_documents(
         &self,
         workspace: &str,
@@ -334,9 +334,9 @@ impl Workspaces {
     ) -> Result<WholeDocuments, CollaborationError> {
         let state = self.workspace(workspace).await?;
         let (peer, device) = {
-            let governed = state.lock().await;
-            let peer = governed.peer().clone();
-            (peer, governed.device.clone())
+            let hosted = state.lock().await;
+            let peer = hosted.peer().clone();
+            (peer, hosted.device.clone())
         };
         let routes: Vec<(String, String)> = peer
             .plaintext_routes()
@@ -387,8 +387,8 @@ impl Workspaces {
             }
         }
         // The records the workspace's store keeps, each with all of its history.
-        let mut governed = state.lock().await;
-        for (route, _, document) in self.stored_documents(&mut governed, only, true) {
+        let mut hosted = state.lock().await;
+        for (route, _, document) in self.stored_documents(&mut hosted, only, true) {
             match document {
                 Ok((revision, saved)) => {
                     read.revisions.insert(route.clone(), revision);
@@ -400,12 +400,12 @@ impl Workspaces {
         Ok(read)
     }
 
-    /// Every record `governed`'s store keeps (or of `only` among them), by its app and id, with
+    /// Every record `hosted`'s store keeps (or of `only` among them), by its app and id, with
     /// its kind, the revision it is at and, when `saved`, the record saved with all of its
     /// history.
     pub(super) fn stored_documents(
         &self,
-        governed: &mut super::GovernedWorkspace,
+        hosted: &mut super::HostedWorkspace,
         only: Option<&BTreeSet<(String, String)>>,
         saved: bool,
     ) -> Vec<StoredDocument> {
@@ -417,7 +417,7 @@ impl Workspaces {
             .into_iter()
             .map(|(app, kind)| (kind, app))
             .collect();
-        let mut store = self.store_of(governed);
+        let mut store = self.store_of(hosted);
         // Every record the store holds, whether or not an app this device knows declares its
         // kind: a record of an app not installed here names content all the same.
         let index = store.index();
@@ -459,7 +459,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here.
+    /// The workspace is not hosted here.
     pub async fn while_unwritten<R>(
         &self,
         workspace: &str,
@@ -467,10 +467,10 @@ impl Workspaces {
         act: impl FnOnce() -> R,
     ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
+        let mut hosted = state.lock().await;
         // A record of the store that changed since it was read.
         let stored: Vec<(String, String)> = self
-            .stored_documents(&mut governed, None, false)
+            .stored_documents(&mut hosted, None, false)
             .into_iter()
             .filter(|(route, _, document)| {
                 document.as_ref().ok().map(|(revision, _)| revision) != read.revisions.get(route)
@@ -479,7 +479,7 @@ impl Workspaces {
             .collect();
         // Members' writes are taken into the replica under its own lock: held
         // too, nothing lands while `act` runs.
-        let peer = governed.peer();
+        let peer = hosted.peer();
         let changed: BTreeSet<(String, String)> = peer
             .plaintext_routes()
             .into_iter()
@@ -496,7 +496,7 @@ impl Workspaces {
             Err(changed)
         };
         drop(peer);
-        drop(governed);
+        drop(hosted);
         Ok(answer)
     }
 
@@ -767,7 +767,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, or its workspace not hosted here.
+    /// The workspace is not hosted here, or it has no link here.
     pub async fn ask_members(&self, workspace: &str, body: Vec<u8>) -> Result<usize, String> {
         let workspace_id = self
             .workspace(workspace)
@@ -1123,7 +1123,7 @@ mod tests {
     )]
     async fn content_a_device_said_it_lacks_follows_once_it_keeps_it() {
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::workspaces::tests::governor();
+        let (key, cert) = crate::workspaces::tests::hosting_device();
         let server = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
         let workspaces = server.workspaces().clone();
         let (written, fetched) = (vec![3_u8; 100], vec![4_u8; 100]);
@@ -1176,7 +1176,7 @@ mod tests {
     )]
     async fn a_member_asking_for_content_gets_it_in_pieces_or_word_that_it_is_not_kept() {
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::workspaces::tests::governor();
+        let (key, cert) = crate::workspaces::tests::hosting_device();
         let server = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
         let workspaces = server.workspaces().clone();
         let avatar = vec![7_u8; neighbour_wire::content::PIECE_BYTES + 10];

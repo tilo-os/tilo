@@ -12,11 +12,9 @@ use tilo_actions::remote::{
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::tests::{
-    Answering, admit, answered, caller, governed, offered, request, settled,
-};
+use super::super::tests::{Answering, admit, answered, caller, hosted, offered, request, settled};
 use super::super::{ADD_MEMBER, ServiceWorkspaceActions};
-use crate::workspaces::tests::{governor, signed_pre_admission, test_host};
+use crate::workspaces::tests::{hosting_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
@@ -102,10 +100,10 @@ async fn answer_moving(
 #[tokio::test]
 async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let here = (workspace.as_str(), workspace_id);
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let agent = agent_of(&owner);
@@ -219,10 +217,10 @@ async fn let_in(
 #[tokio::test]
 async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     // Quinten administers the workspace; his scripts' key is him.
@@ -301,10 +299,10 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
     use tilo_action_policy::agent_answers::ACCOUNT_APP;
     use tilo_server_protocol::workspaces::CREATE_WORKSPACE;
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let here = (workspace.as_str(), workspace_id);
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let agent = agent_of(&owner);
@@ -368,10 +366,10 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
 #[tokio::test]
 async fn its_person_is_asked_last_once_their_own_checks_pass() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let allowing = Answering::approving();

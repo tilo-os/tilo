@@ -1,4 +1,4 @@
-//! A durable record of one workspace its own device governs, behind a bounded
+//! A durable record of one workspace this device hosts, behind a bounded
 //! write mailbox: the boundary the broker's tests cross.
 //!
 //! Each applied write admits the signed document (or records the effect receipt
@@ -83,7 +83,7 @@ fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
     reason = "the fixture's surface is what the broker's tests need of it"
 )]
 impl SessionOwner {
-    /// A new workspace under `dir`, governed by a fresh device with a Writer record.
+    /// A new workspace under `dir`, hosted by a fresh device with a Writer record.
     pub fn initialize(dir: &Path) -> Result<Self, String> {
         Self::initialize_with_documents(dir, |_| Ok(Vec::new()))
     }

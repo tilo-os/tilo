@@ -38,7 +38,7 @@ fn shortcut(id: &str, name: &str, triggers: &serde_json::Value) -> ShortcutChang
     }))
 }
 
-/// A library over a workspace this device governs, and who saves in it here.
+/// A library over a workspace this device hosts, and who saves in it here.
 struct Held {
     workspaces: Arc<ServiceWorkspaces>,
     library: Shortcuts,

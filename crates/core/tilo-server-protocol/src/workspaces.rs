@@ -1,4 +1,4 @@
-//! The workspaces a host governs, as a page reaches them over HTTPS.
+//! The workspaces a host serves, as a page reaches them over HTTPS.
 //!
 //! One route below [`API_PREFIX`](crate::web::API_PREFIX):
 //!
@@ -10,7 +10,7 @@
 //! `workspace.administer` action over the one actions transport, and the host
 //! answers each request in it as the workspace it names decides it. It
 //! administers the host's workspaces for a device of the host's own user:
-//! create a governed workspace, enter it as its owner, invite and cancel
+//! create a workspace, enter it as its owner, invite and cancel
 //! invitations, change members' roles and remove them, and delete a workspace
 //! of one's own with nobody else in it.
 //! `/invitation` says what an invitation offers ([`JoinReply::Invitation`]) to
@@ -27,7 +27,7 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 /// What a member may do in a workspace.
 pub use collab_types::{Member, Role};
 
-/// A governed workspace.
+/// One workspace a host serves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     /// The workspace's UUID.
@@ -236,7 +236,7 @@ pub struct PendingInvite {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspacesRequest {
     List,
-    /// Create a governed workspace named `name` (1–80 characters).
+    /// Create a workspace named `name` (1–80 characters).
     Create {
         name: String,
     },
@@ -354,7 +354,7 @@ pub enum WorkspacesRequest {
     },
     /// End the share `share` in `workspace`: answered with
     /// [`WorkspacesReply::Shared`], how many of its grants were revoked (its
-    /// sharer's, or any for a person who may govern revoking).
+    /// sharer's, or any for a person who may revoke them).
     Unshare {
         workspace: String,
         share: String,
@@ -368,9 +368,9 @@ pub enum WorkspacesRequest {
         workspace: String,
         name: String,
     },
-    /// Have the host govern `workspace`, a workspace of the calling device's
-    /// person, creating it as `name` (1–80 characters) unless the host
-    /// governs it already, and admit the calling device to it as its owner
+    /// Have the host serve `workspace`, a workspace of the calling device's
+    /// person, creating it as `name` (1–80 characters) unless the host serves
+    /// it already, and admit the calling device to it as its owner
     /// ([`WorkspacesRequest::Enter`]): answered with the workspace. Whoever may create
     /// workspaces. A page places its person's workspace before it subscribes, so
     /// the workspace has governance like every other.
@@ -419,7 +419,7 @@ pub enum WorkspacesRequest {
 /// The answer to a [`WorkspacesRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspacesReply {
-    /// Every governed workspace.
+    /// Every workspace the host serves.
     Workspaces(Vec<Workspace>),
     Workspace(Workspace),
     /// The issued invitation.
@@ -693,7 +693,7 @@ mod tests {
 // ---------------------------------------------------------------------------
 // The host's own workspace operations, as the actions a server serves them by.
 //
-// A server serves what it governs as actions addressed to its own device:
+// A server serves what it hosts as actions addressed to its own device:
 // a workspace's own governance (provider `tilo.workspace`, named in
 // `tilo-actions`), and the host's own business, which no workspace decides
 // (creating, listing and entering workspaces, letting an app author a
@@ -709,7 +709,7 @@ mod tests {
 use tilo_workspace_join::MemberId;
 
 /// The provider a server answers its host operations under: creating,
-/// listing and entering the workspaces it governs. Only the devices of the
+/// listing and entering the workspaces it hosts. Only the devices of the
 /// server's own person are offered them, and invoking one is decided as
 /// every action API decides a host operation.
 pub const HOST_ACTIONS_PROVIDER: &str = tilo_actions::policy::agent_answers::ACCOUNT_APP;
@@ -721,7 +721,7 @@ pub const HOST_WORKSPACES_RESOURCE: &str = "host.workspaces";
 /// server's own, kept in its entry among its person's servers, and any device of that
 /// person may change it. Answers `{"serving": serving}`.
 pub const WEB_SERVE: &str = "web.serve";
-/// Create a governed workspace. Arguments: `name`, and the terms of its first
+/// Create a workspace. Arguments: `name`, and the terms of its first
 /// invitation when one is wanted (`invite_role`, `invite_recipient`,
 /// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedWorkspace`].
 pub const CREATE_WORKSPACE: &str = "workspace.create";
@@ -779,10 +779,10 @@ pub fn invitation_scope(request: &InvokeRequest) -> Option<&str> {
 /// [`CreatedWorkspace`] with the invitation the person's devices redeem to
 /// hold the branch (redeemable `expires_in_seconds`, 600 when omitted).
 pub const BRANCH_OWN_WORKSPACE: &str = "workspace.branch-own";
-/// Every workspace the host governs, each as a [`WorkspaceListing`].
+/// Every workspace the host serves, each as a [`WorkspaceListing`].
 pub const LIST_WORKSPACES: &str = "workspace.list";
 /// Delete the workspace `workspace`, one of the caller's person's own (any
-/// workspace this host governs, for the host's own person), with everything
+/// workspace this host serves, for the host's own person), with everything
 /// the host keeps of it: its records, history, files and the storage they
 /// took. Everyone in it is told it was deleted
 /// ([`tilo_server_protocol::refusal::WORKSPACE_DELETED`]) and let in no more.
@@ -1151,7 +1151,7 @@ pub const LIST_REVOCATIONS: &str = "identity.revocations";
 /// holders, and a hand-over without it is refused. Asked with `workspace`,
 /// `workspace_id` and `role` alone, it takes nothing in and answers the
 /// address the host signs for the workspace. Only a certified host serves
-/// workspaces this way. Answers a [`HostedWorkspace`].
+/// workspaces this way. Answers a [`WorkspaceHosted`].
 pub const HOST_WORKSPACE: &str = "workspace.host";
 /// Let `workspace` go, as its owners ask. Answers `{"stopped": bool}`. With
 /// `hand_on`, let go of nothing yet: have another device the workspace names
@@ -1252,7 +1252,7 @@ struct HintPayload {
 
 /// What [`HOST_WORKSPACE`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedWorkspace {
+pub struct WorkspaceHosted {
     /// The serving host's own signed address for the workspace, postcard in hex.
     pub host_hint: String,
     /// Handed its person's own workspace, the other workspaces of theirs the serving host keeps:
@@ -1293,7 +1293,7 @@ pub struct StandingPage {
     pub more: bool,
 }
 
-/// One workspace a server governs, as its host actions answer it.
+/// One workspace a server serves, as its host actions answer it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceListing {
     /// The workspace's UUID.
@@ -1462,7 +1462,7 @@ pub struct RemoveMemberRequest {
     pub user_public_key: [u8; 32],
 }
 
-/// A governed workspace as its administrators see it.
+/// A workspace as its administrators see it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
     /// The workspace's UUID.

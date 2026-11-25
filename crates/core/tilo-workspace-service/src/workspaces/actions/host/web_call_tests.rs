@@ -23,7 +23,7 @@ use tilo_actions::remote::ActionCallError::{self, NotPermitted, Refused, Unknown
 use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest};
 
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, caller, hosted};
 use super::turn_use_tests::{
     approved, asked_by, asks, dispatched, fact, narrowed_elsewhere, narrowing, on_turn,
 };
@@ -31,7 +31,7 @@ use super::vault_tests::{ask, files_holding};
 use crate::workspaces::WorkspaceContent;
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 use tilo_actions::remote::asked::AskedFacts;
 
 /// A made-up key: no service ever issued it, and it opens nothing.
@@ -46,11 +46,11 @@ const MOST: usize = 256 * 1024;
 macro_rules! stage {
     ($dir:ident, $workspaces:ident, $workspace:ident, $workspace_id:ident, $service:ident, $owner:ident, $ada:ident, $as_ada:ident) => {
         let $dir = tempfile::tempdir().unwrap();
-        let (key, $owner) = governor();
+        let (key, $owner) = hosting_device();
         let server = test_host($dir.path(), &key, &$owner).await;
         let $workspaces = server.workspaces();
         $workspaces.call_private_model_addresses(true);
-        let ($workspace, $workspace_id, $service) = governed($workspaces).await;
+        let ($workspace, $workspace_id, $service) = hosted($workspaces).await;
         let $ada = admit($workspaces, &$workspace, &$owner, 1).await;
         let $as_ada = caller(&$ada);
     };

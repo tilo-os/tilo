@@ -70,7 +70,7 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-workspace-service"
-  why = "the workspace host is the store node: it holds and governs a workspace's retained state"
+  why = "the workspace host is the store node: it holds and serves a workspace's retained state"
 
   [[rule.allow]]
   package = "tilo-server"

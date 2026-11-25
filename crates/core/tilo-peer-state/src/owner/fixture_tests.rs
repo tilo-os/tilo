@@ -1,6 +1,6 @@
 use crate::NeighbourMsg;
 use crate::join::{self, JoinTransportRequest, JoinTransportResponse};
-use crate::owner::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, open_file, testing};
+use crate::owner::{DeviceWorkspaces, VerifiedNativeEnrollmentIntent, open_file, testing};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
@@ -9,7 +9,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 
 pub(crate) struct Fixture {
     pub(crate) directory: tempfile::TempDir,
-    pub(crate) owner: NativeWorkspaceOwner,
+    pub(crate) owner: DeviceWorkspaces,
     pub(crate) key: SigningKey,
     pub(crate) certificate: DeviceCert,
     pub(crate) now: SystemTime,
@@ -22,8 +22,8 @@ pub(crate) fn fixture() -> Fixture {
     fixture_with(&root, key.clone(), key, join::Role::Editor, false)
 }
 
-/// A device of a second person, enrolled into a workspace another person governs:
-/// a key holder that neither governs nor hosts the workspace.
+/// A device of a second person, enrolled into a workspace another person hosts:
+/// a key holder that neither administers nor hosts the workspace.
 pub(crate) fn member_device_fixture() -> Fixture {
     fixture_with(
         &SigningKey::from_bytes(&[96; 32]),
@@ -34,22 +34,22 @@ pub(crate) fn member_device_fixture() -> Fixture {
     )
 }
 
-/// A device of `root` at `key`, enrolled into the workspace `governor_key`'s
-/// device of the workspace owner's root governs.
+/// A device of `root` at `key`, enrolled into the workspace `owner_copy_key`'s
+/// device of the workspace owner's root hosts.
 fn fixture_with(
     root: &SigningKey,
     key: SigningKey,
-    governor_key: SigningKey,
+    owner_copy_key: SigningKey,
     role: join::Role,
     administers: bool,
 ) -> Fixture {
-    let governor_root = SigningKey::from_bytes(&[91; 32]);
+    let owner_root = SigningKey::from_bytes(&[91; 32]);
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("owner.json")).unwrap();
-    let certificate = testing::certificate(root, &key, "Governor");
-    let mut governor = testing::workspace::TestWorkspace::empty_interactive(
-        testing::certificate(&governor_root, &governor_key, "Governor"),
-        governor_key,
+    let certificate = testing::certificate(root, &key, "Host");
+    let mut owner_copy = testing::workspace::TestWorkspace::empty_interactive(
+        testing::certificate(&owner_root, &owner_copy_key, "Host"),
+        owner_copy_key,
         testing::WORKSPACE,
     )
     .unwrap();
@@ -60,21 +60,21 @@ fn fixture_with(
         .unwrap(),
     );
     if administers {
-        governor
+        owner_copy
             .allow_governance(
                 &hex::encode(certificate.user_public_key),
                 tilo_action_policy::roles::governance::GRANT,
             )
             .unwrap();
     }
-    let hint = governor.hint(endpoint);
+    let hint = owner_copy.hint(endpoint);
     let now = SystemTime::now();
-    // The owner side runs on `now` throughout; the governor answers on the
+    // The owner side runs on `now` throughout; the host answers on the
     // same instant so invitations and challenges never lapse mid-test on a
     // slow machine.
-    governor.pin_clock(now);
+    owner_copy.pin_clock(now);
     let now_ns = testing::ns(now).unwrap();
-    let invitation = governor.issue(
+    let invitation = owner_copy.issue(
         vec![hint.clone()],
         role,
         Some(certificate.user_public_key),
@@ -88,7 +88,7 @@ fn fixture_with(
         now_ns,
     )
     .unwrap();
-    let response = governor.handle(
+    let response = owner_copy.handle(
         certificate.device_public_key,
         JoinTransportRequest::Challenge(join::JoinChallengeRequest {
             signed_invitation: invitation.clone(),
@@ -127,7 +127,7 @@ fn fixture_with(
     )
     .unwrap();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let response = governor.handle(
+    let response = owner_copy.handle(
         certificate.device_public_key,
         JoinTransportRequest::Complete(complete),
     );
@@ -143,7 +143,7 @@ fn fixture_with(
         key,
         certificate,
         now,
-        workspace: governor,
+        workspace: owner_copy,
     }
 }
 
@@ -498,7 +498,7 @@ async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
     let fixture = fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let written = |owner: &NativeWorkspaceOwner| {
+    let written = |owner: &DeviceWorkspaces| {
         let store: &dyn std::any::Any = &*owner.0.store;
         store
             .downcast_ref::<crate::owner::file_store::FileStore>()
@@ -610,7 +610,7 @@ async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
 /// Write `text` into the chat app's document `document`, as its app signs it, and
 /// answer how long the owner took to commit it.
 fn write_text(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     key: &SigningKey,
     person: &[u8; 32],
     now: SystemTime,
@@ -668,9 +668,9 @@ fn write_text(
 
 /// The record reopens from `path` as the state it was stored as, with the
 /// same digest, and every one of the `writes` changes reads back.
-fn reopens_as_it_was_stored(owner: NativeWorkspaceOwner, path: &std::path::Path, writes: usize) {
+fn reopens_as_it_was_stored(owner: DeviceWorkspaces, path: &std::path::Path, writes: usize) {
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
-    let digest = |owner: &NativeWorkspaceOwner| {
+    let digest = |owner: &DeviceWorkspaces| {
         owner
             .with_current(workspace, |view| view.peer().durable_hash())
             .unwrap()
@@ -762,7 +762,7 @@ async fn a_write_commits_at_what_it_changed_however_many_documents() {
     const WRITES: usize = 101;
     const SIZES: [usize; 2] = [300, 3_000];
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
-    let digest = |owner: &NativeWorkspaceOwner| {
+    let digest = |owner: &DeviceWorkspaces| {
         owner
             .with_current(workspace, |view| view.peer().durable_hash())
             .unwrap()

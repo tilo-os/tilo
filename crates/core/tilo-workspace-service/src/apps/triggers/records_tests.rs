@@ -25,7 +25,7 @@ use super::{Order, Runner, StartRun};
 use crate::workspaces::MemberDevice;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{
-    Started, declare_app, governor, save_signed, test_host as test_server,
+    Started, declare_app, hosting_device, save_signed, test_host as test_server,
 };
 
 /// The Calendar app's entries, with the fields a moment reads.
@@ -260,7 +260,7 @@ fn handed_moments(started: &Started) -> Vec<(String, i64)> {
 )]
 async fn a_moment_before_each_board_entry_fires_once_and_follows_the_records() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_server(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -617,7 +617,7 @@ async fn restarted(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_message_fires_the_shortcut_watching_mail_once() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_server(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -725,7 +725,7 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shortcut_kept_to_her_account_hears_her_mail_and_no_other_account() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_server(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -832,7 +832,7 @@ async fn a_mention_written_through_an_apps_route_fires_the_agents_trigger() {
     use collab_types::store::wire::{Command, Edit, Reply};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_server(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {

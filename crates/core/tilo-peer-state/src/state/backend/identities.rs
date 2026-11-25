@@ -1,7 +1,6 @@
-//! The governed identity import algorithm.
+//! The identity import algorithm.
 use super::{
-    BTreeMap, GovernedIdentity, RedemptionReceipt, RevocationList, SystemTime, VerifiedCertificate,
-    now_ns,
+    BTreeMap, DeviceRow, RedemptionReceipt, RevocationList, SystemTime, VerifiedCertificate, now_ns,
 };
 use crate::workspace::read::{ReadError, Selection, WorkspaceRead, WorkspaceValue};
 use tilo_user_identity::{DeviceCertError, RevocationError};
@@ -26,20 +25,20 @@ impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Row(error) => error.fmt(f),
-            Self::Receipt(error) => write!(f, "governed invitation receipt: {error}"),
+            Self::Receipt(error) => write!(f, "invitation receipt: {error}"),
             Self::Certificate(error) => error.fmt(f),
             Self::Revocation(error) => error.fmt(f),
-            Self::LogShape => f.write_str("governed invitation receipt log is not a map"),
-            Self::ReceiptShape => f.write_str("governed invitation receipt is not bytes"),
-            Self::ReceiptKey => f.write_str("governed invitation receipt key mismatch"),
-            Self::IdentityKey => f.write_str("governed identity key mismatch"),
+            Self::LogShape => f.write_str("the governance's invitation receipt log is not a map"),
+            Self::ReceiptShape => f.write_str("the governance's invitation receipt is not bytes"),
+            Self::ReceiptKey => f.write_str("invitation receipt key mismatch"),
+            Self::IdentityKey => f.write_str("member identity key mismatch"),
             Self::CertificateConflict => f.write_str("certificate conflict"),
             Self::MissingAdmission => {
-                f.write_str("independent identity is missing governed admission receipt")
+                f.write_str("independent identity is missing its admission receipt")
             }
             Self::RevocationRoot => f.write_str("revocation root mismatch"),
             Self::RevocationCrossRoot => f.write_str("revocation cannot cross identity roots"),
-            Self::Read => f.write_str("governed import read failed"),
+            Self::Read => f.write_str("identity import read failed"),
         }
     }
 }
@@ -171,7 +170,7 @@ fn is_key(text: &str, key: &[u8; 32]) -> bool {
 }
 
 fn apply<'a>(
-    identities: impl IntoIterator<Item = (&'a str, &'a GovernedIdentity)>,
+    identities: impl IntoIterator<Item = (&'a str, &'a DeviceRow)>,
     member: &dyn Fn(&str) -> bool,
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     certificates: &mut BTreeMap<[u8; 32], VerifiedCertificate>,
@@ -234,7 +233,7 @@ type Import = (
     RevocationList,
     bool,
 );
-/// The certificates and revocations a workspace's governed identity rows
+/// The certificates and revocations a workspace's member identity rows
 /// prove, over those the replica already holds. The rows are read once per
 /// document state ([`crate::cached_document`]): an identity row a change left
 /// as it was is neither decoded again nor its certificate checked again, so
@@ -256,7 +255,7 @@ pub(in crate::state) fn import(
                 .identities
                 .get(key)
                 .ok_or(ImportError::Read)?;
-            return Err(GovernedIdentity::decode(bytes)
+            return Err(DeviceRow::decode(bytes)
                 .err()
                 .map_or(ImportError::Read, ImportError::Row));
         };

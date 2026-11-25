@@ -39,12 +39,12 @@
 //! - its person is still a member;
 //! - and the protocol is one an agent works on: subscribe, state, publish,
 //!   replay, channel access, remote actions, the live session and content
-//!   discovery. Never compute, environments or governed membership, and
+//!   discovery. Never compute, environments or membership, and
 //!   never by attachment or a host's enrolment.
 //!
 //! What it does there is its person's agent's ([`crate::peer`] makes its
 //! caller the agent, for its person): an agent's role cap holds it at
-//! Editor at most, and it governs and administers nothing; only a person's
+//! Editor at most, and it administers nothing; only a person's
 //! server key invites, for its person, as an Editor at most
 //! (`workspaces::authority`). Its certificate's expiry and its person's
 //! revocations (a minted grant's issuer included) are step 1, checked at
@@ -509,14 +509,14 @@ impl<'a> WorkspaceFacts<'a> {
 
     /// The workspace's signed member list as this server reads it now. `None` where none can be
     /// read, which admits nobody.
-    fn access(&self) -> Option<std::borrow::Cow<'_, tilo_peer_state::GovernedAccess>> {
+    fn access(&self) -> Option<std::borrow::Cow<'_, tilo_peer_state::MemberListAccess>> {
         match self {
             Self::Runtime(facts) => Some(std::borrow::Cow::Borrowed(&*facts.runtime.members)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Link(facts) => facts
                 .peer
                 .governance()
-                .governed_access(facts.now)
+                .member_list_access(facts.now)
                 .ok()
                 .map(std::borrow::Cow::Owned),
         }
@@ -633,7 +633,7 @@ pub(crate) fn decide_in(
     if op == WorkspaceOperation::DelegateMembership {
         // Never by membership, enrolment or attachment: only an agent inside
         // its live delegation, acting for its own person's root, in a
-        // workspace governed here.
+        // workspace hosted here.
         let delegated = trust
             .delegation(&peer.device_public_key, workspace.workspace_id(), now_ns)
             .is_some_and(|delegation| delegation.user_public_key == peer.user_public_key);
@@ -724,7 +724,7 @@ fn grant_decision(
 }
 
 /// Whether `role`'s preset lets its members make undoable changes across a
-/// governed workspace ([`tilo_action_policy::roles::role_rules`]): the roles that
+/// workspace ([`tilo_action_policy::roles::role_rules`]): the roles that
 /// write records. A Moderator writes as an Editor does, and moderates too.
 pub fn role_writes(role: collab_types::Role) -> bool {
     matches!(

@@ -1,5 +1,5 @@
 //! What the broker keeps through the device's workspace service: its effect receipts, and the
-//! kinds an app may found records in where the service governs the workspace.
+//! kinds an app may found records in where the service hosts the workspace.
 
 use std::sync::Arc;
 

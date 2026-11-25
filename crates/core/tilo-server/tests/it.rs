@@ -42,10 +42,6 @@ mod chat_content;
 mod drop_frees_address;
 #[path = "files_at_disk_speed.rs"]
 mod files_at_disk_speed;
-#[path = "governed_workspace_access.rs"]
-mod governed_workspace_access;
-#[path = "governed_workspaces.rs"]
-mod governed_workspaces;
 #[path = "holder_content.rs"]
 mod holder_content;
 #[path = "holder_copies.rs"]
@@ -57,8 +53,12 @@ mod hosted_browser;
 mod hosting_member;
 #[path = "kept_limits.rs"]
 mod kept_limits;
+#[path = "listed_workspaces.rs"]
+mod listed_workspaces;
 #[path = "member_copy.rs"]
 mod member_copy;
+#[path = "member_list_access.rs"]
+mod member_list_access;
 #[cfg(target_os = "linux")]
 #[path = "offloadable_action.rs"]
 mod offloadable_action;

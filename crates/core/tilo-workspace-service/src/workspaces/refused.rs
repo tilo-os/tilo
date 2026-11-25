@@ -260,7 +260,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, the record does not read, or the
+    /// The workspace is not hosted here, the record does not read, or the
     /// workspace refused the write.
     pub async fn record_refusal(&self, workspace: &str, refusal: &Refusal) -> Result<(), String> {
         let id = refusal.id();
@@ -328,7 +328,7 @@ impl Workspaces {
 mod tests {
 
     use super::*;
-    use crate::workspaces::fixtures::{governor, test_host};
+    use crate::workspaces::fixtures::{hosting_device, test_host};
     use tilo_actions::PersonId;
 
     /// A refusal is a record of the workspace: the host writes it as its own
@@ -338,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_is_a_record_of_the_workspace_and_reads_back_from_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let summary = workspaces.create("Lobby").await.unwrap();

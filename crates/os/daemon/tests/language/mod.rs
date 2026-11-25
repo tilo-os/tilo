@@ -100,7 +100,7 @@ use tilo_workspace_service::apps::services::ResourceRequestContext;
 use tilo_workspace_service::apps::triggers::{Firing, Runner};
 use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::workspaces::fixtures::{
-    Started, TestGroupKeys, TestHost, declare_built_in_app, governor, test_host_holding,
+    Started, TestGroupKeys, TestHost, declare_built_in_app, hosting_device, test_host_holding,
 };
 use tilo_workspace_service::workspaces::{DocumentRoute, MemberDevice, ResourceWrite, Workspaces};
 
@@ -151,7 +151,7 @@ impl Device {
     /// there when one is named.
     pub(crate) async fn start(name: &str, app: Option<&str>) -> Device {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let host =
             test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
         let workspaces = host.workspaces().clone();
@@ -231,7 +231,7 @@ pub(crate) async fn govern(
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(serde_json::Value::Null)),
         ReceiptStatus::Rejected { error } => Err(error),
-        other => panic!("a governed change completes at once: {other:?}"),
+        other => panic!("an administration change completes at once: {other:?}"),
     }
 }
 

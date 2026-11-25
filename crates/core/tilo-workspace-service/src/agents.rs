@@ -1,5 +1,5 @@
 //! The one engine that runs a workspace's agents: on the workspace's host, around the clock, for
-//! the workspaces it governs, and on a person's own device for the workspaces it holds
+//! the workspaces it hosts, and on a person's own device for the workspaces it holds
 //! ([`run_on_device`]).
 //!
 //! Who they are is the workspace's own record of its agents (Assistant's
@@ -755,7 +755,7 @@ impl crate::work::AgentEngine for EngineKeys {
     }
 }
 
-/// The agents a host runs for the workspaces it governs.
+/// The agents a host runs for the workspaces it hosts.
 #[derive(Clone)]
 pub struct ServerAgents {
     workspaces: Workspaces,
@@ -1459,7 +1459,14 @@ impl ServerAgents {
                     .await
                     .map(|known| learned::told(&known));
                 Box::pin(work(
-                    model, &scope, &mut turn, budget, &mut reply, going, keeping, Beside { told, web },
+                    model,
+                    &scope,
+                    &mut turn,
+                    budget,
+                    &mut reply,
+                    going,
+                    keeping,
+                    Beside { told, web },
                 ))
                 .await
             }
@@ -1637,8 +1644,8 @@ impl ServerAgents {
 
 /// Count `cost` against `agent`'s day on the workspace's record of its agents, for its keeper:
 /// a model the host asked for the agent charged it, and the keeper's limit is read from it. The
-/// host writes it as the workspace's governor, the count its keeper's own device would write for
-/// an agent it runs, and as a change of Chat's: a host decides it against Chat's surface
+/// host writes it as the workspace's host device would, the count its keeper's own device would
+/// write for an agent it runs, and as a change of Chat's: a host decides it against Chat's surface
 /// like any other. Whatever the host asks a keeper's model for on their agent's behalf counts
 /// here: a turn's calls, and a judgement one of the agent's events asked.
 ///

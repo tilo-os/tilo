@@ -21,8 +21,7 @@ pub struct AppActionAuthorityProjection {
     /// The workspace's owner and members, and the grants that can reach this
     /// app: those on the workspace itself and on the app's subtree.
     pub policy: WorkspacePolicy,
-    /// The person works from a device that is not theirs, in a workspace they
-    /// do not govern.
+    /// The person works from a device the workspace does not admit.
     #[serde(default)]
     pub foreign: bool,
 }

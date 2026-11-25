@@ -138,7 +138,7 @@ fn not_known(answer: &RemoteActionMessage) -> bool {
 
 /// A host answers its own operations, asked with no workspace, for the people it knows: its own
 /// person, one its operator lists, and a member of a workspace it holds. Anyone else may ask it
-/// only to hold a workspace another host governs, which its work setting decides, and is told
+/// only to hold a workspace another host serves, which its work setting decides, and is told
 /// for the rest that the host does not know them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_host_answers_its_own_operations_for_the_people_it_knows() {
@@ -263,7 +263,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     let hosted = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let workspace = hosted.host.workspaces().create("Plans").await.unwrap();
 
-    // The laptop governs and serves the workspace itself: its join answers name
+    // The laptop serves the workspace itself: its join answers name
     // it so, with no host capability.
     let invitation = hosted
         .host
@@ -347,7 +347,7 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let hosted = serve_on(&alice, &laptop, WorkSetting::none()).await;
     // The laptop makes the workspace, so its server holds it and the laptop
-    // governs it; the phone enters it as any other device of hers does.
+    // administers it; the phone enters it as any other device of hers does.
     let home = hosted.host.workspaces().create("Home").await.unwrap();
     assert_eq!(
         hosted.host.device_cert(),

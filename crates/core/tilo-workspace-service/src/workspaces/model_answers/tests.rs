@@ -21,7 +21,7 @@ use agent_provider_config::protocol::{Content, Message, Role, StreamStatus, Tool
 use super::scripted::{Linking, Reply, ScriptedProvider};
 use super::*;
 use crate::workspaces::person_settings::save_provider_config;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 const ADA: WorkspaceId = WorkspaceId::from_u128(7);
 const BO: WorkspaceId = WorkspaceId::from_u128(9);
@@ -78,7 +78,7 @@ fn text_of(answer: &Answer) -> String {
 #[tokio::test]
 async fn nothing_linked_is_refused_and_asks_no_provider() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("never said")]);
@@ -118,7 +118,7 @@ async fn nothing_linked_is_refused_and_asks_no_provider() {
 #[tokio::test]
 async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -219,7 +219,7 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
 #[tokio::test]
 async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -287,7 +287,7 @@ async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
 #[tokio::test]
 async fn a_provider_without_its_key_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -327,7 +327,7 @@ async fn a_provider_without_its_key_is_refused() {
 #[tokio::test]
 async fn an_address_off_the_public_internet_needs_the_operators_word() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -385,7 +385,7 @@ async fn an_address_off_the_public_internet_needs_the_operators_word() {
 #[tokio::test]
 async fn the_answer_streams_and_says_what_it_cost() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -445,7 +445,7 @@ async fn the_answer_streams_and_says_what_it_cost() {
 #[tokio::test]
 async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -543,7 +543,7 @@ fn each_failure_of_a_provider_reads_in_the_persons_language() {
 #[tokio::test]
 async fn a_host_that_speaks_to_no_provider_answers_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -572,7 +572,7 @@ async fn a_host_that_speaks_to_no_provider_answers_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -644,7 +644,7 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_plain_question_is_answered_in_words() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -691,7 +691,7 @@ async fn a_plain_question_is_answered_in_words() {
 #[tokio::test]
 async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -764,7 +764,7 @@ async fn nothing_printed_carries_the_key() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -823,7 +823,7 @@ fn scout(day: &str, limit_micros: Option<u64>) -> Spender {
 #[tokio::test]
 async fn the_days_limit_stops_a_run() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     // The device's keys stay its own across the restart, as its key service keeps them.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
     let server =
@@ -920,7 +920,7 @@ async fn the_days_limit_stops_a_run() {
 #[tokio::test]
 async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()
@@ -1007,7 +1007,7 @@ async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
 async fn calls_at_once_are_each_counted_on_the_day() {
     const CALLS: u64 = 36;
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     server
         .workspaces()

@@ -150,7 +150,7 @@ pub fn content_of(
     is_owner: bool,
     holders: &[MemberHolder],
 ) -> PeopleContent {
-    // An administrator governs every member who is not one; only the owner governs them too.
+    // An administrator administers every member who is not one; only the owner administers them too.
     let administers = is_owner
         || members
             .iter()
@@ -165,7 +165,7 @@ pub fn content_of(
                 name: member.name.clone(),
                 you: user == viewer,
                 // An owner by role who does not own the workspace reads as Admin, and an Editor
-                // the workspace made an administrator as one: everyone sees who governs here.
+                // the workspace made an administrator as one: everyone sees who administers here.
                 role: if member.role == CapRole::Owner && !owns {
                     t("workspace-settings-role-admin")
                 } else if !owns && member.administrator {
@@ -301,14 +301,14 @@ mod tests {
             member("admin", CapRole::Editor, false, true),
             member("eve", CapRole::Editor, false, false),
         ];
-        // The owner governs everyone but themselves.
+        // The owner administers everyone but themselves.
         let owner = content_of(&members, "owner", true, &[]);
         assert_eq!(
             manages(&owner),
             [("owner", false), ("admin", true), ("eve", true)]
         );
         assert_eq!(owner.note, None);
-        // An administrator governs every member who is not one, never the owner.
+        // An administrator administers every member who is not one, never the owner.
         let admin = content_of(&members, "admin", false, &[]);
         assert_eq!(
             manages(&admin),
@@ -319,7 +319,7 @@ mod tests {
             admin.people[1].role,
             crate::desktop::workspace_settings::administrator_label()
         );
-        // Anyone else governs nobody, and is told who does.
+        // Anyone else administers nobody, and is told who does.
         let eve = content_of(&members, "eve", false, &[]);
         assert!(manages(&eve).iter().all(|(_, may)| !may));
         assert!(eve.note.is_some());

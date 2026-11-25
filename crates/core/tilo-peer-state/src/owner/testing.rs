@@ -6,7 +6,7 @@
     reason = "test fixtures: a failed step is the test failing"
 )]
 use crate::owner::{
-    NativeAuthorityStorage, NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, WorkspaceId,
+    DeviceWorkspaces, NativeAuthorityStorage, VerifiedNativeEnrollmentIntent, WorkspaceId,
 };
 use crate::{SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
@@ -96,7 +96,7 @@ pub fn own_host_hint_here(
 /// of the record is. A workspace that seals its records refuses the cleartext,
 /// so only a workspace that commits them as documents starts one this way.
 pub fn start_resource(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     workspace: WorkspaceId,
     app: &str,
     record: &str,
@@ -139,7 +139,7 @@ pub fn start_resource(
 /// # Errors
 /// The device holding the workspace refused this one.
 pub fn founded(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     certificate: &DeviceCert,
     key: &SigningKey,
 ) -> Result<WorkspaceId, String> {
@@ -151,7 +151,7 @@ pub fn founded(
 /// Enroll an empty interactive workspace through the real signed join protocol.
 /// This helper neither seeds application records nor grants capabilities.
 pub fn add_interactive_device(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     key: &SigningKey,
     certificate: &DeviceCert,
 ) -> Result<workspace::TestWorkspace, String> {
@@ -160,7 +160,7 @@ pub fn add_interactive_device(
 
 /// [`add_interactive_device`] into `workspace`.
 pub fn add_interactive_device_in(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     key: &SigningKey,
     certificate: &DeviceCert,
     workspace: &str,
@@ -175,7 +175,7 @@ pub fn add_interactive_device_in(
 /// workspace whose other devices are already in it admits this one into.
 pub fn enroll_into(
     mut fixture: workspace::TestWorkspace,
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     key: &SigningKey,
     certificate: &DeviceCert,
 ) -> Result<workspace::TestWorkspace, String> {
@@ -303,11 +303,11 @@ pub fn member_person() -> [u8; 32] {
     SigningKey::from_bytes(&[64; 32]).verifying_key().to_bytes()
 }
 
-/// A governor's workspace, seeded, and a member's verified invitation into
+/// A host's workspace, seeded, and a member's verified invitation into
 /// it, not yet admitted.
 struct Seeded {
-    governor_key: SigningKey,
-    governor: DeviceCert,
+    owner_copy_key: SigningKey,
+    owner_copy: DeviceCert,
     device: DeviceCert,
     device_key: SigningKey,
     workspace_id: WorkspaceId,
@@ -330,12 +330,8 @@ fn seeded(now: SystemTime) -> Seeded {
             .as_nanos(),
     )
     .unwrap();
-    let governor_key = SigningKey::from_bytes(&[61; 32]);
-    let governor = certificate(
-        &SigningKey::from_bytes(&[62; 32]),
-        &governor_key,
-        "Governor",
-    );
+    let owner_copy_key = SigningKey::from_bytes(&[61; 32]);
+    let owner_copy = certificate(&SigningKey::from_bytes(&[62; 32]), &owner_copy_key, "Host");
     let device_key = member_key();
     let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
     let workspace_id = WorkspaceId::parse(WORKSPACE).unwrap();
@@ -348,18 +344,18 @@ fn seeded(now: SystemTime) -> Seeded {
         origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
+            iroh_base::EndpointId::from_bytes(&owner_copy.device_public_key).unwrap(),
         ),
-        user_public_key: governor.user_public_key,
-        device_certificate: governor.clone(),
+        user_public_key: owner_copy.user_public_key,
+        device_certificate: owner_copy.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
-    .transport_hint(&governor_key)
+    .transport_hint(&owner_copy_key)
     .unwrap();
     let signed = join::issue_invitation(
         join::InviteGrant {
             workspace_id,
-            issuer: governor.clone(),
+            issuer: owner_copy.clone(),
             role: join::Role::Editor,
             nonce: [65; 16],
             recipient_user_public_key: Some(device.user_public_key),
@@ -367,7 +363,7 @@ fn seeded(now: SystemTime) -> Seeded {
             expires_at_ns: ns.checked_add(60_000_000_000).unwrap(),
             transport: vec![hint.clone()],
         },
-        &governor_key,
+        &owner_copy_key,
     )
     .unwrap();
     let verified = join::decode_and_verify_invitation(
@@ -391,8 +387,8 @@ fn seeded(now: SystemTime) -> Seeded {
         join::verify_join_proof(&proof, &challenge, &device, &RevocationList::new(), ns).unwrap();
     let mut peer = StatePeer::new(
         WORKSPACE,
-        governor.clone(),
-        vec![governor.clone()],
+        owner_copy.clone(),
+        vec![owner_copy.clone()],
         RevocationList::new(),
         now,
     )
@@ -409,14 +405,14 @@ fn seeded(now: SystemTime) -> Seeded {
         &mut chat,
         "chat",
         "channels",
-        &governor.user_public_key,
+        &owner_copy.user_public_key,
     );
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(
                 WORKSPACE,
-                &governor,
-                std::slice::from_ref(&governor),
+                &owner_copy,
+                std::slice::from_ref(&owner_copy),
             )
             .unwrap(),
             documents: vec![SeedDocument {
@@ -426,14 +422,14 @@ fn seeded(now: SystemTime) -> Seeded {
                 bytes: chat.save(),
             }],
         },
-        &governor_key,
+        &owner_copy_key,
         now,
     )
     .unwrap();
     peer.select_exact_admissions().unwrap();
     Seeded {
-        governor_key,
-        governor,
+        owner_copy_key,
+        owner_copy,
         device,
         device_key,
         workspace_id,
@@ -445,8 +441,8 @@ fn seeded(now: SystemTime) -> Seeded {
     }
 }
 
-/// A member's enrollment into a governed workspace: its intent, the host's
-/// bootstrap, the governor's history, the governor's device and the time.
+/// A member's enrollment into a hosted workspace: its intent, the host's
+/// bootstrap, the host's history, the host's device and the time.
 pub type RawFixture = (
     VerifiedNativeEnrollmentIntent,
     join::JoinBootstrap,
@@ -456,15 +452,15 @@ pub type RawFixture = (
 );
 
 pub fn raw_fixture_at(now: SystemTime) -> RawFixture {
-    governed_fixture_at(now).0
+    hosted_fixture_at(now).0
 }
 
-/// [`raw_fixture_at`], with the governor's own replica of the workspace and
+/// [`raw_fixture_at`], with the host's own copy of the workspace and
 /// its key: the host a member's writes reach, which writes too.
-pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKey) {
+pub fn hosted_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKey) {
     let Seeded {
-        governor_key,
-        governor,
+        owner_copy_key,
+        owner_copy,
         device,
         device_key,
         workspace_id,
@@ -481,7 +477,7 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
     );
     let messages = peer
         .publication_mut()
-        .bootstrap_messages(&governor_key, now)
+        .bootstrap_messages(&owner_copy_key, now)
         .unwrap();
     let bootstrap = join::JoinBootstrap {
         version: 1,
@@ -489,7 +485,7 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
         device_cert: device.clone(),
         role: join::Role::Editor,
         workspace_id,
-        host: governor.clone(),
+        host: owner_copy.clone(),
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
         records: peer.rows(),
@@ -508,9 +504,15 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
     )
     .unwrap();
     (
-        (intent, bootstrap, messages, governor.device_public_key, now),
+        (
+            intent,
+            bootstrap,
+            messages,
+            owner_copy.device_public_key,
+            now,
+        ),
         peer,
-        governor_key,
+        owner_copy_key,
     )
 }
 /// A workspace a newcomer's host vouched for, as that newcomer's session is
@@ -523,19 +525,19 @@ pub struct LateAdmission {
     pub device_key: SigningKey,
     /// The workspace's governance without the newcomer.
     pub governance: NeighbourMsg,
-    /// The governor's write to [`APP`]'s record `""`.
+    /// The host's write to [`APP`]'s record `""`.
     pub record: NeighbourMsg,
     /// The change of the governance that admits the newcomer.
     pub admitting: NeighbourMsg,
-    /// The governor's device, which sent all three.
-    pub governor: [u8; 32],
+    /// The host's device, which sent all three.
+    pub owner_copy: [u8; 32],
 }
 
 /// [`LateAdmission`] at `now`.
 pub fn late_admission_at(now: SystemTime) -> LateAdmission {
     let Seeded {
-        governor_key,
-        governor,
+        owner_copy_key,
+        owner_copy,
         device,
         device_key,
         workspace_id,
@@ -546,10 +548,10 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
     } = seeded(now);
     let mut chat = AutoCommit::new();
     chat.put(ROOT, "said", "hello").unwrap();
-    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "said", &governor.user_public_key);
+    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "said", &owner_copy.user_public_key);
     let record = peer
         .publication_mut()
-        .publish_document(APP, "", chat.save(), &governor_key, now)
+        .publish_document(APP, "", chat.save(), &owner_copy_key, now)
         .unwrap();
     let governance = peer.workspace_message();
     let before = peer.workspace_heads().unwrap();
@@ -568,7 +570,7 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
         device_cert: device,
         role: join::Role::Editor,
         workspace_id,
-        host: governor.clone(),
+        host: owner_copy.clone(),
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
         records: peer.rows(),
@@ -581,7 +583,7 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
         governance,
         record,
         admitting,
-        governor: governor.device_public_key,
+        owner_copy: owner_copy.device_public_key,
     }
 }
 

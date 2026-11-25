@@ -565,7 +565,7 @@ impl App {
             None
         };
 
-        // Governs pointer click-through only; keyboard focus
+        // Affects pointer click-through only; keyboard focus
         // containment is the separate `traps_focus()` concern (see
         // `keyboard_nav_allowed`).
         let modal_rect = app.root_widget.modal_capture();

@@ -1439,7 +1439,7 @@ pub(super) fn person_device_in(
         .filter(|cert| &cert.user_public_key == person)
         .filter(|cert| {
             peer.governance()
-                .governed_agent(&cert.device_public_key)
+                .listed_delegate(&cert.device_public_key)
                 .is_none()
         })
         .filter(|cert| !placed(&cert.device_public_key))
@@ -1449,8 +1449,8 @@ pub(super) fn person_device_in(
 }
 
 impl Workspaces {
-    /// [`person_device_in`] the workspace `workspace` governed here: `None` for
-    /// a workspace not governed here, or a person it admits on no device of their own. The
+    /// [`person_device_in`] the workspace `workspace` hosted here: `None` for
+    /// a workspace not hosted here, or a person it admits on no device of their own. The
     /// devices this server placed are those its own list of them holds
     /// ([`crate::environment::EnvironmentRegistry`]).
     pub async fn person_device(
@@ -1465,11 +1465,11 @@ impl Workspaces {
     /// the one it certified most recently and admits now that is neither this server's own
     /// device nor one this server placed.
     ///
-    /// This server's own device is a member of every workspace it governs, and on a person's
+    /// This server's own device is a member of every workspace it hosts, and on a person's
     /// own server it is certified in that person's name: [`Self::person_device`] answers it
     /// where it is their newest, and a turn in that workspace acts as it. A read for a person
     /// in another workspace of theirs never does, or it would read with the server's own
-    /// membership there. `None` for a workspace not governed here, or a person it admits on
+    /// membership there. `None` for a workspace not hosted here, or a person it admits on
     /// no other device.
     pub async fn persons_own_device(
         &self,
@@ -1499,7 +1499,7 @@ impl Workspaces {
         .flatten()
     }
 
-    /// Whether `workspace`, governed here, admits `person` on a device now.
+    /// Whether `workspace`, hosted here, admits `person` on a device now.
     async fn admits_person(&self, workspace: WorkspaceId, person: [u8; 32]) -> bool {
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();

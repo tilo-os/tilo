@@ -328,7 +328,7 @@ fn decide_matrix() {
             // The operator's handshake policy does not gate a workspace's own membership: the
             // list holds the device's person, so the link admits it, and its subscribe enrols
             // it without the server's own place in the workspace.
-            name: "cross-user device whose root only another workspace governs",
+            name: "cross-user device whose root only another workspace hosts",
             peer: peer(bob, [21; 32], false, None),
             setup: none(),
             expected: "NNNNNNNNdNN",

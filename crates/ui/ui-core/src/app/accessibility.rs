@@ -1168,7 +1168,7 @@ impl App {
         }
     }
 
-    /// Depends on the focus-trap signal, not `modal_capture`: that governs only
+    /// Depends on the focus-trap signal, not `modal_capture`: that affects only
     /// pointer click-through — guarding Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {

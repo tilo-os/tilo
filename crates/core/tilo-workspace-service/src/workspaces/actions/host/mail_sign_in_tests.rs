@@ -28,11 +28,11 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
 
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, caller, hosted, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::person_settings::cloud_control::{Mount, Request};
-use crate::workspaces::tests::{governor, test_host as test_holder};
+use crate::workspaces::tests::{hosting_device, test_host as test_holder};
 
 /// The domain whose settings document the discovery fake answers for, as a
 /// provider that publishes them.
@@ -54,14 +54,14 @@ struct Setup {
 impl Setup {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_holder(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         // The stand-in calendar server is this machine: the holder may call
         // its own network.
         workspaces.call_private_model_addresses(true);
         workspaces.sign_in_accounts_through(|_address, _password| Ok("signed in".into()));
-        let (workspace, workspace_id, holder) = governed(&workspaces).await;
+        let (workspace, workspace_id, holder) = hosted(&workspaces).await;
         let device = admit(&workspaces, &workspace, &owner, 1).await;
         Self {
             workspaces,

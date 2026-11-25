@@ -20,7 +20,7 @@ use tilo_actions::remote::person_telling::{
 
 use super::*;
 use crate::workspaces::ToTell;
-use crate::workspaces::fixtures::{TestHost, governor, test_host};
+use crate::workspaces::fixtures::{TestHost, hosting_device, test_host};
 use crate::workspaces::model_answers::ProviderProtocol;
 use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
 
@@ -72,7 +72,7 @@ struct Host {
 impl Host {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         server
             .workspaces()

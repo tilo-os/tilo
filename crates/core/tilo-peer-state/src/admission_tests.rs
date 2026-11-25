@@ -329,7 +329,7 @@ tilo_test_env::scenario! {
         let workspace = peer.workspace_id().to_owned();
         assert!(
             peer.governance_mut()
-                .put_governed_grants(
+                .put_member_grants(
                     &[roles::administrator_grant(
                         &workspace,
                         &hex::encode(editor_person),
@@ -492,7 +492,7 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    fn a_checkpoint_installs_only_with_its_governed_coverage;
+    fn a_checkpoint_installs_only_with_its_checkpoint_coverage;
 
     phase source_workspace_signature_and_aged_checkpoint_fail_closed;
     {
@@ -573,11 +573,11 @@ tilo_test_env::scenario! {
 
     phase retained_server_replay_accepts_certified_document_after_live_freshness_window;
     {
-        let (mut governor, authority, _, browser_cert, authored_at) = seeded();
+        let (mut owner_copy, authority, _, browser_cert, authored_at) = seeded();
         let replayed_at = authored_at + Duration::from_secs(301);
         let mut browser = StatePeer::new(
-            governor.workspace_id(),
-            governor.owner_certificates()[0].clone(),
+            owner_copy.workspace_id(),
+            owner_copy.owner_certificates()[0].clone(),
             vec![browser_cert],
             RevocationList::new(),
             replayed_at,
@@ -585,7 +585,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let origin = TransportOrigin::RetainedServerDelta(authority.verifying_key().to_bytes());
 
-        for message in governor
+        for message in owner_copy
             .publication_mut()
             .bootstrap_messages(&authority, authored_at)
             .unwrap()
@@ -593,10 +593,10 @@ tilo_test_env::scenario! {
             browser.receive_from(origin, message, replayed_at).unwrap();
         }
 
-        assert_eq!(browser.rows(), governor.rows());
+        assert_eq!(browser.rows(), owner_copy.rows());
         assert_eq!(
             browser.document_heads("test.app", "tab:1"),
-            governor.document_heads("test.app", "tab:1")
+            owner_copy.document_heads("test.app", "tab:1")
         );
     }
 
@@ -995,7 +995,7 @@ tilo_test_env::scenario! {
     {
         let (mut native, a_key, b_key, b_cert, now) = seeded();
         let empty = AutoCommit::new().save();
-        // The governor checkpoints an empty record: the coverage row it writes
+        // The host checkpoints an empty record: the coverage row it writes
         // names the route with no heads and the hash of that empty snapshot.
         native
             .publication_mut()
@@ -1061,8 +1061,8 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Invite a second person into `peer` as an Editor with one device, as the
-/// governor `authority`: their device certificate and root.
+/// Invite a second person into `peer` as an Editor with one device, signed by
+/// the device `authority`: their device certificate and root.
 pub(crate) fn add_editor(
     peer: &mut StatePeer,
     authority: &SigningKey,
@@ -1073,7 +1073,7 @@ pub(crate) fn add_editor(
 }
 
 /// Invite the person rooted at `root_seed`, with one device from
-/// `device_seed`, into `peer` as an Editor, as the governor `authority`: their
+/// `device_seed`, into `peer` as an Editor, signed by `authority`: their
 /// device key, certificate and person root.
 pub(crate) fn add_member_with(
     peer: &mut StatePeer,
@@ -1350,7 +1350,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         peer.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
-    let access = peer.governance().governed_access(now).unwrap();
+    let access = peer.governance().member_list_access(now).unwrap();
     assert!(
         access
             .member_devices
@@ -1554,7 +1554,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .admit_invited_member(&redemption, &guest_key, now)
             .unwrap()
     );
-    let access = restored.governance().governed_access(now).unwrap();
+    let access = restored.governance().member_list_access(now).unwrap();
     assert!(
         !access
             .member_devices
@@ -1687,7 +1687,7 @@ tilo_test_env::scenario! {
     }
 
     phase admission_records_when_a_member_joined_and_a_role_change_keeps_it;
-    // The governor records when the workspace admitted a person, once: a role
+    // The host records when the workspace admitted a person, once: a role
     // change keeps it, so the numbers namesakes are told apart by never shift,
     // and removal forgets it.
     {
@@ -1699,7 +1699,7 @@ tilo_test_env::scenario! {
                 panic!("unexpected fixture shape")
             };
             let doc = crate::workspace::candidate(None, &changes).unwrap();
-            crate::workspace::extract_governed_fields(&doc)
+            crate::workspace::extract_listed_fields(&doc)
                 .1
                 .joined
                 .get(&person)
@@ -1985,34 +1985,34 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase dynamic_governed_identity_import_preserves_history_and_requires_authority;
+    phase dynamic_device_row_import_preserves_history_and_requires_authority;
     {
-        let (mut governor, a, _, _, now) = seeded();
+        let (mut owner_copy, a, _, _, now) = seeded();
         let root = SigningKey::from_bytes(&[1; 32]);
         let new_key = SigningKey::from_bytes(&[8; 32]);
         let stranger = SigningKey::from_bytes(&[0x5a; 32]);
-        let mut cert = governor.owner_certificates()[0].clone();
+        let mut cert = owner_copy.owner_certificates()[0].clone();
         cert.device_public_key = new_key.verifying_key().to_bytes();
         cert.device_label = "dynamic client".into();
         sign_device_cert(&mut cert, &root).unwrap();
-        let mut existing = governor.clone();
-        let before = governor.durable().unwrap();
+        let mut existing = owner_copy.clone();
+        let before = owner_copy.durable().unwrap();
         assert!(
-            governor
+            owner_copy
                 .governance_mut().admit_member_device(&cert, &stranger, now)
                 .is_err()
         );
-        assert_eq!(before, governor.durable().unwrap());
-        let rows = governor.rows();
-        let floors = governor.replay_floors();
-        assert!(governor.governance_mut().admit_member_device(&cert, &new_key, now).unwrap());
-        assert!(!governor.governance_mut().admit_member_device(&cert, &new_key, now).unwrap());
-        assert_eq!(rows, governor.rows());
-        assert_eq!(floors, governor.replay_floors());
+        assert_eq!(before, owner_copy.durable().unwrap());
+        let rows = owner_copy.rows();
+        let floors = owner_copy.replay_floors();
+        assert!(owner_copy.governance_mut().admit_member_device(&cert, &new_key, now).unwrap());
+        assert!(!owner_copy.governance_mut().admit_member_device(&cert, &new_key, now).unwrap());
+        assert_eq!(rows, owner_copy.rows());
+        assert_eq!(floors, owner_copy.replay_floors());
         let outcome = existing
             .receive_from(
                 TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
-                governor.workspace_message(),
+                owner_copy.workspace_message(),
                 now,
             )
             .unwrap();
@@ -2036,7 +2036,7 @@ tilo_test_env::scenario! {
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
             .unwrap();
         assert!(
-            governor
+            owner_copy
                 .receive_from(
                     TransportOrigin::ServerDelta(new_key.verifying_key().to_bytes()),
                     message,
@@ -2058,22 +2058,22 @@ tilo_test_env::scenario! {
         let other_root = SigningKey::from_bytes(&[9; 32]);
         cert.user_public_key = other_root.verifying_key().to_bytes();
         sign_device_cert(&mut cert, &other_root).unwrap();
-        assert!(governor.governance_mut().admit_member_device(&cert, &new_key, now).is_err());
+        assert!(owner_copy.governance_mut().admit_member_device(&cert, &new_key, now).is_err());
     }
 
     phase a_members_further_device_is_admitted_and_a_strangers_is_not;
     {
-        let (mut governor, a, _, _, now) = seeded();
-        let (_, mut cert, _) = add_member_with(&mut governor, &a, now, 0x45, 0x46);
+        let (mut owner_copy, a, _, _, now) = seeded();
+        let (_, mut cert, _) = add_member_with(&mut owner_copy, &a, now, 0x45, 0x46);
         cert.device_public_key = SigningKey::from_bytes(&[0x47; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut cert, &SigningKey::from_bytes(&[0x45; 32])).unwrap();
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
                 .admit_member_device(&cert, &SigningKey::from_bytes(&[0x47; 32]), now)
                 .unwrap()
         );
-        assert!(governor.permissions(cert.device_public_key, now).is_ok());
+        assert!(owner_copy.permissions(cert.device_public_key, now).is_ok());
 
         let stranger = SigningKey::from_bytes(&[0x48; 32]);
         cert.user_public_key = stranger.verifying_key().to_bytes();
@@ -2081,19 +2081,19 @@ tilo_test_env::scenario! {
             .verifying_key()
             .to_bytes();
         sign_device_cert(&mut cert, &stranger).unwrap();
-        let refused = governor
+        let refused = owner_copy
             .governance_mut()
             .admit_member_device(&cert, &SigningKey::from_bytes(&[0x49; 32]), now)
             .unwrap_err();
         assert!(refused.contains("not a member"), "{refused}");
-        assert!(governor.permissions(cert.device_public_key, now).is_err());
+        assert!(owner_copy.permissions(cert.device_public_key, now).is_err());
     }
 
-    phase expired_known_identity_does_not_block_governed_join;
+    phase expired_known_identity_does_not_block_listed_join;
     {
-        let (mut governor, a, _, _, now) = seeded();
+        let (mut owner_copy, a, _, _, now) = seeded();
         let root = SigningKey::from_bytes(&[1; 32]);
-        let mut cert = governor.owner_certificates()[0].clone();
+        let mut cert = owner_copy.owner_certificates()[0].clone();
         cert.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
         cert.expires_at_ns = Some(
             (now + Duration::from_secs(1))
@@ -2104,11 +2104,11 @@ tilo_test_env::scenario! {
                 .unwrap(),
         );
         sign_device_cert(&mut cert, &root).unwrap();
-        governor
+        owner_copy
             .governance_mut()
             .admit_member_device(&cert, &SigningKey::from_bytes(&[8; 32]), now)
             .unwrap();
-        let mut existing = governor.clone();
+        let mut existing = owner_copy.clone();
         assert!(existing.permissions(cert.device_public_key, now).is_ok());
         let later = now + Duration::from_secs(2);
         assert!(
@@ -2120,7 +2120,7 @@ tilo_test_env::scenario! {
             ),
             "a warm policy cache must not cache certificate validity"
         );
-        let mut next = governor
+        let mut next = owner_copy
             .owner_certificates()
             .into_iter()
             .find(|cert| cert.device_public_key == a.verifying_key().to_bytes())
@@ -2128,7 +2128,7 @@ tilo_test_env::scenario! {
         next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut next, &root).unwrap();
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
                 .admit_member_device(&next, &SigningKey::from_bytes(&[9; 32]), later)
                 .unwrap()
@@ -2137,7 +2137,7 @@ tilo_test_env::scenario! {
             existing
                 .receive(
                     a.verifying_key().to_bytes(),
-                    governor.workspace_message(),
+                    owner_copy.workspace_message(),
                     later
                 )
                 .unwrap()
@@ -2169,7 +2169,7 @@ tilo_test_env::scenario! {
             "expired historical certificates restore but never regain current access"
         );
         let mut empty = StatePeer::new(
-            governor.workspace_id(),
+            owner_copy.workspace_id(),
             next.clone(),
             vec![],
             RevocationList::new(),
@@ -2180,7 +2180,7 @@ tilo_test_env::scenario! {
             empty
                 .receive(
                     a.verifying_key().to_bytes(),
-                    governor.workspace_message(),
+                    owner_copy.workspace_message(),
                     later
                 )
                 .is_err(),
@@ -2306,7 +2306,7 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase governed_import_is_atomic_even_for_direct_admission;
+    phase identity_import_is_atomic_even_for_direct_admission;
     {
         use automerge::ReadDoc;
         let root = SigningKey::from_bytes(&[1; 32]);
@@ -2360,7 +2360,7 @@ tilo_test_env::scenario! {
     clippy::too_many_lines,
     reason = "one end-to-end scenario: its setup and assertions stay together"
 )]
-fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
+fn learned_revocation_and_device_row_survive_a_stale_restore() {
     use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
     let (mut native, a, b, bc, now) = seeded();
     let mut receiver = StatePeer::new(
@@ -2397,7 +2397,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         .unwrap();
     assert!(
         !learned.metadata_changed,
-        "governed SyncResp already imported certificate"
+        "the SyncResp's governance already imported the certificate"
     );
     assert!(receiver.certificates().contains(&bc));
     let restored = StatePeer::restore(
@@ -2476,7 +2476,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     assert!(
         restored
             .governance_mut()
-            .publish_governed_revocations(&[revocation], &a, now)
+            .publish_member_revocations(&[revocation], &a, now)
             .unwrap()
     );
     assert_eq!(restored.document("test.app", "tab:1"), before);
@@ -2893,7 +2893,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     assert!(
         !peer
             .governance()
-            .governed_access(now)
+            .member_list_access(now)
             .unwrap()
             .member_user_roots
             .contains(&guest_cert.user_public_key)

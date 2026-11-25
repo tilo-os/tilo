@@ -15,7 +15,7 @@
     reason = "a test computes when a certificate ends, in nanoseconds far from any bound"
 )]
 
-use super::fixtures::{entry_join_as, governor, test_host};
+use super::fixtures::{entry_join_as, hosting_device, test_host};
 use super::*;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
@@ -64,13 +64,13 @@ async fn settle_after_the_tab_expires(
     person: [u8; 32],
 ) {
     tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
-    let governed = workspaces.workspace(workspace).await.unwrap();
-    let mut governed = governed.lock().await;
-    workspaces.settle(&mut governed).await.unwrap();
-    let access = governed
+    let hosted = workspaces.workspace(workspace).await.unwrap();
+    let mut hosted = hosted.lock().await;
+    workspaces.settle(&mut hosted).await.unwrap();
+    let access = hosted
         .peer()
         .governance()
-        .governed_access(tilo_clock::wall())
+        .member_list_access(tilo_clock::wall())
         .unwrap();
     assert!(
         !access.member_devices.contains(&tab.device_public_key),
@@ -86,7 +86,7 @@ async fn settle_after_the_tab_expires(
 /// handshake and the certification queue (which a device paired from another
 /// of theirs, and their root approving it, go through) read the workspace
 /// runtimes' roots; an agent's delegation is bounded by the same roots; the
-/// person's own listing of workspaces reads the governed ones.
+/// person's own listing of workspaces reads the hosted ones.
 async fn assert_still_a_member_everywhere(
     workspaces: &Workspaces,
     host: &DeviceCert,
@@ -159,7 +159,7 @@ async fn a_new_tab_comes_back_at_the_part_they_hold(
 #[tokio::test]
 async fn a_member_whose_every_device_expired_is_still_a_member_on_each_way_back() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();

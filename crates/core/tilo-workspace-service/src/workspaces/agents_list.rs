@@ -29,8 +29,8 @@ impl Workspaces {
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let governed = state.lock().await;
-            governed.peer().workspace().check_workspace_administration(
+            let hosted = state.lock().await;
+            hosted.peer().workspace().check_workspace_administration(
                 self.device_cert().device_public_key,
                 tilo_clock::wall(),
             )?;

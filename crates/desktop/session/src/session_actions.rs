@@ -524,7 +524,7 @@ mod tests {
         })
     }
 
-    /// A headless session whose workspace the person at this device governs, running as the
+    /// A headless session whose workspace the person at this device owns, running as the
     /// device's daemon's shell: the shell's own actions are enough for a line to change something.
     #[cfg(target_os = "linux")]
     fn line_session(
@@ -550,7 +550,7 @@ mod tests {
             "session.place_found(text: \"Displays\", view: .none, x: .some(40), y: .some(40))";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
         let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
         let person = Caller::local_person(person_id.clone()).in_workspace(WORKSPACE);
@@ -594,7 +594,7 @@ mod tests {
         const WORKSPACE: &str = "4b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b50";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
         let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
         let person = Caller::local_person(person_id).in_workspace(WORKSPACE);
@@ -623,7 +623,7 @@ mod tests {
         const ELSEWHERE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b59";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
         let mut device = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
         // The daemon decides each call in the workspace its caller names: one this device holds
@@ -660,7 +660,7 @@ mod tests {
         const WORKSPACE: &str = "6b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b52";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
         let mut device = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
         let person = Caller::local_person(person_id).in_workspace(WORKSPACE);
@@ -711,7 +711,7 @@ mod tests {
         const WORKSPACE: &str = "7b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b53";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, me) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, me) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the actions in");
         let mut device = serving(state.path(), app_wire.path(), &me, WORKSPACE);
         device.frame();
@@ -871,10 +871,10 @@ mod tests {
         }
     }
 
-    /// Give the session a real device identity and govern `workspace` under it so the broker
+    /// Give the session a real device identity and put `workspace` under it so the broker
     /// admits the person's and their agent's calls on this device.
     #[cfg(target_os = "linux")]
-    fn governed_workspace(
+    fn listed_workspace(
         state: &std::path::Path,
         workspace: &str,
     ) -> (tilo_test_env::ScopedEnv, tempfile::TempDir, String) {
@@ -918,12 +918,12 @@ mod tests {
         .expect("an owner for this device's workspace");
         let workspace_id =
             tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace id");
-        let governor = tilo_peer_state::owner::testing::add_interactive_device_in(
+        let hosting = tilo_peer_state::owner::testing::add_interactive_device_in(
             &owner, &device, &cert, workspace,
         )
-        .expect("this device governs the workspace it hosts");
-        let host = governor.device().device_public_key;
-        let frames: Vec<Vec<u8>> = governor.outgoing().map(|(bytes, _)| bytes).collect();
+        .expect("this device hosts the workspace");
+        let host = hosting.device().device_public_key;
+        let frames: Vec<Vec<u8>> = hosting.outgoing().map(|(bytes, _)| bytes).collect();
         for frame in frames {
             owner
                 .receive(
@@ -1097,7 +1097,7 @@ mod tests {
         const WORKSPACE: &str = "1b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5d";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve actions in");
         let power_link = populated_power_link();
         let power_service =
@@ -1205,7 +1205,7 @@ mod tests {
 
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve headless actions in");
         let (fake_system, system_service) = fake_system_service();
 
@@ -1288,7 +1288,7 @@ mod tests {
 
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve live power actions in");
 
         let fake_system = FakeSystem::new();
@@ -1350,7 +1350,7 @@ mod tests {
 
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve live mode-list actions in");
         let fake_system = FakeSystem::new();
         let (power_link, mut session) = live_power_session(
@@ -1446,7 +1446,7 @@ mod tests {
 
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve unattached power actions");
 
         let power_link = tilo_session_power::PowerLink::default();
@@ -1506,7 +1506,7 @@ mod tests {
 
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
+        let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve live mode actions");
         let fake_system = FakeSystem::new();
         let (_power_link, mut session) = live_power_session(

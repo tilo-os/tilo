@@ -100,7 +100,7 @@ struct Fixture {
     _home: tempfile::TempDir,
 }
 
-/// A workspace its owner governs, with agent `scribe` that may author only in
+/// A workspace with an owner, and agent `scribe` that may author only in
 /// Notes, and agent `porter` that may upload content to the workspace.
 fn fixture() -> Fixture {
     let home = tempfile::tempdir().unwrap();

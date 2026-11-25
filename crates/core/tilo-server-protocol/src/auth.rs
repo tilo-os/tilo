@@ -796,18 +796,18 @@ fn verify_hello_ack_inner(
 ///
 /// # Errors
 ///
-/// Returns [`AuthError`] unless the ACK certificate is the exact expected
-/// governor, is current and non-revoked, can govern workspaces, and proves the
-/// challenge with its certified device key.
+/// Returns [`AuthError`] unless the ACK certificate is the exact expected host,
+/// is current and non-revoked, can own workspaces, and proves the challenge
+/// with its certified device key.
 pub fn verify_interactive_owner_ack(
     ack: &impl ServerProof,
-    expected_governor: &DeviceCert,
+    expected_host: &DeviceCert,
     revocations: &RevocationList,
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
-    if ack.cert() != expected_governor || !ack.cert().capabilities.can_own_workspaces {
+    if ack.cert() != expected_host || !ack.cert().capabilities.can_own_workspaces {
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {

@@ -14,7 +14,9 @@ use tilo_user_identity::DeviceCapabilities;
 
 use super::super::keeping::keep_listed;
 use super::super::{Servers, apply, device_id, read};
-use crate::workspaces::fixtures::{TestHost, device_cert, governor, list_workspace, test_host};
+use crate::workspaces::fixtures::{
+    TestHost, device_cert, hosting_device, list_workspace, test_host,
+};
 use crate::workspaces::{MemberDevice, Workspaces, person_workspace};
 use tilo_server_protocol::servers::person_workspace_id;
 
@@ -70,7 +72,7 @@ async fn keeps(server: &Workspaces, workspace: &str, kept: bool, what: &str) {
 async fn a_server_keeps_each_listed_workspace_until_its_entry_says_not() {
     let desk_state = tempfile::tempdir().unwrap();
     let server_state = tempfile::tempdir().unwrap();
-    let (desk_key, desk_cert) = governor();
+    let (desk_key, desk_cert) = hosting_device();
     let desk = test_host(desk_state.path(), &desk_key, &desk_cert).await;
     let made = desk
         .workspaces()
@@ -153,7 +155,7 @@ async fn a_server_keeps_each_listed_workspace_until_its_entry_says_not() {
 async fn a_device_that_is_no_server_enters_what_the_list_shows_on_it() {
     let desk_state = tempfile::tempdir().unwrap();
     let laptop_state = tempfile::tempdir().unwrap();
-    let (desk_key, desk_cert) = governor();
+    let (desk_key, desk_cert) = hosting_device();
     let desk = test_host(desk_state.path(), &desk_key, &desk_cert).await;
     let made = desk
         .workspaces()

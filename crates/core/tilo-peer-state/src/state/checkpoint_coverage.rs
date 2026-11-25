@@ -1,16 +1,16 @@
-//! A route's governed checkpoint coverage, as one replica holds it.
+//! A route's checkpoint coverage, as one peer holds it.
 //!
-//! One checkpoint governs a route: the one the workspace's coverage row names,
-//! which is the first of the owner's devices to cover it. Every device of the
-//! owner may publish the record as it holds it, and only that checkpoint is
-//! governed; the others are their authors' own changes.
+//! One checkpoint covers each route: the one the workspace's coverage row
+//! names, which is the first of the owner's devices to cover it. Every device
+//! of the owner may publish the record as it has it, and only that checkpoint
+//! is covered; the others are their authors' own changes.
 
 use super::{AdmissionError, AdmissionReport, InputDisposition, ReceiveOutcome, Route, StatePeer};
 
 impl StatePeer {
-    /// `route`'s governed coverage row as this replica holds it: which
-    /// checkpoint of the route the workspace governs, and for whom.
-    pub(super) fn governed_coverage(
+    /// `route`'s coverage row as this peer holds it: which checkpoint of the
+    /// route the workspace covers, and for whom.
+    pub(super) fn checkpoint_coverage(
         &self,
         route: &Route,
     ) -> Result<Option<crate::coverage::Coverage>, String> {
@@ -30,7 +30,7 @@ impl StatePeer {
         sequence: u64,
     ) -> Result<bool, AdmissionError> {
         Ok(self
-            .governed_coverage(route)
+            .checkpoint_coverage(route)
             .map_err(crate::AdmissionError::malformed)?
             .is_some_and(|coverage| {
                 coverage.workspace == self.core.workspace

@@ -166,7 +166,7 @@ pub trait AppWidget: Widget {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    /// Which role permission governs this app.
+    /// Which role permission applies to this app.
     fn permission_hint(&self) -> Option<AppKind> {
         None
     }

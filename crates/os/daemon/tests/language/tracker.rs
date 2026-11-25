@@ -2,7 +2,7 @@
 //! thousand issues costs what it does at a hundred, so an agent listing a company's tracker pays
 //! for the rows it reads.
 //!
-//! The daemon serves the workspace it governs and runs its apps, so a key's listing reads the
+//! The daemon serves the workspace it hosts and runs its apps, so a key's listing reads the
 //! tracker's records as the app lays them out. A test that opens the tracker before the app runs
 //! stops at the app's open.
 
@@ -380,7 +380,7 @@ fn a_trackers_listing_holds_no_other_request() {
         let workspace = host.workspace().to_owned();
         let key = host.key("Mover");
         let base = tracker(&key, &workspace, SIZE).await;
-        // Another workspace the daemon governs: the person's own, made as their computer makes
+        // Another workspace the daemon hosts: the person's own, made as their computer makes
         // one for them.
         let other = format!(
             "/v1/workspaces/{}",

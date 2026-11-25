@@ -1,5 +1,5 @@
 //! What this device keeps beyond its own copies when its machine is a server: the workspaces
-//! placed on it, governed here, with the certification, live origin, kept content, place among
+//! placed on it, hosted here, with the certification, live origin, kept content, place among
 //! its person's servers and rollout that come with keeping them ([`tilo_server::daemon::Server`]),
 //! and the packet relay it is reached through.
 //!
@@ -509,7 +509,7 @@ pub(crate) struct Kept {
 
 impl Kept {
     /// This server's part in its person's update rollout: the workspaces it
-    /// governs, and where it keeps the image it restarted into. The daemon's
+    /// hosts, and where it keeps the image it restarted into. The daemon's
     /// update action takes its turn through it.
     pub(crate) fn machine(&self) -> Option<tilo_server::rollout::ServerMachine> {
         let server = self.server.as_ref()?;
@@ -520,7 +520,7 @@ impl Kept {
     }
 
     /// This machine's controls ([`tilo_server::operations::Controls`]): the workspaces it
-    /// governs, whose administrators may control it, and where its root helper reads what it is
+    /// hosts, whose administrators may control it, and where its root helper reads what it is
     /// asked and answers.
     pub(crate) fn controls(&self) -> Option<tilo_server::operations::Controls> {
         let server = self.server.as_ref()?;

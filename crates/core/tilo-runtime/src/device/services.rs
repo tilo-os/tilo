@@ -2078,7 +2078,7 @@ impl Daemon {
         let browser_sessions = environments.sessions();
         #[cfg(not(target_os = "linux"))]
         let browser_sessions = None;
-        // What a server keeps beyond its copies, on the workspace service it governs.
+        // What a server keeps beyond its copies, on the workspace service it runs.
         let serves_pages = keeping.is_some();
         let kept = match (keeping, relay, itself) {
             (Some(keeping), Some(relay), Some(itself)) => {
@@ -2104,7 +2104,7 @@ impl Daemon {
             (Some(kept), protocols)
         });
         // A server's update turn, as the update actions take it: the workspaces
-        // this computer governs, and where it keeps the image it restarted into.
+        // this computer hosts, and where it keeps the image it restarted into.
         let rollout = kept.as_ref().and_then(super::keep::Kept::machine);
         // The machine's controls, as the `server` actions carry them out: the same workspaces,
         // and the state root its root helper reads and answers at.
@@ -2139,7 +2139,7 @@ impl Daemon {
             || workspaces.copies().action_service(),
             take_work::TakesWork::actions,
         );
-        // The workspaces this device governs run their Terminal sessions' shells here: the
+        // The workspaces this device hosts run their Terminal sessions' shells here: the
         // dispatch answers the records' `run` and `open-terminal` with ush's shells, and the
         // endpoint takes the streams it hands out. A member that takes its server's work runs
         // them for its server instead, and answers none itself.
@@ -3032,7 +3032,7 @@ fn person_name() -> Option<String> {
         .filter(|name| tilo_identity::store::is_chosen_display_name(name))
 }
 
-/// Open the device's workspace service in its directory: it governs the workspace founded here
+/// Open the device's workspace service in its directory: it hosts the workspace founded here
 /// on a computer with no login, and holds the member copies of the login's workspaces otherwise.
 fn open_workspaces(
     identity: &Identity,
@@ -4436,7 +4436,7 @@ impl tilo_api::session::AccountHere for Daemon {
             let id = WorkspaceId::parse(&workspace).ok_or(ServerError::NotFound)?;
             // Only a workspace this device keeps takes a name here; one another host keeps is named
             // there.
-            if workspaces.copies().governed_copy(id).await.is_none() {
+            if workspaces.copies().hosted_copy(id).await.is_none() {
                 return Err(ServerError::Refused(
                     "this device does not keep that workspace".into(),
                 ));
@@ -6782,7 +6782,7 @@ struct EndpointServing<'a> {
     /// The one action service the device actions are answered on: its workspaces', or the work
     /// it takes from its server, admitting a ticket's certify call while a computer asks.
     actions: tilo_peer_state::actions::ActionService,
-    /// The workspace host this device runs, when it governs the workspace founded here or the
+    /// The workspace host this device runs, when it serves the workspace founded here or the
     /// workspaces placed on a server: the person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
     /// What a server answers for what it keeps.

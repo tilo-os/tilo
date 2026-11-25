@@ -1,4 +1,4 @@
-//! Opening an app for the first time in a workspace a home relay governs, after
+//! Opening an app for the first time in a workspace a home relay hosts, after
 //! the workspace lets the app author: a member's device signs the app's empty
 //! record itself, as every copy admits a member's record, and the app's
 //! first state reaches the record as the member's own change.
@@ -77,7 +77,7 @@ async fn admit_viewer(server: &Server, host: &TestDevice, member: &TestDevice, w
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_admitted_member_creates_an_apps_empty_record() {
-    let alice = TestUser::fresh("Fixture governor");
+    let alice = TestUser::fresh("Fixture owner");
     let bob = TestUser::fresh("Fixture editor");
     let carol = TestUser::fresh("Fixture viewer");
     let host = alice.enrol("private-host", DeviceCapabilities::member());

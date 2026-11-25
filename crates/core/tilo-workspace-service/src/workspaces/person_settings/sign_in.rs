@@ -1462,7 +1462,7 @@ mod tests {
     use tilo_account_probe::imap::Reach;
 
     use super::*;
-    use crate::workspaces::tests::{governor, test_host};
+    use crate::workspaces::tests::{hosting_device, test_host};
 
     /// A look-up that answers with a public address on its first asking and
     /// `127.0.0.1` afterwards, counting every call.
@@ -1546,7 +1546,7 @@ mod tests {
     #[tokio::test]
     async fn a_nextcloud_sign_in_whose_name_turns_inside_connects_to_nobody() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let host = test_host(dir.path(), &key, &owner).await;
         let workspaces = host.workspaces();
         let listener = CountingListener::start();

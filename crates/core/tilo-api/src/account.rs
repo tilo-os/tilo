@@ -296,7 +296,7 @@ const VERBS: [Verb; 17] = [
                 ActionParam::optional(
                     "service",
                     ParamType::Secret,
-                    "What its own workspace service governed, with the key it wrote under.",
+                    "What its own workspace service administered, with the key it wrote under.",
                 ),
             ]
         },

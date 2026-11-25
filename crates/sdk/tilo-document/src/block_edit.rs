@@ -385,7 +385,7 @@ fn splice_between(old: &str, new: &str) -> Option<(usize, usize, String)> {
 }
 
 /// Make the stored block `id` (as `view` shows it, `None` for a new one)
-/// take `shape`: its kind, and each attribute it governs, writing only what
+/// take `shape`: its kind, and each attribute it sets, writing only what
 /// differs.
 fn apply_shape(dm: &mut DocMut<'_>, id: &str, view: Option<&BlockView>, shape: &Shape) {
     let stored = shape.stored();

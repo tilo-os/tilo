@@ -994,7 +994,7 @@ fn now_ns() -> u64 {
 
 #[derive(Clone)]
 struct Admission {
-    owner: crate::owner::NativeWorkspaceOwner,
+    owner: crate::owner::DeviceWorkspaces,
     workspace: tilo_desktop_model::WorkspaceId,
 }
 
@@ -1322,7 +1322,7 @@ impl DirectSync {
     /// decides it. The link then syncs that replica.
     pub fn owning(
         &self,
-        owner: crate::owner::NativeWorkspaceOwner,
+        owner: crate::owner::DeviceWorkspaces,
         workspace: tilo_desktop_model::WorkspaceId,
     ) -> Result<Self, String> {
         let replica = owner.replica(workspace)?;
@@ -3374,7 +3374,7 @@ impl DirectSync {
                 hello,
                 self.0.admission.is_none()
                     && replica.has_governance()
-                    && replica.signed_by_governor(&device),
+                    && replica.signed_by_administrator(&device),
             )
         };
         let mut messages = vec![hello];
@@ -4102,7 +4102,7 @@ impl DirectSync {
     }
 
     /// Take `message` into this device's own replica: whether it is the
-    /// workspace's governor decides there too, and what it refuses is filed
+    /// workspace's host decides there too, and what it refuses is filed
     /// where the write's author reads why.
     async fn admit_local(
         &self,
@@ -5209,7 +5209,7 @@ mod tests {
             sync.0
                 .replica
                 .write(|peer| {
-                    peer.governance_mut().publish_governed_revocations(
+                    peer.governance_mut().publish_member_revocations(
                         &[revocation(&root, member.device_public_key)],
                         &roster[0].0,
                         tilo_clock::wall(),
@@ -5252,7 +5252,7 @@ mod tests {
                     .replica
                     .lock()
                     .governance_mut()
-                    .publish_governed_revocations(
+                    .publish_member_revocations(
                         std::slice::from_ref(&entry),
                         &roster[0].0,
                         tilo_clock::wall(),

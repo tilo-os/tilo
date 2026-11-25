@@ -169,7 +169,7 @@ pub fn entry_admission(
         own,
         key,
         |peer, key| {
-            let entry = peer.governance().governed_entry();
+            let entry = peer.governance().workspace_entry();
             if entry.open_role().is_none() {
                 return Err("this workspace's entry does not take people who ask".into());
             }
@@ -218,7 +218,7 @@ fn person_is_member(
 ) -> bool {
     crate::StatePeer::unanchored(workspace, own, governance, now).is_ok_and(|peer| {
         peer.governance()
-            .governed_policy()
+            .member_policy()
             .is_ok_and(|policy| policy.role_of(&hex::encode(own.user_public_key)).is_some())
     })
 }

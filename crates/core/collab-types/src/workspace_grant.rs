@@ -9,7 +9,7 @@
 //! workspace lists and revokes.
 use serde::{Deserialize, Serialize};
 
-/// Key of the workspace's grants in its governance document: a map from each
+/// Key of the workspace's grants in its governance: a map from each
 /// grant's id to the grant (JSON).
 pub const WORKSPACE_GRANTS_KEY: &str = "key_grants";
 

@@ -20,9 +20,9 @@ fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// The governor `a` holding `records` seeded documents, and a fresh member
-/// replica with the same pinned authority.
-fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, SystemTime) {
+/// The device `a` that hosts the workspace, with `records` seeded documents,
+/// and a fresh member replica with the same pinned authority.
+fn owner_and_member(records: usize) -> (StatePeer, StatePeer, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let now = SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(2000))
@@ -30,7 +30,7 @@ fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, Sy
     let (a, ac) = device(&root, 2);
     let (_, bc) = device(&root, 3);
     let roster = vec![ac.clone(), bc];
-    let mut governor = StatePeer::new(
+    let mut owner_copy = StatePeer::new(
         WORKSPACE,
         ac.clone(),
         roster.clone(),
@@ -53,7 +53,7 @@ fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, Sy
             }
         })
         .collect();
-    governor
+    owner_copy
         .install_seed(
             SeedState {
                 workspace_changes: seed_workspace(WORKSPACE, &ac, &roster).unwrap(),
@@ -64,12 +64,12 @@ fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, Sy
         )
         .unwrap();
     let replica = StatePeer::new(WORKSPACE, ac, roster, RevocationList::new(), now).unwrap();
-    (governor, replica, a, now)
+    (owner_copy, replica, a, now)
 }
 
-/// The governor whose workspace names `devices` devices of its owner, and
+/// The host whose workspace names `devices` devices of its owner, and
 /// their keys.
-fn governor_with_devices(devices: u8) -> (StatePeer, Vec<[u8; 32]>, SystemTime) {
+fn owner_with_devices(devices: u8) -> (StatePeer, Vec<[u8; 32]>, SystemTime) {
     let root = SigningKey::from_bytes(&[5; 32]);
     let now = SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(2000))
@@ -82,7 +82,7 @@ fn governor_with_devices(devices: u8) -> (StatePeer, Vec<[u8; 32]>, SystemTime) 
         .map(|(key, _)| key.verifying_key().to_bytes())
         .collect();
     let (authority, authority_cert) = &roster[0];
-    let mut governor = StatePeer::new(
+    let mut owner_copy = StatePeer::new(
         WORKSPACE,
         authority_cert.clone(),
         certs.clone(),
@@ -90,7 +90,7 @@ fn governor_with_devices(devices: u8) -> (StatePeer, Vec<[u8; 32]>, SystemTime) 
         now,
     )
     .unwrap();
-    governor
+    owner_copy
         .install_seed(
             SeedState {
                 workspace_changes: seed_workspace(WORKSPACE, authority_cert, &certs).unwrap(),
@@ -100,7 +100,7 @@ fn governor_with_devices(devices: u8) -> (StatePeer, Vec<[u8; 32]>, SystemTime) 
             now,
         )
         .unwrap();
-    (governor, keys, now)
+    (owner_copy, keys, now)
 }
 
 /// Deriving every device's access walks the workspace's certificates and
@@ -110,8 +110,8 @@ fn governor_with_devices(devices: u8) -> (StatePeer, Vec<[u8; 32]>, SystemTime) 
 fn deriving_every_devices_access_walks_the_certificates_once() {
     let mut measured = Vec::new();
     for devices in [3_u8, 40] {
-        let (governor, keys, now) = governor_with_devices(devices);
-        let (access, walks) = governor
+        let (owner_copy, keys, now) = owner_with_devices(devices);
+        let (access, walks) = owner_copy
             .governance()
             .access_of_with_walks(&keys, now)
             .unwrap();
@@ -132,21 +132,21 @@ fn deriving_every_devices_access_walks_the_certificates_once() {
 #[test]
 fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
     const MESSAGES: usize = 10;
-    let (mut governor, mut replica, a, now) = governor_and_replica(MESSAGES);
+    let (mut owner_copy, mut replica, a, now) = owner_and_member(MESSAGES);
     let source = a.verifying_key().to_bytes();
-    let messages = governor
+    let messages = owner_copy
         .publication_mut()
         .signed_snapshots(&a, now)
         .unwrap();
     assert_eq!(messages.len(), MESSAGES);
     replica
-        .receive(source, governor.workspace_message(), now)
+        .receive(source, owner_copy.workspace_message(), now)
         .unwrap();
     // Counted without touching the cache under test.
     let identities = workspace::governance_of(replica.core.workspace_doc.as_deref())
         .identities
         .len();
-    assert_eq!(identities, 2, "both roster devices are governed identities");
+    assert_eq!(identities, 2, "both roster devices are member identities");
     crate::workspace::POLICY_READS.with(|count| count.set(0));
     crate::cached_document::IDENTITY_DECODES.with(|count| count.set(0));
     for message in messages {
@@ -154,7 +154,7 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
         let outcome = replica.receive(source, message, now).unwrap();
         assert!(outcome.changed && outcome.rejected == 0);
     }
-    assert_eq!(replica.rows(), governor.rows());
+    assert_eq!(replica.rows(), owner_copy.rows());
     // Taking in the governance may have read it already.
     assert!(
         crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
@@ -166,27 +166,27 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
     );
 }
 
-/// The governor writes `receipts` into its workspace document, as an owner commit
+/// The host writes `receipts` into its workspace document, as an owner commit
 /// does, and returns the workspace message that carries them.
-fn publish_receipts(governor: &mut StatePeer, receipts: &[(&str, &[u8])]) -> NeighbourMsg {
-    let workspace = governor.core.workspace_doc.as_deref_mut().unwrap();
+fn publish_receipts(owner_copy: &mut StatePeer, receipts: &[(&str, &[u8])]) -> NeighbourMsg {
+    let workspace = owner_copy.core.workspace_doc.as_deref_mut().unwrap();
     let log = workspace
         .get(ROOT, "effect_receipts_v1")
         .unwrap()
         .unwrap()
         .1;
-    // The governor's own rows: who recorded them is not what is measured.
+    // The host's own rows: who recorded them is not what is measured.
     for (key, bytes) in receipts {
         workspace
             .put(
                 &log,
-                format!("governor/{key}"),
+                format!("host/{key}"),
                 automerge::ScalarValue::Bytes(bytes.to_vec()),
             )
             .unwrap();
     }
     workspace.commit();
-    governor.workspace_message()
+    owner_copy.workspace_message()
 }
 
 fn receipt_decodes() -> usize {
@@ -195,10 +195,10 @@ fn receipt_decodes() -> usize {
 
 #[test]
 fn sync_resp_decodes_each_receipt_once() {
-    let (mut governor, mut replica, a, now) = governor_and_replica(1);
+    let (mut owner_copy, mut replica, a, now) = owner_and_member(1);
     let source = a.verifying_key().to_bytes();
     replica
-        .receive(source, governor.workspace_message(), now)
+        .receive(source, owner_copy.workspace_message(), now)
         .unwrap();
     // Spaced JSON: a re-encoding would not reproduce these bytes.
     let first: Vec<(String, Vec<u8>)> = (0..5)
@@ -213,7 +213,7 @@ fn sync_resp_decodes_each_receipt_once() {
         .iter()
         .map(|(key, bytes)| (key.as_str(), bytes.as_slice()))
         .collect();
-    let message = publish_receipts(&mut governor, &rows);
+    let message = publish_receipts(&mut owner_copy, &rows);
     crate::workspace::RECEIPT_DECODES.with(|count| count.set(0));
     replica.receive(source, message, now).unwrap();
     assert_eq!(receipt_decodes(), first.len(), "each new receipt once");
@@ -226,7 +226,10 @@ fn sync_resp_decodes_each_receipt_once() {
     }
 
     // A later sync restating every admitted receipt decodes only the new one.
-    let message = publish_receipts(&mut governor, &[("invocation-5", br#"{"outcome":"late"}"#)]);
+    let message = publish_receipts(
+        &mut owner_copy,
+        &[("invocation-5", br#"{"outcome":"late"}"#)],
+    );
     crate::workspace::RECEIPT_DECODES.with(|count| count.set(0));
     replica.receive(source, message, now).unwrap();
     assert_eq!(receipt_decodes(), 1, "only the new receipt is decoded");
@@ -234,13 +237,13 @@ fn sync_resp_decodes_each_receipt_once() {
 
     crate::workspace::RECEIPT_DECODES.with(|count| count.set(0));
     replica
-        .receive(source, governor.workspace_message(), now)
+        .receive(source, owner_copy.workspace_message(), now)
         .unwrap();
     assert_eq!(receipt_decodes(), 0, "an unchanged sync decodes nothing");
 
-    // Rewriting admitted evidence is refused, even by the governor.
+    // Rewriting admitted evidence is refused, even by the host.
     let rewrite = publish_receipts(
-        &mut governor,
+        &mut owner_copy,
         &[("invocation-0", br#"{"outcome":"undone"}"#)],
     );
     let before = replica.core.receipts.clone();
@@ -275,7 +278,7 @@ fn person_device(n: usize) -> (SigningKey, DeviceCert) {
 }
 
 /// Workspace `workspace` of `people` editors and its owner, whose grants keep the first
-/// person from `named` records: the governed peer, and the people's devices.
+/// person from `named` records: the host peer, and the people's devices.
 fn crowded_workspace(
     workspace: &str,
     people: usize,
@@ -385,12 +388,12 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         let now = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(2000))
             .unwrap();
-        let (governor, _) = crowded_workspace(CROWDED, people, 0, now);
-        let owner = governor
+        let (owner_copy, _) = crowded_workspace(CROWDED, people, 0, now);
+        let owner = owner_copy
             .core
             .certificates
             .values()
-            .find(|cert| cert.user_public_key == governor.core.owner)
+            .find(|cert| cert.user_public_key == owner_copy.core.owner)
             .unwrap()
             .as_ref()
             .clone();
@@ -403,7 +406,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
             now,
         )
         .unwrap();
-        let message = governor.workspace_message();
+        let message = owner_copy.workspace_message();
         let before = crate::work::now();
         page.receive_from_report(
             TransportOrigin::ServerDelta(owner.device_public_key),
@@ -411,8 +414,8 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
             now,
         )
         .unwrap();
-        page.governance().governed_members(now).unwrap();
-        let access = page.governance().governed_access(now).unwrap();
+        page.governance().member_list(now).unwrap();
+        let access = page.governance().member_list_access(now).unwrap();
         assert_eq!(
             access.member_devices.len(),
             people + 1,
@@ -450,14 +453,14 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
 #[test]
 fn a_records_writes_leave_the_security_basis_worked_out_once() {
     const MESSAGES: usize = 10;
-    let (mut governor, mut replica, a, now) = governor_and_replica(MESSAGES);
+    let (mut owner_copy, mut replica, a, now) = owner_and_member(MESSAGES);
     let source = a.verifying_key().to_bytes();
-    let messages = governor
+    let messages = owner_copy
         .publication_mut()
         .signed_snapshots(&a, now)
         .unwrap();
     replica
-        .receive(source, governor.workspace_message(), now)
+        .receive(source, owner_copy.workspace_message(), now)
         .unwrap();
     let before = crate::work::now();
     let basis = replica.security_basis().unwrap().unwrap();
@@ -478,7 +481,7 @@ fn a_records_writes_leave_the_security_basis_worked_out_once() {
     );
     // Governance that changes is a new state, whose basis is worked out anew.
     let before = crate::work::now();
-    let receipts = publish_receipts(&mut governor, &[("invocation-0", b"{}")]);
+    let receipts = publish_receipts(&mut owner_copy, &[("invocation-0", b"{}")]);
     replica.receive(source, receipts, now).unwrap();
     replica.security_basis().unwrap().unwrap();
     assert_eq!(crate::work::now().since(before).security_bases, 1);

@@ -12,14 +12,14 @@ use tilo_actions::remote::asked::AskedGrants;
 use tilo_actions::remote::{Pending, pending};
 
 use super::weak::WeakWorkspaces;
-use super::{GovernedWorkspace, Workspaces};
+use super::{HostedWorkspace, Workspaces};
 
 /// What refuses a grant asked of this host for someone other than its own person.
 const NOT_OURS: &str = "this server writes grants only for the person it belongs to";
 
 impl Workspaces {
     /// Write `grant` in `workspace`, given by `person` (hex root key): refused unless `person`
-    /// is this host's own, this host governs the workspace, and `person` may take every kind
+    /// is this host's own, this host serves the workspace, and `person` may take every kind
     /// of action it grants at its node themselves.
     ///
     /// # Errors
@@ -35,13 +35,13 @@ impl Workspaces {
         {
             return Err(NOT_OURS.to_owned());
         }
-        let governed = self
+        let hosted = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = governed.lock().await;
+        let mut hosted = hosted.lock().await;
         let at = tilo_clock::wall();
-        let access = governed
+        let access = hosted
             .peer()
             .permissions(self.inner.host.cert.device_public_key, at)
             .map_err(|error| error.to_string())?;
@@ -56,27 +56,27 @@ impl Workspaces {
         }
         drop(access);
         let written = self
-            .put_grants(&mut governed, at, std::slice::from_ref(&grant))
+            .put_grants(&mut hosted, at, std::slice::from_ref(&grant))
             .await;
-        drop(governed);
+        drop(hosted);
         written
     }
 
     /// Write `grants` in `workspace`, as the host's change to it.
     async fn put_grants(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         at: std::time::SystemTime,
         grants: &[Grant],
     ) -> Result<(), String> {
         if !self.administers(workspace) {
-            return Err("this server's person does not govern the workspace".to_owned());
+            return Err("this server's person does not host the workspace".to_owned());
         }
         let key = &self.inner.host.key;
         let mut candidate = workspace.peer().clone();
         if candidate
             .governance_mut()
-            .put_governed_grants(grants, key, at)?
+            .put_member_grants(grants, key, at)?
         {
             let state = workspace.collaboration().clone();
             workspace.keep(candidate, key, at, |_, _| Ok(state))?;

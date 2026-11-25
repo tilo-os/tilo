@@ -4,7 +4,7 @@
 //! A person is their root; their devices are keys their root certified, each
 //! running a session of its own with its own home, identity and state
 //! ([`common::people`]). The workspace is a site's: a server of this machine
-//! governs it, hosts it and admits people to it at an entry a site serves.
+//! hosts it and admits people to it at an entry a site serves.
 //!
 //! What this proves: a person joins a workspace at its site's entry and lands
 //! in it; each further device of theirs, and of someone they invite, joins by
@@ -32,7 +32,7 @@ use tilo_server_protocol::workspaces::Role;
 fn two_people_on_two_devices_each_meet_in_one_workspace() {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
-    // Ada's site: her home peer, which governs her workspace and hosts it.
+    // Ada's site: her home peer, which hosts her workspace.
     let site = Site::start(&ada, "Studio");
     // The workspace is public to its entry, where anyone the site's own entry admits joins as an
     // editor.

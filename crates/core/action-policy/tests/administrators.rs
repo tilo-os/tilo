@@ -1,6 +1,6 @@
 //! A workspace's administrator: an Editor given every governance action.
-//! They govern every member who is not an administrator, an Editor by role
-//! alone governs nothing, and a foreign device, an agent, a ban and a
+//! They administer every member who is not an administrator, an Editor by role
+//! alone administers nothing, and a foreign device, an agent, a ban and a
 //! restriction still bound them. Administrators are made by the owner and
 //! other administrators, and unmade by the owner alone.
 

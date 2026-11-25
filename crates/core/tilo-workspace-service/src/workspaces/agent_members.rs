@@ -1,15 +1,15 @@
-//! Delegated agents as governed members of the workspaces this server governs.
+//! Delegated agents as members of the workspaces this server hosts.
 //!
 //! An agent of a person this server serves is a device of that person, with
 //! its own key, its own certificate and a root-signed delegation naming the
-//! workspaces and apps it may act in, until when. To act in a governed
-//! workspace it needs what every member needs: a place on the workspace's
-//! governed roster, which every member reads, which the server admits to the
+//! workspaces and apps it may act in, until when. To act in a workspace this
+//! server hosts it needs what every member needs: a place on the workspace's
+//! signed member list, which every member reads, which the server admits to the
 //! workspace, and from which the workspace's key holders admit devices to each
 //! record's channel.
 //!
 //! So when the agent's grant is approved (or restored after a restart), each
-//! workspace this server governs asks the one admission decision,
+//! workspace this server hosts asks the one admission decision,
 //! [`WorkspaceOperation::DelegateMembership`], with the agent's certificate: only a
 //! live delegated agent whose delegation names its person, in a workspace the
 //! delegation names and governance owns here. If admitted, the agent writes its
@@ -20,17 +20,17 @@
 //! its delegation.
 //!
 //! A grant that ends, is narrowed or is withdrawn is carried onto the same
-//! rosters ([`Workspaces::reconcile_agent`]): the governor withdraws it from each
-//! workspace whose decision no longer admits it, which removes it from the workspace
-//! and every channel of it, and members refuse whatever it writes from then
-//! on. Its delegation's expiry needs no governor at all: members check it on
+//! member lists ([`Workspaces::reconcile_agent`]): the host withdraws it from
+//! each workspace whose decision no longer admits it, which removes it from the
+//! workspace and every channel of it, and members refuse whatever it writes from
+//! then on. Its delegation's expiry needs no host at all: members check it on
 //! every change.
 
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::delegation::Delegation;
 use tilo_user_identity::DeviceCert;
 
-use super::{GovernedWorkspace, Workspaces, system_time};
+use super::{HostedWorkspace, Workspaces, system_time};
 use crate::auth::AuthenticatedPeer;
 use crate::workspace_access::{self, Decision, DenyReason, ServerTrust, WorkspaceOperation};
 
@@ -50,14 +50,14 @@ impl Workspaces {
 
     /// Whether [`WorkspaceOperation::DelegateMembership`] admits `peer` to `workspace`
     /// now.
-    async fn agent_admitted(&self, governed: &GovernedWorkspace, peer: &AuthenticatedPeer) -> bool {
+    async fn agent_admitted(&self, hosted: &HostedWorkspace, peer: &AuthenticatedPeer) -> bool {
         let Some(workspace) = self
             .inner
             .host
             .workspaces
             .lock()
             .await
-            .get(&governed.workspace_id())
+            .get(&hosted.workspace_id())
             .cloned()
         else {
             return false;
@@ -71,7 +71,7 @@ impl Workspaces {
         if let Decision::Deny(reason) = decision
             && reason != DenyReason::NotADelegatedAgent
         {
-            tracing::debug!(workspace = %governed.workspace(), device = %hex::encode(peer.device_public_key),
+            tracing::debug!(workspace = %hosted.workspace(), device = %hex::encode(peer.device_public_key),
                 reason = reason.reason(), "an agent is not admitted to the workspace");
         }
         decision == Decision::Admit
@@ -117,10 +117,10 @@ impl Workspaces {
         if &cert.user_public_key != acts_for {
             return false;
         }
-        let Ok(governed) = self.workspace(&workspace.to_string()).await else {
+        let Ok(hosted) = self.workspace(&workspace.to_string()).await else {
             return false;
         };
-        let governed = governed.lock().await;
+        let hosted = hosted.lock().await;
         let now = tilo_clock::unix_now_ns();
         let peer = AuthenticatedPeer {
             user_public_key: cert.user_public_key,
@@ -135,15 +135,16 @@ impl Workspaces {
                 .of(&cert.device_public_key, now)
                 .is_none()
             && trust.cert(&peer, now).is_ok()
-            && governed
+            && hosted
                 .peer()
                 .permissions(cert.device_public_key, system_time(now))
                 .is_ok()
     }
 
-    /// The certified device of an exact, currently approved agent on this workspace's
-    /// governed roster. The host register and the roster must hold the same delegation.
-    /// Two live assignments of the same roster id are ambiguous.
+    /// The certified device of an exact, currently approved agent on this
+    /// workspace's member list. The host register and the member list must keep
+    /// the same delegation. Two live assignments of the same agent id are
+    /// ambiguous.
     pub async fn approved_agent_device(
         &self,
         workspace: WorkspaceId,
@@ -167,7 +168,7 @@ impl Workspaces {
         let trust = self.trust();
         let mut matching = peer
             .governance()
-            .governed_agents(system_time(now_ns))
+            .delegated_agents(system_time(now_ns))
             .ok()?
             .into_iter()
             .filter(|entry| {
@@ -175,7 +176,7 @@ impl Workspaces {
             })
             .filter_map(|entry| {
                 let device = entry.device_public_key;
-                let (cert, delegation, None) = peer.governance().governed_agent(&device)? else {
+                let (cert, delegation, None) = peer.governance().listed_delegate(&device)? else {
                     return None;
                 };
                 let peer = AuthenticatedPeer {
@@ -190,7 +191,7 @@ impl Workspaces {
         matching.next().filter(|_| matching.next().is_none())
     }
 
-    /// Bring agent `device`'s place in every workspace this server governs in line
+    /// Bring agent `device`'s place in every workspace this server hosts in line
     /// with its delegation now: after its grant was approved, restored,
     /// renewed, narrowed, withdrawn or ended. `agent` is its certificate and
     /// what signs as it, when the agent is here to sign: it writes its own row,
@@ -223,11 +224,11 @@ impl Workspaces {
 
     async fn reconcile_agent_in(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         device: [u8; 32],
         agent: Option<(&DeviceCert, &dyn collab_types::signer::DeviceSigner)>,
     ) -> Result<(), String> {
-        let recorded = workspace.peer().governance().governed_agent(&device);
+        let recorded = workspace.peer().governance().listed_delegate(&device);
         let offered = agent.map(|(cert, _)| cert);
         let cert = match (&recorded, offered) {
             // Withdrawal is final.

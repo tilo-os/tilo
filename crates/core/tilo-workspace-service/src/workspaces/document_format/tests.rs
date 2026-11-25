@@ -8,11 +8,7 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 /// administration record not filed beside it yet. Kept so a workspace's file
 /// goes on reading the same way; a field added, removed or reordered changes
 /// these bytes.
-const GOLDEN: &str = include_str!("../../../golden/governed-workspace-document/v6.hex");
-
-/// The same record as version 5 wrote it, with one change its host published
-/// in its own name.
-const VERSION_5: &str = include_str!("../../../golden/governed-workspace-document/v5.hex");
+const GOLDEN: &str = include_str!("../../../golden/hosted-workspace-document/v6.hex");
 
 fn golden() -> Vec<u8> {
     hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
@@ -84,10 +80,9 @@ fn the_record_kept_here_reads_and_writes_as_it_is() {
     );
 }
 
-/// A record version 5 kept, which held what its host published in its own
-/// name, reads as this build writes it, with that left behind.
+/// A record of another version is refused, whichever build wrote it.
 #[test]
-fn a_record_that_kept_what_its_host_sent_reads_without_it() {
-    let kept = hex::decode(VERSION_5.split_whitespace().collect::<String>()).unwrap();
-    assert_eq!(FORMAT.migrate(kept, 5).unwrap(), golden());
+fn a_record_of_another_version_is_refused() {
+    assert!(FORMAT.migrate(golden(), 5).is_err());
+    assert!(FORMAT.migrate(golden(), 7).is_err());
 }

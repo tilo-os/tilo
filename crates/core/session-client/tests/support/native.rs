@@ -83,7 +83,7 @@ pub async fn connect(
     device: &Device,
     workspace: WorkspaceId,
 ) -> DeviceLink {
-    let workspaces = server.workspaces().expect("the host governs workspaces");
+    let workspaces = server.workspaces().expect("the host serves workspaces");
     let host = workspaces.host_device();
     let host_cert = workspaces.device_cert().clone();
     let state = workspaces

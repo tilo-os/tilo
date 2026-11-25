@@ -110,7 +110,7 @@ impl PeerGovernance<'_> {
     /// # Errors
     /// The workspace's members do not read.
     pub fn call_gate(self, now: SystemTime) -> Result<CallGate, String> {
-        let list = self.governed_members(now)?;
+        let list = self.member_list(now)?;
         let persons = list
             .members
             .iter()

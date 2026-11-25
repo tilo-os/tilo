@@ -184,12 +184,12 @@ offer (storage, compute, machines) and, where a server holds several people's
 workspaces, in keeping each workspace's work in its own sandbox.
 
 **The hosts that hold a workspace.** A workspace lives on the devices that
-hold it. Its governor (the host whose root owns it) holds it first; its
-governance names every other host holding it beside the governor, each by
+hold it. The host whose root owns it holds it first; its
+governance names every other host holding it beside that one, each by
 an address that host signed. Being named there is what lets a host in
 everywhere the workspace is held: its device holds the workspace, and its
-person may reach the hosts that do. Another server of the governor's own person
-is also admitted as one of the owner's devices. A server of another person,
+person may reach the hosts that do. Another server of the owner's is also
+admitted as one of the owner's devices. A server of another person,
 such as tilo.sh, never becomes a member, so the workspace's members and roles
 stay as they were; it holds the workspace as a store or as a key holder, as
 chosen above. Of its own accord it writes one thing into the workspace: the
@@ -200,9 +200,9 @@ takes: workspace work placed on it, and a member's work under that member's
 delegation, each signed so that history names the actor it acted for and the
 server it ran on. Anything else it writes is refused. Adding people otherwise and changing roles stays with the owner's
 and administrators' devices. Whom a workspace is held by is the
-owner's decision: a device of the owner asks its governor to have another
-host hold it (`workspace.attach-host`, an operator's `hold`), and the governor
-hands that host the workspace and names it. The other host takes it only when
+owner's decision: a device of the owner asks the host that serves it to have another
+host hold it (`workspace.attach-host`, an operator's `hold`), and the serving
+host hands the new one the workspace and names it. The other host takes it only when
 its own operator's work setting takes that work: by default only its own
 person's, and another person's only for the workspaces its operator names or
 for anyone when it says so, so a server never holds strangers' workspaces
@@ -210,7 +210,7 @@ unasked. From then on both hold it: each keeps a writable copy and carries what 
 written through it to every other holder, signed by the device that wrote
 it, so its history and authors are the same on all of them, and each picks up
 again after a restart. None of them is needed by the others: losing any one
-leaves the workspace writable and governed at the rest. The workspace's
+leaves the workspace writable and served at the rest. The workspace's
 compacted base stays with the host it was made on; the others publish only
 their changes after it. A
 member's device dials the holders alike, starting with the one it last
@@ -384,7 +384,7 @@ lives in a file of its own. Which workspaces a server holds, and as what (store
 or key holder), is each workspace's governance alone: its holders list names
 the server, and the workspace's own actions add, move and remove it. The
 document keeps only what governance cannot name yet, the workspaces a planned
-machine is to hold, which a device governing each hands the machine once it
+machine is to hold, which a device that hosts each one hands the machine once it
 enrolled. A retired server is taken out of every workspace that names it.
 What the person asks of a server is the same document and the same actions:
 each entry keeps the operation asked of it (its health, a service's journal,
@@ -887,11 +887,11 @@ The source is read and never changed.
 API offers it as the account action `account/workspaces#branch`. Only the person who owns the source
 branches it, from a device of theirs or a key reaching all their workspaces; a
 key for one workspace makes none, and someone else's workspace is not theirs
-to branch. The host is a member of every channel of the workspaces it governs,
+to branch. The host is a member of every channel of the workspaces it serves,
 so it copies what it reads, as a device does:
 
 - every document of the source, read whole with its history, forked as above
-  and founded in the branch as the governor founds a document, sealed under the
+  and founded in the branch as the host founds a document, sealed under the
   branch's own keys where its documents are sealed; a document the host does not
   read whole stops the branch before anything is made, and a person's own
   documents sealed for their devices alone (drafts) are not the host's to read;

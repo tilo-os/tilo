@@ -65,7 +65,7 @@ tilo_test_env::scenario! {
             peer.permissions(vm.device_public_key, now),
             Err(MembershipError::OtherWorkspace)
         ));
-        let access = peer.governance().governed_device_access(now).unwrap();
+        let access = peer.governance().member_device_access(now).unwrap();
         assert!(access.contains_key(&laptop.device_public_key));
         assert!(
             !access.contains_key(&vm.device_public_key),

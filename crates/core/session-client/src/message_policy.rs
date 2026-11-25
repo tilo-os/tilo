@@ -70,7 +70,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         // state.
         | NeighbourMsg::Heartbeat { .. }
         | NeighbourMsg::LivePresence { .. }
-        // The sender's own device certificate, which only the workspace's governor may promote into
+        // The sender's own device certificate, which only the workspace's host may promote into
         // its governance.
         | NeighbourMsg::IdentityAnnouncementV2 { .. }
         // Each remote action is authorized per call against its own declared permission.

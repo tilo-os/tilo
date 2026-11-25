@@ -15,7 +15,7 @@ use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
 use ed25519_dalek::{SigningKey, Verifier as _};
 
-/// The prefix of each import step's key in the workspace's governance document: one step per
+/// The prefix of each import step's key in the workspace's governance: one step per
 /// key, its JSON the value.
 pub const IMPORTED_HISTORY_PREFIX: &str = "imported_history_v1/";
 /// What an import step's signature is over, before the step itself.
@@ -80,7 +80,7 @@ impl ImportedHistory {
         .is_ok()
     }
 
-    /// The key the step is kept under in the governance document.
+    /// The key the step is kept under in the workspace's governance.
     fn key(&self) -> String {
         let id: Vec<u8> = self.signature.iter().take(16).copied().collect();
         format!("{IMPORTED_HISTORY_PREFIX}{}", hex::encode(id))

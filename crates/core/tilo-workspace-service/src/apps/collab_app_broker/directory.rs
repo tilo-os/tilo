@@ -659,7 +659,7 @@ pub(super) fn permits_directory_row(
 }
 
 /// What current authority must decide for one directory row: the action
-/// whose contract governs the row, where it sits and what kind it is.
+/// whose contract decides the row, where it sits and what kind it is.
 pub(super) struct DirectoryQuestion<'a> {
     pub(super) resource_kind: &'a str,
     pub(super) resource: &'a str,

@@ -1760,7 +1760,7 @@ action retry(d: Draft) uses time (icon: .refresh, label: "Try again") {
 
 /// Tells everyone who reads the conversation that mail came to it: who wrote, what it is
 /// called, and which account it came to while the workspace reads several of them, opening the
-/// conversation. It is run once for each arrival, on the device that governs the workspace, so
+/// conversation. It is run once for each arrival, on the device that hosts the workspace, so
 /// each person is told once however many of their devices are open.
 action announce(t: Thread) uses notify (icon: .bell, label: "Announce the mail that came") {
     require t.arrived != .none "No mail came to this conversation since it was last announced"

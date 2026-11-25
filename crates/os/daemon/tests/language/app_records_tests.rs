@@ -19,7 +19,7 @@ use tilo_action_policy::{
 use tilo_workspace_service::tl_records::{Compiled, Package};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, declare_app, governor, install_app, revoke_grant, test_host_holding,
+    TestGroupKeys, declare_app, hosting_device, install_app, revoke_grant, test_host_holding,
     uninstall_app,
 };
 use tilolang_workspace::records::{Packages, member, with_tl_record};
@@ -82,7 +82,7 @@ async fn ring_next(
 #[tokio::test]
 async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_back() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let desk = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
     let workspaces = desk.workspaces().clone();
     mount(&workspaces);
@@ -239,7 +239,7 @@ async fn a_native_apps_own_write_is_the_apps_and_stops_when_its_grant_is_taken_b
     use tilo_workspace_service::apps::services::ResourceRequestContext;
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let desk = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
     let workspaces = desk.workspaces().clone();
     mount(&workspaces);
@@ -278,7 +278,10 @@ async fn a_native_apps_own_write_is_the_apps_and_stops_when_its_grant_is_taken_b
             order: None,
             fields: [
                 ("city".to_owned(), Cell::One(Value::Text(name.into()))),
-                ("zone".to_owned(), Cell::One(Value::Text("Asia/Tokyo".into()))),
+                (
+                    "zone".to_owned(),
+                    Cell::One(Value::Text("Asia/Tokyo".into())),
+                ),
             ]
             .into(),
         },

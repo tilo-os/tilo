@@ -54,7 +54,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     use std::sync::atomic::Ordering;
     // The surfaces it installs are the process's: no other test runs here.
     if !crate::common::in_own_process(
-        "governed_workspaces::app_push::a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in",
+        "listed_workspaces::app_push::a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in",
     ) {
         return;
     }

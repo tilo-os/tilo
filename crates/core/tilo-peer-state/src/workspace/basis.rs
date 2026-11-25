@@ -2,7 +2,7 @@
 //! standing rests on (the owner, the membership, the devices and their
 //! revocations), so two replicas compare what they admit by one value.
 use crate::cached_document::CachedDocument;
-use crate::state::GovernedIdentity;
+use crate::state::DeviceRow;
 use crate::workspace::read::{self, WorkspaceRead, policy_error};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,12 +57,12 @@ impl std::fmt::Display for BasisError {
 impl std::error::Error for BasisError {}
 
 /// Canonical security consistency digest, never an authority credential. Only
-/// governed security fields participate; presentation labels do not. Extra
+/// the governance's security fields participate; presentation labels do not. Extra
 /// revocations are verified and intersect local knowledge before publication.
 ///
 /// # Errors
 ///
-/// Returns a [`BasisError`] if governed security fields are malformed or an extra
+/// Returns a [`BasisError`] if the security fields are malformed or an extra
 /// revocation fails verification.
 pub fn security_basis(
     doc: &automerge::AutoCommit,
@@ -170,7 +170,7 @@ fn project<'a>(
             let bytes = read::strict_bytes_of(values).map_err(policy_error)?;
             let row = &match decoded.and_then(|doc| doc.decoded_identity(key, &bytes)) {
                 Some(identity) => identity.clone(),
-                None => GovernedIdentity::decode(&bytes).map_err(|_| BasisError::Malformed)?,
+                None => DeviceRow::decode(&bytes).map_err(|_| BasisError::Malformed)?,
             };
             let device = canonical_key(key)?;
             if device != row.device_cert.device_public_key {

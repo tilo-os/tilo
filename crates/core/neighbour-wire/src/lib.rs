@@ -560,7 +560,7 @@ pub enum NeighbourMsg {
         workspace: String,
         device_cert: Box<tilo_user_identity::DeviceCert>,
         /// Additive root-signed revocations for the certificate's human root.
-        /// The workspace governor verifies and retains them independently of the
+        /// The workspace's host verifies and retains them independently of the
         /// announcing device, so omission can never resurrect a device.
         revocations: Vec<tilo_user_identity::RevocationEntry>,
     },

@@ -1119,7 +1119,7 @@ fn a_locked_screen_stops_the_share_at_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_joins_while_the_workspace_keys_are_still_on_their_way() {
     let person = person_key();
-    // This session's device is not the one its workspace is governed by, and its channel's keys have
+    // This session's device is not the workspace's host, and its channel's keys have
     // not reached it yet.
     let laptop = device(&person, 0x22, "Laptop");
     let session = device(&person, 0x11, "Session");

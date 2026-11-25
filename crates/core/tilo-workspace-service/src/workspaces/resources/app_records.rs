@@ -94,8 +94,8 @@ impl Workspaces {
             return error;
         };
         let installed = {
-            let governed = state.lock().await;
-            governed.peer().governance().app_version(app).is_some()
+            let hosted = state.lock().await;
+            hosted.peer().governance().app_version(app).is_some()
         };
         let mut args = tilo_history::FluentArgs::new();
         args.set("app", app_name(app));

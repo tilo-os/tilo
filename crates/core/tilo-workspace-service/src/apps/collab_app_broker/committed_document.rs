@@ -109,7 +109,7 @@ pub struct HeldRevision {
 /// Data only. Its provider retains the actual bounded native save's lifetime.
 pub enum NativeDocumentRead {
     Unchanged([u8; 32]),
-    /// The owner holds no complete capture right now: the record's governed
+    /// The owner holds no complete capture right now: the record's checkpoint
     /// checkpoint is still arriving, or the keys it is sealed under are on
     /// their way to this device. Not readable yet, and no failure:
     /// answered as [`Reply::Unavailable`], the reader withholds readiness

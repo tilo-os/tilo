@@ -15,7 +15,7 @@ use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{self, FILES_APP, ROOT_ID, Tree, TreeChunks};
 use serde_json::json;
 
-use crate::workspaces::fixtures::{governor, test_host};
+use crate::workspaces::fixtures::{hosting_device, test_host};
 
 use super::*;
 
@@ -189,7 +189,7 @@ struct Put {
 
 async fn fixture() -> Put {
     let state = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(state.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     let name = workspaces.create("Files put").await.unwrap().workspace;
@@ -226,7 +226,7 @@ impl Put {
             ..tilo_actions::ActionContext::default()
         }
         .with_invoker(tilo_actions::ActionInvoker::person(hex::encode(
-            governor().1.user_public_key,
+            hosting_device().1.user_public_key,
         )));
         self.put_for(
             arguments,
@@ -260,7 +260,7 @@ impl Put {
 
     /// The `files#open` of `arguments`, signed by the workspace's owner on their device.
     fn signed_open(&self, arguments: &Value) -> tilo_actions::remote::InvokeRequest {
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let mut request = tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
@@ -424,7 +424,7 @@ async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
     // the workspace takes the change in as the agent's.
     let agents = put_content(&put.shelf, put.workspace, b"an agent's\n");
     let arguments = json!({"content": agents, "name": "agent.txt", "dir": "signed"});
-    let owner = hex::encode(governor().1.user_public_key);
+    let owner = hex::encode(hosting_device().1.user_public_key);
     put.allow_agent("porter", &owner).await;
     let mut request = put.signed_open(&arguments);
     request.signed = None;

@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
         let joined = enrolled();
         let member = member().verifying_key().to_bytes();
         let held = full(&joined, member);
-        let governor_key = SigningKey::from_bytes(&[61; 32]);
+        let owner_copy_key = SigningKey::from_bytes(&[61; 32]);
         let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
         super::commit(&joined.owner, joined.workspace, covered, joined.now).unwrap();
         let mut remote = joined
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let frames = remote
             .publication_mut()
-            .bootstrap_messages(&governor_key, joined.now)
+            .bootstrap_messages(&owner_copy_key, joined.now)
             .unwrap();
         let mut pending = 0;
         for frame in frames {
@@ -184,7 +184,7 @@ tilo_test_env::scenario! {
                 .owner
                 .receive(
                     joined.workspace,
-                    TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(owner_copy_key.verifying_key().to_bytes()),
                     frame,
                     joined.now,
                 )

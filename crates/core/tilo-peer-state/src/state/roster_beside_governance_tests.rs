@@ -11,25 +11,25 @@ fn held(peer: &StatePeer) -> Vec<DeviceCert> {
     certificates
 }
 
-/// A replica of `governor`'s workspace built from `roster` and the governance
-/// it publishes, as a newcomer's page builds one from its bootstrap and the
-/// replay after it.
+/// A replica of the workspace `owner_copy` hosts, built from `roster` and the
+/// governance it publishes, as a newcomer's page builds one from its bootstrap
+/// and the replay after it.
 fn replica(
-    governor: &mut StatePeer,
+    owner_copy: &mut StatePeer,
     key: &SigningKey,
     roster: Vec<DeviceCert>,
     now: SystemTime,
 ) -> StatePeer {
-    let host = governor.owner_certificates()[0].clone();
+    let host = owner_copy.owner_certificates()[0].clone();
     let mut replica = StatePeer::from_join(
-        governor.workspace_id(),
+        owner_copy.workspace_id(),
         host.clone(),
         roster,
-        &governor.revocations(),
+        &owner_copy.revocations(),
         now,
     )
     .unwrap();
-    for message in governor
+    for message in owner_copy
         .publication_mut()
         .bootstrap_messages(key, now)
         .unwrap()
@@ -53,32 +53,32 @@ tilo_test_env::scenario! {
 
     phase a_replica_from_the_roster_beside_governance_holds_what_the_whole_roster_gives;
     {
-        let (mut governor, key, _, _, now) = seeded();
+        let (mut owner_copy, key, _, _, now) = seeded();
         let members: Vec<DeviceCert> = (0..6)
-            .map(|n| add_member_with(&mut governor, &key, now, 40 + n, 60 + n).1)
+            .map(|n| add_member_with(&mut owner_copy, &key, now, 40 + n, 60 + n).1)
             .collect();
         let newcomer = &members[0];
-        let host = governor.owner_certificates()[0].clone();
+        let host = owner_copy.owner_certificates()[0].clone();
 
-        let whole = governor.certificates();
-        let short = governor
+        let whole = owner_copy.certificates();
+        let short = owner_copy
             .roster_beside_governance(&[newcomer.device_public_key, host.device_public_key], now);
         // The newcomer and its host stay; every other member's certificate is
         // the governance's to carry.
         assert!(short.contains(newcomer));
         assert!(short.contains(&host));
         for member in &members[1..] {
-            assert!(governor.governance_certifies(member, now));
+            assert!(owner_copy.governance_certifies(member, now));
             assert!(!short.contains(member), "{member:?} sent twice");
         }
         assert!(short.len() < whole.len());
 
-        let from_whole = replica(&mut governor, &key, whole, now);
-        let from_short = replica(&mut governor, &key, short, now);
+        let from_whole = replica(&mut owner_copy, &key, whole, now);
+        let from_short = replica(&mut owner_copy, &key, short, now);
         assert_eq!(held(&from_short), held(&from_whole));
         assert_eq!(
-            from_short.governance().governed_members(now).unwrap(),
-            from_whole.governance().governed_members(now).unwrap()
+            from_short.governance().member_list(now).unwrap(),
+            from_whole.governance().member_list(now).unwrap()
         );
         for member in &members {
             assert_eq!(
@@ -94,18 +94,18 @@ tilo_test_env::scenario! {
 
     phase governance_certifies_only_the_certificate_its_row_names_while_it_is_valid;
     {
-        let (mut governor, key, _, _, now) = seeded();
-        let (_, member, _) = add_member_with(&mut governor, &key, now, 40, 60);
-        assert!(governor.governance_certifies(&member, now));
+        let (mut owner_copy, key, _, _, now) = seeded();
+        let (_, member, _) = add_member_with(&mut owner_copy, &key, now, 40, 60);
+        assert!(owner_copy.governance_certifies(&member, now));
         // Another certificate for the same device is not the row's.
         let mut other = member.clone();
         other.device_label = "Elsewhere".into();
-        assert!(!governor.governance_certifies(&other, now));
+        assert!(!owner_copy.governance_certifies(&other, now));
         // A device the governance never listed.
         let (_, stranger, _) = add_member_with(&mut seeded().0, &key, now, 41, 61);
-        assert!(!governor.governance_certifies(&stranger, now));
+        assert!(!owner_copy.governance_certifies(&stranger, now));
         // Before its certificate's time, as the import would refuse it.
         let before = SystemTime::UNIX_EPOCH;
-        assert!(!governor.governance_certifies(&member, before));
+        assert!(!owner_copy.governance_certifies(&member, before));
     }
 }

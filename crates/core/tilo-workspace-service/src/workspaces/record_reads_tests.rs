@@ -11,7 +11,9 @@ use tilo_actions::remote::{
 use tilo_user_identity::DeviceCapabilities;
 
 use super::super::OwnWorkspaceOffer;
-use super::super::fixtures::{device_cert, entry_join_as, governor, record_grants, test_host};
+use super::super::fixtures::{
+    device_cert, entry_join_as, hosting_device, record_grants, test_host,
+};
 
 const NOTES: &str = "tilo.notes";
 /// Someone no workspace here admitted.
@@ -80,7 +82,7 @@ fn reads_only(id: &str, grantee: Grantee, workspace: &str, by: &str) -> Grant {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_foreign_workspace_grants_a_stranger_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     workspaces
@@ -99,7 +101,7 @@ async fn a_foreign_workspace_grants_a_stranger_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_grant_in_one_workspace_reads_nothing_of_another() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     workspaces
@@ -135,7 +137,7 @@ async fn a_grant_in_one_workspace_reads_nothing_of_another() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_app_acting_for_someone_reads_no_more_than_they_may() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     workspaces
@@ -207,7 +209,7 @@ struct Host {
 
 async fn host() -> Host {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     workspaces
@@ -383,7 +385,7 @@ async fn an_agent_reads_the_workspace_records_its_grant_and_its_person_allow() {
 /// The broker's reader also answered a record whose writes this device held only in part
 /// ("the writes this device holds of the record build on changes it does not hold"): it captured
 /// records from a document owner that kept a sealed workspace's writes as they arrived. The one
-/// reader reads the copy this device governs instead (`Workspaces::resource_document`), which
+/// reader reads the copy this device hosts instead (`Workspaces::resource_document`), which
 /// holds a record only as the writes its governance took make it, so no such record exists to
 /// read here.
 #[tokio::test(flavor = "multi_thread")]

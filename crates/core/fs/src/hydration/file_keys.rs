@@ -330,7 +330,7 @@ impl Hydrator {
         (value, moved)
     }
 
-    /// Use the workspace key for each governed folder of the managed Files mount.
+    /// Use the workspace key for each workspace-scoped folder of the managed Files mount.
     #[must_use]
     pub fn with_scoped_file_keys(
         self,

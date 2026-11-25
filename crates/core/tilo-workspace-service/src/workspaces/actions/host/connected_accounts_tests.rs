@@ -11,10 +11,10 @@ use tilo_actions::remote::{
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 use tilo_server_protocol::servers::person_workspace_id;
 
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, caller, hosted, settled};
 use super::accounts_tests::asking;
 use crate::workspaces::person_workspace::{self, connected};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 const BRIDGE: &str = "so.tilo.bridge";
 
@@ -167,7 +167,7 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     server.set_account("80351110224678912", "ada");
     let port = free_port();
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let host = test_host(dir.path(), &key, &owner).await;
     let workspaces = host.workspaces();
     // The device that made the root founds the person's own workspace, where what they
@@ -175,7 +175,7 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     person_workspace::found(workspaces)
         .await
         .expect("the person's own workspace");
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let device = owner.clone();
     let page = actions.device_page(workspace_id, &device);
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -276,7 +276,7 @@ async fn a_person_forgets_an_account_they_connected() {
     server.set_account("80351110224678912", "ada");
     let port = free_port();
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let host = test_host(dir.path(), &key, &owner).await;
     let workspaces = host.workspaces();
     // The device that made the root founds the person's own workspace, where what they
@@ -284,7 +284,7 @@ async fn a_person_forgets_an_account_they_connected() {
     person_workspace::found(workspaces)
         .await
         .expect("the person's own workspace");
-    let (_, workspace_id, actions) = governed(workspaces).await;
+    let (_, workspace_id, actions) = hosted(workspaces).await;
     let device = owner.clone();
     let page = actions.device_page(workspace_id, &device);
     let person = hex::encode(device.user_public_key);

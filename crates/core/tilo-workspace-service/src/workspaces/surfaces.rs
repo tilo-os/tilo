@@ -40,7 +40,7 @@ impl Workspaces {
     }
 
     /// Ask each workspace for the surfaces this host lacks, until they arrive
-    /// or the workspaces are no longer governed here.
+    /// or the workspaces are no longer hosted here.
     pub(super) fn follow_missing_surfaces(&self) {
         let workspaces = Arc::downgrade(&self.inner);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {

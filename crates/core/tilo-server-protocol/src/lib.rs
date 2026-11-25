@@ -10,7 +10,7 @@
 //! - [`live`] — the ephemeral presence and preview frames of the live session;
 //! - [`web`] — the HTTPS routes a page asks a host before it holds a session,
 //!   and the live grant;
-//! - [`workspaces`] — governed workspaces over HTTPS: administration and joining;
+//! - [`workspaces`] — hosted workspaces over HTTPS: administration and joining;
 //! - [`directory`] — the public workspaces a host lists, and the entry that
 //!   lets anyone in with the owner's default role;
 //! - [`operator`] — the wait-list mailbox and status an entry keeps, and the

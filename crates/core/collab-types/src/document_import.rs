@@ -1,9 +1,9 @@
 //! Signed, two-party proposal to bring a whole document into a workspace.
 //!
-//! A member of a governed workspace proposes that a document, with its whole
+//! A member of a workspace proposes that a document, with its whole
 //! history, become a new document there. Its device signs the proposal; the
 //! workspace's owner accepts or declines it with a signed decision. Its
-//! governor creates the document only for an accepted proposal, and only
+//! host creates the document only for an accepted proposal, and only
 //! with the rights an empty creation needs, so the pair adds consent to
 //! document creation and never widens it.
 

@@ -665,7 +665,7 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
     document
 }
 
-/// A site's workspace as a site runs it: a host on this machine governs the workspace, a page of
+/// A site's workspace as a site runs it: a host on this machine serves the workspace, a page of
 /// the site's person recorded there before anyone joined this computer, and the site's entry in
 /// front of it.
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
@@ -789,7 +789,7 @@ impl Lounge {
 
 /// A key the lounge keeps to itself: drawn for each lounge rather than a constant, because the
 /// suites on a machine share one network, and two lounges answering to one node id answer each
-/// other's joins as a host that does not govern the room the join names.
+/// other's joins as a host that does not serve the room the join names.
 fn lounge_key() -> [u8; 32] {
     let mut key = [0; 32];
     getrandom::fill(&mut key).expect("a key for the lounge");
@@ -797,7 +797,7 @@ fn lounge_key() -> [u8; 32] {
 }
 
 /// The host behind the lounge's site: a server of this machine, certified under a key root of the
-/// test's own, which governs the lounge's workspace and keeps what its page writes sealed.
+/// test's own, which hosts the lounge's workspace and keeps what its page writes sealed.
 struct LoungeHost {
     server: tilo_server::daemon::Server,
     workspaces: tilo_server::workspaces::Workspaces,
@@ -810,7 +810,7 @@ struct LoungeHost {
 }
 
 impl LoungeHost {
-    /// A host governing a workspace of its own, with the site's page entered in it.
+    /// A host serving a workspace of its own, with the site's page entered in it.
     fn start(runtime: &tokio::runtime::Runtime, state: &std::path::Path) -> Self {
         let owner_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let host_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
@@ -843,7 +843,7 @@ impl LoungeHost {
                 .expect("the lounge's host");
                 let workspaces = server
                     .workspaces()
-                    .expect("the host governs workspaces")
+                    .expect("the host serves workspaces")
                     .clone();
                 let workspace = workspaces
                     .create("Lounge")

@@ -23,13 +23,13 @@ pub use saved_shortcut::{
 };
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
-/// Every governed value a workspace document records, exactly as stored.
+/// Every value the workspace's governance records, exactly as stored.
 ///
 /// Member, grant and identity rows are the raw blobs the document holds, not their
 /// decoded form: equality is the byte-exact comparison
-/// [`governance_unchanged`] needs, so a non-governor cannot slip a changed but
-/// undecodable (or re-encoded) row past it. Decoded views of the same document
-/// state live on its cache (`crate::cached_document::CachedDocument::policy`).
+/// [`governance_unchanged`] needs, so a device that may not write governance cannot
+/// slip a changed but undecodable (or re-encoded) row past it. Decoded views of the
+/// same document state live on its cache (`crate::cached_document::CachedDocument::policy`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceGovernance {
     /// The structural owner's person key (`owner`).
@@ -39,9 +39,9 @@ pub struct WorkspaceGovernance {
     /// `peers.*`: self-asserted display names keyed by device key, or by a
     /// person's user root for someone the workspace holds by root alone.
     pub peers: BTreeMap<String, String>,
-    /// `peer_identities_v1.*`: postcard `GovernedIdentity` rows keyed by device key.
+    /// `peer_identities_v1.*`: postcard `DeviceRow` rows keyed by device key.
     pub identities: BTreeMap<String, Vec<u8>>,
-    /// The governed checkpoint coverage bytes.
+    /// The workspace's checkpoint coverage bytes.
     pub coverage: Option<Vec<u8>>,
     /// `invitation_receipts_v1.*`: every redemption receipt, keyed by invite id.
     pub invitation_receipts: BTreeMap<String, Vec<Vec<u8>>>,
@@ -92,7 +92,7 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     });
     // The visitor is infallible.
     debug_assert!(result.is_ok());
-    governance.coverage = crate::coverage::governed_bytes(doc);
+    governance.coverage = crate::coverage::coverage_bytes(doc);
     governance.invitation_receipts = invitation_receipts(doc).unwrap_or_default();
     governance.invitation_parts = crate::state::invitation_receipts::parts(doc).unwrap_or_default();
     governance
@@ -103,15 +103,14 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
 /// (a server's historical retention proof) without the rest of the row.
 #[derive(Clone, Debug)]
 pub struct IdentityRow {
-    /// The governed device certificate.
+    /// The device certificate the row names.
     pub device_cert: tilo_user_identity::DeviceCert,
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
 /// Decode one [`WorkspaceGovernance::identities`] row exactly as admission does.
 pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, String> {
-    let identity =
-        crate::state::GovernedIdentity::decode(bytes).map_err(|error| error.to_string())?;
+    let identity = crate::state::DeviceRow::decode(bytes).map_err(|error| error.to_string())?;
     Ok(IdentityRow {
         device_cert: identity.device_cert,
         revocations: identity.revocations,
@@ -125,7 +124,7 @@ fn receipt_log(doc: &AutoCommit) -> Result<Option<automerge::ObjId>, String> {
         .map_err(|error| error.to_string())?
     {
         Some((Value::Object(automerge::ObjType::Map), log)) => Ok(Some(log)),
-        Some(_) => Err("governed invitation receipt log is not a map".to_string()),
+        Some(_) => Err("the governance's invitation receipt log is not a map".to_string()),
         None => Ok(None),
     }
 }
@@ -143,10 +142,10 @@ pub(crate) fn invitation_receipts_of(doc: &AutoCommit, key: &str) -> Result<Vec<
         match value {
             Value::Scalar(value) => match value.as_ref() {
                 ScalarValue::Bytes(bytes) => receipts.push(bytes.clone()),
-                _ => return Err("governed invitation receipt is not bytes".to_string()),
+                _ => return Err("the governance's invitation receipt is not bytes".to_string()),
             },
             Value::Object(_) => {
-                return Err("governed invitation receipt is not bytes".to_string());
+                return Err("the governance's invitation receipt is not bytes".to_string());
             }
         }
     }
@@ -167,9 +166,11 @@ pub(crate) fn invitation_receipts(
             .map(|(value, _)| match value {
                 Value::Scalar(value) => match value.as_ref() {
                     ScalarValue::Bytes(bytes) => Ok(bytes.clone()),
-                    _ => Err("governed invitation receipt is not bytes".to_string()),
+                    _ => Err("the governance's invitation receipt is not bytes".to_string()),
                 },
-                Value::Object(_) => Err("governed invitation receipt is not bytes".to_string()),
+                Value::Object(_) => {
+                    Err("the governance's invitation receipt is not bytes".to_string())
+                }
             })
             .collect::<Result<Vec<_>, _>>()?;
         receipts.entry(key).or_default().extend(values);
@@ -216,7 +217,7 @@ pub(crate) fn redemptions_kept(before: Option<&AutoCommit>, after: &AutoCommit) 
 
 /// The workspace's name and authority as `candidate` records them, for the workspace
 /// it declares. Rows that do not decode are skipped.
-pub fn extract_governed_fields(
+pub fn extract_listed_fields(
     candidate: &AutoCommit,
 ) -> (Option<String>, tilo_action_policy::WorkspacePolicy) {
     #[cfg(test)]
@@ -295,7 +296,7 @@ pub fn declared_workspace_mismatches(candidate: &AutoCommit, workspace: uuid::Uu
 }
 /// Whether `after` carries the governance `before` does, compared by value: a
 /// peer echoing governance it learned re-states it under its own actor, which
-/// is not a change. Durable receipts and import proposals are governed too.
+/// is not a change. Durable receipts and import proposals are in the governance too.
 pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
     changed_rows(before, Some(after), true).is_empty()
 }

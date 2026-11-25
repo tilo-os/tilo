@@ -558,7 +558,7 @@ impl RecordHandle {
         committed_document::Reply::decode(&reply).map_err(refused)
     }
 
-    /// Control this launched application's local governed call. The host
+    /// Control this launched application's local call. The host
     /// derives the exact caller and record from the authenticated connection.
     ///
     /// # Errors

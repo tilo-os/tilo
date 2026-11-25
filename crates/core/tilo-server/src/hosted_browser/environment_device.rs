@@ -10,7 +10,7 @@
 //!   current epoch, for that one sender and only the streams it publishes
 //!   ([`tilo_live::frame::Stream::OWN`]), and sealed to its device key, so
 //!   whatever carries the answer between here and the VM reads none of it;
-//! - a window it shares is written as the workspace's governor writes a web
+//! - a window it shares is written as the workspace's host writes a web
 //!   page's share ([`tilo_workspace_service::workspaces::Workspaces::share_resource`]),
 //!   after checking the window's id was minted under the asking device's own
 //!   salt: a confined device shares its own windows and nobody else's.
@@ -40,7 +40,7 @@ use crate::WorkspaceId;
 struct Asked {
     device: DeviceCert,
     workspace: String,
-    /// The workspaces this host governs, when it governs any: where their
+    /// The workspaces this host serves, when it serves any: where their
     /// keys and governance are.
     workspaces: Option<tilo_workspace_service::workspaces::Workspaces>,
 }
@@ -169,7 +169,7 @@ impl Asked {
             .workspaces
             .as_ref()
             .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "this host governs no workspace".to_owned(),
+                reason: "this host serves no workspace".to_owned(),
             })?;
         let grants = if share {
             let node = window_node(&self.workspace, &window.app, window.tab);

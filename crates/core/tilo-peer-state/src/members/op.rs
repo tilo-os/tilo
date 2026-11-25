@@ -69,8 +69,8 @@ pub enum MembershipOpCommand {
     /// The governance parts its author's device changed, as the rows they are
     /// ([`GovernanceRow`]). What the values are is the document's history; the
     /// operation says which parts of it the change touched, and every receiver
-    /// checks each is its author's to change. A batch that changes a governed
-    /// part without an operation naming it changes nothing at all.
+    /// checks each is its author's to change. A batch that changes a part of
+    /// the governance without an operation naming it changes nothing at all.
     Governance { rows: Vec<GovernanceRow> },
     /// Its author's device recorded `person` (a user key) redeeming the
     /// invitation `invite` (its id): replay checks the invitation the

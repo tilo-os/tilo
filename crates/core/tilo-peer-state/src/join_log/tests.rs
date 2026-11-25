@@ -45,7 +45,7 @@ fn invitation(recipient: Option<[u8; 32]>, now: u64) -> IssueInvitationRequest {
     }
 }
 
-/// One log serves every governor: issuing, challenging, redeeming and
+/// One log serves every hosting device: issuing, challenging, redeeming and
 /// completing a join through it admits the device into the workspace, answers
 /// a retry of the same Complete with the same bootstrap, and spends the
 /// invitation.
@@ -60,7 +60,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
     let now_ns = ns(now);
     let messages = || Ok(vec![b"governance".to_vec()]);
     let server_cert = peer.owner_certificates()[0].clone();
-    let workspace = Governed {
+    let workspace = Listed {
         peer: (&peer).into(),
         host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -180,7 +180,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         )
         .is_err()
     );
-    let other_holder = Governed {
+    let other_holder = Listed {
         peer: (&peer).into(),
         host: &guest_cert,
         workspace_id: workspace.workspace_id,
@@ -251,7 +251,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
     assert!(refusals.iter().all(Option::is_none), "{refusals:?}");
     let guest_member = candidate
         .governance()
-        .governed_members(now)
+        .member_list(now)
         .unwrap()
         .members
         .into_iter()
@@ -263,7 +263,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         "the workspace names the guest as they named themself, not by their device"
     );
     let server_cert = candidate.owner_certificates()[0].clone();
-    let committed = Governed {
+    let committed = Listed {
         peer: (&candidate).into(),
         host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -316,7 +316,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         "a retry hears the answer the device was sent"
     );
     let later = || Ok(vec![b"later governance".to_vec()]);
-    let moved = Governed {
+    let moved = Listed {
         peer: (&candidate).into(),
         host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -349,7 +349,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
 /// bearer invitation, saying `name` as it comes in: the workspace after it.
 fn joined(
     log: &mut JoinLog,
-    workspace: &Governed<'_>,
+    workspace: &Listed<'_>,
     authority_key: &SigningKey,
     (key, cert): (&SigningKey, &DeviceCert),
     name: &str,
@@ -419,14 +419,14 @@ fn joined(
 #[expect(
     clippy::significant_drop_tightening,
     clippy::too_many_lines,
-    reason = "the governed workspace reads the peer through each step of the decision, an admission and the invitation a key of the same person asks for"
+    reason = "the hosted workspace reads the peer through each step of the decision, an admission and the invitation a key of the same person asks for"
 )]
 fn a_key_made_to_act_for_a_person_never_names_them() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = || Ok(Vec::<Vec<u8>>::new());
     let server_cert = peer.owner_certificates()[0].clone();
-    let workspace = Governed {
+    let workspace = Listed {
         peer: (&peer).into(),
         host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -460,7 +460,7 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     let named = |member_of: &StatePeer| {
         member_of
             .governance()
-            .governed_members(now)
+            .member_list(now)
             .unwrap()
             .members
             .into_iter()
@@ -483,7 +483,7 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
         issuer: None,
     };
     sign_device_cert(&mut backend, &root).unwrap();
-    let again = Governed {
+    let again = Listed {
         peer: (&joined_ada).into(),
         host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -544,14 +544,14 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the governed workspace reads the peer through each step of the decision"
+    reason = "the hosted workspace reads the peer through each step of the decision"
 )]
 fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = || Ok(Vec::<Vec<u8>>::new());
     let server_cert = peer.owner_certificates()[0].clone();
-    let workspace = Governed {
+    let workspace = Listed {
         peer: (&peer).into(),
         host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -638,13 +638,13 @@ fn an_administration_request_is_answered_once_and_refused_for_another_operation(
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the governed workspace reads the peer through each step of the decision"
+    reason = "the hosted workspace reads the peer through each step of the decision"
 )]
 fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unchanged() {
     let (peer, _, _, _, _) = seeded();
     let messages = || Ok(vec![b"governance".to_vec()]);
     let server_cert = peer.owner_certificates()[0].clone();
-    let workspace = Governed {
+    let workspace = Listed {
         peer: (&peer).into(),
         host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -662,7 +662,7 @@ fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unc
     assert_eq!(receipt.replay(&workspace).unwrap(), delivered);
     // Any governance change since moves the workspace's generation on: the
     // reply delivered then is not the workspace now, and the member refreshes.
-    let moved = Governed {
+    let moved = Listed {
         generation: 2,
         ..workspace
     };
@@ -721,8 +721,8 @@ impl Client {
         }
     }
 
-    fn workspace(&self) -> Governed<'_> {
-        Governed {
+    fn workspace(&self) -> Listed<'_> {
+        Listed {
             peer: (&self.peer).into(),
             host: &self.host,
             workspace_id: self.workspace_id,

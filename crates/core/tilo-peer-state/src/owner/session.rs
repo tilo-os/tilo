@@ -9,7 +9,7 @@ pub use reach::{Linked, OwnHost, Reach};
 
 use crate::direct::DirectSync;
 use crate::join::TransportHint;
-use crate::owner::{AppWrite, NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, took_in};
+use crate::owner::{AppWrite, DeviceWorkspaces, NativeCommittedView, WorkspaceId, took_in};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use tilo_identity::identity_store::DeviceIdentity;
@@ -18,7 +18,7 @@ use tilo_user_identity::{DeviceCert, RevocationEntry};
 /// An enrolled workspace to hold a link for.
 #[derive(Clone)]
 pub struct Connect {
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     workspace: WorkspaceId,
 }
 impl std::fmt::Debug for Connect {
@@ -29,7 +29,7 @@ impl std::fmt::Debug for Connect {
     }
 }
 
-impl NativeWorkspaceOwner {
+impl DeviceWorkspaces {
     /// Where `workspace`'s host is reached, with the device its enrollment
     /// pins: the address a live session of the workspace dials that host at,
     /// decoded from the hint the host signed. `None` while the workspace is
@@ -51,7 +51,7 @@ impl NativeWorkspaceOwner {
 impl Connect {
     /// # Errors
     /// `workspace` has no committed enrollment.
-    pub fn new(owner: NativeWorkspaceOwner, workspace: WorkspaceId) -> Result<Self, String> {
+    pub fn new(owner: DeviceWorkspaces, workspace: WorkspaceId) -> Result<Self, String> {
         owner.with_current(workspace, |_| Ok(()))?;
         Ok(Self { owner, workspace })
     }
@@ -159,7 +159,7 @@ impl Connect {
     }
     /// The owner of the workspace's record.
     #[must_use]
-    pub fn owner(&self) -> &NativeWorkspaceOwner {
+    pub fn owner(&self) -> &DeviceWorkspaces {
         &self.owner
     }
 }
@@ -273,7 +273,7 @@ impl Scope {
 /// write, a write naming another workspace, or an author without member access.
 #[must_use]
 pub fn app_write(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     workspace: WorkspaceId,
     device: [u8; 32],
     author: [u8; 32],

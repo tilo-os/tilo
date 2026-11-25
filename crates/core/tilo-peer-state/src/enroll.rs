@@ -8,7 +8,7 @@ use crate::join::{
 };
 use crate::join_transport::{WorkspaceJoinClient, invitation_host};
 use crate::owner::{
-    NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
+    DeviceWorkspaces, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
     VerifiedNativeEnrollmentIntent,
 };
 use std::time::SystemTime;
@@ -28,7 +28,7 @@ fn current(
     Ok(())
 }
 fn active(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     intent: &VerifiedNativeEnrollmentIntent,
     id: &PendingEnrollmentId,
 ) -> Result<(), String> {
@@ -49,7 +49,7 @@ fn active(
 ///
 /// Returns closed response evidence only. The owner still rechecks the
 /// workspace and crosses its single installation barrier
-/// ([`NativeWorkspaceOwner::install`]) before any Joined result.
+/// ([`DeviceWorkspaces::install`]) before any Joined result.
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered exchange: prepare, persist, send, verify and hand back closed evidence"
@@ -60,7 +60,7 @@ pub async fn prepare_and_complete(
     identity_topic: WorkspaceId,
     local: Option<WorkspaceId>,
     invitation: String,
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
 ) -> Result<VerifiedNativeEnrollment, String> {
     if invitation.len() > 384 * 1024 {
         return Err("native invitation exceeds bound".into());
@@ -356,7 +356,7 @@ fn expired(code: u16, message: &str) -> bool {
 /// the device's key and presenting `device`, the certificate it is a member
 /// with or the renewal of it. The answer is checked by whoever takes it in
 /// ([`VerifiedNativeEnrollment::finalize`],
-/// [`NativeWorkspaceOwner::renew_membership`]); a device's workspace service takes the same
+/// [`DeviceWorkspaces::renew_membership`]); a device's workspace service takes the same
 /// answer in as its member copy.
 ///
 /// # Errors
@@ -468,7 +468,7 @@ async fn endpoint_delegation(
 pub async fn admit_as_member(
     client: WorkspaceJoinClient,
     identity: DeviceIdentity,
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     workspace_id: WorkspaceId,
     hint: join::TransportHint,
     now: SystemTime,
@@ -491,12 +491,12 @@ pub async fn admit_as_member(
 
 /// Prove this device's membership of `workspace`, a workspace it joined, with the
 /// renewal of the certificate the workspace's record holds, when its ownership
-/// holds one, and take the governor's answer in
-/// ([`NativeWorkspaceOwner::renew_membership`]). Answers whether it renewed.
+/// holds one, and take the host's answer in
+/// ([`DeviceWorkspaces::renew_membership`]). Answers whether it renewed.
 pub async fn renew_membership(
     client: WorkspaceJoinClient,
     identity: DeviceIdentity,
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     workspace: WorkspaceId,
 ) -> Result<bool, String> {
     let (topic, hint, held) = owner.with_current(workspace, |view| {

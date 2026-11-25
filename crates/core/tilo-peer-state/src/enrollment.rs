@@ -1,6 +1,6 @@
 use crate::owner::stored::{StoredPendingEnrollment, StoredWorkspace};
 use crate::owner::{
-    Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, PendingEnrollmentId,
+    Change, DeviceWorkspaces, NativeAuthorityStorage, NativeCommittedView, PendingEnrollmentId,
     PendingEnrollmentStatus, VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, limits,
 };
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
@@ -47,7 +47,7 @@ pub(crate) fn restore(
             crate::vouched::validate(workspace, record, &vouched.bootstrap)?;
         }
         // A workspace this device's own host keeps was founded here
-        // ([`NativeWorkspaceOwner::create_workspace`]): no other device
+        // ([`DeviceWorkspaces::create_workspace`]): no other device
         // admitted this one into it, so there is neither an enrollment nor
         // a vouch to hold, and where its own host is reached is the hint
         // the record carries.
@@ -98,7 +98,7 @@ fn validate_enrollment(
     Ok(())
 }
 
-impl NativeWorkspaceOwner {
+impl DeviceWorkspaces {
     /// Persist the signed Complete proof before it is sent, so a lost
     /// response is retried with the exact same proof. `local` is the
     /// workspace on the host's shell the enrollment installs into, made for it.
@@ -358,7 +358,6 @@ impl NativeWorkspaceOwner {
             peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
-            publication: None,
             frames: crate::owner::stored::Frames::default(),
         };
         Ok(self.publish_workspace(

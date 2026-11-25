@@ -405,7 +405,7 @@ pub fn capture_bridge() -> Option<InitialReadBridge> {
 /// retaining the original worker.
 ///
 /// A window is built while its route is still joining (the live launch
-/// builds local-first), and a workspace this device governs answers the route's
+/// builds local-first), and a workspace this device serves answers the route's
 /// committed read as its own channel. Neither is a reason this app may not
 /// reach the session: whether the session serves a service to an app is the
 /// session's own decision on the app's certified route, not a property of

@@ -1,4 +1,4 @@
-//! The governed-checkpoint coverage check.
+//! The checkpoint coverage check.
 use crate::workspace::read::{ReadError, Selection, WorkspaceRead, WorkspaceValue};
 use std::collections::BTreeMap;
 
@@ -17,9 +17,9 @@ pub(crate) enum CoverageMatchError {
     Decode(postcard::Error),
     NoMatch,
 }
-/// How a stored checkpoint stands against its route's governed coverage.
+/// How a stored checkpoint stands against its route's coverage.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Governed {
+pub(crate) enum Listed {
     /// No coverage or no checkpoint to compare, or the checkpoint is the
     /// covered one.
     Current,
@@ -27,27 +27,27 @@ pub(crate) enum Governed {
     /// coverage and checkpoint arrive as separate frames.
     Arriving,
 }
-/// Check a stored checkpoint against its route's governed coverage row, if
+/// Check a stored checkpoint against its route's coverage row, if
 /// any. A checkpoint older than coverage whose body the document has not
 /// admitted (`covered`, per hex author) is arriving; one that differs from
 /// coverage it already admitted is refused.
-pub(crate) fn governed_snapshot_matches(
+pub(crate) fn coverage_snapshot_matches(
     workspace: Option<&impl WorkspaceRead>,
     (app, record): (&str, &str),
     covered: &BTreeMap<String, u64>,
     snapshot: Option<&[u8]>,
-) -> Result<Governed, CoverageMatchError> {
+) -> Result<Listed, CoverageMatchError> {
     let (Some(snapshot), Some(workspace)) = (snapshot, workspace) else {
-        return Ok(Governed::Current);
+        return Ok(Listed::Current);
     };
-    let mut governed = Governed::Current;
+    let mut hosted = Listed::Current;
     let mut resolve = |row: &super::RouteValue| -> Result<(), CoverageMatchError> {
         if crate::document::snapshot_hash(snapshot).is_ok_and(|hash| hash == row.payload_hash()) {
             Ok(())
         } else if row.admitted_in(covered) {
             Err(CoverageMatchError::NoMatch)
         } else {
-            governed = Governed::Arriving;
+            hosted = Listed::Arriving;
             Ok(())
         }
     };
@@ -91,7 +91,7 @@ pub(crate) fn governed_snapshot_matches(
         },
     );
     match v2 {
-        Ok(_) | Err(ReadError::Malformed) => Ok(governed),
+        Ok(_) | Err(ReadError::Malformed) => Ok(hosted),
         Err(ReadError::Visitor(error)) => Err(error),
     }
 }

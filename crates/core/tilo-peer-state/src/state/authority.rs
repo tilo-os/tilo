@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 
 use super::written_under::Under;
 use super::{
-    ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MemberAccess, MembershipError, Role,
-    Route, SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
+    ActionKind, AutoCommit, DeviceCert, DeviceRow, MemberAccess, MembershipError, Role, Route,
+    SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
     held_units, now_ns, resource_type, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
@@ -226,13 +226,13 @@ pub struct PlacedDevice {
 pub(super) enum Authorized {
     /// It is its author's to make, under `member`. `history` when its
     /// author's device was removed since and the cut of the removal keeps
-    /// the change ([`crate::removals`]). `by_governor` when its author wrote
-    /// it as one of the workspace's governors ([`StatePeer::wrote_as_governor`]),
+    /// the change ([`crate::removals`]). `by_owner` when its author wrote
+    /// it as one of the workspace's administrators ([`StatePeer::wrote_as_administrator`]),
     /// as the governance it was judged by says.
     Admit {
         member: MemberAccess,
         history: bool,
-        by_governor: bool,
+        by_owner: bool,
     },
     /// Not decided until what it waits for is here.
     Hold(crate::MissingPrerequisite),
@@ -265,10 +265,10 @@ impl From<AuthorizeRefusal> for String {
 }
 
 impl StatePeer {
-    pub(super) fn has_governed_admission(&self, cert: &DeviceCert) -> bool {
+    pub(super) fn has_listed_admission(&self, cert: &DeviceCert) -> bool {
         self.core.workspace_doc.as_ref().is_some_and(|doc| {
             doc.policy().identities.values().any(|bytes| {
-                GovernedIdentity::decode(bytes)
+                DeviceRow::decode(bytes)
                     .is_ok_and(|identity| identity.device_cert == *cert && identity.has_admission())
             })
         })
@@ -337,14 +337,14 @@ impl StatePeer {
         })
     }
 
-    /// Whether `person` governs the workspace's history: its owner, or one of
+    /// Whether `person` administers the workspace's history: its owner, or one of
     /// its administrators as the governance this replica holds names them.
     /// Their devices sign the workspace's checkpoints and bases and relay
     /// what its members write, so a workspace whose owner handed it on keeps
     /// being served by the administrator that holds it, visibly, through the
     /// grant every member reads and its owner may withdraw.
     #[must_use]
-    pub fn governs_history(&self, person: &[u8; 32]) -> bool {
+    pub fn administers_history(&self, person: &[u8; 32]) -> bool {
         *person == self.core.owner
             || self.core.workspace_doc.as_ref().is_some_and(|doc| {
                 doc.workspace_policy(&self.core.workspace)
@@ -353,7 +353,7 @@ impl StatePeer {
     }
 
     /// The workspace's administrators, by their root keys, as the governance
-    /// this replica holds names them ([`Self::governs_history`]).
+    /// this replica holds names them ([`Self::administers_history`]).
     #[must_use]
     pub(super) fn administrator_roots(&self) -> Vec<[u8; 32]> {
         let Some(doc) = self.core.workspace_doc.as_ref() else {
@@ -369,17 +369,17 @@ impl StatePeer {
             .collect()
     }
 
-    /// Whether `device` is a known, unrevoked device of a person who governs
-    /// the workspace's history ([`Self::governs_history`]), at no particular
+    /// Whether `device` is a known, unrevoked device of a person who administers
+    /// the workspace's history ([`Self::administers_history`]), at no particular
     /// time: for evidence a device of theirs signed earlier.
     #[must_use]
-    pub fn signed_by_governor(&self, device: &[u8; 32]) -> bool {
+    pub fn signed_by_administrator(&self, device: &[u8; 32]) -> bool {
         self.known_device(device)
             && self
                 .core
                 .certificates
                 .get(device)
-                .is_some_and(|cert| self.governs_history(&cert.user_public_key))
+                .is_some_and(|cert| self.administers_history(&cert.user_public_key))
     }
 
     /// Verified public identity metadata; never includes signing keys.
@@ -429,7 +429,7 @@ impl StatePeer {
     /// peer's governance: every certificate this peer holds that the
     /// governance does not carry on its own ([`Self::governance_certifies`]),
     /// and always those of `kept`, the device the answer is for and the host
-    /// that answers, and this peer's governing device's, which a replica
+    /// that answers, and this peer's own device's, which a replica
     /// holds before any governance arrives. In a workspace of hundreds the
     /// roster repeated every member's certificate the governance after it
     /// carries.
@@ -793,17 +793,17 @@ impl StatePeer {
             .map(|(member, _)| member)
             .ok_or(MembershipError::Revoked)
     }
-    /// Whether the device that wrote a change is one of a governor's
-    /// ([`Self::governs_history`]): a known device of theirs now, or, for a
+    /// Whether the device that wrote a change is one of an administrator's
+    /// ([`Self::administers_history`]): a known device of theirs now, or, for a
     /// change that is `history`, one they removed since.
-    pub(super) fn wrote_as_governor(&self, device: &[u8; 32], history: bool) -> bool {
-        self.signed_by_governor(device)
+    pub(super) fn wrote_as_administrator(&self, device: &[u8; 32], history: bool) -> bool {
+        self.signed_by_administrator(device)
             || (history
                 && self
                     .core
                     .certificates
                     .get(device)
-                    .is_some_and(|cert| self.governs_history(&cert.user_public_key)))
+                    .is_some_and(|cert| self.administers_history(&cert.user_public_key)))
     }
     /// The id the cut of a removal names `write`, a write to `document` of
     /// `app`, by: `None` when the write does not encode.
@@ -1021,8 +1021,8 @@ impl StatePeer {
         self.core.workspace_doc.as_deref()
     }
 
-    /// Read permission for an exact canonical document using the same governed
-    /// actor/resource vocabulary as document mutation admission.
+    /// Read permission for an exact canonical document using the same actor and
+    /// resource vocabulary as document mutation admission.
     pub fn check_document_read(
         &self,
         device: [u8; 32],
@@ -1531,7 +1531,7 @@ impl StatePeer {
         drop(allows);
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit {
-                by_governor: self.wrote_as_governor(source, history),
+                by_owner: self.wrote_as_administrator(source, history),
                 member,
                 history,
             }),
@@ -1625,7 +1625,7 @@ impl StatePeer {
             app: app_id,
             document: record,
         };
-        let keeper = self.signed_by_governor(source).then_some(source);
+        let keeper = self.signed_by_administrator(source).then_some(source);
         let mut caller: Option<CallerAccess> = None;
         let mut bare = false;
         for claim in &envelope.claims {
@@ -1861,7 +1861,7 @@ impl StatePeer {
         // A step a called action declares it takes in another record counts only when the
         // device that wrote it keeps the workspace's records: its host. Any other device writes
         // nothing for a call but the call's own.
-        let keeper = self.signed_by_governor(source).then_some(
+        let keeper = self.signed_by_administrator(source).then_some(
             tilo_server_protocol::invocation::RecordHost {
                 app: app_id,
                 device: source,

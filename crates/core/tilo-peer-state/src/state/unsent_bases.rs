@@ -39,7 +39,7 @@ pub(super) struct Signed {
 
 /// How far each signer's sequence in a record is held without a gap: every write it signed up to
 /// its mark is in the record's history, or folded into what covers it (a compaction at the head of
-/// the history, or a governed checkpoint's watermarks).
+/// the history, or a covered checkpoint's watermarks).
 #[derive(Debug, Default)]
 pub(super) struct HeldThrough(HashMap<[u8; 32], u64>);
 

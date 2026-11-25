@@ -1,4 +1,4 @@
-//! Handing the workspaces this device governs to the person's servers.
+//! Handing the workspaces this device hosts to the person's servers.
 //!
 //! Which workspaces a server holds is each workspace's governance: its holders
 //! list names the server, and the workspace's actions add, move and remove it.
@@ -7,10 +7,10 @@
 //!
 //! - every server of the person takes part in the Servers workspace itself, as
 //!   a key holder, once it enrolled an address;
-//! - a planned machine holds the workspaces its plan names: a device governing
+//! - a planned machine keeps the workspaces its plan names: a device hosting
 //!   one names the machine there once it enrolled, then marks it handed in the
-//!   plan, so a holder taken out of a workspace later stays out;
-//! - a retired server holds nothing: a device governing a workspace that names
+//!   plan, so a device taken out of a workspace later stays out;
+//! - a retired server keeps nothing: a device hosting a workspace that names
 //!   it takes it out.
 //!
 //! Every holder of the Servers workspace applies this, not only a server: a
@@ -47,11 +47,11 @@ impl Attached {
 }
 
 /// Name each enrolled server in the Servers workspace, hand a planned machine
-/// the workspaces its plan names that this device governs, and take a retired
-/// server out of every workspace this device governs: one pass.
+/// the workspaces its plan names that this device hosts, and take a retired
+/// server out of every workspace this device hosts: one pass.
 ///
-/// A workspace this device does not govern is its governor's to change, so it
-/// is skipped here.
+/// A workspace this device does not host is its host's to change, so it is
+/// skipped here.
 ///
 /// # Errors
 /// The document could not be read or written, or a workspace's keeping
@@ -64,13 +64,13 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
     let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     let servers = read(workspaces).await?;
     let own = workspaces.device_cert().device_public_key;
-    let mut governed = workspaces
+    let mut hosted = workspaces
         .list()
         .await
         .into_iter()
         .map(|summary| summary.workspace)
         .collect::<BTreeSet<_>>();
-    governed.insert(admin.clone());
+    hosted.insert(admin.clone());
     let mut attached = Attached::default();
     for (device, server) in servers.servers.iter() {
         let Some(key) = tilo_failure::ignored!(
@@ -83,7 +83,7 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
             continue;
         }
         if server.retired {
-            for workspace in &governed {
+            for workspace in &hosted {
                 if names(workspaces, workspace, device.as_str()).await == Some(true) {
                     workspaces.remove_server(workspace, device.as_str()).await?;
                     attached.released.push(workspace.clone());
@@ -106,7 +106,7 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
             if planned.handed || workspace == admin {
                 continue;
             }
-            // Only the workspace's governor names a holder in it.
+            // Only the workspace's host names a device in it.
             let Some(named) = names(workspaces, workspace, device.as_str()).await else {
                 continue;
             };
@@ -132,7 +132,7 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
 }
 
 /// Whether `workspace` names the device `device` (hex) among its keeping
-/// devices: `None` when this device does not govern the workspace.
+/// devices: `None` when this device does not host the workspace.
 async fn names(workspaces: &Workspaces, workspace: &str, device: &str) -> Option<bool> {
     let keeping = workspaces.keeping_devices(workspace).await.ok()?;
     Some(keeping.iter().any(|keeper| keeper.device == device))
@@ -154,12 +154,12 @@ const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(300);
 
 impl Workspaces {
-    /// Apply the servers' document to the workspaces this device governs now
+    /// Apply the servers' document to the workspaces this device hosts now
     /// and again after each change to it or to a workspace's keeping devices,
     /// for as long as this device keeps the workspace, and after a pass that
     /// failed, again after a wait that grows with each. A server handed a
     /// workspace after it started is attached as the document says, whoever
-    /// governs the workspace: a desktop that approved it and a server of the
+    /// hosts the workspace: a desktop that approved it and a server of the
     /// person alike.
     pub(crate) fn follow_servers(&self) {
         let mut writes = self.document_writes();

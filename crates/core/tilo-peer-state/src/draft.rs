@@ -14,7 +14,7 @@ use tilo_action_policy::MemberAccess;
 use tilo_desktop_model::WorkspaceId;
 use web_time::SystemTime;
 
-use crate::owner::{AppWrite, NativeWorkspaceOwner, WriteRefusal};
+use crate::owner::{AppWrite, DeviceWorkspaces, WriteRefusal};
 use crate::replica::Replica;
 use crate::workspace_documents::DocumentWrite;
 use crate::{NotAdmitted, SealCheckpoint, StatePeer};
@@ -233,7 +233,7 @@ pub fn draft_local_write(
 /// signer answers through a promise, and no link admits in between the draft and the admission.
 pub fn admit_local_write(
     replica: Replica,
-    owner: Option<NativeWorkspaceOwner>,
+    owner: Option<DeviceWorkspaces>,
     device: [u8; 32],
     signer: Arc<dyn DeviceSigner>,
     workspace: &str,

@@ -159,7 +159,7 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
     let workspaces = f.host.server.workspaces().unwrap();
     assert!(
         workspaces.summary(&f.work).await.is_ok() && workspaces.summary(&f.home).await.is_ok(),
-        "the always-on server governs every workspace of the person"
+        "the always-on server serves every workspace of the person"
     );
 
     // Each device their root certified is in the record of their devices.

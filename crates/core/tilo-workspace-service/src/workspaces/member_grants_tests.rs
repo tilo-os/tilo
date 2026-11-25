@@ -10,7 +10,7 @@
 use tilo_action_policy::{Answer, Grantee, KindSet, TreePath};
 
 use super::OwnWorkspaceOffer;
-use super::fixtures::{governor, test_host};
+use super::fixtures::{hosting_device, test_host};
 
 /// The person whose own workspace the server holds.
 const PERSON: [u8; 32] = [5; 32];
@@ -19,7 +19,7 @@ const BRANCH: &str = "6f2b8a51-6d0f-4d4e-9d6c-5d3b3f1f2a10";
 #[tokio::test(flavor = "multi_thread")]
 async fn grants_are_written_into_a_workspace_as_far_as_this_servers_person_administers_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     workspaces
@@ -42,10 +42,10 @@ async fn grants_are_written_into_a_workspace_as_far_as_this_servers_person_admin
         )
     };
 
-    // A workspace the server governs takes the grant...
-    let governed = grant(&source);
+    // A workspace the server hosts takes the grant...
+    let hosted = grant(&source);
     workspaces
-        .put_workspace_grants(&source, &cert, [6; 32], vec![governed.clone()])
+        .put_workspace_grants(&source, &cert, [6; 32], vec![hosted.clone()])
         .await
         .expect("the server's own workspace takes its grant");
     assert!(
@@ -54,7 +54,7 @@ async fn grants_are_written_into_a_workspace_as_far_as_this_servers_person_admin
             .await
             .unwrap()
             .iter()
-            .any(|kept| kept.id == governed.id)
+            .any(|kept| kept.id == hosted.id)
     );
 
     // ...and one the server made for someone else takes it too: the server's person stays in

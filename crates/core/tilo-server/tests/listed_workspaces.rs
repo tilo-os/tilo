@@ -1,4 +1,4 @@
-//! A workspace this server governs: another person is invited, joins, edits with
+//! A workspace this server hosts: another person is invited, joins, edits with
 //! the workspace's owner, sees their presence, and is removed again.
 
 #![allow(
@@ -169,10 +169,10 @@ fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
     peer.role(&device, SystemTime::now()).ok()
 }
 
-/// What every scenario here starts from: Alice's server governing a workspace her
+/// What every scenario here starts from: Alice's server hosting a workspace her
 /// laptop owns, Bob's phone admitted through an invitation as `role`, and a link open
 /// for each of them, Alice's from what the host holds and Bob's from his join alone.
-struct Governed {
+struct Listed {
     alice: TestUser,
     host: TestDevice,
     laptop: TestDevice,
@@ -185,9 +185,9 @@ struct Governed {
     bob_link: Linked,
 }
 
-/// A governed workspace's whole setup. Boxed: the fixture's own future is far larger
+/// A hosted workspace's whole setup. Boxed: the fixture's own future is far larger
 /// than the tests that only destructure its result.
-fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Governed> + Send>> {
+fn listed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Listed> + Send>> {
     Box::pin(async move {
         let alice = TestUser::fresh("Alice");
         let bob = TestUser::fresh("Bob");
@@ -278,7 +278,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
             &phone.device_pubkey(),
         )
         .await;
-        Governed {
+        Listed {
             alice,
             host,
             laptop,
@@ -294,8 +294,8 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is_removed() {
-    let Governed {
+async fn an_invited_person_joins_a_listed_workspace_edits_sees_presence_and_is_removed() {
+    let Listed {
         alice,
         host,
         laptop,
@@ -306,7 +306,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         workspace,
         mut alice_link,
         mut bob_link,
-    } = governed_workspace(Role::Editor).await;
+    } = listed_workspace(Role::Editor).await;
 
     // Alice writes; Bob's copy verifies and applies it.
     alice_link
@@ -452,7 +452,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
     let server = start_at(state.path(), &alice, &host, iroh_listen).await;
     let workspaces = server.workspaces().unwrap().list().await;
     let [restored] = workspaces.as_slice() else {
-        panic!("one governed workspace: {workspaces:?}")
+        panic!("one hosted workspace: {workspaces:?}")
     };
     assert_eq!(restored.workspace, workspace.workspace);
     // A host names its own address in a workspace's governance when it opens it
@@ -559,7 +559,7 @@ type = "String"
 "#;
     // The surfaces it installs are the process's: no other test runs here.
     if !crate::common::in_own_process(
-        "governed_workspaces::the_server_forwards_only_changes_their_app_surface_publishes",
+        "listed_workspaces::the_server_forwards_only_changes_their_app_surface_publishes",
     ) {
         return;
     }
@@ -574,7 +574,7 @@ type = "String"
         )),
         move |_| Some(hash),
     );
-    let Governed {
+    let Listed {
         // The server's storage: kept alive for the whole test.
         state: _state,
         laptop,
@@ -582,7 +582,7 @@ type = "String"
         alice_link,
         bob_link,
         ..
-    } = governed_workspace(Role::Editor).await;
+    } = listed_workspace(Role::Editor).await;
 
     // A change claiming a verb the app does not publish: refused by the
     // server, so it never reaches Bob (whose copy would refuse it loudly).
@@ -666,7 +666,7 @@ params = []
 "#;
     // The surfaces it installs are the process's: no other test runs here.
     if !crate::common::in_own_process(
-        "governed_workspaces::the_server_refuses_an_action_the_author_is_not_granted",
+        "listed_workspaces::the_server_refuses_an_action_the_author_is_not_granted",
     ) {
         return;
     }
@@ -681,7 +681,7 @@ params = []
         )),
         move |_| Some(hash),
     );
-    let Governed {
+    let Listed {
         // The server's storage: kept alive for the whole test.
         state: _state,
         laptop,
@@ -691,7 +691,7 @@ params = []
         alice_link,
         bob_link,
         ..
-    } = governed_workspace(Role::Commenter).await;
+    } = listed_workspace(Role::Commenter).await;
     // Alice's chat: the record exists before Bob writes to it.
     alice_link
         .publish(|peer| {
@@ -920,32 +920,32 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
     server.shutdown().await;
 }
 
-#[path = "governed_workspaces/members.rs"]
+#[path = "listed_workspaces/members.rs"]
 mod members;
 
-#[path = "governed_workspaces/governance_actions.rs"]
+#[path = "listed_workspaces/governance_actions.rs"]
 mod governance_actions;
 
-#[path = "governed_workspaces/app_records.rs"]
+#[path = "listed_workspaces/app_records.rs"]
 mod app_records;
 
-#[path = "governed_workspaces/sealed_documents.rs"]
+#[path = "listed_workspaces/sealed_documents.rs"]
 mod sealed_documents;
 
-#[path = "governed_workspaces/shared_desktop.rs"]
+#[path = "listed_workspaces/shared_desktop.rs"]
 mod shared_desktop;
 
-#[path = "governed_workspaces/revocations.rs"]
+#[path = "listed_workspaces/revocations.rs"]
 mod revocations;
 
-#[path = "governed_workspaces/copies_read.rs"]
+#[path = "listed_workspaces/copies_read.rs"]
 mod copies_read;
 
-#[path = "governed_workspaces/hard_stops.rs"]
+#[path = "listed_workspaces/hard_stops.rs"]
 mod hard_stops;
 
-#[path = "governed_workspaces/app_push.rs"]
+#[path = "listed_workspaces/app_push.rs"]
 mod app_push;
 
-#[path = "governed_workspaces/record_content.rs"]
+#[path = "listed_workspaces/record_content.rs"]
 mod record_content;

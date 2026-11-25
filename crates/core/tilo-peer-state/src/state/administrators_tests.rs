@@ -8,7 +8,7 @@ use tilo_action_policy::{Answer, KindSet};
 
 /// How many of the workspace's governance actions the member with device
 /// `device` may run, as `peer`'s workspace policy decides it now.
-fn governs(peer: &StatePeer, device: [u8; 32], now: SystemTime) -> usize {
+fn administers(peer: &StatePeer, device: [u8; 32], now: SystemTime) -> usize {
     let member = peer.permissions(device, now).unwrap();
     let authority = member.authority();
     let cx = tilo_action_policy::Context::at_time(now);
@@ -27,7 +27,7 @@ const EVERY: usize = governance::ALL.len();
 
 fn is_administrator(peer: &StatePeer, user: [u8; 32], now: SystemTime) -> bool {
     peer.governance()
-        .governed_members(now)
+        .member_list(now)
         .unwrap()
         .members
         .iter()
@@ -37,11 +37,11 @@ fn is_administrator(peer: &StatePeer, user: [u8; 32], now: SystemTime) -> bool {
 tilo_test_env::scenario! {
     fn an_administrator_may_what_an_editor_may_not;
 
-    phase an_administrator_governs_and_an_editor_does_not;
+    phase an_administrator_administers_and_an_editor_does_not;
     {
         let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
         let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-        assert_eq!(governs(&peer, editor.device_public_key, now), 0);
+        assert_eq!(administers(&peer, editor.device_public_key, now), 0);
 
         assert!(
             peer.governance_mut()
@@ -49,7 +49,7 @@ tilo_test_env::scenario! {
                 .unwrap()
         );
         assert!(is_administrator(&peer, user, now));
-        assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
+        assert_eq!(administers(&peer, editor.device_public_key, now), EVERY);
         let held = peer.permissions(editor.device_public_key, now).unwrap();
         assert_eq!(
             held.policy.role_of(held.person_id().unwrap()),
@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
             .set_member_role(user, crate::join::Role::Editor, &host_key, now)
             .unwrap();
         assert!(!is_administrator(&peer, user, now));
-        assert_eq!(governs(&peer, editor.device_public_key, now), 0);
+        assert_eq!(administers(&peer, editor.device_public_key, now), 0);
     }
 
     phase an_administrator_moderates_and_an_editor_does_not;
@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
         assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
         assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
         assert!(change_settings(&mut peer, &editor, sandbox, now).unwrap());
-        let granted = peer.governance().governed_sandbox().unwrap();
+        let granted = peer.governance().member_sandbox().unwrap();
         let [held] = granted.as_slice() else {
             panic!("one capability: {granted:?}");
         };
@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
             )
             .unwrap()
         );
-        assert!(peer.governance().governed_sandbox().unwrap().is_empty());
+        assert!(peer.governance().member_sandbox().unwrap().is_empty());
     }
 
     phase a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it;
@@ -212,7 +212,7 @@ tilo_test_env::scenario! {
         let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
         let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
         peer.governance_mut()
-            .put_governed_presets(&[readers()], &host_key, now)
+            .put_saved_presets(&[readers()], &host_key, now)
             .unwrap();
         let assign = SettingsChange::AssignPreset {
             preset: "Readers".into(),
@@ -230,7 +230,7 @@ tilo_test_env::scenario! {
             tilo_action_policy::Grantee::person(owner),
         );
         peer.governance_mut()
-            .put_governed_grants(&[on_set], &host_key, now)
+            .put_member_grants(&[on_set], &host_key, now)
             .unwrap();
         assert!(change_settings(&mut peer, &editor, assign, now).unwrap());
         assert!(
@@ -280,11 +280,11 @@ tilo_test_env::scenario! {
             &legacy
         ));
         peer.governance_mut()
-            .put_governed_grants(std::slice::from_ref(&legacy), &host_key, now)
+            .put_member_grants(std::slice::from_ref(&legacy), &host_key, now)
             .unwrap();
         assert!(is_administrator(&peer, user, now));
         assert_eq!(
-            governs(&peer, editor.device_public_key, now),
+            administers(&peer, editor.device_public_key, now),
             0,
             "the Editor's Deny outranks the grant where it sits"
         );
@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
                 .reconcile_administrator_grants(&host_key, now)
                 .unwrap()
         );
-        assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
+        assert_eq!(administers(&peer, editor.device_public_key, now), EVERY);
         assert!(is_administrator(&peer, user, now));
         let held = peer.permissions(editor.device_public_key, now).unwrap();
         let rewritten = held
@@ -409,7 +409,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             peer.governance()
-                .governed_members(now)
+                .member_list(now)
                 .unwrap()
                 .members
                 .iter()
@@ -551,7 +551,7 @@ mod made_and_invited {
                 crate::admission_tests::add_member_with(&mut peer, &host_key, now, 32, 33);
             let (eve_key, _, eve) =
                 crate::admission_tests::add_member_with(&mut peer, &host_key, now, 34, 35);
-            let policy = |peer: &StatePeer| peer.governance().governed_policy().unwrap();
+            let policy = |peer: &StatePeer| peer.governance().member_policy().unwrap();
             assert_eq!(policy(&peer).owner(), Some(hex::encode(owner).as_str()));
 
             // An Editor makes nobody an administrator, nor takes the workspace.
@@ -602,13 +602,13 @@ mod made_and_invited {
                         .is_err()
                 );
             }
-            // The owner unmakes Dee, who governs nothing from then on.
+            // The owner unmakes Dee, who administers nothing from then on.
             peer.governance_mut()
                 .set_member_role(dee, crate::join::Role::Editor, &owner_key, now)
                 .unwrap();
             assert!(!is_administrator(&peer, dee, now));
             let dee_device = SigningKey::from_bytes(&[33; 32]).verifying_key().to_bytes();
-            assert_eq!(governs(&peer, dee_device, now), 0);
+            assert_eq!(administers(&peer, dee_device, now), 0);
             assert!(
                 !peer
                     .governance()
@@ -640,8 +640,8 @@ mod made_and_invited {
                     .unwrap()
             );
             assert!(is_administrator(&peer, guest.1.user_public_key, now));
-            assert_eq!(governs(&peer, guest.1.device_public_key, now), EVERY);
-            let replica = peer.governance().governed_policy().unwrap();
+            assert_eq!(administers(&peer, guest.1.device_public_key, now), EVERY);
+            let replica = peer.governance().member_policy().unwrap();
             let guest_person = hex::encode(guest.1.user_public_key);
             assert!(replica.is_administrator(&guest_person));
             assert_eq!(replica.role_of(&guest_person), Some(Role::Editor));

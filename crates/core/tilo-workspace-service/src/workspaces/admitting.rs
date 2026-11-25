@@ -35,7 +35,7 @@ use super::collaboration::{
     request_digest, stamped,
 };
 use super::pages::Presented;
-use super::{GovernedWorkspace, Workspaces, system_time};
+use super::{HostedWorkspace, Workspaces, system_time};
 
 /// The argument of `workspace/members#admit` that redeems invitations: the admissions, each a
 /// [`Admitting`], answered in order with a [`Admitted`] each.
@@ -281,8 +281,8 @@ impl Workspaces {
         admissions: Vec<Admitting>,
     ) -> Result<Vec<Admitted>, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        let governed = self.workspace(&workspace_id.to_string()).await?;
-        let mut workspace = governed.lock().await;
+        let hosted = self.workspace(&workspace_id.to_string()).await?;
+        let mut workspace = hosted.lock().await;
         let mut answers: Vec<Option<Admitted>> = vec![None; admissions.len()];
         let mut checked = Vec::new();
         let mut invites = std::collections::BTreeSet::new();
@@ -371,7 +371,7 @@ impl Workspaces {
     /// holds the invitations already admitted in this change.
     fn check(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         index: usize,
         admission: Admitting,
         (issuer, device): (Option<[u8; 32]>, Option<[u8; 32]>),
@@ -443,7 +443,7 @@ impl Workspaces {
                 let request_id = proof.challenge.request_id;
                 let proof_digest = request_digest(&proof)?;
                 let prior = workspace.collaboration().completed(
-                    &workspace.governed(answering),
+                    &workspace.hosted(answering),
                     remote_endpoint,
                     request_id,
                     proof_digest,
@@ -451,11 +451,11 @@ impl Workspaces {
                 )?;
                 if let Some(prior) = prior {
                     return Ok(Err(Admitted::Joined(Box::new(
-                        workspace.governed(answering).filled(prior)?,
+                        workspace.hosted(answering).filled(prior)?,
                     ))));
                 }
                 let redemption = workspace.collaboration().redeem(
-                    &workspace.governed(answering),
+                    &workspace.hosted(answering),
                     remote_endpoint,
                     &proof,
                     now,
@@ -476,7 +476,7 @@ impl Workspaces {
     /// it is refused. `invites` holds the invitations already admitted in this change.
     fn admit_checked(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         index: usize,
         issuer: Option<[u8; 32]>,
         invites: &mut std::collections::BTreeSet<[u8; 32]>,
@@ -531,7 +531,7 @@ impl Workspaces {
     /// What `checked`, admitted as `bootstrap`, is answered.
     fn answer(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         checked: &Checked,
         bootstrap: JoinBootstrap,
         now: u64,
@@ -567,7 +567,7 @@ impl Workspaces {
             }
             // The device is sent the workspace as the admission committed it.
             Way::Answered => workspace
-                .governed(self.device_cert())
+                .hosted(self.device_cert())
                 .filled(bootstrap)
                 .map(|bootstrap| Admitted::Joined(Box::new(bootstrap))),
         }
@@ -588,7 +588,7 @@ impl Workspaces {
     )]
     async fn admit_redemptions(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         joins: &[Redeeming<'_>],
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {

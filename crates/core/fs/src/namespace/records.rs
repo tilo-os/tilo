@@ -542,18 +542,6 @@ impl Namespace {
             return false;
         };
         doc.commit_named();
-        // A record a build before wrote names nothing: it takes the founding every holder
-        // derives alike, which the workspace's server gives it too, so the two identities merge
-        // as one instead of competing.
-        if let Some(mut founding) = collab_types::document::identity::founding_for_unnamed(
-            doc,
-            &id,
-            &tree_kind(),
-            workspace,
-        ) && (**doc).merge_incoming(&mut founding).is_err()
-        {
-            return false;
-        }
         collab_types::document::identity::init_scoped(
             doc,
             &id,

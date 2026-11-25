@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
     phase a_newcomer_refuses_a_history_that_starts_anywhere_else;
     // The device a newcomer joined through hands it a history: one founded by
     // someone else, one starting from a base no one signed, or from a base a
-    // member who governs nothing signed. Each is refused.
+    // member who administers nothing signed. Each is refused.
     {
         let (mut peer, key, guest) = workspace_with(Role::Editor);
         let (_, owner) = owner();
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
                 founded_elsewhere.workspace_message(),
             )
             .is_err(),
-            "a founding that lists none of the newcomer's devices governs nothing there"
+            "a founding that lists none of the newcomer's devices administers nothing there"
         );
         // A history whose founding someone other than its owner wrote is refused whoever
         // it lists.
@@ -185,16 +185,16 @@ tilo_test_env::scenario! {
         .unwrap();
         assert_eq!(
             compaction::compacted_by(&by_an_editor, WORKSPACE, &owner.user_public_key),
-            Err(CompactionRefusal::NotGoverning)
+            Err(CompactionRefusal::NotAdministrator)
         );
         let refusal =
             handed(&mut newcomer(), owner.device_public_key, sent(&by_an_editor)).unwrap_err();
-        assert!(refusal.contains(&CompactionRefusal::NotGoverning.to_string()), "{refusal}");
+        assert!(refusal.contains(&CompactionRefusal::NotAdministrator.to_string()), "{refusal}");
         // A device holding the history refuses it as the newer base too.
         let mut holder = newcomer();
         handed(&mut holder, owner.device_public_key, peer.workspace_message()).unwrap();
         let refusal = handed(&mut holder, guest.device_public_key, sent(&by_an_editor)).unwrap_err();
-        assert!(refusal.contains(&CompactionRefusal::NotGoverning.to_string()), "{refusal}");
+        assert!(refusal.contains(&CompactionRefusal::NotAdministrator.to_string()), "{refusal}");
         assert!(
             peer.compact_workspace(&guest, &key, now()).is_err(),
             "an editor's device makes no compaction"
@@ -211,12 +211,12 @@ tilo_test_env::scenario! {
         let (owner_key, owner) = owner();
         assert!(
             peer.governance_mut()
-                .put_governed_presets(&[preset("Secret plan")], &owner_key, now())
+                .put_saved_presets(&[preset("Secret plan")], &owner_key, now())
                 .unwrap()
         );
         assert!(
             peer.governance_mut()
-                .put_governed_presets(&[], &owner_key, now())
+                .put_saved_presets(&[], &owner_key, now())
                 .unwrap()
         );
         assert!(
@@ -237,6 +237,6 @@ tilo_test_env::scenario! {
             "the history starts from the administrator's signed compaction"
         );
         assert!(!ever_held(&held, "Secret plan"), "the withdrawn set never reaches it");
-        assert!(copy.governance().governed_presets().is_empty());
+        assert!(copy.governance().saved_presets().is_empty());
     }
 }

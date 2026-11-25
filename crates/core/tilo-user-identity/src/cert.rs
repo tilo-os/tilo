@@ -435,7 +435,7 @@ pub struct DeviceCapabilities {
     /// so an agent the person approved acts for them, in the workspaces the
     /// scope names and nowhere else. Such a certificate grants none of the
     /// flags above, expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] unless it
-    /// is a server key ([`Self::server_key`]), governs no workspace, and is
+    /// is a server key ([`Self::server_key`]), administers no workspace, and is
     /// revoked like any device.
     pub agent: Option<AgentScope>,
 
@@ -1339,8 +1339,8 @@ impl DeviceCapabilities {
         self.can_own_workspaces && !self.foreign
     }
 
-    /// Whether a workspace governed by a device with these capabilities has
-    /// that governor hold the workspace's keys, wherever it runs (a person's
+    /// Whether a workspace hosted by a device with these capabilities has
+    /// that host keep the workspace's keys, wherever it runs (a person's
     /// device or a server): the workspace's records are then sealed, and each
     /// member opens them itself. The workspace host and every member decide
     /// this the same way.

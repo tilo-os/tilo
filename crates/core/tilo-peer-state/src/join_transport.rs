@@ -1,7 +1,7 @@
 //! The owner-neutral iroh transport for the shared workspace join contract.
-//! The client half reaches a governor over its iroh endpoint. The server half,
-//! [`WorkspaceJoinProtocol`], is how every governor answers on its iroh
-//! endpoint: a server for the workspaces it governs and a device for its own.
+//! The client half reaches a host over its iroh endpoint. The server half,
+//! [`WorkspaceJoinProtocol`], is how every host answers on its iroh endpoint: a
+//! server for the workspaces it hosts and a device for its own.
 //! The messages are `tilo_workspace_join`'s and the decisions are
 //! [`crate::join_answer`]'s, so a device answers and asks with what it already
 //! holds.
@@ -103,7 +103,7 @@ pub struct WorkspaceJoinClient {
     carrier: Carrier,
 }
 
-/// A governor's join service, callable in-process: what a host in the same
+/// A host's join service, callable in-process: what another host in the same
 /// process answers, as [`WorkspaceJoinService`] is on its iroh endpoint,
 /// behind a handle the client can hold.
 pub trait LocalJoinService: Send + Sync + std::fmt::Debug + 'static {

@@ -16,7 +16,7 @@ const SECRET: &str = "a sentence only key holders may read";
 pub(super) struct Fixture {
     /// A durable replica holding the seeded record and no channel key.
     pub(super) replica: StatePeer,
-    /// The workspace's governing device, which holds the owner role.
+    /// The workspace's host, which holds the owner role.
     pub(super) owner: SigningKey,
     /// The owner's second device.
     pub(super) other: SigningKey,
@@ -1155,12 +1155,12 @@ tilo_test_env::scenario! {
             "both visitors' writes wait for the lost change"
         );
         let mut read = AutoCommit::load(&opened.document).expect("the rest opens as a whole record");
-        let governor = "54b2fcc8";
+        let owner_copy = "54b2fcc8";
         assert!(
             read.get_heads()
                 .iter()
-                .any(|head| head.to_string().starts_with(governor)),
-            "the governor's own write is read"
+                .any(|head| head.to_string().starts_with(owner_copy)),
+            "the host's own write is read"
         );
 
         // The lost write returns: the record is whole again.
@@ -1192,10 +1192,10 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A public workspace's chat as its governor kept it after hard stops, opened
+/// A public workspace's chat as its host kept it after hard stops, opened
 /// with the channel's keys: the record's base, the last member snapshot,
-/// the governor's own write, then two visitors' writes that build on a
-/// change of a third visitor's snapshot the governor had taken in and lost
+/// the host's own write, then two visitors' writes that build on a
+/// change of a third visitor's snapshot the host had taken in and lost
 /// at a stop. `lost` is that snapshot, as the server still retained it.
 /// Its postcard `Vec<(label, bytes)>`, hex.
 const LOUNGE_CHAT_GAP: &str = include_str!("fixtures/lounge-chat-gap.hex");
@@ -1656,7 +1656,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn a_history_falls_due_and_the_governor_compacts_behind_its_receipt;
+    fn a_history_falls_due_and_the_owner_compacts_behind_its_receipt;
 
     phase a_history_near_its_bound_is_due_for_compaction;
     {
@@ -3045,7 +3045,7 @@ tilo_test_env::scenario! {
         assert!(
             holder
                 .governance_mut()
-                .publish_governed_revocations(&[revocation], &a, now)
+                .publish_member_revocations(&[revocation], &a, now)
                 .unwrap()
         );
         assert_eq!(held(&holder), before);
@@ -3354,21 +3354,21 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let phone = f.other.clone();
-        let (_, mut governor, _, _) = three_writes(&f, &keys);
-        let mut author = Author::new(&governor);
-        let first = write(&governor, &phone, &keys, &author.edit("first", "written"), now);
-        admit(&mut governor, &phone, first, now);
+        let (_, mut owner_copy, _, _) = three_writes(&f, &keys);
+        let mut author = Author::new(&owner_copy);
+        let first = write(&owner_copy, &phone, &keys, &author.edit("first", "written"), now);
+        admit(&mut owner_copy, &phone, first, now);
         // A device that was ended holds the phone's first write and not its second.
-        let mut behind = governor.clone();
-        let second = write(&governor, &phone, &keys, &author.edit("second", "written"), now);
-        admit(&mut governor, &phone, second, now);
-        let whole = governor.clone();
+        let mut behind = owner_copy.clone();
+        let second = write(&owner_copy, &phone, &keys, &author.edit("second", "written"), now);
+        admit(&mut owner_copy, &phone, second, now);
+        let whole = owner_copy.clone();
         // The phone folds both into a compaction the workspace takes, and is removed: the
         // removal's cut keeps that compaction as the phone's history.
-        let taken = mint(&mut governor, &keys, &phone, now).unwrap();
+        let taken = mint(&mut owner_copy, &keys, &phone, now).unwrap();
         // Every device with the record's keys checked it, which a device behind it then reads
         // without the writes it stands in for.
-        checked_by_every_device(&f, &mut governor, &keys);
+        checked_by_every_device(&f, &mut owner_copy, &keys);
         let root = SigningKey::from_bytes(&[1; 32]);
         let mut removal = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
@@ -3379,13 +3379,13 @@ tilo_test_env::scenario! {
         };
         tilo_user_identity::sign_revocation_entry(&mut removal, &root).unwrap();
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
-                .publish_governed_revocations(std::slice::from_ref(&removal), &f.owner, now)
+                .publish_member_revocations(std::slice::from_ref(&removal), &f.owner, now)
                 .unwrap()
         );
         behind
-            .receive_from(origin(&f.owner), governor.workspace_message(), now)
+            .receive_from(origin(&f.owner), owner_copy.workspace_message(), now)
             .unwrap();
         // Removed, the phone signs another compaction of the same two writes, under the
         // number it used: a device behind it takes nothing of it, with its keys or without.
@@ -3396,7 +3396,7 @@ tilo_test_env::scenario! {
         assert_eq!(behind.durable().unwrap(), before, "the replica is unchanged");
         // The one the workspace had taken is history: the device behind it takes it.
         take_behind(&mut behind, &keys, &taken, now).unwrap();
-        assert_eq!(held(&behind), held(&governor));
+        assert_eq!(held(&behind), held(&owner_copy));
         assert_eq!(
             text(&captured(&f, &behind, &keys).unwrap(), "second").as_deref(),
             Some("written")

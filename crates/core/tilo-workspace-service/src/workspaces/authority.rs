@@ -2,9 +2,9 @@
 //!
 //! Every administration entry (the `tilo.workspace` and `tilo.host` actions,
 //! the `/workspaces` pages, calls, the moderation
-//! agent) asks [`Workspaces::authorize`] with what it is about to do. No device or
-//! server governs a workspace: the workspace's member list decides for every
-//! device alike, this server's own included. The answer comes in three steps:
+//! agent) asks [`Workspaces::authorize`] with what it is about to do. The
+//! workspace's member list decides for every device alike, this server's own
+//! included. The answer comes in three steps:
 //!
 //! 1. The device must be a person's current device: certified now, not
 //!    revoked, and not one of the server's agents (an agent administers
@@ -41,8 +41,7 @@ use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    CollaborationError, GovernedWorkspace, MemberPlace, SetMemberRoleRequest, Workspaces,
-    system_time,
+    CollaborationError, HostedWorkspace, MemberPlace, SetMemberRoleRequest, Workspaces, system_time,
 };
 use crate::service_authority::ServiceOperation;
 use tilo_lock::RwLockRecover as _;
@@ -150,7 +149,7 @@ impl Workspaces {
     pub(super) fn authorize(
         &self,
         device: &DeviceCert,
-        workspace: Option<&GovernedWorkspace>,
+        workspace: Option<&HostedWorkspace>,
         op: WorkspaceOp<'_>,
         now: u64,
     ) -> Result<String, CollaborationError> {
@@ -185,9 +184,9 @@ impl Workspaces {
         let Some(workspace) = workspace else {
             return self.authorize(device, None, op, now).map(drop);
         };
-        let governed = self.workspace(workspace).await?;
-        let governed = governed.lock().await;
-        self.authorize(device, Some(&governed), op, now).map(drop)
+        let hosted = self.workspace(workspace).await?;
+        let hosted = hosted.lock().await;
+        self.authorize(device, Some(&hosted), op, now).map(drop)
     }
 
     /// Whether [`Self::authorize`] would let `device` do `op` in `workspace` at
@@ -197,7 +196,7 @@ impl Workspaces {
     pub(super) fn permits(
         &self,
         device: &DeviceCert,
-        workspace: Option<&GovernedWorkspace>,
+        workspace: Option<&HostedWorkspace>,
         op: WorkspaceOp<'_>,
         now: u64,
     ) -> bool {
@@ -207,7 +206,7 @@ impl Workspaces {
     fn decide(
         &self,
         device: &DeviceCert,
-        workspace: Option<&GovernedWorkspace>,
+        workspace: Option<&HostedWorkspace>,
         op: WorkspaceOp<'_>,
         now: u64,
     ) -> Result<String, CollaborationError> {
@@ -269,7 +268,7 @@ impl Workspaces {
         let policy = workspace
             .peer()
             .governance()
-            .governed_policy()
+            .member_policy()
             .map_err(CollaborationError::new)?;
         // A place is changed on a person the workspace has, whoever asks: someone it does not
         // have is given one by `member.add`, never a place here.
@@ -289,7 +288,7 @@ impl Workspaces {
 /// their own, certified by their root or a device of theirs, that the workspace keeps as no
 /// revoked key.
 fn of_a_member(
-    workspace: &GovernedWorkspace,
+    workspace: &HostedWorkspace,
     device: &DeviceCert,
     policy: &tilo_action_policy::WorkspacePolicy,
 ) -> bool {
@@ -301,7 +300,7 @@ fn of_a_member(
 /// What `workspace` lets `device` do: the access of a device its member list holds, or, for a
 /// device the list does not hold yet, its person's, when it is a device of a member's own.
 fn member_access(
-    workspace: &GovernedWorkspace,
+    workspace: &HostedWorkspace,
     device: &DeviceCert,
     op: WorkspaceOp<'_>,
     now: u64,
@@ -316,7 +315,7 @@ fn member_access(
     let policy = workspace
         .peer()
         .governance()
-        .governed_policy()
+        .member_policy()
         .map_err(CollaborationError::new)?;
     if !of_a_member(workspace, device, &policy) {
         return Err(CollaborationError::new(format!(
@@ -338,7 +337,7 @@ fn member_access(
 /// list does not hold yet is its person, when it is a device of theirs and
 /// the list has them.
 fn decide_by_governance(
-    workspace: &GovernedWorkspace,
+    workspace: &HostedWorkspace,
     device: &DeviceCert,
     op: WorkspaceOp<'_>,
     now: u64,
@@ -462,7 +461,7 @@ fn permits(
 }
 
 /// Why a key that is no device of the person's own may not do `op` in the workspace `policy`
-/// governs, when the workspace's own rule refuses it: `None` where the workspace leaves the
+/// decides, when the workspace's own rule refuses it: `None` where the workspace leaves the
 /// operation to such a key. Its own rule decides it, asked as a member whose device is not
 /// theirs ([`tilo_action_policy::Cap::FOREIGN_DEVICE`]): what that member may not is the
 /// administration, the workspace itself, and a place. It lets people in at a role its person may
@@ -525,7 +524,7 @@ impl Workspaces {
     /// Why the device may not.
     pub(super) fn authorize_role_change(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         device: &DeviceCert,
         request: &SetMemberRoleRequest,
         now: u64,
@@ -544,11 +543,11 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, or holds no governance.
+    /// The workspace is not hosted here, or keeps no governance.
     pub async fn membership_log(&self, workspace: &str) -> Result<Vec<String>, CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let governed = state.lock().await;
-        governed
+        let hosted = state.lock().await;
+        hosted
             .peer()
             .governance()
             .membership_log()
@@ -557,7 +556,7 @@ impl Workspaces {
 
     /// The people the devices `workspace` admits now belong to, by the device:
     /// whose record a device's writes are. And the person who owns the
-    /// workspace. `None` for a workspace not governed here.
+    /// workspace. `None` for a workspace not hosted here.
     pub async fn people_of(
         &self,
         workspace: &str,
@@ -578,13 +577,13 @@ impl Workspaces {
 
     /// The people `workspace` has as members now, its owner among them: whose
     /// holds on content a host keeps stand. One whose device's certificate
-    /// ran out is still a member. `None` for a workspace not governed here.
+    /// ran out is still a member. `None` for a workspace not hosted here.
     pub async fn member_people(
         &self,
         workspace: &str,
     ) -> Option<std::collections::BTreeSet<[u8; 32]>> {
         let peer = self.state(workspace).await?;
-        let policy = peer.governance().governed_policy().ok()?;
+        let policy = peer.governance().member_policy().ok()?;
         let owner = peer.owner();
         Some(
             peer.certificates()

@@ -349,8 +349,8 @@ pub trait ContentBackend: Send + Sync {
     /// asserts nothing outside it is referenced by anything it is responsible for.
     ///
     /// # Errors
-    /// [`ContentError::CollectionUnsupported`] for backends whose retention is governed elsewhere
-    /// (a shared device store), or an I/O failure part-way (retry with the same live set).
+    /// [`ContentError::CollectionUnsupported`] for backends whose retention another store
+    /// decides (a shared device store), or an I/O failure part-way (retry with the same live set).
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
         let _ = live;
         Err(ContentError::CollectionUnsupported)
@@ -362,8 +362,8 @@ pub trait ContentBackend: Send + Sync {
     /// only what it alone keeps.
     ///
     /// # Errors
-    /// [`ContentError::CollectionUnsupported`] for backends whose retention is governed elsewhere,
-    /// or an I/O failure.
+    /// [`ContentError::CollectionUnsupported`] for backends whose retention another store
+    /// decides, or an I/O failure.
     fn release(&self, hash: &str) -> Result<Collected, ContentError> {
         let _ = hash;
         Err(ContentError::CollectionUnsupported)

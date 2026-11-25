@@ -13,7 +13,7 @@ use tilo_server_protocol::workspaces::Role;
 
 use super::fixtures::entry_join_as;
 use super::servers::{self, Servers};
-use super::tests::{governor, guest_device, test_host};
+use super::tests::{guest_device, hosting_device, test_host};
 use super::*;
 use crate::work::{
     Actor, HostLinux, Ineligible, Job, KeepsContent, NotTaken, Turn, keep_done, takes_turn,
@@ -206,7 +206,7 @@ async fn offer_compute(host: &super::fixtures::TestHost, device: &DeviceCert, co
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Photos").await.unwrap().workspace;
@@ -317,7 +317,7 @@ impl HostLinux for Linux {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_takes_a_linux_run_when_it_runs_linux_and_has_room() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Build").await.unwrap().workspace;
@@ -380,7 +380,7 @@ async fn a_device_takes_a_linux_run_when_it_runs_linux_and_has_room() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_device_asks_and_the_host_runs_its_turn() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Photos").await.unwrap().workspace;
@@ -520,7 +520,7 @@ async fn claim_as(workspaces: &Workspaces, workspace: &str, device: &DeviceCert,
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_firing_goes_to_its_starter_then_a_server_then_any_device() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Home").await.unwrap().workspace;
@@ -606,7 +606,7 @@ async fn a_firing_goes_to_its_starter_then_a_server_then_any_device() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_that_goes_quiet_loses_its_turn_to_the_next() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Home").await.unwrap().workspace;
@@ -682,7 +682,7 @@ async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
     use collab_types::store::wire::{Command, Reply, Turn as Answer};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     workspaces.set_member_device(Arc::new(MemberDevice {

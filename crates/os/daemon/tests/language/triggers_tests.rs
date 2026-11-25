@@ -684,7 +684,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     const MESSAGE: &str = "tl.so.tilo.mail.Message";
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
+    let (key, cert) = tilo_workspace_service::workspaces::fixtures::hosting_device();
     let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
@@ -908,7 +908,7 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
     const MESSAGE: &str = "tl.so.tilo.mail.Message";
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
+    let (key, cert) = tilo_workspace_service::workspaces::fixtures::hosting_device();
     let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
@@ -1365,7 +1365,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
 
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
+    let (key, cert) = tilo_workspace_service::workspaces::fixtures::hosting_device();
     let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,

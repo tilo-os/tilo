@@ -15,7 +15,7 @@ use tilo_action_policy::{ContentLimit, ContentPolicy, Raises};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::kept_content::KeptContent;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, entry_join, governor, guest_device, test_host, test_host_holding,
+    TestGroupKeys, entry_join, guest_device, hosting_device, test_host, test_host_holding,
 };
 
 /// The app a member's messages and their files are kept in.
@@ -154,7 +154,7 @@ fn refused(limit: ContentLimit, allowed: u64) -> Posted {
 )]
 async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_keeps() {
     let scratch = tempfile::tempdir().unwrap();
-    let (root, host_cert) = governor();
+    let (root, host_cert) = hosting_device();
     let host = test_host(scratch.path(), &root, &host_cert).await;
     let workspaces = host.workspaces().clone();
     let summary = workspaces.create("Lounge").await.unwrap();
@@ -461,7 +461,7 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
 )]
 async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals() {
     let scratch = tempfile::tempdir().unwrap();
-    let (root, host_cert) = governor();
+    let (root, host_cert) = hosting_device();
     // One key service across both hosts: the device that comes up again opens
     // what the one before it sealed.
     let keys = Arc::new(TestGroupKeys::default());
@@ -559,8 +559,8 @@ async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals(
     assert_eq!(refusal.bytes, 800);
     let at = refusal.at;
 
-    // The host restarts: its keeper and the workspaces it governs open again
-    // from the store, with nothing of the refusal or the member's share in
+    // The host restarts: the content it keeps and the workspaces it serves open
+    // again from the store, with nothing of the refusal or the member's share in
     // memory.
     keeping.abort();
     drop(kept);
@@ -673,7 +673,7 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
     const FILE_BYTES: usize = 64 * 1024 * 1024;
 
     let scratch = tempfile::tempdir().unwrap();
-    let (root, host_cert) = governor();
+    let (root, host_cert) = hosting_device();
     let host = test_host(scratch.path(), &root, &host_cert).await;
     let workspaces = host.workspaces().clone();
     let summary = workspaces.create("Lounge").await.unwrap();
@@ -859,7 +859,7 @@ fn folder_piece_frame(
 )]
 async fn a_three_gib_folder_reaches_its_own_server_whole() {
     let scratch = tempfile::tempdir().unwrap();
-    let (root, host_cert) = governor();
+    let (root, host_cert) = hosting_device();
     let host = test_host(scratch.path(), &root, &host_cert).await;
     let workspaces = host.workspaces().clone();
     let summary = workspaces.create("Lounge").await.unwrap();

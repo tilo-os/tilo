@@ -1,6 +1,6 @@
 //! The grants a workspace admitted, as its governance records them.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{ROOT, SystemTime, err, governed_map};
+use super::{ROOT, SystemTime, err, workspace_map};
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc as _, Value};
 use collab_types::signer::DeviceSigner;
@@ -96,7 +96,7 @@ impl PeerGovernanceMut<'_> {
         let json = serde_json::to_string(grant).map_err(|error| error.to_string())?;
         let id = grant.id.clone();
         self.write(key, now, |doc| {
-            let grants = governed_map(doc, WORKSPACE_GRANTS_KEY)?;
+            let grants = workspace_map(doc, WORKSPACE_GRANTS_KEY)?;
             doc.put(&grants, id.as_str(), json.as_str()).map_err(err)
         })
     }
@@ -207,24 +207,24 @@ mod tests {
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
     fn a_host_records_the_grant_it_admitted_and_its_revocation() -> TestResult {
-        let (mut peer, governor, _, _, now) = crate::admission_tests::seeded();
+        let (mut peer, owner_copy, _, _, now) = crate::admission_tests::seeded();
         assert!(peer.governance().workspace_grants().is_empty());
         let admitted = grant([7; 32]);
         assert!(
             peer.governance_mut()
-                .author_workspace_grant(&admitted, &governor, now)?
+                .author_workspace_grant(&admitted, &owner_copy, now)?
         );
         assert_eq!(peer.governance().workspace_grants(), vec![admitted.clone()]);
         assert!(
             !peer
                 .governance_mut()
-                .author_workspace_grant(&admitted, &governor, now)?,
+                .author_workspace_grant(&admitted, &owner_copy, now)?,
             "recording it as it is recorded changes nothing"
         );
         assert!(peer.governance_mut().author_workspace_grant_revoked(
             &admitted.id,
             42,
-            &governor,
+            &owner_copy,
             now
         )?);
         let revoked = peer.governance().workspace_grants();
@@ -233,7 +233,7 @@ mod tests {
             !peer.governance_mut().author_workspace_grant_revoked(
                 &admitted.id,
                 43,
-                &governor,
+                &owner_copy,
                 now
             )?,
             "a revoked grant stays revoked at the first time it was"
@@ -258,7 +258,7 @@ mod tests {
         use ed25519_dalek::SigningKey;
         use tilo_action_policy::{Acting, ActionKind, Answer, Context, TreePath};
         use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
-        let (mut peer, governor, _, server, now) = crate::admission_tests::seeded();
+        let (mut peer, owner_copy, _, server, now) = crate::admission_tests::seeded();
         let root = SigningKey::from_bytes(&[1; 32]);
         let key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
         let mut cert = DeviceCert {
@@ -298,14 +298,14 @@ mod tests {
         let mut listed = grant(key);
         listed.id = WorkspaceGrant::id_of(&key);
         peer.governance_mut()
-            .author_workspace_grant(&listed, &governor, now)?;
+            .author_workspace_grant(&listed, &owner_copy, now)?;
         assert_eq!(
             decided(&peer)?,
             Some(Answer::Allow),
             "listing it changes nothing"
         );
         peer.governance_mut()
-            .author_workspace_grant_revoked(&listed.id, 42, &governor, now)?;
+            .author_workspace_grant_revoked(&listed.id, 42, &owner_copy, now)?;
         assert_ne!(
             decided(&peer)?,
             Some(Answer::Allow),

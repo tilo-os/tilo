@@ -15,7 +15,7 @@
 //! theirs, not a grant's. Another person reaches none of it.
 
 use super::{
-    ActionCallError, ActionKind, ActionParam, Args, CHOOSES_SERVERS, CatalogueRow, Governed, Id,
+    ActionCallError, ActionKind, ActionParam, Args, CHOOSES_SERVERS, CatalogueRow, Id, Listed,
     ParamType, Verb, Workspaces, roles,
 };
 use crate::workspaces::servers;
@@ -113,7 +113,7 @@ pub(super) fn verb(action: &str) -> Option<&'static ServerVerb> {
 }
 
 /// The rows of what a person asks of their servers, published on `workspace`.
-pub(super) fn rows(workspace: &crate::workspaces::GovernedWorkspace) -> Vec<CatalogueRow> {
+pub(super) fn rows(workspace: &crate::workspaces::HostedWorkspace) -> Vec<CatalogueRow> {
     SERVER_VERBS
         .iter()
         .map(|verb| {
@@ -182,7 +182,7 @@ impl Workspaces {
         workspace_id: tilo_server_protocol::WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         certificate: Option<&DeviceCert>,
-    ) -> Option<(Governed, DeviceCert)> {
+    ) -> Option<(Listed, DeviceCert)> {
         let certificate = certificate?;
         let person = caller.user_public_key()?;
         if certificate.user_public_key != *person
@@ -210,11 +210,11 @@ impl Workspaces {
         verb: &'static ServerVerb,
         request: &InvokeRequest,
     ) -> Result<serde_json::Value, ActionCallError> {
-        let (governed, device) = self
+        let (hosted, device) = self
             .server_operator(workspace_id, caller, certificate)
             .await
             .ok_or(ActionCallError::UnknownAction)?;
-        let workspace = governed.lock().await.workspace().to_owned();
+        let workspace = hosted.lock().await.workspace().to_owned();
         let args = Args::of(&request.argument)?;
         let server = args.required_text("server")?.trim().to_owned();
         match verb.operation {

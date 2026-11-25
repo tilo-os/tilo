@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tilo_user_identity::{DeviceCert, DeviceCertError, verify_device_cert, verify_device_cert_at};
 
 /// Immutable signature-verified public certificate. This is not an authorization
-/// result: expiry, revocation and governed membership remain live checks.
+/// result: expiry, revocation and the member list remain live checks.
 #[derive(Clone)]
 pub(crate) struct VerifiedCertificate(Arc<DeviceCert>);
 

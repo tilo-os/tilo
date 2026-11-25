@@ -34,7 +34,7 @@ fn cert(root: &SigningKey, device: &SigningKey, issued: u64, expires: Option<u64
     cert
 }
 
-/// Admit `member` into `peer` as an Editor, through the governor's
+/// Admit `member` into `peer` as an Editor, through the owner's
 /// invitation, at `at`.
 fn admit(
     peer: &mut StatePeer,

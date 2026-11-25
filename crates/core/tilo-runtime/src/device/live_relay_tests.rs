@@ -56,18 +56,18 @@ tilo_test_env::scenario! {
     phase the_device_serving_the_workspace_relays_while_it_is_a_member;
     {
         let devices = vec![device([1; 32], None), device([2; 32], Some(10))];
-        assert!(relays_here(Some(Held::Governs), &devices, [1; 32], 10));
+        assert!(relays_here(Some(Held::Hosts), &devices, [1; 32], 10));
         assert!(
             !relays_here(Some(Held::MemberCopy), &devices, [1; 32], 10),
             "a member copy of a workspace another device serves relays nothing"
         );
         assert!(!relays_here(None, &devices, [1; 32], 10), "a workspace not held relays nothing");
         assert!(
-            !relays_here(Some(Held::Governs), &devices, [2; 32], 10),
+            !relays_here(Some(Held::Hosts), &devices, [2; 32], 10),
             "a serving device whose certificate expired relays nothing"
         );
         assert!(
-            !relays_here(Some(Held::Governs), &devices, [7; 32], 10),
+            !relays_here(Some(Held::Hosts), &devices, [7; 32], 10),
             "a device that is no member relays nothing"
         );
     }

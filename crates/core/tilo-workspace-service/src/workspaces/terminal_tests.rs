@@ -22,7 +22,7 @@ use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, Watching, W
 use super::Workspaces;
 use super::providers::Reach;
 use super::terminal::{self, TerminalService};
-use super::tests::{governor, test_host};
+use super::tests::{hosting_device, test_host};
 
 /// The record of the workspace's machine secrets, as Terminal's app keeps it.
 const DOCUMENT: &str = "derived:terminal.machine-secrets@tab:0000000000000000";
@@ -242,7 +242,7 @@ fn answer(record: &RecordRef, answer: Offer) -> InvokeRequest {
 #[tokio::test]
 async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let summary = workspaces.create("Home").await.unwrap();

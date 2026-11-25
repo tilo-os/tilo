@@ -2,8 +2,8 @@ use crate::KeptDocument;
 use crate::TransportOrigin;
 use crate::owner::testing::{APP, WORKSPACE, document_on_disk, raw_fixture};
 use crate::owner::{
-    DocumentRead, History, Holding, NativeWorkspaceOwner, PendingEnrollmentId,
-    WorkspaceDocumentWrite, WorkspaceId, WriteRefusal, open_file,
+    DeviceWorkspaces, DocumentRead, History, Holding, PendingEnrollmentId, WorkspaceDocumentWrite,
+    WorkspaceId, WriteRefusal, open_file,
 };
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -29,19 +29,19 @@ const CRASHING_CHANGE: &str = "856f4a83a9cba9c000ba020210a1a1a1a1a1a1a1a1a1a1a1a
 struct Enrolled {
     _directory: tempfile::TempDir,
     path: PathBuf,
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     workspace: WorkspaceId,
     now: SystemTime,
 }
 
-/// Enroll through the file store and admit the governor's history.
+/// Join through the file store and admit the host's history.
 fn enrolled() -> Enrolled {
     enrolled_with(raw_fixture())
 }
 
 /// [`enrolled`] into the workspace `fixture` holds.
 fn enrolled_with(
-    (intent, bootstrap, messages, governor, now): crate::owner::testing::RawFixture,
+    (intent, bootstrap, messages, owner_copy, now): crate::owner::testing::RawFixture,
 ) -> Enrolled {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("joined-workspaces.json");
@@ -55,7 +55,7 @@ fn enrolled_with(
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedServerDelta(governor),
+                TransportOrigin::RetainedServerDelta(owner_copy),
                 message,
                 now,
             )
@@ -102,7 +102,7 @@ fn member() -> SigningKey {
 }
 
 fn edit_with(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     workspace: WorkspaceId,
     now: SystemTime,
     topic: &str,
@@ -115,7 +115,7 @@ fn edit_with(
 /// Admit `write`, this device's signed write to the fixture's record, and make
 /// it durable.
 fn commit(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     workspace: WorkspaceId,
     envelope: collab_types::SignedOp,
     now: SystemTime,
@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
     phase a_joined_workspace_is_kept_in_its_own_private_file_and_reopens;
     {
         let joined = enrolled();
-        let basis = |owner: &NativeWorkspaceOwner| {
+        let basis = |owner: &DeviceWorkspaces| {
             owner
                 .with_current(joined.workspace, |view| {
                     view.peer()
@@ -370,7 +370,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused;
-    // A governor checkpoint reaches this owner as several signed frames. A read
+    // A host's checkpoint reaches this owner as several signed frames. A read
     // between them hands out nothing and says the checkpoint is pending, so the
     // reader asks again; a refusal would end an app's collaboration for good.
     // It still refuses a device that may not read the record.
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
         let joined = enrolled();
         let member = member().verifying_key().to_bytes();
         let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
-        let governor_key = SigningKey::from_bytes(&[61; 32]);
+        let owner_copy_key = SigningKey::from_bytes(&[61; 32]);
         let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
         commit(&joined.owner, joined.workspace, covered, joined.now).unwrap();
         let mut remote = joined
@@ -387,7 +387,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let frames = remote
             .publication_mut()
-            .bootstrap_messages(&governor_key, joined.now)
+            .bootstrap_messages(&owner_copy_key, joined.now)
             .unwrap();
         let read = |reader| {
             joined.owner.with_current(joined.workspace, |view| {
@@ -400,7 +400,7 @@ tilo_test_env::scenario! {
                 .owner
                 .receive(
                     joined.workspace,
-                    TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(owner_copy_key.verifying_key().to_bytes()),
                     frame,
                     joined.now,
                 )
@@ -521,7 +521,7 @@ const SECRET: &str = "only key holders read this";
 fn rotated_channel() -> (key_group::ContentKeys, key_group::ContentKeys) {
     let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
     let mut group =
-        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("governor").unwrap())
+        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("host").unwrap())
             .unwrap();
     let before = group.content_keys().unwrap();
     group

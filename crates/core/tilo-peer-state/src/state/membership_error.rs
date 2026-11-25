@@ -33,13 +33,13 @@ pub enum MembershipError {
     /// to decide against yet.
     #[error("the workspace's rules are not here yet")]
     RulesMissing,
-    /// The governance document carries no row for the device.
-    #[error("device is absent from governed roster")]
+    /// The workspace's member list carries no row for the device.
+    #[error("device is absent from the member list")]
     Absent,
     /// The row the workspace holds is another certificate than the device's.
-    #[error("governed certificate mismatch")]
+    #[error("certificate mismatch with the member list")]
     CertificateMismatch,
-    /// The revocations in the governance document are not this workspace's root's.
+    /// The revocations in the member list are not this workspace's root's.
     #[error("revocation root mismatch")]
     RevocationRoot,
     /// A revocation entry does not verify.
@@ -56,8 +56,8 @@ pub enum MembershipError {
     /// and the person is owed the difference.
     #[error("this person's access rows do not read back")]
     UnreadableAccess,
-    /// The governance document's row for the device does not decode.
-    #[error("the governed identity row does not decode")]
+    /// The member list's row for the device does not decode.
+    #[error("the identity row does not decode")]
     MalformedIdentity(#[source] std::sync::Arc<crate::state::RowError>),
 }
 impl MembershipError {

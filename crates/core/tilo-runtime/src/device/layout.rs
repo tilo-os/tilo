@@ -157,7 +157,7 @@ impl DeviceLayouts {
                 let Some(id) = WorkspaceId::parse(workspace) else {
                     return LayoutHere::Elsewhere;
                 };
-                if block_on_owned(async move { copies.governed_copy(id).await.is_some() }) {
+                if block_on_owned(async move { copies.hosted_copy(id).await.is_some() }) {
                     LayoutHere::Unwritten
                 } else {
                     LayoutHere::Elsewhere

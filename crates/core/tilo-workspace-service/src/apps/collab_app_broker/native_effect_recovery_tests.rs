@@ -10,7 +10,7 @@ use std::{
 use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 
 struct NativeEffects {
-    owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
+    owner: Arc<tilo_peer_state::owner::DeviceWorkspaces>,
     held: Arc<tokio::sync::Semaphore>,
     submitted: Arc<tokio::sync::Notify>,
 }
@@ -49,7 +49,7 @@ impl WorkspaceCommits for NativeEffects {
         })
     }
 }
-struct NativeAuthority(Arc<tilo_peer_state::owner::NativeWorkspaceOwner>);
+struct NativeAuthority(Arc<tilo_peer_state::owner::DeviceWorkspaces>);
 impl crate::apps::certificate_authority::CertificateAuthority for NativeAuthority {
     fn authorize(
         &self,
@@ -71,7 +71,7 @@ impl crate::apps::certificate_authority::CertificateAuthority for NativeAuthorit
 }
 struct Fixture {
     directory: tempfile::TempDir,
-    owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
+    owner: Arc<tilo_peer_state::owner::DeviceWorkspaces>,
     state: Arc<AppBrokerState>,
     caller: VerifiedActionCaller,
     membership: crate::apps::test_support::WorkspaceTreeHandle,
@@ -87,7 +87,7 @@ fn fixture() -> Fixture {
     let certificate = tilo_peer_state::owner::testing::certificate(
         &SigningKey::from_bytes(&[91; 32]),
         &key,
-        "Governor",
+        "Host",
     );
     tilo_peer_state::owner::testing::add_interactive_device(&owner, &key, &certificate).unwrap();
     let workspace_id = tilo_peer_state::owner::testing::WORKSPACE;

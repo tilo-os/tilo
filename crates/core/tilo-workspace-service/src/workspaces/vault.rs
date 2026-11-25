@@ -171,8 +171,8 @@ impl Workspaces {
     /// that holds them.
     #[cfg(feature = "device-keys")]
     pub(crate) async fn carry_vaults_over(&self) {
-        let governed: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
-        for workspace in governed {
+        let hosted: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
+        for workspace in hosted {
             let kept = accounts::vault_dir_in(&self.workspace_root(&workspace)).exists();
             if !kept {
                 continue;
@@ -527,10 +527,10 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Whether this service holds `workspace`'s own copy, governing it, rather than a member's.
+    /// Whether this service keeps `workspace`'s own copy, hosting it, rather than a member's.
     pub(crate) async fn holds_own_copy(&self, workspace: &str) -> bool {
         match collab_types::WorkspaceId::parse(workspace) {
-            Some(id) => self.governs(id).await,
+            Some(id) => self.hosts_here(id).await,
             None => false,
         }
     }
@@ -959,14 +959,14 @@ pub(crate) fn may_read_vault(
 mod tests {
 
     use super::*;
-    use crate::workspaces::fixtures::{governor, test_host};
+    use crate::workspaces::fixtures::{hosting_device, test_host};
 
     /// What this device keeps in the vault it reads back, opened under the document's keys,
     /// with a use written beside it; what it forgets is gone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn what_a_device_keeps_in_the_vault_it_reads_back() {
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(scratch.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Vault").await.unwrap().workspace;
@@ -1027,7 +1027,7 @@ mod tests {
     async fn installing_passwords_keeps_the_vault_the_systems() {
         const PASSWORDS: &str = r#"{"format":2,"resources":[{"fields":[{"path":"title","type":"text"}],"kind":"passwords.item","label":"Item","verbs":[{"id":"type","kind":"undoable"}],"version":1}]}"#;
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(scratch.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let surfaces = &workspaces.inner.host.surfaces;

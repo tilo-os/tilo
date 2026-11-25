@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
         assert_eq!(workspace.owner(), Some(BOB));
         assert_eq!(workspace.role_of(BOB), Some(Role::Owner));
         assert!(!workspace.members.contains_key(BOB), "an owner is no member");
-        assert!(!workspace.is_administrator(BOB), "the owner governs as owner");
+        assert!(!workspace.is_administrator(BOB), "the owner administers by being owner");
         assert_eq!(workspace.role_of(OWNER), Some(Role::Editor));
         assert!(workspace.is_administrator(OWNER));
         assert_eq!(workspace.joined.get(OWNER), Some(&NOW));
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
 
 /// A device's settings (`settings/devices/<device>/settings/<name>`) are its owner's: kept in the
 /// person's own workspace, written there by them or by someone they granted, and never by a person
-/// who governs a workspace the device is in.
+/// who administers the workspace the device is in.
 fn displays(workspace: &str, device: &[u8; 32]) -> TreePath {
     TreePath::workspace(workspace)
         .app(tilo_app_id::apps::SETTINGS)
@@ -149,11 +149,11 @@ tilo_test_env::scenario! {
     phase a_governing_role_in_a_shared_workspace_reaches_no_other_persons_device;
     {
         let root = [3u8; 32];
-        let governor = [4u8; 32];
-        let mut workspace = WorkspacePolicy::new("shared", hex::encode(governor));
+        let founder = [4u8; 32];
+        let mut workspace = WorkspacePolicy::new("shared", hex::encode(founder));
         workspace.members.insert(hex::encode(root), Role::Editor);
         let node = displays("shared", &root);
-        let owner = Authority::person(workspace.party(&hex::encode(governor)));
+        let owner = Authority::person(workspace.party(&hex::encode(founder)));
         assert_eq!(
             owner.decide(&node, ActionKind::Undoable, &cx()).answer,
             Answer::Deny,

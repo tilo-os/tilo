@@ -3,12 +3,12 @@
 
 use tilo_server_protocol::WorkspaceId;
 
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 #[tokio::test]
 async fn a_host_that_serves_no_link_answers_a_catch_up_where_its_store_stands() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let created = workspaces.create("Notes").await.unwrap();

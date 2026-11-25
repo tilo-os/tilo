@@ -1961,13 +1961,13 @@ fn without_a_store_nothing_is_due() {
         workspace.queues.lock().unwrap().values().all(Vec::is_empty),
         "no governance was sent"
     );
-    // The workspace is a governed one too: still no state of its own.
-    let mut governed = WorkspaceKeys::without_store(Box::new(Directory::new(policy)), seal_checks);
+    // A workspace with a governance of its own too: still no state of its own.
+    let mut listed_keys = WorkspaceKeys::without_store(Box::new(Directory::new(policy)), seal_checks);
     assert!(matches!(
-        governed.access(workspace_id, now),
+        listed_keys.access(workspace_id, now),
         KeyAccess::NoSecretStore
     ));
-    assert!(governed.peers.is_empty());
+    assert!(listed_keys.peers.is_empty());
 }
 
 include!("personal_cluster_tests.rs");

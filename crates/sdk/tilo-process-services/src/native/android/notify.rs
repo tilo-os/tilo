@@ -23,7 +23,7 @@ pub(super) struct SystemNotifier {
 
 impl SystemNotifier {
     /// On Android 13 and later the first notification asks for the runtime
-    /// permission; it is not shown, and the answer governs later ones. The
+    /// permission; it is not shown, and the answer decides later ones. The
     /// user is asked once per process.
     fn permitted(&self) -> Result<(), NotifyError> {
         if bridge::sdk_int() < RUNTIME_PERMISSION_SDK

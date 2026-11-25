@@ -48,7 +48,7 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeReques
 use tilo_user_identity::DeviceCert;
 
 use super::workspace_stores::{Reach, Store};
-use super::{GovernedWorkspace, WorkspaceId, Workspaces};
+use super::{HostedWorkspace, WorkspaceId, Workspaces};
 
 /// Where a device puts a secret its person copies from the vault ([`person_vault::COPY`]): the
 /// clipboard of the session they sit at, which keeps it out of its history and forgets it again
@@ -85,18 +85,18 @@ impl Workspaces {
     /// Take back the grants `ids` of `workspace`, written as the host's change to it.
     pub(super) async fn revoke_grants(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         at: std::time::SystemTime,
         ids: &[tilo_action_policy::GrantId],
     ) -> Result<(), String> {
         if !self.administers(workspace) {
-            return Err("this server's person does not govern the workspace".to_owned());
+            return Err("this server's person does not host the workspace".to_owned());
         }
         let key = &self.inner.host.key;
         let mut candidate = workspace.peer().clone();
         if candidate
             .governance_mut()
-            .remove_governed_grants(ids, key, at)?
+            .remove_member_grants(ids, key, at)?
         {
             let state = workspace.collaboration().clone();
             workspace.keep(candidate, key, at, |_, _| Ok(state))?;
@@ -407,7 +407,7 @@ impl Workspaces {
             .iter()
             .map(|(grant, _)| grant.clone())
             .collect::<Vec<_>>();
-        let times = workspace.peer().governance().governed_grant_times(&grants);
+        let times = workspace.peer().governance().member_grant_times(&grants);
         drop(workspace);
         let mut shown = Vec::with_capacity(kept.len());
         for (grant, mut approval) in kept {

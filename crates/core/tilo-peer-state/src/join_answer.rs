@@ -15,7 +15,7 @@ use crate::join::{
     MembershipChallengeResponse, MembershipCompleteRequest,
 };
 use crate::join_log::{
-    Governed, JoinError, JoinLog, Redeeming, invitation_workspace, request_digest,
+    JoinError, JoinLog, Listed, Redeeming, invitation_workspace, request_digest,
 };
 use collab_types::signer::DeviceSigner;
 use std::future::Future;
@@ -29,7 +29,7 @@ pub trait WorkspaceTxn {
     /// The workspace's id.
     fn workspace(&self) -> &str;
     /// The workspace as committed now, as its join log reads it.
-    fn governed(&self) -> Governed<'_>;
+    fn hosted(&self) -> Listed<'_>;
     /// The workspace's join log as it stands, staged changes included.
     fn log(&self) -> &JoinLog;
     /// Stage `log` as the workspace's join log. The store makes it durable
@@ -47,7 +47,7 @@ pub trait WorkspaceTxn {
         &mut self,
         peer: StatePeer,
         now: u64,
-        log: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLog, JoinError>,
+        log: &mut dyn FnMut(&Listed<'_>) -> Result<JoinLog, JoinError>,
     ) -> Result<(), JoinError>;
 
     /// [`Self::commit_governance`] of a change that only admits people
@@ -62,7 +62,7 @@ pub trait WorkspaceTxn {
         &mut self,
         peer: StatePeer,
         now: u64,
-        log: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLog, JoinError>,
+        log: &mut dyn FnMut(&Listed<'_>) -> Result<JoinLog, JoinError>,
     ) -> Result<(), JoinError> {
         self.commit_governance(peer, now, log)
     }
@@ -81,7 +81,7 @@ pub trait JoinWorkspaces: Send + Sync {
     /// answered.
     ///
     /// # Errors
-    /// The workspace is not governed here, `decide` refuses, or its change
+    /// The workspace is not hosted here, `decide` refuses, or its change
     /// cannot be made durable.
     fn with_workspace<T: Send>(
         &self,
@@ -162,14 +162,14 @@ pub fn requested_workspace(
 /// checked on its own and refused alone; everyone admitted is then committed
 /// and recorded in the workspace's log, together. Answers each join in
 /// order, with its admission: what the bootstrap says of the device, without
-/// the workspace's state, which [`crate::join_log::Governed::filled`] adds
+/// the workspace's state, which [`crate::join_log::Listed::filled`] adds
 /// for a device it is sent to.
 pub fn admit(
     workspace: &mut dyn WorkspaceTxn,
     joins: &[Redeeming<'_>],
     now: u64,
 ) -> Result<Vec<Result<JoinBootstrap, JoinError>>, JoinError> {
-    let mut candidate = workspace.governed().peer.clone();
+    let mut candidate = workspace.hosted().peer.clone();
     let refusals = workspace.log().admit(&mut candidate, joins, now);
     for (join, refused) in joins.iter().zip(&refusals) {
         if let Some(error) = refused {
@@ -188,9 +188,9 @@ pub fn admit(
     }
     let mut delivered = Vec::new();
     let log = workspace.log().clone();
-    workspace.commit_admission(candidate, now, &mut |governed| {
+    workspace.commit_admission(candidate, now, &mut |hosted| {
         let mut completed = log.clone();
-        delivered = completed.complete(governed, joins, &refusals)?;
+        delivered = completed.complete(hosted, joins, &refusals)?;
         Ok(completed)
     })?;
     for bootstrap in delivered.iter().flatten() {
@@ -273,10 +273,9 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
     ) -> Result<JoinTransportResponse, JoinError> {
         self.0
             .with_workspace(workspace, |workspace| {
-                let join =
-                    workspace
-                        .log()
-                        .inspect(&workspace.governed(), signed_invitation, now)?;
+                let join = workspace
+                    .log()
+                    .inspect(&workspace.hosted(), signed_invitation, now)?;
                 Ok(JoinTransportResponse::Inspection(JoinInspection {
                     invite_id: join.invite_id(),
                     grant: join.grant().clone(),
@@ -306,10 +305,10 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         self.0
             .with_workspace(workspace, |workspace| {
                 let mut log = workspace.log().clone();
-                let governed = workspace.governed();
+                let hosted = workspace.hosted();
                 // A device the workspace removed is invited back only by a device that
                 // keeps its person's root, which took it back above.
-                if governed
+                if hosted
                     .peer
                     .governance()
                     .removed_from_member_list(&request.device_cert)
@@ -320,9 +319,9 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                 // verified for the device at the authenticated
                 // endpoint: only then is it given the governance it
                 // writes its own admission on.
-                let challenge = log.challenge(&governed, remote_endpoint, request, nonce, now)?;
-                let governance = governed.governance()?;
-                drop(governed);
+                let challenge = log.challenge(&hosted, remote_endpoint, request, nonce, now)?;
+                let governance = hosted.governance()?;
+                drop(hosted);
                 workspace.stage_log(log);
                 Ok(JoinTransportResponse::Challenge(JoinChallengeResponse {
                     challenge,
@@ -370,8 +369,8 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                 // member's device, given the governance it writes its
                 // own row on, and sends that row with its proof.
                 let mut log = workspace.log().clone();
-                let governed = workspace.governed();
-                if governed
+                let hosted = workspace.hosted();
+                if hosted
                     .peer
                     .governance()
                     .removed_from_member_list(&request.device_cert)
@@ -379,9 +378,9 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                     return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
                 }
                 let challenge =
-                    log.membership_challenge(&governed, remote_endpoint, request, nonce, now)?;
-                let governance = governed.governance()?;
-                drop(governed);
+                    log.membership_challenge(&hosted, remote_endpoint, request, nonce, now)?;
+                let governance = hosted.governance()?;
+                drop(hosted);
                 workspace.stage_log(log);
                 Ok(JoinTransportResponse::MembershipChallenge(
                     MembershipChallengeResponse {
@@ -424,20 +423,20 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         let store = &self.0;
         store
             .with_workspace(workspace, |workspace| {
-                let governed = workspace.governed();
-                if governed.host.device_public_key != store.signer().device_public_key() {
+                let hosted = workspace.hosted();
+                if hosted.host.device_public_key != store.signer().device_public_key() {
                     return Err(JoinError::new(
                         "the invitation is no longer available to this device",
                     ));
                 }
                 let signed_invitation = workspace.log().resolve_invitation(
-                    &governed,
+                    &hosted,
                     reference,
                     device_cert,
                     remote_endpoint,
                     now,
                 )?;
-                drop(governed);
+                drop(hosted);
                 Ok(JoinTransportResponse::ResolvedInvitation { signed_invitation })
             })
             .await
@@ -456,10 +455,10 @@ fn complete(
     let request_id = request.proof.challenge.request_id;
     let proof_digest = request_digest(&request.proof)?;
     let prior = {
-        let governed = workspace.governed();
+        let hosted = workspace.hosted();
         workspace
             .log()
-            .completed(&governed, remote_endpoint, request_id, proof_digest, now)?
+            .completed(&hosted, remote_endpoint, request_id, proof_digest, now)?
     };
     if let Some(prior) = prior {
         return Ok(prior);
@@ -467,7 +466,7 @@ fn complete(
     let redemption =
         workspace
             .log()
-            .redeem(&workspace.governed(), remote_endpoint, &request.proof, now)?;
+            .redeem(&workspace.hosted(), remote_endpoint, &request.proof, now)?;
     let joins = [Redeeming {
         remote_endpoint,
         request_id,
@@ -479,7 +478,7 @@ fn complete(
         .pop()
         .unwrap_or_else(|| Err(JoinError::new("join bootstrap was not built")))?;
     // The device is sent the workspace as the admission committed it.
-    workspace.governed().filled(admitted)
+    workspace.hosted().filled(admitted)
 }
 
 /// Take in the further device's own row that `request` carries, when it
@@ -503,16 +502,16 @@ fn admit_member_device(
     let device =
         workspace
             .log()
-            .membership_device(&workspace.governed(), remote_endpoint, request, now)?;
+            .membership_device(&workspace.hosted(), remote_endpoint, request, now)?;
     if workspace
-        .governed()
+        .hosted()
         .peer
         .governance()
         .removed_from_member_list(&device)
     {
         return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
     }
-    let mut candidate = workspace.governed().peer.clone();
+    let mut candidate = workspace.hosted().peer.clone();
     if !candidate
         .admit_own(&device, request.admission.clone(), at(now))
         .map_err(JoinError::new)?
@@ -545,7 +544,7 @@ fn membership_complete(
     admit_member_device(workspace, remote_endpoint, request, now)?;
     workspace
         .log()
-        .membership_complete(&workspace.governed(), remote_endpoint, request, now)
+        .membership_complete(&workspace.hosted(), remote_endpoint, request, now)
 }
 
 impl<S> WorkspaceJoinService for JoinAnswer<S>

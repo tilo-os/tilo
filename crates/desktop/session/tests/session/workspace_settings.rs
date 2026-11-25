@@ -800,7 +800,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         workspaces.kinds[2].caption.as_deref(),
         Some("Creating, branching, entering and deleting your workspaces.")
     );
-    // The row that governs the workspace's people wears the people's mark, not another
+    // The row that serves the workspace's people wears the people's mark, not another
     // window.
     let members = listed_app(
         &session,

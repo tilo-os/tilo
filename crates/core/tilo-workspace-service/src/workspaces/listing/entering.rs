@@ -53,9 +53,9 @@ impl Admit for Workspaces {
             }
             // A device asking again under an entry the workspace already
             // admitted (its answer was lost with its connection) is in.
-            if let Ok(governed) = self.workspace(&entering.workspace).await {
+            if let Ok(hosted) = self.workspace(&entering.workspace).await {
                 let again = {
-                    let workspace = governed.lock().await;
+                    let workspace = hosted.lock().await;
                     (workspace.admitted_device(entering.request_id) == Some(device)).then(|| {
                         Self::admitted(&workspace, device, tilo_clock::unix_now_ns()).map_or_else(
                             |error| Entered::Refused(refused(error.to_string())),
@@ -192,7 +192,7 @@ impl Workspaces {
     async fn sign_on(&self, workspace: &str, through: Through) -> Entered {
         use tilo_peer_state::join_log::GovernanceMessages as _;
         let governance = match self.workspace(workspace).await {
-            Ok(governed) => governed.lock().await.peer().governance_messages(),
+            Ok(hosted) => hosted.lock().await.peer().governance_messages(),
             Err(error) => Err(error.to_string()),
         };
         match governance {
@@ -259,9 +259,9 @@ impl Workspaces {
     async fn removed_before_entry(&self, cert: &DeviceCert, entering: &Entering) -> bool {
         entering.through == Through::Entry
             && match self.workspace(&entering.workspace).await {
-                Ok(governed) => {
-                    let governed = governed.lock().await;
-                    governed.peer().governance().removed_from_member_list(cert)
+                Ok(hosted) => {
+                    let hosted = hosted.lock().await;
+                    hosted.peer().governance().removed_from_member_list(cert)
                 }
                 Err(_) => false,
             }
@@ -301,22 +301,22 @@ impl Workspaces {
     )]
     async fn member_already(&self, cert: &DeviceCert, workspace: &str) -> Option<Entered> {
         let now = tilo_clock::unix_now_ns();
-        let governed = self.workspace(workspace).await.ok()?;
-        let mut governed = governed.lock().await;
+        let hosted = self.workspace(workspace).await.ok()?;
+        let mut hosted = hosted.lock().await;
         // The refusals the entry would answer: a person banned or removed here
         // does not come back in by the admission it gave them before.
         // Read from the workspace's governance, not through this host's own
         // permissions: a server that keeps another person's workspace is no
         // member of it, and lets its members in all the same.
-        let policy = governed.peer().governance().governed_policy().ok()?;
+        let policy = hosted.peer().governance().member_policy().ok()?;
         if policy.is_blocked(&hex::encode(cert.user_public_key))
-            || governed.removals.refuses(cert.user_public_key, now)
+            || hosted.removals.refuses(cert.user_public_key, now)
         {
             return None;
         }
         // The workspace's own admission of this device, never another's: a
         // stranger holds no permissions here.
-        governed
+        hosted
             .peer()
             .permissions(cert.device_public_key, tilo_clock::wall())
             .ok()?;
@@ -325,18 +325,18 @@ impl Workspaces {
         // workspace decides its changes against: settle before answering, as
         // a device that enters once more does.
         if !self
-            .decides_for(governed.workspace_id(), cert.device_public_key)
+            .decides_for(hosted.workspace_id(), cert.device_public_key)
             .await
         {
-            self.settle(&mut governed).await.ok()?;
+            self.settle(&mut hosted).await.ok()?;
         }
         Some(entered(
-            Self::admitted(&governed, cert.device_public_key, now).ok()?,
+            Self::admitted(&hosted, cert.device_public_key, now).ok()?,
         ))
     }
 
     /// Take `admission`, the row `cert`'s device signed for itself on the
-    /// member list ([`tilo_peer_state::own_admission`]), into `governed`, as
+    /// member list ([`tilo_peer_state::own_admission`]), into `hosted`, as
     /// every member takes it: judged under its author, the device; this host
     /// carries it and writes nothing of its own. Settled, so the device is
     /// admitted here from now on.
@@ -358,12 +358,12 @@ impl Workspaces {
     /// device in, or the workspace could not keep or carry it.
     pub(crate) async fn take_own_row(
         &self,
-        governed: &mut crate::workspaces::GovernedWorkspace,
+        hosted: &mut crate::workspaces::HostedWorkspace,
         cert: &DeviceCert,
         admission: &[Vec<u8>],
         now: u64,
     ) -> Result<(), String> {
-        let policy = governed.peer().governance().governed_policy()?;
+        let policy = hosted.peer().governance().member_policy()?;
         let host = hex::encode(self.inner.host.cert.user_public_key);
         if !policy.is_owner(&host) && policy.active_role(&host).is_none() {
             return Err(
@@ -371,7 +371,7 @@ impl Workspaces {
             );
         }
         let key = self.inner.host.key.clone();
-        let mut candidate = governed.peer().clone();
+        let mut candidate = hosted.peer().clone();
         if !candidate.admit_own(
             cert,
             admission.to_vec(),
@@ -383,8 +383,8 @@ impl Workspaces {
             changes: admission.to_vec(),
             workspace: candidate.workspace_id().to_owned(),
         };
-        let state = governed.collaboration().clone();
-        governed.keep(
+        let state = hosted.collaboration().clone();
+        hosted.keep(
             candidate,
             &key,
             crate::workspaces::system_time(now),
@@ -394,12 +394,12 @@ impl Workspaces {
         self.inner
             .records
             .carry(
-                governed.workspace_id(),
+                hosted.workspace_id(),
                 cert.device_public_key,
                 &crate::workspace_documents::HostCommit { body },
             )
             .map_err(|error| format!("the device's own row was not carried: {error}"))?;
-        self.settle(governed).await
+        self.settle(hosted).await
     }
 
     /// Take `admission`, the changes `cert`'s device signed for itself
@@ -433,33 +433,33 @@ impl Workspaces {
         let Ok(state) = self.workspace(workspace).await else {
             return refused("this host holds no such workspace".to_owned());
         };
-        let mut governed = state.lock().await;
-        if governed.admitted_device(request_id) == Some(cert.device_public_key) {
-            return Self::admitted(&governed, cert.device_public_key, now)
+        let mut hosted = state.lock().await;
+        if hosted.admitted_device(request_id) == Some(cert.device_public_key) {
+            return Self::admitted(&hosted, cert.device_public_key, now)
                 .unwrap_or_else(|error| refused(error.to_string()));
         }
-        let entry = governed.peer().governance().governed_entry();
+        let entry = hosted.peer().governance().workspace_entry();
         let Some(role) = entry.open_role() else {
             return refused("this workspace's entry does not take people who ask".to_owned());
         };
         let Ok(digest) = tilo_peer_state::entry_digest(&entry) else {
             return refused("the workspace's entry does not read".to_owned());
         };
-        if governed
+        if hosted
             .peer()
             .governance()
-            .governed_policy()
+            .member_policy()
             .is_ok_and(|policy| policy.is_blocked(&hex::encode(cert.user_public_key)))
         {
             return refused("this person is banned from the workspace".to_owned());
         }
-        if governed.removals.refuses(cert.user_public_key, now)
-            || governed.peer().governance().removed_from_member_list(cert)
+        if hosted.removals.refuses(cert.user_public_key, now)
+            || hosted.peer().governance().removed_from_member_list(cert)
         {
             return refused(tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned());
         }
         let key = self.inner.host.key.clone();
-        let mut candidate = governed.peer().clone();
+        let mut candidate = hosted.peer().clone();
         if let Err(error) = candidate.admit_own(
             cert,
             admission.to_vec(),
@@ -467,15 +467,15 @@ impl Workspaces {
         ) {
             return refused(error);
         }
-        let mut collaboration = governed.collaboration().clone();
+        let mut collaboration = hosted.collaboration().clone();
         {
-            let host = governed.governed(self.device_cert());
+            let host = hosted.hosted(self.device_cert());
             if let Err(error) = collaboration.completed_entry(&host, cert, request_id, digest, role)
             {
                 return refused(error.to_string());
             }
         }
-        if let Err(error) = governed.keep(
+        if let Err(error) = hosted.keep(
             candidate,
             &key,
             crate::workspaces::system_time(now),
@@ -483,10 +483,10 @@ impl Workspaces {
         ) {
             return refused(error);
         }
-        if let Err(error) = self.settle(&mut governed).await {
+        if let Err(error) = self.settle(&mut hosted).await {
             return refused(error);
         }
-        Self::admitted(&governed, cert.device_public_key, now)
+        Self::admitted(&hosted, cert.device_public_key, now)
             .unwrap_or_else(|error| refused(error.to_string()))
     }
 
@@ -522,16 +522,16 @@ impl Workspaces {
         {
             return Some(Entered::Refused(refused(refusal.to_string())));
         }
-        let governed = self.workspace(workspace).await.ok()?;
+        let hosted = self.workspace(workspace).await.ok()?;
         let reply = {
-            let mut governed = governed.lock().await;
-            let policy = governed.peer().governance().governed_policy().ok()?;
+            let mut hosted = hosted.lock().await;
+            let policy = hosted.peer().governance().member_policy().ok()?;
             let person = hex::encode(cert.user_public_key);
             // A workspace of the person's own names them its owner from the
             // moment it is made, so a device of theirs comes in before any
             // of theirs has entered it.
             if policy.is_blocked(&person)
-                || governed.removals.refuses(cert.user_public_key, now)
+                || hosted.removals.refuses(cert.user_public_key, now)
                 || policy.active_role(&person).is_none()
             {
                 return None;
@@ -539,18 +539,18 @@ impl Workspaces {
             // A device the workspace met and took off its member list comes back
             // by a deliberate admission, never by presenting the certificate
             // the workspace still holds: it is told so in words.
-            if governed.peer().governance().removed_from_member_list(cert) {
+            if hosted.peer().governance().removed_from_member_list(cert) {
                 return Some(Entered::Refused(refused(
                     tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned(),
                 )));
             }
-            let listed = governed.peer().certificates().contains(cert);
+            let listed = hosted.peer().certificates().contains(cert);
             if !listed {
                 if admission.is_empty() {
-                    drop(governed);
+                    drop(hosted);
                     return Some(self.sign_on(workspace, Through::Entry).await);
                 }
-                if let Err(error) = self.take_own_row(&mut governed, cert, admission, now).await {
+                if let Err(error) = self.take_own_row(&mut hosted, cert, admission, now).await {
                     return Some(Entered::Refused(refused(error)));
                 }
                 tracing::info!(
@@ -561,7 +561,7 @@ impl Workspaces {
                     "a member's further device came in through the entry by its own row"
                 );
             }
-            Self::admitted(&governed, cert.device_public_key, now)
+            Self::admitted(&hosted, cert.device_public_key, now)
                 .unwrap_or_else(|error| JoinReply::Refused(error.to_string()))
         };
         Some(entered(reply))
@@ -630,8 +630,8 @@ impl Workspaces {
             return entered;
         };
         let host = match self.workspace(workspace).await {
-            Ok(governed) => {
-                let hint = self.transport_hint(&*governed.lock().await);
+            Ok(hosted) => {
+                let hint = self.transport_hint(&*hosted.lock().await);
                 hint.ok().and_then(|hint| postcard::to_stdvec(&hint).ok())
             }
             Err(_) => None,
@@ -677,7 +677,7 @@ mod tests {
     use tilo_server_protocol::workspaces::{JoinReply, Role};
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
-    use crate::workspaces::fixtures::{governor, signed_pre_admission_as, test_host};
+    use crate::workspaces::fixtures::{hosting_device, signed_pre_admission_as, test_host};
     use crate::workspaces::mode::HostMode;
     use crate::workspaces::{PreAdmitRequest, Workspaces};
 
@@ -783,7 +783,7 @@ mod tests {
     #[tokio::test]
     async fn a_members_further_device_enters_through_the_entry_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let closed = workspaces.create("Lounge").await.unwrap().workspace;
@@ -851,7 +851,7 @@ mod tests {
     #[tokio::test]
     async fn an_invitation_only_entry_lets_a_member_in_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -943,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn a_banned_or_removed_persons_device_and_a_members_agent_stay_out() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1006,7 +1006,7 @@ mod tests {
     #[tokio::test]
     async fn a_paused_host_admits_nobody_new_while_a_members_device_enters() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;

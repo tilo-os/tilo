@@ -8,7 +8,7 @@
 //!
 //! A member copy's material moves when the copy is enrolled again: the
 //! service fences the runs admitted under the enrollment it replaces. A
-//! workspace this service governs itself cannot change identity while it
+//! workspace this service hosts itself cannot change identity while it
 //! holds it, so a run admitted there is pinned to the device alone.
 
 use std::{
@@ -82,7 +82,7 @@ impl std::error::Error for Refusal {}
 /// What a run was admitted under, compared on every call.
 #[allow(
     clippy::large_enum_variant,
-    reason = "a member copy's pin is its serving device's signed address; the governed case holds nothing, and there is one of these per run"
+    reason = "a member copy's pin is its serving device's signed address; the hosted case keeps nothing, and there is one of these per run"
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Pinned {
@@ -92,7 +92,7 @@ enum Pinned {
         hint: TransportHint,
         continuity: u64,
     },
-    /// A workspace this service governs itself.
+    /// A workspace this service hosts itself.
     Own,
 }
 
@@ -164,7 +164,7 @@ impl SessionAdmission {
     }
 
     /// What `workspace`'s ownership is now: the member copy's material, or a
-    /// workspace governed here.
+    /// workspace hosted here.
     fn current(&self, workspaces: &Workspaces) -> Result<Pinned, String> {
         Ok(match workspaces.member_material(self.workspace) {
             Some(material) => Pinned::Member {
@@ -241,7 +241,7 @@ impl Workspaces {
         self.admitted_run(selected, caller, own, pinned, presentation)
     }
 
-    /// Admit a run of the key `key` certifies, in `workspace`, a workspace this service governs,
+    /// Admit a run of the key `key` certifies, in `workspace`, a workspace this service hosts,
     /// presenting `presentation` (the key's own proof for the workspace): the caller its calls
     /// are is the key itself, never its person, so each call is decided by what the workspace
     /// grants that key ([`Self::enter`] keeps a key's grant as it admits it). A key the person
@@ -250,7 +250,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here (a member copy's key enters where it is kept), or the
+    /// The workspace is not hosted here (a member copy's key enters where it is kept), or the
     /// key's grant does not reach it.
     pub async fn admit_key(
         &self,
@@ -280,8 +280,8 @@ impl Workspaces {
         // grants naming that agent.
         let caller = if key.capabilities.agent.is_some() && !key.capabilities.server_key {
             let granted = {
-                let governed = held.lock().await;
-                governed
+                let hosted = held.lock().await;
+                hosted
                     .peer()
                     .permissions(key.device_public_key, system_time(tilo_clock::unix_now_ns()))
                     .map_err(|_| "the workspace holds no grant for this key")?

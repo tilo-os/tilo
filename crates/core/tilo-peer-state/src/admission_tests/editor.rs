@@ -17,8 +17,8 @@ pub(crate) fn other_owner() -> (SigningKey, DeviceCert) {
     crate::members::op::tests_support::device(200)
 }
 /// [`seeded`], with the workspace owned by another person ([`other_owner`],
-/// whose device the returned governor key is) and the fixture's person an
-/// Editor of it, a member whose grants a governor can narrow, with a second
+/// whose device the returned key belongs to) and the fixture's person an
+/// Editor of it, a member whose grants an owner can narrow, with a second
 /// certified device of that member in the initial workspace.
 pub(crate) fn seeded_editor_with_second_device() -> (
     StatePeer,

@@ -489,8 +489,8 @@ impl AppBrokerState {
                 retryable: false,
             })
         };
-        // The change commits at the workspace's governor, which may be another
-        // device's host: awaited on the library's runtime, and the invocation
+        // The change commits at the workspace's host, which may be another
+        // device: awaited on the library's runtime, and the invocation
         // finishes when it does.
         let runtime = match library.runtime() {
             Ok(runtime) => runtime,

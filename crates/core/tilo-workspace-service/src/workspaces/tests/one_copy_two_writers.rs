@@ -20,8 +20,8 @@ async fn layout_change(
 ) -> neighbour_wire::NeighbourMsg {
     let mut doc = {
         let state = workspaces.workspace(workspace).await.unwrap();
-        let governed = state.lock().await;
-        governed.peer().admitted_workspace().unwrap().clone()
+        let hosted = state.lock().await;
+        hosted.peer().admitted_workspace().unwrap().clone()
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(device.device_public_key.to_vec()));
@@ -46,7 +46,7 @@ async fn layout_change(
 async fn a_write_authored_and_one_the_link_takes_in_at_one_moment_both_land() {
     use automerge::transaction::Transactable as _;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();

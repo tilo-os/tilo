@@ -22,19 +22,22 @@ pub(crate) struct RecordAction<'a> {
 }
 
 impl Workspaces {
-    /// Whether this host governs `workspace`'s applications: of its holders,
-    /// the one its governance names to make the compacted base, else the
-    /// device it was made on. That one authors its records' setup.
+    /// Whether this host administers `workspace`'s applications: of the devices
+    /// keeping it, the one its governance names to make the compacted base,
+    /// else the device it was made on. That one authors its records' setup.
     ///
     /// # Errors
     /// The workspace is not held here.
-    pub async fn governs_applications(&self, workspace: &str) -> Result<bool, CollaborationError> {
+    pub async fn administers_applications(
+        &self,
+        workspace: &str,
+    ) -> Result<bool, CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let governs = state
+        let administers = state
             .lock()
             .await
-            .governs_applications(&self.inner.host.cert);
-        Ok(governs)
+            .administers_applications(&self.inner.host.cert);
+        Ok(administers)
     }
 
     /// Run one of an app's actions on `record` as `caller`: the invocation the workspace's own

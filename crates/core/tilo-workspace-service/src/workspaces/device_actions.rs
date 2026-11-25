@@ -42,14 +42,14 @@ use crate::work::{HostLinux, Job, KeepsContent, LINUX_RESOURCE, Turn, WORK_PROVI
 use tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::GovernedWorkspace;
+use super::HostedWorkspace;
 
 #[cfg(test)]
 mod acting_tests;
 
-/// The workspaces a host governs, by workspace: what [`Workspaces`](super::Workspaces)
+/// The workspaces a host serves, by workspace: what [`Workspaces`](super::Workspaces)
 /// keeps and this action service reads.
-pub(crate) type WorkspacesMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedWorkspace>>>>;
+pub(crate) type WorkspacesMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<HostedWorkspace>>>>;
 
 /// The work this device takes for the devices of its workspaces, shared by the
 /// action service that answers them.
@@ -879,7 +879,7 @@ pub(crate) const APP_CONNECTION_PROVIDERS: [&str; 2] = [
     tilo_actions::remote::person_vault::PROVIDER,
 ];
 
-fn governed(provider: &str) -> bool {
+fn hosted(provider: &str) -> bool {
     provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
         || provider == tilo_actions::remote::model_providers::PROVIDER
 }
@@ -898,7 +898,7 @@ impl ActionProvider for Answers {
     }
 
     fn serves(&self, provider: &str) -> bool {
-        governed(provider)
+        hosted(provider)
             || provider == HOST_ACTIONS_PROVIDER
             || provider == WORK_PROVIDER
             // The calls that wait for a person's yes, read and answered from their records.
@@ -1276,7 +1276,7 @@ impl super::Workspaces {
 
     /// Write `command`, a row of this device's own in the workspace's state:
     /// a member copy's write sent to the device serving it, or a change of
-    /// the workspace this device governs.
+    /// the workspace this device hosts.
     async fn write_own_row(
         &self,
         workspace: &str,
@@ -1367,7 +1367,7 @@ impl Answers {
         if super::hosted_use::answers(caller, &request.target) {
             return self.work.answer_turn(caller, request);
         }
-        if governed(&request.target.provider)
+        if hosted(&request.target.provider)
             || tilo_actions::remote::asked::is_resolve(&request.target)
         {
             return self.work.govern(caller, request);

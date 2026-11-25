@@ -4,7 +4,7 @@
 //!
 //! A person's is theirs, not one workspace's. They give it once, from any device of theirs (the
 //! `tilo` command, a page, their desktop); this server keeps it with their profile
-//! ([`PersonNames`]) and names them by it in every workspace it governs, the ones they join later
+//! ([`PersonNames`]) and names them by it in every workspace it hosts, the ones they join later
 //! included. What a workspace's governance keeps of the name, which its lists, its invitations
 //! and its history read, follows the person's.
 
@@ -14,7 +14,7 @@ use tilo_lock::RwLockRecover as _;
 
 use tilo_peer_state::workspace_membership::valid_workspace_name;
 
-use super::{CollaborationError, GovernedWorkspace, WorkspaceSummary, Workspaces, system_time};
+use super::{CollaborationError, HostedWorkspace, WorkspaceSummary, Workspaces, system_time};
 
 /// Where this server keeps the name each person gave themselves: their profile, which every device
 /// of theirs reads it from.
@@ -40,7 +40,7 @@ pub trait PersonNames: Send + Sync {
 
 impl Workspaces {
     /// Keep the name each person gives themselves in `names`, and name every person in each
-    /// workspace governed here by the one `names` keeps for them, as soon as its governance moves
+    /// workspace hosted here by the one `names` keeps for them, as soon as its governance moves
     /// (someone joins, someone renames themselves on another device).
     pub fn person_names(&self, names: Arc<dyn PersonNames>) {
         *self.inner.person_names.write_recover() = Some(names);
@@ -52,7 +52,7 @@ impl Workspaces {
                     Ok(workspace) => this.names_follow_people(&workspace).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         // Moves were missed: every workspace is read again.
-                        for workspace in this.governed_ids().await {
+                        for workspace in this.administered_ids().await {
                             this.names_follow_people(&workspace).await;
                         }
                     }
@@ -86,7 +86,7 @@ impl Workspaces {
             .filter(|photo| !photo.is_empty())
     }
 
-    /// Keep `name` as `person`'s, then name them by it in every workspace governed here that they
+    /// Keep `name` as `person`'s, then name them by it in every workspace hosted here that they
     /// hold a part in. Whether any workspace changed.
     ///
     /// # Errors
@@ -107,13 +107,13 @@ impl Workspaces {
         Ok(self.name_person_everywhere(person, name, now).await)
     }
 
-    /// Name `person` `name` in every workspace governed here that they hold a part in, as the
+    /// Name `person` `name` in every workspace hosted here that they hold a part in, as the
     /// profile their root signed says: whether any workspace changed. A workspace whose
     /// governance could not be written says so in the log and keeps the name it had; the others
     /// take it all the same.
     pub async fn name_person_everywhere(&self, person: [u8; 32], name: &str, now: u64) -> bool {
         let mut changed = false;
-        for workspace in self.governed_ids().await {
+        for workspace in self.administered_ids().await {
             match self.name_in(&workspace, person, name, now).await {
                 Ok(named) => changed |= named,
                 Err(error) => {
@@ -125,7 +125,7 @@ impl Workspaces {
     }
 
     /// The workspaces this server's person administers.
-    pub(super) async fn governed_ids(&self) -> Vec<String> {
+    pub(super) async fn administered_ids(&self) -> Vec<String> {
         let held: Vec<_> = self
             .inner
             .workspaces
@@ -134,13 +134,13 @@ impl Workspaces {
             .iter()
             .map(|(id, workspace)| (id.clone(), workspace.clone()))
             .collect();
-        let mut governed = Vec::with_capacity(held.len());
+        let mut hosted = Vec::with_capacity(held.len());
         for (id, workspace) in held {
             if self.administers(&*workspace.lock().await) {
-                governed.push(id);
+                hosted.push(id);
             }
         }
-        governed
+        hosted
     }
 
     /// Name each person in `workspace` by the name they gave themselves, where it calls them
@@ -154,14 +154,11 @@ impl Workspaces {
         };
         let now = tilo_clock::unix_now_ns();
         let read = {
-            let governed = state.lock().await;
-            if !self.administers(&governed) {
+            let hosted = state.lock().await;
+            if !self.administers(&hosted) {
                 return;
             }
-            governed
-                .peer()
-                .governance()
-                .governed_members(system_time(now))
+            hosted.peer().governance().member_list(system_time(now))
         };
         let members = match read {
             Ok(list) => list.members,
@@ -199,12 +196,12 @@ impl Workspaces {
         now: u64,
     ) -> Result<bool, CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
+        let mut hosted = state.lock().await;
         let at = system_time(now);
-        let holds_a_part = governed
+        let holds_a_part = hosted
             .peer()
             .governance()
-            .governed_members(at)
+            .member_list(at)
             .map_err(CollaborationError::new)?
             .members
             .iter()
@@ -213,7 +210,7 @@ impl Workspaces {
             return Ok(false);
         }
         let key = self.inner.host.key.clone();
-        let mut candidate = governed.peer().clone();
+        let mut candidate = hosted.peer().clone();
         if !candidate
             .governance_mut()
             .name_person(person, name, &key, at)
@@ -221,11 +218,11 @@ impl Workspaces {
         {
             return Ok(false);
         }
-        let log = governed.collaboration().clone();
-        governed
+        let log = hosted.collaboration().clone();
+        hosted
             .keep(candidate, &key, at, |_, _| Ok(log))
             .map_err(CollaborationError::new)?;
-        self.settle(&mut governed).await?;
+        self.settle(&mut hosted).await?;
         Ok(true)
     }
 
@@ -235,7 +232,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, the name is not 1–80 characters, or
+    /// The workspace is not hosted here, the name is not 1–80 characters, or
     /// the change could not be committed.
     #[expect(
         clippy::significant_drop_tightening,
@@ -246,35 +243,35 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let summary = self.rename_governed(&mut governed, name)?;
-        self.settle(&mut governed).await?;
+        let mut hosted = state.lock().await;
+        let summary = self.rename_hosted(&mut hosted, name)?;
+        self.settle(&mut hosted).await?;
         Ok(summary)
     }
 
-    /// [`Self::rename`] of `governed`, which the caller holds, without
+    /// [`Self::rename`] of `hosted`, which the caller keeps, without
     /// settling it: the entry answers with what the rename made.
     ///
     /// # Errors
     ///
     /// The name is not 1–80 characters, or the change could not be committed.
-    pub(super) fn rename_governed(
+    pub(super) fn rename_hosted(
         &self,
-        governed: &mut GovernedWorkspace,
+        hosted: &mut HostedWorkspace,
         name: &str,
     ) -> Result<WorkspaceSummary, String> {
         let name = valid_workspace_name(name)?;
-        if governed.peer().governance().workspace_name().as_deref() == Some(name) {
-            return Ok(self.people(governed));
+        if hosted.peer().governance().workspace_name().as_deref() == Some(name) {
+            return Ok(self.people(hosted));
         }
         let now = tilo_clock::wall();
         let key = &self.inner.host.key;
-        let mut candidate = governed.peer().clone();
+        let mut candidate = hosted.peer().clone();
         candidate
             .governance_mut()
             .author_workspace_name(name, key, now)?;
-        let collaboration = governed.collaboration().clone();
-        governed.keep(candidate, key, now, |_, _| Ok(collaboration))?;
-        Ok(self.people(governed))
+        let collaboration = hosted.collaboration().clone();
+        hosted.keep(candidate, key, now, |_, _| Ok(collaboration))?;
+        Ok(self.people(hosted))
     }
 }

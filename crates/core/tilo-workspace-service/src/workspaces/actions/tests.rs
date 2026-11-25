@@ -1,4 +1,4 @@
-//! A governed workspace's administration as `tilo.workspace` actions: offered as
+//! A hosted workspace's administration as `tilo.workspace` actions: offered as
 //! far as the workspace's grants let the caller, run through the same workspace
 //! methods as the wire API does, and ending a call held back until everyone's
 //! own confirmation can be asked for.
@@ -19,13 +19,13 @@ use tilo_user_identity::DeviceCert;
 
 use super::{
     ADD_ATTESTOR, ADD_REGISTRY, CANCEL_INVITATION, DISABLE_REGISTRY, ENABLE_REGISTRY,
-    GovernedServer, INVITATIONS, MAIL_INVITATION, MEMBERS, NAME, REGISTRIES, REGISTRY_CHANNEL,
+    HostActionServer, INVITATIONS, MAIL_INVITATION, MEMBERS, NAME, REGISTRIES, REGISTRY_CHANNEL,
     REMOVE_ATTESTOR, REMOVE_REGISTRY, REVOKE_PUBLISHER, REVOKED_PUBLISHERS,
     ServiceWorkspaceActions, TRUSTED_ATTESTORS, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{
-    governor, guest_device, is_banned, signed_pre_admission, test_host,
+    guest_device, hosting_device, is_banned, signed_pre_admission, test_host,
 };
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
@@ -92,7 +92,7 @@ impl Answering {
 /// of its asked record carried it out; declined, or answered by nobody (`None`), it is
 /// admitted no more and the caller hears what they were shown.
 ///
-/// A call this host governs runs as its job: `Accepted` while it runs, and `Completed` once it
+/// A call this host serves runs as its job: `Accepted` while it runs, and `Completed` once it
 /// ends without asking. One that waits is kept as its asked record, which the person answers
 /// there through `tilo.invocations#resolve`, and the call is followed to its end.
 pub(crate) async fn answered(
@@ -561,7 +561,7 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
 
 /// A new workspace of `workspaces`, the workspace carrying it, and its governance
 /// as actions.
-pub(crate) async fn governed(
+pub(crate) async fn hosted(
     workspaces: &Workspaces,
 ) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
@@ -572,7 +572,7 @@ pub(crate) async fn governed(
     )
 }
 
-/// The one dispatch that governs `workspaces`: the host's own where it has one, else one
+/// The one dispatch that serves `workspaces`: the host's own where it has one, else one
 /// attached now as the first. A person's answer to a call that waits for them comes back to
 /// that one, and a host is handed no second.
 pub(crate) fn host_dispatch(workspaces: &Workspaces) -> ServiceWorkspaceActions {
@@ -638,9 +638,9 @@ pub(super) async fn offered(
 #[tokio::test]
 async fn the_catalogue_root_carries_the_surface_the_workspace_publishes() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
-    let (_workspace, workspace_id, host) = governed(server.workspaces()).await;
+    let (_workspace, workspace_id, host) = hosted(server.workspaces()).await;
     let page = settled(host.in_workspace(workspace_id).query(
         &caller(&owner),
         CatalogueQuery {
@@ -711,10 +711,10 @@ fn offered_in_catalogue(verbs: impl IntoIterator<Item = &'static str>) -> Vec<St
 #[tokio::test]
 async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
 
@@ -791,8 +791,8 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         ])
     );
 
-    // An agent governs nothing, even on the server person's own key, and a
-    // workspace that carries no governed workspace offers nothing.
+    // An agent administers nothing, even on the server person's own key, and a
+    // workspace that carries no hosted workspace offers nothing.
     let agent = Caller::delegated_agent("writer", owner.user_public_key, owner.device_public_key);
     assert!(offered(&host, workspace_id, &agent).await.is_empty());
     assert!(
@@ -809,10 +809,10 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
 #[tokio::test]
 async fn the_workspaces_owners_and_moderators_rename_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let rename = |name: &str| request(&workspace, governance::RENAME, json!({ "name": name }));
 
@@ -870,10 +870,10 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
     };
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let provider = host.device_page(workspace_id, &owner);
     let owner_caller = caller(&owner);
     let query = CatalogueQuery {
@@ -955,10 +955,10 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
 #[tokio::test]
 async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
 
     // The desktop's invitation: seconds take precedence over the hours an
     // older server would read, for exactly the person and name it asked.
@@ -1026,10 +1026,10 @@ async fn invitations(
 #[tokio::test]
 async fn invitations_run_through_the_workspaces_own_methods() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, governing) = governed(workspaces).await;
+    let (workspace, workspace_id, governing) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     // The owner invites: the workspace records a pending invitation.
@@ -1132,13 +1132,13 @@ async fn invitations_run_through_the_workspaces_own_methods() {
 #[tokio::test]
 async fn an_editor_invites_up_to_her_own_role_and_no_further() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
-    // An Editor by role alone governs nothing: she reads neither the pending
+    // An Editor by role alone decides nothing: she reads neither the pending
     // invitations nor the wait list.
     assert!(workspaces.pending(&workspace, &ada).await.is_err());
     assert!(matches!(
@@ -1181,10 +1181,10 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
 #[tokio::test]
 async fn an_administrator_is_an_editor_the_invitation_also_governs() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     // The owner may make administrators, so an invitation they make can as
@@ -1298,10 +1298,10 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
 #[tokio::test]
 async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     assert!(!workspaces.has_owner(&workspace).await);
 
     let issued = invoke(
@@ -1345,10 +1345,10 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
 #[tokio::test]
 async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
@@ -1431,10 +1431,10 @@ async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
 #[tokio::test]
 async fn a_member_granted_removing_removes_anyone_but_the_owner() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
@@ -1566,10 +1566,10 @@ fn roles(listed: &Value) -> Vec<(String, String)> {
 )]
 async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_hold() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let (_, stranger) = guest_device();
@@ -1723,7 +1723,7 @@ async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_h
 
 #[tokio::test]
 async fn a_host_without_apps_answers_only_its_workspaces_governance() {
-    let server = GovernedServer {
+    let server = HostActionServer {
         governance: ServiceWorkspaceActions::new(),
         apps: None,
     };
@@ -1999,10 +1999,10 @@ async fn a_release_that_does_not_name_its_hashes_is_refused(
 #[tokio::test]
 async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let publisher = hex::encode(ada.user_public_key);
 
@@ -2195,10 +2195,10 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
     const SECRET: &str = "sk-ada-own-secret";
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     workspaces
@@ -2242,7 +2242,7 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
     assert!(!his.to_string().contains(SECRET), "{his}");
 
     // Another workspace on the same host reaches none of it.
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     reaches_none_of_it(&host, elsewhere_id, &cy, &provider).await;
 
@@ -2287,10 +2287,10 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
     use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let added = ask_own(
         &host,
@@ -2465,10 +2465,10 @@ async fn a_thinking_level_reaches_the_workspaces_provider_with_the_next_ask() {
     use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     // The provider is on this machine, which a server calls only with its
     // operator's leave.
@@ -2653,11 +2653,11 @@ async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
     use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &elsewhere, &owner, 2).await;
     // The provider is on this machine, which a server calls only with its
@@ -2752,10 +2752,10 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
     use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let (fake, adding) = provider_of_two_keys();
 
@@ -2806,10 +2806,10 @@ async fn only_an_owner_chooses_a_workspaces_holders() {
     use test_http::{Reply, Responder};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
-    let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
-    let (_, stranger) = governor();
+    let (workspace, workspace_id, governance) = hosted(server.workspaces()).await;
+    let (_, stranger) = hosting_device();
     let stranger = caller(&stranger);
     let site = Responder::handle(|_| Some(Reply::status(404)));
     for (verb, argument) in [
@@ -2848,9 +2848,9 @@ async fn a_server_is_named_by_its_own_line_and_no_site_is_asked() {
     use test_http::{Reply, Responder};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
-    let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
+    let (workspace, workspace_id, governance) = hosted(server.workspaces()).await;
     // Which servers keep a workspace is chosen on a device of the owner's that keeps their root.
     // The person's own records are of the kinds a device's service declares as it starts.
     crate::workspaces::person_workspace::declare_kinds(&server.workspaces().inner.host.surfaces)
@@ -2907,10 +2907,10 @@ async fn a_server_is_named_by_its_own_line_and_no_site_is_asked() {
 #[tokio::test]
 async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_by() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     members_read_the_package_trust_and_registries(&host, workspace_id, &workspace, &ada).await;
@@ -3210,10 +3210,10 @@ async fn a_developer_removes_a_registry(
 #[tokio::test]
 async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let issued = invoke(
         &host,
         workspace_id,
@@ -3297,10 +3297,10 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
 #[tokio::test]
 async fn only_the_workspaces_owners_change_what_members_may_post() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     let asked = request(

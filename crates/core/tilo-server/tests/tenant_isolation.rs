@@ -1,12 +1,12 @@
 //! Tenant isolation on one hosted server.
 //!
-//! A hosted server governs workspaces for people who share nothing but the host:
-//! two tenants, each its own governed workspace with its own members. These
+//! A hosted server serves workspaces for people who share nothing but the host:
+//! two tenants, each its own hosted workspace with its own members. These
 //! tests stand the real server up with two such workspaces and drive every entry a
 //! member, an agent or a compute client has, asserting that one tenant
 //! cannot read, write, enumerate, administer or invoke anything in the
 //! other's workspace, that an agent holds only what its delegation names and
-//! never governs, and that a removed member loses access at once. Each
+//! never administers, and that a removed member loses access at once. Each
 //! refusal is checked against the other workspace's state afterwards, so an entry
 //! that answered "no" but acted anyway still fails.
 //!
@@ -321,13 +321,13 @@ impl TwoTenants {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
-    // tenants' people, their devices and two governed workspaces.
+    // tenants' people, their devices and two hosted workspaces.
     let t = Box::pin(TwoTenants::start()).await;
     let workspaces = t.workspaces();
     let before = t.globex_governance().await;
     let ann = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
 
-    // Positive control: Ann governs her own workspace through the same actions.
+    // Positive control: Ann administers her own workspace through the same actions.
     let own = invocation(
         WORKSPACE_GOVERNANCE_PROVIDER,
         workspace_governance_child(&t.acme.workspace, Some(WORKSPACE_INVITATIONS)),
@@ -425,7 +425,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_workspace() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
-    // tenants' people, their devices and two governed workspaces.
+    // tenants' people, their devices and two hosted workspaces.
     let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
     let bob_in_globex = subscribed(&t.server, &t.bob_phone, t.globex.workspace_id).await;
@@ -553,7 +553,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
-    // tenants' people, their devices and two governed workspaces.
+    // tenants' people, their devices and two hosted workspaces.
     let t = Box::pin(TwoTenants::start()).await;
     let mut ann_in_acme = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
     let bob_in_globex = subscribed(&t.server, &t.bob_phone, t.globex.workspace_id).await;
@@ -623,9 +623,9 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation() {
+async fn an_agent_never_administers_and_reaches_no_workspace_outside_its_delegation() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
-    // tenants' people, their devices and two governed workspaces.
+    // tenants' people, their devices and two hosted workspaces.
     let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
     // The host's own agent: a device of the server's person with no
@@ -671,8 +671,8 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
         );
     }
 
-    // An agent governs nothing, not even the workspace it is delegated, and it
-    // is no host person: the one decision every entry asks refuses it
+    // An agent administers nothing, not even the workspace it is delegated, and
+    // it is no host person: the one decision every entry asks refuses it
     // removing anyone, the host's operations and either workspace's governance.
     removal_refused("the agent", &agent, &t.server, &t.acme, t.ann.user_pk).await;
     removal_refused("the agent", &agent, &t.server, &t.globex, t.bob.user_pk).await;

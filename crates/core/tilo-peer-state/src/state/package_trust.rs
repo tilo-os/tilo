@@ -13,7 +13,7 @@ use tilo_action_policy::roles::governance;
 use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
-use super::{StatePeer, SystemTime, err, governed_map, person_of};
+use super::{StatePeer, SystemTime, err, person_of, workspace_map};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 
 /// The map of the trust list, by attestor id.
@@ -156,7 +156,7 @@ impl StatePeer {
             .ok_or("the workspace tree is missing")?;
         let before = doc.get_heads();
         doc.set_actor(self.workspace_actor_of(key));
-        let rows = governed_map(&doc, map)?;
+        let rows = workspace_map(&doc, map)?;
         match bytes {
             Some(bytes) => doc
                 .put(&rows, key_in_map, automerge::ScalarValue::Bytes(bytes))

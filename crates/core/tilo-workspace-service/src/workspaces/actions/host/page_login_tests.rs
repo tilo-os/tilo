@@ -19,11 +19,11 @@ use tilo_actions::remote::person_vault::{
 };
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
-use super::super::tests::{caller, governed};
+use super::super::tests::{caller, hosted};
 use super::release_tests::{approve_and_grant, asked_records, refusal};
 use super::vault_tests::ask;
 use crate::workspaces::page_logins;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 use crate::workspaces::vault_release::AppProcess;
 
 /// The app whose window shows the page.
@@ -65,10 +65,10 @@ fn fill(item: &ItemRef, site: &str) -> InvokeRequest {
 #[tokio::test]
 async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let added = ask(
         &service,
         workspace_id,

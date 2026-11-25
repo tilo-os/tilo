@@ -7,8 +7,8 @@
 //! requests for an app's actions are then answered through [`Served`], and a
 //! server advertises its `app_serving` service.
 //! Without one, the capability stays off and such requests are refused at once
-//! — all but the governance of the workspaces the server governs, which it
-//! answers itself (`crate::workspaces::GovernedServer`).
+//! — all but the governance of the workspaces the server hosts, which it
+//! answers itself (`crate::workspaces::HostActionServer`).
 
 use std::sync::Arc;
 
@@ -51,7 +51,7 @@ pub trait AppActionServer: Send + Sync {
     /// Answer one of the host's own operations (`tilo.host`), asked of the
     /// host itself by `caller` on the device `certificate` names, as the
     /// server's handshake verified it: no workspace is involved. An app action server that
-    /// governs no workspaces answers none.
+    /// hosts no workspaces answers none.
     fn serve_host(
         &self,
         caller: &Caller,
@@ -885,7 +885,7 @@ impl HostOperations {
     /// Answer `server`'s own operations for the devices the host's revocations do not refuse,
     /// of a person the host knows: one its operator trusts or one of a workspace in
     /// `workspaces`. Any other device may ask only that the host hold a workspace another
-    /// governs ([`tilo_server_protocol::workspaces::HOST_WORKSPACE`]), which the host's work
+    /// host serves ([`tilo_server_protocol::workspaces::HOST_WORKSPACE`]), which the host's work
     /// setting decides.
     ///
     /// # Panics
@@ -930,7 +930,7 @@ impl HostOperations {
     }
 }
 
-/// Whether `target` asks this host to hold a workspace another host governs.
+/// Whether `target` asks this host to hold a workspace another host serves.
 fn asks_to_hold(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
     target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
         && target.address.action == tilo_server_protocol::workspaces::HOST_WORKSPACE
@@ -969,7 +969,7 @@ impl ActionProvider for HostOperations {
             Err(error) => return Pending::ready(Err(error)),
         };
         // A device of a person the host does not know asks one thing of it: to hold a
-        // workspace its governing host hands it, which the work setting then decides. It is
+        // workspace another host hands it, which the work setting then decides. It is
         // told that it is not known here for anything else.
         let known = self
             .workspaces

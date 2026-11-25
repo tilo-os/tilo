@@ -81,19 +81,6 @@ impl PeerStore for PagePeerStore {
         self.put("workspaces", bytes)
     }
 
-    fn save_workspaces_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
-        let name = format!("{}runs/{name}", self.under);
-        match bytes {
-            Some(bytes) => self.store.keep_state(&name, bytes),
-            None => self.store.forget_state(&name),
-        }
-        .map_err(|error| error.to_string())
-    }
-
-    fn load_workspaces_run(&self, name: &str) -> Option<Vec<u8>> {
-        self.get(&format!("runs/{name}"))
-    }
-
     fn load_workspaces_part(&self, name: &str) -> Option<Vec<u8>> {
         self.get(&format!("parts/{name}"))
     }
@@ -211,9 +198,6 @@ mod tests {
         peer.save_workspaces_part("index", b"one").unwrap();
         peer.append_workspaces_part("index", b" two").unwrap();
         peer.append_workspaces_part("journal", b"first").unwrap();
-        peer.save_workspaces_run("outgoing", Some(b"run")).unwrap();
-        peer.save_workspaces_run("done", Some(b"over")).unwrap();
-        peer.save_workspaces_run("done", None).unwrap();
         now(backend.durable()).unwrap();
         drop(peer);
 
@@ -231,8 +215,6 @@ mod tests {
             peer.load_workspaces_part("journal"),
             Some(b"first".to_vec())
         );
-        assert_eq!(peer.load_workspaces_run("outgoing"), Some(b"run".to_vec()));
-        assert_eq!(peer.load_workspaces_run("done"), None);
         assert_eq!(peer.channel_vault(), Some([7; 32]));
         assert!(peer.keeps_workspaces() && peer.keeps_workspaces_parts());
 

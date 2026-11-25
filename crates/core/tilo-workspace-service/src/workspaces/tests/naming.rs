@@ -6,12 +6,12 @@ use tilo_peer_state::{CopyRole, join::Role};
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::workspaces::HostWorkspaceRequest;
-use crate::workspaces::tests::{device_cert, governor, test_host};
+use crate::workspaces::tests::{device_cert, hosting_device, test_host};
 
 #[tokio::test]
 async fn a_hand_over_without_the_change_naming_the_server_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let (owner_key, owner_cert) = governor();
+    let (owner_key, owner_cert) = hosting_device();
     let owner = test_host(&dir.path().join("owner"), &owner_key, &owner_cert).await;
     let (server_key, server_cert) = device_cert(&owner_key, "server", DeviceCapabilities::member());
     let server = test_host(&dir.path().join("server"), &server_key, &server_cert).await;
@@ -19,18 +19,18 @@ async fn a_hand_over_without_the_change_naming_the_server_is_refused() {
     // What the owner's device would hand over before naming the server among
     // the workspace's holders: the workspace as a joining member gets it.
     let (workspace_id, holder_hint, bootstrap) = {
-        let governed = owner.workspaces().workspace(&workspace).await.unwrap();
-        let governed = governed.lock().await;
-        let mut bootstrap = governed
-            .governed(&owner_cert)
+        let hosted = owner.workspaces().workspace(&workspace).await.unwrap();
+        let hosted = hosted.lock().await;
+        let mut bootstrap = hosted
+            .hosted(&owner_cert)
             .bootstrap([0; 32], server_cert.clone(), Role::Editor)
             .expect("the workspace as a joining member gets it");
         bootstrap.records.clear();
         let hint = owner
             .workspaces()
-            .transport_hint(&governed)
+            .transport_hint(&hosted)
             .expect("the owner's signed address");
-        (governed.workspace_id(), hint, bootstrap)
+        (hosted.workspace_id(), hint, bootstrap)
     };
     let request = HostWorkspaceRequest {
         workspace: workspace.clone(),

@@ -120,7 +120,7 @@ fn who(event: &DocumentEvent) -> &'static str {
 /// what the server does hold is still looked at.
 ///
 /// # Errors
-/// The workspace is not governed here.
+/// The workspace is not hosted here.
 pub(super) async fn gather(
     workspaces: &Workspaces,
     workspace: &str,
@@ -403,7 +403,7 @@ verbs = [
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_look_counts_the_mail_that_arrived_since_the_last_one() {
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::workspaces::fixtures::governor();
+        let (key, cert) = crate::workspaces::fixtures::hosting_device();
         let host = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
         let workspaces = host.workspaces().clone();
         workspaces.set_member_device(Arc::new(MemberDevice {

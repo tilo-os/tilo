@@ -292,7 +292,7 @@ impl Authority {
         let Some(workspaces) = self.server.admin.get() else {
             return Arc::default();
         };
-        let copy = if let Some(copy) = workspaces.governed_copy(workspace).await {
+        let copy = if let Some(copy) = workspaces.hosted_copy(workspace).await {
             Some(copy)
         } else {
             workspaces.member_copy(workspace).await

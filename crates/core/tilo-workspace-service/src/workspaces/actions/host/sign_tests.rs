@@ -27,7 +27,7 @@ use tilo_actions::remote::person_vault::{self, ItemRef};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, caller, hosted};
 use super::turn_use_tests::{
     always, approved, asked_by, asks, dispatched, fact, narrowed_elsewhere, narrowing,
     not_hosted_turns, on_turn,
@@ -37,7 +37,7 @@ use super::web_call_tests::logged;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::test_host;
 use crate::workspaces::hosted_use::HostedTurn;
-use crate::workspaces::tests::governor;
+use crate::workspaces::tests::hosting_device;
 
 const SERVER: &str = "ssh://git.example.test";
 const SIGN_USE: &str = "tilo.vault/sign";
@@ -236,10 +236,10 @@ fn asked_records(workspaces: &Workspaces, workspace: &str) -> String {
 #[tokio::test]
 async fn an_agents_signature_waits_for_its_person_and_verifies() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -346,10 +346,10 @@ async fn an_agents_signature_waits_for_its_person_and_verifies() {
 #[tokio::test]
 async fn after_always_the_agent_signs_unasked_until_the_leave_is_taken_back() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -441,10 +441,10 @@ async fn after_always_the_agent_signs_unasked_until_the_leave_is_taken_back() {
 #[tokio::test]
 async fn a_login_signs_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let login = kept(
@@ -471,10 +471,10 @@ async fn a_login_signs_nothing() {
 #[tokio::test]
 async fn what_signs_is_an_ssh_key_for_its_own_server_asked_by_a_turn() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);

@@ -1,5 +1,5 @@
 //! The person's workspace on this computer: the one its login names, or, on a computer with no
-//! login, the one this device governs for its person. That one is not founded when the daemon
+//! login, the one this device hosts for its person. That one is not founded when the daemon
 //! starts: the person's desktop may still hand over the workspace it kept
 //! (`account/workspaces#import`), which then is theirs here. It is founded when the person first
 //! needs one and nothing came in for them, at the id the person's key names (the one every device
@@ -31,7 +31,7 @@ pub(crate) struct FirstWorkspace {
     file: Option<PathBuf>,
     id: tokio::sync::OnceCell<String>,
     workspaces: Arc<ServiceWorkspaces>,
-    /// Where the files of the workspaces this computer governs are shown, once they are.
+    /// Where the files of the workspaces this computer hosts are shown, once they are.
     replicas: OnceLock<Weak<Replicas>>,
     /// What the daemon does once the workspace is here ([`Self::when_here`]).
     settling: OnceLock<Settling>,

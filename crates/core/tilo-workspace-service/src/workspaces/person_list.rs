@@ -1,4 +1,4 @@
-//! The person's list of their workspaces, written by a device of theirs that governs their own
+//! The person's list of their workspaces, written by a device of theirs that administers their own
 //! workspace.
 //!
 //! A workspace is listed when the person's own daemon makes one for them, redeems the invitation
@@ -9,7 +9,7 @@
 //! not, never writes the list itself; a host that merely admits someone holds no copy of their own
 //! workspace and writes nothing either.
 //!
-//! One writer runs wherever the person's own workspace is governed: the daemon calls these
+//! One writer runs wherever the person's own workspace is hosted: the daemon calls these
 //! changes as part of the action that made the workspace, took the device into one that is
 //! theirs or admitted the person, so the list is complete without a desktop session, and a
 //! workspace removed is remembered as gone so a device that was away lets it go too.
@@ -100,11 +100,11 @@ impl Workspaces {
     /// Where `workspace` is kept, as this device reads its governance: the device keeping it, and
     /// the address it signed.
     pub async fn kept_at(&self, workspace: &str) -> Option<KeptAt> {
-        let governed = self.workspace(workspace).await.ok()?;
-        let governed = governed.lock().await;
+        let hosted = self.workspace(workspace).await.ok()?;
+        let hosted = hosted.lock().await;
         let own = self.device_cert().device_public_key;
-        let hosts = governed.peer().governance().keeping_devices();
-        drop(governed);
+        let hosts = hosted.peer().governance().keeping_devices();
+        drop(hosted);
         // The device keeping it: this one when it does, else the host of this member copy.
         let hint = hosts
             .iter()
@@ -118,9 +118,9 @@ impl Workspaces {
         })
     }
 
-    /// List `workspace` as `name` in `person`'s own list, where this device governs their own
-    /// workspace: whether it wrote. A device that keeps no copy of it writes nothing, and neither
-    /// does one keeping a copy another device governs.
+    /// List `workspace` as `name` in `person`'s own list, where this device hosts
+    /// their own workspace: whether it wrote. A device that keeps no copy of it
+    /// writes nothing, and neither does one keeping a copy another device hosts.
     pub async fn list_for(&self, person: &[u8; 32], workspace: &str, name: &str) -> bool {
         // Their own workspace holds the list; the list never names it.
         if workspace == person_workspace_id(person) {
@@ -219,26 +219,26 @@ impl Workspaces {
         let their_own = person_workspace_id(person);
         let mut known: Vec<(String, String)> = Vec::new();
         if *person == self.device_cert().user_public_key {
-            // What this host governs that is theirs: the workspaces their member
-            // list holds them in. A host that runs other people's workspaces
-            // beside them governs those as well, and none of them is listed here.
+            // What this host keeps that is theirs: the workspaces their member
+            // list names them in. A host that runs other people's workspaces
+            // beside them hosts those as well, and none of them is listed here.
             let now = tilo_clock::wall();
             for workspace in self.ids().await {
                 let Ok(state) = self.workspace(&workspace.to_string()).await else {
                     continue;
                 };
-                let governed = state.lock().await;
-                let theirs = governed
+                let hosted = state.lock().await;
+                let theirs = hosted
                     .peer()
                     .governance()
-                    .governed_members(now)
+                    .member_list(now)
                     .is_ok_and(|list| {
                         list.members
                             .iter()
                             .any(|member| member.root() == Some(*person) && !member.removed)
                     });
-                let listed = (governed.workspace().to_owned(), governed.name());
-                drop(governed);
+                let listed = (hosted.workspace().to_owned(), hosted.name());
+                drop(hosted);
                 if theirs {
                     known.push(listed);
                 }
@@ -259,8 +259,9 @@ impl Workspaces {
         known
     }
 
-    /// Apply `changes` to `person`'s own workspace where this device governs it: whether every one
-    /// landed. A member copy of it keeps what the device that governs it wrote, and adds nothing
+    /// Apply `changes` to `person`'s own workspace where this device hosts it:
+    /// whether every one landed. A member copy of it keeps what the device that
+    /// hosts it wrote, and adds nothing
     /// of its own.
     async fn write_person_list(
         &self,

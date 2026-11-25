@@ -43,12 +43,8 @@ fn actual_redemption_at(
             .as_nanos(),
     )
     .unwrap();
-    let governor_key = SigningKey::from_bytes(&[71; 32]);
-    let governor = certificate(
-        &SigningKey::from_bytes(&[72; 32]),
-        &governor_key,
-        "Governor",
-    );
+    let owner_copy_key = SigningKey::from_bytes(&[71; 32]);
+    let owner_copy = certificate(&SigningKey::from_bytes(&[72; 32]), &owner_copy_key, "Host");
     let device_key = SigningKey::from_bytes(&[73; 32]);
     let device = certificate(
         &SigningKey::from_bytes(&[74; 32]),
@@ -66,18 +62,18 @@ fn actual_redemption_at(
         origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
+            iroh_base::EndpointId::from_bytes(&owner_copy.device_public_key).unwrap(),
         ),
-        user_public_key: governor.user_public_key,
-        device_certificate: governor.clone(),
+        user_public_key: owner_copy.user_public_key,
+        device_certificate: owner_copy.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
-    .transport_hint(&governor_key)
+    .transport_hint(&owner_copy_key)
     .unwrap();
     let signed = join::issue_invitation(
         InviteGrant {
             workspace_id,
-            issuer: governor.clone(),
+            issuer: owner_copy.clone(),
             role: Role::Editor,
             nonce: [75; 16],
             recipient_user_public_key: Some(device.user_public_key),
@@ -85,7 +81,7 @@ fn actual_redemption_at(
             expires_at_ns: ns.checked_add(60_000_000_000).unwrap(),
             transport: vec![hint.clone()],
         },
-        &governor_key,
+        &owner_copy_key,
     )
     .unwrap();
     let join = join::decode_and_verify_invitation(
@@ -109,8 +105,8 @@ fn actual_redemption_at(
         join::verify_join_proof(&proof, &challenge, &device, &RevocationList::new(), ns).unwrap();
     let mut peer = StatePeer::new(
         workspace,
-        governor.clone(),
-        vec![governor.clone()],
+        owner_copy.clone(),
+        vec![owner_copy.clone()],
         RevocationList::new(),
         now,
     )
@@ -119,13 +115,13 @@ fn actual_redemption_at(
         SeedState {
             workspace_changes: seed_workspace(
                 workspace,
-                &governor,
-                std::slice::from_ref(&governor),
+                &owner_copy,
+                std::slice::from_ref(&owner_copy),
             )
             .unwrap(),
             documents: vec![],
         },
-        &governor_key,
+        &owner_copy_key,
         now,
     )
     .unwrap();
@@ -140,7 +136,7 @@ fn actual_redemption_at(
         device_cert: device.clone(),
         role: Role::Editor,
         workspace_id,
-        host: governor,
+        host: owner_copy,
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
         records: peer.rows(),
@@ -247,7 +243,7 @@ tilo_test_env::scenario! {
     }
 }
 
-fn pending_owner() -> (tempfile::TempDir, crate::owner::NativeWorkspaceOwner) {
+fn pending_owner() -> (tempfile::TempDir, crate::owner::DeviceWorkspaces) {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let owner = crate::owner::open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     (directory, owner)

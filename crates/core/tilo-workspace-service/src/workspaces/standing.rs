@@ -30,7 +30,7 @@ pub fn reading(
     let now = tilo_clock::wall();
     let membership = peer.governance();
     let person = hex::encode(reader.person);
-    let members = membership.governed_members(now).unwrap_or_default();
+    let members = membership.member_list(now).unwrap_or_default();
     let owner = Some(membership.owner_user_public_key())
         .filter(|owner| *owner != [0; 32])
         .map(hex::encode);
@@ -40,7 +40,7 @@ pub fn reading(
         .map(|certificate| (certificate.device_public_key, certificate.device_label))
         .collect();
     let admitted: BTreeSet<[u8; 32]> = membership
-        .governed_access(now)
+        .member_list_access(now)
         .map(|access| access.member_devices.into_iter().collect())
         .unwrap_or_default();
     let roster_devices: Vec<[u8; 32]> = labels
@@ -78,7 +78,7 @@ pub fn reading(
         roster_devices,
         people,
         members,
-        policy: membership.governed_policy().ok(),
+        policy: membership.member_policy().ok(),
         administers: peer
             .workspace()
             .check_workspace_administration(reader.device, now)
@@ -113,7 +113,7 @@ pub fn reading(
         open_links,
         document: peer.workspace().document(),
         shortcuts: peer.workspace().workspace_shortcuts(),
-        sandbox: membership.governed_sandbox().ok(),
+        sandbox: membership.member_sandbox().ok(),
     }
 }
 

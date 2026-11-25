@@ -46,8 +46,8 @@ async fn write_misplaced_draft(workspaces: &Workspaces, workspace: &str) -> Resu
         .await
         .map_err(|error| error.to_string())?;
     let writes = {
-        let mut governed = std::sync::Arc::clone(&state).lock_owned().await;
-        let mut store = workspaces.store_of(&mut governed);
+        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
+        let mut store = workspaces.store_of(&mut hosted);
         let stamp = tilo_resource_store::Stamp {
             verb: "type".to_owned(),
             // This device's write, as its own person: a device writes for no other member.
@@ -74,9 +74,9 @@ async fn write_misplaced_draft(workspaces: &Workspaces, workspace: &str) -> Resu
         tilo_resource_store::wire::draft(&mut store, command)
             .map_err(|refused| refused.error.to_string())?
     };
-    let governed = std::sync::Arc::clone(&state).lock_owned().await;
+    let hosted = std::sync::Arc::clone(&state).lock_owned().await;
     workspaces
-        .keep_writes(governed, workspaces.signing_device(), APP, writes, None)
+        .keep_writes(hosted, workspaces.signing_device(), APP, writes, None)
         .await
         .map(|_| ())
 }
@@ -86,8 +86,8 @@ async fn draft_read_by(workspaces: &Workspaces, workspace: &str, who: &str) -> b
     let Ok(state) = workspaces.workspace(workspace).await else {
         return false;
     };
-    let mut governed = state.lock().await;
-    let store = workspaces.store_of(&mut governed);
+    let mut hosted = state.lock().await;
+    let store = workspaces.store_of(&mut hosted);
     let get = Command::Get {
         kind: DRAFT.to_owned(),
         id: "draft".to_owned(),
@@ -101,7 +101,7 @@ async fn draft_read_by(workspaces: &Workspaces, workspace: &str, who: &str) -> b
 #[tokio::test]
 async fn a_misplaced_draft_is_moved_into_its_rules_document() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Mail").await.unwrap();
@@ -118,8 +118,8 @@ async fn a_misplaced_draft_is_moved_into_its_rules_document() {
     crate::workspaces::fixtures::declare_app(&server, APP, &surface(true));
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
-        let mut governed = state.lock().await;
-        let store = workspaces.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let store = workspaces.store_of(&mut hosted);
         assert!(
             store.misplaced(DRAFT, "draft"),
             "the draft is held where every member reads it, and its rule names one"
@@ -138,8 +138,8 @@ async fn a_misplaced_draft_is_moved_into_its_rules_document() {
         .expect("the misplaced draft is moved");
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
-        let mut governed = state.lock().await;
-        let store = workspaces.store_of(&mut governed);
+        let mut hosted = state.lock().await;
+        let store = workspaces.store_of(&mut hosted);
         assert!(
             !store.misplaced(DRAFT, "draft"),
             "the draft is moved into the document its rule gives"
@@ -167,7 +167,7 @@ async fn a_misplaced_draft_is_moved_into_its_rules_document() {
 #[tokio::test]
 async fn a_repair_taken_in_twice_leaves_one_copy() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Mail").await.unwrap();
@@ -179,8 +179,8 @@ async fn a_repair_taken_in_twice_leaves_one_copy() {
     crate::workspaces::fixtures::declare_app(&server, APP, &surface(true));
 
     let state = workspaces.workspace(&workspace).await.unwrap();
-    let mut governed = state.lock().await;
-    let mut store = workspaces.store_of(&mut governed);
+    let mut hosted = state.lock().await;
+    let mut store = workspaces.store_of(&mut hosted);
     let invoker = host_person(&workspaces);
     let first = crate::workspaces::replacing::repair_writes(&mut store, DRAFT, "draft", &invoker)
         .expect("the repair drafts");

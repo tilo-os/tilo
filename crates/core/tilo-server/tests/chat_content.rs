@@ -12,7 +12,7 @@ use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable as _};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::kept_content::KeptContent;
-use tilo_workspace_service::workspaces::fixtures::{governor, member_device, test_host};
+use tilo_workspace_service::workspaces::fixtures::{hosting_device, member_device, test_host};
 
 /// The app a member's messages and their files are kept in.
 const CHAT: &str = "so.tilo.chat";
@@ -102,7 +102,7 @@ fn opened(frames: &[Vec<u8>], asker: &[u8; 32]) -> Option<Vec<u8>> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leaves() {
     let scratch = tempfile::tempdir().unwrap();
-    let (root, host_cert) = governor();
+    let (root, host_cert) = hosting_device();
     let host = test_host(scratch.path(), &root, &host_cert).await;
     let workspaces = host.workspaces().clone();
     let summary = workspaces.create("Lounge").await.unwrap();
@@ -251,7 +251,7 @@ fn attach(doc: &mut AutoCommit, name: &str, hash: &str) -> Result<(), String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_file_a_member_posts_is_kept_as_it_is_pushed() {
     let scratch = tempfile::tempdir().unwrap();
-    let (root, host_cert) = governor();
+    let (root, host_cert) = hosting_device();
     let host = test_host(scratch.path(), &root, &host_cert).await;
     let workspaces = host.workspaces().clone();
     let summary = workspaces.create("Lounge").await.unwrap();

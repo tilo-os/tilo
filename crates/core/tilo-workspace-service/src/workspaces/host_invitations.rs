@@ -102,11 +102,11 @@ impl Workspaces {
         wait_list_entry: Option<[u8; 32]>,
     ) -> Result<IssuedInvitation, CollaborationError> {
         {
-            let governed = self.workspace(workspace).await?;
-            let governed = governed.lock().await;
+            let hosted = self.workspace(workspace).await?;
+            let hosted = hosted.lock().await;
             self.authorize(
                 device,
-                Some(&governed),
+                Some(&hosted),
                 super::authority::WorkspaceOp::MakeOwner,
                 tilo_clock::unix_now_ns(),
             )?;
@@ -146,7 +146,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, this host no longer owns it, or its
+    /// The workspace is not hosted here, this host no longer owns it, or its
     /// governance could not be changed.
     pub async fn declare_owner(
         &self,
@@ -154,9 +154,9 @@ impl Workspaces {
         user: [u8; 32],
         name: Option<&str>,
     ) -> Result<(), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        self.give_ownership(&mut governed, user, name)
+        let hosted = self.workspace(workspace).await?;
+        let mut hosted = hosted.lock().await;
+        self.give_ownership(&mut hosted, user, name)
             .await
             .map_err(CollaborationError::new)?;
         Ok(())
@@ -197,7 +197,9 @@ impl Workspaces {
 mod tests {
     use super::*;
     use crate::workspaces::listing::entry_tests::walk_in_as;
-    use crate::workspaces::tests::{device_cert, governor, governor_with, guest_device, test_host};
+    use crate::workspaces::tests::{
+        device_cert, guest_device, hosting_device, hosting_device_with, test_host,
+    };
     use ed25519_dalek::SigningKey;
     use tilo_peer_state::join::Role;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
@@ -332,7 +334,7 @@ mod tests {
     #[tokio::test]
     async fn an_owner_invitation_makes_whoever_accepts_it_the_owner() {
         let dir = tempfile::tempdir().unwrap();
-        let host = governor();
+        let host = hosting_device();
         let server = site(dir.path(), &host).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -407,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn an_owner_invitation_a_persons_key_asks_for_names_them() {
         let dir = tempfile::tempdir().unwrap();
-        let holder = governor();
+        let holder = hosting_device();
         let server = site(dir.path(), &holder).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Tilo").await.unwrap().workspace;
@@ -469,11 +471,11 @@ mod tests {
     #[tokio::test]
     async fn an_invitation_a_second_device_of_the_workspaces_person_asks_for_says_so() {
         let dir = tempfile::tempdir().unwrap();
-        let holder = governor();
+        let holder = hosting_device();
         let server = site(dir.path(), &holder).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Tilo").await.unwrap().workspace;
-        let (sibling_key, sibling) = governor_with(DeviceCapabilities::member());
+        let (sibling_key, sibling) = hosting_device_with(DeviceCapabilities::member());
         assert_eq!(sibling.user_public_key, holder.1.user_public_key);
         assert_ne!(sibling.device_public_key, holder.1.device_public_key);
         // The sibling lists itself, as a further device of the person does.
@@ -496,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn an_owner_links_opener_reads_as_owner_and_governs_peoples_roles() {
         let dir = tempfile::tempdir().unwrap();
-        let host = governor();
+        let host = hosting_device();
         let server = site(dir.path(), &host).await;
         let workspaces = server.workspaces();
         let lounge = workspaces.create("Lounge").await.unwrap().workspace;
@@ -604,7 +606,7 @@ mod tests {
     #[tokio::test]
     async fn an_invitation_anywhere_on_the_host_opens_the_invite_only_home() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         assert!(
@@ -671,7 +673,7 @@ mod tests {
     #[tokio::test]
     async fn a_person_declared_an_owner_may_invite_from_the_device_they_walked_in_with() {
         let dir = tempfile::tempdir().unwrap();
-        let governing = governor();
+        let governing = hosting_device();
         let site = site(dir.path(), &governing).await;
         let workspaces = site.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;

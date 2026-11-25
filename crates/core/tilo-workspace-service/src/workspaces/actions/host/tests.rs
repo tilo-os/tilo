@@ -19,13 +19,13 @@ use tilo_server_protocol::workspaces::{
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::super::tests::{caller, settled};
-use super::super::{GovernedServer, ServiceWorkspaceActions};
+use super::super::{HostActionServer, ServiceWorkspaceActions};
 use crate::app_serving::AppActionServer as _;
-use crate::workspaces::tests::{governor, guest_device, test_host};
+use crate::workspaces::tests::{guest_device, hosting_device, test_host};
 use tilo_server_protocol::WorkspaceId;
 
-/// Another device of the server's own person: the one `governor` certifies
-/// the server for.
+/// Another device of the server's own person: one the person's root key
+/// certifies, as it certifies the server.
 fn owners_laptop() -> DeviceCert {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[5; 32]);
@@ -114,7 +114,7 @@ const HOST_OPERATIONS: [&str; 22] = [
 #[tokio::test]
 async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -203,7 +203,7 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
 #[tokio::test]
 async fn the_servers_person_creates_a_workspace_with_an_administrators_invitation() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let host = super::super::tests::host_dispatch(server.workspaces());
     let laptop = owners_laptop();
@@ -242,7 +242,7 @@ async fn the_servers_person_creates_a_workspace_with_an_administrators_invitatio
 #[tokio::test]
 async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_actions() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -353,7 +353,7 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
 #[tokio::test]
 async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -445,13 +445,13 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     assert_eq!(unverified.unwrap_err(), ActionCallError::UnknownAction);
 
     // The app action server hands the certificate on: through it, the laptop lists.
-    let governed = GovernedServer {
+    let hosted = HostActionServer {
         governance: host.clone(),
         apps: None,
     };
     let list = RemoteActionMessage::Invoke(host_request(LIST_WORKSPACES, json!({})));
-    assert!(governed.answers(&caller(&laptop), &list));
-    let answer = governed
+    assert!(hosted.answers(&caller(&laptop), &list));
+    let answer = hosted
         .serve_host(&caller(&laptop), &laptop, list)
         .expect("an invocation is answered");
     let RemoteActionMessage::Receipt(receipt) = settled(answer).await else {
@@ -471,7 +471,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
 #[tokio::test]
 async fn the_operator_blocks_and_unblocks_a_device_and_a_person_as_actions() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -574,7 +574,7 @@ async fn the_operator_blocks_and_unblocks_a_device_and_a_person_as_actions() {
 #[tokio::test]
 async fn a_stranger_cannot_block_a_key_on_the_host() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);

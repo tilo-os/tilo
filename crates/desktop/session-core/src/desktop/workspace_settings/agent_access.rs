@@ -190,7 +190,7 @@ pub fn agent_access_rows(
         .collect();
     rows.compact_sort_by_key(|row| row.label.to_lowercase());
     // What the person's own account holds follows the apps, in every workspace: the agent
-    // makes and deletes their workspaces, and governs this one, as these rows answer.
+    // makes and deletes their workspaces, and administers this one, as these rows answer.
     rows.extend(
         ACCOUNT
             .iter()

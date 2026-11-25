@@ -83,11 +83,11 @@ impl Workspaces {
             .map_err(|_| WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::Workspace))?;
         let drafting = crate::timing::start();
         let (envelopes, author) = {
-            let governed = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
+            let hosted = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
             let picked = match sealed {
                 Some(_) => None,
                 None => self
-                    .sealing_keys(&governed, app, document)
+                    .sealing_keys(&hosted, app, document)
                     .await
                     .map_err(|why| {
                         tracing::debug!(%workspace, app, document, %why, "the write waits for its keys");
@@ -96,8 +96,8 @@ impl Workspaces {
             };
             let sealed = sealed.or_else(|| picked.as_ref().map(|keys| &keys.keys));
             tilo_peer_state::owner::draft_local_write(
-                &governed.peer(),
-                governed.workspace(),
+                &hosted.peer(),
+                hosted.workspace(),
                 &device.device(),
                 tilo_peer_state::owner::LocalWrite {
                     app,
@@ -170,7 +170,7 @@ mod tests {
     use tilo_user_identity::DeviceCapabilities;
 
     use super::super::fixtures::{
-        TestGroupKeys, device_cert, governor_with, test_host, test_host_holding,
+        TestGroupKeys, device_cert, hosting_device_with, test_host, test_host_holding,
         test_host_in_the_clear,
     };
     use super::super::{MemberDevice, Workspaces};
@@ -208,7 +208,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a state directory");
         let keys = Arc::new(TestGroupKeys::default());
         let root = SigningKey::from_bytes(&[1; 32]);
-        let (key, cert) = governor_with(DeviceCapabilities::member());
+        let (key, cert) = hosting_device_with(DeviceCapabilities::member());
         let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
         let workspaces = server.workspaces().clone();
         let created = workspaces.create("Layout").await.expect("the workspace");
@@ -332,7 +332,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_host_with_no_device_founds_no_workspace() {
         let dir = tempfile::tempdir().expect("a state directory");
-        let (key, cert) = governor_with(DeviceCapabilities::member());
+        let (key, cert) = hosting_device_with(DeviceCapabilities::member());
         let server = test_host_in_the_clear(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces().clone();
         let refused = workspaces
@@ -361,7 +361,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_read_before_the_workspace_is_held_is_answered_on_its_way() {
         let dir = tempfile::tempdir().expect("a state directory");
-        let (key, cert) = governor_with(DeviceCapabilities::member());
+        let (key, cert) = hosting_device_with(DeviceCapabilities::member());
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces().clone();
         let id = uuid::Uuid::new_v4().to_string();

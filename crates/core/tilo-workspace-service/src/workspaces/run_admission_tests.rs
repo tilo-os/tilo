@@ -11,7 +11,9 @@ use std::sync::Arc;
 use super::super::MemberDevice;
 use super::super::PreAdmitRequest;
 use super::super::WorkspaceSummary;
-use super::super::fixtures::{TestHost, device_cert, governor, signed_pre_admission, test_host};
+use super::super::fixtures::{
+    TestHost, device_cert, hosting_device, signed_pre_admission, test_host,
+};
 use super::Refusal;
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -23,7 +25,7 @@ async fn shared(
     name: &str,
     seed: u8,
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
-    let (serving_key, serving_cert) = governor();
+    let (serving_key, serving_cert) = hosting_device();
     let serving = test_host(serving_state, &serving_key, &serving_cert).await;
     let created = serving
         .workspaces()
@@ -151,7 +153,7 @@ async fn a_run_admitted_for_another_person_is_refused() {
 #[tokio::test]
 async fn a_workspace_this_device_governs_admits_a_run_of_its_own_device() {
     let state = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(state.path(), &key, &cert).await;
     let created = host
         .workspaces()
@@ -178,7 +180,7 @@ async fn a_workspace_this_device_governs_admits_a_run_of_its_own_device() {
 #[tokio::test]
 async fn a_run_under_another_devices_certificate_is_a_foreign_devices() {
     let state = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(state.path(), &key, &cert).await;
     let created = host
         .workspaces()
@@ -268,7 +270,7 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
     use tilo_actions::remote::asked::{self, AskedBy, AskedFacts, Named};
     use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, RemoteActionTarget};
     let state = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(state.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let created = workspaces

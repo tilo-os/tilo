@@ -51,7 +51,7 @@ async fn refused_change_is_unseen(linked: &Linked, marker: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn governed_access_removes_a_live_person_without_widening_other_workspaces() {
+async fn member_list_access_removes_a_live_person_without_widening_other_workspaces() {
     let provider = TestUser::fresh("Provider");
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");

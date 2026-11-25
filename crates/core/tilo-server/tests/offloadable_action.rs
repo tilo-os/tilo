@@ -231,8 +231,8 @@ async fn invited(
 }
 
 /// `laptop`'s action service: it asks the workspace's other devices and answers
-/// nothing itself, and holds the workspace as the devices its governor
-/// certified.
+/// nothing itself, and keeps its copy of the workspace as its member list
+/// names the devices.
 fn asking_action_service(laptop: &TestDevice, host: &TestDevice, workspace: &str) -> ActionService {
     let now = std::time::SystemTime::now();
     let roster = vec![laptop.cert.clone(), host.cert.clone()];
@@ -323,7 +323,7 @@ async fn a_phone_asks_and_the_server_that_offers_compute_runs_the_action() {
     let tower = owner.enrol("tower", DeviceCapabilities::primary());
     let phone = owner.enrol("phone", DeviceCapabilities::member());
 
-    // The server governs the workspace and keeps its content: the
+    // The server serves the workspace and keeps its content: the
     // photographs are the workspace's, so the phone reads them exactly where
     // the server does.
     let hosted = serve_on(&owner, &tower, WorkSetting::own_person()).await;

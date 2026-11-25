@@ -289,7 +289,7 @@ browser-continuity = { path = "../../import/browser-continuity" }
 tilo-system-stats = { path = "../../os/system-stats" }
 # The broker that serves the socket this session's apps speak on, and the
 # provider service it asks for what the services publish. Its channel encryption
-# service governs the sealed channels a workspace's content is carried in.
+# service seals the channels a workspace's content is carried in.
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 # The fabric's portable vocabulary: who a device is, the stamp a fact carries, fresh ids.
@@ -567,7 +567,7 @@ test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # the broker admits Files.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }
 # A site's workspace as a site runs it: the host on this machine that
-# governs the workspace a join enrolls into, folding what its pages write,
+# serves the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.
 tilo-server = { path = "../../core/tilo-server", features = ["web"] }
 # What `NetworkManager` says, fed in rather than read from a bus.

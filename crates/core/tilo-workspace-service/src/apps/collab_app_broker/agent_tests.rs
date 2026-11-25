@@ -14,14 +14,14 @@ use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 mod agent_session;
 
 struct Native {
-    owner: tilo_peer_state::owner::NativeWorkspaceOwner,
+    owner: tilo_peer_state::owner::DeviceWorkspaces,
     key: SigningKey,
     certificate: tilo_user_identity::DeviceCert,
     origin: PolicyOrigin,
     cached_projection: Mutex<Option<tilo_desktop_model::Layout>>,
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
-    /// The workspace's governor records no effect receipt: one it is asked for
-    /// is refused, as a governor out of reach refuses it.
+    /// The workspace's host records no effect receipt: one it is asked for
+    /// is refused, as a host out of reach refuses it.
     receipts_refused: std::sync::atomic::AtomicBool,
     /// The owner is still opening, as a session's is at its start: health
     /// says so until it is open.
@@ -308,7 +308,7 @@ impl Fixture {
         let mut certificate = tilo_peer_state::owner::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),
             &key,
-            "Governor",
+            "Host",
         );
         // A device of the person's own runs the agents: a foreign one is held to the
         // workspace's cap, which no agent runs under.
@@ -499,7 +499,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
         .with_current(workspace_id(), |view| {
             let mut next = view.peer().clone();
             next.governance_mut()
-                .put_governed_grants(&[grant], &f.native.key, now)?;
+                .put_member_grants(&[grant], &f.native.key, now)?;
             Ok(vec![next.workspace_message()])
         })
         .unwrap();

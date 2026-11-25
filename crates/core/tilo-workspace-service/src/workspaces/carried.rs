@@ -1,4 +1,4 @@
-/// How a member's write reached the governor, which decides whether the
+/// How a member's write reached the host, which decides whether the
 /// service still has to keep what it carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Carried {

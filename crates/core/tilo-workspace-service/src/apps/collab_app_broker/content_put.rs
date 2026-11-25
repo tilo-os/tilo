@@ -7,7 +7,7 @@
 //! A put is decided at its own node, `tilo.content/…/put` in the workspace
 //! ([`put_node`]): workspace rules reach it as they reach any node, an app's
 //! rules do not. Puts are invisible to everyone until an action at its own
-//! node references them; this node governs storage and tagging only, and a
+//! node references them; this node decides storage and tagging only, and a
 //! successful put is never authority over any document.
 
 use std::sync::{Arc, Weak};

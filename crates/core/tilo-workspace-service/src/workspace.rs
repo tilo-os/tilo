@@ -24,7 +24,7 @@ pub type DeviceAccess = std::collections::BTreeMap<[u8; 32], tilo_action_policy:
 pub struct WorkspaceRuntime {
     /// The workspace this runtime is of, by the one id a workspace has.
     workspace_id: WorkspaceId,
-    /// Whether the workspace's governor follows its app surfaces arriving.
+    /// Whether the workspace's host follows its app surfaces arriving.
     pub(crate) followed: bool,
     /// The in-process authority serving this workspace, if any: it answers
     /// the workspace's calls.
@@ -44,7 +44,7 @@ pub struct WorkspaceRuntime {
     /// ([`crate::environment`]). Set when the list settles here and rebuilt from the
     /// durable list when the workspace is bound; never kept on disk. Both lists are
     /// sorted.
-    pub(crate) members: Arc<tilo_peer_state::GovernedAccess>,
+    pub(crate) members: Arc<tilo_peer_state::MemberListAccess>,
     /// The devices this workspace keeps as keys its person revoked: refused with how to approve
     /// another wherever they ask, until their person's approval admits a new key.
     pub(crate) revoked_keys: HashSet<[u8; 32]>,
@@ -78,7 +78,7 @@ impl WorkspaceRuntime {
     /// refuses its links, which re-check on the announced change.
     pub(crate) fn settle_members(
         &mut self,
-        mut members: tilo_peer_state::GovernedAccess,
+        mut members: tilo_peer_state::MemberListAccess,
         revoked: impl IntoIterator<Item = [u8; 32]>,
         device_access: Option<DeviceAccess>,
     ) {

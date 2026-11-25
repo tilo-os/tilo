@@ -167,7 +167,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             ),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::RedemptionImmutable => {
-                f.write_str("governed invitation has conflicting redemption receipts")
+                f.write_str("an invitation has conflicting redemption receipts")
             }
             Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
             Self::RefusalWriter => f.write_str("write refusal is not its recorder's own"),
@@ -290,7 +290,7 @@ pub fn admit_workspace_changes(
             // devices write theirs the same way.
             let grown = crate::members::growth(input.before, &candidate)
                 .map_err(WorkspaceRefusal::Membership)?;
-            let governed = if grown > 0 {
+            let hosted = if grown > 0 {
                 super::membership::admit_operations(
                     input.before,
                     &candidate,
@@ -319,7 +319,7 @@ pub fn admit_workspace_changes(
             } else {
                 false
             };
-            checked(&input, &candidate, governed)?;
+            checked(&input, &candidate, hosted)?;
             Ok(AdmittedWorkspace {
                 candidate,
                 rebased: false,
@@ -370,7 +370,7 @@ pub fn admit_workspace_changes(
 /// replica's own device, or the device it joined through) as a device of a
 /// person holding a role, or among the workspace's holders by its signed
 /// address. A document founded anywhere else names none of them, so it
-/// governs nothing here.
+/// changes nothing here.
 fn first_member_list(
     input: &WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
@@ -406,7 +406,7 @@ fn first_member_list(
         };
         tilo_failure::ignored!(
             "a device row that does not decode lists no device",
-            crate::state::GovernedIdentity::certificate_of(&bytes).ok()
+            crate::state::DeviceRow::certificate_of(&bytes).ok()
         )
         .is_some_and(|cert| {
             cert.device_public_key == *device
@@ -521,7 +521,7 @@ fn own_operations(
         .flat_map(|key| super::membership::values(candidate, &[], key))
         .filter_map(|bytes| {
             tilo_failure::ignored!(
-                "an operation that does not prove its author governs nothing",
+                "an operation that does not prove its author changes nothing",
                 crate::members::SignedMembershipOp::verified_stored(&bytes).ok()
             )
             .map(|(_, op)| op)
@@ -569,7 +569,7 @@ fn only_own_rows(
         |key: &str| match super::membership::winner(candidate, "peer_identities_v1", key) {
             Some(automerge::ScalarValue::Bytes(bytes)) => tilo_failure::ignored!(
                 "a device row that does not decode is no device's own",
-                crate::state::GovernedIdentity::decode(&bytes).ok()
+                crate::state::DeviceRow::decode(&bytes).ok()
             ),
             _ => None,
         };
@@ -704,7 +704,7 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
-    governed: bool,
+    hosted: bool,
 ) -> Result<(), WorkspaceRefusal> {
     let WorkspaceAdmission {
         before,
@@ -721,7 +721,7 @@ fn checked(
     if super::declared_workspace_mismatches(candidate, declared) {
         return Err(WorkspaceRefusal::DeclaredWorkspaceMismatch);
     }
-    if !governed && !super::governance_unchanged(before, candidate) {
+    if !hosted && !super::governance_unchanged(before, candidate) {
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
     if !keeps {

@@ -37,7 +37,7 @@ impl CollabLaunchHandoff {
 pub(super) struct VerifiedJoinIdentity {
     pub(super) user_public_key: [u8; 32],
     pub(super) device_public_key: [u8; 32],
-    /// A foreign device in a workspace it does not govern: its role is capped.
+    /// A foreign device, which the workspace does not admit: its role is capped.
     pub(super) capped: bool,
 }
 
@@ -310,7 +310,7 @@ pub(super) fn verify_join_presentation(
             .verify(&digest, &Signature::from_bytes(&proof))
             .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
     })?;
-    // Without an authority to ask who governs the workspace, every foreign device
+    // Without an authority to ask who hosts the workspace, every foreign device
     // is held to the cap; the caller refines this where it has one.
     Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
 }

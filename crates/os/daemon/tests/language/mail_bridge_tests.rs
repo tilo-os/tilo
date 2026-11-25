@@ -20,7 +20,7 @@ use tilo_workspace_service::work::{
 };
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, governor, record_grants, test_host_holding,
+    TestGroupKeys, hosting_device, record_grants, test_host_holding,
 };
 use tilolang_mail::test_support::{Rig, served};
 
@@ -39,7 +39,7 @@ async fn a_connected_mail_account_is_kept_where_the_bridge_reads_it() {
     // The workspace's own store, with no window and no app's package: what the account is kept
     // in is the one record, and the connector reads it there.
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {

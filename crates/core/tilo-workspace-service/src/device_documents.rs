@@ -1,7 +1,7 @@
 //! A device's own documents, as its workspace service holds them.
 //!
 //! The service answers the reads and writes its own roles make of the workspaces it holds:
-//! the ones it governs and the member copies it joined. A read is decided for the device the
+//! the ones it hosts and the member copies it joined. A read is decided for the device the
 //! service acts as, and a write is signed and sealed as that device, then committed through
 //! the service's one commit path, so it is kept, carried and published as any member's write
 //! is.

@@ -1,9 +1,9 @@
-//! What a workspace's governor records between the steps of a join, on every
-//! host that governs workspaces: a server, a cloud host or the device that made
+//! What a workspace's host records between the steps of a join, on every
+//! host that serves workspaces: a server, a cloud host or the device that made
 //! the workspace. One log, so a workspace is joined the same way wherever it is
 //! hosted.
 //!
-//! The cryptographic and governed-document contract is [`crate::join`]'s
+//! The cryptographic and member-list contract is [`crate::join`]'s
 //! and [`crate::governance`]'s. The log keeps the invitations a workspace
 //! issued, the challenges it handed out, the receipts of completed joins and
 //! of administration requests, with the request idempotency each exchange
@@ -55,7 +55,7 @@ pub const CHALLENGE_LIFETIME_NS: u64 = 60_000_000_000;
 /// The longest an invitation may stay redeemable.
 const MAX_INVITATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 
-/// Why the governor refused or failed a request.
+/// Why the host refused or failed a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinError {
     message: String,
@@ -165,8 +165,8 @@ impl<'a> From<PeerGuard<'a>> for PeerRef<'a> {
     }
 }
 
-/// The governed workspace a log answers for, as committed now.
-pub struct Governed<'a> {
+/// The workspace a log answers for, as committed now.
+pub struct Listed<'a> {
     /// The workspace's admitted state.
     pub peer: PeerRef<'a>,
     /// The device answering the join: a key holder of the workspace.
@@ -175,13 +175,13 @@ pub struct Governed<'a> {
     pub workspace_id: WorkspaceId,
     /// The workspace's committed generation.
     pub generation: u64,
-    /// Where a governor keeps the signed governance a joining member admits,
-    /// oldest first, when it keeps them apart from the replica; a governor
-    /// without one answers with its replica's own workspace document.
+    /// Where a host keeps the signed governance a joining member admits,
+    /// oldest first, when it keeps it apart from the workspace document; a host
+    /// without one answers with the document itself.
     pub governance_messages: Option<&'a dyn GovernanceMessages>,
 }
 
-/// Where a governor keeps the signed governance a joining member admits.
+/// Where a host keeps the signed governance a joining member admits.
 pub trait GovernanceMessages {
     /// That governance, oldest first.
     fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String>;
@@ -204,7 +204,7 @@ impl GovernanceMessages for crate::StatePeer {
     }
 }
 
-impl Governed<'_> {
+impl Listed<'_> {
     /// The bootstrap a device admitted as `role` with `invite_id` receives.
     pub fn bootstrap(
         &self,
@@ -277,7 +277,7 @@ impl Governed<'_> {
     }
 }
 
-/// The governor's key signing an invitation, and the nonce that makes this
+/// The host's key signing an invitation, and the nonce that makes this
 /// invitation unique.
 #[derive(Clone, Copy)]
 pub struct Signer<'a> {
@@ -297,7 +297,7 @@ pub struct Redeeming<'a> {
     pub admission: &'a [Vec<u8>],
 }
 
-/// What a workspace's governor keeps between the steps of its joins. Its bytes
+/// What a workspace's host keeps between the steps of its joins. Its bytes
 /// are part of the host's workspace record (postcard on a server): field order is
 /// the format, append only.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,7 +383,7 @@ impl JoinCompletionRecord {
     /// The reply this completion delivered, rebuilt from the workspace and
     /// answered only while its governance is unchanged. Once the workspace has
     /// moved on, the member refreshes through the membership challenge.
-    fn replay(&self, workspace: &Governed<'_>) -> Result<JoinBootstrap, JoinError> {
+    fn replay(&self, workspace: &Listed<'_>) -> Result<JoinBootstrap, JoinError> {
         if workspace.generation != self.bootstrap.generation {
             return Err(JoinError::refresh());
         }
@@ -528,13 +528,13 @@ impl JoinLog {
     /// The request does not encode.
     pub fn completed_entry(
         &mut self,
-        governed: &Governed<'_>,
+        hosted: &Listed<'_>,
         device_cert: &DeviceCert,
         request_id: [u8; 32],
         entry: [u8; 32],
         role: Role,
     ) -> Result<JoinBootstrap, JoinError> {
-        let admitted = governed.admission(entry, device_cert.clone(), role);
+        let admitted = hosted.admission(entry, device_cert.clone(), role);
         let digest = request_digest(&(device_cert.device_public_key, request_id))?;
         self.join_completions.push(JoinCompletionRecord::receipt(
             device_cert.device_public_key,
@@ -581,10 +581,10 @@ impl JoinLog {
     }
 
     /// Record an invitation `request` asks of `workspace`, signed by `signer` (the
-    /// workspace's governor) and reached through `transport`.
+    /// workspace's host) and reached through `transport`.
     pub fn issue(
         &mut self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
         transport: Vec<TransportHint>,
@@ -617,7 +617,7 @@ impl JoinLog {
     /// request's role.
     pub fn issue_as(
         &mut self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
         makes_administrator: bool,
@@ -824,7 +824,7 @@ impl JoinLog {
     /// Open the exact invitation named by a native link for the dialling device.
     pub fn resolve_invitation(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         reference: &crate::join::native::InvitationRef,
         device: &DeviceCert,
         remote_endpoint: [u8; 32],
@@ -903,7 +903,7 @@ impl JoinLog {
     /// issued and has not cancelled.
     pub fn inspect(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         signed_invitation: &[u8],
         now: u64,
     ) -> Result<VerifiedJoin, JoinError> {
@@ -920,7 +920,7 @@ impl JoinLog {
     /// challenge is open answers that challenge.
     pub fn challenge(
         &mut self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         remote_endpoint: [u8; 32],
         request: JoinChallengeRequest,
         nonce: [u8; 32],
@@ -989,7 +989,7 @@ impl JoinLog {
     /// ([`crate::join::JOIN_COMPLETED_REFRESH`]).
     pub fn completed(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
         proof_digest: [u8; 32],
@@ -1035,7 +1035,7 @@ impl JoinLog {
     /// or does not verify, or the invitation is no longer redeemable.
     pub fn redeem(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         remote_endpoint: [u8; 32],
         proof: &JoinProof,
         now: u64,
@@ -1083,7 +1083,7 @@ impl JoinLog {
     /// another workspace's, or it was spent or cancelled.
     pub fn redeem_on_connection(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         signed_invitation: &[u8],
         cert: &DeviceCert,
         request_id: [u8; 32],
@@ -1159,10 +1159,10 @@ impl JoinLog {
     /// answers for it from now on, with the challenge it proved and the
     /// invitation it spent let go. Answers each join's admission or refusal,
     /// in order: its bootstrap without the workspace's state, which
-    /// [`Governed::filled`] adds for a device the bootstrap is sent to.
+    /// [`Listed::filled`] adds for a device the bootstrap is sent to.
     pub fn complete(
         &mut self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         joins: &[Redeeming<'_>],
         refusals: &[Option<JoinError>],
     ) -> Result<Vec<Result<JoinBootstrap, JoinError>>, JoinError> {
@@ -1204,7 +1204,7 @@ impl JoinLog {
     /// request asked again while its challenge is open answers that challenge.
     pub fn membership_challenge(
         &mut self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         remote_endpoint: [u8; 32],
         request: MembershipChallengeRequest,
         nonce: [u8; 32],
@@ -1254,7 +1254,7 @@ impl JoinLog {
     /// sent it and the workspace's revocations.
     fn proven_membership(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         remote_endpoint: [u8; 32],
         request: &MembershipCompleteRequest,
         now: u64,
@@ -1291,7 +1291,7 @@ impl JoinLog {
     /// As [`Self::membership_complete`].
     pub fn membership_device(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         remote_endpoint: [u8; 32],
         request: &MembershipCompleteRequest,
         now: u64,
@@ -1304,7 +1304,7 @@ impl JoinLog {
     /// against a challenge this workspace issued.
     pub fn membership_complete(
         &self,
-        workspace: &Governed<'_>,
+        workspace: &Listed<'_>,
         remote_endpoint: [u8; 32],
         request: &MembershipCompleteRequest,
         now: u64,

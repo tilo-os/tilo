@@ -3,7 +3,7 @@
 //! whether or not it runs agents, so this is not part of `applications`.
 
 use super::sealed_documents::DocumentKeys;
-use super::{CollaborationError, GovernedWorkspace, Workspaces, system_time};
+use super::{CollaborationError, HostedWorkspace, Workspaces, system_time};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::StatePeer;
 use tilo_user_identity::DeviceCert;
@@ -47,17 +47,17 @@ impl Workspaces {
     ) -> Result<R, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        if &governed.record.owner != holder {
+        let mut hosted = state.lock().await;
+        if &hosted.record.owner != holder {
             // Every other holder its member list names writes it too: each
             // keeps a writable copy.
-            super::holding::require_holder(&governed.peer(), holder)?;
+            super::holding::require_holder(&hosted.peer(), holder)?;
         }
-        governed
+        hosted
             .peer()
             .workspace()
             .check_workspace_administration(holder.device_public_key, system_time(now))?;
-        let record = self.hold_record(&governed, (app, name)).await?;
+        let record = self.hold_record(&hosted, (app, name)).await?;
         // Build the change on the workspace as it stands, with its copy locked
         // from the build to the commit, the staging the workspace's other
         // changes use. The link takes members' writes into that same copy
@@ -66,7 +66,7 @@ impl Workspaces {
         // commit is then refused for history it was not built on. Locked here,
         // a write the link takes in meanwhile waits for this commit, which
         // publishes it with this change.
-        let (result, written) = governed
+        let (result, written) = hosted
             .change(
                 &self.inner.host.key,
                 system_time(now),
@@ -86,9 +86,9 @@ impl Workspaces {
         if written.is_empty() {
             return Ok(result);
         }
-        self.settle(&mut governed).await?;
-        self.carry_written(governed.workspace_id(), &written)?;
-        drop(governed);
+        self.settle(&mut hosted).await?;
+        self.carry_written(hosted.workspace_id(), &written)?;
+        drop(hosted);
         // What this device wrote itself reaches whoever follows the record, as a member's write
         // does: an agent the host adds is answered without a restart.
         self.wrote(workspace, app, name);
@@ -126,7 +126,7 @@ impl Workspaces {
     /// be opened.
     pub(super) async fn hold_record(
         &self,
-        workspace: &GovernedWorkspace,
+        workspace: &HostedWorkspace,
         (app, name): (&str, &str),
     ) -> Result<HeldRecord, CollaborationError> {
         let write = self

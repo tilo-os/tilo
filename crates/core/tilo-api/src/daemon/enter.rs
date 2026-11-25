@@ -583,7 +583,7 @@ pub async fn log_in_at(
 }
 
 /// The workspaces of `person`'s the server `session` reached keeps: what it answers its own
-/// `workspace.list` with, each one it governs whose people name them. The person's list in their
+/// `workspace.list` with, each one it hosts whose people name them. The person's list in their
 /// own workspace is not read: a server that keeps a workspace for them (its operator made them
 /// its owner, or an invitation let them in) holds their own workspace only when it made it, and
 /// a computer that holds their root keeps that one itself.

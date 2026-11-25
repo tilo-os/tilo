@@ -488,7 +488,7 @@ impl AclHandle {
         })
     }
 
-    /// Whether moving this path would move a governed file tree out of its scope.
+    /// Whether moving this path would move a workspace file tree out of its scope.
     pub(crate) fn protects_workspace_tree(&self, path: &str) -> bool {
         self.acl.read().map_or(true, |acl| {
             acl.bindings

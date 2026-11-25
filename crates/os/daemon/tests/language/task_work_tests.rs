@@ -22,7 +22,7 @@ mod session_tests {
     use tilo_workspace_service::agents::{EngineActions, Outcome, WorkspaceActionProvider};
     use tilo_workspace_service::workspaces::Workspaces;
     use tilo_workspace_service::workspaces::fixtures::{
-        TestGroupKeys, TestHost, governor, test_host_holding,
+        TestGroupKeys, TestHost, hosting_device, test_host_holding,
     };
 
     use super::super::mount;
@@ -273,7 +273,7 @@ mod session_tests {
     impl Host {
         async fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let (key, cert) = governor();
+            let (key, cert) = hosting_device();
             let host =
                 test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default()))
                     .await;

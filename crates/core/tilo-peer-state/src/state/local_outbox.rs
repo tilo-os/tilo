@@ -217,7 +217,7 @@ impl PeerOutbox<'_> {
 
     /// Draft the renewals of `originals`, sealed writes of `selected` still in
     /// ownership, for `selected` to sign and [`PeerOutboxMut::admit_sealed_renewal`]
-    /// to admit: each one due expired before the governor's watermark retired
+    /// to admit: each one due expired before the host's watermark retired
     /// it. `reseal` is the channel's key holder: it returns the payload to
     /// carry under the channel's current epoch, or refuses. A renewal keeps
     /// its original's artifact, attestation and class, and is drafted at

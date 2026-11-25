@@ -25,7 +25,7 @@ use tilo_user_identity::{
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{Answering, answered, caller, settled};
 use crate::workspaces::fixtures::list_itself_on_link;
-use crate::workspaces::tests::{governor, guest_device, test_host};
+use crate::workspaces::tests::{guest_device, hosting_device, test_host};
 use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
 
 /// `request` by `caller` on the connection `device` certified to the host, answered by its
@@ -191,7 +191,7 @@ async fn access(
 )]
 async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -331,7 +331,7 @@ const MANY: usize = 24;
 #[tokio::test]
 async fn a_person_may_keep_many_workspaces_of_their_own_and_they_stay_quick() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
@@ -417,7 +417,7 @@ async fn a_person_may_keep_many_workspaces_of_their_own_and_they_stay_quick() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_of_a_persons_devices_asking_at_once_are_answered_one_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
@@ -466,7 +466,7 @@ async fn two_of_a_persons_devices_asking_at_once_are_answered_one_workspace() {
 #[tokio::test]
 async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_how_many() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
@@ -521,7 +521,7 @@ async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_ho
 #[tokio::test]
 async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
@@ -568,7 +568,7 @@ async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
 )]
 async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
@@ -701,7 +701,7 @@ async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them()
 #[tokio::test]
 async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspaces() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     // Nobody answers: the grant's own scope, which its person signed, is their yes to making a
@@ -820,7 +820,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
 #[tokio::test]
 async fn an_agent_asks_before_a_host_operation_its_certificate_does_not_grant() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
@@ -891,7 +891,7 @@ async fn an_agent_asks_before_a_host_operation_its_certificate_does_not_grant() 
 #[tokio::test]
 async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces
@@ -940,7 +940,7 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
 #[tokio::test]
 async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_none() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
@@ -1101,7 +1101,7 @@ async fn govern(
 async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own() {
     use tilo_actions::remote::WORKSPACE_INVITE;
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
@@ -1116,7 +1116,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     join(workspaces, &created, (&backend_key, &backend)).await;
     let workspace = &created.workspace;
 
-    // It governs as Ada does: she owns the workspace, so it invites at
+    // It administers as Ada does: she owns the workspace, so it invites at
     // whatever role she may give.
     let invite = |role: &str| json!({ "role": role });
     govern(
@@ -1215,7 +1215,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
 #[tokio::test]
 async fn a_key_of_the_person_a_workspace_was_handed_to_enters_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
@@ -1254,7 +1254,7 @@ async fn a_key_of_the_person_a_workspace_was_handed_to_enters_it() {
 #[tokio::test]
 async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_people_in() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
@@ -1401,7 +1401,7 @@ async fn listed_for(
 async fn people_are_named_as_people_and_their_listing_names_what_they_were_invited_into() {
     use tilo_actions::remote::WORKSPACE_INVITE;
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
@@ -1560,7 +1560,7 @@ fn delete_request(workspace: &str) -> InvokeRequest {
 #[tokio::test]
 async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
@@ -1668,7 +1668,7 @@ async fn held_host() -> (
     tempfile::TempDir,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     workspaces
@@ -1726,7 +1726,7 @@ async fn held_host() -> (
 async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
     use tilo_server_protocol::directory::EntryJoin;
 
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let dir = tempfile::tempdir().unwrap();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
@@ -2068,7 +2068,7 @@ async fn subscribe(
 #[tokio::test]
 async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -2116,7 +2116,7 @@ async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
 #[tokio::test]
 async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_stays_in() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -2170,7 +2170,7 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
 #[tokio::test]
 async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(workspaces);
@@ -2242,7 +2242,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
 async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device_joined() {
     use tilo_actions::remote::WORKSPACE_INVITE;
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;

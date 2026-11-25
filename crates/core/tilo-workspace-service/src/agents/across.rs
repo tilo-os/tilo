@@ -31,12 +31,12 @@
 //! - `no_device`: the workspace admits them on no device of their own now. A device this
 //!   server placed itself for a workspace's window is certified in a person's name and is
 //!   often the newest they have there, and this server's own device is a member of every
-//!   workspace it governs. Neither is ever the device a read for a person acts as, so a
+//!   workspace it hosts. Neither is ever the device a read for a person acts as, so a
 //!   person with no other device there is on none. A server that was not told which devices
 //!   it placed (`knowing_placed` of this server's agents) cannot tell them apart and says the
 //!   same of every workspace;
 //! - `another_server`: the person's own list of their workspaces names it and this server
-//!   does not govern it ([`Workspaces::kept_elsewhere`]).
+//!   does not host it ([`Workspaces::kept_elsewhere`]).
 //!
 //! A workspace the person is no member of is not in the list, whether it exists or not.
 

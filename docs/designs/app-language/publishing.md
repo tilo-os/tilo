@@ -154,12 +154,12 @@ with no external registry account, no domain DNS proof, and no external review q
 - **Storage and sync**: the signed `.tapp` is stored as a `WorkspacePackage` resource inside
   the workspace's document tree, with its immutable payload blob synced over the workspace's
   existing peer network. It works offline and on a LAN with no external server.
-- **Roles and visibility**: governed by workspace roles and `action-policy`:
+- **Roles and visibility**: decided by workspace roles and `action-policy`:
   - Publishing, upgrading, or retiring a workspace package requires the workspace's publish
     grant (by default workspace owners and admins, or members granted
     `workspace.packages.publish`).
   - Once published, the app appears immediately in search, the launcher, and "New…" for every
-    member of that workspace, governed by ordinary workspace resource permissions.
+    member of that workspace, under ordinary workspace resource permissions.
 - **Upgrades and retirement**:
   - Publishing version `0.2.0` checks `app.ids` compatibility against `0.1.0`, re-checks any
     dependent workspace views or packages (`authority.md`), and advances the workspace's pinned

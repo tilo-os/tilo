@@ -317,7 +317,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_learns_uses_and_forgets_a_fact_only_for_the_person_it_is_about() {
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::workspaces::fixtures::governor();
+        let (key, cert) = crate::workspaces::fixtures::hosting_device();
         let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
         let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Launch").await.unwrap().workspace;

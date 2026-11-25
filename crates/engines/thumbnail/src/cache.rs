@@ -294,7 +294,7 @@ impl ThumbCache {
             .map(|address| address.trim().to_ascii_lowercase())
             .filter(|address| tilo_content::valid_hash(address))
             .collect();
-        // A store that governs its own retention reports unsupported; the
+        // A store that manages its own retention reports unsupported; the
         // index is still bounded.
         let _ = self.store.collect_unreferenced(&live);
     }

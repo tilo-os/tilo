@@ -661,8 +661,8 @@ async fn admit_scribe(workspaces: &Workspaces, workspace: &str) -> (SigningKey, 
         let Ok(state) = workspaces.workspace(workspace).await else {
             unreachable!("the workspace the devices share is held")
         };
-        let governed = state.lock().await;
-        if governed
+        let hosted = state.lock().await;
+        if hosted
             .peer()
             .governance_mut()
             .admit_agent(cert.clone(), delegation, &key, tilo_clock::wall())

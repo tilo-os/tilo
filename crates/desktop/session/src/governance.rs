@@ -138,7 +138,7 @@ impl crate::Shared {
             let mut changed = false;
             for workspace in workspaces {
                 // The workspace's one name, which the shell keeps none of its own of.
-                if let Some(name) = self.governing_name(workspace.id()) {
+                if let Some(name) = self.listed_name(workspace.id()) {
                     changed |= workspace.named_as(&name);
                 }
                 let Ok(policy) = view.policy(&workspace.id().to_string()) else {
@@ -179,22 +179,22 @@ impl crate::Shared {
 /// back, so it goes. Whether the shell's workspace changed.
 fn project_sandbox(
     workspace: &mut Workspace,
-    mut governed: Vec<collab_types::caps::CapOverride>,
+    mut listed: Vec<collab_types::caps::CapOverride>,
 ) -> bool {
-    governed.extend(
+    listed.extend(
         workspace
             .sandbox
             .iter()
             .filter(|capability| !capability.is_durable())
             .cloned(),
     );
-    governed.sort_by(|a, b| a.id.cmp(&b.id));
+    listed.sort_by(|a, b| a.id.cmp(&b.id));
     let mut held = workspace.sandbox.clone();
     held.sort_by(|a, b| a.id.cmp(&b.id));
-    if held == governed {
+    if held == listed {
         return false;
     }
-    workspace.sandbox = governed;
+    workspace.sandbox = listed;
     true
 }
 

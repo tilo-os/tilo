@@ -791,7 +791,7 @@ pub(super) fn serve(
     router.accept(ACTIONS_ALPN, actions).spawn()
 }
 
-/// A daemon of the person's device with no login, governing the workspace it founded, issues a
+/// A daemon of the person's device with no login, hosting the workspace it founded, issues a
 /// ticket; a second computer logs in with it and enters that workspace. The second computer runs on
 /// an operating system Tilo does not control, as it reports logging in, so the root adds it as
 /// foreign, whatever the issuer's own certificate says.
@@ -2503,7 +2503,7 @@ async fn a_tab_the_root_signs_in_is_listed_with_the_persons_devices() {
     let record = tilo_identity::store::resolve_active_identity(identity.path())
         .expect("the imported root is the active identity");
     let _root_kept_here = super::services::root_record_for_test(record);
-    // The device that keeps it: its service governs the person's own workspace here, where the
+    // The device that keeps it: its service hosts the person's own workspace here, where the
     // record of their devices is.
     let state = tempfile::tempdir().unwrap();
     let (key, cert) = enrol(&root, "laptop", DeviceCapabilities::primary());

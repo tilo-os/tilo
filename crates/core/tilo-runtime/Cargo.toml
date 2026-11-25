@@ -246,7 +246,7 @@ tilo-actions = { path = "../actions", features = ["test-support"] }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
-# The governor whose workspaces a runtime joins.
+# The host whose workspaces a runtime joins.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
 ed25519-dalek.workspace = true

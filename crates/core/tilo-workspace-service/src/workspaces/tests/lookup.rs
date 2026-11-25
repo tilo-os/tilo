@@ -1,4 +1,4 @@
-//! Answering a governed workspace by its id, however many the host serves.
+//! Answering a hosted workspace by its id, however many the host serves.
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"
@@ -6,15 +6,15 @@
 
 use super::*;
 
-/// Every governed workspace answers for its own id, whatever else this host
-/// governs: the lookup is by id, not by looking through the rest. A
+/// Every hosted workspace answers for its own id, whatever else this host
+/// serves: the lookup is by id, not by looking through the rest. A
 /// workspace deleted here answers nothing by its id, and the ones left still
 /// answer theirs.
 #[tokio::test]
-async fn a_host_answers_each_governed_workspace_by_its_own_id() {
+async fn a_host_answers_each_listed_workspace_by_its_own_id() {
     use tilo_actions::remote::Caller;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let member_key = SigningKey::from_bytes(&[3; 32]);

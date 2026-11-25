@@ -135,11 +135,11 @@ pub enum ServiceError {
     /// Filesystem I/O.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// Governed workspace admission could not be reconciled safely.
-    #[error("governed access: {0}")]
-    GovernedAccess(String),
+    /// Member-list admission could not be reconciled safely.
+    #[error("member list: {0}")]
+    MemberListAccess(String),
     /// The workspaces could not be opened.
-    #[error("governed workspaces: {0}")]
+    #[error("workspaces: {0}")]
     Workspaces(String),
     /// A member's handshake failed.
     #[error("handshake: {0}")]
@@ -195,7 +195,7 @@ fn no_actions() -> Arc<dyn AppActionServer> {
 
 /// A service's workspaces: their signed member lists, and the app action server answering
 /// their actions.
-pub struct Governed {
+pub struct Listed {
     pub workspaces: crate::workspaces::Workspaces,
     pub(crate) actions: Arc<dyn AppActionServer>,
 }
@@ -225,7 +225,7 @@ impl ServiceSessions {
             &WorkspaceRegistry,
             Option<Arc<dyn AppActionServer>>,
         ) -> Option<Arc<dyn AppActionServer>>,
-    ) -> Result<(Self, Option<Governed>), ServiceError> {
+    ) -> Result<(Self, Option<Listed>), ServiceError> {
         validate_service_device_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces = empty_registry();
@@ -246,7 +246,7 @@ impl ServiceSessions {
             !handshake_trust.allow_any && identity.device_cert.capabilities.holds_workspace_keys();
         let governance = founds.then(crate::workspaces::ServiceWorkspaceActions::new);
         let own_server = match &governance {
-            Some(governance) => Some(Arc::new(crate::workspaces::GovernedServer {
+            Some(governance) => Some(Arc::new(crate::workspaces::HostActionServer {
                 governance: governance.clone(),
                 apps: cfg.apps.clone(),
             }) as Arc<dyn AppActionServer>),
@@ -334,7 +334,7 @@ impl ServiceSessions {
             .map_err(ServiceError::Workspaces)?;
         Ok((
             sessions,
-            Some(Governed {
+            Some(Listed {
                 workspaces,
                 actions: own_server.unwrap_or_else(no_actions),
             }),
@@ -390,7 +390,7 @@ impl ServiceSessions {
         }
     }
 
-    /// What the workspaces a service governs take from it: its workspaces' registry,
+    /// What the workspaces a service hosts take from it: its workspaces' registry,
     /// access, records, identity and live trust, and `cfg`'s workspace settings.
     fn workspace_services(
         &self,
@@ -445,8 +445,8 @@ impl ServiceSessions {
     }
 
     /// What settles each workspace's member list onto the service's links.
-    pub(crate) fn access_writer(&self) -> GovernedAccessWriter {
-        GovernedAccessWriter {
+    pub(crate) fn access_writer(&self) -> MemberListAccessWriter {
+        MemberListAccessWriter {
             workspaces: self.workspaces.clone(),
             handshake_trust: self.handshake_trust.clone(),
             state_root: self.state_root.clone(),
@@ -480,7 +480,7 @@ impl ServiceSessions {
     }
 }
 
-/// The handlers of a governing service's ALPNs, shared between the routers
+/// The handlers of a hosting service's ALPNs, shared between the routers
 /// that register them.
 fn service_handlers(
     sessions: &ServiceSessions,
@@ -730,7 +730,7 @@ impl WorkspaceService {
                 "a service admitting anyone keeps no workspaces".into(),
             ));
         }
-        let (sessions, governed) = Box::pin(ServiceSessions::open(
+        let (sessions, hosted) = Box::pin(ServiceSessions::open(
             cfg,
             identity,
             endpoint,
@@ -738,10 +738,10 @@ impl WorkspaceService {
             |_, server| server,
         ))
         .await?;
-        let Some(Governed {
+        let Some(Listed {
             workspaces,
             actions,
-        }) = governed
+        }) = hosted
         else {
             return Err(ServiceError::Workspaces(
                 "the service's certificate holds no workspace keys, and it keeps no member copies"
@@ -887,7 +887,7 @@ impl WorkspaceService {
     /// through to their files first: that write-through is deferred, so a
     /// service stopped without this would end with a record a member wrote only
     /// in memory. A start replays what the server retains, but it takes a
-    /// write only into a record its governor already holds
+    /// write only into a record its host already keeps
     /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
     pub async fn shutdown(&self) {
         self.workspaces.keep_what_was_followed().await;
@@ -1061,7 +1061,7 @@ impl ProtocolHandler for Deferred {
 /// Nothing of it is kept on disk: the list is the workspace's own, and each start reads it
 /// again.
 #[derive(Clone)]
-pub(crate) struct GovernedAccessWriter {
+pub(crate) struct MemberListAccessWriter {
     workspaces: WorkspaceRegistry,
     handshake_trust: HandshakeTrust,
     state_root: PathBuf,
@@ -1071,7 +1071,7 @@ pub(crate) struct GovernedAccessWriter {
     environments: crate::environment::EnvironmentRegistry,
 }
 
-impl GovernedAccessWriter {
+impl MemberListAccessWriter {
     pub(crate) fn state_root(&self) -> &std::path::Path {
         &self.state_root
     }
@@ -1098,7 +1098,7 @@ impl GovernedAccessWriter {
     pub(crate) async fn settle(
         &self,
         workspace_id: WorkspaceId,
-        mut access: tilo_peer_state::GovernedAccess,
+        mut access: tilo_peer_state::MemberListAccess,
         revoked: Vec<[u8; 32]>,
         device_access: crate::workspace::DeviceAccess,
     ) -> Result<(), ServiceError> {
@@ -1132,7 +1132,7 @@ impl GovernedAccessWriter {
         let workspace = self.workspaces.lock().await.get(&workspace_id).cloned();
         if let Some(workspace) = workspace {
             workspace.lock().await.settle_members(
-                tilo_peer_state::GovernedAccess::default(),
+                tilo_peer_state::MemberListAccess::default(),
                 [],
                 None,
             );
@@ -1301,7 +1301,7 @@ pub struct ServerProtocol {
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
-    /// Set once when the service governs workspaces: what its links answer a
+    /// Set once when the service hosts workspaces: what its links answer a
     /// device's workspace administration with.
     pub admin: Arc<std::sync::OnceLock<Arc<crate::workspaces::Workspaces>>>,
     pub agents: crate::registry::AgentRegistry,
@@ -1352,7 +1352,7 @@ impl ServerProtocol {
         self.app_serving.as_deref()?.pages()
     }
 
-    /// The direct links of the workspaces this server governs, when it governs
+    /// The direct links of the workspaces this server hosts, when it hosts
     /// any: what a device's link to them is served by
     /// ([`tilo_peer_state::direct::Serving::serve_link`]) over the browser's
     /// transport as much as over iroh.
@@ -1362,7 +1362,7 @@ impl ServerProtocol {
     }
 
     /// The action service this server's workspaces answer their devices'
-    /// requests on, when it governs any: what the same service serves on a
+    /// requests on, when it hosts any: what the same service serves on a
     /// device's link ([`tilo_peer_state::actions::ACTIONS_ALPN`]).
     #[must_use]
     pub fn actions(&self) -> Option<tilo_peer_state::actions::ActionService> {

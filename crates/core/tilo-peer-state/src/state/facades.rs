@@ -8,16 +8,16 @@
 //! reaches the peer's core through it that the peer did not already expose.
 use super::StatePeer;
 
-/// What a peer's workspace governs, read side: who may read, name and write
-/// its checkpoints, run its tasks and administer it, and the roots its effect
-/// history and checkpoints currently stand at.
+/// What a peer's workspace's governance decides, read side: who may read,
+/// name and write its checkpoints, run its tasks and administer it, and the
+/// roots its effect history and checkpoints currently stand at.
 #[derive(Clone, Copy)]
 pub struct PeerWorkspace<'peer> {
     pub(crate) peer: &'peer StatePeer,
 }
 
-/// What a peer's workspace governs, write side: effect receipts, checkpoint
-/// and effect-history roots, task commands and membership commands.
+/// What a peer's workspace's governance changes, write side: effect receipts,
+/// checkpoint and effect-history roots, task commands and membership commands.
 pub struct PeerWorkspaceMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }
@@ -77,7 +77,7 @@ impl StatePeer {
         PeerGovernanceMut { peer: self }
     }
 
-    /// Check against, or read, the workspace this peer's workspace governs.
+    /// Check against, or read, the workspace this peer holds.
     #[must_use]
     pub fn workspace(&self) -> PeerWorkspace<'_> {
         PeerWorkspace { peer: self }

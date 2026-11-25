@@ -6,7 +6,7 @@
 //! and a person's own folder reaches their own server whole). The bounds are
 //! policy, and only policy: the workspace's owners may say how large one file
 //! may be and how much one member's files may take, now and in any hour, and a
-//! host's person may say how much the host keeps for each workspace it governs
+//! host's person may say how much the host keeps for each workspace it hosts
 //! ([`crate::KeptLimits::workspace_bytes`], the server's own setting). A limit
 //! nobody set is no limit at all: nothing here is a compiled-in ceiling, and a
 //! limit set once is obeyed by every host of the workspace, including after a

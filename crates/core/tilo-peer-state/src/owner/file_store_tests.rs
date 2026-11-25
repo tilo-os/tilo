@@ -7,7 +7,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 use super::{index_of, part_bytes, parts_of};
-use crate::owner::{NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing};
+use crate::owner::{DeviceWorkspaces, WorkspaceId, open_file, read_file, testing};
 use ed25519_dalek::SigningKey;
 use std::{
     cell::Cell,
@@ -203,7 +203,7 @@ fn a_workspace_costs_its_own_record() {
 
     // A second person joins a workspace: the record this device keeps of it
     // is what a workspace with two people costs.
-    let _governor = testing::add_interactive_device(&owner, &key, &device).unwrap();
+    let _owner = testing::add_interactive_device(&owner, &key, &device).unwrap();
     let record = read_file(&path).unwrap();
     let joined = workspace(testing::WORKSPACE);
     let joined_bytes = part_bytes(record.workspaces.get(&joined).unwrap())
@@ -335,7 +335,7 @@ fn a_later_change_appends_to_its_workspace_journal() {
     let record = read_file(&path).unwrap();
     assert_eq!(record.revision(), revision);
     let reopened = open_file(&path).unwrap();
-    let held = |reopened: &NativeWorkspaceOwner, record: &str| {
+    let held = |reopened: &DeviceWorkspaces, record: &str| {
         reopened
             .with_current(founded, |view| {
                 Ok(view.peer().document("so.tilo.chat", record).is_some())
@@ -364,7 +364,7 @@ fn a_journal_entry_cut_short_is_not_part_of_the_record() {
     std::fs::write(parts_of(&path).join(name), torn).unwrap();
 
     let reopened = open_file(&path).unwrap();
-    let held = |owner: &NativeWorkspaceOwner, record: &str| {
+    let held = |owner: &DeviceWorkspaces, record: &str| {
         owner
             .with_current(founded, |view| {
                 Ok(view.peer().document("so.tilo.chat", record).is_some())

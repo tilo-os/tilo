@@ -19,7 +19,7 @@ use tilo_compositor::InputEvent;
 use tilo_desktop_model::WorkspaceId;
 use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::join::Role;
-use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
+use tilo_peer_state::owner::{self, DeviceWorkspaces};
 use tilo_session::Session;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::invite::InviteApp;
@@ -42,13 +42,13 @@ fn settle(session: &mut Session) {
 }
 
 /// Who `owner` 's copy of `workspace` has in it, by person, in the part each holds.
-fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, Option<Role>)> {
+fn members(owner: &DeviceWorkspaces, workspace: WorkspaceId) -> Vec<(String, Option<Role>)> {
     owner
         .with_current(workspace, |view| {
             let members = view
                 .peer()
                 .governance()
-                .governed_members(SystemTime::now())?
+                .member_list(SystemTime::now())?
                 .members;
             Ok(members
                 .into_iter()
@@ -70,7 +70,7 @@ fn joins_with(
     workspace: WorkspaceId,
     cert: &DeviceCert,
     key: &SigningKey,
-) -> Result<NativeWorkspaceOwner, String> {
+) -> Result<DeviceWorkspaces, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

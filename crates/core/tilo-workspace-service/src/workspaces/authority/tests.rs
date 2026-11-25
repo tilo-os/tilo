@@ -10,7 +10,7 @@ use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesReq
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::workspaces::PersonNames as _;
-use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
+use crate::workspaces::tests::{guest_device, hosting_device, signed_pre_admission, test_host};
 use crate::workspaces::{
     IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest, SetMemberRoleRequest,
     WaitListMail, WaitListSecrets, WaitListed, Workspaces,
@@ -121,7 +121,7 @@ async fn page_role_assignments_change_the_documents_key_holders() {
     use tilo_action_policy::Change;
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -259,7 +259,7 @@ async fn check_default_access_rules(workspaces: &Workspaces, workspace: &str, ow
 #[tokio::test]
 async fn a_page_deletes_a_workspace_of_its_own_with_nobody_else_in_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -308,7 +308,7 @@ async fn a_page_deletes_a_workspace_of_its_own_with_nobody_else_in_it() {
     );
     assert!(
         workspaces.summary(&workspace).await.is_err(),
-        "a deleted workspace is not governed here"
+        "a deleted workspace is not hosted here"
     );
     let WorkspacesReply::Workspaces(listed) = workspaces
         .page_workspaces(&owner, WorkspacesRequest::List)
@@ -326,7 +326,7 @@ async fn a_page_deletes_a_workspace_of_its_own_with_nobody_else_in_it() {
 #[tokio::test]
 async fn an_address_left_at_the_entry_is_on_the_wait_list_and_never_a_person_to_admit() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -430,7 +430,7 @@ async fn bo_confirmed_beside_cy(
 #[tokio::test]
 async fn a_mailed_invitation_names_who_asked_as_the_workspace_names_them() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -498,7 +498,7 @@ async fn mailed_inviter(
 #[tokio::test]
 async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_leaves_on_joining() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -514,7 +514,7 @@ async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_lea
 #[tokio::test]
 async fn an_invitation_sent_off_the_wait_list_says_so() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -711,7 +711,7 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
     use sha2::Digest as _;
     let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -807,7 +807,7 @@ async fn a_timed_out_invitation_acknowledgement_keeps_the_reservation() {
 
 async fn uncertain_invitation_mail(timeout: bool) {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let shutdown = {
         let server = test_host(dir.path(), &key, &owner).await;
         assert_uncertain_invitation_mail(server.workspaces(), &owner, timeout).await;
@@ -886,7 +886,7 @@ async fn assert_uncertain_invitation_mail(
 #[tokio::test]
 async fn pending_removal_returns_only_a_private_stable_contact_digest() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let shutdown = {
         let server = test_host(dir.path(), &key, &owner).await;
         assert_pending_removal_contact_digest(server.workspaces()).await;
@@ -984,7 +984,7 @@ const fn listed_at_once(removal: u8) -> WaitListSecrets {
 #[tokio::test]
 async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_shows_them() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1059,7 +1059,7 @@ fn keyed_device_of(
 #[tokio::test]
 async fn a_declared_owner_carries_the_name_they_were_declared_with() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1163,7 +1163,7 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
 #[tokio::test]
 async fn an_administrator_governs_within_their_role_without_further_grants() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1207,7 +1207,7 @@ async fn an_administrator_rules_every_member_but_administrators(
         .unwrap();
 }
 
-/// An Editor by role alone still governs nothing, and the owner unmaking the
+/// An Editor by role alone still decides nothing, and the owner unmaking the
 /// administrator takes it all back.
 async fn unmaking_the_administrator_takes_it_all_back(
     workspaces: &Workspaces,
@@ -1234,7 +1234,7 @@ async fn unmaking_the_administrator_takes_it_all_back(
 #[tokio::test]
 async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1269,7 +1269,7 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
 #[tokio::test]
 async fn what_a_workspace_lets_a_member_this_server_carries_out() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1383,7 +1383,7 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
 #[tokio::test]
 async fn an_expired_certificate_administers_nothing_even_the_owners() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1419,7 +1419,7 @@ async fn an_expired_certificate_administers_nothing_even_the_owners() {
 async fn a_server_without_a_place_on_the_member_list_carries_out_nothing() {
     use super::{WorkspaceOp, decide_by_governance};
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1470,7 +1470,7 @@ async fn a_server_without_a_place_on_the_member_list_carries_out_nothing() {
 #[tokio::test]
 async fn a_workspace_handed_to_a_person_is_administered_by_them() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, host) = governor();
+    let (key, host) = hosting_device();
     let server = test_host(dir.path(), &key, &host).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1550,12 +1550,12 @@ async fn a_workspace_handed_to_a_person_is_administered_by_them() {
 #[tokio::test]
 async fn a_page_lists_the_servers_keeping_the_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
 
-    // Its owner lists the one server it was made on, which governs it.
+    // Its owner lists the one server it was made on, which hosts it.
     let listed = workspaces
         .page_workspaces(
             &owner,
@@ -1605,12 +1605,12 @@ impl crate::workspaces::PersonNames for KeptNames {
 }
 
 /// A person names themselves once, in one workspace, and goes by that name in every workspace
-/// this server governs: the name is theirs, kept with their profile, and a workspace they are
+/// this server hosts: the name is theirs, kept with their profile, and a workspace they are
 /// declared in later calls them by it too.
 #[tokio::test]
 async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let kept = std::sync::Arc::new(KeptNames::default());
@@ -1673,7 +1673,7 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
 #[tokio::test]
 async fn a_person_renames_themselves_and_the_last_name_is_the_one_kept() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let kept = std::sync::Arc::new(KeptNames::default());

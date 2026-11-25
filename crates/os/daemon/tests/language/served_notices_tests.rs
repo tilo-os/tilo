@@ -21,7 +21,7 @@ use tilo_workspace_service::apps::served_notices::ServedNotices;
 use tilo_workspace_service::tl_records::{Compiled, Package};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, declare_app, governor, test_host_holding,
+    TestGroupKeys, declare_app, hosting_device, test_host_holding,
 };
 use tilo_workspace_service::workspaces::person_workspace::{
     self,
@@ -116,7 +116,7 @@ async fn shown(
 #[tokio::test]
 async fn a_notice_raised_in_the_daemon_follows_the_person_and_their_answers_reach_the_app() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let desk = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
     let workspaces = desk.workspaces().clone();
     mount(&workspaces);

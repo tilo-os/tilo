@@ -63,7 +63,7 @@ fn fresh_id() -> [u8; 32] {
         .to_bytes()
 }
 
-/// The server keeping the workspace, and the device it governs it from.
+/// The server keeping the workspace, and the certificate it serves under.
 struct Site {
     server: tilo_server::daemon::Server,
     cert: DeviceCert,

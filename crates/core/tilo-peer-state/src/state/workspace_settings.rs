@@ -1,7 +1,7 @@
 //! The workspace's own settings: its name, its saved grant sets and their
 //! assignment, its apps' sandbox capabilities, its entry and its saved
 //! shortcuts, which every member reads
-//! from the workspace's governance document
+//! from the workspace's governance
 //! ([`tilo_desktop_model::projection::workspace_presets_of`],
 //! [`tilo_desktop_model::projection::workspace_sandbox_of`],
 //! [`tilo_desktop_model::projection::workspace_entry_of`],
@@ -52,7 +52,7 @@ impl StatePeer {
                     .save_preset_at(&mut workspace.presets, &authority, preset.clone(), seconds)
                     .map_err(|error| refused(&error))?;
                 self.governance_mut()
-                    .put_governed_presets(&workspace.presets, key, now)
+                    .put_saved_presets(&workspace.presets, key, now)
             }
             SettingsChange::AssignPreset {
                 preset,
@@ -78,24 +78,24 @@ impl StatePeer {
                     .filter(|grant| assigned.contains(&grant.id))
                     .cloned()
                     .collect();
-                self.governance_mut().put_governed_grants(&grants, key, now)
+                self.governance_mut().put_member_grants(&grants, key, now)
             }
             SettingsChange::GrantSandbox { capability } => {
                 let by = tilo_action_policy::MemberId::person(person_of(&member)?.to_owned());
                 grant_sandbox(&mut workspace, capability, by)?;
                 self.governance_mut()
-                    .put_governed_sandbox(&workspace.sandbox, key, now)
+                    .put_member_sandbox(&workspace.sandbox, key, now)
             }
             SettingsChange::RevokeSandbox { capability } => {
                 if !collab_types::caps::sandbox::revoke(&mut workspace.sandbox, capability) {
                     return Ok(false);
                 }
                 self.governance_mut()
-                    .put_governed_sandbox(&workspace.sandbox, key, now)
+                    .put_member_sandbox(&workspace.sandbox, key, now)
             }
             SettingsChange::Entry(entry) => {
                 let entry = entry.clone().checked().map_err(|error| error.to_string())?;
-                self.governance_mut().put_governed_entry(&entry, key, now)
+                self.governance_mut().put_workspace_entry(&entry, key, now)
             }
             SettingsChange::Content(policy) => {
                 self.governance_mut().put_content_policy(policy, key, now)
@@ -166,7 +166,7 @@ impl PeerGovernance<'_> {
     /// lists it, and whom it lets in. Every host serving the workspace answers
     /// its entry from this one record.
     #[must_use]
-    pub fn governed_entry(self) -> tilo_action_policy::EntryPolicy {
+    pub fn workspace_entry(self) -> tilo_action_policy::EntryPolicy {
         self.peer
             .core
             .workspace_doc
@@ -189,7 +189,7 @@ impl PeerGovernance<'_> {
 
     /// The grant sets the workspace has saved, as its governance records them.
     #[must_use]
-    pub fn governed_presets(self) -> Vec<tilo_action_policy::Preset> {
+    pub fn saved_presets(self) -> Vec<tilo_action_policy::Preset> {
         self.peer
             .core
             .workspace_doc
@@ -207,7 +207,7 @@ impl PeerGovernanceMut<'_> {
     /// # Errors
     ///
     /// `key` is not a member's device, or governance cannot be updated.
-    pub fn put_governed_entry(
+    pub fn put_workspace_entry(
         self,
         entry: &tilo_action_policy::EntryPolicy,
         key: &dyn DeviceSigner,
@@ -243,7 +243,7 @@ impl PeerGovernanceMut<'_> {
     /// # Errors
     ///
     /// `key` is not a member's device, or governance cannot be updated.
-    pub fn put_governed_presets(
+    pub fn put_saved_presets(
         self,
         presets: &[tilo_action_policy::Preset],
         key: &dyn DeviceSigner,
@@ -260,7 +260,7 @@ impl PeerGovernanceMut<'_> {
     /// # Errors
     ///
     /// `key` is not a member's device, or governance cannot be updated.
-    pub fn put_governed_sandbox(
+    pub fn put_member_sandbox(
         self,
         sandbox: &[collab_types::caps::CapOverride],
         key: &dyn DeviceSigner,
@@ -271,7 +271,7 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
-    /// Write `edit` into the workspace's governance document as `key`, and
+    /// Write `edit` into the workspace's governance signed by `key`, and
     /// admit it the way every member admits it.
     pub(super) fn author(
         self,
@@ -324,9 +324,9 @@ mod tests {
         (cert, device)
     }
 
-    /// The workspace as its governor, the owner's device `[12; 32]`, holds it;
+    /// The workspace, with the owner's device `[12; 32]` as its host;
     /// the owner's other device `[13; 32]` is on its roster.
-    fn governor() -> (DeviceCert, SigningKey, StatePeer) {
+    fn owner_copy() -> (DeviceCert, SigningKey, StatePeer) {
         let (cert, device) = device(12);
         let now = tilo_clock::wall();
         let roster = vec![cert.clone(), self::device(13).0];
@@ -362,18 +362,18 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_owners_devices_write_the_workspaces_settings;
 
-        phase the_governor_saves_the_workspaces_grant_sets_and_members_read_them;
+        phase the_owner_saves_the_workspaces_grant_sets_and_members_read_them;
         {
-            let (_, key, mut peer) = governor();
+            let (_, key, mut peer) = owner_copy();
             let now = tilo_clock::wall();
             assert!(
                 peer.governance_mut()
-                    .put_governed_presets(&[preset("Reviewers")], &key, now)
+                    .put_saved_presets(&[preset("Reviewers")], &key, now)
                     .unwrap()
             );
             let names: Vec<String> = peer
                 .governance()
-                .governed_presets()
+                .saved_presets()
                 .into_iter()
                 .map(|preset| preset.name)
                 .collect();
@@ -381,7 +381,7 @@ mod tests {
             assert!(
                 !peer
                     .governance_mut()
-                    .put_governed_presets(&[preset("Reviewers")], &key, now)
+                    .put_saved_presets(&[preset("Reviewers")], &key, now)
                     .unwrap(),
                 "saving the same sets again changes nothing"
             );
@@ -389,22 +389,22 @@ mod tests {
 
         phase any_device_of_the_owner_writes_the_workspaces_sandbox;
         {
-            let (_, _, mut peer) = governor();
+            let (_, _, mut peer) = owner_copy();
             let other = SigningKey::from_bytes(&[13; 32]);
             peer.governance_mut()
-                .put_governed_sandbox(&[], &other, tilo_clock::wall())
+                .put_member_sandbox(&[], &other, tilo_clock::wall())
                 .unwrap();
             let stranger = SigningKey::from_bytes(&[99; 32]);
             assert!(
                 peer.governance_mut()
-                    .put_governed_sandbox(&[], &stranger, tilo_clock::wall())
+                    .put_member_sandbox(&[], &stranger, tilo_clock::wall())
                     .is_err()
             );
         }
 
         phase any_device_of_the_owner_renames_the_workspace_and_rewrites_its_grant_sets;
         {
-            let (cert, key, mut peer) = governor();
+            let (cert, key, mut peer) = owner_copy();
             let (other_cert, other) = device(13);
             write(
                 &mut peer,

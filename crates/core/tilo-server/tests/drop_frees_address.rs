@@ -84,7 +84,7 @@ async fn a_dropped_server_lets_go_of_its_workspaces() {
     let (_user, _host, _state, _listen, server) = a_server().await;
     let workspaces = server
         .workspaces()
-        .expect("the server governs workspaces")
+        .expect("the server hosts workspaces")
         .downgrade();
     drop(server);
     tilo_test_env::wait_for_within(

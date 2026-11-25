@@ -9,8 +9,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
-    device_cert, entry_join, governor, governor_with, restricted_until, signed_pre_admission,
-    test_host,
+    device_cert, entry_join, hosting_device, hosting_device_with, restricted_until,
+    signed_pre_admission, test_host,
 };
 
 pub(crate) mod admission_cost;
@@ -29,7 +29,7 @@ mod replacing;
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
@@ -58,7 +58,7 @@ pub(crate) use super::fixtures::guest_device;
 async fn a_crowd_of_pre_admitted_guests_signs_its_own_way_in_and_a_bad_token_is_refused_alone() {
     use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
@@ -92,9 +92,9 @@ async fn a_crowd_of_pre_admitted_guests_signs_its_own_way_in_and_a_bad_token_is_
     // The changes this host's own device made to the workspace.
     let own_changes = || async {
         let state = workspaces.workspace(&created.workspace).await.unwrap();
-        let governed = state.lock().await;
-        let own = governed.peer().workspace_actor_for(&cert.device_public_key);
-        let mut held = governed.peer().admitted_workspace().unwrap().clone();
+        let hosted = state.lock().await;
+        let own = hosted.peer().workspace_actor_for(&cert.device_public_key);
+        let mut held = hosted.peer().admitted_workspace().unwrap().clone();
         held.get_changes(&[])
             .iter()
             .filter(|change| change.actor_id() == &own)
@@ -160,7 +160,7 @@ async fn a_crowd_of_pre_admitted_guests_signs_its_own_way_in_and_a_bad_token_is_
 async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
     use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
@@ -212,7 +212,7 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
 #[tokio::test]
 async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
@@ -234,18 +234,18 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     };
     // The first entry commits the admission and stops there.
     {
-        let governed = workspaces.workspace(&created.workspace).await.unwrap();
-        let mut governed = governed.lock().await;
+        let hosted = workspaces.workspace(&created.workspace).await.unwrap();
+        let mut hosted = hosted.lock().await;
         let now = SystemTime::now();
-        let mut candidate = governed.peer().clone();
+        let mut candidate = hosted.peer().clone();
         assert!(
             candidate
                 .governance_mut()
                 .admit_member_device(&page, &page_key, now)
                 .unwrap()
         );
-        let state = governed.collaboration().clone();
-        governed
+        let state = hosted.collaboration().clone();
+        hosted
             .keep(candidate, &workspaces.inner.host.key, now, |_, _| Ok(state))
             .unwrap();
     }
@@ -279,7 +279,7 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
 async fn every_settled_decision_is_announced_with_its_workspace() {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
@@ -336,7 +336,7 @@ async fn assert_view_reader_refused(
     );
 }
 
-/// Publish `revoked` while a reader of `source` waits on the governed workspace
+/// Publish `revoked` while a reader of `source` waits on the hosted workspace
 /// lock: the reader must recheck admission behind that same lock and be refused.
 #[cfg(feature = "agents")]
 async fn publish_a_revocation_with_a_reader_waiting(
@@ -352,7 +352,7 @@ async fn publish_a_revocation_with_a_reader_waiting(
     tokio::pin!(queued_read);
     let state = workspaces.workspace(workspace).await.unwrap();
     let mut workspace = state.lock().await;
-    // Poll the actual reader to Pending while the governed workspace lock is held.
+    // Poll the actual reader to Pending while the hosted workspace lock is held.
     // It must recheck admission after acquiring this same lock.
     assert!(
         std::future::poll_fn(|cx| {
@@ -365,7 +365,7 @@ async fn publish_a_revocation_with_a_reader_waiting(
     let mut candidate = workspace.peer().clone();
     candidate
         .governance_mut()
-        .publish_governed_revocations(&[revoked], key, now)
+        .publish_member_revocations(&[revoked], key, now)
         .unwrap();
     let collaboration = workspace.collaboration().clone();
     workspace
@@ -384,7 +384,7 @@ async fn publish_a_revocation_with_a_reader_waiting(
 async fn view_read_policy_requires_current_certified_person_and_observes_revocation() {
     use tilo_actions::remote::Caller;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces
@@ -485,7 +485,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
 async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
     use tilo_actions::remote::Caller;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("A workspace's people").await.unwrap();
@@ -518,7 +518,7 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
     }
     assert!(
         !workspaces.admits(WorkspaceId::from_u128(0), &agent).await,
-        "a workspace this host does not govern admits nobody"
+        "a workspace this host does not host admits nobody"
     );
     // Revoking the device ends it, though the workspace still lists its
     // certificate: the authority a member holds here is checked, not the list.
@@ -538,7 +538,7 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
         let mut candidate = workspace.peer().clone();
         candidate
             .governance_mut()
-            .publish_governed_revocations(&[revoked], &key, now)
+            .publish_member_revocations(&[revoked], &key, now)
             .unwrap();
         let collaboration = workspace.collaboration().clone();
         workspace
@@ -557,8 +557,8 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
 #[test]
 fn a_created_workspace_restores_with_its_governance_and_publication() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let created = GovernedWorkspace::create(
+    let (key, cert) = hosting_device();
+    let created = HostedWorkspace::create(
         dir.path(),
         "Team",
         &cert,
@@ -573,7 +573,7 @@ fn a_created_workspace_restores_with_its_governance_and_publication() {
         created.unsent.as_slice(),
         [neighbour_wire::NeighbourMsg::SyncResp { changes, .. }] if !changes.is_empty()
     ));
-    let restored = GovernedWorkspace::open(created.path.clone(), None).unwrap();
+    let restored = HostedWorkspace::open(created.path.clone(), None).unwrap();
     assert_eq!(restored.record.workspace, created.record.workspace);
     assert_eq!(
         restored.peer().governance().generation(),
@@ -599,8 +599,8 @@ fn kept_peer_state(path: &std::path::Path) -> (document_format::StoredResource, 
 #[test]
 fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let created = GovernedWorkspace::create(
+    let (key, cert) = hosting_device();
+    let created = HostedWorkspace::create(
         dir.path(),
         "Team",
         &cert,
@@ -622,7 +622,7 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
     stored.peer = vec![peer_parts::PeerPart::Inline(peer)];
     std::fs::write(&path, postcard::to_stdvec(&stored).unwrap()).unwrap();
 
-    let restored = GovernedWorkspace::open(path.clone(), None).unwrap();
+    let restored = HostedWorkspace::open(path.clone(), None).unwrap();
     assert_eq!(restored.summary().name, "Team");
     assert!(restored.peer().has_governance());
     drop(restored);
@@ -632,7 +632,7 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
         tilo_peer_state::DURABLE_VERSION,
         "the file names the state in today's layout"
     );
-    let reopened = GovernedWorkspace::open(path, None).unwrap();
+    let reopened = HostedWorkspace::open(path, None).unwrap();
     assert_eq!(reopened.summary().name, "Team");
 }
 
@@ -651,7 +651,7 @@ fn kept_before(bytes: &[u8]) -> Vec<u8> {
 
 #[test]
 fn a_workspace_name_must_be_printable_and_short() {
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let longest = "x".repeat(80);
     let too_long = "x".repeat(81);
     let longest_wide = "\u{e9}".repeat(80);
@@ -677,7 +677,7 @@ fn a_workspace_name_must_be_printable_and_short() {
     ];
     for (name, founded, what) in names {
         let dir = tempfile::tempdir().unwrap();
-        let created = GovernedWorkspace::create(
+        let created = HostedWorkspace::create(
             dir.path(),
             name,
             &cert,
@@ -719,7 +719,7 @@ pub(crate) async fn is_banned(
 )]
 async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("plaza").await.unwrap();
@@ -770,16 +770,16 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
     );
     let path = {
         let state = workspaces.workspace(&created.workspace).await.unwrap();
-        let governed = state.lock().await;
+        let hosted = state.lock().await;
         assert_eq!(
-            governed.peer().governance().workspace_name().as_deref(),
+            hosted.peer().governance().workspace_name().as_deref(),
             Some("Plaza")
         );
-        governed.path.clone()
+        hosted.path.clone()
     };
     drop(workspaces);
     server.shutdown().await;
-    let restored = GovernedWorkspace::open(path, None).unwrap();
+    let restored = HostedWorkspace::open(path, None).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
     assert_eq!(
         restored.peer().governance().workspace_name().as_deref(),
@@ -795,7 +795,7 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
 async fn the_owner_restricts_until_a_time_and_lifts_it() {
     use tilo_server_protocol::workspaces::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
@@ -839,7 +839,7 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
     server.shutdown().await;
 }
 
-/// A server certified with `capabilities`, a workspace it governs, and one of
+/// A server certified with `capabilities`, a workspace it hosts, and one of
 /// the workspace's member devices, with the channel route that member asks for.
 struct AskedForKeys {
     /// The server's state.
@@ -864,7 +864,7 @@ async fn a_member_asks_for_a_channel_through(
     carried: super::Carried,
 ) -> AskedForKeys {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(capabilities);
+    let (key, cert) = hosting_device_with(capabilities);
     let server = test_host(&dir.path().join("server"), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Sealed").await.unwrap();
@@ -965,12 +965,12 @@ async fn a_host_keeps_what_its_members_send_for_a_channels_group() {
 
 /// A server another person keeps is named among a workspace's holders as its store:
 /// what it sends for a channel's group is refused like anything a device the
-/// workspace does not govern sends, and no key of the workspace is handed to it,
+/// workspace does not host sends, and no key of the workspace is handed to it,
 /// so the frames it keeps open nowhere on it.
 #[tokio::test]
 async fn another_persons_server_keeps_the_ciphertext_and_is_refused_a_channels_keys() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(DeviceCapabilities::member());
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Sealed").await.unwrap();
@@ -1092,7 +1092,7 @@ async fn a_request_the_server_kept_is_not_kept_again_as_the_hosts() {
 #[tokio::test]
 async fn every_decision_is_kept_and_carried_once_it_is_answered() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
@@ -1120,16 +1120,16 @@ async fn every_decision_is_kept_and_carried_once_it_is_answered() {
     .await
     .unwrap();
     {
-        let governed = workspaces.workspace(&created.workspace).await.unwrap();
-        let governed = governed.lock().await;
-        assert_eq!(governed.summary().name, "Public 47");
+        let hosted = workspaces.workspace(&created.workspace).await.unwrap();
+        let hosted = hosted.lock().await;
+        assert_eq!(hosted.summary().name, "Public 47");
         assert!(
-            governed.unsent.is_empty(),
+            hosted.unsent.is_empty(),
             "every change this device made is carried once answered: {} wait",
-            governed.unsent.len()
+            hosted.unsent.len()
         );
-        let own = governed.peer().workspace_actor_for(&cert.device_public_key);
-        let mut held = governed.peer().admitted_workspace().unwrap().clone();
+        let own = hosted.peer().workspace_actor_for(&cert.device_public_key);
+        let mut held = hosted.peer().admitted_workspace().unwrap().clone();
         let written = held
             .get_changes(&[])
             .iter()
@@ -1165,7 +1165,7 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
         JoinTransportResponse, sign_join_proof,
     };
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -1305,13 +1305,13 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
 }
 
 /// A window a member opens after joining is a change to the workspace's
-/// layout, made by the member's person. The governor takes it in as the workspace's next
+/// layout, made by the member's person. The host takes it in as the workspace's next
 /// generation, so every other member sees the window; before, only record
 /// writes were taken in and the window reached nobody.
 #[tokio::test]
 async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -1370,7 +1370,7 @@ async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
         for hash in &hashes {
             assert!(
                 admitted.has_change(hash),
-                "the governed workspace holds the member's window"
+                "the hosted workspace holds the member's window"
             );
         }
     }
@@ -1385,7 +1385,7 @@ async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
 #[tokio::test]
 async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitations() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -1416,15 +1416,15 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
 
     let body = {
         let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        let mut written = governed.peer().clone();
+        let hosted = state.lock().await;
+        let mut written = hosted.peer().clone();
         let heads = written.workspace_heads().unwrap();
         written
             .governance_mut()
             .remove_member(guest.user_public_key, &writer_key, SystemTime::now())
             .unwrap();
         let changes = written.workspace_changes_since(&heads);
-        drop(governed);
+        drop(hosted);
         postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
             changes,
             workspace: workspace.clone(),
@@ -1452,7 +1452,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
     server.shutdown().await;
 }
 
-/// A device of the governor's person, certified as a member and admitted to
+/// A device of the host's person, certified as a member and admitted to
 /// `workspace`, and the id namespace it mints in.
 pub(crate) async fn admitted_member(
     workspaces: &Workspaces,
@@ -1514,8 +1514,8 @@ async fn terminals_opened(
     }];
     let mut doc = {
         let state = workspaces.workspace(workspace).await.unwrap();
-        let governed = state.lock().await;
-        governed.peer().admitted_workspace().unwrap().clone()
+        let hosted = state.lock().await;
+        hosted.peer().admitted_workspace().unwrap().clone()
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
@@ -1532,14 +1532,14 @@ async fn terminals_opened(
     .unwrap()
 }
 
-/// The window titles the governed workspace holds: what every member is given.
+/// The window titles the hosted workspace holds: what every member is given.
 async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> {
     let state = workspaces.workspace(workspace).await.unwrap();
-    let governed = state.lock().await;
-    titles_in(governed.peer().admitted_workspace().unwrap())
+    let hosted = state.lock().await;
+    titles_in(hosted.peer().admitted_workspace().unwrap())
 }
 
-/// A member's windows are the workspace's: the governor takes the change in, and
+/// A member's windows are the workspace's: the host takes the change in, and
 /// every member sees the windows.
 #[allow(
     clippy::significant_drop_tightening,
@@ -1548,7 +1548,7 @@ async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> 
 #[tokio::test]
 async fn the_windows_a_member_opens_are_shared_by_the_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -1575,8 +1575,8 @@ async fn windows_closed(
 ) -> Vec<u8> {
     let mut doc = {
         let state = workspaces.workspace(workspace).await.unwrap();
-        let governed = state.lock().await;
-        governed.peer().admitted_workspace().unwrap().clone()
+        let hosted = state.lock().await;
+        hosted.peer().admitted_workspace().unwrap().clone()
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
@@ -1623,7 +1623,7 @@ fn replayed_frame_carries(frame: &neighbour_wire::NeighbourMsg, title: &str) -> 
 async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     const TITLES: [&str; 2] = ["ssh prod-db", "~/private/taxes"];
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -1655,9 +1655,9 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     // over its link, whose holder sends the workspace and a signed checkpoint of
     // each of its records, as the link's catch-up builds them.
     let replayed = {
-        let governed = workspaces.workspace(&workspace).await.unwrap();
-        let governed = governed.lock().await;
-        let mut holder = governed.peer().clone();
+        let hosted = workspaces.workspace(&workspace).await.unwrap();
+        let hosted = hosted.lock().await;
+        let mut holder = hosted.peer().clone();
         holder
             .publication_mut()
             .bootstrap_messages(&key, SystemTime::now())
@@ -1691,7 +1691,7 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
 #[tokio::test]
 async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -1751,7 +1751,7 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
         MembershipChallengeRequest, MembershipCompleteRequest, sign_membership_proof,
     };
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -1836,12 +1836,12 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
 }
 
 /// A workspace that moves to its person's host keeps its workspace: the host
-/// takes over governing the workspace under the identity it already has, and
+/// takes over hosting the workspace under the identity it already has, and
 /// refuses a workspace it holds already, rather than minting another.
 #[tokio::test]
 async fn a_workspace_moved_here_keeps_its_identity() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let workspace = "6f1c2b9e-4d3a-4f5e-8a7b-1c2d3e4f5a6b";
@@ -1909,7 +1909,7 @@ async fn a_workspace_made_with_no_catalogue_starts_with_the_defaults_the_cache_h
         .set("TILO_APPS_DATA_DIR", &store)
         .set("TILO_STORE_CONFIG_DIR", &config)
         .set("TILO_WORKSPACE_REGISTRIES", r#"{"registries": []}"#);
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(&dir.path().join("host"), &key, &cert).await;
     let made = server
         .workspaces()
@@ -1950,7 +1950,7 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
         MembershipCompleteRequest, sign_membership_proof,
     };
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -2052,8 +2052,8 @@ struct Shape {
 
 async fn history_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
     use tilo_peer_state::workspace::base;
-    let governed = workspaces.workspace(workspace).await.unwrap();
-    let mut doc = governed
+    let hosted = workspaces.workspace(workspace).await.unwrap();
+    let mut doc = hosted
         .lock()
         .await
         .peer()
@@ -2096,7 +2096,7 @@ async fn history_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
 async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
     const FLOOR: usize = 64 * 1024;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -2182,11 +2182,11 @@ async fn the_base_is_the_owners_signed_compaction(
     workspace: &str,
     owner: [u8; 32],
 ) {
-    let Ok(governed) = workspaces.workspace(workspace).await else {
+    let Ok(hosted) = workspaces.workspace(workspace).await else {
         unreachable!("the workspace is held here");
     };
     let mut doc = {
-        let admitted = governed.lock().await;
+        let admitted = hosted.lock().await;
         let peer = admitted.peer();
         let Some(doc) = peer.admitted_workspace() else {
             unreachable!("the workspace has a base");
@@ -2201,7 +2201,7 @@ async fn the_base_is_the_owners_signed_compaction(
         Ok(owner),
         "the base is the compaction the owner's device signed"
     );
-    let message = governed.lock().await.peer().workspace_message();
+    let message = hosted.lock().await.peer().workspace_message();
     let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = message else {
         unreachable!("the workspace as a newcomer is sent it");
     };
@@ -2217,14 +2217,14 @@ async fn the_base_is_the_owners_signed_compaction(
     );
 }
 
-/// A host that renamed its own governor certificate — the same device key,
-/// the same capabilities, a new label — serves the workspaces that
-/// certificate already governs: a name is not what governs a workspace, and
+/// A host that renamed its own certificate — the same device key, the same
+/// capabilities, a new label — serves the workspaces that certificate
+/// already hosts: a name is not what hosts a workspace, and
 /// refusing it made a host renamed by an upgrade unable to start.
 #[tokio::test]
-async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
+async fn a_host_serves_the_workspaces_its_renamed_certificate_hosts() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let created = server.workspaces().create("Demo").await.unwrap();
     server.shutdown().await;
@@ -2284,7 +2284,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
     other.shutdown().await;
 }
 
-/// A workspace names its own host among its hosts, as its governor, so a member
+/// A workspace names its own host among its hosts, as its host, so a member
 /// reads where the workspace is served off the replica it already holds, and reads
 /// it once.
 #[tokio::test]
@@ -2292,7 +2292,7 @@ async fn a_workspace_names_its_own_host_to_every_member() {
     use std::time::Duration;
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = tokio::time::timeout(Duration::from_secs(120), test_host(dir.path(), &key, &cert))
         .await
         .expect("the host opens");
@@ -2302,7 +2302,7 @@ async fn a_workspace_names_its_own_host_to_every_member() {
         .await
         .expect("the workspace is created")
         .unwrap();
-    let governed = tokio::time::timeout(
+    let hosted = tokio::time::timeout(
         Duration::from_secs(120),
         workspaces.workspace(&created.workspace),
     )
@@ -2310,8 +2310,8 @@ async fn a_workspace_names_its_own_host_to_every_member() {
     .expect("the workspace opens")
     .unwrap();
     let hosts = {
-        let governed = governed.lock().await;
-        governed.peer().governance().keeping_devices()
+        let hosted = hosted.lock().await;
+        hosted.peer().governance().keeping_devices()
     };
     assert_eq!(hosts.len(), 1, "{hosts:?}");
     assert_eq!(hosts[0].host.device_public_key, cert.device_public_key);
@@ -2321,14 +2321,14 @@ async fn a_workspace_names_its_own_host_to_every_member() {
             .endpoint_addr,
         addr
     );
-    let governors = tokio::time::timeout(
+    let hosting_devices = tokio::time::timeout(
         Duration::from_secs(120),
         workspaces.hosts(&created.workspace),
     )
     .await
     .expect("the workspace names its hosts")
     .unwrap();
-    assert_eq!(governors.len(), 1, "the governor is named once");
+    assert_eq!(hosting_devices.len(), 1, "the host is named once");
     server.shutdown().await;
 }
 
@@ -2340,7 +2340,7 @@ async fn a_workspace_names_its_own_host_to_every_member() {
 #[tokio::test]
 async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Plans").await.unwrap().workspace;
@@ -2365,8 +2365,8 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     // A member's copy, sent the workspace as it stands, holds the same people.
     let (server_policy, copy_policy) = {
         let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        let held = governed.peer().admitted_workspace().unwrap().clone();
+        let hosted = state.lock().await;
+        let held = hosted.peer().admitted_workspace().unwrap().clone();
         let mut copy = automerge::AutoCommit::new();
         tilo_automerge::ApplyIncoming::apply_incoming(&mut copy, held.clone().get_changes(&[]))
             .unwrap();
@@ -2407,7 +2407,7 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
 }
 
 /// The member list `workspace_id`'s runtime on this host admits by.
-async fn admitted(workspaces: &Workspaces, workspace: &str) -> tilo_peer_state::GovernedAccess {
+async fn admitted(workspaces: &Workspaces, workspace: &str) -> tilo_peer_state::MemberListAccess {
     let id = workspaces
         .workspace(workspace)
         .await
@@ -2435,7 +2435,7 @@ async fn admitted(workspaces: &Workspaces, workspace: &str) -> tilo_peer_state::
 #[tokio::test]
 async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Plans").await.unwrap();
@@ -2481,18 +2481,18 @@ async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
         DeviceCapabilities::member(),
     );
     {
-        let governed = workspaces.workspace(&created.workspace).await.unwrap();
-        let mut governed = governed.lock().await;
+        let hosted = workspaces.workspace(&created.workspace).await.unwrap();
+        let mut hosted = hosted.lock().await;
         let now = SystemTime::now();
-        let mut candidate = governed.peer().clone();
+        let mut candidate = hosted.peer().clone();
         assert!(
             candidate
                 .governance_mut()
                 .admit_member_device(&page, &page_key, now)
                 .unwrap()
         );
-        let state = governed.collaboration().clone();
-        governed
+        let state = hosted.collaboration().clone();
+        hosted
             .keep(candidate, &workspaces.inner.host.key, now, |_, _| Ok(state))
             .unwrap();
     }
@@ -2501,17 +2501,17 @@ async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
 
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let governed = {
+    let hosted = {
         let state = workspaces.workspace(&created.workspace).await.unwrap();
         let state = state.lock().await;
         state
             .peer()
             .governance()
-            .governed_access(SystemTime::now())
+            .member_list_access(SystemTime::now())
             .unwrap()
     };
-    assert!(governed.member_devices.contains(&page.device_public_key));
-    assert!(!governed.member_devices.contains(&guest.device_public_key));
+    assert!(hosted.member_devices.contains(&page.device_public_key));
+    assert!(!hosted.member_devices.contains(&guest.device_public_key));
     let admitted = admitted(&workspaces, &created.workspace).await;
     let sorted = |mut devices: Vec<[u8; 32]>| {
         devices.sort_unstable();
@@ -2519,12 +2519,12 @@ async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
     };
     assert_eq!(
         admitted.member_devices,
-        sorted(governed.member_devices),
+        sorted(hosted.member_devices),
         "the restarted host admits the devices the member list has"
     );
     assert_eq!(
         admitted.member_user_roots,
-        sorted(governed.member_user_roots),
+        sorted(hosted.member_user_roots),
         "and the people it has"
     );
     drop(workspaces);
@@ -2574,8 +2574,8 @@ fn readers_report_reads_a_state_directory_without_writing_it() {
     let root = tempfile::tempdir().unwrap();
     let workspaces = root.path().join("workspaces");
     std::fs::create_dir(&workspaces).unwrap();
-    let (key, cert) = governor();
-    let created = GovernedWorkspace::create(
+    let (key, cert) = hosting_device();
+    let created = HostedWorkspace::create(
         &workspaces,
         "Team",
         &cert,

@@ -12,35 +12,35 @@ const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
 struct Fixture {
-    governor: StatePeer,
+    owner_copy: StatePeer,
     member: StatePeer,
-    governor_key: SigningKey,
+    owner_copy_key: SigningKey,
     key: SigningKey,
     cert: DeviceCert,
     now: SystemTime,
     write: NeighbourMsg,
 }
 
-/// A member holding its own sealed write, which never reached the governor.
+/// A member holding its own sealed write, which never reached the host.
 fn fixture() -> Fixture {
-    let (mut governor, governor_key, key, cert, now) = crate::admission_tests::seeded();
-    governor.select_exact_admissions().unwrap();
+    let (mut owner_copy, owner_copy_key, key, cert, now) = crate::admission_tests::seeded();
+    owner_copy.select_exact_admissions().unwrap();
     let mut member = StatePeer::new(
-        governor.workspace_id(),
-        governor.owner_certificates()[0].clone(),
+        owner_copy.workspace_id(),
+        owner_copy.owner_certificates()[0].clone(),
         vec![cert.clone()],
         RevocationList::new(),
         now,
     )
     .unwrap();
     member.select_exact_admissions().unwrap();
-    for message in governor
+    for message in owner_copy
         .publication_mut()
-        .bootstrap_messages(&governor_key, now)
+        .bootstrap_messages(&owner_copy_key, now)
         .unwrap()
     {
         member
-            .receive_from(origin(&governor_key), message, now)
+            .receive_from(origin(&owner_copy_key), message, now)
             .unwrap();
     }
     let write = sealed(&member, &key, &cert, now, "sealed by this member's app");
@@ -48,9 +48,9 @@ fn fixture() -> Fixture {
         .admit_new_local_document(APP, RECORD, envelope(&write).clone(), now)
         .unwrap();
     Fixture {
-        governor,
+        owner_copy,
         member,
-        governor_key,
+        owner_copy_key,
         key,
         cert,
         now,
@@ -134,12 +134,12 @@ fn expired(now: SystemTime) -> SystemTime {
     now.checked_add(Duration::from_secs(301)).unwrap()
 }
 
-/// The governor admits `message` and records, in governance `member`
+/// The host admits `message` and records, in governance `member`
 /// admits, its signed durable receipt over the record's watermarks. The
 /// member holds no key for the record, so that receipt, not a cleartext
 /// checkpoint, is what acknowledges its write.
 ///
-/// A renewal is numbered past the write it renews, so a governor that never saw
+/// A renewal is numbered past the write it renews, so a owner_copy that never saw
 /// that write holds the renewal for the history before it and asks its sender for
 /// it. The sender still keeps the original write, unretired, and answers with it
 /// as retained history; the renewal is taken in with it.
@@ -147,7 +147,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
     let payload = envelope(&message).payload.clone();
     let signature = envelope(&message).signature;
     let report = fixture
-        .governor
+        .owner_copy
         .receive_from_report(origin(&fixture.key), message, at)
         .unwrap();
     let primary = report.primary().clone();
@@ -155,7 +155,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
     if !taken {
         let original = fixture.write.clone();
         let history = fixture
-            .governor
+            .owner_copy
             .receive_from_report(
                 TransportOrigin::RetainedServerDelta(fixture.key.verifying_key().to_bytes()),
                 original,
@@ -164,7 +164,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
             .unwrap();
         assert!(
             matches!(history.primary(), InputDisposition::Accepted(_)),
-            "the governor takes the write before the renewal as history: {:?}",
+            "the host takes the write before the renewal as history: {:?}",
             history.primary()
         );
         taken = history.released().iter().any(|released| {
@@ -174,10 +174,10 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
             )
         });
     }
-    assert!(taken, "the governor takes the renewal: {primary:?}");
-    let governor = &mut fixture.governor;
-    let authority = governor.owner_certificates()[0].device_public_key;
-    let document = &governor.core.documents[&Route {
+    assert!(taken, "the host takes the renewal: {primary:?}");
+    let owner_copy = &mut fixture.owner_copy;
+    let authority = owner_copy.owner_certificates()[0].device_public_key;
+    let document = &owner_copy.core.documents[&Route {
         app: APP.into(),
         record: RECORD.into(),
     }];
@@ -190,7 +190,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
     let sequence = watermarks[&hex::encode(authority)].checked_add(1).unwrap();
     watermarks.insert(hex::encode(authority), sequence);
     let coverage = crate::coverage::Coverage {
-        workspace: governor.workspace_id().into(),
+        workspace: owner_copy.workspace_id().into(),
         app: APP.into(),
         record: RECORD.into(),
         payload_hash: *blake3::hash(&payload).as_bytes(),
@@ -204,7 +204,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
         sequence,
         watermarks,
     };
-    let workspace = governor.core.workspace_doc.as_deref_mut().unwrap();
+    let workspace = owner_copy.core.workspace_doc.as_deref_mut().unwrap();
     let generation = crate::durability::entries(workspace)
         .unwrap()
         .values()
@@ -224,10 +224,10 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
             .collect()
     })
     .unwrap();
-    let governance = governor.workspace_message();
+    let governance = owner_copy.workspace_message();
     fixture
         .member
-        .receive_from(origin(&fixture.governor_key), governance, at)
+        .receive_from(origin(&fixture.owner_copy_key), governance, at)
         .unwrap();
 }
 
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
                     .outbox()
                     .retained_local_document_retired(message, author)
                     .unwrap(),
-                "the governor's watermark over the renewal retires both"
+                "the host's watermark over the renewal retires both"
             );
         }
         assert_eq!(
@@ -379,10 +379,10 @@ tilo_test_env::scenario! {
         fixture
             .member
             .receive_from(
-                TransportOrigin::UntrustedPresence(fixture.governor_key.verifying_key().to_bytes()),
+                TransportOrigin::UntrustedPresence(fixture.owner_copy_key.verifying_key().to_bytes()),
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(fixture.governor.owner_certificates()[0].clone()),
+                    cert: Box::new(fixture.owner_copy.owner_certificates()[0].clone()),
                     revocations: vec![revocation],
                 },
                 later,

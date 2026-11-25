@@ -6,7 +6,7 @@ use web_time::SystemTime;
 
 /// The channel keys a device holds for the sealed records of its workspaces:
 /// what it compacts their histories with
-/// ([`NativeWorkspaceOwner::keep_sealed_histories`](super::NativeWorkspaceOwner::keep_sealed_histories)).
+/// ([`DeviceWorkspaces::keep_sealed_histories`](super::DeviceWorkspaces::keep_sealed_histories)).
 pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
     /// Open `write`, an admitted write of a sealed record's history of
     /// `workspace` (a compaction included), under any epoch whose key this

@@ -150,16 +150,16 @@ pub(crate) fn parts(doc: &AutoCommit) -> Result<BTreeMap<String, Vec<Vec<u8>>>, 
             for key in doc.keys(&object) {
                 for (value, _) in doc.get_all(&object, &key).map_err(err)? {
                     let Value::Scalar(value) = value else {
-                        return Err("governed invitation part is not bytes".into());
+                        return Err("invitation part is not bytes".into());
                     };
                     let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                        return Err("governed invitation part is not bytes".into());
+                        return Err("invitation part is not bytes".into());
                     };
                     parts.entry(key.clone()).or_default().push(bytes.clone());
                 }
             }
         }
-        Some(_) => return Err("governed invitation parts are not a map".into()),
+        Some(_) => return Err("invitation parts are not a map".into()),
     }
     Ok(parts)
 }
@@ -183,7 +183,7 @@ pub(crate) fn put_parts(doc: &mut AutoCommit, parts: &[Vec<u8>]) -> Result<(), S
     if parts.is_empty() {
         return Ok(());
     }
-    let map = super::governed_map(doc, PARTS_KEY)?;
+    let map = super::workspace_map(doc, PARTS_KEY)?;
     for part in parts {
         let key = part_key(blake3::hash(part).as_bytes());
         if doc.get(&map, &key).map_err(err)?.is_none() {

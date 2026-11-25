@@ -1,11 +1,11 @@
 //! A renewed device certificate in the workspaces this device joined. A
 //! certificate that expires is renewed by its person's root before it runs
 //! out (`tilo_identity`); the device proves its membership again with
-//! the renewed one, the workspace's governor puts it in place of the one the
+//! the renewed one, the workspace's host puts it in place of the one the
 //! workspace held, and the workspace's record here follows. The device stays the same
 //! member, with its role and everything it wrote.
 use crate::join::JoinBootstrap;
-use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
+use crate::owner::{DeviceWorkspaces, WorkspaceId};
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
@@ -17,8 +17,8 @@ pub fn renews(renewed: &DeviceCert, held: &DeviceCert) -> bool {
     renewed.renews(held)
 }
 
-impl NativeWorkspaceOwner {
-    /// Take `bootstrap`, the answer of `workspace`'s governor to this device
+impl DeviceWorkspaces {
+    /// Take `bootstrap`, the answer of `workspace`'s host to this device
     /// proving its membership with `renewed`, into the workspace: its
     /// governance, which now holds `renewed`, and the workspace's record of this
     /// device. Published before it returns.

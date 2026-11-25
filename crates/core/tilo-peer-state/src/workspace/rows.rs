@@ -8,7 +8,7 @@ use automerge::{AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Va
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::governance;
 
-/// The document key older builds kept a governed call policy under.
+/// The document key older builds kept the call policy under.
 const MEDIA_KEY: &str = "media_policy_v1";
 /// The document key holding the hosts serving a workspace.
 const KEEPING_DEVICES_KEY: &str = "keeping_devices_v1";
@@ -230,7 +230,7 @@ pub fn changed_rows_by(
         .collect()
 }
 
-/// The governed parts `changes` wrote to at all, read against `after`, the
+/// The parts `changes` wrote to at all, read against `after`, the
 /// document holding them, whether or not the batch they are part of leaves
 /// those parts changed. `None` when an operation names an object that cannot
 /// be placed under a key.

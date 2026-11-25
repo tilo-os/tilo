@@ -5,7 +5,7 @@ use super::{ROOT, ReadDoc, SystemTime, Transactable, err};
 use collab_types::signer::DeviceSigner;
 
 impl PeerGovernance<'_> {
-    /// The workspace's name, as its governance document records it.
+    /// The workspace's name, as its governance records it.
     #[must_use]
     pub fn workspace_name(self) -> Option<String> {
         let doc = self.peer.core.workspace_doc.as_deref()?;

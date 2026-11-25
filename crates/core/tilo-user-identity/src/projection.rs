@@ -112,8 +112,8 @@ pub enum TrustedIdentityProjectionError {
 pub struct TrustedIdentityProjectionV1 {
     /// Must equal [`TRUSTED_IDENTITY_PROJECTION_V1_VERSION`].
     pub schema_version: u16,
-    /// Governance-admitted human root keys and their governed labels.
-    pub humans: Vec<GovernedHumanIdentityV1>,
+    /// Human root keys admitted by governance, and their labels.
+    pub humans: Vec<ListedHumanIdentityV1>,
 }
 
 impl Default for TrustedIdentityProjectionV1 {
@@ -156,16 +156,16 @@ impl TrustedIdentityProjectionV1 {
     }
 }
 
-/// Current bounded snapshot: governed human labels plus exact root-signed
+/// Current bounded snapshot: human labels from governance plus exact root-signed
 /// device certificates. The certificate label is device presentation only;
-/// the enclosing governed name is the human label Files may use for sharing.
+/// the enclosing name from governance is the human label Files may use for sharing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustedIdentityProjectionV2 {
     /// Must equal [`TRUSTED_IDENTITY_PROJECTION_VERSION`].
     pub schema_version: u16,
     /// Governance-admitted human roots, grouped with their certified devices.
-    pub humans: Vec<GovernedHumanIdentityV2>,
+    pub humans: Vec<ListedHumanIdentityV2>,
 }
 
 impl Default for TrustedIdentityProjectionV2 {
@@ -227,18 +227,18 @@ impl TrustedIdentityProjectionV2 {
 /// One governance-named human root and its certified devices.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GovernedHumanIdentityV2 {
+pub struct ListedHumanIdentityV2 {
     /// Ed25519 human root authority.
     pub root_public_key: [u8; 32],
     pub display_name: String,
     /// Root-signed devices currently known to workspace governance.
-    pub devices: Vec<GovernedDeviceIdentityV2>,
+    pub devices: Vec<ListedDeviceIdentityV2>,
 }
 
 /// Exact signed device detail nested under its human root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GovernedDeviceIdentityV2 {
+pub struct ListedDeviceIdentityV2 {
     /// Root-signed device certificate, including label, capabilities and expiry.
     pub certificate: DeviceCert,
     /// Set when governance knows the device as a delegated agent of the
@@ -246,13 +246,13 @@ pub struct GovernedDeviceIdentityV2 {
     /// human. The producer verified the human's root-signed delegation.
     /// Presentation only, never authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<GovernedAgentIdentityV2>,
+    pub agent: Option<ListedAgentIdentityV2>,
 }
 
 /// How a delegated agent device is shown, from its person's delegation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GovernedAgentIdentityV2 {
+pub struct ListedAgentIdentityV2 {
     /// The delegation's stable agent id.
     pub agent_id: String,
     /// The agent's display name.
@@ -261,7 +261,7 @@ pub struct GovernedAgentIdentityV2 {
     pub color: [u8; 3],
 }
 
-impl GovernedAgentIdentityV2 {
+impl ListedAgentIdentityV2 {
     fn validate(&self, certificate: &DeviceCert) -> Result<(), TrustedIdentityProjectionError> {
         let capabilities = &certificate.capabilities;
         let holds_power = capabilities.can_own_workspaces || capabilities.can_admit_devices;
@@ -288,7 +288,7 @@ fn validate_name(name: &str) -> Result<(), TrustedIdentityProjectionError> {
 /// presentation metadata and must never be converted back into authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GovernedHumanIdentityV1 {
+pub struct ListedHumanIdentityV1 {
     /// Ed25519 human root key certified by an admitted device chain.
     pub root_public_key: [u8; 32],
     /// Governance-controlled presentation label for this root key.
@@ -317,7 +317,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Validation rejects ambiguous or unpresentable rows, and v2 binds each device certificate to one
-        /// governed human root.
+        /// admitted human root.
         fn identity_projections_are_unambiguous_and_bind_devices_to_one_root;
 
         phase validation_rejects_ambiguous_or_unpresentable_rows;
@@ -325,7 +325,7 @@ mod tests {
             let root = ed25519_dalek::SigningKey::from_bytes(&[4; 32])
                 .verifying_key()
                 .to_bytes();
-            let row = |name: &str| GovernedHumanIdentityV1 {
+            let row = |name: &str| ListedHumanIdentityV1 {
                 root_public_key: root,
                 display_name: name.to_string(),
             };
@@ -347,16 +347,16 @@ mod tests {
             );
         }
 
-        phase v2_binds_each_device_certificate_to_one_governed_human_root;
+        phase v2_binds_each_device_certificate_to_one_human_root;
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
             let certificate = certificate(&root, 22);
             let projection = TrustedIdentityProjectionV2 {
                 schema_version: TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![GovernedHumanIdentityV2 {
+                humans: vec![ListedHumanIdentityV2 {
                     root_public_key: root.verifying_key().to_bytes(),
                     display_name: "Ada Lovelace".into(),
-                    devices: vec![GovernedDeviceIdentityV2 {
+                    devices: vec![ListedDeviceIdentityV2 {
                         certificate,
                         agent: None,
                     }],
@@ -400,18 +400,18 @@ mod tests {
             issuer: None,
         };
         crate::sign_device_cert(&mut agent_certificate, &root).unwrap();
-        let agent = GovernedAgentIdentityV2 {
+        let agent = ListedAgentIdentityV2 {
             agent_id: "scribe".into(),
             label: "Scribe".into(),
             color: [10, 20, 30],
         };
         let projection =
-            |certificate: DeviceCert, agent: GovernedAgentIdentityV2| TrustedIdentityProjectionV2 {
+            |certificate: DeviceCert, agent: ListedAgentIdentityV2| TrustedIdentityProjectionV2 {
                 schema_version: TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![GovernedHumanIdentityV2 {
+                humans: vec![ListedHumanIdentityV2 {
                     root_public_key: root.verifying_key().to_bytes(),
                     display_name: "Ada Lovelace".into(),
-                    devices: vec![GovernedDeviceIdentityV2 {
+                    devices: vec![ListedDeviceIdentityV2 {
                         certificate,
                         agent: Some(agent),
                     }],
@@ -430,7 +430,7 @@ mod tests {
             Err(TrustedIdentityProjectionError::InvalidAgent),
             "a member's device is never shown as an agent"
         );
-        let unnamed = GovernedAgentIdentityV2 {
+        let unnamed = ListedAgentIdentityV2 {
             label: " ".into(),
             ..agent
         };
@@ -441,10 +441,10 @@ mod tests {
 
         let unmarked = TrustedIdentityProjectionV2 {
             schema_version: TRUSTED_IDENTITY_PROJECTION_VERSION,
-            humans: vec![GovernedHumanIdentityV2 {
+            humans: vec![ListedHumanIdentityV2 {
                 root_public_key: root.verifying_key().to_bytes(),
                 display_name: "Ada Lovelace".into(),
-                devices: vec![GovernedDeviceIdentityV2 {
+                devices: vec![ListedDeviceIdentityV2 {
                     certificate: agent_certificate,
                     agent: None,
                 }],

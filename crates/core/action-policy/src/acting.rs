@@ -549,7 +549,7 @@ mod tests {
                 roles::GOVERNANCE_KIND,
                 &Context::at_secs(1),
             );
-            assert_eq!(verdict.answer, Answer::Deny, "never governs a workspace");
+            assert_eq!(verdict.answer, Answer::Deny, "never administers a workspace");
             assert_eq!(
                 answer(&Acting::person("owner"), &policy, &[], ActionKind::Undoable),
                 Answer::Allow

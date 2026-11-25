@@ -12,11 +12,11 @@ use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entr
 const APP: &str = "test.app";
 const DOCUMENT: &str = "tab:1";
 
-/// A workspace its owner's laptop (`a`) governs. Their phone (`b`) wrote
+/// A workspace its owner's laptop (`a`) hosts. Their phone (`b`) wrote
 /// into a document, the laptop built on that, and the phone was then removed.
 struct Story {
-    /// The governing replica, after it took the removal into its governance.
-    governor: StatePeer,
+    /// The host's copy, after it took the removal into its governance.
+    owner_copy: StatePeer,
     a: SigningKey,
     b: SigningKey,
     now: SystemTime,
@@ -26,7 +26,7 @@ struct Story {
     /// The phone's write, and the laptop's on top of it.
     phones: NeighbourMsg,
     laptops: NeighbourMsg,
-    /// The governing replica before the phone wrote, and before its removal:
+    /// The host's copy before the phone wrote, and before its removal:
     /// what a phone that never hears of its removal goes on writing from.
     before_phone: StatePeer,
     before_removal: StatePeer,
@@ -81,24 +81,24 @@ fn removal_of(device: &SigningKey, reason: RevocationReason, now: SystemTime) ->
 }
 
 fn story(reason: RevocationReason) -> Story {
-    let (mut governor, a, b, _, now) = seeded();
-    let founding = governor
+    let (mut owner_copy, a, b, _, now) = seeded();
+    let founding = owner_copy
         .publication_mut()
         .bootstrap_messages(&a, now)
         .unwrap();
-    let before_phone = governor.clone();
-    let phones = write_at(&mut governor, &b, "phone", now);
-    let laptops = write_at(&mut governor, &a, "laptop", now);
-    let before_removal = governor.clone();
+    let before_phone = owner_copy.clone();
+    let phones = write_at(&mut owner_copy, &b, "phone", now);
+    let laptops = write_at(&mut owner_copy, &a, "laptop", now);
+    let before_removal = owner_copy.clone();
     let removal = removal_of(&b, reason, now);
     assert!(
-        governor
+        owner_copy
             .governance_mut()
-            .publish_governed_revocations(std::slice::from_ref(&removal), &a, now)
+            .publish_member_revocations(std::slice::from_ref(&removal), &a, now)
             .unwrap()
     );
     Story {
-        governor,
+        owner_copy,
         a,
         b,
         now,
@@ -132,8 +132,8 @@ fn newcomer_exact(story: &Story) -> StatePeer {
 
 fn joining(story: &Story, exact: bool) -> StatePeer {
     let mut peer = StatePeer::new(
-        story.governor.workspace_id(),
-        certificate_of(&story.governor, &story.a),
+        story.owner_copy.workspace_id(),
+        certificate_of(&story.owner_copy, &story.a),
         vec![],
         RevocationList::new(),
         story.now,
@@ -155,7 +155,7 @@ fn caught_up(story: &Story) -> StatePeer {
     let mut peer = newcomer(story);
     peer.receive_from(
         live(&story.a),
-        story.governor.workspace_message(),
+        story.owner_copy.workspace_message(),
         story.now,
     )
     .unwrap();
@@ -223,7 +223,7 @@ tilo_test_env::scenario! {
             let story = story(reason);
             let mut joiner = newcomer(&story);
             joiner
-                .receive_from(live(&story.a), story.governor.workspace_message(), story.now)
+                .receive_from(live(&story.a), story.owner_copy.workspace_message(), story.now)
                 .unwrap();
             // The device itself is gone for the newcomer as for everyone.
             assert!(
@@ -242,7 +242,7 @@ tilo_test_env::scenario! {
                 .receive_from(retained(&story.a), story.laptops.clone(), story.now)
                 .unwrap();
             assert!(says(&joiner, "phone") && says(&joiner, "laptop"), "{reason:?}");
-            assert_eq!(heads(&joiner), heads(&story.governor), "{reason:?}");
+            assert_eq!(heads(&joiner), heads(&story.owner_copy), "{reason:?}");
             assert_eq!(joiner.incomplete_reason(), None, "{reason:?}");
         }
     }
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
         ] {
             let forged = write_at(&mut story.before_removal.clone(), &story.b, "thief", at);
             for (who, peer) in [
-                ("the governing device", &story.governor),
+                ("the host", &story.owner_copy),
                 ("a device that joined after", &joiner),
             ] {
                 // Sent by the device, or handed on from what a holder kept.
@@ -327,7 +327,7 @@ tilo_test_env::scenario! {
                 TransportOrigin::UntrustedPresence(key_of(&story.a)),
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(certificate_of(&story.governor, &story.a)),
+                    cert: Box::new(certificate_of(&story.owner_copy, &story.a)),
                     revocations: vec![story.removal.clone()],
                 },
                 story.now,
@@ -347,26 +347,26 @@ tilo_test_env::scenario! {
 
         // The governance arrives with the cut: history lands, the rest does not.
         joiner
-            .receive_from(live(&story.a), story.governor.workspace_message(), story.now)
+            .receive_from(live(&story.a), story.owner_copy.workspace_message(), story.now)
             .unwrap();
         assert!(says(&joiner, "phone"));
         joiner
             .receive_from(retained(&story.a), story.laptops.clone(), story.now)
             .unwrap();
         assert!(says(&joiner, "laptop") && !says(&joiner, "thief"));
-        assert_eq!(heads(&joiner), heads(&story.governor));
+        assert_eq!(heads(&joiner), heads(&story.owner_copy));
         assert!(joiner.core.pending.is_empty(), "nothing of the device is left waiting");
     }
 
-    phase a_removal_recorded_before_cuts_were_kept_is_completed_by_the_governing_device;
+    phase a_removal_recorded_before_cuts_were_kept_is_completed_by_the_hosting_device;
     {
         let story = story(RevocationReason::Retired);
         // A removal recorded with no cut yet: the map is founded with the
-        // workspace, and the governing device has not written what it had
+        // workspace, and the host has not written what it had
         // taken of the device.
-        let mut governor = story.governor.clone();
+        let mut owner_copy = story.owner_copy.clone();
         {
-            let doc = governor.core.workspace_doc.as_deref_mut().unwrap();
+            let doc = owner_copy.core.workspace_doc.as_deref_mut().unwrap();
             let map = doc
                 .get(ROOT, crate::removals::FIELD_V1)
                 .unwrap()
@@ -378,12 +378,12 @@ tilo_test_env::scenario! {
             }
             doc.commit();
         }
-        assert!(governor.governance().lacks_removal_cuts());
+        assert!(owner_copy.governance().lacks_removal_cuts());
         // A device joining now takes the workspace in as it stands, the
         // removal recorded and no cut written, and the document as founded.
         let mut joiner = StatePeer::new(
-            story.governor.workspace_id(),
-            certificate_of(&story.governor, &story.a),
+            story.owner_copy.workspace_id(),
+            certificate_of(&story.owner_copy, &story.a),
             vec![],
             RevocationList::new(),
             story.now,
@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
         .unwrap();
         joiner.select_exact_admissions().unwrap();
         joiner
-            .receive_from(live(&story.a), governor.workspace_message(), story.now)
+            .receive_from(live(&story.a), owner_copy.workspace_message(), story.now)
             .unwrap();
         for message in story.founding.clone() {
             joiner
@@ -408,31 +408,31 @@ tilo_test_env::scenario! {
         );
         assert!(!says(&joiner, "phone"));
 
-        // The governing device opens the workspace again: it writes the cut
+        // The host opens the workspace again: it writes the cut
         // from what it holds, which is what it had taken before it took the
         // removal in.
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
-                .publish_governed_revocations(&[], &story.a, story.now)
+                .publish_member_revocations(&[], &story.a, story.now)
                 .unwrap()
         );
-        assert!(!governor.governance().lacks_removal_cuts());
+        assert!(!owner_copy.governance().lacks_removal_cuts());
         assert!(
-            !governor
+            !owner_copy
                 .governance_mut()
-                .publish_governed_revocations(&[], &story.a, story.now)
+                .publish_member_revocations(&[], &story.a, story.now)
                 .unwrap(),
             "a cut is written once"
         );
         joiner
-            .receive_from(live(&story.a), governor.workspace_message(), story.now)
+            .receive_from(live(&story.a), owner_copy.workspace_message(), story.now)
             .unwrap();
         assert!(says(&joiner, "phone"), "the document reads again, with nothing done by anyone");
         joiner
             .receive_from(retained(&story.a), story.laptops.clone(), story.now)
             .unwrap();
-        assert_eq!(heads(&joiner), heads(&story.governor));
+        assert_eq!(heads(&joiner), heads(&story.owner_copy));
         // And the repair keeps the device out.
         let forged = write_at(&mut story.before_removal.clone(), &story.b, "thief", story.now);
         assert!(
@@ -449,13 +449,13 @@ tilo_test_env::scenario! {
         let story = story(RevocationReason::Compromised);
         let mut joiner = caught_up(&story);
         let erased = {
-            let mut doc = story.governor.core.workspace_doc.clone().unwrap();
+            let mut doc = story.owner_copy.core.workspace_doc.clone().unwrap();
             let before = doc.get_heads();
             doc.delete(ROOT, crate::removals::FIELD_V1).unwrap();
             // With the operation naming what it changes, as the owner's
             // devices write governance.
             let op = crate::members::SignedMembershipOp::signed(
-                &certificate_of(&story.governor, &story.a),
+                &certificate_of(&story.owner_copy, &story.a),
                 &story.a,
                 crate::members::heads(&crate::members::ops(&doc)),
                 tilo_clock::unix_now_ns(),
@@ -472,7 +472,7 @@ tilo_test_env::scenario! {
                     .into_iter()
                     .map(crate::workspace::sent_change)
                     .collect(),
-                workspace: story.governor.workspace_id().to_owned(),
+                workspace: story.owner_copy.workspace_id().to_owned(),
             }
         };
         // Not even a device of the owner's takes history back.
@@ -549,19 +549,19 @@ tilo_test_env::scenario! {
             }
             peer
         };
-        let mut governor = exact(vec![bc]);
-        let phones = sealed(&governor, &b, 1, b"sealed by the phone", now);
-        governor.receive_from(live(&b), phones.clone(), now).unwrap();
+        let mut owner_copy = exact(vec![bc]);
+        let phones = sealed(&owner_copy, &b, 1, b"sealed by the phone", now);
+        owner_copy.receive_from(live(&b), phones.clone(), now).unwrap();
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
-                .publish_governed_revocations(&[removal_of(&b, RevocationReason::Retired, now)], &a, now)
+                .publish_member_revocations(&[removal_of(&b, RevocationReason::Retired, now)], &a, now)
                 .unwrap()
         );
 
         let mut joiner = exact(vec![]);
         joiner
-            .receive_from(live(&a), governor.workspace_message(), now)
+            .receive_from(live(&a), owner_copy.workspace_message(), now)
             .unwrap();
         let report = joiner
             .receive_from_report(retained(&b), phones, now)
@@ -573,7 +573,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             super::sealed_compaction_tests::held(&joiner),
-            super::sealed_compaction_tests::held(&governor)
+            super::sealed_compaction_tests::held(&owner_copy)
         );
         // Its next number, sealed after the removal, joins no history.
         let earlier = now.checked_sub(Duration::from_secs(1000)).unwrap();
@@ -599,28 +599,28 @@ tilo_test_env::scenario! {
         // What a device that joins later holds: the governance and the
         // document's base, and nothing of its sealed history.
         let joining = fx.replica;
-        let mut governor = joining.clone();
-        let mut author = sealing::Author::new(&governor);
+        let mut owner_copy = joining.clone();
+        let mut author = sealing::Author::new(&owner_copy);
         for field in ["first", "second"] {
-            let write = sealing::write(&governor, &phone, &keys, &author.edit(field, "written"), now);
-            sealing::admit(&mut governor, &phone, write, now);
+            let write = sealing::write(&owner_copy, &phone, &keys, &author.edit(field, "written"), now);
+            sealing::admit(&mut owner_copy, &phone, write, now);
         }
         // A device that was away holds the phone's two writes as it wrote them.
-        let away = governor.clone();
+        let away = owner_copy.clone();
         // The phone folds them into a checkpoint, which leads the document's
         // history from then on, and is removed.
-        let checkpoint = sealing::mint(&mut governor, &keys, &phone, now).unwrap();
+        let checkpoint = sealing::mint(&mut owner_copy, &keys, &phone, now).unwrap();
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
-                .publish_governed_revocations(
+                .publish_member_revocations(
                     &[removal_of(&phone, RevocationReason::Stolen, now)],
                     &owner,
                     now
                 )
                 .unwrap()
         );
-        let governance = governor.workspace_message();
+        let governance = owner_copy.workspace_message();
 
         // Removed, the phone signs another checkpoint of the same two writes,
         // under the number it used for the first: what a number alone would
@@ -651,15 +651,15 @@ tilo_test_env::scenario! {
                 "{who}: {:?}",
                 report.primary()
             );
-            assert_eq!(sealing::held(&peer), sealing::held(&governor), "{who}");
+            assert_eq!(sealing::held(&peer), sealing::held(&owner_copy), "{who}");
             // And once it leads the history, nothing of the phone's replaces it.
             assert!(
                 peer.receive_from(retained(&phone), forged(), now).is_err(),
                 "{who}"
             );
-            assert_eq!(sealing::held(&peer), sealing::held(&governor), "{who}");
+            assert_eq!(sealing::held(&peer), sealing::held(&owner_copy), "{who}");
         }
-        let refused = governor
+        let refused = owner_copy
             .clone()
             .receive_from(live(&phone), forged(), now)
             .unwrap_err()

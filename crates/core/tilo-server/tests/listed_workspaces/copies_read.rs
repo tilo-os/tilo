@@ -32,7 +32,7 @@ fn keeps(workspace: &str) -> RemoteActionMessage {
 /// address the tree gives the read, not from a call only the server may make.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_reads_the_devices_keeping_the_workspace() {
-    let fixture = governed_workspace(Role::Editor).await;
+    let fixture = listed_workspace(Role::Editor).await;
     let member = fixture
         .bob_link
         .asking_in(&fixture.workspace.workspace)
@@ -75,7 +75,7 @@ async fn a_member_reads_the_devices_keeping_the_workspace() {
 /// the list has only once the device wrote its row there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_the_member_list_does_not_name_reads_no_copies() {
-    let fixture = governed_workspace(Role::Editor).await;
+    let fixture = listed_workspace(Role::Editor).await;
     let unlisted = fixture
         .bob
         .enrol("bob-tablet", DeviceCapabilities::member());

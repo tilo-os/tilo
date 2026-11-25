@@ -778,7 +778,7 @@ fn invitation_entry(entry: &str, local: bool) -> String {
     }
 }
 
-impl super::GovernedWorkspace {
+impl super::HostedWorkspace {
     /// Take off the wait list everyone who joined with an invitation sent
     /// for their entry. A failed write leaves them for the next time.
     pub(super) fn forget_joined_wait_list(&mut self) {

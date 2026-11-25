@@ -13,14 +13,14 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
 
-use crate::workspaces::fixtures::{governor, test_host};
+use crate::workspaces::fixtures::{hosting_device, test_host};
 
 /// The person on her own device lists the members; a caller on that same device acting as
 /// anyone else (a bot, an agent the device handed its requests to) is not answered as her.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_hosts_own_answers_go_to_whoever_the_device_acts_as() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let host = test_host(dir.path(), &key, &owner).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;

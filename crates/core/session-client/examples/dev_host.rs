@@ -112,7 +112,7 @@ async fn main() {
     // Every tab that asks to sign in as one of the root's devices is signed in.
     let tickets = server
         .workspaces()
-        .expect("the host governs its workspaces")
+        .expect("the host serves its workspaces")
         .action_service()
         .tickets();
     loop {

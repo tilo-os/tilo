@@ -951,8 +951,8 @@ pub struct RouteContentService {
 }
 
 /// Route the content the records of `workspaces`' workspaces reference over `shelf`, the
-/// device's content store: a want goes to the device serving a member copy, or, for a workspace
-/// this device governs, to the workspace's host, which asks its members; and the answers come
+/// device's content store: a want goes to the device serving a member copy, or, in a workspace
+/// this device hosts, to its members; and the answers come
 /// back the same way, into the record content an app waiting on the want hears of
 /// ([`RouteContent`]).
 ///
@@ -1025,7 +1025,7 @@ impl ContentPeers for MemberPeers {
             let _ = self.workspaces.send_member(workspace, message);
             return;
         }
-        // The workspace this device governs: its host asks the members.
+        // The workspace this device hosts: it asks its members.
         let Ok(body) = postcard::to_stdvec(&message) else {
             return;
         };

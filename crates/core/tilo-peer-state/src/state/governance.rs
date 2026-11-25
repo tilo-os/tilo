@@ -2,10 +2,10 @@
 //! grants, delegations and revocations as the workspace document records them.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
-    BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, Grant, GrantId, Grantee,
-    Member, MemberAccess, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc,
-    RevocationList, Role, SystemTime, Transactable, err, governed_map, keeping_device_keys_of,
-    now_ns, person_of, workspace,
+    BTreeMap, BTreeSet, DeviceCert, DeviceRow, Grant, GrantId, Grantee, Member, MemberAccess,
+    MemberId, MemberList, MemberListAccess, MembershipError, Person, ROOT, ReadDoc, RevocationList,
+    Role, SystemTime, Transactable, err, keeping_device_keys_of, now_ns, person_of, workspace,
+    workspace_map,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -133,8 +133,8 @@ impl PeerGovernance<'_> {
     }
     /// Whether the governance carries a device's removal without its cut
     /// ([`crate::removals`]): one recorded before cuts were kept. Until the
-    /// device that governs the workspace completes it
-    /// ([`PeerGovernanceMut::publish_governed_revocations`]), nobody decides
+    /// device that hosts the workspace completes it
+    /// ([`PeerGovernanceMut::publish_member_revocations`]), nobody decides
     /// what that device wrote.
     #[must_use]
     pub fn lacks_removal_cuts(self) -> bool {
@@ -151,7 +151,7 @@ impl PeerGovernance<'_> {
             .any(|entry| !recorded.contains(&entry.revoked_device_public_key))
     }
     /// The sandbox capabilities the workspace's governance grants its apps.
-    pub fn governed_sandbox(self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
+    pub fn member_sandbox(self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
         let doc = self
             .peer
             .core
@@ -164,19 +164,19 @@ impl PeerGovernance<'_> {
             .map(|bytes| serde_json::from_slice(bytes).map_err(err))
             .collect()
     }
-    /// The access of every governed member device at `now`: what a server
+    /// The access of every member device at `now`: what a server
     /// that does not hold the workspace's governance decides their changes
     /// with, each held to its foreign-device bound.
-    pub fn governed_device_access(
+    pub fn member_device_access(
         self,
         now: SystemTime,
     ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>, String>
     {
-        let access = self.peer.governance().governed_access(now)?;
+        let access = self.peer.governance().member_list_access(now)?;
         self.access_of(&access.member_devices, now)
     }
-    /// [`Self::governed_device_access`] of `devices`, the member devices
-    /// [`Self::governed_access`] at `now` answered: a host that just listed
+    /// [`Self::member_device_access`] of `devices`, the member devices
+    /// [`Self::member_list_access`] at `now` answered: a host that just listed
     /// them for its access does not list them again.
     pub fn access_of(
         self,
@@ -207,7 +207,7 @@ impl PeerGovernance<'_> {
             })
             .collect())
     }
-    /// Current governed access, derived from the workspace's member set: its
+    /// Current member access, derived from the workspace's member set: its
     /// members by their roots, and the devices of theirs it lists now.
     ///
     /// [`Self::access_of`], and how many times deriving it walked the
@@ -243,8 +243,8 @@ impl PeerGovernance<'_> {
     /// Each identity row is decoded and its certificate's signature verified
     /// once per document state: a page in a workspace of hundreds of people
     /// lists its member devices for every frame its channels take in.
-    pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
-        let people = self.governed_set(now)?;
+    pub fn member_list_access(self, now: SystemTime) -> Result<MemberListAccess, String> {
+        let people = self.listed_members(now)?;
         let mut member_devices = Vec::new();
         let mut member_user_roots = Vec::new();
         for (root, member) in &people {
@@ -261,7 +261,7 @@ impl PeerGovernance<'_> {
         member_devices.dedup();
         member_user_roots.sort_unstable();
         member_user_roots.dedup();
-        Ok(GovernedAccess {
+        Ok(MemberListAccess {
             member_devices,
             member_user_roots,
         })
@@ -279,7 +279,7 @@ impl PeerGovernance<'_> {
         let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
         let mut named = false;
         for bytes in policy.identities.values() {
-            let Ok(identity) = GovernedIdentity::decode(bytes) else {
+            let Ok(identity) = DeviceRow::decode(bytes) else {
                 continue;
             };
             if identity.device_cert.device_public_key != device {
@@ -345,11 +345,6 @@ impl PeerGovernance<'_> {
 
     /// The device the workspace was created on, which founds its MLS group;
     /// every other device takes the group it hands over.
-    ///
-    /// A Servers workspace an earlier build founded alike on each of its
-    /// person's devices names the person's root here instead, which founds
-    /// nothing: its first holder founds it again under its own device
-    /// (`tilo_workspace_service::workspaces::servers::refound`).
     pub fn founder(self) -> Option<[u8; 32]> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
         let (value, _) = doc.get(ROOT, super::seed::FOUNDER).ok()??;
@@ -369,7 +364,7 @@ impl PeerGovernance<'_> {
     /// group's keys, so a page that escapes it on that machine opens nothing
     /// sealed to the group.
     pub fn key_holders(self, now: SystemTime) -> Result<BTreeSet<[u8; 32]>, String> {
-        let access = self.peer.governance().governed_access(now)?;
+        let access = self.peer.governance().member_list_access(now)?;
         let mut holders: BTreeSet<[u8; 32]> = BTreeSet::new();
         let mut stores: BTreeSet<[u8; 32]> = BTreeSet::new();
         // A holder the member list names keeps the workspace: a key holder among them takes the
@@ -413,7 +408,7 @@ impl PeerGovernance<'_> {
         named: &collab_types::NamedReaders,
         now: SystemTime,
     ) -> Result<BTreeSet<[u8; 32]>, String> {
-        let members = self.governed_set(now)?;
+        let members = self.listed_members(now)?;
         let reads = |root: &[u8; 32]| {
             named.includes(
                 root,
@@ -454,7 +449,7 @@ impl PeerGovernance<'_> {
             return true;
         }
         named.role.is_some()
-            && self.governed_set(now).is_ok_and(|members| {
+            && self.listed_members(now).is_ok_and(|members| {
                 members.get(person).is_some_and(|member| {
                     !member.removed && named.includes(person, Some(member.role))
                 })
@@ -465,7 +460,7 @@ impl PeerGovernance<'_> {
     /// owner, its members with the part each takes, when each was admitted,
     /// and the grants on its nodes. This is the one source every list of its
     /// people shows.
-    pub fn governed_policy(self) -> Result<tilo_action_policy::WorkspacePolicy, String> {
+    pub fn member_policy(self) -> Result<tilo_action_policy::WorkspacePolicy, String> {
         let doc = self
             .peer
             .core
@@ -477,10 +472,7 @@ impl PeerGovernance<'_> {
 
     /// The issuance time of each live grant, from the signed change that wrote it.
     #[must_use]
-    pub fn governed_grant_times(
-        &self,
-        grants: &[Grant],
-    ) -> std::collections::BTreeMap<GrantId, u64> {
+    pub fn member_grant_times(&self, grants: &[Grant]) -> std::collections::BTreeMap<GrantId, u64> {
         use crate::members::{self, MembershipOpCommand};
         let mut times = std::collections::BTreeMap::<GrantId, u64>::new();
         if grants.is_empty() {
@@ -560,16 +552,16 @@ impl PeerGovernance<'_> {
     /// reads as theirs. A device the workspace names among its keepers is
     /// listed as its person's too, though its access comes from the keepers.
     /// It is the workspace's member set, named.
-    pub fn governed_members(self, now: SystemTime) -> Result<MemberList, String> {
+    pub fn member_list(self, now: SystemTime) -> Result<MemberList, String> {
         let doc = self
             .peer
             .core
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        let people = self.governed_set(now)?;
+        let people = self.listed_members(now)?;
         // A device the workspace names among its keepers holds it by that
-        // name and is no member's device for its access ([`Self::governed_set`]).
+        // name and is no member's device for its access ([`Self::listed_members`]).
         // A page still shows it as the device of the person who keeps it
         // there, so a window it serves or what it narrates reads as theirs.
         let keeping: Vec<([u8; 32], [u8; 32])> = self
@@ -640,9 +632,9 @@ impl PeerGovernance<'_> {
     /// The workspace's member set as its signed governance gives it, by the
     /// root each person's devices are certified by: their part, whether the
     /// workspace removed them, and the devices of theirs it lists now — the
-    /// one membership its member list ([`Self::governed_members`]) and its
-    /// access ([`Self::governed_access`]) are both read from.
-    fn governed_set(self, now: SystemTime) -> Result<BTreeMap<[u8; 32], GovernedMember>, String> {
+    /// one membership its member list ([`Self::member_list`]) and its
+    /// access ([`Self::member_list_access`]) are both read from.
+    fn listed_members(self, now: SystemTime) -> Result<BTreeMap<[u8; 32], ListedMember>, String> {
         let doc = self
             .peer
             .core
@@ -661,7 +653,7 @@ impl PeerGovernance<'_> {
         let grants = workspace_policy.grants_by_person();
         crate::work::grants_walked();
         let administrator = |root: &[u8; 32]| grants.administers(&hex::encode(root));
-        let mut people: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
+        let mut people: BTreeMap<[u8; 32], ListedMember> = BTreeMap::new();
         // A person is a member by their root, whatever devices of theirs the
         // workspace has rows for: its owner from the workspace's beginning,
         // and someone declared before any device of theirs arrived, or whose
@@ -685,7 +677,7 @@ impl PeerGovernance<'_> {
             ) {
                 continue;
             }
-            let member = GovernedMember {
+            let member = ListedMember {
                 role,
                 // Its owner keeps the part they were given first, whatever
                 // else the policy says of the same person.
@@ -707,7 +699,7 @@ impl PeerGovernance<'_> {
                 .or_else(|| identity.admissions.last())
                 && let std::collections::btree_map::Entry::Vacant(held) = people.entry(root)
             {
-                held.insert(GovernedMember {
+                held.insert(ListedMember {
                     role: receipt.role,
                     administrator: administrator(&root),
                     grants: 0,
@@ -745,11 +737,11 @@ impl PeerGovernance<'_> {
     pub fn owner_user_public_key(self) -> [u8; 32] {
         self.peer.core.owner
     }
-    /// Issue a membership refresh challenge for a governed device.
+    /// Issue a membership refresh challenge for a member device.
     ///
     /// # Errors
     ///
-    /// Returns an error if the device is not a current governed member at `now` or the
+    /// Returns an error if the device is not a current member at `now` or the
     /// challenge cannot be signed.
     pub fn membership_challenge(
         self,
@@ -762,7 +754,7 @@ impl PeerGovernance<'_> {
         now: SystemTime,
     ) -> Result<crate::join::MembershipChallenge, String> {
         // A renewed certificate is challenged as the device it renews; its
-        // membership is decided once the governor holds it
+        // membership is decided once the host has it
         // ([`PeerGovernanceMut::renew_member_certificate`]). A device the
         // workspace holds no certificate for renews nothing: it is a stranger
         // or a further device of a member, told apart below.
@@ -801,7 +793,7 @@ impl PeerGovernance<'_> {
             match self.peer.permissions(device_cert.device_public_key, now) {
                 Ok(_) => {}
                 Err(MembershipError::NoMembership)
-                    if self.peer.has_governed_admission(device_cert) =>
+                    if self.peer.has_listed_admission(device_cert) =>
                 {
                     return Err("member has been removed".into());
                 }
@@ -837,7 +829,7 @@ impl PeerGovernance<'_> {
 
 /// One person a workspace has, as its signed governance records them: the part
 /// they hold, whether it removed them, and the devices of theirs it lists now.
-struct GovernedMember {
+struct ListedMember {
     role: Role,
     administrator: bool,
     /// The permissions the workspace gives them beyond their role.
@@ -973,7 +965,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// Returns an error if the change is not `key`'s device's to make, an entry's root
     /// may not revoke its device here, or governance cannot be updated.
-    pub fn publish_governed_revocations(
+    pub fn publish_member_revocations(
         self,
         entries: &[tilo_user_identity::RevocationEntry],
         key: &dyn DeviceSigner,
@@ -986,7 +978,7 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let rows = super::governed_rows::identity_rows(&doc).map_err(err)?;
+        let rows = super::identity_rows::identity_rows(&doc).map_err(err)?;
         let mut verified = self.peer.core.revocations.clone();
         for entry in entries {
             let certified = rows.iter().any(|(_, _, identity)| {
@@ -994,7 +986,7 @@ impl PeerGovernanceMut<'_> {
                     && identity.device_cert.user_public_key == entry.user_public_key
             });
             if entry.user_public_key != owner && !certified {
-                return Err("governed revocation root mismatch".into());
+                return Err("revocation root is not the member list's".into());
             }
             verified.insert(entry.clone()).map_err(err)?;
         }
@@ -1023,7 +1015,7 @@ impl PeerGovernanceMut<'_> {
             identity.revocations = written;
         }
         let mut changed =
-            super::governed_rows::put_identity_rows(&mut doc, &projected).map_err(err)?;
+            super::identity_rows::put_identity_rows(&mut doc, &projected).map_err(err)?;
         // With every removal the governance carries goes its cut, written
         // once: where each document's history stood for the removed device, as
         // this replica holds it now. A removal the governance carried before
@@ -1298,9 +1290,9 @@ impl PeerGovernanceMut<'_> {
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
-            .ok_or("governed identities missing")?
+            .ok_or("member identities missing")?
             .1;
-        let identity = GovernedIdentity {
+        let identity = DeviceRow {
             device_cert: device.clone(),
             revocations: Vec::new(),
             admission: None,
@@ -1359,7 +1351,7 @@ impl PeerGovernanceMut<'_> {
                 row.removed = false;
                 row
             }
-            None => GovernedIdentity {
+            None => DeviceRow {
                 device_cert: device.clone(),
                 revocations: Vec::new(),
                 admission: None,
@@ -1373,7 +1365,7 @@ impl PeerGovernanceMut<'_> {
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
-            .ok_or("governed identities missing")?
+            .ok_or("the workspace's identities are missing")?
             .1;
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -1398,7 +1390,7 @@ impl PeerGovernanceMut<'_> {
 
     /// Take out of the workspace's governance every device row whose
     /// certificate has expired: a device whose certificate no longer verifies
-    /// is no member device any more ([`Self::governed_access`] leaves it out),
+    /// is no member device any more ([`Self::member_list_access`] leaves it out),
     /// so the row it left keeps nobody reading. A page's device certificate
     /// lasts an hour and a page opens a fresh one on every load, so this is
     /// what keeps a workspace that many people visit from keeping a row per
@@ -1502,8 +1494,8 @@ impl PeerGovernanceMut<'_> {
             .identities
             .get(&id)
             .cloned()
-            .ok_or("governed identity missing")?;
-        let mut row = GovernedIdentity::decode(&bytes).map_err(err)?;
+            .ok_or("member identity missing")?;
+        let mut row = DeviceRow::decode(&bytes).map_err(err)?;
         if row.removed {
             return Ok(false);
         }
@@ -1511,7 +1503,7 @@ impl PeerGovernanceMut<'_> {
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
-            .ok_or("governed identities missing")?
+            .ok_or("member identities missing")?
             .1;
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -1524,7 +1516,7 @@ impl PeerGovernanceMut<'_> {
         self.peer.write_governance(doc, &before, key, now)
     }
 
-    /// Take `devices`' rows out of the workspace's governance as the governing
+    /// Take `devices`' rows out of the workspace's governance signed by
     /// `key`, in one change, and take it in as every member will. Whether the
     /// workspace changed.
     fn forget_identity_rows(
@@ -1542,7 +1534,7 @@ impl PeerGovernanceMut<'_> {
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
-            .ok_or("governed identities missing")?
+            .ok_or("member identities missing")?
             .1;
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -1552,12 +1544,12 @@ impl PeerGovernanceMut<'_> {
         self.peer.write_governance(doc, &before, key, now)
     }
 
-    /// Change a governed member's workspace role.
+    /// Change a member's workspace role.
     ///
     /// # Errors
     ///
     /// Returns an error if the change is not `key`'s device's to make, the user is the owner or
-    /// absent from governed admission history, or governance cannot be updated.
+    /// absent from the admission history, or governance cannot be updated.
     pub fn set_member_role(
         self,
         user_public_key: [u8; 32],
@@ -1712,7 +1704,7 @@ impl PeerGovernanceMut<'_> {
     }
 
     /// Name the person `user_public_key` `name` in the workspace: the name
-    /// every reader of [`PeerGovernance::governed_members`] shows for them.
+    /// every reader of [`PeerGovernance::member_list`] shows for them.
     /// The name is kept under the person's root, where the workspace holds
     /// them whether or not a device of theirs has been admitted yet — someone
     /// its operator declared an owner names themselves from a key before any
@@ -1774,7 +1766,7 @@ impl PeerGovernanceMut<'_> {
         let peers = doc
             .get(ROOT, "peers")
             .map_err(err)?
-            .ok_or("governed peers missing")?
+            .ok_or("peer names missing")?
             .1;
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -1822,7 +1814,7 @@ impl PeerGovernanceMut<'_> {
             return Ok(false);
         }
         let mut doc = held.clone();
-        let peers = governed_map(&doc, "peers")?;
+        let peers = workspace_map(&doc, "peers")?;
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
         for named in &nobody {
@@ -1889,7 +1881,7 @@ impl PeerGovernanceMut<'_> {
         }
         self.peer
             .governance_mut()
-            .put_governed_grants(&rewritten, key, now)
+            .put_member_grants(&rewritten, key, now)
     }
     /// Remove grants a member's device decided to take back, by id.
     /// Memberships are removed through member governance.
@@ -1898,7 +1890,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// Returns an error if the change is not `key`'s device's to make or governance
     /// cannot be updated.
-    pub fn remove_governed_grants(
+    pub fn remove_member_grants(
         self,
         ids: &[GrantId],
         key: &dyn DeviceSigner,
@@ -1926,7 +1918,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// Returns an error if the change is not `key`'s device's to make, a grant has no
     /// id or names another workspace, or governance cannot be updated.
-    pub fn put_governed_grants(
+    pub fn put_member_grants(
         self,
         grants: &[Grant],
         key: &dyn DeviceSigner,
@@ -1961,7 +1953,7 @@ impl PeerGovernanceMut<'_> {
         }
         self.peer.write_changes(doc, changes, key, now)
     }
-    /// Remove a governed member and their grants; someone removing
+    /// Remove a member and their grants; someone removing
     /// themselves also takes their own devices' rows.
     ///
     /// # Errors
@@ -2035,12 +2027,12 @@ impl PeerGovernanceMut<'_> {
         // named here. Another person's devices stay until whoever may remove
         // them takes them.
         if let Some(leaving) = signer.filter(|signer| people.contains(signer)) {
-            let identities = governed_map(&doc, "peer_identities_v1")?;
+            let identities = workspace_map(&doc, "peer_identities_v1")?;
             let own: Vec<String> = crate::workspace::governance_of(Some(&doc))
                 .identities
                 .into_iter()
                 .filter(|(_, bytes)| {
-                    super::GovernedIdentity::decode(bytes)
+                    super::DeviceRow::decode(bytes)
                         .is_ok_and(|identity| identity.device_cert.user_public_key == leaving)
                 })
                 .map(|(device, _)| device)
@@ -2054,7 +2046,7 @@ impl PeerGovernanceMut<'_> {
         // person's own, under their root, and their devices' whose rows went. A
         // name for nobody the workspace holds makes its security basis
         // unreadable, and every device's next write with it.
-        let peers = governed_map(&doc, "peers")?;
+        let peers = workspace_map(&doc, "peers")?;
         for named in gone {
             if doc.get(&peers, named.as_str()).map_err(err)?.is_some() {
                 doc.delete(&peers, named.as_str()).map_err(err)?;

@@ -123,8 +123,8 @@ pub use image::{
     verify_image_endorsement_with_revocations_at, verify_image_signing_authorization_at,
 };
 pub use projection::{
-    DisplayNameError, GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,
-    GovernedHumanIdentityV2, MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES,
+    DisplayNameError, ListedAgentIdentityV2, ListedDeviceIdentityV2, ListedHumanIdentityV1,
+    ListedHumanIdentityV2, MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES,
     MAX_TRUSTED_IDENTITY_PROJECTION_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES,
     MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
     TRUSTED_IDENTITY_PROJECTION_VERSION, TrustedIdentityProjectionError,

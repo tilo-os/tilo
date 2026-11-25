@@ -120,7 +120,7 @@ fn edit(peer: &StatePeer, key: &SigningKey, to: &'static str, seq: u64) -> Neigh
 /// before that, and two writes of the editor's made on that earlier state: one
 /// beside the demotion, and one naming it.
 struct Demotion {
-    governor: StatePeer,
+    owner_copy: StatePeer,
     before: StatePeer,
     guest: DeviceCert,
     taken: NeighbourMsg,
@@ -131,23 +131,23 @@ struct Demotion {
 }
 
 fn demotion() -> Demotion {
-    let (mut governor, key, guest) = workspace_with(Role::Editor);
+    let (mut owner_copy, key, guest) = workspace_with(Role::Editor);
     let (owner_key, _) = owner();
     let mut early = empty_copy(Arc::new(Source(true)));
-    take_in(&mut early, &mut governor, true);
-    let taken = edit(&governor, &key, "taken", 1);
-    sent(&mut governor, &guest, taken.clone()).expect("an editor edits");
-    let before = governor.clone();
+    take_in(&mut early, &mut owner_copy, true);
+    let taken = edit(&owner_copy, &key, "taken", 1);
+    sent(&mut owner_copy, &guest, taken.clone()).expect("an editor edits");
+    let before = owner_copy.clone();
     assert!(
-        governor
+        owner_copy
             .governance_mut()
             .set_member_role(guest.user_public_key, Role::Viewer, &owner_key, now())
             .unwrap()
     );
     let beside = edit(&before, &key, "beside", 2);
-    let after = under(edit(&before, &key, "after", 3), &heads(&governor), &key);
+    let after = under(edit(&before, &key, "after", 3), &heads(&owner_copy), &key);
     Demotion {
-        governor,
+        owner_copy,
         before,
         guest,
         taken,
@@ -169,12 +169,12 @@ tilo_test_env::scenario! {
         let Demotion { guest, .. } = &story;
         let mut first = story.early.clone();
         sent(&mut first, guest, story.taken.clone()).expect("taken before the demotion");
-        take_in(&mut first, &mut story.governor.clone(), false);
+        take_in(&mut first, &mut story.owner_copy.clone(), false);
         refused(&mut first, guest, story.after.clone());
         assert_eq!(value(&first), "taken");
 
         let mut second = story.early.clone();
-        take_in(&mut second, &mut story.governor.clone(), false);
+        take_in(&mut second, &mut story.owner_copy.clone(), false);
         refused(&mut second, guest, story.after.clone());
         sent(&mut second, guest, story.taken.clone())
             .expect("a write the demotion kept is its editor's, after it as before");
@@ -193,15 +193,15 @@ tilo_test_env::scenario! {
     {
         let mut story = demotion();
         let guest = story.guest.clone();
-        refused(&mut story.governor, &guest, story.beside.clone());
+        refused(&mut story.owner_copy, &guest, story.beside.clone());
         // A copy that took the demotion first.
         let mut copy = story.early.clone();
-        take_in(&mut copy, &mut story.governor, false);
+        take_in(&mut copy, &mut story.owner_copy, false);
         sent(&mut copy, &guest, story.taken.clone()).unwrap();
         refused(&mut copy, &guest, story.beside.clone());
         // A copy made after the workspace started over from a base, as at the
         // next admission: the heads the write names went into the base.
-        let mut based = story.governor.clone();
+        let mut based = story.owner_copy.clone();
         let (owner_key, owner) = owner();
         assert!(based.compact_workspace(&owner, &owner_key, now()).unwrap());
         let mut late = empty_copy(Arc::new(Source(true)));
@@ -256,23 +256,23 @@ tilo_test_env::scenario! {
     // Its earlier sends stay its history on a copy that takes the hand-over
     // first; a send it makes now asks.
     {
-        let (mut governor, _, guest) = workspace_keeping(Role::Editor, &["outbox"]);
-        governor.set_surfaces(Surfaces::from_source(Arc::new(MailboxSource)));
+        let (mut owner_copy, _, guest) = workspace_keeping(Role::Editor, &["outbox"]);
+        owner_copy.set_surfaces(Surfaces::from_source(Arc::new(MailboxSource)));
         let (owner_key, owner) = owner();
         let mut copy = empty_copy(Arc::new(MailboxSource));
-        take_in(&mut copy, &mut governor, true);
-        let history = owners_send(&governor, "sent", 10);
-        sent(&mut governor, &owner, history.clone()).expect("its owner reaches outside");
+        take_in(&mut copy, &mut owner_copy, true);
+        let history = owners_send(&owner_copy, "sent", 10);
+        sent(&mut owner_copy, &owner, history.clone()).expect("its owner reaches outside");
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
                 .transfer_ownership(guest.user_public_key, &owner_key, now())
                 .unwrap()
         );
-        let again = owners_send(&governor, "again", 11);
-        refused(&mut governor.clone(), &owner, again);
+        let again = owners_send(&owner_copy, "again", 11);
+        refused(&mut owner_copy.clone(), &owner, again);
 
-        take_in(&mut copy, &mut governor, false);
+        take_in(&mut copy, &mut owner_copy, false);
         assert_eq!(copy.owner(), guest.user_public_key);
         sent(&mut copy, &owner, history).expect("its history from before the hand-over");
         assert_eq!(value(&copy), "sent");
@@ -284,22 +284,22 @@ tilo_test_env::scenario! {
     // holds a governance with none of the heads the old owner's writes name,
     // and is handed those writes from what a holder kept.
     {
-        let (mut governor, _, guest) = workspace_keeping(Role::Editor, &["outbox"]);
-        governor.set_surfaces(Surfaces::from_source(Arc::new(MailboxSource)));
+        let (mut owner_copy, _, guest) = workspace_keeping(Role::Editor, &["outbox"]);
+        owner_copy.set_surfaces(Surfaces::from_source(Arc::new(MailboxSource)));
         let (owner_key, owner) = owner();
         // The device holds the record as it was founded, nothing of its
         // governance's history after that.
         let mut device = empty_copy(Arc::new(MailboxSource));
-        take_in(&mut device, &mut governor.clone(), true);
-        let history = owners_send(&governor, "sent", 10);
-        sent(&mut governor, &owner, history.clone()).unwrap();
-        governor
+        take_in(&mut device, &mut owner_copy.clone(), true);
+        let history = owners_send(&owner_copy, "sent", 10);
+        sent(&mut owner_copy, &owner, history.clone()).unwrap();
+        owner_copy
             .governance_mut()
             .transfer_ownership(guest.user_public_key, &owner_key, now())
             .unwrap();
-        assert!(governor.compact_workspace(&owner, &owner_key, now()).unwrap());
+        assert!(owner_copy.compact_workspace(&owner, &owner_key, now()).unwrap());
 
-        take_in(&mut device, &mut governor.clone(), false);
+        take_in(&mut device, &mut owner_copy.clone(), false);
         assert_eq!(device.owner(), guest.user_public_key);
         assert_eq!(value(&device), "seed");
         handed(&mut device, &owner, history).expect("the old owner's history");
@@ -307,7 +307,7 @@ tilo_test_env::scenario! {
 
         // A device that copies everything at once holds it too.
         let mut fresh = empty_copy(Arc::new(MailboxSource));
-        take_in(&mut fresh, &mut governor, true);
+        take_in(&mut fresh, &mut owner_copy, true);
         assert_eq!(value(&fresh), "sent");
     }
 }

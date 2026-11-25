@@ -3,7 +3,7 @@
 //! whose state lives in its process on one device shows its contents to the
 //! others only once its member shares it, and the share is the workspace's
 //! resource share ([`tilo_action_policy::share`]) of the window's own node. The
-//! governor takes such a share only from the device that minted the tab's id, so
+//! host takes such a share only from the device that minted the tab's id, so
 //! nobody shares another device's window. A window that closes ends its share as
 //! it goes: the grants are in the same workspace the close already changes.
 
@@ -18,7 +18,7 @@ use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
 use crate::layout::TileContent;
 use crate::tree::Workspace;
 
-/// Key of the workspace's governed device identities, by device key.
+/// Key of the workspace's member device identities, by device key.
 const PEER_IDENTITIES_KEY: &str = "peer_identities_v1";
 
 /// A window id as it stands in a share id or a node: fixed-width hex, so it

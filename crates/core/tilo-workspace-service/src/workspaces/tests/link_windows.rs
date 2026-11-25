@@ -17,7 +17,7 @@ use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry,
 };
 
-/// How long a link or the governor may take to do what a test waits for.
+/// How long a link or the host may take to do what a test waits for.
 const WAIT: Duration = Duration::from_secs(10);
 
 /// A member device of `workspace` with `key`, linked to the server's direct
@@ -49,16 +49,16 @@ async fn linked(
     (pairing, member)
 }
 
-/// Wait until the governor of `workspace` committed everything its copy holds
-/// (what a restart starts from) and that copy holds `titles` windows.
+/// Wait until the host of `workspace` committed everything its copy keeps
+/// (what a restart starts from) and that copy keeps `titles` windows.
 async fn committed_with(workspaces: &Workspaces, workspace: &str, titles: usize) {
     let state = workspaces.workspace(workspace).await.unwrap();
     tokio::time::timeout(WAIT, async {
         loop {
             {
-                let governed = state.lock().await;
-                let held = titles_in(governed.peer().admitted_workspace().unwrap()).len();
-                if held == titles && governed.peer().workspace_heads() == governed.kept_heads {
+                let hosted = state.lock().await;
+                let held = titles_in(hosted.peer().admitted_workspace().unwrap()).len();
+                if held == titles && hosted.peer().workspace_heads() == hosted.kept_heads {
                     return;
                 }
             }
@@ -67,7 +67,7 @@ async fn committed_with(workspaces: &Workspaces, workspace: &str, titles: usize)
     })
     .await
     .unwrap_or_else(|_| {
-        panic!("the governor commits the member's windows the link admitted ({titles} windows)")
+        panic!("the host commits the member's windows the link admitted ({titles} windows)")
     });
 }
 
@@ -96,24 +96,24 @@ fn closed_on(
     }
 }
 
-/// The workspace's document as the governor of `workspace` holds it.
-async fn governors_copy(workspaces: &Workspaces, workspace: &str) -> automerge::AutoCommit {
+/// The workspace's document as the host of `workspace` keeps it.
+async fn hosts_copy(workspaces: &Workspaces, workspace: &str) -> automerge::AutoCommit {
     let state = workspaces.workspace(workspace).await.unwrap();
-    let governed = state.lock().await;
-    governed.peer().admitted_workspace().unwrap().clone()
+    let hosted = state.lock().await;
+    hosted.peer().admitted_workspace().unwrap().clone()
 }
 
-/// The windows a member opens over the link are committed by the governor as
-/// they come: the server restarts, the member's device restarts holding them
+/// The windows a member opens over the link are committed by the host as
+/// they come: the server restarts, the member's device restarts keeping them
 /// as the workspace's, and the windows it closes next, a change built on
-/// them, are taken in. The link took them into the governor's copy, and
+/// them, are taken in. The link took them into the host's copy, and
 /// nothing wrote that copy to disk until some other change came: a restart
 /// before one lost them, and the server refused every later change of the
 /// member's for history it no longer had, as long as the member ran.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_members_windows_the_link_admitted_outlive_a_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -125,7 +125,7 @@ async fn a_members_windows_the_link_admitted_outlive_a_restart() {
     link.send(postcard::from_bytes(&opened).unwrap()).unwrap();
     committed_with(&workspaces, &workspace, 2).await;
     // What the member's device holds of the workspace: its own windows in it.
-    let members_copy = governors_copy(&workspaces, &workspace).await;
+    let members_copy = hosts_copy(&workspaces, &workspace).await;
     pairing.abort();
     drop(link);
     drop(workspaces);
@@ -134,7 +134,7 @@ async fn a_members_windows_the_link_admitted_outlive_a_restart() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     assert_eq!(
-        titles_in(&governors_copy(&workspaces, &workspace).await).len(),
+        titles_in(&hosts_copy(&workspaces, &workspace).await).len(),
         2,
         "the server starts again with the member's windows"
     );
@@ -249,7 +249,7 @@ async fn runtime(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_members_device_is_admitted_on_the_link_it_dials() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -290,7 +290,7 @@ async fn a_members_device_is_admitted_on_the_link_it_dials() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_keyed_by_another_endpoint_is_admitted_as_its_device() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -332,7 +332,7 @@ async fn a_page_keyed_by_another_endpoint_is_admitted_as_its_device() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -444,7 +444,7 @@ async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
 async fn a_member_peoples_new_device_lists_itself_on_its_first_link() {
     use automerge::ReadDoc as _;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -508,7 +508,7 @@ async fn a_member_peoples_new_device_lists_itself_on_its_first_link() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hosted_environments_link_reads_its_one_record() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -557,7 +557,7 @@ async fn a_hosted_environments_link_reads_its_one_record() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_agent_outside_its_grant_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
@@ -659,9 +659,9 @@ async fn admitted_guest(
     // What a settled governance decision does: the workspace's members reach
     // the host's handshake by their roots as well as its policy's own.
     let state = workspaces.workspace(workspace).await.unwrap();
-    let mut governed = state.lock().await;
+    let mut hosted = state.lock().await;
     workspaces
-        .settle(&mut governed)
+        .settle(&mut hosted)
         .await
         .expect("the workspace settles the guest's admission");
     (member, member_key)
@@ -850,7 +850,7 @@ async fn the_persons_blocked_key_ends_every_device_of_theirs(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();

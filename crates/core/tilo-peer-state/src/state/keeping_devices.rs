@@ -9,13 +9,13 @@
 //! ([`PeerGovernance::key_holders`]).
 use super::copies::CopyRole;
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{ROOT, SystemTime, err, governed_map};
+use super::{ROOT, SystemTime, err, workspace_map};
 use crate::join::TransportHint;
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc as _, Value};
 use collab_types::signer::DeviceSigner;
 
-/// Key of the workspace's hosts in its governance document: a map from each
+/// Key of the workspace's hosts in its governance: a map from each
 /// host's device key (hex) to its signed address (JSON).
 pub const WORKSPACE_KEEPING_DEVICES_KEY: &str = "keeping_devices_v1";
 
@@ -87,7 +87,7 @@ impl PeerGovernance<'_> {
 
     /// The holder whose copy makes the workspace's compacted base, the same
     /// on every device: of the holders with the keys that are the owner's or
-    /// an administrator's ([`StatePeer::governs_history`]), the device the
+    /// an administrator's ([`StatePeer::administers_history`]), the device the
     /// workspace was founded on while it is one, else the first by device
     /// key. `None` while it names no such holder. A newer base is taken only
     /// from those people's devices, and only one device may make each, so
@@ -99,7 +99,7 @@ impl PeerGovernance<'_> {
             .keeping_devices()
             .iter()
             .filter(|hint| {
-                self.peer.governs_history(&hint.host.user_public_key)
+                self.peer.administers_history(&hint.host.user_public_key)
                     && holder_role(hint) == CopyRole::KeyHolder
             })
             .map(|hint| hint.host.device_public_key)
@@ -137,7 +137,7 @@ impl PeerGovernanceMut<'_> {
         }
         let json = serde_json::to_string(hint).map_err(|error| error.to_string())?;
         self.write(key, now, |doc| {
-            let hosts = governed_map(doc, WORKSPACE_KEEPING_DEVICES_KEY)?;
+            let hosts = workspace_map(doc, WORKSPACE_KEEPING_DEVICES_KEY)?;
             doc.put(
                 &hosts,
                 hex::encode(hint.host.device_public_key).as_str(),
@@ -148,9 +148,9 @@ impl PeerGovernanceMut<'_> {
     }
 
     /// Name the host `device` among the workspace's hosts no more, authored by
-    /// the governor `key`, and take the word it said of its own copy with it:
-    /// a copy report is a holder's, and this device holds the workspace no
-    /// more. Returns whether it changed the workspace.
+    /// the owner's device `key`, and take the word it said of its own copy with
+    /// it: a copy report belongs to the device that made it, and this device
+    /// hosts the workspace no more. Returns whether it changed the workspace.
     pub fn author_keeping_device_removed(
         self,
         device: &[u8; 32],
@@ -184,8 +184,8 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
-    /// Apply `change` to the workspace's governance as the governor `key`,
-    /// for this module and the workspace's grants beside it.
+    /// Apply `change` to the workspace's governance signed by `key`, for this
+    /// module and the workspace's grants beside it.
     pub(super) fn write(
         self,
         key: &dyn DeviceSigner,
@@ -219,15 +219,15 @@ mod tests {
         tilo_workspace_join::sign_transport_hint("iroh", at, host.clone(), [3; 32], key)
     }
 
-    /// The governor names a host and moves or removes it; every member's
+    /// The owner names a host and moves or removes it; every member's
     /// copy reads what it named. An address its host did not sign is refused.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
-    fn the_governor_names_the_workspaces_hosts() -> TestResult {
-        let (mut peer, governor, nas_key, nas, now) = crate::admission_tests::seeded();
+    fn the_owner_names_the_workspaces_hosts() -> TestResult {
+        let (mut peer, owner_copy, nas_key, nas, now) = crate::admission_tests::seeded();
         assert!(peer.governance().keeping_devices().is_empty());
         let first = hint(&nas, &nas_key, "first")?;
         let forged = TransportHint {
@@ -236,29 +236,29 @@ mod tests {
         };
         assert!(
             peer.governance_mut()
-                .author_keeping_device(&forged, &governor, now)
+                .author_keeping_device(&forged, &owner_copy, now)
                 .is_err(),
             "only the host signs where it answers"
         );
         assert!(
             peer.governance_mut()
-                .author_keeping_device(&first, &governor, now)?
+                .author_keeping_device(&first, &owner_copy, now)?
         );
         assert!(
             !peer
                 .governance_mut()
-                .author_keeping_device(&first, &governor, now)?,
+                .author_keeping_device(&first, &owner_copy, now)?,
             "naming it as it is named changes nothing"
         );
         let moved = hint(&nas, &nas_key, "moved")?;
         assert!(
             peer.governance_mut()
-                .author_keeping_device(&moved, &governor, now)?
+                .author_keeping_device(&moved, &owner_copy, now)?
         );
         assert_eq!(peer.governance().keeping_devices(), [moved]);
         assert!(peer.governance_mut().author_keeping_device_removed(
             &nas.device_public_key,
-            &governor,
+            &owner_copy,
             now
         )?);
         assert!(peer.governance().keeping_devices().is_empty());

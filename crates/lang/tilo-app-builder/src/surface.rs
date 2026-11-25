@@ -1120,7 +1120,7 @@ fn ensure_view_built(report: &SurfaceReport, app_dir: &Path) -> Result<()> {
 
 /// Add to the manifest's `[resources] kinds`, which the package signs, the
 /// app's own kinds it does not list yet: a resource added or renamed in
-/// code would otherwise be one a governed workspace never lets the app
+/// code would otherwise be one a workspace never lets the app
 /// create.
 /// Kinds the manifest names already stay, whether the sources declare them
 /// or not.

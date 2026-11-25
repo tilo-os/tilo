@@ -231,7 +231,7 @@ struct Web {
     /// no endpoint of its own.
     endpoint: Option<iroh::Endpoint>,
     allowed_origins: Vec<String>,
-    /// The workspaces this server governs, for their directory and entries.
+    /// The workspaces this server serves, for their directory and entries.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' profiles, for `/profile`.
     profiles: Arc<profiles::Profiles>,
@@ -1123,8 +1123,8 @@ async fn directory_entry(
     };
     let (workspace, step) =
         entry_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
-    // A server that governs no workspaces refuses before the request is parsed.
-    let workspaces = governed_workspaces(web)?;
+    // A server that hosts no workspaces refuses before the request is parsed.
+    let workspaces = served_workspaces(web)?;
     // The wait list a workspace taking people by invitation keeps: an address
     // left, confirmed, taken off, and where it stands.
     if matches!(
@@ -1186,15 +1186,15 @@ async fn directory_entry(
     }
 }
 
-/// The workspaces this server governs, or the answer that it governs none.
+/// The workspaces this server hosts, or the answer that it hosts none.
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
 )]
-fn governed_workspaces(web: &Web) -> Result<&crate::workspaces::Workspaces, Response<Body>> {
+fn served_workspaces(web: &Web) -> Result<&crate::workspaces::Workspaces, Response<Body>> {
     web.workspaces
         .as_ref()
-        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this server governs no workspaces"))
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this server hosts no workspaces"))
 }
 
 #[allow(
@@ -1467,16 +1467,18 @@ async fn route(
             Ok(encoded(&deleted))
         }
         tilo_server_protocol::web::INVITATION_PATH => {
-            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
-                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
-            })?;
+            let workspaces = web
+                .workspaces
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this server hosts no workspaces"))?;
             let invitation: Vec<u8> = decode(&bytes)?;
             Ok(encoded(&workspaces.inspect_invitation(&invitation).await))
         }
         tilo_server_protocol::web::OPEN_INVITATION_PATH => {
-            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
-                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
-            })?;
+            let workspaces = web
+                .workspaces
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this server hosts no workspaces"))?;
             let asked: tilo_server_protocol::web::KeptInvitation = serde_json::from_slice(&bytes)
                 .map_err(|_| {
                 status(
@@ -1495,9 +1497,10 @@ async fn route(
             }))
         }
         tilo_server_protocol::directory::DIRECTORY_PATH => {
-            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
-                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
-            })?;
+            let workspaces = web
+                .workspaces
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this server hosts no workspaces"))?;
             // The operator's kill switch: a host paused entirely serves its listing to nobody,
             // while one kept watch-only still lets a page read who is here. Either way the
             // people already in it work on.

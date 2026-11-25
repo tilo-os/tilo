@@ -164,16 +164,16 @@ its person's agent, iff
 - it is an exact member device there: it redeemed an invitation for its
   person, as every new device of theirs does, so the workspace's roster holds
   it under its person;
-- in a governed workspace, its person is still a member;
+- its person is still a member;
 - and the protocol is one an agent works on (subscribe, state, publish, replay,
   channel access, remote actions, the live session, content discovery), never
-  compute, environments or governed membership, and never by attachment or a
+  compute, environments or membership, and never by attachment or a
   same-owner host's enrolment.
 
 What it does there is its person's agent's: the server makes its caller the
 agent a device of the person handed its session to
 (`Caller::delegated_to`), so an agent's role cap holds it at Editor at most,
-and it governs, invites and administers nothing. The server's own operations
+and it invites and administers nothing. The server's own operations
 treat it as its person within its scope (`host_authority`): a grant reaching
 all workspaces makes and lists the person's own; nothing else.
 

@@ -5,35 +5,35 @@ use super::*;
 use crate::admission_tests::{add_editor, add_member_with, seeded};
 use tilo_action_policy::roles;
 
-/// A replica of `governor`'s workspace joined through `through`, a device of
-/// the governor's, built from what the governor publishes now.
+/// A replica of the workspace `owner_copy` hosts, joined through `through`, a
+/// device of the host's, built from what it publishes now.
 fn replica(
-    governor: &mut StatePeer,
+    owner_copy: &mut StatePeer,
     key: &SigningKey,
     through: &DeviceCert,
     now: SystemTime,
 ) -> StatePeer {
     let mut replica = StatePeer::from_join(
-        governor.workspace_id(),
+        owner_copy.workspace_id(),
         through.clone(),
-        governor.certificates(),
-        &governor.revocations(),
+        owner_copy.certificates(),
+        &owner_copy.revocations(),
         now,
     )
     .unwrap();
-    take_in(&mut replica, governor, key, through, now);
+    take_in(&mut replica, owner_copy, key, through, now);
     replica
 }
 
-/// `replica` takes in the governance `governor` publishes now, from `through`.
+/// `replica` takes in the governance `owner_copy` publishes now, from `through`.
 fn take_in(
     replica: &mut StatePeer,
-    governor: &mut StatePeer,
+    owner_copy: &mut StatePeer,
     key: &SigningKey,
     through: &DeviceCert,
     now: SystemTime,
 ) {
-    for message in governor
+    for message in owner_copy
         .publication_mut()
         .bootstrap_messages(key, now)
         .unwrap()
@@ -56,42 +56,42 @@ tilo_test_env::scenario! {
 
     phase every_replica_holds_the_new_owner_whenever_the_transfer_reached_it;
     {
-        let (mut governor, owner_key, _, _, now) = seeded();
-        let owner_cert = governor
+        let (mut owner_copy, owner_key, _, _, now) = seeded();
+        let owner_cert = owner_copy
             .owner_certificates()
             .into_iter()
             .find(|cert| cert.device_public_key == owner_key.verifying_key().to_bytes())
             .unwrap();
-        let first_owner = governor.owner();
-        let (editor, person) = add_editor(&mut governor, &owner_key, now);
+        let first_owner = owner_copy.owner();
+        let (editor, person) = add_editor(&mut owner_copy, &owner_key, now);
         let editor_key = SigningKey::from_bytes(&[6; 32]);
         // A replica made before the transfer, and one made after it.
-        let mut early = replica(&mut governor, &owner_key, &owner_cert, now);
+        let mut early = replica(&mut owner_copy, &owner_key, &owner_cert, now);
         assert_eq!(early.owner(), first_owner);
 
         // A member hands over nothing that is not theirs.
         assert!(
-            governor
+            owner_copy
                 .clone()
                 .governance_mut()
                 .transfer_ownership(person, &editor_key, now)
                 .is_err()
         );
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
                 .transfer_ownership(person, &owner_key, now)
                 .unwrap()
         );
         assert!(
-            !governor
+            !owner_copy
                 .governance_mut()
                 .transfer_ownership(person, &owner_key, now)
                 .unwrap(),
             "handing it to its owner changes nothing"
         );
-        assert_eq!(governor.owner(), person);
-        let policy = governor.governance().governed_policy().unwrap();
+        assert_eq!(owner_copy.owner(), person);
+        let policy = owner_copy.governance().member_policy().unwrap();
         let (new, old) = (hex::encode(person), hex::encode(first_owner));
         assert!(policy.is_owner(&new));
         assert!(!policy.members.contains_key(&new), "an owner is no member");
@@ -105,18 +105,18 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(grant.granted_by, tilo_action_policy::Grantee::person(old.clone()));
 
-        let late = replica(&mut governor, &owner_key, &owner_cert, now);
-        take_in(&mut early, &mut governor, &owner_key, &owner_cert, now);
+        let late = replica(&mut owner_copy, &owner_key, &owner_cert, now);
+        take_in(&mut early, &mut owner_copy, &owner_key, &owner_cert, now);
         for (who, peer) in [("early", &early), ("late", &late)] {
             assert_eq!(peer.owner(), person, "the {who} replica's owner");
             assert_eq!(
-                peer.governance().governed_policy().unwrap(),
+                peer.governance().member_policy().unwrap(),
                 policy,
                 "the {who} replica's governance"
             );
             assert_eq!(
                 peer.governance().key_holders(now).unwrap(),
-                governor.governance().key_holders(now).unwrap(),
+                owner_copy.governance().key_holders(now).unwrap(),
                 "the {who} replica's key holders"
             );
             assert_eq!(
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
             );
         }
         assert!(
-            governor
+            owner_copy
                 .governance()
                 .key_holders(now)
                 .unwrap()
@@ -139,10 +139,10 @@ tilo_test_env::scenario! {
 
         // Kept and read back, the workspace is still the new owner's.
         let restored = StatePeer::restore(
-            &governor.durable().unwrap(),
-            governor.workspace_id(),
+            &owner_copy.durable().unwrap(),
+            owner_copy.workspace_id(),
             owner_cert.clone(),
-            governor.certificates(),
+            owner_copy.certificates(),
             RevocationList::new(),
             now,
         )
@@ -151,13 +151,13 @@ tilo_test_env::scenario! {
 
         // The owner it replaced hands it on no more; the new owner does.
         assert!(
-            governor
+            owner_copy
                 .clone()
                 .governance_mut()
                 .transfer_ownership(first_owner, &owner_key, now)
                 .is_err()
         );
-        let mut back = governor.clone();
+        let mut back = owner_copy.clone();
         assert!(
             back.governance_mut()
                 .transfer_ownership(first_owner, &editor_key, now)
@@ -166,37 +166,37 @@ tilo_test_env::scenario! {
         assert_eq!(back.owner(), first_owner);
         assert!(
             back.governance()
-                .governed_policy()
+                .member_policy()
                 .unwrap()
                 .is_administrator(&new)
         );
     }
     phase the_owner_it_replaced_keeps_serving_as_an_administrator;
     {
-        let (mut governor, host_key, _, _, now) = seeded();
-        let host = governor
+        let (mut owner_copy, host_key, _, _, now) = seeded();
+        let host = owner_copy
             .certificates()
             .into_iter()
             .find(|cert| cert.device_public_key == host_key.verifying_key().to_bytes())
             .unwrap();
-        let (_, person) = add_editor(&mut governor, &host_key, now);
-        governor
+        let (_, person) = add_editor(&mut owner_copy, &host_key, now);
+        owner_copy
             .governance_mut()
             .transfer_ownership(person, &host_key, now)
             .unwrap();
-        assert_ne!(governor.owner(), host.user_public_key);
-        assert!(governor.governs_history(&host.user_public_key));
+        assert_ne!(owner_copy.owner(), host.user_public_key);
+        assert!(owner_copy.administers_history(&host.user_public_key));
         assert!(
-            governor.signed_by_governor(&host.device_public_key),
+            owner_copy.signed_by_administrator(&host.device_public_key),
             "its checkpoints are the workspace's"
         );
         // It still admits whom an invitation names, and every replica takes
         // the admission it signed.
-        let (_, _, bob) = add_member_with(&mut governor, &host_key, now, 30, 31);
-        let late = replica(&mut governor, &host_key, &host, now);
+        let (_, _, bob) = add_member_with(&mut owner_copy, &host_key, now, 30, 31);
+        let late = replica(&mut owner_copy, &host_key, &host, now);
         assert!(
             late.governance()
-                .governed_policy()
+                .member_policy()
                 .unwrap()
                 .members
                 .contains_key(&hex::encode(bob))
@@ -204,12 +204,12 @@ tilo_test_env::scenario! {
         assert_eq!(late.owner(), person);
         // Withdrawn as an administrator by the owner, it keeps nothing.
         let owner_key = SigningKey::from_bytes(&[6; 32]);
-        governor
+        owner_copy
             .governance_mut()
             .set_member_role(host.user_public_key, crate::join::Role::Editor, &owner_key, now)
             .unwrap();
-        assert!(!governor.governs_history(&host.user_public_key));
-        assert!(!governor.signed_by_governor(&host.device_public_key));
+        assert!(!owner_copy.administers_history(&host.user_public_key));
+        assert!(!owner_copy.signed_by_administrator(&host.device_public_key));
     }
     phase the_new_owner_keeps_the_name_the_workspace_gave_them;
     {
@@ -217,28 +217,28 @@ tilo_test_env::scenario! {
         // does for a workspace it made for them: the owner is no member beside
         // it, and the name kept under their root still names somebody, so
         // the security basis every device's write reads stays readable.
-        let (mut governor, host_key, _, _, now) = seeded();
-        let host = governor
+        let (mut owner_copy, host_key, _, _, now) = seeded();
+        let host = owner_copy
             .certificates()
             .into_iter()
             .find(|cert| cert.device_public_key == host_key.verifying_key().to_bytes())
             .unwrap();
-        let (_, person) = add_editor(&mut governor, &host_key, now);
-        governor
+        let (_, person) = add_editor(&mut owner_copy, &host_key, now);
+        owner_copy
             .governance_mut()
             .transfer_ownership(person, &host_key, now)
             .unwrap();
         assert!(
-            governor
+            owner_copy
                 .governance_mut()
                 .name_person(person, "Ada", &host_key, now)
                 .unwrap()
         );
-        governor
+        owner_copy
             .security_basis()
             .unwrap()
             .expect("the basis reads with the owner's name in it");
-        let late = replica(&mut governor, &host_key, &host, now);
+        let late = replica(&mut owner_copy, &host_key, &host, now);
         late.security_basis()
             .unwrap()
             .expect("a replica reads it alike");
@@ -246,8 +246,8 @@ tilo_test_env::scenario! {
 }
 
 /// The owner's device, among the certificates a seeded workspace holds.
-fn owner_device(governor: &StatePeer, key: &SigningKey) -> DeviceCert {
-    governor
+fn owner_device(owner_copy: &StatePeer, key: &SigningKey) -> DeviceCert {
+    owner_copy
         .owner_certificates()
         .into_iter()
         .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
@@ -278,12 +278,12 @@ fn written_by(
 /// instead.
 #[test]
 fn a_state_that_names_another_owner_without_a_transfer_is_refused() {
-    let (mut governor, owner_key, _, _, now) = seeded();
-    let owner = owner_device(&governor, &owner_key);
-    let workspace = governor.workspace_id().to_owned();
-    let mut replica = replica(&mut governor, &owner_key, &owner, now);
+    let (mut owner_copy, owner_key, _, _, now) = seeded();
+    let owner = owner_device(&owner_copy, &owner_key);
+    let workspace = owner_copy.workspace_id().to_owned();
+    let mut replica = replica(&mut owner_copy, &owner_key, &owner, now);
     let held = replica.owner();
-    let governance = governor
+    let governance = owner_copy
         .core
         .workspace_doc
         .as_deref()
@@ -316,7 +316,7 @@ fn a_state_that_names_another_owner_without_a_transfer_is_refused() {
     assert_eq!(
         replica
             .governance()
-            .governed_policy()
+            .member_policy()
             .expect("its governance")
             .owner()
             .map(str::to_owned),
@@ -330,19 +330,19 @@ fn a_state_that_names_another_owner_without_a_transfer_is_refused() {
 /// forgets the owner it was joined as nor reads it as a member.
 #[test]
 fn a_state_that_names_no_owner_is_not_adopted() {
-    let (governor, owner_key, _, _, now) = seeded();
-    let owner = owner_device(&governor, &owner_key);
-    let workspace = governor.workspace_id().to_owned();
+    let (owner_copy, owner_key, _, _, now) = seeded();
+    let owner = owner_device(&owner_copy, &owner_key);
+    let workspace = owner_copy.workspace_id().to_owned();
     let mut replica = StatePeer::from_join(
         &workspace,
         owner.clone(),
-        governor.certificates(),
-        &governor.revocations(),
+        owner_copy.certificates(),
+        &owner_copy.revocations(),
         now,
     )
     .unwrap();
     let held = replica.owner();
-    let governance = governor
+    let governance = owner_copy
         .core
         .workspace_doc
         .as_deref()

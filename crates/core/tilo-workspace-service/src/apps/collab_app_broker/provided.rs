@@ -928,7 +928,7 @@ pub(crate) mod signed_test_support {
     use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest};
 
     struct NativeOwnerReceipts {
-        owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
+        owner: Arc<tilo_peer_state::owner::DeviceWorkspaces>,
     }
 
     impl tilo_broker_core::workspace_commits::WorkspaceCommits for NativeOwnerReceipts {
@@ -2302,7 +2302,7 @@ mod settings_documents_tests {
         }
     }
 
-    /// A workspace its owner governs, with `person` a member: where a person's shell stands.
+    /// A workspace with an owner, and `person` a member: where a person's shell stands.
     fn studio(person: &str) -> Workspace {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Studio");
         workspace.policy.set_owner(hex::encode([42; 32]));

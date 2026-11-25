@@ -26,7 +26,7 @@ use crate::agents::triggered;
 use crate::service::local_caller;
 #[cfg(feature = "agents")]
 use crate::work::{Ineligible, NotTaken};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 use crate::workspaces::{SetMemberRoleRequest, Workspaces};
 
 /// Each agent the workspace's record names, by id: its name and whether it still works.
@@ -118,7 +118,7 @@ async fn offered(workspaces: &Workspaces, workspace: &str, device: &DeviceCert) 
 )]
 async fn the_agents_record_changes_only_through_admitted_actions() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Studio").await.unwrap();
@@ -246,7 +246,7 @@ const AGENTS_ADMIT_BUDGET: std::time::Duration = std::time::Duration::from_milli
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_change_is_admitted_while_a_writer_holds_the_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Studio").await.unwrap().workspace;
@@ -399,7 +399,7 @@ impl AgentKeys for Keyed {
 )]
 async fn an_agent_installs_with_its_triggers_pauses_resumes_and_leaves_with_them() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Studio").await.unwrap();

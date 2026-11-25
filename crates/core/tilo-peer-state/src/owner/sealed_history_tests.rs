@@ -70,7 +70,7 @@ impl Typist {
     }
 }
 
-fn base(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<u8> {
+fn base(owner: &DeviceWorkspaces, workspace: WorkspaceId) -> Vec<u8> {
     owner
         .with_current(workspace, |view| {
             view.peer()
@@ -83,7 +83,7 @@ fn base(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<u8> {
 /// Write `changes` sealed under `keys` as this device does: drafted, sealed and
 /// signed in one turn, and compacted when the history is due.
 async fn write(
-    owner: &NativeWorkspaceOwner,
+    owner: &DeviceWorkspaces,
     workspace: WorkspaceId,
     keys: &ContentKeys,
     changes: Vec<u8>,
@@ -357,8 +357,7 @@ fn base_of(peer: &crate::StatePeer) -> Vec<u8> {
 /// holding the workspace keeps it as every member's device does.
 #[tokio::test]
 async fn a_device_with_the_keys_decides_a_sealed_change_it_receives_by_what_it_opens_to() {
-    let (fixture, host, writer_key) =
-        crate::owner::testing::governed_fixture_at(tilo_clock::wall());
+    let (fixture, host, writer_key) = crate::owner::testing::hosted_fixture_at(tilo_clock::wall());
     let joined = enrolled_with(fixture);
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let writer = writer_key.verifying_key().to_bytes();

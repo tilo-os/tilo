@@ -1,5 +1,5 @@
 //! Several people on several devices each, as real sessions on this machine:
-//! a site one person's home peer governs their workspace from, the person
+//! a site one person's home peer hosts their workspace from, the person
 //! whose identity every device is certified under, and a device that runs a
 //! headless `tilo-session` of its own.
 //!
@@ -12,7 +12,7 @@
 //! link it made for it.
 //!
 //! A workspace lives at a site ([`Site`]): a server of this machine that
-//! governs it, hosts it for the people in it, admits people at the entry it
+//! hosts it for the people in it, admits people at the entry it
 //! serves the way a site's entry admits them, and keeps what its people record
 //! while they are away. The site is one person's own, as a home peer is: its
 //! device is a device of theirs, the workspace's owner, and the invitations
@@ -123,16 +123,16 @@ pub fn joined_within() -> Duration {
 /// its session answering on a loaded machine.
 const JOIN_OUTCOME_READ: Duration = Duration::from_secs(30);
 
-/// A site: a server of this machine that governs one workspace, hosts it for the people in it and
+/// A site: a server of this machine that hosts one workspace for the people in it and
 /// admits people to it at its entry.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
     server: Option<tilo_server::daemon::Server>,
-    /// The workspaces this site governs.
+    /// The workspaces this site hosts.
     pub workspaces: tilo_server::workspaces::Workspaces,
     /// The person this site is: the workspace's owner.
     pub owner: [u8; 32],
-    /// The site's device, the one it governs and signs with — a device of [`Self::owner`], as a
+    /// The site's device, the one it signs with — a device of [`Self::owner`], as a
     /// home peer is.
     pub host: DeviceCert,
     /// The workspace the site serves here, by id.
@@ -161,7 +161,7 @@ impl Site {
         }
     }
 
-    /// `owner`'s site: a server of this machine governing the workspace `name`,
+    /// `owner`'s site: a server of this machine hosting the workspace `name`,
     /// listening on loopback with its directory and entry served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
         // The site runs in this process: its log is this test's stderr.
@@ -203,14 +203,14 @@ impl Site {
             .expect("the site's host");
             let workspaces = server
                 .workspaces()
-                .expect("the site governs workspaces")
+                .expect("the site hosts workspaces")
                 .clone();
             let workspace = workspaces
                 .create(name)
                 .await
                 .expect("the site's workspace")
                 .workspace;
-            // The site's own device is in the workspace it governs, as a site's is: it hosts what
+            // The site's own device is in the workspace it hosts, as a site's is: it hosts what
             // its people record there.
             workspaces
                 .enter(&workspace, (&host, &host_key))
@@ -1008,7 +1008,7 @@ impl Person {
     }
 
     /// Certify the device key `paths` holds as this person's site: the device a site runs, which
-    /// governs the workspaces it hosts and takes part in their channels, so the records it keeps
+    /// serves the workspaces it hosts and takes part in their channels, so the records it keeps
     /// are sealed ones.
     pub fn certify_as_host(&self, paths: &IdentityPaths, label: &str) -> DeviceCert {
         self.certify_with(
@@ -1747,7 +1747,10 @@ impl Device {
             .env("TILO_IDENTITY_ROOT", root.join("identity"))
             // This device relays through this machine's loopback relay, as the site does: no
             // session of a test reaches the person's relays or their directory out on the internet.
-            .env(test_server::loopback_relay().0, test_server::loopback_relay().1)
+            .env(
+                test_server::loopback_relay().0,
+                test_server::loopback_relay().1,
+            )
             // Every device of a test runs on this one machine, so each takes its workspaces' work
             // on a port the machine gives it rather than the one port a computer's single runtime
             // takes: the person's other devices reach it at the address its endpoint says.
@@ -1770,7 +1773,7 @@ impl Device {
                 SESSION_LOG.get().map_or(
                     "info,tilo_peer_state::direct=debug,tilo_peer_state::join_transport=debug,\
                      tilo_session::layout=debug,tilo_network_actor::native_ingress=debug,\
-                     tilo_peer_state::owner::publication=debug,tilo_session_client::ownership=debug",
+                     tilo_session_client::ownership=debug",
                     String::as_str,
                 ),
             )

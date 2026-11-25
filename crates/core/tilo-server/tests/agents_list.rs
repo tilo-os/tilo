@@ -10,7 +10,7 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-use tilo_peer_state::GovernedAgent;
+use tilo_peer_state::DelegatedAgent;
 use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::DeviceCapabilities;
 
@@ -20,10 +20,10 @@ use tilo_server::WorkspaceId;
 const WS: WorkspaceId = WorkspaceId::from_u128(0x51);
 
 /// The workspace's agent list, as `linked`'s device holds it.
-fn agents_on(linked: &Linked) -> Vec<GovernedAgent> {
+fn agents_on(linked: &Linked) -> Vec<DelegatedAgent> {
     linked.read(|peer| {
         peer.governance()
-            .governed_agents(std::time::SystemTime::now())
+            .delegated_agents(std::time::SystemTime::now())
             .unwrap_or_default()
     })
 }
@@ -111,7 +111,7 @@ async fn a_members_agent_list_reaches_their_second_device_over_its_link() {
     );
     assert!(listed[0].acting, "the delegation is current");
 
-    // The host reads the same list on the workspace it governs.
+    // The host reads the same list on the workspace it serves.
     let on_host = workspaces.agents(&WS.to_string()).await.unwrap();
     assert_eq!(
         on_host

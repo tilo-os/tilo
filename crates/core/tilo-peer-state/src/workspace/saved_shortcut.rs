@@ -2,8 +2,8 @@
 //!
 //! A shortcut's `saved_by` is authority: its triggers fire on that person's
 //! behalf and its unattended runs use the consents they gave in advance. A
-//! field anyone writing the workspace could set is no such thing, and the workspace's
-//! governor merges and relays what members write, so neither the sender of a
+//! field anyone writing the workspace could set is no such thing, and a host
+//! merges and relays what members write, so neither the sender of a
 //! batch nor an automerge actor id says who wrote a shortcut. The saver's
 //! device signs the shortcut instead ([`sign_saved_shortcut`]), over the
 //! workspace it is saved in, and every reader asks [`proven_saver`]: admission for

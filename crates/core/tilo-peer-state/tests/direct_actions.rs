@@ -522,7 +522,7 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
             .replica
             .write(|peer| peer
                 .governance_mut()
-                .publish_governed_revocations(&[entry], &a.0, now))
+                .publish_member_revocations(&[entry], &a.0, now))
             .unwrap()
     );
 
@@ -1268,7 +1268,7 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     let mut peer = workspace(WORKSPACE, &a, std::slice::from_ref(&a.1));
     // The workspace takes people by invitation and keeps their requests.
     peer.governance_mut()
-        .put_governed_entry(
+        .put_workspace_entry(
             &tilo_action_policy::EntryPolicy {
                 listing: None,
                 invitation_only: true,
@@ -1635,7 +1635,7 @@ async fn a_device_the_workspace_no_longer_admits_runs_nothing() {
     };
     sign_revocation_entry(&mut entry, &root).unwrap();
     peer.governance_mut()
-        .publish_governed_revocations(std::slice::from_ref(&entry), &a.0, tilo_clock::wall())
+        .publish_member_revocations(std::slice::from_ref(&entry), &a.0, tilo_clock::wall())
         .unwrap();
     let engine = Engine::serving(
         Replica::new(peer),

@@ -1,5 +1,5 @@
-//! Who sends and receives a workspace's window streams: the devices its governor
-//! admitted, as this device's native owner projected the workspace's roster.
+//! Who sends and receives a workspace's window streams: the devices its member
+//! list admits, as this device's `DeviceWorkspaces` projected the workspace's roster.
 //! A connection a peer opened is bound, per workspace, to the membership active
 //! on its first frame there, and stops counting for that workspace once that
 //! membership is removed, even if the device is admitted again later.

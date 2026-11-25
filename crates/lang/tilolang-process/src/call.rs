@@ -6,7 +6,7 @@
 //! nothing else. A page whose tiles stand in its own HTML decodes the same stream where they
 //! stand (`pictures_local`): nothing of it is collected here.
 //!
-//! The service is the shell's governed voice service (`CollabRequest::NativeMediaCommand`): it
+//! The service is the shell's own voice service (`CollabRequest::NativeMediaCommand`): it
 //! binds every command to the connection's own app, workspace and record, asks for the
 //! microphone, camera and screen through the system's prompts, and holds the call on the
 //! workspace's live session. Nothing of a call is stored in the app's record. One watch is

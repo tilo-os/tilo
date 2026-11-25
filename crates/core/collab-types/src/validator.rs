@@ -511,7 +511,7 @@ mod protected_document_tests {
     }
 }
 
-/// The document whose access governs this data, excluding workspace-wide
+/// The document that decides access to this data, excluding workspace-wide
 /// service documents.
 pub fn document_access_target<'a>(app: &str, document: &'a str) -> Option<&'a str> {
     use tilo_actions::document_sync::{DocumentSync, document_sync};

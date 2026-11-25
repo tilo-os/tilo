@@ -30,7 +30,7 @@ pub struct ServiceReads {
 }
 
 impl ServiceReads {
-    /// Reads of the resources of the workspaces `workspaces` governs, counted in `metrics`.
+    /// Reads of the resources of the workspaces `workspaces` hosts, counted in `metrics`.
     #[must_use]
     pub const fn new(
         workspaces: Workspaces,

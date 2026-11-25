@@ -70,8 +70,8 @@ fn put_role(
     crate::members::op::tests_support::set_member(doc, by, &person_id(person), role);
 }
 
-/// The maps a founded workspace holds, which its devices and governors write
-/// their own rows into before any of them writes.
+/// The maps a founded workspace holds, which its devices write their own rows
+/// into before any of them writes.
 fn founded_maps(doc: &mut AutoCommit) {
     use automerge::ObjType;
     for key in [
@@ -93,8 +93,8 @@ fn founded_maps(doc: &mut AutoCommit) {
     }
 }
 
-/// A workspace the owner governs, with an editor and a viewer.
-fn governed() -> AutoCommit {
+/// A workspace of the owner's, with an editor and a viewer.
+fn hosted() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "workspace", WORKSPACE).unwrap();
     doc.put(ROOT, "name", "Workspace").unwrap();
@@ -207,10 +207,10 @@ tilo_test_env::scenario! {
     phase a_first_member_list_is_taken_in_where_it_lists_this_device;
     // With nothing held, whoever sends the workspace's governance, it is taken
     // in only where it lists this replica's own device (or the device it
-    // joined through) under a person holding a role: no sender is the
-    // workspace's governor by answering first.
+    // joined through) under a person holding a role: no sender becomes the
+    // workspace's host by answering first.
     {
-        let mut listed = governed();
+        let mut listed = hosted();
         let (_, editor) = editor_device();
         list_device(&mut listed, &editor);
         let snapshot = all_changes(&listed);
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
             )
             .unwrap_err(),
             WorkspaceRefusal::WriteForbidden,
-            "a governance that lists no anchor of the replica governs nothing here, \
+            "a governance that lists no anchor of the replica changes nothing here, \
              whoever sends it"
         );
     }
@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
     // A workspace started over from a base holds the authority it held, so a member
     // writes on the base as before it.
     {
-        let workspace = governed();
+        let workspace = hosted();
         let based = super::super::base::rebase(&workspace, automerge::ActorId::random()).unwrap();
         assert_eq!(
             crate::workspace::policy_of(&based, WORKSPACE),
@@ -266,9 +266,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase sender_needs_write_on_the_workspace_it_already_governs;
+    phase sender_needs_write_on_the_workspace_it_already_hosts;
     {
-        let before = governed();
+        let before = hosted();
         let edit = changes_after(&before, |doc| hold_document(doc, "file:/plan.md"));
         let writer = key(0x02);
         assert_eq!(
@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
 
     phase malformed_batch_and_foreign_workspace_are_refused;
     {
-        let before = governed();
+        let before = hosted();
         let authority = key(0xA0);
         assert!(matches!(
             admit(
@@ -352,7 +352,7 @@ tilo_test_env::scenario! {
     // role permits. A batch that moves governance without one is refused from
     // the owner's devices too.
     {
-        let before = governed();
+        let before = hosted();
         let seize = changes_after(&before, |doc| take_ownership(doc, editor_root()));
         let editor = key(0x02);
         let as_editor = member(&editor, editor_root());
@@ -387,7 +387,7 @@ tilo_test_env::scenario! {
     // is no longer governance, so a member's batch that carries it is admitted as
     // any other change, and the layout a workspace holds is its members'.
     {
-        let before = governed();
+        let before = hosted();
         let edit = changes_after(&before, |doc| {
             doc.put(ROOT, "layout_v1", "personal").unwrap();
             hold_document(doc, "file:/plan.md");
@@ -405,7 +405,7 @@ tilo_test_env::scenario! {
 
     phase a_first_answer_listing_no_device_here_is_refused;
     {
-        let snapshot = all_changes(&governed());
+        let snapshot = all_changes(&hosted());
         let first = key(0xB0);
         assert_eq!(
             admit(
@@ -419,13 +419,13 @@ tilo_test_env::scenario! {
             )
             .unwrap_err(),
             WorkspaceRefusal::WriteForbidden,
-            "answering first does not make a peer the governor"
+            "answering first does not make a peer the workspace's host"
         );
     }
 
     phase durable_and_import_governance_count_as_governance;
     {
-        let before = governed();
+        let before = hosted();
         let receipts = changes_after(&before, |doc| {
             crate::durability::put(
                 doc,
@@ -514,7 +514,7 @@ tilo_test_env::scenario! {
 
     phase a_member_records_only_their_own_effect_receipts;
     {
-        let before = governed();
+        let before = hosted();
         let editor = key(0x02);
         let own = recording(
             &before,
@@ -629,7 +629,7 @@ tilo_test_env::scenario! {
     // they may not is kept and changes nothing.
     {
         use tilo_action_policy::share::ShareAccess;
-        let before = governed();
+        let before = hosted();
         let (editor_key, viewer_key) = (key(0x02), key(0x03));
         let (editor_signs, viewer_signs) = (editor_device(), viewer_device());
         let edit = share_of_note(editor_root(), ShareAccess::Edit);
@@ -704,7 +704,7 @@ tilo_test_env::scenario! {
     // at the start of its second.
     {
         use crate::workspace::saved_shortcut::tests::{NOW_NS, device, shortcut};
-        let before = governed();
+        let before = hosted();
         let writer = key(0x02);
         let mut editor = device(0x22, 0x02);
         editor.cert.issued_at_ns = NOW_NS + 400_000_000;
@@ -732,14 +732,14 @@ tilo_test_env::scenario! {
             crate::workspace::saved_shortcut::ns_at(NOW),
             crate::workspace::saved_shortcut::tests::NOW_NS
         );
-        let before = governed();
+        let before = hosted();
         let authority = key(0xA0);
         let writer = key(0x02);
         let owner = device(0x11, 0xA0);
         let editor = device(0x22, 0x02);
-        let governor = &owner_root();
+        let owner_copy = &owner_root();
         let as_editor = || member(&writer, editor_root());
-        let as_governor = || member(&authority, owner_root());
+        let as_owner = || member(&authority, owner_root());
 
         // The editor's device names the owner as who saved it.
         let mut forged = editor.saves(WORKSPACE, shortcut("water"));
@@ -748,13 +748,13 @@ tilo_test_env::scenario! {
         unproven.saved_by = Some(owner.person());
         for batch in [saving(&before, &forged), saving(&before, &unproven)] {
             assert_eq!(
-                admit(Some(&before), as_editor(), governor, &batch).unwrap_err(),
+                admit(Some(&before), as_editor(), owner_copy, &batch).unwrap_err(),
                 WorkspaceRefusal::ShortcutAuthorship("water".into()),
                 "a member cannot save a shortcut as another person"
             );
         }
 
-        // The governor is no exception: it names the editor without the
+        // The host is no exception: it names the editor without the
         // editor's device having signed.
         let mut forged = owner.saves(WORKSPACE, shortcut("ferns"));
         forged.saved_by = Some(editor.person());
@@ -762,9 +762,9 @@ tilo_test_env::scenario! {
         unproven.saved_by = Some(editor.person());
         for batch in [saving(&before, &forged), saving(&before, &unproven)] {
             assert_eq!(
-                admit(Some(&before), as_governor(), governor, &batch).unwrap_err(),
+                admit(Some(&before), as_owner(), owner_copy, &batch).unwrap_err(),
                 WorkspaceRefusal::ShortcutAuthorship("ferns".into()),
-                "the governor cannot save a shortcut as a member"
+                "the host cannot save a shortcut as a member"
             );
         }
 
@@ -774,23 +774,23 @@ tilo_test_env::scenario! {
             &editor.saves("5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60", shortcut("lamp")),
         );
         assert_eq!(
-            admit(Some(&before), as_editor(), governor, &copied).unwrap_err(),
+            admit(Some(&before), as_editor(), owner_copy, &copied).unwrap_err(),
             WorkspaceRefusal::ShortcutAuthorship("lamp".into()),
         );
 
-        // The person's own device saves it; the governor relaying that change is
+        // The person's own device saves it; the host relaying that change is
         // judged by the device that signed it, not by itself.
         let own = saving(&before, &editor.saves(WORKSPACE, shortcut("water")));
-        admit(Some(&before), as_editor(), governor, &own)
+        admit(Some(&before), as_editor(), owner_copy, &own)
             .expect("the editor's own device saves as the editor");
-        let relayed = admit(Some(&before), as_governor(), governor, &own)
+        let relayed = admit(Some(&before), as_owner(), owner_copy, &own)
             .expect("a relayed member change is judged by its signer")
             .candidate;
         assert!(
             admit(
                 Some(&before),
                 as_editor(),
-                governor,
+                owner_copy,
                 &saving(&before, &shortcut("nobody")),
             )
             .is_ok(),
@@ -813,7 +813,7 @@ tilo_test_env::scenario! {
         held.commit();
         let edit = changes_after(&held, |doc| hold_document(doc, "file:/plan.md"));
         assert!(
-            admit(Some(&held), as_editor(), governor, &edit).is_ok(),
+            admit(Some(&held), as_editor(), owner_copy, &edit).is_ok(),
             "a shortcut held unchanged is not a write"
         );
     }
@@ -882,11 +882,11 @@ fn durable_receipt(generation: u64) -> crate::durability::DurableReceipt {
     crate::durability::DurableReceipt::new(coverage(2), generation).unwrap()
 }
 
-/// What a batch itself forbids is refused whoever wrote it, the governor's
-/// own device included: one row per such check, with the refusal it gives.
+/// What a batch itself forbids is refused whoever wrote it, the host's own
+/// device included: one row per such check, with the refusal it gives.
 #[test]
-fn a_forbidden_change_is_refused_even_from_the_governor() {
-    let mut covered = governed();
+fn a_forbidden_change_is_refused_even_from_the_owner() {
+    let mut covered = hosted();
     crate::coverage::put(&mut covered, coverage(5)).unwrap();
     covered.commit();
     let coverage_rewind = changes_after(&covered, |doc| {
@@ -894,7 +894,7 @@ fn a_forbidden_change_is_refused_even_from_the_governor() {
     });
 
     let route = crate::coverage::route_key("app", "note");
-    let mut durable = governed();
+    let mut durable = hosted();
     crate::durability::put(
         &mut durable,
         BTreeMap::from([(route.clone(), durable_receipt(7))]),
@@ -905,7 +905,7 @@ fn a_forbidden_change_is_refused_even_from_the_governor() {
         crate::durability::put(doc, BTreeMap::from([(route, durable_receipt(6))])).unwrap();
     });
 
-    let mut recorded = governed();
+    let mut recorded = hosted();
     tilo_desktop_model::projection::project_effect_receipts(
         &mut recorded,
         &person_id(owner_root()),
@@ -967,9 +967,9 @@ fn saving(before: &AutoCommit, shortcut: &tilo_automation::Shortcut) -> Vec<Vec<
     })
 }
 
-/// [`governed`] with an editor the owner made an administrator.
+/// A hosted workspace with an editor the owner made an administrator.
 fn with_administrator() -> AutoCommit {
-    let mut doc = governed();
+    let mut doc = hosted();
     sign(
         &mut doc,
         &owner_device(),
@@ -1327,7 +1327,7 @@ fn list_device(doc: &mut AutoCommit, cert: &DeviceCert) {
             .put_object(ROOT, "peer_identities_v1", automerge::ObjType::Map)
             .unwrap(),
     };
-    let identity = crate::state::GovernedIdentity {
+    let identity = crate::state::DeviceRow {
         device_cert: cert.clone(),
         revocations: Vec::new(),
         admission: None,
@@ -1540,7 +1540,7 @@ fn owners_other_device(seed: u8) -> DeviceCert {
 }
 
 /// The workspace document `founder` seeds, started over from a base `bases` times, as a
-/// governor does at each admission.
+/// host does at each admission.
 fn founded_by(founder: &DeviceCert, bases: u64) -> AutoCommit {
     let seed = crate::seed_workspace(WORKSPACE, founder, std::slice::from_ref(founder)).unwrap();
     let mut doc = crate::workspace::candidate(None, &seed).unwrap();
@@ -1579,7 +1579,7 @@ fn a_workspace_founded_again_under_its_id_replaces_nothing_its_host_holds() {
             Err(WorkspaceRefusal::Refounded),
             "{what} of another founding is refused"
         );
-        // A receiver refusing it does not take itself for behind its governor.
+        // A receiver refusing it does not take itself for behind its host.
         assert!(!matches!(
             super::super::base::lineage(Some(&held), &refounded),
             super::super::base::Lineage::Newer { .. }

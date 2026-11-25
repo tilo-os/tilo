@@ -14,7 +14,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
 use super::package_trust::valid_pubkey;
-use super::{StatePeer, SystemTime, err, governed_map};
+use super::{StatePeer, SystemTime, err, workspace_map};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 
 /// The map of the registries, by name.
@@ -150,7 +150,7 @@ impl StatePeer {
             .ok_or("the workspace tree is missing")?;
         let before = doc.get_heads();
         doc.set_actor(self.workspace_actor_of(key));
-        let rows = governed_map(&doc, REGISTRIES)?;
+        let rows = workspace_map(&doc, REGISTRIES)?;
         match bytes {
             Some(bytes) => doc
                 .put(&rows, name, automerge::ScalarValue::Bytes(bytes))

@@ -18,12 +18,12 @@ use tilo_actions::remote::{
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as Served;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, caller, hosted, settled};
 use super::turn_use_tests::asks;
 use crate::connections::ASKS_FIRST;
 use crate::connections::stand_in::StandIn;
 use crate::workspaces::fixtures::test_host as start_serving;
-use crate::workspaces::tests::governor;
+use crate::workspaces::tests::hosting_device;
 
 const NOT_KEPT: &str = "That connection is not kept here";
 const NOT_CALLED: &str = "That address is not called from here";
@@ -205,16 +205,16 @@ async fn a_member_calls_and_reads_its_uses(ada: Asking<'_>, id: &str) {
 #[tokio::test]
 async fn a_member_connects_a_service_the_workspace_keeps_and_nobody_outside_reaches_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let workspaces = started.workspaces();
     workspaces.call_private_model_addresses(true);
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let (elsewhere, _, _) = governed(workspaces).await;
+    let (elsewhere, _, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
-    let (_, stranger) = governor();
+    let (_, stranger) = hosting_device();
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
     let (as_cy, as_stranger) = (caller(&cy), caller(&stranger));
     let ada_asks = Asking {
@@ -374,11 +374,11 @@ async fn an_agent_reads_and_calls_what_only_reads(
 #[tokio::test]
 async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let workspaces = started.workspaces();
     workspaces.call_private_model_addresses(true);
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let ada_asks = Asking {
@@ -464,16 +464,16 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
 #[tokio::test]
 async fn whoever_is_neither_a_member_nor_their_agent_is_answered_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let workspaces = started.workspaces();
     workspaces.call_private_model_addresses(true);
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let (elsewhere, _, _) = governed(workspaces).await;
+    let (elsewhere, _, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
-    let (_, stranger) = governor();
+    let (_, stranger) = hosting_device();
     let as_ada = caller(&ada);
     let ada_asks = Asking {
         actions: &actions,
@@ -545,10 +545,10 @@ async fn whoever_is_neither_a_member_nor_their_agent_is_answered_nothing() {
 #[tokio::test]
 async fn a_server_asks_no_address_inside_its_network_unless_its_operator_lets_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let started = start_serving(dir.path(), &key, &owner).await;
     let workspaces = started.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let ada_asks = Asking {

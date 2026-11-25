@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use super::WorkspaceMachines;
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// What a test's machines were asked, in order, and whether the workspace
-/// asked about was still governed when they were.
+/// asked about was still hosted when they were.
 type Asked = Arc<Mutex<Vec<(String, bool)>>>;
 
 /// Machines that answer as a test sets, noting each question.
@@ -89,7 +89,7 @@ mod branching {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_branch_takes_its_sources_machine_before_it_is_the_persons() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let source = source(workspaces).await;
@@ -111,7 +111,7 @@ mod branching {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_source_without_a_machine_branches_without_one() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let source = source(workspaces).await;
@@ -128,7 +128,7 @@ mod branching {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_branch_whose_machine_did_not_come_is_removed_saying_so() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let source = source(workspaces).await;
@@ -172,7 +172,7 @@ mod branching {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_branch_whose_machine_did_not_come_is_made_again_under_its_identity() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let source = source(workspaces).await;
@@ -215,7 +215,7 @@ mod branching {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_branch_a_stop_cut_short_opens_as_nothing_and_is_made_again() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let source = source(workspaces).await;
@@ -236,7 +236,7 @@ mod branching {
             .unwrap();
         assert!(
             workspaces.summary(BRANCH).await.is_err(),
-            "the host governs none of it"
+            "the host serves none of it"
         );
         assert!(
             !workspaces
@@ -268,7 +268,7 @@ mod branching {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_host_that_runs_no_machines_branches_as_before() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let source = source(workspaces).await;
@@ -285,7 +285,7 @@ mod branching {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_is_deleted_after_its_machine_and_stays_when_that_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let kept = workspaces.create("Kept").await.unwrap().workspace;
@@ -322,7 +322,7 @@ async fn a_workspace_is_deleted_after_its_machine_and_stays_when_that_fails() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_its_owner_deleted_stays_refused_under_its_identity() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let made = workspaces.create("Gone").await.unwrap();
@@ -351,7 +351,7 @@ async fn a_workspace_its_owner_deleted_stays_refused_under_its_identity() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_that_runs_no_machines_deletes_as_before() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let gone = workspaces.create("Gone").await.unwrap().workspace;

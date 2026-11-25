@@ -37,7 +37,7 @@ tempfile.workspace = true
 # A member's root key and the hex its ids are written in, for the tests of a record's port.
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 hex.workspace = true
-# The certificate a fixture's governor signed, which a test's owner carries.
+# The certificate a fixture's host signed, which a test's owner carries.
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 # The service its own fixtures stand, with the search index and app store the tests read.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }

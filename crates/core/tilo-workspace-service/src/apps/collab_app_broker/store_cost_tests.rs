@@ -36,7 +36,7 @@ async fn a_store_command_round_trip_to_the_workspace_store_is_a_local_trip() {
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let directory = tempfile::tempdir().unwrap();
-            let (key, cert) = fixtures::governor();
+            let (key, cert) = fixtures::hosting_device();
             let server = fixtures::test_host(directory.path(), &key, &cert).await;
             let workspaces = server.workspaces();
             workspaces

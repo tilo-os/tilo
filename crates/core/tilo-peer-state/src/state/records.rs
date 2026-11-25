@@ -95,7 +95,7 @@ impl StatePeer {
             .map(|entry| entry.doc.base_heads())
     }
 
-    /// Whether `record`'s governed checkpoint is still arriving: the workspace
+    /// Whether `record`'s covered checkpoint is still arriving: the workspace
     /// already carries its coverage, but the checkpoint body it names has
     /// not been admitted, so the document's accepted checkpoint is an older
     /// one. A read waits for the body; it is a cut in flight, not a damaged
@@ -115,13 +115,13 @@ impl StatePeer {
             .map(|snapshot| snapshot.0.bytes.as_slice());
         let workspace: Option<&automerge::AutoCommit> = self.core.workspace_doc.as_deref();
         matches!(
-            crate::coverage::read::governed_snapshot_matches(
+            crate::coverage::read::coverage_snapshot_matches(
                 workspace,
                 (app, record),
                 &document.covered,
                 snapshot,
             ),
-            Ok(crate::coverage::read::Governed::Arriving)
+            Ok(crate::coverage::read::Listed::Arriving)
         )
     }
 

@@ -321,7 +321,7 @@ impl<'a> Membership<'a> {
 /// Write the people `policy` — the workspace's governance — names into `workspace` : its owner,
 /// who may be someone it was handed to since it was founded, the part each other person takes
 /// there, when each was admitted, and the grants it makes, which are the ones the broker decides a person's and an app's
-/// actions against here: a grant governs from the device it was written on, and one taken back is
+/// actions against here: a grant is in force from the device it was written on, and one taken back is
 /// gone here as it is everywhere. The windows its devices share with it are among them
 /// ([`tilo_desktop_model::window_share`]): a share is the workspace's, so the shell of every device
 /// that holds the workspace reads it there, the sharer's own included. Whether anything changed.
@@ -362,7 +362,7 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     true
 }
 
-/// Write the names the workspace's governance gives its people, `people` (its governed members),
+/// Write the names the workspace's governance gives its people, `people` (its members),
 /// into `workspace`: what every surface calls someone who is not here. A person's name is the one
 /// they gave themselves, which their server keeps for every workspace of theirs; a removed member's
 /// row names nobody who is in it. Whether anything changed.

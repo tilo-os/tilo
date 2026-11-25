@@ -1,4 +1,4 @@
-//! A member's share of one record or item with a workspace this host governs,
+//! A member's share of one record or item with a workspace this host serves,
 //! as a page asks it (`crate::workspaces::shares`): the same rule every receiver
 //! holds a device's own share to (`tilo_peer_state::workspace::share`).
 
@@ -10,9 +10,9 @@
 use serde_json::{Value, json};
 use tilo_user_identity::DeviceCert;
 
-use super::tests::{admit, governed};
+use super::tests::{admit, hosted};
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 const SHARE_RESOURCE: &str = "share";
 const UNSHARE_RESOURCE: &str = "unshare";
@@ -93,10 +93,10 @@ async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
     use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _, _) = governed(workspaces).await;
+    let (workspace, _, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     workspaces
@@ -236,10 +236,10 @@ async fn a_share_to_edit_lifts_no_restriction() {
     use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _, _) = governed(workspaces).await;
+    let (workspace, _, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     workspaces
@@ -348,10 +348,10 @@ async fn only_the_device_a_window_runs_on_shares_it() {
     use tilo_desktop_model::window_share::{window_node, window_share_id};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _, _) = governed(workspaces).await;
+    let (workspace, _, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     // Ada's device mints its windows under the salt its key derives.

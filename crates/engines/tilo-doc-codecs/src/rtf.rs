@@ -119,7 +119,7 @@ fn tokenize(src: &str) -> Vec<Token> {
                     if i < n && at(&chars, i) == ' ' {
                         i = i.saturating_add(1);
                     }
-                    // `\u`: the parameter is the code unit; RTF's `\ucN` governs how many fallback chars follow (default 1) — we always skip exactly one.
+                    // `\u`: the parameter is the code unit; RTF's `\ucN` decides how many fallback chars follow (default 1) — we always skip exactly one.
                     if word == "u" {
                         if let Some(cu) = param {
                             out.push(Token::Unicode(cu));

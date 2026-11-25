@@ -28,11 +28,11 @@ impl Workspaces {
         workspace: &str,
         messages: Vec<neighbour_wire::NeighbourMsg>,
     ) -> Result<(), String> {
-        let governed = self
+        let hosted = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let workspace_id = governed.lock().await.workspace_id();
+        let workspace_id = hosted.lock().await.workspace_id();
         let own = self.inner.records.device();
         self.keep_channel_rules(workspace_id, own, &messages)
     }
@@ -82,7 +82,7 @@ impl Workspaces {
     /// a member's device, or a device of a person the workspace has as a member,
     /// as the person's own laptop is.
     ///
-    /// This host holds no channel keys of its own. What a governed device sent,
+    /// This host holds no channel keys of its own. What a member's device sent,
     /// and only that, it keeps like any other governance, for
     /// whoever takes part later: a device that links reads every channel's
     /// genesis from it, and the host answers a request with what it keeps
@@ -106,14 +106,11 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let (workspace_id, governed_by) = {
-            let governed = state.lock().await;
-            (
-                governed.workspace_id(),
-                governs_device(&governed.peer(), author),
-            )
+        let (workspace_id, device_in_list) = {
+            let hosted = state.lock().await;
+            (hosted.workspace_id(), listed_device(&hosted.peer(), author))
         };
-        if !governed_by {
+        if !device_in_list {
             return Ok(());
         }
         if self
@@ -189,13 +186,13 @@ impl Workspaces {
     }
 }
 
-/// Whether `author`, a device, is one the workspace governs by the same rule wherever it asks:
+/// Whether `author`, a device, is one the workspace lists by the same rule wherever it asks:
 /// it is a member's device, or a device of a person the workspace has as a member, as the
 /// person's laptop is. What it certifies is its certificate's user key, held here among the
 /// devices the workspace knows or the holders it names.
-fn governs_device(peer: &tilo_peer_state::StatePeer, author: [u8; 32]) -> bool {
+fn listed_device(peer: &tilo_peer_state::StatePeer, author: [u8; 32]) -> bool {
     let governance = peer.governance();
-    let access = governance.governed_access(tilo_clock::wall());
+    let access = governance.member_list_access(tilo_clock::wall());
     let access = access.as_ref().ok();
     let member = access.is_some_and(|access| access.member_devices.contains(&author));
     let their_person = peer

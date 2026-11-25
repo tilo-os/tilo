@@ -18,7 +18,7 @@
 //!   replaced on the action service's next join.
 //! - [`SHARE_WINDOW`] and [`END_WINDOW_SHARE`]: share one of its own windows
 //!   with the workspace's members ([`WindowShare`]), or end that share. The
-//!   host writes the grants as the workspace's governor, as it writes a web
+//!   host writes the grants as the workspace's administrator, as it writes a web
 //!   page's share, once it has checked the window is one the asking device
 //!   minted: a confined device never writes the workspace's governance
 //!   itself, and never shares a window that is not its own.

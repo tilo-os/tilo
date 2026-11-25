@@ -150,11 +150,11 @@ impl Workspaces {
         Arc::new(KeptInRecords { changes })
     }
 
-    /// Every asked call that waits in the records of the workspaces this host governs, as
+    /// Every asked call that waits in the records of the workspaces this host keeps, as
     /// they were kept before it started.
     pub async fn asked_kept(&self) -> Vec<KeptAsk> {
         let mut kept = Vec::new();
-        for workspace in self.governed_ids().await {
+        for workspace in self.administered_ids().await {
             match self.resource_document(&workspace, PROVIDER, RECORD).await {
                 Ok(None) => {}
                 Ok(Some(bytes)) => match read(&bytes) {

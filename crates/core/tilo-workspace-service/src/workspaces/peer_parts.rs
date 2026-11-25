@@ -1,6 +1,6 @@
-//! A governed workspace's durable copy of its peer state, stored in parts.
+//! A hosted workspace's durable copy of its peer state, stored in parts.
 //!
-//! The governor's copy of a workspace is mostly its records' history, and a
+//! The host's copy of a workspace is mostly its records' history, and a
 //! governance change (a person let in, a role changed) touches little of it.
 //! Writing the whole copy into the workspace file with every change made each
 //! change cost the workspace's whole history, and a crowd joining a long-running
@@ -57,7 +57,7 @@ fn address(part: &Arc<[u8]>) -> usize {
 
 /// A workspace's parts directory and its workspace file, written by whoever
 /// holds them: under the workspace's lock, or after it, when a copy of the
-/// members' writes is kept in the background ([`super::GovernedWorkspace::keep_later`]).
+/// members' writes is kept in the background ([`super::HostedWorkspace::keep_later`]).
 /// The disk can take seconds to write a large part, and nothing that reads the
 /// workspace or takes a member's write in waits for that.
 #[derive(Clone)]

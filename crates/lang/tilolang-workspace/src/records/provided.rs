@@ -400,7 +400,7 @@ mod tests {
     use super::*;
     use tilo_action_policy::{Answer, KindSet, TreePath};
     use tilo_actions::remote::ReceiptStatus;
-    use tilo_workspace_service::workspaces::fixtures::{governor, test_host};
+    use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
 
     const CHAT: &str = "so.tilo.chat";
 
@@ -565,7 +565,7 @@ mod tests {
     #[tokio::test]
     async fn a_built_in_apps_record_is_offered_and_written_with_no_window_open() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces
@@ -611,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn an_agent_writes_a_record_only_within_its_delegation_and_as_itself() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces
@@ -712,7 +712,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_reads_nothing_of_a_conversation_they_are_not_in() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces
@@ -873,7 +873,7 @@ mod tests {
     async fn search_finds_nothing_of_another_apps_record_for_a_person_outside_the_workspace() {
         const TASKS: &str = "so.tilo.tasks";
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces

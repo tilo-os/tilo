@@ -300,7 +300,7 @@ fn is_drm_path(p: &Path) -> bool {
     p == Path::new(DRM_DIR) || p.starts_with(DRM_DIR)
 }
 
-/// Host-governed human identity directory exposed to Files.
+/// The host's human identity directory exposed to Files.
 pub const SANDBOX_TRUSTED_IDENTITIES_DIR: &str = "/run/tilo/identity-projection";
 
 /// Bind one already-staged identity projection into Files.

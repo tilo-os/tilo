@@ -76,7 +76,7 @@ mod tests {
     use collab_types::store::wire::{Command, Reply};
 
     use super::{OWNERSHIP, Ownership};
-    use crate::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
+    use crate::workspaces::fixtures::{TestGroupKeys, hosting_device, test_host_holding};
     use crate::workspaces::person_workspace;
 
     /// What a workspace's owner alone keeps of it is founded for them alone: they read it, and
@@ -84,7 +84,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn another_person_reads_none_of_what_the_owner_alone_keeps() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let keys = Arc::new(TestGroupKeys::default());
         let host = test_host_holding(dir.path(), &key, &cert, keys).await;
         let workspaces = host.workspaces().clone();

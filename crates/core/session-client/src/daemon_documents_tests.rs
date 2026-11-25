@@ -152,11 +152,11 @@ fn layout() -> automerge::AutoCommit {
 }
 
 fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
-    use tilo_workspace_service::workspaces::fixtures::{governor, test_host};
+    use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let socket = dir.path().join("collab.sock");
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = runtime.block_on(test_host(&dir.path().join("host"), &key, &cert));
     let workspaces = host.workspaces().clone();
     // The daemon holds the person's workspace and keeps its desktop's layout there, written as

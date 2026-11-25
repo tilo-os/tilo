@@ -7,7 +7,7 @@ use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::DeviceCert;
 
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 use crate::workspaces::{WaitListSecrets, Workspaces};
 
 /// What reading an invitation may take: one local check of what it signs, plus
@@ -81,7 +81,7 @@ async fn mailed_invitation(
 #[tokio::test]
 async fn an_invitation_reads_at_once_though_its_workspace_is_busy() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;

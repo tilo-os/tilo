@@ -1,21 +1,21 @@
-//! Delegated agents as governed members of a workspace.
+//! Delegated agents as members of a workspace.
 //!
 //! An agent is a device of its person: its own key, a certificate the
 //! person's root signed, and a root-signed [`Delegation`] naming the
 //! device an agent, how it is shown, the workspaces and apps it may act in and
-//! until when. The agent writes its own governed identity, carrying that
+//! until when. The agent writes its own identity row, carrying that
 //! delegation ([`PeerGovernanceMut::admit_agent`](crate::PeerGovernanceMut::admit_agent)), so every member
 //! knows the device, the person it acts for, and its window: its changes
 //! are signed by its own key and attributed to it, never to the device that
 //! launched it.
 //!
-//! The rule every member applies, in one place ([`GovernedDelegateRow::acting`]):
+//! The rule every member applies, in one place ([`DelegateRow::acting`]):
 //! an agent identity acts only while its delegation verifies against the
 //! certificate's own root, names that device and this workspace, is inside its
-//! validity window, and the governor has not withdrawn it. It acts with its
+//! validity window, and an administrator has not withdrawn it. It acts with its
 //! person's grants bounded by its delegation
 //! ([`tilo_action_policy::roles::agent_grants`]): an agent writes where
-//! its person may write and governs nothing. Outside its window the
+//! its person may write and administers nothing. Outside its window the
 //! identity stays on the roster, so the history it wrote stays attributed,
 //! but it is no reader of the workspace's channels and no op of it is admitted.
 
@@ -26,16 +26,16 @@ use tilo_action_policy::roles::agent_policy;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::Delegation;
 
-use super::{GovernedIdentity, SystemTime, err, now_ns, workspace};
+use super::{DeviceRow, SystemTime, err, now_ns, workspace};
 use crate::join::WorkspaceId;
 
-/// What a governed identity carries when its device is a delegate of its
+/// What a member identity carries when its device is a delegate of its
 /// person: an agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GovernedDelegateRow {
+pub struct DelegateRow {
     /// The person's root-signed delegation naming this device.
     pub delegation: Delegation,
-    /// When the governor withdrew it; it acts on nothing from then on.
+    /// When it was withdrawn; it acts on nothing from then on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withdrawn_at_ns: Option<u64>,
 }
@@ -43,7 +43,7 @@ pub struct GovernedDelegateRow {
 /// Why an agent identity does not act at a given time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DelegateInactive {
-    /// The governor withdrew it.
+    /// The delegation was withdrawn.
     #[error("the delegate was withdrawn")]
     Withdrawn,
     /// The delegation is not the certificate root's, or is outside its
@@ -58,7 +58,7 @@ pub enum DelegateInactive {
     OtherWorkspace,
 }
 
-impl GovernedDelegateRow {
+impl DelegateRow {
     /// Whether the agent whose certificate is `cert` acts in `workspace` at
     /// `now_ns`: the one rule (see the module documentation).
     pub(crate) fn acting(
@@ -85,7 +85,7 @@ impl GovernedDelegateRow {
     }
 }
 
-impl GovernedIdentity {
+impl DeviceRow {
     /// Whether this identity may act in `workspace` at `now_ns` as far as its
     /// delegation goes. Every identity that is no delegate passes.
     pub(crate) fn delegate_acting(
@@ -101,7 +101,7 @@ impl GovernedIdentity {
 
 /// One delegated agent on a workspace's roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GovernedAgent {
+pub struct DelegatedAgent {
     /// The agent's own device key, which signs everything it writes.
     pub device_public_key: [u8; 32],
     /// The person it acts for: the root that signed its certificate and
@@ -115,7 +115,7 @@ pub struct GovernedAgent {
     pub color: [u8; 3],
     /// When its delegation ends, ns since the epoch.
     pub expires_at_ns: u64,
-    /// When the governor withdrew it, if it did.
+    /// When it was withdrawn, if it was.
     pub withdrawn_at_ns: Option<u64>,
     /// Whether it acts in the workspace at the time the roster was read.
     pub acting: bool,
@@ -129,15 +129,15 @@ pub(crate) const fn holds_no_power(cert: &DeviceCert) -> bool {
 
 impl PeerGovernance<'_> {
     /// The certificate and delegation of agent `device` as this workspace's
-    /// governance records them, and when it was withdrawn: what a governor
+    /// governance records them, and when it was withdrawn: what an administrator
     /// decides an agent's place in the workspace from again.
-    pub fn governed_agent(
+    pub fn listed_delegate(
         self,
         device: &[u8; 32],
     ) -> Option<(DeviceCert, Delegation, Option<u64>)> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
         let bytes = doc.policy().identities.get(&hex::encode(device))?.clone();
-        let identity = GovernedIdentity::decode(&bytes).ok()?;
+        let identity = DeviceRow::decode(&bytes).ok()?;
         let agent = identity.delegate?;
         agent.delegation.delegate.agent_id()?;
         Some((
@@ -147,7 +147,7 @@ impl PeerGovernance<'_> {
         ))
     }
     /// Every delegated agent on this workspace's roster, acting or not at `now`.
-    pub fn governed_agents(self, now: SystemTime) -> Result<Vec<GovernedAgent>, String> {
+    pub fn delegated_agents(self, now: SystemTime) -> Result<Vec<DelegatedAgent>, String> {
         let doc = self
             .peer
             .core
@@ -156,7 +156,7 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         let mut agents = Vec::new();
         for bytes in doc.policy().identities.values() {
-            let identity = GovernedIdentity::decode(bytes).map_err(err)?;
+            let identity = DeviceRow::decode(bytes).map_err(err)?;
             let acting = identity
                 .delegate_acting(&self.peer.core.workspace, now_ns(now))
                 .is_ok();
@@ -166,7 +166,7 @@ impl PeerGovernance<'_> {
             let Some(agent_id) = agent.delegation.delegate.agent_id().map(str::to_owned) else {
                 continue;
             };
-            agents.push(GovernedAgent {
+            agents.push(DelegatedAgent {
                 device_public_key: identity.device_cert.device_public_key,
                 user_public_key: identity.device_cert.user_public_key,
                 agent_id,
@@ -218,7 +218,7 @@ impl PeerGovernanceMut<'_> {
         {
             return Err("certificate conflict".into());
         }
-        let row = GovernedDelegateRow {
+        let row = DelegateRow {
             delegation,
             withdrawn_at_ns: None,
         };
@@ -234,11 +234,11 @@ impl PeerGovernanceMut<'_> {
         let prior = workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
-            .map(|bytes| GovernedIdentity::decode(bytes))
+            .map(|bytes| DeviceRow::decode(bytes))
             .transpose()
             .map_err(err)?;
         let identity = match prior {
-            None => GovernedIdentity {
+            None => DeviceRow {
                 device_cert: cert,
                 revocations: vec![],
                 admission: None,
@@ -251,12 +251,12 @@ impl PeerGovernanceMut<'_> {
             Some(prior) if prior.device_cert != cert => {
                 return Err("certificate conflict".into());
             }
-            Some(GovernedIdentity { delegate: None, .. }) => {
+            Some(DeviceRow { delegate: None, .. }) => {
                 return Err("the device is a member, not an agent".into());
             }
-            Some(GovernedIdentity {
+            Some(DeviceRow {
                 delegate:
-                    Some(GovernedDelegateRow {
+                    Some(DelegateRow {
                         withdrawn_at_ns: Some(_),
                         ..
                     }),
@@ -264,7 +264,7 @@ impl PeerGovernanceMut<'_> {
             }) if agent_policy::WITHDRAWAL_IS_FINAL => {
                 return Err("the agent was withdrawn".into());
             }
-            Some(GovernedIdentity {
+            Some(DeviceRow {
                 delegate: Some(ref known),
                 ..
             }) if known.delegation.issued_at_ns >= row.delegation.issued_at_ns => {
@@ -306,7 +306,7 @@ impl PeerGovernanceMut<'_> {
         else {
             return Ok(false);
         };
-        let mut identity = GovernedIdentity::decode(&bytes).map_err(err)?;
+        let mut identity = DeviceRow::decode(&bytes).map_err(err)?;
         let Some(agent) = identity.delegate.as_mut() else {
             return Err("the device is a member, not an agent".into());
         };

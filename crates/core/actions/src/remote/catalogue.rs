@@ -50,7 +50,7 @@ pub struct ViewResourceQuery {
 pub struct ResourceViewLocator {
     /// Provider-configured HTTPS listener origin.
     pub origin: String,
-    /// Current governed workspace, supplied by the provider.
+    /// The workspace this locator is for, supplied by the provider.
     pub workspace: String,
     /// Certified provider device key as hexadecimal.
     #[serde(rename = "hostDevice")]

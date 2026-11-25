@@ -201,7 +201,7 @@ impl StatePeer {
     ) -> Result<bool, String> {
         member_root(person)?;
         let workspace = self.core.workspace.clone();
-        self.governance_mut().put_governed_grants(
+        self.governance_mut().put_member_grants(
             &[roles::restriction_grant(
                 &workspace,
                 person,
@@ -221,11 +221,8 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         member_root(person)?;
-        self.governance_mut().remove_governed_grants(
-            &[roles::restriction_grant_id(person)],
-            key,
-            now,
-        )
+        self.governance_mut()
+            .remove_member_grants(&[roles::restriction_grant_id(person)], key, now)
     }
 
     /// Share `node` with the workspace as `access` gives, under `share`, as the
@@ -258,7 +255,7 @@ impl StatePeer {
         {
             return Ok(false);
         }
-        self.governance_mut().put_governed_grants(&grants, key, now)
+        self.governance_mut().put_member_grants(&grants, key, now)
     }
 
     /// End the share `share` as the caller
@@ -282,12 +279,11 @@ impl StatePeer {
         if ended.is_empty() {
             return Ok(false);
         }
-        self.governance_mut()
-            .remove_governed_grants(&ended, key, now)
+        self.governance_mut().remove_member_grants(&ended, key, now)
     }
 
     /// Give or take back a grant in the workspace, as the caller: the workspace's
-    /// policy decides, exactly as on a device that governs it here.
+    /// policy decides, exactly as on a device that administers it here.
     fn apply_governance_grant_command(
         &mut self,
         caller: &DeviceCert,
@@ -316,11 +312,11 @@ impl StatePeer {
                     .cloned()
                     .ok_or("the grant was not recorded")?;
                 self.governance_mut()
-                    .put_governed_grants(&[recorded], key, now)
+                    .put_member_grants(&[recorded], key, now)
             }
             WorkspaceMembershipCommand::Revoke { grant } => self
                 .governance_mut()
-                .remove_governed_grants(std::slice::from_ref(grant), key, now),
+                .remove_member_grants(std::slice::from_ref(grant), key, now),
             _ => Err("not a governance grant command".into()),
         }
     }
@@ -376,8 +372,8 @@ impl PeerWorkspaceMut<'_> {
         Ok(())
     }
 
-    /// Apply the retained person's typed membership command using actual
-    /// governor signing ownership. Public command arguments grant no authority.
+    /// Apply the retained person's typed membership command using the
+    /// signing device's own authority. Public command arguments grant no authority.
     pub fn apply_workspace_membership_command(
         self,
         caller: &DeviceCert,

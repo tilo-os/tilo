@@ -1,4 +1,4 @@
-//! What one more admission costs a workspace's governor as the workspace grows.
+//! What one more admission costs a workspace's host as the workspace grows.
 
 use crate::StatePeer;
 use crate::join::WorkspaceId;
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
     fn a_crowded_workspaces_governance_is_read_and_stored_by_what_changed;
 
     phase every_change_reads_the_same_narrowed_as_whole;
-    // Every kind of change a governor makes to a crowded workspace reads the
+    // Every kind of change a host makes to a crowded workspace reads the
     // same through the narrowed paths (the parts a change wrote, the rows a
     // change left as they were) as through a whole reading: each governance
     // write a test makes compares the two ([`crate::workspace::changed_rows_by`]),
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         ];
         for (step, change) in steps {
             // Read the state before, so its views carry over into the next.
-            let _ = peer.governance().governed_members(now).unwrap();
+            let _ = peer.governance().member_list(now).unwrap();
             change(&mut peer);
             let fresh = StatePeer::restore(
                 &peer.durable().unwrap(),
@@ -182,18 +182,18 @@ tilo_test_env::scenario! {
             )
             .unwrap();
             assert_eq!(
-                peer.governance().governed_members(now).unwrap(),
-                fresh.governance().governed_members(now).unwrap(),
+                peer.governance().member_list(now).unwrap(),
+                fresh.governance().member_list(now).unwrap(),
                 "{step}: the people"
             );
             assert_eq!(
-                peer.governance().governed_access(now).unwrap(),
-                fresh.governance().governed_access(now).unwrap(),
+                peer.governance().member_list_access(now).unwrap(),
+                fresh.governance().member_list_access(now).unwrap(),
                 "{step}: who may read"
             );
             assert_eq!(
-                peer.governance().governed_device_access(now).unwrap(),
-                fresh.governance().governed_device_access(now).unwrap(),
+                peer.governance().member_device_access(now).unwrap(),
+                fresh.governance().member_device_access(now).unwrap(),
                 "{step}: what each device may do"
             );
         }
@@ -237,8 +237,8 @@ tilo_test_env::scenario! {
                 base = std::sync::Arc::clone(&parts[1]);
             }
             assert_eq!(
-                restored(&parts).governance().governed_members(now).unwrap(),
-                peer.governance().governed_members(now).unwrap(),
+                restored(&parts).governance().member_list(now).unwrap(),
+                peer.governance().member_list(now).unwrap(),
                 "admission {n} restores as it stands"
             );
         }
@@ -270,14 +270,14 @@ fn newcomer_work(members: u32) -> crate::work::Work {
     guest
         .receive(authority.verifying_key().to_bytes(), message, now)
         .unwrap();
-    let access = guest.governance().governed_access(now).unwrap();
+    let access = guest.governance().member_list_access(now).unwrap();
     let members = usize::try_from(members).unwrap();
     assert_eq!(access.member_devices.len(), members.saturating_add(2));
-    let people = guest.governance().governed_members(now).unwrap();
+    let people = guest.governance().member_list(now).unwrap();
     // The workspace's owner is one of its members, beside the `members` it
     // admitted.
     assert_eq!(people.members.len(), members.saturating_add(1));
-    guest.governance().governed_device_access(now).unwrap();
+    guest.governance().member_device_access(now).unwrap();
     assert!(matches!(guest.security_basis(), Some(Ok(_))));
     crate::work::now().since(before)
 }
@@ -333,7 +333,7 @@ fn entered_work(members: u32, records: usize) -> crate::work::Work {
     let (mut peer, authority, now) = crowd(members);
     admit(&mut peer, &authority, members, now);
     let before = crate::work::now();
-    let people = peer.governance().governed_members(now).unwrap();
+    let people = peer.governance().member_list(now).unwrap();
     // The crowd, its owner and the person who just entered.
     assert_eq!(
         people.members.len(),

@@ -1090,7 +1090,7 @@ fn guest_write_under(
     message
 }
 
-/// The owner's device, which governs the test workspace.
+/// The owner's device, which hosts the test workspace.
 fn owner() -> (SigningKey, DeviceCert) {
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
@@ -1130,24 +1130,24 @@ fn a_viewers_write_naming_them_is_refused_by_their_role_and_an_editors_is_taken(
 fn a_write_under_a_role_given_a_moment_ago_waits_for_it_then_applies() {
     let (mut peer, guest_key, guest) = workspace_with(Role::Viewer);
     let (owner_key, owner) = owner();
-    let mut governor = peer.clone();
-    governor
+    let mut owner_copy = peer.clone();
+    owner_copy
         .governance_mut()
         .set_member_role(guest.user_public_key, Role::Editor, &owner_key, now())
         .unwrap();
     let before = value(&peer);
     let write = guest_write_under(
-        &governor,
+        &owner_copy,
         &guest_key,
         "edited",
-        &governor.governance().heads(),
+        &owner_copy.governance().heads(),
     );
     receive(&mut peer, &guest, write).expect("held, not refused");
     assert_eq!(value(&peer), before, "nothing of it is taken in yet");
 
     peer.receive_from(
         TransportOrigin::ServerDelta(owner.device_public_key),
-        governor.workspace_message(),
+        owner_copy.workspace_message(),
         now(),
     )
     .unwrap();
@@ -1182,25 +1182,25 @@ fn a_write_citing_governance_from_before_its_writers_removal_is_refused() {
 fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
     let (mut peer, guest_key, guest) = workspace_with(Role::Viewer);
     let (owner_key, owner) = owner();
-    let mut governor = peer.clone();
-    governor
+    let mut owner_copy = peer.clone();
+    owner_copy
         .governance_mut()
         .set_member_role(guest.user_public_key, Role::Editor, &owner_key, now())
         .unwrap();
-    let named: Vec<[u8; 4]> = governor
+    let named: Vec<[u8; 4]> = owner_copy
         .governance()
         .heads()
         .iter()
         .map(collab_types::governance_head)
         .collect();
     let count = u64::try_from(crate::MAX_HELD_FOR_GOVERNANCE_PER_WRITER).unwrap() + 4;
-    // One after the other, as a page writes them: the governor, which holds
-    // the role, takes each in, and the next is written on top of it.
+    // One after the other, as a page writes them: the host, which has the
+    // role, takes each in, and the next is written on top of it.
     let writes: Vec<NeighbourMsg> = (1..=count)
         .map(|seq| {
             let edit = format!("edit {seq}");
             let mut message = guest_write_at(
-                &governor,
+                &owner_copy,
                 &guest_key,
                 |doc| doc.put(ROOT, "value", edit).unwrap(),
                 edit_value(),
@@ -1212,7 +1212,7 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
             };
             envelope.governance.clone_from(&named);
             collab_types::sign_op(envelope, &guest_key).unwrap();
-            receive(&mut governor, &guest, message.clone()).expect("the governor takes it in");
+            receive(&mut owner_copy, &guest, message.clone()).expect("the host takes it in");
             message
         })
         .collect();
@@ -1238,7 +1238,7 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
     let arrived = peer
         .receive_from(
             TransportOrigin::ServerDelta(owner.device_public_key),
-            governor.workspace_message(),
+            owner_copy.workspace_message(),
             now(),
         )
         .unwrap();

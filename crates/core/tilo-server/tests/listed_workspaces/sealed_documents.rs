@@ -65,7 +65,7 @@ pub(super) fn joined<'a>(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
+async fn a_sealed_write_to_a_shared_record_never_keeps_the_next_person_out() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());

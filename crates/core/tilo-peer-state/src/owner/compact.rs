@@ -6,12 +6,12 @@
 //! checkpoint of the merged history, admitted like any write.
 
 use super::history_keys::{SealedHistoryKeys, seal_for_document};
-use super::{NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, write};
+use super::{DeviceWorkspaces, NeighbourMsg, SystemTime, WorkspaceId, write};
 use collab_types::SignedOp;
 use collab_types::signer::DeviceSigner;
 use std::sync::Arc;
 
-impl NativeWorkspaceOwner {
+impl DeviceWorkspaces {
     /// Keep every sealed record history this device holds within its bound
     /// with `keys`, the channel keys this device holds: before each of this
     /// device's writes, and whenever its holder asks

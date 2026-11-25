@@ -1,4 +1,4 @@
-//! Admitting a member to a governed workspace, as every test of its members
+//! Admitting a member to a hosted workspace, as every test of its members
 //! starts.
 use super::*;
 

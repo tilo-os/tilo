@@ -1,7 +1,7 @@
 //! A device whose certificate expires while it runs keeps its membership:
 //! its person's root renews the certificate, the device proves its
-//! membership with the renewal, and the governor and the device's own
-//! record take it in place of the expired one.
+//! membership with the renewal, and the host and the device's own record take
+//! it in place of the expired one.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,7 +19,7 @@ use tilo_peer_state::join::{
     self, JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
 };
 use tilo_peer_state::join_answer::{JoinAnswer, JoinWorkspaces, WorkspaceTxn};
-use tilo_peer_state::join_log::{GovernanceMessages, Governed, JoinError, JoinLog, Signer};
+use tilo_peer_state::join_log::{GovernanceMessages, JoinError, JoinLog, Listed, Signer};
 use tilo_peer_state::owner::testing::{self, WORKSPACE};
 use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
@@ -35,18 +35,18 @@ impl GovernanceMessages for Admitted {
     }
 }
 
-/// One workspace as its governor holds it in memory.
+/// One workspace as its host keeps it in memory.
 struct HeldWorkspace {
     peer: Admitted,
-    /// The device answering the join: the governor's own.
+    /// The device answering the join: the host's own.
     host: DeviceCert,
     log: JoinLog,
     generation: u64,
 }
 
 impl HeldWorkspace {
-    fn governed(&self) -> Governed<'_> {
-        Governed {
+    fn hosted(&self) -> Listed<'_> {
+        Listed {
             peer: (&self.peer.0).into(),
             host: &self.host,
             workspace_id: join::WorkspaceId::parse(WORKSPACE).unwrap(),
@@ -61,8 +61,8 @@ impl WorkspaceTxn for HeldWorkspace {
         WORKSPACE
     }
 
-    fn governed(&self) -> Governed<'_> {
-        HeldWorkspace::governed(self)
+    fn hosted(&self) -> Listed<'_> {
+        HeldWorkspace::hosted(self)
     }
 
     fn log(&self) -> &JoinLog {
@@ -77,7 +77,7 @@ impl WorkspaceTxn for HeldWorkspace {
         &mut self,
         peer: StatePeer,
         _now: u64,
-        log: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLog, JoinError>,
+        log: &mut dyn FnMut(&Listed<'_>) -> Result<JoinLog, JoinError>,
     ) -> Result<(), JoinError> {
         let next = HeldWorkspace {
             peer: Admitted(peer),
@@ -85,7 +85,7 @@ impl WorkspaceTxn for HeldWorkspace {
             log: JoinLog::default(),
             generation: self.generation.saturating_add(1),
         };
-        let answered = log(&next.governed())?;
+        let answered = log(&next.hosted())?;
         *self = HeldWorkspace {
             log: answered,
             ..next
@@ -94,8 +94,8 @@ impl WorkspaceTxn for HeldWorkspace {
     }
 }
 
-/// A governor of one workspace, kept in memory: the exchange every host
-/// answers ([`JoinAnswer`]) over the simplest store.
+/// A host of one workspace, kept in memory: the exchange a host answers
+/// ([`JoinAnswer`]) over the simplest store.
 struct MemoryWorkspaces {
     key: SigningKey,
     nonce: Mutex<u8>,
@@ -121,13 +121,13 @@ impl JoinWorkspaces for MemoryWorkspaces {
         std::future::ready(if workspace == WORKSPACE {
             decide(&mut *self.workspace.lock().unwrap())
         } else {
-            Err(JoinError::new("this governor holds no such workspace"))
+            Err(JoinError::new("this host holds no such workspace"))
         })
     }
 }
 
 impl MemoryWorkspaces {
-    /// A governor of `WORKSPACE` signing as `device`, whose key `key` is.
+    /// A host of `WORKSPACE` signing as `device`, whose key `key` is.
     fn new(device: &DeviceCert, key: &SigningKey, now: SystemTime) -> Self {
         let mut peer = StatePeer::new(
             WORKSPACE,
@@ -177,7 +177,7 @@ impl MemoryWorkspaces {
             .unwrap();
         let issued = log
             .issue(
-                &workspace.governed(),
+                &workspace.hosted(),
                 &administrator,
                 request,
                 vec![transport],
@@ -197,18 +197,18 @@ impl MemoryWorkspaces {
     }
 }
 
-/// `governor`'s answer to `request` from `remote` at `now`. Every step of
-/// a memory governor is decided before its future is first polled.
+/// The host's answer to `request` from `remote` at `now`. Every step of a
+/// memory host is decided before its future is first polled.
 fn answer(
-    governor: &JoinAnswer<MemoryWorkspaces>,
+    owner_copy: &JoinAnswer<MemoryWorkspaces>,
     remote: [u8; 32],
     request: JoinTransportRequest,
     now: SystemTime,
 ) -> JoinTransportResponse {
-    let answer = std::pin::pin!(governor.answer(remote, request, testing::ns(now).unwrap()));
+    let answer = std::pin::pin!(owner_copy.answer(remote, request, testing::ns(now).unwrap()));
     match answer.poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
         std::task::Poll::Ready(answer) => answer,
-        std::task::Poll::Pending => panic!("a memory governor answers at once"),
+        std::task::Poll::Pending => panic!("a memory host answers at once"),
     }
 }
 
@@ -251,7 +251,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
     let joined_at = SystemTime::now();
     let joined_ns = testing::ns(joined_at).unwrap();
-    let governor = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));
+    let owner_copy = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));
     let workspace_id = join::WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = WorkspaceDeviceHintV1 {
         version: 1,
@@ -280,7 +280,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         joined_at.checked_sub(HOUR).unwrap(),
         24 * HOUR,
     );
-    let issued = governor.0.issue(
+    let issued = owner_copy.0.issue(
         IssueInvitationRequest {
             request_id: [1; 32],
             role: Role::Editor,
@@ -300,7 +300,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     )
     .unwrap();
     let JoinTransportResponse::Challenge(challenge) = answer(
-        &governor,
+        &owner_copy,
         first.device_public_key,
         JoinTransportRequest::Challenge(join::JoinChallengeRequest {
             signed_invitation: issued.signed_invitation.clone(),
@@ -309,7 +309,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         }),
         joined_at,
     ) else {
-        panic!("the governor challenges the slot");
+        panic!("the host challenges the slot");
     };
     let redemption = join::verify_connection_redemption(
         &issued.signed_invitation,
@@ -346,12 +346,12 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         .prepare_enrollment_into(&intent, None, joined_at)
         .unwrap();
     let JoinTransportResponse::Complete(bootstrap) = answer(
-        &governor,
+        &owner_copy,
         first.device_public_key,
         JoinTransportRequest::Complete(complete),
         joined_at,
     ) else {
-        panic!("the governor admits the slot");
+        panic!("the host admits the slot");
     };
     member
         .install(
@@ -373,7 +373,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     assert!(first.is_expired_at(later_ns));
     let membership = |device_cert: &DeviceCert, seed: u8| {
         answer(
-            &governor,
+            &owner_copy,
             slot_key.verifying_key().to_bytes(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
                 workspace_id,
@@ -389,10 +389,10 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         "the expired certificate proves nothing"
     );
     let JoinTransportResponse::MembershipChallenge(challenge) = membership(&renewed, 11) else {
-        panic!("the governor challenges the renewed certificate as the device it renews");
+        panic!("the host challenges the renewed certificate as the device it renews");
     };
     let JoinTransportResponse::MembershipComplete(renewal) = answer(
-        &governor,
+        &owner_copy,
         slot_key.verifying_key().to_bytes(),
         JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest {
             proof: collab_types::signer::answered_now(join::sign_membership_proof(
@@ -414,7 +414,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         }),
         later,
     ) else {
-        panic!("the governor answers the slot's renewed membership");
+        panic!("the host answers the slot's renewed membership");
     };
     assert_eq!(renewal.device_cert, renewed);
     assert_eq!(renewal.role, Role::Editor, "the same member, with its role");
@@ -422,7 +422,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         .renew_membership(workspace, &renewed, &renewal, later)
         .unwrap();
 
-    governor
+    owner_copy
         .0
         .with_peer(|peer| {
             assert!(peer.certificates().contains(&renewed));

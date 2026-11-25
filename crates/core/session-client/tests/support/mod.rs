@@ -105,7 +105,7 @@ pub fn page_bundle() -> std::path::PathBuf {
         .clone()
 }
 
-/// The test hosts' devices. A governed workspace's host writes the first state
+/// The test hosts' devices. A workspace's host writes the first state
 /// of each record a member starts; the tests read what members wrote.
 static HOSTS: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
@@ -120,7 +120,7 @@ pub fn workspace() -> tilo_server_protocol::WorkspaceId {
     tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
-/// Have `server` govern [`WORKSPACE`], the person's workspace, unless it does,
+/// Have `server` host [`WORKSPACE`], the person's workspace, unless it does,
 /// and admit `device` to it as its owner: what a page asks of its host
 /// before it joins ([`Outbox::join_placed`](tilo_session_client::Outbox::join_placed)), done here for a peer
 /// that reaches the host without the route that administers them.
@@ -328,7 +328,7 @@ fn names_its_server(server: &Server) {
     );
 }
 
-/// A host that governs workspaces rather than one pinned workspace, serving
+/// A host that serves workspaces rather than one pinned workspace, serving
 /// browsers on an ephemeral port. With `keep_web_identity` its development
 /// certificate is stored under `state`, so a restarted host presents the
 /// same one.
@@ -939,7 +939,7 @@ pub async fn enter(
 
 pub async fn in_workspace(peer: &Link, workspace_id: WorkspaceId) {
     ready(&[peer]).await;
-    wait_for("the governed workspace to let the page in", || async {
+    wait_for("the workspace to let the page in", || async {
         (peer.status().workspaces.get(&workspace_id) == Some(&true)).then_some(())
     })
     .await;

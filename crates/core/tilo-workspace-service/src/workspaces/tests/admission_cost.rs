@@ -77,7 +77,7 @@ pub(crate) async fn entry_arrival(
 /// of its membership log.
 async fn work_per_arrival(members: u32, arrivals: u32) -> Vec<tilo_peer_state::work::Work> {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -152,7 +152,7 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
 /// inline, and of the files beside it.
 async fn document_after(members: u32) -> (usize, u64) {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;

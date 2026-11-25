@@ -55,7 +55,7 @@ pub(crate) fn read(document: &automerge::AutoCommit) -> std::sync::Arc<PolicyDat
         return std::sync::Arc::new(whole(document));
     }
     let heads = document.base_heads();
-    let workspace = governed_workspace(document);
+    let workspace = workspace_row(document);
     if let Some(known) = remembered::recall(&workspace, &heads) {
         return known;
     }
@@ -73,9 +73,9 @@ pub(crate) fn read(document: &automerge::AutoCommit) -> std::sync::Arc<PolicyDat
     read
 }
 
-/// The workspace `document` governs, as its `workspace` row names it: whose
-/// states a reading is remembered among.
-fn governed_workspace(document: &automerge::AutoCommit) -> String {
+/// The workspace `document` names in its `workspace` row: whose states a
+/// reading is remembered among.
+fn workspace_row(document: &automerge::AutoCommit) -> String {
     use automerge::ReadDoc as _;
     document
         .get(automerge::ROOT, "workspace")

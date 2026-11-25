@@ -72,7 +72,7 @@ pub fn parse_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, ClaimError>
 
 /// The claims of `mutation`'s changes, each writing the units `units` lists
 /// for it. A snapshot carries none: it is a checkpoint, which only the
-/// workspace's pinned governor may publish.
+/// workspace's host may publish.
 ///
 /// # Errors
 /// The first change that cannot be claimed, or bytes that do not parse.

@@ -13,7 +13,7 @@ use super::super::PreAdmitRequest;
 use super::super::WorkspaceContent;
 use super::super::WorkspaceSummary;
 use super::super::fixtures::{
-    TestGroupKeys, TestHost, device_cert, governor, invited, signed_pre_admission, test_host,
+    TestGroupKeys, TestHost, device_cert, hosting_device, invited, signed_pre_admission, test_host,
     test_host_holding,
 };
 use super::MemberDevice;
@@ -60,7 +60,7 @@ pub(super) async fn shared_with(
     seed: u8,
     device: (SigningKey, DeviceCert),
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
-    let (serving_key, serving_cert) = governor();
+    let (serving_key, serving_cert) = hosting_device();
     let serving = test_host_holding(serving_state, &serving_key, &serving_cert, group_keys()).await;
     invited(serving, &serving_cert, name, seed, device).await
 }
@@ -1149,7 +1149,7 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
 }
 
 /// A member copy says when the history of the device serving it is in hand, and a workspace this
-/// device governs has no such link to wait on.
+/// device hosts has no such link to wait on.
 #[tokio::test]
 async fn a_member_copy_says_when_it_caught_up_with_its_serving_device() {
     let serving_state = tempfile::tempdir().unwrap();
@@ -1166,11 +1166,10 @@ async fn a_member_copy_says_when_it_caught_up_with_its_serving_device() {
         .member_caught_up(workspace_id)
         .expect("the copy is linked to the device serving it");
     assert!(*caught_up.borrow());
-    let governed =
-        WorkspaceId::parse(&created.workspace).expect("the serving device's workspace id");
+    let hosted = WorkspaceId::parse(&created.workspace).expect("the serving device's workspace id");
     assert!(
-        serving.workspaces().member_caught_up(governed).is_none(),
-        "a workspace this device governs answers through no serving device"
+        serving.workspaces().member_caught_up(hosted).is_none(),
+        "a workspace this device hosts answers through no serving device"
     );
     drop(copies);
     member.shutdown().await;
@@ -1325,7 +1324,7 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
     let member_state = tempfile::tempdir().unwrap();
     // The serving device seals what it writes, as a device taking part in the workspace's key
     // groups does: a sealed write is what a copy keeps until its keys open it.
-    let (serving_key, serving_cert) = governor();
+    let (serving_key, serving_cert) = hosting_device();
     let serving =
         super::super::fixtures::test_host(serving_state.path(), &serving_key, &serving_cert).await;
     let (serving, device, created, invitation) =
@@ -1479,7 +1478,7 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (serving_key, serving_cert) = governor();
+    let (serving_key, serving_cert) = hosting_device();
     let serving = test_host_holding(
         serving_state.path(),
         &serving_key,
@@ -1628,7 +1627,7 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 async fn a_copied_disk_holds_its_workspace_as_a_member_copy_once_the_source_admits_it() {
     let source_state = tempfile::tempdir().unwrap();
     let copy_state = tempfile::tempdir().unwrap();
-    let (serving_key, serving_cert) = governor();
+    let (serving_key, serving_cert) = hosting_device();
     let source = test_host(source_state.path(), &serving_key, &serving_cert).await;
     let created = source
         .workspaces()
@@ -1917,8 +1916,8 @@ async fn a_member_copy_lists_its_persons_computer_agent() {
         .expect("the invitation is redeemed");
     assert_eq!(workspace.to_string(), created.workspace);
     assert!(
-        member.workspaces().governed_copy(workspace).await.is_none(),
-        "the computer holds the workspace as a member copy, governed elsewhere"
+        member.workspaces().hosted_copy(workspace).await.is_none(),
+        "the computer keeps the workspace as a member copy, hosted elsewhere"
     );
 
     let name = "mcp";

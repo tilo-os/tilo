@@ -26,7 +26,7 @@ mod presence;
 pub trait Host: 'static {
     /// The person the workspace `workspace`'s governance admitted `device` as, when the device
     /// announced no certificate of its own here.
-    fn governed_person(&self, _workspace: &str, _device: EndpointId) -> Option<String> {
+    fn admitted_person(&self, _workspace: &str, _device: EndpointId) -> Option<String> {
         None
     }
 
@@ -264,7 +264,7 @@ impl Client {
     /// of its own — a test, an embedder that carries the frames itself — hands them here instead.
     pub fn heard_presence(&self, workspace: &str, from: EndpointId, frame: &Frame) {
         let heard = self.presence.heard_presence(workspace, from, frame);
-        if heard | self.know_governed(workspace, from) {
+        if heard | self.know_admitted(workspace, from) {
             self.touched();
         }
     }
@@ -273,7 +273,7 @@ impl Client {
     /// host that carries the frames itself (a page's endpoint) hands its session.
     pub fn heard_body(&self, workspace: &str, from: EndpointId, body: &[u8]) {
         let heard = self.presence.heard_body(workspace, from, body);
-        if heard | self.know_governed(workspace, from) {
+        if heard | self.know_admitted(workspace, from) {
             self.touched();
         }
     }
@@ -282,21 +282,21 @@ impl Client {
     /// workspace's governance admitted their device as: every surface that draws them — the bar's
     /// face, the People list, their pointer, their caret in an app — then draws one person, by one
     /// name and in one colour. Whether that is new here.
-    fn know_governed(&self, workspace: &str, from: EndpointId) -> bool {
+    fn know_admitted(&self, workspace: &str, from: EndpointId) -> bool {
         self.presence.unknown_person(workspace, from)
             && self
-                .governed_person(workspace, from)
+                .admitted_person(workspace, from)
                 .is_some_and(|person| self.presence.admitted_as(workspace, from, person))
     }
 
     /// The person the workspace `workspace`'s governance admitted `device` as: who a member is
     /// whose device announced no certificate here.
     #[must_use]
-    pub fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
+    pub fn admitted_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
         self.host
             .borrow()
             .as_ref()
-            .and_then(|host| host.governed_person(workspace, device))
+            .and_then(|host| host.admitted_person(workspace, device))
     }
 
     /// Take one thing the peer network heard, and hand the host who is here now: who said they are here,

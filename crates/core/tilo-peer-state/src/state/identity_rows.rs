@@ -4,10 +4,10 @@ use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue, transaction::Tran
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
-use super::GovernedDelegateRow;
+use super::DelegateRow;
 
 /// A device row: its key, the bytes it was read from, and the row they hold.
-pub(crate) type IdentityRow = (String, Vec<u8>, GovernedIdentity);
+pub(crate) type IdentityRow = (String, Vec<u8>, DeviceRow);
 
 /// The workspace document's device rows, in key order.
 pub(crate) fn identity_rows(doc: &AutoCommit) -> Result<Vec<IdentityRow>, String> {
@@ -15,7 +15,7 @@ pub(crate) fn identity_rows(doc: &AutoCommit) -> Result<Vec<IdentityRow>, String
         .identities
         .into_iter()
         .map(|(id, bytes)| {
-            GovernedIdentity::decode(&bytes)
+            DeviceRow::decode(&bytes)
                 .map(|row| (id, bytes, row))
                 .map_err(err)
         })
@@ -44,7 +44,7 @@ fn identities(doc: &AutoCommit) -> Result<ObjId, String> {
     Ok(doc
         .get(ROOT, "peer_identities_v1")
         .map_err(err)?
-        .ok_or("governed identities missing")?
+        .ok_or("member identities missing")?
         .1)
 }
 
@@ -56,7 +56,7 @@ fn err(error: impl std::fmt::Display) -> String {
 /// signatures as the bytes they are. A delegate's row, which few devices
 /// carry, is kept as the JSON its own types read and write.
 #[derive(Clone)]
-pub(crate) struct GovernedIdentity {
+pub(crate) struct DeviceRow {
     pub(crate) device_cert: DeviceCert,
     pub(crate) revocations: Vec<tilo_user_identity::RevocationEntry>,
     pub(crate) admission: Option<RedemptionReceipt>,
@@ -64,7 +64,7 @@ pub(crate) struct GovernedIdentity {
     /// Present when the device is a delegate of its person, an agent
     /// ([`super::delegates`]). Absent from every other identity's
     /// bytes.
-    pub(crate) delegate: Option<GovernedDelegateRow>,
+    pub(crate) delegate: Option<DelegateRow>,
     /// The workspace delegations older builds wrote in this row: it let
     /// another device issue invitations for a workspace. Workspaces no longer have them, so nothing here reads one to
     /// act on; they are kept because the row's bytes, and the media
@@ -86,7 +86,7 @@ pub(crate) struct GovernedIdentity {
     pub(crate) entry: Option<EntryReceipt>,
 }
 
-impl GovernedIdentity {
+impl DeviceRow {
     /// The certificate the identity row `bytes` hold, its first part, read
     /// without the rest of the row.
     ///
@@ -225,14 +225,14 @@ pub enum RowError {
 impl std::fmt::Display for RowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Postcard(error) => write!(f, "governed identity row: {error}"),
-            Self::Delegate(error) => write!(f, "governed identity row's delegate: {error}"),
+            Self::Postcard(error) => write!(f, "identity row: {error}"),
+            Self::Delegate(error) => write!(f, "identity row's delegate: {error}"),
         }
     }
 }
 impl std::error::Error for RowError {}
 
-/// [`GovernedIdentity`] as stored, in field order.
+/// [`DeviceRow`] as stored, in field order.
 #[derive(Deserialize)]
 struct StoredIdentity {
     device_cert: DeviceCert,
@@ -282,7 +282,7 @@ pub(crate) struct WorkspaceDelegationPermissions {
     pub(crate) admit_invited_members: bool,
 }
 
-impl Default for GovernedIdentity {
+impl Default for DeviceRow {
     fn default() -> Self {
         Self {
             device_cert: DeviceCert {
@@ -309,7 +309,7 @@ impl Default for GovernedIdentity {
     }
 }
 
-impl GovernedIdentity {
+impl DeviceRow {
     pub(crate) fn has_admission(&self) -> bool {
         // An agent row is no admission, which keeps other people's agents
         // out.
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn a_row_written_before_the_mark_reads_as_one_the_workspace_holds() {
-        let identity = GovernedIdentity::default();
+        let identity = DeviceRow::default();
         // The bytes a build wrote before rows carried a removal's mark: the
         // same field sequence, ending after its last field.
         let before = postcard::to_stdvec(&(
@@ -354,7 +354,7 @@ mod tests {
             &identity.workspace_delegations,
         ))
         .expect("the layout before the mark writes");
-        let read = GovernedIdentity::decode(&before).expect("a row before the mark reads");
+        let read = DeviceRow::decode(&before).expect("a row before the mark reads");
         assert!(!read.removed, "a row that names no mark holds its device");
         assert_eq!(
             read.device_cert.device_public_key,
@@ -369,7 +369,7 @@ mod tests {
             "the mark is one byte"
         );
         assert!(
-            GovernedIdentity::decode(&bytes)
+            DeviceRow::decode(&bytes)
                 .expect("a marked row reads")
                 .removed
         );

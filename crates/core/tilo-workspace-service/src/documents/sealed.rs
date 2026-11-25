@@ -4,8 +4,8 @@
 //!
 //! What a holder needs to open a sealed record is here, over the device's
 //! [`GroupKeys`](crate::documents::device_keys::GroupKeys) and the record's
-//! route; the governor's own folding of a history (its compaction) is the
-//! holder's, beside the workspaces it serves.
+//! route; the host's own folding of a history (its compaction) is the holder's,
+//! beside the workspaces it serves.
 
 use collab_types::{ArtifactId, SignedOp};
 use key_group::ContentKeys;
@@ -22,7 +22,7 @@ pub(crate) struct DocumentKeys {
         target_arch = "wasm32",
         allow(
             dead_code,
-            reason = "the reader set names the group a history folds into, which is the governor's"
+            reason = "the reader set names the group a history folds into, which is the host's"
         )
     )]
     pub(crate) readers: Option<String>,

@@ -1,7 +1,7 @@
 //! A returning browser's device and the workspace's entry: what the workspace refuses
 //! of a device it knows, and whom it admits instead.
 
-use super::tests::{governor, signed_pre_admission, test_host};
+use super::tests::{hosting_device, signed_pre_admission, test_host};
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -50,7 +50,7 @@ async fn pre_admitted_join(
 async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_one_is_refused() {
     use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -174,7 +174,7 @@ async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
     use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Home").await.unwrap();
@@ -264,7 +264,7 @@ async fn a_member_device_whose_certificate_ran_out_comes_back_under_its_renewal(
     use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Home").await.unwrap();

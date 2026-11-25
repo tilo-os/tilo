@@ -1,4 +1,4 @@
-//! What a governed workspace's record holds that grows with every change, in
+//! What a hosted workspace's record keeps that grows with every change, in
 //! files of their own beside it, appended to.
 //!
 //! The record is written whole with every change. It held the workspace's

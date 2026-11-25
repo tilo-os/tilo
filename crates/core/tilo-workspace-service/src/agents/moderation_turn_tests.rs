@@ -179,7 +179,7 @@ async fn keep_scout(workspaces: &crate::workspaces::Workspaces, workspace: &str,
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turns_caller_carries_the_saver_and_the_author() {
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = crate::workspaces::fixtures::governor();
+    let (key, cert) = crate::workspaces::fixtures::hosting_device();
     let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Moderation").await.unwrap().workspace;

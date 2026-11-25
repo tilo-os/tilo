@@ -75,7 +75,7 @@ pub use done::{DONE_KEY, Done, mail_send_lease};
 mod schedules_tests;
 #[cfg(test)]
 pub(crate) mod test_desktops;
-pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
+pub use delegates::{ActingAs, DelegateInactive, DelegateRow, DelegatedAgent};
 mod local_admission;
 pub(crate) use document_capture::OpenedRefusal;
 pub(crate) use local_admission::DraftRefusal;
@@ -92,7 +92,7 @@ mod workspace_refusals;
 pub use workspace_refusals::ChangeRefused;
 mod workspace_shortcuts;
 pub use local_outbox::Reseal;
-mod governed_coverage;
+mod checkpoint_coverage;
 mod held;
 mod joined;
 mod publication;
@@ -197,7 +197,7 @@ pub struct SeedState {
     pub documents: Vec<SeedDocument>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GovernedAccess {
+pub struct MemberListAccess {
     /// The devices the workspace admits now: its members' certified,
     /// unrevoked devices.
     pub member_devices: Vec<[u8; 32]>,
@@ -516,19 +516,19 @@ fn resource_type(doc: &impl automerge::ReadDoc) -> Option<String> {
     }
 }
 
-fn check_governed_snapshot(
+fn check_coverage_snapshot(
     workspace: Option<&AutoCommit>,
     route: &Route,
     covered: &BTreeMap<String, u64>,
     snapshot: Option<&[u8]>,
 ) -> Result<(), String> {
-    use crate::coverage::read::{CoverageMatchError, governed_snapshot_matches};
-    governed_snapshot_matches(workspace, (&route.app, &route.record), covered, snapshot)
+    use crate::coverage::read::{CoverageMatchError, coverage_snapshot_matches};
+    coverage_snapshot_matches(workspace, (&route.app, &route.record), covered, snapshot)
     .map(drop)
     .map_err(|error| match error {
         CoverageMatchError::Decode(error) => format!("invalid checkpoint coverage: {error}"),
         CoverageMatchError::NoMatch => format!(
-            "governed checkpoint for {}/{} does not match its coverage; preserve journal and request a fresh authenticated checkpoint",
+            "checkpoint for {}/{} does not match its coverage; preserve journal and request a fresh authenticated checkpoint",
             route.app, route.record
         ),
     })
@@ -548,16 +548,16 @@ pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
         && incoming.issued_at_ns >= held.issued_at_ns
 }
 
-pub use governed_rows::RowError;
-pub(crate) use governed_rows::{EntryReceipt, GovernedIdentity, RedemptionReceipt};
+pub use identity_rows::RowError;
+pub(crate) use identity_rows::{DeviceRow, EntryReceipt, RedemptionReceipt};
 pub(crate) use invitation_receipts::StoredReceipt;
 
-/// The map at `key` of a governed workspace document.
-pub(crate) fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
+/// The map at `key` of a workspace document.
+pub(crate) fn workspace_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
     doc.get(ROOT, key)
         .map_err(err)?
         .map(|(_, id)| id)
-        .ok_or_else(|| format!("governed {key} missing"))
+        .ok_or_else(|| format!("workspace {key} missing"))
 }
 
 #[cfg(test)]
@@ -587,13 +587,13 @@ mod ownership_tests;
 #[cfg(test)]
 #[path = "state/founded_rows_tests.rs"]
 mod founded_rows_tests;
-mod governed_rows;
 #[cfg(test)]
 #[path = "state/held_document_tests.rs"]
 mod held_document_tests;
 #[cfg(test)]
 #[path = "state/held_queue_tests.rs"]
 mod held_queue_tests;
+mod identity_rows;
 pub(crate) mod invitation_receipts;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]

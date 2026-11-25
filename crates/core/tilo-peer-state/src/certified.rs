@@ -188,7 +188,7 @@ fn validate_historical_iroh(
         return Err("native signed Iroh scope mismatch".into());
     }
     if value.holds_keys && !hint.host.capabilities.can_own_workspaces {
-        return Err("the device serving the workspace cannot govern workspaces".into());
+        return Err("the device serving the workspace cannot administer workspaces".into());
     }
     value
         .validate_invitation(join.grant())
@@ -221,7 +221,7 @@ impl VerifiedNativeEnrollment {
         &self.bootstrap
     }
     /// The certificate this device is a member with: the one it joined
-    /// with, or the renewal of it the governor answered.
+    /// with, or the renewal of it the host answered.
     #[must_use]
     pub fn local_device(&self) -> &DeviceCert {
         &self.bootstrap.device_cert

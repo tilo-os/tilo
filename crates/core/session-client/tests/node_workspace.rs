@@ -6,11 +6,11 @@
 //! node's install route, as `tilo-server run --web … --install-token-file`
 //! serves it. With it the root certifies the session beside the node, which
 //! runs the person's apps and agents with a key of its own: the node vouches
-//! for that key, and the session becomes one of her devices, never a host. The node then starts as the founder's host and the governor of
-//! their workspaces: the page's own device connects, creates the company
-//! workspace and writes a document, which leaves the page sealed and is
-//! retained on the node only as ciphertext, under channel keys the node
-//! holds. A second person, invited by name, is admitted and reads the
+//! for that key, and the session becomes one of her devices, never a host.
+//! The node then starts as the founder's host: the page's own device connects,
+//! creates the company workspace and writes a document, which leaves the page
+//! sealed and is retained on the node only as ciphertext, under channel keys
+//! the node holds. A second person, invited by name, is admitted and reads the
 //! document's whole history. A third, whom the founder pre-admitted for a
 //! token someone else vouched with, is admitted without the founder, who
 //! finds a notice and removes her.
@@ -136,7 +136,7 @@ fn holds(dir: &Path, needle: &[u8]) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_company_node_governs_and_seals_the_workspace_people_join() {
+async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
     let driver =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/page-driver.mjs");
     // The runtime module the driver serves is resolved before it starts, so
@@ -291,7 +291,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let ada = start_peer(host.clone(), page_cert, server_cert.clone(), page_key);
     ready(&[&ada]).await;
 
-    // The company workspace, governed by the node, with Ada as its owner.
+    // The company workspace, hosted by the node, with Ada as its owner.
     let WorkspacesReply::Workspace(acme) = workspaces(
         &ada,
         WorkspacesRequest::Create {

@@ -3,7 +3,7 @@
 //! A workspace's live session runs through one relay, the device the workspace's state names as
 //! serving it. The daemon holds the device's endpoint, so it is the daemon that relays: it serves
 //! [`tilo_live::relay::Relay`] on [`tilo_live::native::ALPN`] beside the device's other
-//! protocols, and admits a connection for a workspace it governs only when the certificate the
+//! protocols, and admits a connection for a workspace it hosts only when the certificate the
 //! grant presents is the roster's own and the handshake proved the key ([`bind`]). It cuts a
 //! session when the workspace's membership, keys or calls move.
 //!
@@ -372,7 +372,7 @@ fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
 /// Whether `own` relays a workspace that `held` says how this device holds, whose members are
 /// `devices`: it serves the workspace, and is a member whose certificate is in force.
 fn relays_here(held: Option<Held>, devices: &[Device], own: [u8; 32], now_ns: u64) -> bool {
-    matches!(held, Some(Held::Governs))
+    matches!(held, Some(Held::Hosts))
         && devices
             .iter()
             .any(|device| device.device == own && !device.cert.is_expired_at(now_ns))
@@ -745,7 +745,7 @@ impl Shared {
             self.withdraw(workspace);
             return;
         };
-        if !matches!(held, Held::Governs) {
+        if !matches!(held, Held::Hosts) {
             self.withdraw(workspace);
             return;
         }
@@ -1040,7 +1040,7 @@ impl Live {
         // Where this device takes part: its own relay when it serves the workspace, the relay of
         // the device that holds it otherwise, whose signed address its governance names.
         let toward = match held {
-            Held::Governs => Some((own, None)),
+            Held::Hosts => Some((own, None)),
             Held::MemberCopy => self
                 .host_relay(workspace)
                 .await
@@ -1126,7 +1126,7 @@ impl Live {
         let own = self.shared.device;
         let gate = self.call_gate(workspace);
         let roster = Roster::new(devices.iter().map(|device| device.device));
-        let local = matches!(held, Held::Governs).then_some(&self.relay);
+        let local = matches!(held, Held::Hosts).then_some(&self.relay);
         let certificate = self.shared.workspaces.device_cert().clone();
         match super::live_call::CallSession::join(
             local,

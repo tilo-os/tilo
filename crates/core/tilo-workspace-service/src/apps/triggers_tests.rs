@@ -15,7 +15,9 @@ use tilo_automation::{
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 use super::*;
-use crate::workspaces::fixtures::{Started, governor, on_issue_change, save_signed, test_host};
+use crate::workspaces::fixtures::{
+    Started, hosting_device, on_issue_change, save_signed, test_host,
+};
 
 tilo_test_env::scenario! {
     fn a_committed_change_is_a_record_event_only_with_its_entry;
@@ -78,7 +80,7 @@ tilo_test_env::scenario! {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_moment_that_came_fires_its_shortcut_once_workspace_wide() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Home").await.unwrap().workspace;
@@ -191,7 +193,7 @@ impl ConnectorEvents for Reports {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_connector_event_fires_the_shortcut_watching_it_once() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Discord").await.unwrap().workspace;
@@ -277,7 +279,7 @@ async fn a_connector_event_fires_the_shortcut_watching_it_once() {
 /// in the same workspace fires nothing on this device.
 #[test]
 fn a_shortcut_saved_by_someone_elses_device_arms_nothing_here() {
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let id = tilo_desktop_model::WorkspaceId::new();
     let workspace = id.to_string();
     let workspace = workspace.as_str();
@@ -321,7 +323,7 @@ fn a_shortcut_saved_by_someone_elses_device_arms_nothing_here() {
 async fn a_schedules_fire_time_survives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host =
         crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys))
             .await;
@@ -697,7 +699,7 @@ impl StartRun for Counting {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scheduled_shortcut_runs_at_its_time_and_again_at_the_next() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Clock").await.unwrap().workspace;
@@ -762,7 +764,7 @@ async fn a_scheduled_shortcut_runs_at_its_time_and_again_at_the_next() {
 )]
 async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_moment() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Catch up").await.unwrap().workspace;
@@ -884,7 +886,7 @@ async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_mome
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restarted_host_skips_the_times_it_missed() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Skip").await.unwrap().workspace;
@@ -937,7 +939,7 @@ async fn a_restarted_host_skips_the_times_it_missed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_moment_fires_once_at_its_time_and_never_again() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Reminder").await.unwrap().workspace;
@@ -1005,7 +1007,7 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_paused_shortcut_fires_nothing_until_it_is_resumed() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Pausing").await.unwrap().workspace;
@@ -1078,7 +1080,7 @@ async fn a_paused_shortcut_fires_nothing_until_it_is_resumed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_counted_shortcut_keeps_its_count_in_the_workspace_across_a_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Counting").await.unwrap().workspace;
@@ -1140,7 +1142,7 @@ async fn a_counted_shortcut_keeps_its_count_in_the_workspace_across_a_restart() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_that_cannot_start_is_tried_again_and_a_refusal_is_kept_as_a_dead_letter() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Retrying").await.unwrap().workspace;
@@ -1235,7 +1237,7 @@ async fn a_run_that_cannot_start_is_tried_again_and_a_refusal_is_kept_as_a_dead_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Failing").await.unwrap().workspace;
@@ -1321,7 +1323,7 @@ fn agent_grant(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shortcut_saved_by_an_agent_acts_as_that_agent_and_one_saved_by_a_person_as_the_person() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Agent").await.unwrap().workspace;
@@ -1585,7 +1587,7 @@ async fn source_runner(workspaces: &Workspaces, started: &Arc<Started>, fixtures
 )]
 async fn a_feed_that_did_not_change_fires_nothing_and_a_new_entry_fires_its_shortcut_once() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Feeds").await.unwrap().workspace;
@@ -1687,7 +1689,7 @@ async fn a_feed_that_did_not_change_fires_nothing_and_a_new_entry_fires_its_shor
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_fires_its_shortcut_when_the_text_read_changed_and_not_for_its_clock() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Pages").await.unwrap().workspace;
@@ -1742,7 +1744,7 @@ async fn a_page_fires_its_shortcut_when_the_text_read_changed_and_not_for_its_cl
 )]
 async fn a_source_that_fails_is_left_alone_for_longer_and_fires_once_it_is_gone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Gone").await.unwrap().workspace;
@@ -1813,7 +1815,7 @@ async fn a_source_that_fails_is_left_alone_for_longer_and_fires_once_it_is_gone(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_source_on_this_machine_is_refused_when_the_fetch_ships() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Local").await.unwrap().workspace;
@@ -1872,7 +1874,7 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
     });
     let source = Source::saying("text/html", &prices(10, "10:42", "a"));
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Proxy").await.unwrap().workspace;
@@ -1982,7 +1984,7 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
 
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
     let workspaces = host.workspaces();
     workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
@@ -1990,7 +1992,7 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    // This host serves its people's pictures at its site, and keeps one for the governor.
+    // This host serves its people's pictures at its site, and keeps one for the owner.
     workspaces.advertises_at("https://eu1.tilo.sh");
     workspaces.person_names(Arc::new(ChatProfile {
         root: cert.user_public_key,
@@ -2075,7 +2077,7 @@ fn assert_bound_inputs(
         .unwrap_or_else(|| panic!("the workspace input: {inputs:?}"))
         .iter()
         .find(|row| row["member"]["person"] == json!(hex::encode(who)))
-        .unwrap_or_else(|| panic!("the governor's row: {inputs:?}"));
+        .unwrap_or_else(|| panic!("the owner's row: {inputs:?}"));
     assert_eq!(me["name"], "Ada");
     assert_eq!(me["role"], "owner");
     let avatar = me["avatar"].as_str().unwrap_or_default();

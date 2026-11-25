@@ -1,5 +1,5 @@
 //! The host's own operations as actions: creating, listing and entering the
-//! workspaces this server governs, and letting an app author one of them
+//! workspaces this server hosts, and letting an app author one of them
 //! (provider [`HOST_ACTIONS_PROVIDER`]).
 //!
 //! No workspace decides them: they are the server's person's alone
@@ -26,7 +26,7 @@ use tilo_server_protocol::workspaces::{
     ActionInvitation, AdminRefusal, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CREATE_OWN_WORKSPACE,
     CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
-    HostedWorkspace, LIST_REVOCATIONS, LIST_WORKSPACES, StandingPage, UNHOST_WORKSPACE, WEB_SERVE,
+    LIST_REVOCATIONS, LIST_WORKSPACES, StandingPage, UNHOST_WORKSPACE, WEB_SERVE, WorkspaceHosted,
     WorkspaceLabels, WorkspaceListing, administered_answer, administered_request, check_labels,
     labelled,
 };
@@ -156,7 +156,7 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 22] = [
     (
         Verb {
             id: HOST_WORKSPACE,
-            label: "Serve a workspace for its governor",
+            label: "Serve a workspace another host hands over",
             check: HOST_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: host_workspace_params,
@@ -166,7 +166,7 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 22] = [
     (
         Verb {
             id: UNHOST_WORKSPACE,
-            label: "Stop serving a workspace for its governor",
+            label: "Stop serving a workspace another host handed over",
             check: UNHOST_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: workspace_params,
@@ -906,7 +906,7 @@ impl Workspaces {
         let person = device.user_public_key;
         let entering = match operation {
             ServiceOperation::CreateWorkspace => {
-                // An agent's grant governs nothing, so it invites nobody: the
+                // An agent's grant decides nothing, so it invites nobody: the
                 // first invitation of a workspace it makes is for its own
                 // person (their runtime joins with it).
                 if device.capabilities.agent.is_some()
@@ -920,7 +920,7 @@ impl Workspaces {
                 false
             }
             ServiceOperation::DeleteOwnWorkspace => {
-                // The server's person deletes any workspace it governs; anyone
+                // The server's person deletes any workspace it hosts; anyone
                 // else one of their own, which their grant reaches.
                 let workspace = args.required_text("workspace")?;
                 let theirs =
@@ -1085,9 +1085,9 @@ impl Workspaces {
         let name = args.required_text("name")?;
         let workspace = args.text("workspace")?;
         let first = first_invitation(args, request_id, now)?;
-        // An agent's grant governs nothing: the server issues the first
+        // An agent's grant decides nothing: the server issues the first
         // invitation of a workspace it makes, to its own person
-        // ([`Self::check_account`]), as the workspace's governor.
+        // ([`Self::check_account`]), as the workspace's host.
         let inviter = if device.capabilities.agent.is_some() {
             &self.inner.host.cert
         } else {
@@ -1182,7 +1182,7 @@ impl Workspaces {
             });
             return listed;
         }
-        // The person who owns this server lists what it governs: each workspace's own
+        // The person who owns this server lists what it hosts: each workspace's own
         // listing answers when it was made, which no summary carries.
         let mut listed: Vec<WorkspaceListing> = Vec::new();
         for summary in self.list().await {
@@ -1412,8 +1412,8 @@ impl Workspaces {
     }
 
     /// Invite the host's own person (`device` is theirs) into the workspace
-    /// `workspace` governed here, as a host that keeps no workspaces of anyone
-    /// else's answers `workspace.create-own`: every workspace it governs is
+    /// `workspace` hosted here, as a host that keeps no workspaces of anyone
+    /// else's answers `workspace.create-own`: every workspace it hosts is
     /// theirs, so another device of theirs, or a key of theirs whose scope
     /// reaches it, enters it as them. It makes none: that is `workspace.create`.
     async fn enter_host_persons(
@@ -1464,15 +1464,15 @@ impl Workspaces {
     }
 
     /// The role `person` holds in `workspace` now, a member it has not
-    /// removed; `None` for anyone else, and for a workspace not governed
+    /// removed; `None` for anyone else, and for a workspace not hosted
     /// here.
     async fn role_of(&self, workspace: &str, person: [u8; 32], now: u64) -> Option<Role> {
-        let governed = self.workspace(workspace).await.ok()?;
-        let governed = governed.lock().await;
-        governed
+        let hosted = self.workspace(workspace).await.ok()?;
+        let hosted = hosted.lock().await;
+        hosted
             .peer()
             .governance()
-            .governed_members(crate::workspaces::system_time(now))
+            .member_list(crate::workspaces::system_time(now))
             .ok()?
             .members
             .into_iter()
@@ -1481,7 +1481,7 @@ impl Workspaces {
     }
 
     /// Answer `summary` with an invitation for its `person` as `role`, until
-    /// `expires_at_ns`: the workspace's governor, the host, invites them.
+    /// `expires_at_ns`: the workspace's host invites them.
     async fn invite_own_person(
         &self,
         summary: WorkspaceSummary,
@@ -1516,7 +1516,7 @@ impl Workspaces {
     }
 
     /// Whom this host takes the workspace `request` hands over for, as
-    /// `caller`, its governor, asks: nobody when its work setting takes it
+    /// `caller`, its host, asks: nobody when its work setting takes it
     /// anyway, else its owner, when that is not this host's own person and
     /// this host keeps workspaces for them ([`Workspaces::keeps_for_owner`]).
     ///
@@ -1533,13 +1533,13 @@ impl Workspaces {
         if super::super::work_takes(&host.work, caller, &host.cert, request) {
             return Ok(None);
         }
-        // A workspace its own person governs was taken above, whatever the work
+        // A workspace of its own person's was taken above, whatever the work
         // setting; this host keeps another's only for an owner it keeps
         // workspaces for.
         let owner = super::super::owner(request)?;
         if owner == host.cert.user_public_key {
             return Err(
-                "this host keeps a workspace another host governs only for its owner".into(),
+                "this host keeps a workspace another host serves only for its owner".into(),
             );
         }
         self.keeps_for_owner(&owner, now).await?;
@@ -1587,7 +1587,7 @@ impl Workspaces {
     }
 
     /// The host operations that have one host of the person serve a workspace
-    /// another governs ([`super::super::holding`]), already permitted to `device`:
+    /// another device hosts ([`super::super::holding`]), already permitted to `device`:
     /// the action asked, and the operation it is.
     async fn serving_invoke(
         &self,
@@ -1622,7 +1622,7 @@ impl Workspaces {
                     let hint = self
                         .host_address(workspace_id, role)
                         .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                    return answer(&HostedWorkspace {
+                    return answer(&WorkspaceHosted {
                         host_hint: hex_postcard(&hint)?,
                         kept: Vec::new(),
                     });
@@ -1645,7 +1645,7 @@ impl Workspaces {
                 let (hint, kept) = Box::pin(self.hold(device, &request))
                     .await
                     .map_err(ActionCallError::refused)?;
-                answer(&HostedWorkspace {
+                answer(&WorkspaceHosted {
                     host_hint: hex_postcard(&hint)?,
                     kept,
                 })

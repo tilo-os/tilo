@@ -4,7 +4,7 @@ use super::*;
 use crate::join::{
     InviteGrant, Role, decode_and_verify_invitation, issue_invitation, verify_connection_redemption,
 };
-use crate::state::GovernedIdentity;
+use crate::state::DeviceRow;
 use std::collections::BTreeSet;
 
 /// A device of `root_seed`'s person, `device_seed`'s key, certified by that
@@ -468,7 +468,7 @@ fn many_entry_admissions_replay_by_the_entry_their_place_held() {
     };
     assert!(
         peer.governance_mut()
-            .put_governed_entry(&entry, &authority_key, now)
+            .put_workspace_entry(&entry, &authority_key, now)
             .unwrap()
     );
     let workspace = peer.workspace_id().to_owned();
@@ -547,7 +547,7 @@ fn opened(peer: &mut StatePeer, authority: &SigningKey, now: SystemTime) -> [u8;
     };
     assert!(
         peer.governance_mut()
-            .put_governed_entry(&entry, authority, now)
+            .put_workspace_entry(&entry, authority, now)
             .unwrap()
     );
     crate::state::entry_digest(&entry).unwrap()
@@ -575,9 +575,9 @@ fn entry_row(
     workspace: &str,
     (key, cert): (&SigningKey, &DeviceCert),
     entry: [u8; 32],
-) -> GovernedIdentity {
+) -> DeviceRow {
     let _ = (key, workspace);
-    GovernedIdentity {
+    DeviceRow {
         device_cert: cert.clone(),
         revocations: Vec::new(),
         admission: None,

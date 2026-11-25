@@ -260,10 +260,10 @@ fn the_workspaces_revocations_are_those_its_identity_rows_carry() {
     let mut forged = revoked(&ada);
     forged.user_public_key = bob.cert.user_public_key;
     for (device, revocations) in [(&ada, vec![revoked(&ada)]), (&bob, vec![forged])] {
-        let row = crate::state::GovernedIdentity {
+        let row = crate::state::DeviceRow {
             device_cert: device.cert.clone(),
             revocations,
-            ..crate::state::GovernedIdentity::default()
+            ..crate::state::DeviceRow::default()
         };
         doc.put(
             &identities,

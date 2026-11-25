@@ -642,7 +642,7 @@ impl OriginalInvocation {
     }
 
     /// The original person caller, decided while `state` can still say who
-    /// governs the workspace; `None` for an agent caller.
+    /// hosts the workspace; `None` for an agent caller.
     fn original_person(&self) -> Result<Option<super::BrokerActor>, String> {
         if self.agent_id().is_some() {
             return Ok(None);

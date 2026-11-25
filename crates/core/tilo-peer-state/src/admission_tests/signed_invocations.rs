@@ -1496,7 +1496,7 @@ tilo_test_env::scenario! {
         // agent any action.
         receiver
             .governance_mut()
-            .put_governed_grants(
+            .put_member_grants(
                 &[tilo_action_policy::Grant::new(
                     "scribe-files",
                     tilo_action_policy::Grantee::agent("scribe", owner.as_str()),

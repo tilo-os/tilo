@@ -1,5 +1,5 @@
 //! A person with only a browser: the page's root certifies a native node as
-//! the host and governor of their workspaces, the node serves with that
+//! the host of their workspaces, the node serves with that
 //! certificate, and the page certifies its own device against it and syncs.
 
 #![allow(

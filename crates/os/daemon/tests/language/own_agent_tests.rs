@@ -36,7 +36,7 @@ use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::answer_grant;
 use tilo_workspace_service::workspaces::fixtures::{
-    Started, TestGroupKeys, device_cert, governor, test_host_holding,
+    Started, TestGroupKeys, device_cert, hosting_device, test_host_holding,
 };
 use tilo_workspace_service::workspaces::fixtures::{invitation, invited, membership_log_alone};
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
@@ -165,7 +165,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let keys = Arc::new(TestGroupKeys::default());
     let bea_root = SigningKey::from_bytes(&[0xbe; 32]);
     let (bea_key, bea_cert) = device_cert(&bea_root, "bea-laptop", DeviceCapabilities::member());
-    let (ada_key, ada_cert) = governor();
+    let (ada_key, ada_cert) = hosting_device();
     let ada = test_host_holding(ada_state.path(), &ada_key, &ada_cert, Arc::clone(&keys)).await;
     let (ada, (bea_key, bea_cert), created, invitation) =
         invited(ada, &ada_cert, "Team", 0x61, (bea_key, bea_cert)).await;
@@ -536,7 +536,7 @@ fn mentioned(body: &Json) -> Option<tilo_action_policy::MemberId> {
 }
 
 /// Ada adds Bea's agent to a conversation of her own: it stays Bea's. What it names is the agent
-/// and the person it is of, so it reads with Bea's reach, Bea's answers and her stop govern it,
+/// and the person it is of, so it reads with Bea's reach, Bea's answers and her stop apply to it,
 /// and Ada's own agent of the same id is another member, which nothing Bea says reaches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
@@ -547,7 +547,7 @@ async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
     let keys = Arc::new(TestGroupKeys::default());
     let bea_root = SigningKey::from_bytes(&[0xbe; 32]);
     let (bea_key, bea_cert) = device_cert(&bea_root, "bea-laptop", DeviceCapabilities::member());
-    let (ada_key, ada_cert) = governor();
+    let (ada_key, ada_cert) = hosting_device();
     let ada = test_host_holding(states[0].path(), &ada_key, &ada_cert, Arc::clone(&keys)).await;
     let (ada, (bea_key, bea_cert), created, invitation) =
         invited(ada, &ada_cert, "Team", 0x64, (bea_key, bea_cert)).await;
@@ -683,7 +683,7 @@ async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
     assert_eq!(
         decides(&answered, &added)[1],
         Answer::Deny,
-        "Bea's answer governs the agent Ada added"
+        "Bea's answer decides the agent Ada added"
     );
     let adas_policy = adas.policy_of(&workspace).await.unwrap();
     assert_ne!(
@@ -731,7 +731,7 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
     let cy_root = SigningKey::from_bytes(&[0xc7; 32]);
     let (bea_key, bea_cert) = device_cert(&bea_root, "bea-laptop", DeviceCapabilities::member());
     let (cy_key, cy_cert) = device_cert(&cy_root, "cy-laptop", DeviceCapabilities::member());
-    let (ada_key, ada_cert) = governor();
+    let (ada_key, ada_cert) = hosting_device();
     let ada = test_host_holding(states[0].path(), &ada_key, &ada_cert, Arc::clone(&keys)).await;
     let (ada, (bea_key, bea_cert), created, beas_invitation) =
         invited(ada, &ada_cert, "Team", 0x62, (bea_key, bea_cert)).await;

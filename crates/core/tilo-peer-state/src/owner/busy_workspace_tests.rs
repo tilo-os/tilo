@@ -3,7 +3,7 @@
 //! messages reach the workspace afterwards through its sync, each authorized as
 //! any write is.
 use crate::owner::testing::{APP, WORKSPACE, certificate};
-use crate::owner::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, WorkspaceId, open_file};
+use crate::owner::{DeviceWorkspaces, VerifiedNativeEnrollmentIntent, WorkspaceId, open_file};
 use crate::{
     InputDisposition, SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace,
 };
@@ -22,10 +22,10 @@ fn ns(now: SystemTime) -> u64 {
     crate::owner::testing::ns(now).unwrap()
 }
 
-/// The governor's invitation for `device`, redeemed by it.
+/// The host's invitation for `device`, redeemed by it.
 fn redemption(
-    governor: &DeviceCert,
-    governor_key: &SigningKey,
+    owner_copy: &DeviceCert,
+    owner_copy_key: &SigningKey,
     hint: &join::TransportHint,
     (device, device_key): (&DeviceCert, &SigningKey),
     nonce: u8,
@@ -38,7 +38,7 @@ fn redemption(
     let signed = join::issue_invitation(
         join::InviteGrant {
             workspace_id: tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
-            issuer: governor.clone(),
+            issuer: owner_copy.clone(),
             role: join::Role::Editor,
             nonce: [nonce; 16],
             recipient_user_public_key: Some(device.user_public_key),
@@ -46,7 +46,7 @@ fn redemption(
             expires_at_ns: ns(now).checked_add(60_000_000_000).unwrap(),
             transport: vec![hint.clone()],
         },
-        governor_key,
+        owner_copy_key,
     )
     .unwrap();
     let verified = join::decode_and_verify_invitation(
@@ -125,7 +125,7 @@ struct BusyWorkspace {
     intent: VerifiedNativeEnrollmentIntent,
     complete_bootstrap: join::JoinBootstrap,
     /// What the workspace's sync delivers once it is installed, in the host's
-    /// order: the governor's checkpoint of the chat, then every message.
+    /// order: the host's checkpoint of the chat, then every message.
     sync: Vec<([u8; 32], NeighbourMsg)>,
     texts: Vec<String>,
     now: SystemTime,
@@ -141,8 +141,8 @@ struct BusyWorkspace {
 fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let now = SystemTime::now();
     let root = SigningKey::from_bytes(&[121; 32]);
-    let governor_key = SigningKey::from_bytes(&[122; 32]);
-    let governor = certificate(&root, &governor_key, "Lounge host");
+    let owner_copy_key = SigningKey::from_bytes(&[122; 32]);
+    let owner_copy = certificate(&root, &owner_copy_key, "Lounge host");
     let device_key = SigningKey::from_bytes(&[123; 32]);
     let device = certificate(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
     let workspace_id = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
@@ -155,31 +155,31 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
-            iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
+            iroh_base::EndpointId::from_bytes(&owner_copy.device_public_key).unwrap(),
         ),
-        user_public_key: governor.user_public_key,
-        device_certificate: governor.clone(),
+        user_public_key: owner_copy.user_public_key,
+        device_certificate: owner_copy.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
-    .transport_hint(&governor_key)
+    .transport_hint(&owner_copy_key)
     .unwrap();
     let mut peer = StatePeer::new(
         WORKSPACE,
-        governor.clone(),
-        vec![governor.clone()],
+        owner_copy.clone(),
+        vec![owner_copy.clone()],
         RevocationList::new(),
         now,
     )
     .unwrap();
     let mut chat = AutoCommit::new();
     chat.put_object(ROOT, "messages", ObjType::Map).unwrap();
-    chat.commit_edit("chat", "messages", &governor.user_public_key);
+    chat.commit_edit("chat", "messages", &owner_copy.user_public_key);
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(
                 WORKSPACE,
-                &governor,
-                std::slice::from_ref(&governor),
+                &owner_copy,
+                std::slice::from_ref(&owner_copy),
             )
             .unwrap(),
             documents: vec![SeedDocument {
@@ -189,20 +189,20 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
                 bytes: chat.save(),
             }],
         },
-        &governor_key,
+        &owner_copy_key,
         now,
     )
     .unwrap();
     peer.select_exact_admissions().unwrap();
     let opening = peer
         .publication_mut()
-        .bootstrap_messages(&governor_key, now)
+        .bootstrap_messages(&owner_copy_key, now)
         .unwrap();
     let mut sync = Vec::new();
     let mut bootstrap = Vec::new();
     for message in opening {
         if matches!(message, NeighbourMsg::AppDocument { .. }) {
-            sync.push((governor.device_public_key, message.clone()));
+            sync.push((owner_copy.device_public_key, message.clone()));
         }
         bootstrap.push(message);
     }
@@ -222,8 +222,14 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
             bootstrap.push(written);
             texts.push(text);
         }
-        let (_, _, redeemed) =
-            redemption(&governor, &governor_key, &hint, (&cert, &key), author, now);
+        let (_, _, redeemed) = redemption(
+            &owner_copy,
+            &owner_copy_key,
+            &hint,
+            (&cert, &key),
+            author,
+            now,
+        );
         assert!(
             peer.governance_mut()
                 .admit_invited_member(&redeemed, &key, now)
@@ -232,8 +238,8 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         bootstrap.push(peer.workspace_message());
     }
     let (verified, complete, redeemed) = redemption(
-        &governor,
-        &governor_key,
+        &owner_copy,
+        &owner_copy_key,
         &hint,
         (&device, &device_key),
         250,
@@ -251,10 +257,10 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         device_cert: device.clone(),
         role: join::Role::Editor,
         workspace_id,
-        host: governor.clone(),
+        host: owner_copy.clone(),
         // The authors' certificates reach the device only through the
         // governance that admits them, after their messages.
-        certified_roster: vec![governor, device.clone()],
+        certified_roster: vec![owner_copy, device.clone()],
         revocations: Vec::new(),
         records: peer.rows(),
         governance_messages: bootstrap
@@ -274,7 +280,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     }
 }
 
-fn install(workspace: BusyWorkspace) -> (tempfile::TempDir, NativeWorkspaceOwner, BusyWorkspace) {
+fn install(workspace: BusyWorkspace) -> (tempfile::TempDir, DeviceWorkspaces, BusyWorkspace) {
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     let pending = owner

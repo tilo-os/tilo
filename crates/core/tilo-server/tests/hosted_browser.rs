@@ -2110,7 +2110,7 @@ async fn named_by_no_roster(fixture: &Fixture, environment_device: &TestDevice) 
                         .iter()
                         .any(|cert| cert.device_public_key == device),
                     peer.governance()
-                        .governed_access(now)
+                        .member_list_access(now)
                         .expect("the member list reads")
                         .member_devices
                         .contains(&device),
@@ -2133,7 +2133,7 @@ async fn named_by_no_roster(fixture: &Fixture, environment_device: &TestDevice) 
                     .any(|cert| cert.device_public_key == device),
                 state
                     .governance()
-                    .governed_access(now)
+                    .member_list_access(now)
                     .expect("the member list reads")
                     .member_devices
                     .contains(&device),
@@ -2946,7 +2946,7 @@ async fn live_session(
 #[tokio::test]
 async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exists() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    // A workspace this host governs: an open placed from its run names the workspace by its id.
+    // A workspace this host serves: an open placed from its run names the workspace by its id.
     let second = fixture
         .server
         .server
@@ -3125,7 +3125,7 @@ async fn listed_by_workspace(fixture: &Fixture, device: [u8; 32]) -> Vec<&'stati
                 .iter()
                 .any(|cert| cert.device_public_key == device),
             peer.governance()
-                .governed_access(now)
+                .member_list_access(now)
                 .expect("the laptop reads the workspace's access")
                 .member_devices
                 .contains(&device),
@@ -3142,7 +3142,7 @@ async fn listed_by_workspace(fixture: &Fixture, device: [u8; 32]) -> Vec<&'stati
         (
             state
                 .governance()
-                .governed_access(now)
+                .member_list_access(now)
                 .expect("the host reads the workspace's access")
                 .member_devices
                 .contains(&device),

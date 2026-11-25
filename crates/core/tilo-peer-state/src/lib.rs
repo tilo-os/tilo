@@ -10,8 +10,6 @@
         reason = "a page's signer answers through a JavaScript promise, so the owner's write future, which awaits it while it holds the page's store, stays on the page's one thread"
     )
 )]
-mod before_own_removal;
-pub use before_own_removal::kept_message;
 mod device_answers;
 mod frames;
 pub mod governance;
@@ -97,18 +95,19 @@ pub use state::Quarantined;
 pub use state::mail_send_lease;
 pub use state::{
     ActionStamp, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY,
-    DelegateInactive, DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow,
-    HELD_COPIES_KEY, HeldCopy, HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY,
-    Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member,
-    MemberId, MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenSealedError,
-    OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError,
-    PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
-    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PlacedDevice, ReceiveOutcome, Reseal,
-    RowError, SCHEDULES_KEY, SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer,
-    TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY,
-    committed_document_revision, decide_with_surfaces, default_surfaces, entry_digest, holder_role,
-    keeping_devices_of, peer_handle, seed_workspace, seed_workspace_at, trigger_mark, unranked,
-    workspace_grants_of, workspace_host_actor, workspace_seed,
+    DelegateInactive, DelegateRow, DelegatedAgent, DocumentRow, Done, HELD_COPIES_KEY, HeldCopy,
+    HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY, Lease, LeaseClaim,
+    MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member, MemberId,
+    MemberList, MemberListAccess, MembershipError, MergedDocument, Missing, NotAdmitted,
+    OpenSealedError, OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture,
+    PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut,
+    PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PlacedDevice,
+    ReceiveOutcome, Reseal, RowError, SCHEDULES_KEY, SealCheckpoint, SeedDocument, SeedState,
+    Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
+    WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision, decide_with_surfaces,
+    default_surfaces, entry_digest, holder_role, keeping_devices_of, peer_handle, seed_workspace,
+    seed_workspace_at, trigger_mark, unranked, workspace_grants_of, workspace_host_actor,
+    workspace_seed,
 };
 pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
 pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
@@ -116,8 +115,8 @@ pub use state::{Captured, changes_since, saved_whole};
 pub use state::{IMPORTED_HISTORY_PREFIX, Imported, ImportedHistory};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;
-mod governed_routes;
 pub mod removals;
+mod route_maps;
 pub mod standing;
 pub use collab_types::DocumentMutation;
 

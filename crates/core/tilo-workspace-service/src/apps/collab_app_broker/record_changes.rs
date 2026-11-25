@@ -64,7 +64,7 @@ pub(super) fn addressed(command: &Command, route: &CrdtRoute) -> CrdtRoute {
 }
 
 impl JoinedChannel {
-    /// Why the route's app may not found its record, where this device governs the workspace:
+    /// Why the route's app may not found its record, where this device hosts the workspace:
     /// a new record is of a kind its installed manifest declares.
     pub(super) fn founding_refusal(&self, route: &CrdtRoute) -> Option<String> {
         let allows = self.state.services.record_founding.as_ref()?;

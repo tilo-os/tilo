@@ -1,4 +1,4 @@
-//! The workspaces a host governs, administered from the page: one call turns
+//! The workspaces a host serves, administered from the page: one call turns
 //! the page's arguments into the shared protocol's own typed request
 //! ([`tilo_server_protocol::workspaces`]) and answers in the shape the page
 //! draws and its apps read as an action's output — times in milliseconds,
@@ -168,8 +168,8 @@ fn entries(reply: WorkspacesReply, wanted: &str) -> Result<Value, JsError> {
     }))
 }
 
-/// The workspaces the host governs.
-fn governed(reply: WorkspacesReply) -> Result<Vec<Workspace>, JsError> {
+/// The workspaces the host serves.
+fn workspace_list(reply: WorkspacesReply) -> Result<Vec<Workspace>, JsError> {
     answered(reply, |reply| match reply {
         WorkspacesReply::Workspaces(list) => Some(list),
         _ => None,
@@ -274,7 +274,7 @@ impl WasmPeer {
         let id = args.workspace.clone();
         let answer = match op {
             "workspaces" => Value::Array(
-                governed(self.workspaces_request(WorkspacesRequest::List).await?)?
+                workspace_list(self.workspaces_request(WorkspacesRequest::List).await?)?
                     .iter()
                     .map(workspace)
                     .collect(),
@@ -304,7 +304,7 @@ impl WasmPeer {
                 Value::String(invitation_text(reply)?)
             }
             "list" => {
-                let list = governed(self.workspaces_request(WorkspacesRequest::List).await?)?;
+                let list = workspace_list(self.workspaces_request(WorkspacesRequest::List).await?)?;
                 match list.iter().find(|held| held.workspace == id) {
                     Some(held) => workspace(held),
                     None => return Err(js_error("the server does not hold this workspace")),
@@ -337,7 +337,7 @@ impl WasmPeer {
             // the workspace as the host lists it once it holds the change.
             "setRole" | "remove" | "ban" | "unban" => {
                 self.govern(&id, args.about_member(op)?).await?;
-                let list = governed(self.workspaces_request(WorkspacesRequest::List).await?)?;
+                let list = workspace_list(self.workspaces_request(WorkspacesRequest::List).await?)?;
                 match list.iter().find(|held| held.workspace == id) {
                     Some(held) => workspace(held),
                     None => return Err(js_error("the server does not hold this workspace")),

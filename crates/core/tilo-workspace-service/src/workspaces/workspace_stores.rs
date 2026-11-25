@@ -149,7 +149,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// [`ActionCallError::UnknownAction`] for a caller the workspace does not
-    /// have, on a device it does not certify, or a workspace not governed
+    /// have, on a device it does not certify, or a workspace not hosted
     /// here; [`ActionCallError::NotPermitted`] for one whose grants do not
     /// reach.
     pub async fn reaching(
@@ -195,12 +195,12 @@ impl Workspaces {
                     && caller.user_public_key() == Some(&certificate.user_public_key)
             })
             .ok_or(ActionCallError::UnknownAction)?;
-        let governed = self
+        let hosted = self
             .held(workspace)
             .await
             .ok_or(ActionCallError::UnknownAction)?;
         let now = tilo_clock::wall();
-        let access = governed
+        let access = hosted
             .lock()
             .await
             .peer()

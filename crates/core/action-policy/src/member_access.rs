@@ -35,7 +35,7 @@ pub struct MemberAccess {
 }
 
 impl MemberAccess {
-    /// `acting` in the workspace `policy` governs.
+    /// `acting` in the workspace `policy` names.
     #[must_use]
     pub fn new(policy: impl Into<std::sync::Arc<WorkspacePolicy>>, acting: Acting) -> Self {
         let policy: std::sync::Arc<WorkspacePolicy> = policy.into();
@@ -184,7 +184,7 @@ impl MemberAccess {
         self
     }
 
-    /// Whether the device this access is reaches the workspace its policy governs: every device
+    /// Whether the device this access is reaches the workspace its policy names: every device
     /// does but one confined to another ([`Self::confined_to`]).
     #[must_use]
     pub fn reaches_its_workspace(&self) -> bool {

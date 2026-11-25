@@ -101,7 +101,7 @@ pub fn requested(action: &str, args: &Value) -> Result<ServerOperation, String> 
 }
 
 /// The controls of this machine, as its daemon answers its `server` actions:
-/// the workspaces it governs, where its state is kept (and its root helper
+/// the workspaces it serves, where its state is kept (and its root helper
 /// reads and answers), and how long that helper is waited for.
 #[derive(Clone)]
 pub struct Controls {
@@ -111,7 +111,7 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// The controls of the server that governs `workspaces` and keeps its
+    /// The controls of the server that serves `workspaces` and keeps its
     /// state at `state_root`.
     #[must_use]
     pub const fn new(workspaces: Workspaces, state_root: PathBuf) -> Self {
@@ -146,7 +146,7 @@ impl Controls {
         .await
     }
 
-    /// The workspaces this server governs, as this machine's person's copies hold them: what a
+    /// The workspaces this server serves, as this machine's person's copies keep them: what a
     /// caller's grant to control the machine is decided from.
     #[must_use]
     pub const fn workspaces(&self) -> &Workspaces {

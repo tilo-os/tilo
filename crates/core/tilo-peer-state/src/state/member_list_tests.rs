@@ -7,7 +7,7 @@ use super::*;
 /// The workspace's row for the person `root`, as its governance lists them.
 fn member(peer: &StatePeer, root: [u8; 32], now: SystemTime) -> Option<Member> {
     peer.governance()
-        .governed_members(now)
+        .member_list(now)
         .unwrap()
         .members
         .into_iter()
@@ -22,7 +22,7 @@ fn the_owner_is_a_member_like_any_other() {
     assert_eq!(listed.role, Some(Role::Owner));
     assert!(!listed.removed);
     assert!(listed.administrator);
-    let access = peer.governance().governed_access(now).unwrap();
+    let access = peer.governance().member_list_access(now).unwrap();
     assert!(
         access.member_user_roots.contains(&owner),
         "the owner holds the workspace by their root"
@@ -50,7 +50,7 @@ fn a_declared_person_is_a_member_before_any_device_joins() {
         listed.name, "Rosa",
         "the declaration's name is how they read"
     );
-    let access = peer.governance().governed_access(now).unwrap();
+    let access = peer.governance().member_list_access(now).unwrap();
     assert!(
         access.member_user_roots.contains(&root),
         "a key of theirs finds the workspace by their root"
@@ -61,7 +61,7 @@ fn a_declared_person_is_a_member_before_any_device_joins() {
 fn a_removed_member_loses_the_list_and_the_access() {
     let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
     let (guest, person) = crate::admission_tests::add_editor(&mut peer, &authority, now);
-    let access = peer.governance().governed_access(now).unwrap();
+    let access = peer.governance().member_list_access(now).unwrap();
     assert!(access.member_user_roots.contains(&person));
     assert!(access.member_devices.contains(&guest.device_public_key));
 
@@ -70,7 +70,7 @@ fn a_removed_member_loses_the_list_and_the_access() {
         .unwrap();
     let listed = member(&peer, person, now).expect("their row stays, so what they did reads");
     assert!(listed.removed);
-    let access = peer.governance().governed_access(now).unwrap();
+    let access = peer.governance().member_list_access(now).unwrap();
     assert!(
         !access.member_user_roots.contains(&person),
         "a removed person holds nothing"
@@ -99,7 +99,7 @@ fn a_members_row_counts_the_permissions_given_beyond_their_role() {
         tilo_action_policy::Grantee::person(hex::encode(owner_cert.user_public_key)),
     );
     peer.governance_mut()
-        .put_governed_grants(&[invite], &authority, now)
+        .put_member_grants(&[invite], &authority, now)
         .unwrap();
     // Being an administrator is their role's to say, not one more permission.
     peer.governance_mut()

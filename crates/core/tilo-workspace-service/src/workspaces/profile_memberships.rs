@@ -1,4 +1,4 @@
-//! The workspaces a device governs, as the broker on it reads who is in them: the people's
+//! The workspaces a device hosts, as the broker on it reads who is in them: the people's
 //! pictures come from the profiles this host keeps, and nothing here copies a member list.
 
 use std::sync::Arc;

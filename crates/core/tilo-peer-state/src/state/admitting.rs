@@ -60,7 +60,7 @@ impl StatePeer {
                 .into());
             }
             if genesis
-                && !self.signed_by_governor(&source)
+                && !self.signed_by_administrator(&source)
                 && !self.may_create_document(
                     &self.permissions(source, now)?,
                     &Route {
@@ -250,10 +250,8 @@ impl StatePeer {
                 return Err(super::MembershipError::Revoked.into());
             }
             super::authority::Authorized::Admit {
-                member,
-                by_governor,
-                ..
-            } => (member, by_governor),
+                member, by_owner, ..
+            } => (member, by_owner),
             super::authority::Authorized::Hold(prerequisite) => {
                 return self.defer(
                     source,
@@ -356,7 +354,7 @@ impl StatePeer {
             Err(collab_types::ValidationError::ReplaySeq { .. }) => {
                 // A sealed history is a log, kept in whatever order its writes
                 // were admitted: a replica catching up from retained frames, or
-                // a governor following its store, can hand a write over after
+                // a host following its store, can hand a write over after
                 // one of a later number. A sealed write this document does not
                 // hold is no replay of what it does, whatever its number, and
                 // leaving it out would put the history a write short of what its
@@ -601,27 +599,27 @@ impl StatePeer {
             );
         }
         // A snapshot one of the workspace owner's devices publishes is the
-        // checkpoint the workspace governs, with its coverage row fixing the
+        // checkpoint the workspace covers, with its coverage row fixing the
         // history it retains. Any other writer publishes the record as it
         // holds it, which is its own change and merges like one: a document
         // is merged into what a device holds, never put in its place, so
         // nothing of the record is lost by taking it.
-        // One checkpoint governs a route: the one its coverage row names,
+        // One checkpoint covers a route: the one its coverage row names,
         // which is the first of the owner's devices to cover it. Another of
         // their devices publishing the record as it holds it carries no row
         // of its own, and is taken in as that device's own change rather
         // than held to a coverage that is not about it.
         let coverage = self
-            .governed_coverage(&route)
+            .checkpoint_coverage(&route)
             .map_err(crate::AdmissionError::malformed)?;
         let covered_by = coverage.as_ref().map(|row| row.author);
         let owner_snapshot = matches!(&mutation, DocumentMutation::Snapshot(_))
             && !local_app
             && !genesis
             && by_owner;
-        let governed_checkpoint =
+        let covering_checkpoint =
             owner_snapshot && covered_by.is_none_or(|author| author == source);
-        if governed_checkpoint {
+        if covering_checkpoint {
             let DocumentMutation::Snapshot(bytes) = &mutation else {
                 return Err(crate::AdmissionError::malformed(
                     "only a whole document is a checkpoint",
@@ -666,8 +664,8 @@ impl StatePeer {
             if coverage.sequence > envelope.seq
                 && self.superseded_checkpoint(&route, &source, envelope.seq)?
             {
-                // A strictly newer covered checkpoint by the same author governs
-                // this route; skip this one unapplied instead of wedging delivery.
+                // A strictly newer covered checkpoint by the same author is
+                // this route's; skip this one unapplied instead of wedging delivery.
                 return Ok(Self::superseded_checkpoint_report());
             }
             let mut snapshot = AutoCommit::new();
@@ -699,7 +697,7 @@ impl StatePeer {
                 || coverage.heads != heads
             {
                 return Err(crate::AdmissionError::malformed(
-                    "checkpoint does not match governed coverage",
+                    "checkpoint does not match its coverage",
                 ));
             }
             if coverage.watermarks.get(&hex::encode(source)).copied() != Some(envelope.seq) {

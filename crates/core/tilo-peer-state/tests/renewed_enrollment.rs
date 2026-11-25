@@ -65,7 +65,7 @@ struct Admitted {
     workspace: String,
     workspace_id: WorkspaceId,
     invitation: String,
-    owner: tilo_peer_state::owner::NativeWorkspaceOwner,
+    owner: tilo_peer_state::owner::DeviceWorkspaces,
     client: WorkspaceJoinClient,
     device_key: SigningKey,
 }

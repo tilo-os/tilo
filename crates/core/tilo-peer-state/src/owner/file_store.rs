@@ -16,11 +16,11 @@
 //! ([`parts_of`], `index.json` in it), so a record's files never share the
 //! name of the file the host keeps them beside.
 use crate::owner::journaled::{INDEX_NAME, JournalParts, Journaled};
-use crate::owner::{Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store};
+use crate::owner::{Change, DeviceWorkspaces, NativeAuthorityStorage, Store};
 use parking_lot::{Mutex, RwLock};
 use std::{
     collections::BTreeSet,
-    io::{ErrorKind, Read as _},
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -108,11 +108,6 @@ pub(crate) fn document_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std
     }
     files.sort();
     Ok(files)
-}
-
-/// The file the writes of `workspace`'s outgoing ownership named `hash` are kept in.
-fn ownership_run_of(parts: &Path, workspace: WorkspaceId, hash: [u8; 32]) -> PathBuf {
-    parts.join(crate::owner::ownership_run_name(workspace, hash))
 }
 
 fn provision(parts: &Path) -> Result<(), String> {
@@ -227,18 +222,15 @@ pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
 }
 
 /// Open the owner whose record is the file at `path`, starting empty.
-pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
+pub fn open_file(path: &Path) -> Result<DeviceWorkspaces, String> {
     open_file_with(path, Arc::new(NoHost))
 }
 
 /// [`open_file`] for a host that follows each publication through `host`.
-pub fn open_file_with(
-    path: &Path,
-    host: Arc<dyn FileHost>,
-) -> Result<NativeWorkspaceOwner, String> {
+pub fn open_file_with(path: &Path, host: Arc<dyn FileHost>) -> Result<DeviceWorkspaces, String> {
     let (mut journaled, authority) = read_resource(path)?;
     let store = Arc::new(FileStore::at(path, host));
-    let owner = NativeWorkspaceOwner::restore(
+    let owner = DeviceWorkspaces::restore(
         Arc::clone(&store) as Arc<dyn Store>,
         authority,
         tilo_clock::wall(),
@@ -249,7 +241,7 @@ pub fn open_file_with(
     *store.journaled.lock() = journaled;
     // A publication that stopped before the index left files the record does
     // not name.
-    store.prune_parts(&owner.0.authority.read());
+    store.prune_parts();
     Ok(owner)
 }
 
@@ -313,23 +305,19 @@ impl FileStore {
         }
     }
 
-    /// Remove the files `record`, the record as published, does not name: those a publication
-    /// stopped before its index wrote, and the kept writes of ownership that moved to its head.
-    fn prune_parts(&self, record: &NativeAuthorityStorage) {
+    /// Remove the files the record as published does not name: those a publication stopped
+    /// before its index wrote.
+    fn prune_parts(&self) {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
         };
-        let mut kept: BTreeSet<PathBuf> = record
-            .ownership_runs()
-            .map(|name| self.parts.join(name))
+        let kept: BTreeSet<PathBuf> = self
+            .journaled
+            .lock()
+            .named()
+            .iter()
+            .map(|name| file_of(&self.parts, name))
             .collect();
-        kept.extend(
-            self.journaled
-                .lock()
-                .named()
-                .iter()
-                .map(|name| file_of(&self.parts, name)),
-        );
         for entry in entries.flatten() {
             let path = entry.path();
             if kept.contains(&path) {
@@ -359,10 +347,9 @@ impl FileStore {
             .lock()
             .publish_indexed(&parts, next, change)?;
         install();
-        // Once the index moved, what it named before and the runs of
-        // ownership that moved to its head are not the record's.
+        // Once the index moved, what it named before is not the record's.
         if indexed {
-            self.prune_parts(next);
+            self.prune_parts();
         }
         Ok(())
     }
@@ -374,35 +361,6 @@ impl Store for FileStore {
     }
     fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
         self.history.read(hash)
-    }
-    fn put_ownership(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
-        if bytes.len() > crate::owner::publication::MAX_RUN_BYTES {
-            return Err("a run of outgoing ownership exceeds its cap".into());
-        }
-        provision(&self.parts)?;
-        let hash = *blake3::hash(bytes).as_bytes();
-        // Named by its contents: what is kept already is the same bytes, and nothing names
-        // new ones before this returns, so it never fences the store.
-        tilo_files::native::atomic::replace(
-            &ownership_run_of(&self.parts, workspace, hash),
-            bytes,
-            tilo_files::native::atomic::Privacy::OwnerOnly,
-        )
-        .map_err(|error| error.into_io_error().to_string())?;
-        Ok(hash)
-    }
-    fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        let file = std::fs::File::open(ownership_run_of(&self.parts, workspace, hash))
-            .map_err(|error| error.to_string())?;
-        let limit = crate::owner::publication::MAX_RUN_BYTES;
-        let mut bytes = Vec::new();
-        file.take((limit as u64).saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        if bytes.len() > limit {
-            return Err("a run of outgoing ownership exceeds its cap".into());
-        }
-        Ok(bytes)
     }
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)

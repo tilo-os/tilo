@@ -92,8 +92,8 @@ pub struct ActivitySnapshot {
     workspace: Option<tilo_desktop_model::WorkspaceId>,
     /// What the document holds the layout as.
     shape: Shape,
-    /// The workspace's own document, where this document is one of its records: what it governs —
-    /// who owns it, who it is shared with, what it grants — is read from there.
+    /// The workspace's own document, where this document is one of its records: what its
+    /// governance says — who owns it, who it is shared with, what it grants — is read from there.
     governance: Option<AutoCommit>,
     /// What reads the signed values in [`Self::governance`].
     reader: Option<std::rc::Rc<dyn GovernanceReader>>,
@@ -188,7 +188,7 @@ impl ActivitySnapshot {
     }
 
     /// Read the workspace's governance from `document` , the workspace's own: this document is one
-    /// of its records, and what the workspace governs is not written there.
+    /// of its records, and what the workspace's governance says is not written there.
     #[must_use]
     pub fn governing(mut self, document: AutoCommit) -> Self {
         self.governance = Some(document);

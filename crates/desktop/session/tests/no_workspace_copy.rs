@@ -66,7 +66,7 @@ fn a_session_without_a_daemon_holds_no_workspace_and_founds_none() {
     );
 
     // It kept no copy of any workspace: neither the service's store nor the owner store a
-    // session that governs a workspace writes.
+    // hosting device writes.
     assert!(
         !state.join("tilo").join("workspace-service").exists(),
         "the session keeps no workspace service"

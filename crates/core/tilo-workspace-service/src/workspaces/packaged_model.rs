@@ -81,8 +81,8 @@ impl Workspaces {
     pub async fn installed_package(&self, workspace: &str, app: &str) -> Option<Vec<u8>> {
         let state = self.workspace(workspace).await.ok()?;
         let installed = {
-            let governed = state.lock().await;
-            governed.peer().governance().app_version(app)?
+            let hosted = state.lock().await;
+            hosted.peer().governance().app_version(app)?
         };
         self.app_file(workspace, installed.release.file.as_deref()?)
     }

@@ -248,7 +248,7 @@ async fn serve_one(
             return Err(why);
         }
     };
-    let governed = workspaces.governs(workspace).await;
+    let hosted = workspaces.hosts_here(workspace).await;
     let source =
         super::WorkspaceSource::new(Arc::clone(&content), &workspace.to_string(), WANT_WITHIN);
     let Backend {
@@ -256,7 +256,7 @@ async fn serve_one(
         reads,
         writer,
         wakes,
-    } = Backend::of(&workspaces, workspace, Some(content), governed);
+    } = Backend::of(&workspaces, workspace, Some(content), hosted);
     offers.daemons.connected(&workspace.to_string(), &lender);
     let name = copy.name.clone();
     let served = Connection {
@@ -699,7 +699,7 @@ fn tell_peer(
         .filter(|chunk| copy.holds(*chunk))
         .collect();
     let pending = u64::try_from(copy.pending()).unwrap_or(u64::MAX);
-    // A workspace this device governs is here from the start, as the copy says in-process too.
+    // A workspace this device hosts is here from the start, as the copy says in-process too.
     let workspace = tilo_fs::tree_sync::TreePeer::holds_workspace(copy).unwrap_or(false);
     let lacks = tilo_fs::tree_sync::TreePeer::host_lacks(copy);
     let now = (holds, pending, workspace, lacks);

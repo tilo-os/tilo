@@ -9,10 +9,10 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, caller, hosted};
 use super::vault_tests::ask_at;
 use crate::workspaces::region::{REGION, Region};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// `action` of the person's formats, asked by `who` as their page asks it.
 async fn ask(
@@ -47,14 +47,14 @@ fn holds_folder(dir: &std::path::Path, name: &str) -> bool {
 #[tokio::test]
 async fn a_persons_formats_are_a_resource_for_them_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, ada) = governor();
+    let (key, ada) = hosting_device();
     let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = server.workspaces();
     // The device that made the root founds the person's own workspace, where their region is.
     crate::workspaces::person_workspace::found(workspaces)
         .await
         .expect("the person's own workspace");
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let bo = admit(workspaces, &workspace, &ada, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
 
@@ -164,14 +164,14 @@ async fn a_persons_formats_are_a_resource_for_them_alone() {
 #[tokio::test]
 async fn the_browsers_zone_is_taken_until_the_person_chooses_one() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, ada) = governor();
+    let (key, ada) = hosting_device();
     let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = server.workspaces();
     // The device that made the root founds the person's own workspace, where their region is.
     crate::workspaces::person_workspace::found(workspaces)
         .await
         .expect("the person's own workspace");
-    let (_, workspace_id, service) = governed(workspaces).await;
+    let (_, workspace_id, service) = hosted(workspaces).await;
     let as_ada = caller(&ada);
     let zone = || async {
         workspaces

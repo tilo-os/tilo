@@ -1,4 +1,4 @@
-//! Versioned governor assertions, published only by a completed native storage barrier.
+//! Versioned host assertions, published only by a completed native storage barrier.
 //! This metadata leaves the frozen neighbour and checkpoint-coverage encodings intact.
 use crate::coverage::{Coverage, route_key};
 use automerge::AutoCommit;
@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 /// Per-route map: a commit rewrites only the routes it changed.
 pub const FIELD_V2: &str = "document_durability_receipts_v2";
-pub(crate) const LAYOUT: crate::governed_routes::Layout =
-    crate::governed_routes::Layout { routes: FIELD_V2 };
+pub(crate) const LAYOUT: crate::route_maps::Layout = crate::route_maps::Layout { routes: FIELD_V2 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DurableReceipt {
     pub version: u32,
@@ -45,7 +44,7 @@ impl DurableReceipt {
     }
 }
 /// One route value. A receipt for exactly the route's current checkpoint
-/// coverage (the normal case: the governor issues it right after publishing
+/// coverage (the normal case: the host issues it right after publishing
 /// that coverage) stores only its generation; the receipt, including its
 /// derived id, is rebuilt from the coverage. Any other receipt is `Full`.
 /// Coverage writes pin a `Current` receipt in full before changing the
@@ -80,7 +79,7 @@ fn decode_route(
     bytes: &[u8],
     coverage: &BTreeMap<String, Coverage>,
 ) -> Result<DurableReceipt, String> {
-    let Some(value) = crate::governed_routes::exact::<RouteValue>(bytes) else {
+    let Some(value) = crate::route_maps::exact::<RouteValue>(bytes) else {
         return Err(format!(
             "invalid durable receipts: {}",
             postcard::from_bytes::<RouteValue>(bytes)
@@ -100,7 +99,7 @@ fn decode_route(
     }
 }
 fn route_values(doc: &AutoCommit) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    Ok(crate::governed_routes::route_bytes(doc, LAYOUT)?.unwrap_or_default())
+    Ok(crate::route_maps::route_bytes(doc, LAYOUT)?.unwrap_or_default())
 }
 fn rows(doc: &AutoCommit) -> Result<BTreeMap<String, DurableReceipt>, String> {
     let mut rows = BTreeMap::new();
@@ -152,7 +151,7 @@ pub(crate) fn encode_all(
 )]
 pub fn put(doc: &mut AutoCommit, receipts: BTreeMap<String, DurableReceipt>) -> Result<(), String> {
     let next = encode_all(&receipts, &crate::coverage::entries(doc)?)?;
-    crate::governed_routes::write_raw(doc, &[(LAYOUT, &next)])?;
+    crate::route_maps::write_raw(doc, &[(LAYOUT, &next)])?;
     Ok(())
 }
 /// Before coverage routes change to `next_coverage` (raw route values), the
@@ -172,7 +171,7 @@ pub(crate) fn pin_before_coverage_change(
     let mut next = BTreeMap::new();
     for (key, bytes) in routes {
         let current = matches!(
-            crate::governed_routes::exact::<RouteValue>(&bytes),
+            crate::route_maps::exact::<RouteValue>(&bytes),
             Some(RouteValue::Current { .. })
         );
         if current && old_raw.get(&key) != next_coverage.get(&key) {
@@ -401,8 +400,8 @@ mod tests {
             watermarks: BTreeMap::from([(hex::encode([1u8; 32]), sequence)]),
         }
     }
-    fn raw(doc: &AutoCommit, layout: crate::governed_routes::Layout) -> Vec<u8> {
-        crate::governed_routes::route_bytes(doc, layout)
+    fn raw(doc: &AutoCommit, layout: crate::route_maps::Layout) -> Vec<u8> {
+        crate::route_maps::route_bytes(doc, layout)
             .unwrap()
             .unwrap()
             .remove(&route_key("app", "record"))

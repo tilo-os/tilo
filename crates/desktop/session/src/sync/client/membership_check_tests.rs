@@ -1,7 +1,7 @@
 //! What an app writes on one device reaches the workspace's other devices: the broker commits the
 //! app's effect receipt into the daemon's copy of the workspace here, which syncs it with the device
 //! hosting the workspace, which hands it to every other member. Each device's daemon on this
-//! machine's loopback joins one workspace governed by a host on this machine whose certificate takes
+//! machine's loopback joins one workspace hosted by a host on this machine whose certificate takes
 //! part in no channels: the workspace's records are documents the owner commits.
 
 #![allow(
@@ -90,7 +90,7 @@ impl Device {
         self.join_to(host, host.workspace(), request)
     }
 
-    /// Join `workspace`, one `host` governs, with an invitation for this person, and wait until the
+    /// Join `workspace`, one `host` serves, with an invitation for this person, and wait until the
     /// workspace is held here.
     fn join_to(&self, host: &test_server::Host, workspace: &str, request: u8) -> WorkspaceId {
         let invitation = host.invitation_to(workspace, self.person(), request);

@@ -6,9 +6,9 @@
 //! decided by the workspace the record is in. A caller inside this device that the workspace did
 //! not admit as a device reads there as [`AppBrokerState::reading_caller`] names it: the person
 //! signed in here, an app or an agent acting for them, never one a person's device handed its
-//! session to. Before anyone signs in, the device itself reads the records of a workspace its
-//! person governs, as the person its own certificate ([`CertificateAuthority::own_device`]) names
-//! and the workspace's signed member list makes owner or administrator.
+//! session to. Before anyone signs in, the device itself reads the records of a workspace whose
+//! signed member list names its person owner or administrator, as the person its own certificate
+//! ([`CertificateAuthority::own_device`]) names.
 //!
 //! [`CertificateAuthority::own_device`]: crate::apps::certificate_authority::CertificateAuthority::own_device
 
@@ -117,16 +117,16 @@ impl AppBrokerState {
             });
         };
         let device = super::person_id_for_root(certificate.user_public_key);
-        // The device reads as its own person only in a workspace that person governs, as the
-        // workspace's signed member list names its owner and administrators.
-        let governs = membership
+        // The device reads as its own person only where the workspace's signed member list
+        // names that person its owner or an administrator.
+        let administers = membership
             .decide_in_workspace(workspace, |held| {
                 held.is_some_and(|held| {
                     held.policy.is_owner(&device) || held.policy.is_administrator(&device)
                 })
             })
             .map_err(|reason| ActionCallError::Unavailable { reason })?;
-        if !governs {
+        if !administers {
             return Err(refused());
         }
         // Nobody is signed in here: a caller naming a person names this device's own.

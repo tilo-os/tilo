@@ -218,7 +218,7 @@ pub type ReadFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 /// them: the store a session opens its workspaces in is asked when a request
 /// names one, so who may act there is what holds at that moment rather than as
 /// it was when the action service started.
-impl Workspaces for crate::owner::NativeWorkspaceOwner {
+impl Workspaces for crate::owner::DeviceWorkspaces {
     fn read<'a>(
         &'a self,
         workspace: &'a str,
@@ -1044,7 +1044,7 @@ impl ActionService {
                             && visitor_may(peer, &action.workspace, acting, &action.message);
                         // An agent's key the workspace's roster lists and has not retired: the
                         // delegation its person's root signed for this device in this workspace
-                        // ([`crate::PeerGovernance::governed_agent`]) is what the caller built
+                        // ([`crate::PeerGovernance::listed_delegate`]) is what the caller built
                         // below is bound to (`Caller::on_roster`), so the certificate's
                         // delegation reaches it inside the workspace's own grants.
                         let roster = authority
@@ -1054,7 +1054,7 @@ impl ActionService {
                             .zip(certificate.as_ref())
                             .and_then(|(_, certificate)| {
                                 let (_, delegation, withdrawn) =
-                                    peer.governance().governed_agent(&acting)?;
+                                    peer.governance().listed_delegate(&acting)?;
                                 (withdrawn.is_none()
                                     && delegation.user_public_key == certificate.user_public_key)
                                     .then(|| {
@@ -1788,7 +1788,7 @@ fn visitor_may(
         RemoteActionMessage::Observe { .. } => return true,
         _ => return false,
     };
-    let Ok(policy) = peer.governance().governed_policy() else {
+    let Ok(policy) = peer.governance().member_policy() else {
         return false;
     };
     let node = tilo_action_policy::TreePath::workspace(workspace)

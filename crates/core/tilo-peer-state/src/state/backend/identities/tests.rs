@@ -24,11 +24,11 @@ fn compare_case(
         now,
     );
     let mut oracle = peer.clone();
-    let imported = oracle.import_governed_rows(&fresh, now);
+    let imported = oracle.import_device_rows(&fresh, now);
     if let Some(held) = peer.core.workspace_doc.as_ref() {
         let _ = (held.identities(), held.identity_certificates());
         let mut following = peer.clone();
-        let got = following.import_governed_rows(&held.followed_by(workspace.clone()), now);
+        let got = following.import_device_rows(&held.followed_by(workspace.clone()), now);
         assert_eq!(got, imported);
         assert_eq!(following.certificates(), oracle.certificates());
         assert_eq!(following.revocations(), oracle.revocations());
@@ -36,7 +36,7 @@ fn compare_case(
     expected
 }
 
-fn set_identity(workspace: &mut AutoCommit, id: &str, row: &GovernedIdentity) {
+fn set_identity(workspace: &mut AutoCommit, id: &str, row: &DeviceRow) {
     let (_, object) = workspace
         .get(automerge::ROOT, "peer_identities_v1")
         .unwrap()
@@ -44,8 +44,8 @@ fn set_identity(workspace: &mut AutoCommit, id: &str, row: &GovernedIdentity) {
     workspace.put(object, id, row.encode().unwrap()).unwrap();
     workspace.commit();
 }
-fn row(cert: DeviceCert) -> GovernedIdentity {
-    GovernedIdentity {
+fn row(cert: DeviceCert) -> DeviceRow {
+    DeviceRow {
         device_cert: cert,
         revocations: vec![],
         admission: None,
@@ -58,9 +58,9 @@ fn row(cert: DeviceCert) -> GovernedIdentity {
 }
 
 tilo_test_env::scenario! {
-    fn governed_import_keeps_what_the_signed_workspace_proves;
+    fn identity_import_keeps_what_the_signed_workspace_proves;
 
-    phase governed_import_preserves_real_signed_identity_admission_and_certificate_failures;
+    phase identity_import_preserves_real_signed_identity_admission_and_certificate_failures;
     {
         let (peer, _, _, member, now) = crate::admission_tests::seeded();
         let original = peer.admitted_workspace().unwrap();
@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase governed_import_keeps_a_minted_grants_issuer;
+    phase identity_import_keeps_a_minted_grants_issuer;
     {
         let (peer, _, _, _, now) = crate::admission_tests::seeded();
         let now_ns = now_ns(now);
@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
         compare_case(&peer, &workspace, now).unwrap();
         let mut imported = peer;
         imported
-            .import_governed_rows(&workspace.into(), now)
+            .import_device_rows(&workspace.into(), now)
             .unwrap();
         assert!(
             imported.certificates().contains(&minted),
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase governed_import_preserves_all_receipt_shapes_and_error_order;
+    phase identity_import_preserves_all_receipt_shapes_and_error_order;
     {
         let (peer, _, _, member, now) = crate::admission_tests::seeded();
         let mut workspace = peer.admitted_workspace().unwrap().clone();
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase governed_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_signature;
+    phase identity_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_signature;
     {
         let (peer, _, _, member, now) = crate::admission_tests::seeded();
         let mut identity = row(member.clone());

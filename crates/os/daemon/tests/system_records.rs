@@ -25,7 +25,9 @@ use tilo_actions::remote::{
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 use tilo_workspace_service::service::local_caller;
-use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, hosting_device, test_host_holding,
+};
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
 
 tilo_automerge_isolate::test_worker!();
@@ -97,7 +99,7 @@ async fn a_second_agent_is_made_in_the_record_the_first_founded() {
     let content = tempfile::tempdir().unwrap();
     tilo_workspace_service::surfaces::decide_receipt(&content.path().join("surfaces"));
     let state = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
+    let (key, cert) = hosting_device();
     let host = test_host_holding(
         state.path(),
         &key,

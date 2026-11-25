@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
 
     phase delivery_admission_exact_retry_rechecks_signature_route_and_current_revocation;
     {
-        let (mut receiver, governor, key, _, now) = seeded();
+        let (mut receiver, owner_copy, key, _, now) = seeded();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now, "A");
         let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
@@ -241,7 +241,7 @@ tilo_test_env::scenario! {
         tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
         receiver
             .governance_mut()
-            .publish_governed_revocations(&[revocation], &governor, now)
+            .publish_member_revocations(&[revocation], &owner_copy, now)
             .unwrap();
         let later = now + Duration::from_secs(301);
         // The write was taken before its device was removed, so the cut of

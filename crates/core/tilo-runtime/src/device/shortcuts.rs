@@ -162,7 +162,7 @@ async fn store_shortcut(
     };
     let command = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(change));
     // A workspace another device serves takes the change in this device's member copy and sends
-    // it there; the workspace founded here is committed as its governor.
+    // it there; the workspace founded here is the one this device hosts, so it commits here.
     held.commit_own_change(&request.workspace, command, None)
         .await
 }

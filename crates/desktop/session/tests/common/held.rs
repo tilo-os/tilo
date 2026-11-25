@@ -1,4 +1,4 @@
-//! A workspace this computer holds and governs, and the identities that hold it: the fixtures the
+//! A workspace this computer hosts, and the identities it runs as: the fixtures the
 //! tests of a hosted workspace start from.
 
 use std::os::unix::fs::PermissionsExt as _;
@@ -142,8 +142,8 @@ pub fn daemon_service_root(state: &Path) -> PathBuf {
         .join("service")
 }
 
-/// This computer's copy of the workspace `workspace` under `state`, held as `cert`'s device in a
-/// workspace the same device governs: the state the daemon started on this directory finds
+/// This computer's copy of the workspace `workspace` under `state`, as `cert`'s device in a
+/// workspace the same device hosts: the state the daemon started on this directory finds
 /// waiting for it.
 pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key: &SigningKey) {
     workspace_founded_on_this_device_then(
@@ -157,7 +157,7 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
 }
 
 /// Found `workspace` under `name` in the workspace service this device's daemon serves from
-/// `state`, as the daemon founds a workspace its person makes: the service holds and governs it,
+/// `state`, as the daemon founds a workspace its person makes: the service hosts it,
 /// this device's person is its owner, and this device is enrolled in it. What a session asks of
 /// the workspace's governance — an invitation into it above all — is answered by that service
 /// through the daemon from then on. `then` runs on the service once the workspace is founded

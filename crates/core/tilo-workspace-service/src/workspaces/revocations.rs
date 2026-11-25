@@ -13,7 +13,7 @@
 //! every handshake, session and administration entry reads, so the key is
 //! refused everywhere at once — a device of the person's, and the stand-in
 //! approver this holder keeps for them, which no workspace lists because a
-//! stand-in is no device. Every workspace the holder governs also writes the
+//! stand-in is no device. Every workspace the device hosts also writes the
 //! entries it may carry into its governance, each with its cut
 //! ([`tilo_peer_state::removals`]): the device leaves the workspace's access
 //! and keys, every member's replica refuses what it signs from there on, and
@@ -22,7 +22,7 @@
 use tilo_lock::RwLockRecover as _;
 use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
-use super::{GovernedWorkspace, Workspaces};
+use super::{HostedWorkspace, Workspaces};
 
 impl Workspaces {
     /// Take in the root-signed `entries` a device announced. An entry whose
@@ -197,11 +197,11 @@ impl Workspaces {
     /// server's live list) it may carry and does not yet: those its
     /// authority's root signed, and those of a root the workspace certifies the
     /// revoked device to. A workspace never carries the revocation of its own
-    /// governing device, which would leave it without a writer, nor one
+    /// hosting device, which would leave it without a writer, nor one
     /// naming a device it certifies to another root.
     pub(super) async fn carry_revocations(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         entries: &[RevocationEntry],
     ) -> Result<(), String> {
         let key = &self.inner.host.key;
@@ -233,7 +233,7 @@ impl Workspaces {
             .cloned()
             .collect::<Vec<_>>();
         // A removal the governance carries without its cut, one recorded
-        // before cuts were kept, is completed here by the device that governs
+        // before cuts were kept, is completed here by the device that hosts
         // the workspace: until then nobody decides what that device wrote.
         if carry.is_empty() && !workspace.peer().governance().lacks_removal_cuts() {
             return Ok(());
@@ -251,7 +251,7 @@ impl Workspaces {
             |_, candidate| {
                 let carried = candidate
                     .governance_mut()
-                    .publish_governed_revocations(&carry, key, now)?;
+                    .publish_member_revocations(&carry, key, now)?;
                 Ok((carried, carried))
             },
             |record, _| Ok(record.collaboration.clone()),
@@ -280,7 +280,7 @@ mod tests {
         sign_revocation_entry,
     };
 
-    use super::super::fixtures::{governor, test_host};
+    use super::super::fixtures::{hosting_device, test_host};
 
     fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
         let mut entry = RevocationEntry {
@@ -317,11 +317,11 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
-        // The person's root, whose key the governor's certificate names: a revocation is the
+        // The person's root, whose key the host's certificate names: a revocation is the
         // root's to sign, not a device's.
         let root = SigningKey::from_bytes(&[1; 32]);
         assert_eq!(root.verifying_key().to_bytes(), cert.user_public_key);
@@ -387,7 +387,7 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
@@ -464,7 +464,7 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
@@ -523,7 +523,7 @@ mod tests {
     #[tokio::test]
     async fn every_revocation_of_a_served_root_is_kept_across_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();

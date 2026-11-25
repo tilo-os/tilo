@@ -1,4 +1,4 @@
-//! A member's resource writes reach the governor's store over the path every member write
+//! A member's resource writes reach the host's store over the path every member write
 //! takes, are queryable there, and are read back from the store's snapshots after a restart.
 //! The service here has the language mounted, as the daemon's program mounts it: the types and
 //! verbs of the apps these records are of are declared on it, as a device that runs them declares
@@ -25,7 +25,7 @@ use tilo_workspace_service::workspaces::fixtures::ContentKeys;
 use tilo_actions::remote::CatalogueQuery;
 use tilo_workspace_service::apps::services::ResourceRequestContext;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, TestHost, declare_app, governor_with, guest_device, invitation_text,
+    TestGroupKeys, TestHost, declare_app, guest_device, hosting_device_with, invitation_text,
     member_device,
 };
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
@@ -303,7 +303,7 @@ impl Writer {
     }
 }
 
-/// The title of issue `id` as the governor's store holds it.
+/// The title of issue `id` as the host's store holds it.
 async fn title(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Value> {
     workspaces
         .store_held(workspace, KIND, id)
@@ -520,7 +520,7 @@ async fn assert_scribed_as_agent(
 async fn a_device_writes_its_resources_through_the_service_and_reads_them_back() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     // The service acts as this device, as a desktop's does: what it writes is the device's.
@@ -712,7 +712,7 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     const REQUEST: &str = "entry.request";
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     declare_app(&server, ENTRY, ENTRY_SURFACE.as_bytes());
     let workspaces = server.workspaces().clone();
@@ -850,10 +850,10 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
 }
 
 #[tokio::test]
-async fn a_members_resource_writes_are_queryable_on_the_governor_and_after_a_restart() {
+async fn a_members_resource_writes_are_queryable_on_the_host_and_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Tasks").await.unwrap();
@@ -924,7 +924,7 @@ async fn a_members_resource_writes_are_queryable_on_the_governor_and_after_a_res
 #[tokio::test]
 async fn a_write_by_a_device_the_workspace_never_admitted_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::default()).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;
@@ -946,7 +946,7 @@ async fn a_write_by_a_device_the_workspace_never_admitted_changes_nothing() {
 async fn an_open_query_is_sent_each_page_a_write_makes_different() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -1032,7 +1032,7 @@ async fn an_open_query_is_sent_each_page_a_write_makes_different() {
 async fn a_members_store_document_reads_back_the_content_its_cells_name() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Photos").await.unwrap();
@@ -1060,7 +1060,7 @@ async fn a_members_store_document_reads_back_the_content_its_cells_name() {
     server.shutdown().await;
 }
 
-/// Simulate shutdown after indexing a signed checkpoint but before the governor
+/// Simulate shutdown after indexing a signed checkpoint but before the host
 /// followed it.
 async fn index_retained_checkpoint(
     workspaces: &Workspaces,
@@ -1214,7 +1214,7 @@ async fn whole_writes(
 async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -1400,7 +1400,8 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
     let owner_dir = tempfile::tempdir().unwrap();
     let member_dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (owner_key, owner_cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (owner_key, owner_cert) =
+        hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let owner = test_host_holding(owner_dir.path(), &owner_key, &owner_cert, keys.clone()).await;
     let created = owner.workspaces().create("Tasks").await.unwrap();
     let workspace = created.workspace;
@@ -1488,7 +1489,8 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
     let owner_dir = tempfile::tempdir().unwrap();
     let member_dir = tempfile::tempdir().unwrap();
     let owner_keys = Arc::new(TestGroupKeys::default());
-    let (owner_key, owner_cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (owner_key, owner_cert) =
+        hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let owner = test_host_holding(
         owner_dir.path(),
         &owner_key,
@@ -1652,7 +1654,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
 async fn retained_store_checkpoint_restores_signed_history_on_open() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -1732,7 +1734,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
 async fn a_write_this_device_cannot_send_is_not_read_back() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -1838,7 +1840,7 @@ async fn workspace_of_tasks(
     // caller keeps it.
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, keys).await;
     let workspaces = server.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
@@ -2036,7 +2038,7 @@ async fn checkpoints(workspaces: &Workspaces, workspace: &str, document: &str) -
 async fn a_viewers_checkpoint_is_refused_by_the_workspaces_write_check() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;

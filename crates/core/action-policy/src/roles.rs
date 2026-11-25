@@ -443,7 +443,7 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 ///
 /// An administrator stays a member with a role, an Editor as the workspace's
 /// governance writes them, for what they do with the workspace's content.
-/// Governing it, they are the owner's equal in all but the owner's place:
+/// Administering it, they are the owner's equal in all but the owner's place:
 /// they hand out every role a workspace hands out, and a membership action
 /// reaches every member who is not an administrator; other administrators
 /// are the owner's to unmake or remove
@@ -572,8 +572,8 @@ pub fn telling_nodes(workspace: &str) -> [TreePath; 3] {
 /// The role the workspace's answers for [`telling_nodes`] describe. A Commenter
 /// writes nowhere they ask, so reads as a Viewer.
 #[must_use]
-pub fn role_answered([writes, moderates, governs]: [bool; 3]) -> Role {
-    if governs {
+pub fn role_answered([writes, moderates, administers]: [bool; 3]) -> Role {
+    if administers {
         Role::Owner
     } else if moderates {
         Role::Moderator
@@ -990,7 +990,7 @@ pub fn role_preset(role: Role, workspace: &str) -> Preset {
         Role::Moderator => {
             "Can do what an Editor can, moderate other people's content, and remove, ban or restrict members."
         }
-        Role::Owner => "Can do everything, including governing the workspace.",
+        Role::Owner => "Can do everything, including the workspace's members and settings.",
     };
     Preset::new(role.name(), description, role_rules(role, workspace))
 }
@@ -1181,9 +1181,9 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 /// An agent acts inside a turn ([`crate::turn::Turn`]), for the person whose
 /// message caused it, bounded by its own person: it never holds more than their role,
 /// and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the
-/// server governing a workspace, every member admitting its ops, the desktop
+/// server hosting a workspace, every member admitting its ops, the desktop
 /// broker hosting a workspace itself — asks [`role`](agent_policy::role) rather
-/// than deciding on its own. A workspace's governor admits only its own
+/// than deciding on its own. A host admits only its own
 /// person's agents.
 ///
 /// Two questions about agents are still open. Until they are decided each
@@ -1200,7 +1200,7 @@ pub mod agent_policy {
     use crate::Role;
 
     /// The most an agent ever acts as, whoever it acts for. An agent never
-    /// governs a workspace.
+    /// acts as a workspace's owner.
     pub const ROLE_CAP: Role = Role::Editor;
 
     /// Whether withdrawing an agent from a workspace is final for its device

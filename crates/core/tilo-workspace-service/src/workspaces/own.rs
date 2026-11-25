@@ -1,6 +1,6 @@
 //! Workspaces of a person's own on this host: made whenever they ask
-//! ([`ServiceOperation::CreateOwnWorkspace`]), any number of them, governed here
-//! like every workspace this server governs, with the person as each one's
+//! ([`ServiceOperation::CreateOwnWorkspace`]), any number of them, hosted here
+//! like every workspace this server hosts, with the person as each one's
 //! administrator.
 //!
 //! Every host that serves persistently keeps them, with what each person may
@@ -18,7 +18,7 @@
 //! Which workspaces are whose is kept beside the workspaces' records, in
 //! `own-workspaces.json`, so asking again after a restart answers the same
 //! ones, and a person's listing is found by their ids rather than by reading
-//! every workspace this host governs. What each owner labelled theirs with
+//! every workspace it hosts. What each owner labelled theirs with
 //! (`customer_id` → `cus_8121`, [`WorkspaceLabels`]), and whether they let it
 //! run commands unattended ([`Workspaces::runs_unattended`]), is a record of
 //! the workspace that only its owner reads and changes
@@ -449,8 +449,8 @@ impl Workspaces {
     }
 
     /// Whether this host keeps workspaces for the people it lets in
-    /// ([`Self::offer_own_workspaces`]): theirs, and the ones another host
-    /// governs that their owner has it hold as well.
+    /// ([`Self::offer_own_workspaces`]): theirs, and the ones hosted elsewhere
+    /// that their owner has this host keep as well.
     #[must_use]
     pub fn keeps_workspaces_for_people(&self) -> bool {
         self.own().is_some()
@@ -496,7 +496,7 @@ impl Workspaces {
     }
 
     /// Whether this host keeps for `person`, an owner of it, a workspace
-    /// another host governs: as it keeps workspaces of their own here, only
+    /// hosted elsewhere: as it keeps workspaces of their own here, only
     /// for someone it let in ([`Self::let_in`]) whose workspaces here have
     /// capacity left. Why not, in plain words, when it does not.
     ///
@@ -627,7 +627,7 @@ impl Workspaces {
 
     /// Whether this host keeps workspaces of people's own: one that does
     /// says whose each of them is ([`Self::owns`]); one that does not
-    /// governs its workspaces for its own person.
+    /// hosts its workspaces for its own person.
     #[must_use]
     pub fn keeps_own_workspaces(&self) -> bool {
         self.own().is_some()

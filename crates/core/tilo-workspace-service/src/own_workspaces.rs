@@ -170,7 +170,7 @@ fn answer<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::tests::{governor, test_host};
+    use crate::workspaces::tests::{hosting_device, test_host};
     use tilo_actions::remote::ActionProvider as _;
 
     /// An agent another of the person's devices handed its session to asks this device's
@@ -178,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn an_agents_call_this_device_does_not_offer_is_refused_as_unknown() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let created = server.workspaces().create("Home").await.unwrap();
         let handed = local_caller(&cert)
@@ -209,7 +209,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_asks_its_workspaces_governance_on_the_device_action_service() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
+        let (key, cert) = hosting_device();
         let server = test_host(dir.path(), &key, &cert).await;
         let created = server.workspaces().create("Home").await.unwrap();
         let mut arguments = Map::new();

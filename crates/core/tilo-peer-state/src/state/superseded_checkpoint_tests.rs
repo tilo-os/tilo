@@ -1,4 +1,4 @@
-//! A superseded checkpoint (governed coverage strictly newer, same route and
+//! A superseded checkpoint (a coverage row strictly newer, same route and
 //! author) is skipped unapplied; every other coverage mismatch keeps failing.
 use super::*;
 use crate::{InputDisposition, MissingPrerequisite};
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
             record: "tab:1".into(),
         };
         let source = key.verifying_key().to_bytes();
-        // Coverage N governs; a snapshot at N+1 is ahead of coverage, not superseded.
+        // Coverage N is authoritative; a snapshot at N+1 is ahead of coverage, not superseded.
         assert!(
             !receiver
                 .superseded_checkpoint(&route, &source, seq(&ahead))
@@ -234,7 +234,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_checkpoint_of_another_of_the_owners_devices_is_merged_not_refused;
-    // One checkpoint governs a route: the one its coverage row names. Another of
+    // One checkpoint covers a route: the one its coverage row names. Another of
     // the owner's devices publishing the record as it holds it is that device's
     // own change — taken in and merged, with no coverage row of its own — never
     // refused against a coverage that is not about it.
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
         let mut second = first.clone();
         let theirs = snapshot(&mut second, &second_key, later, "second");
         assert_eq!(
-            second.governed_coverage(&route).unwrap().unwrap().author,
+            second.checkpoint_coverage(&route).unwrap().unwrap().author,
             first_key.verifying_key().to_bytes(),
             "another of the owner's devices wrote coverage of its own"
         );
@@ -263,13 +263,13 @@ tilo_test_env::scenario! {
         receiver
             .receive_from_report(origin(&first_key), first.workspace_message(), later)
             .unwrap();
-        let governed = receiver
+        let hosted = receiver
             .receive_from_report(origin(&first_key), covered, later)
             .unwrap();
         assert!(
-            matches!(governed.primary(), InputDisposition::Accepted(_)),
+            matches!(hosted.primary(), InputDisposition::Accepted(_)),
             "the covered checkpoint was not admitted: {:?}",
-            governed.primary()
+            hosted.primary()
         );
 
         receiver
@@ -284,7 +284,7 @@ tilo_test_env::scenario! {
             merged.primary()
         );
         assert_eq!(
-            receiver.governed_coverage(&route).unwrap().unwrap().author,
+            receiver.checkpoint_coverage(&route).unwrap().unwrap().author,
             first_key.verifying_key().to_bytes(),
             "the route's coverage changed hands"
         );

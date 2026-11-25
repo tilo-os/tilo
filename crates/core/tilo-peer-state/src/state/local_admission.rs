@@ -267,7 +267,7 @@ impl StatePeer {
             // create one: a peer's copy of the same start is held or merged as the nothing it
             // is, but its own write would be answered as published while no peer ever sees it.
             if matches!(&mutation, Some(collab_types::DocumentMutation::Snapshot(bytes)) if super::empty_genesis(bytes))
-                && !self.signed_by_governor(author.as_bytes())
+                && !self.signed_by_administrator(author.as_bytes())
                 && !self.may_create_document(
                     &self
                         .membership(*author.as_bytes(), now)

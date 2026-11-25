@@ -38,7 +38,7 @@ const SCOUT: &str = "scout";
 /// The workspace of a person's own device, with Chat and their assistant `Scout` on it: what the
 /// tests below answer a turn in.
 async fn scout_on_a_device(scratch: &std::path::Path) -> (TestHost, String, String) {
-    let (key, cert) = crate::workspaces::fixtures::governor();
+    let (key, cert) = crate::workspaces::fixtures::hosting_device();
     // The native apps name their surfaces as the host first runs them.
     crate::surfaces::decide_receipt(&scratch.join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch, &key, &cert).await;

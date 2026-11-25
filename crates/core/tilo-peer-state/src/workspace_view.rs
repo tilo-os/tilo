@@ -199,7 +199,7 @@ pub struct WorkspaceReading {
     pub id: String,
     /// The workspace's one name, as its membership records it.
     pub name: Option<String>,
-    /// Who governs it, as the person id its membership names.
+    /// Who owns it, as the person id its membership names.
     pub owner: Option<String>,
     /// The devices its roster admits, by key.
     pub roster_devices: Vec<[u8; 32]>,

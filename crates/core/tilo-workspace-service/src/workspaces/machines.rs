@@ -16,7 +16,7 @@ use tilo_lock::RwLockRecover as _;
 
 use super::Workspaces;
 
-/// What runs the Linux machines of the workspaces this host governs, as a
+/// What runs the Linux machines of the workspaces this host serves, as a
 /// branch takes its source's and a deletion takes the workspace's.
 pub trait WorkspaceMachines: Send + Sync {
     /// Make `branch`'s machine a copy of `source`'s as it is now: `true` once

@@ -6,7 +6,6 @@
 //!
 //! [`crate::enroll`] redeems an invitation with the device that issued it, and
 //! [`session`] holds the link to the device the workspace is kept on.
-mod answers;
 mod compact;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_store;
@@ -19,7 +18,6 @@ mod history_keys;
 mod journal;
 mod journaled;
 pub(crate) mod limits;
-mod publication;
 pub mod renewal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod session;
@@ -44,7 +42,6 @@ pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_fi
 pub use history_content::HistoryContent;
 pub use history_keys::SealedHistoryKeys;
 pub use journaled::{JournalParts, Journaled};
-pub use publication::ownership_run_name;
 pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
@@ -116,16 +113,6 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
         Err("native owner history content is unavailable".into())
     }
-    /// Durably keep `bytes`, a run of `workspace`'s outgoing ownership waiting behind its head,
-    /// beside the record, and answer the hash it is named by. The store keeps it while the
-    /// record names it.
-    fn put_ownership(&self, _workspace: WorkspaceId, _bytes: &[u8]) -> Result<[u8; 32], String> {
-        Err("native outgoing ownership runs are unavailable".into())
-    }
-    /// Read a run of ownership [`Self::put_ownership`] kept.
-    fn read_ownership(&self, _workspace: WorkspaceId, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        Err("native outgoing ownership runs are unavailable".into())
-    }
     /// False once a publication may or may not have reached disk; the owner
     /// then stays fenced until it is reopened from what the disk holds.
     fn healthy(&self) -> bool;
@@ -154,7 +141,7 @@ pub enum Change {
     /// This device no longer holds `workspace`: its replica and any enrollment
     /// into it are gone from the record, and the host takes the workspace's
     /// shared desktop off in the same publication. Nobody else's data goes: the
-    /// workspace lives on with its governor and members.
+    /// workspace lives on with its host and members.
     Released { workspace: WorkspaceId },
 }
 
@@ -205,7 +192,7 @@ impl From<crate::AdmissionError> for InstallError {
 }
 
 #[derive(Clone)]
-pub struct NativeWorkspaceOwner(pub(crate) Arc<SharedOwner>);
+pub struct DeviceWorkspaces(pub(crate) Arc<SharedOwner>);
 /// Does not keep the owner alive; a host's writer holds one to fence it.
 #[derive(Clone)]
 pub struct WeakNativeWorkspaceOwner(Weak<SharedOwner>);
@@ -217,7 +204,7 @@ pub(crate) struct SharedOwner {
     pub(crate) current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// The channel keys that keep this device's sealed record histories within
-    /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
+    /// their bound ([`DeviceWorkspaces::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
     /// This device's frame changes waiting for the publication that makes them durable.
     pub(crate) due: Mutex<write::DueFrames>,
@@ -525,11 +512,11 @@ impl Drop for SharedOwner {
 }
 impl WeakNativeWorkspaceOwner {
     #[must_use]
-    pub fn upgrade(&self) -> Option<NativeWorkspaceOwner> {
-        self.0.upgrade().map(NativeWorkspaceOwner)
+    pub fn upgrade(&self) -> Option<DeviceWorkspaces> {
+        self.0.upgrade().map(DeviceWorkspaces)
     }
 }
-impl NativeWorkspaceOwner {
+impl DeviceWorkspaces {
     /// An owner of no workspaces yet, publishing through `store`.
     #[must_use]
     pub fn empty(store: Arc<dyn Store>) -> Self {
@@ -585,8 +572,8 @@ impl NativeWorkspaceOwner {
     }
     /// Stop holding `workspace` here: drop this device's replica of it and any
     /// enrollment into it, with the host's workspace of it in the same
-    /// publication ([`Change::Released`]). The workspace itself, its governor and its other members are
-    /// untouched. Answers whether the record held the workspace.
+    /// publication ([`Change::Released`]). The workspace itself, its host and its other members
+    /// are untouched. Answers whether the record held the workspace.
     pub fn release_workspace(&self, workspace: WorkspaceId) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
         let mut next = self.0.authority.read().clone();

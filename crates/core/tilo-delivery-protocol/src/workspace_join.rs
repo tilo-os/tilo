@@ -15,7 +15,7 @@ use tilo_workspace_join::{
 pub const WORKSPACE_JOIN_ALPN: &[u8] = b"tilo-workspace-join/1";
 /// Largest accepted encoded request, including a signed invitation and certificate.
 pub const MAX_WORKSPACE_JOIN_REQUEST_BYTES: usize = 256 * 1024;
-/// Largest accepted bootstrap response containing governed workspace state.
+/// Largest accepted bootstrap response containing workspace state.
 pub const MAX_WORKSPACE_JOIN_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 /// Longest name a holder gives itself in its signed address, in characters.
 pub const MAX_HOLDER_LABEL_CHARS: usize = 80;
@@ -32,7 +32,7 @@ pub struct ServedWorkspace {
 /// Bootstrap paired with the proof of the workspace it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceJoinAdmission {
-    /// Authoritative governed state committed before the device replied.
+    /// Authoritative state committed before the device replied.
     pub bootstrap: JoinBootstrap,
     /// The workspace the bootstrap is scoped to, and the device that signed for it.
     pub served: ServedWorkspace,
@@ -62,7 +62,7 @@ impl ServedWorkspace {
     ///
     /// # Errors
     ///
-    /// The certificate does not verify now, or the device may not govern workspaces.
+    /// The certificate does not verify now, or the device may not own workspaces.
     pub fn verify(
         workspace_id: WorkspaceId,
         device: DeviceCert,
@@ -72,7 +72,7 @@ impl ServedWorkspace {
             .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
         if !device.capabilities.can_own_workspaces {
             return Err(WorkspaceJoinError::Protocol(
-                "a device that serves a workspace cannot govern workspaces".into(),
+                "a device that serves a workspace cannot own workspaces".into(),
             ));
         }
         Ok(Self {
@@ -349,7 +349,7 @@ impl WorkspaceDeviceHintV1 {
             .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
         if self.holds_keys && !self.device_certificate.capabilities.can_own_workspaces {
             return Err(WorkspaceJoinError::Protocol(
-                "a device that holds a workspace's keys cannot govern workspaces".into(),
+                "a device that holds a workspace's keys cannot own workspaces".into(),
             ));
         }
         if self.runs_work && !self.holds_keys {

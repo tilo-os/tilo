@@ -55,7 +55,7 @@ fn held_at(site: &Site) -> (Vec<(String, String)>, String) {
         |error| error,
         |summary| {
             format!(
-                "{} is governed by {:?}, whose devices are {:?}",
+                "{} is hosted by {:?}, whose devices are {:?}",
                 summary.name, summary.members, summary.devices
             )
         },

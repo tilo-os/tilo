@@ -228,7 +228,7 @@ fn two_devices_first_invitation_parts_both_survive_a_merge() {
         "both devices' first parts are kept: {held:?}"
     );
     let (_, maps) = foundations(&both, crate::state::invitation_receipts::PARTS_KEY);
-    assert_eq!(maps, 1, "every governor writes into the founded map");
+    assert_eq!(maps, 1, "every device writes into the founded map");
 }
 
 #[test]
@@ -312,5 +312,5 @@ fn two_devices_first_removal_cuts_both_survive_a_merge() {
         "both removal cuts are kept: {held:?}"
     );
     let (_, maps) = foundations(&both, crate::removals::FIELD_V1);
-    assert_eq!(maps, 1, "every governor writes into the founded map");
+    assert_eq!(maps, 1, "every device writes into the founded map");
 }

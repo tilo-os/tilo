@@ -312,7 +312,7 @@ pub async fn member_devices(server: &Server, workspace: WorkspaceId) -> Vec<[u8;
     };
     state
         .governance()
-        .governed_access(std::time::SystemTime::now())
+        .member_list_access(std::time::SystemTime::now())
         .expect("the workspace's member list")
         .member_devices
 }
@@ -488,18 +488,18 @@ pub async fn serve_on(user: &TestUser, device: &TestDevice, work: WorkSetting) -
 /// does: the device the ticket is answered on enters it among the person's
 /// servers, and the copy's holders hand it the workspace once its entry names
 /// where it is reached. Waits until `at` keeps the workspace.
-pub async fn join_person_workspace(governor: &Hosted, device: &TestDevice, at: &Hosted) {
+pub async fn join_person_workspace(hosting_device: &Hosted, device: &TestDevice, at: &Hosted) {
     // Boxed: the hand-over's own future is large, and every fixture that joins
     // a device would otherwise carry it in its own.
     Box::pin(async move {
         tilo_server::servers::admit(
-            governor.host.workspaces(),
+            hosting_device.host.workspaces(),
             &device.cert,
             &at.host.node_addr(),
         )
         .await
         .unwrap();
-        tilo_server::servers::attach::attach_named(governor.host.workspaces())
+        tilo_server::servers::attach::attach_named(hosting_device.host.workspaces())
             .await
             .unwrap();
         tilo_test_env::within(

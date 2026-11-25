@@ -84,11 +84,11 @@ fn alone(
 }
 
 /// How many grants of the share `share` the governance the daemon holds of `workspace` names.
-fn governed(daemon: &TestDaemon, workspace: WorkspaceId, share: &str) -> usize {
+fn listed_shares(daemon: &TestDaemon, workspace: WorkspaceId, share: &str) -> usize {
     daemon
         .copy(workspace)
         .governance()
-        .governed_policy()
+        .member_policy()
         .expect("the workspace's governance")
         .grants
         .iter()
@@ -216,7 +216,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_memb
             .expect("a frame");
     }
     assert_eq!(
-        governed(&first, workspace_id, &share),
+        listed_shares(&first, workspace_id, &share),
         0,
         "the first device knows nothing of the share before it is made"
     );
@@ -243,12 +243,12 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_memb
         &mut window,
         "the share lands in the workspace's governance and on the sharer's shell",
         |sharer| {
-            governed(&second, workspace_id, &share) == 1
+            listed_shares(&second, workspace_id, &share) == 1
                 && on_shell(&sharer.session, workspace_id, &share) == 1
         },
     );
     assert_eq!(
-        governed(&second, workspace_id, &share),
+        listed_shares(&second, workspace_id, &share),
         1,
         "the share is in the workspace's governance the second device's daemon holds, one grant \
          to the viewers that reaches every role above them: a share only its own shell names \
@@ -268,7 +268,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_memb
         &mut None,
         "the first device's daemon holds the share and its shell names it",
         |viewer| {
-            governed(&first, workspace_id, &share) == 1
+            listed_shares(&first, workspace_id, &share) == 1
                 && on_shell(&viewer.session, workspace_id, &share) == 1
         },
     );

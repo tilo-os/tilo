@@ -13,8 +13,8 @@ use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
 
-use super::super::tests::{admit, caller, governed, settled};
-use crate::workspaces::tests::{governor, test_host};
+use super::super::tests::{admit, caller, hosted, settled};
+use crate::workspaces::tests::{hosting_device, test_host};
 
 /// A request of one of the accounts actions, with `argument` when it has one.
 pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {
@@ -73,10 +73,10 @@ pub(super) fn listed(
 #[tokio::test]
 async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, workspace_id, host) = governed(&workspaces).await;
+    let (workspace, workspace_id, host) = hosted(&workspaces).await;
     let ada = admit(&workspaces, &workspace, &owner, 1).await;
     let bo = admit(&workspaces, &workspace, &owner, 2).await;
     let keeping = workspace_id.to_string();

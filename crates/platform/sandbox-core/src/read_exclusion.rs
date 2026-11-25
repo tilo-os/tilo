@@ -188,7 +188,7 @@ impl PreparedReadExclusion {
                     continue;
                 }
                 // Directories and regular/device files can carry READ_FILE;
-                // sockets and pipes are already governed by inherited rights.
+                // sockets and pipes are already covered by inherited rights.
                 if metadata.is_dir() || metadata.is_file() {
                     grant(&ruleset, &object)?;
                 } else {

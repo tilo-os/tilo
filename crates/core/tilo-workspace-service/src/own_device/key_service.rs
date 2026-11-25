@@ -2,9 +2,9 @@
 //!
 //! The device takes part in every group of those workspaces with the one leaf it has in every
 //! other group ([`WorkspaceKeys`]). What the workspaces' other devices send for a group reaches it
-//! through the service's [`KeySink`]: a governed workspace's members' links, and the link of a
+//! through the service's [`KeySink`]: a hosted workspace's members' links, and the link of a
 //! member copy to the device serving it. What it settles goes back the same way: retained by a
-//! workspace the service governs as its own governance, so whoever joins it later reads the
+//! workspace the service hosts as its own governance, so whoever joins it later reads the
 //! group's history from it, and handed to the workspace's direct link
 //! ([`Workspaces::publish_governance`]); sent on the member link of a member copy
 //! ([`Workspaces::send_member`]). Who takes part in a group is read from the workspace's replica
@@ -135,7 +135,7 @@ struct Link {
     inbound: Mutex<Vec<InboundGovernance>>,
     /// The service itself, to forget the workspaces deleted here.
     access: SharedKeys,
-    /// What the service settles for a workspace it governs, once the service is built.
+    /// What the service settles for a workspace it hosts, once the service is built.
     publish: Mutex<Option<tokio::sync::mpsc::UnboundedSender<NeighbourMsg>>>,
     park: Arc<GovernancePark>,
     /// The tasks sending what the service settles and forgetting deleted workspaces' groups,
@@ -214,7 +214,7 @@ impl KeySink for Link {
 
 impl GovernanceTransport for Link {
     /// A member copy's governance goes to the device serving it while the copy's link is up, and
-    /// is kept for a later pass while it is not; a governed workspace retains it.
+    /// is kept for a later pass while it is not; a hosted workspace retains it.
     fn publish(&self, message: NeighbourMsg) -> bool {
         let Some(workspace) = message.governance_workspace().map(str::to_owned) else {
             return false;
@@ -336,10 +336,10 @@ impl KeyDirectory for Directory {
         )
     }
 
-    /// A workspace the service governs whose founding device is this device or its service: a
+    /// A workspace the service hosts whose founding device is this device or its service: a
     /// member copy's groups are its serving device's to found.
     fn founds(&self, workspace: WorkspaceId) -> bool {
-        let Some((Held::Governs, founder)) =
+        let Some((Held::Hosts, founder)) =
             self.read(workspace, |state| state.governance().founder())
         else {
             return false;

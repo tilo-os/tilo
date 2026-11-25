@@ -229,7 +229,7 @@ fn decide_op_settled(
     (replay, imported, signer): (bool, Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
-    let governed = |action: &str| {
+    let administered = |action: &str| {
         let node = roles::governance_action(document.workspace, action);
         if allows(None, &node, roles::GOVERNANCE_KIND) {
             Ok(Receipt::Admit)
@@ -241,8 +241,8 @@ fn decide_op_settled(
         }
     };
     match op.kind {
-        OpKind::Compaction => admittable_compaction(op, document, allows, &governed),
-        OpKind::Redaction => governed(roles::governance::REDACT),
+        OpKind::Compaction => admittable_compaction(op, document, allows, &administered),
+        OpKind::Redaction => administered(roles::governance::REDACT),
         OpKind::Change => decide_change_op(
             (op, opened),
             document,
@@ -551,20 +551,20 @@ fn sealed_invoker(
 /// A sealed compaction folds a record's sealed history into one snapshot of
 /// what it already held, and only a device holding the record's channel keys
 /// can make one. Whoever the record admits as a writer of it holds those
-/// keys, so compacting is part of writing it; the workspace's governor keeps its
+/// keys, so compacting is part of writing it; the workspace's host keeps its
 /// governance action as well. A compaction in the clear sets the workspace's
-/// history horizon for everyone and stays the governor's to make, which
-/// `governed` decides.
+/// history horizon for everyone and stays the host's to make, which `administered`
+/// decides.
 fn admittable_compaction(
     op: &SignedOp,
     document: &WrittenDocument<'_>,
     allows: &Allows<'_>,
-    governed: &dyn Fn(&str) -> Result<Receipt, ReceiptRefusal>,
+    administered: &dyn Fn(&str) -> Result<Receipt, ReceiptRefusal>,
 ) -> Result<Receipt, ReceiptRefusal> {
     if op.encryption.is_some() && allows(None, &written_node(document), ActionKind::Undoable) {
         Ok(Receipt::Admit)
     } else {
-        governed(tilo_action_policy::roles::governance::COMPACT)
+        administered(tilo_action_policy::roles::governance::COMPACT)
     }
 }
 

@@ -45,7 +45,7 @@ pub const REST_AFTER: Duration = Duration::from_secs(5 * 60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Need {
     /// A remote party the network actor is connected to or keeps dialling:
-    /// a peer, a host, a governed workspace's relay, one of the person's
+    /// a peer, a host, a workspace's relay, one of the person's
     /// devices, a streamed window, a Messages account.
     Transport,
     /// What the session has recorded: a workspace shared with someone or

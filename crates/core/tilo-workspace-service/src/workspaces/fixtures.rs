@@ -1,4 +1,4 @@
-//! A governing holder and the devices around it, for the tests of workspaces and of
+//! A hosting device and the devices around it, for the tests of workspaces and of
 //! the app action servers embedders build on them.
 #![allow(
     clippy::expect_used,
@@ -36,8 +36,8 @@ pub fn needed<T, E: std::fmt::Display>(result: Result<T, E>, what: &str) -> T {
     result.unwrap_or_else(|error| panic!("{what}: {error}"))
 }
 
-/// Another device of the person whose root (`[1; 32]`) certified the fixture's governor
-/// `cert`, admitted to `workspace`.
+/// Another device of the person whose root (`[1; 32]`) certified the fixture's hosting
+/// device `cert`, admitted to `workspace`.
 pub async fn member_device(
     workspaces: &Workspaces,
     workspace: &str,
@@ -56,11 +56,11 @@ pub async fn member_device(
     (member_key, member)
 }
 
-/// A holder certified only to keep workspaces: it governs them without taking part in
+/// A device certified only to keep workspaces: it hosts them without taking part in
 /// their channels.
 #[must_use]
-pub fn governor() -> (SigningKey, DeviceCert) {
-    governor_with(DeviceCapabilities::member())
+pub fn hosting_device() -> (SigningKey, DeviceCert) {
+    hosting_device_with(DeviceCapabilities::member())
 }
 
 /// A holder's device of the person whose root is `[1; 32]`, certified with
@@ -70,7 +70,7 @@ pub fn governor() -> (SigningKey, DeviceCert) {
 ///
 /// The certificate cannot be signed.
 #[must_use]
-pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
+pub fn hosting_device_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     device_cert(&SigningKey::from_bytes(&[1; 32]), "home", capabilities)
 }
 
@@ -122,7 +122,7 @@ pub struct TestHost {
 }
 
 impl TestHost {
-    /// The workspaces it governs.
+    /// The workspaces it hosts.
     #[must_use]
     pub fn workspaces(&self) -> &Workspaces {
         self.host.workspaces()
@@ -383,7 +383,7 @@ pub async fn lists(reader: &Workspaces, workspace: &str) -> bool {
 }
 
 /// A certified host of `cert`'s device keeping its state under `state_root`,
-/// taking part in its workspaces' channels as every server that governs
+/// taking part in its workspaces' channels as every server that hosts
 /// workspaces does: what its members seal it opens, and what it writes itself
 /// it seals.
 ///
@@ -919,20 +919,20 @@ async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_relay::Rela
 ///
 /// # Panics
 ///
-/// The workspace is not governed here, or its governance does not read.
+/// The workspace is not hosted here, or its governance does not read.
 pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
     let state = workspaces
         .workspace(workspace)
         .await
-        .expect("a governed workspace");
+        .expect("a hosted workspace");
     let (device_access, workspace_id) = {
-        let governed = state.lock().await;
-        let device_access = governed
+        let hosted = state.lock().await;
+        let device_access = hosted
             .peer()
             .governance()
-            .governed_device_access(tilo_clock::wall())
+            .member_device_access(tilo_clock::wall())
             .expect("the workspace's device_access");
-        (device_access, governed.workspace_id())
+        (device_access, hosted.workspace_id())
     };
     let runtime = workspaces
         .inner
@@ -950,7 +950,7 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
 ///
 /// # Panics
 ///
-/// The workspace is not governed here.
+/// The workspace is not hosted here.
 pub async fn restricted_until(
     workspaces: &Workspaces,
     workspace: &str,
@@ -960,7 +960,7 @@ pub async fn restricted_until(
     let state = workspaces
         .workspace(workspace)
         .await
-        .expect("a governed workspace");
+        .expect("a hosted workspace");
     let now = tilo_clock::wall();
     let permissions = state
         .lock()
@@ -1269,7 +1269,7 @@ impl Workspaces {
 ///
 /// # Panics
 ///
-/// The workspace is not governed here, or its governance did not take them.
+/// The workspace is not hosted here, or its governance did not take them.
 pub async fn record_grants(
     workspaces: &Workspaces,
     workspace: &str,
@@ -1278,14 +1278,14 @@ pub async fn record_grants(
     let state = workspaces
         .workspace(workspace)
         .await
-        .expect("a governed workspace");
+        .expect("a hosted workspace");
     {
-        let governed = state.lock().await;
+        let hosted = state.lock().await;
         let key = workspaces.inner.host.key.clone();
-        governed
+        hosted
             .peer()
             .governance_mut()
-            .put_governed_grants(grants, &key, tilo_clock::wall())
+            .put_member_grants(grants, &key, tilo_clock::wall())
             .expect("the host records its workspace's grants");
     }
     project_access(workspaces, workspace).await;
@@ -1296,7 +1296,7 @@ pub async fn record_grants(
 ///
 /// # Panics
 ///
-/// The workspace is not governed here, or its governance did not take the change.
+/// The workspace is not hosted here, or its governance did not take the change.
 pub async fn revoke_grants(
     workspaces: &Workspaces,
     workspace: &str,
@@ -1305,14 +1305,14 @@ pub async fn revoke_grants(
     let state = workspaces
         .workspace(workspace)
         .await
-        .expect("a governed workspace");
+        .expect("a hosted workspace");
     {
-        let governed = state.lock().await;
+        let hosted = state.lock().await;
         let key = workspaces.inner.host.key.clone();
-        governed
+        hosted
             .peer()
             .governance_mut()
-            .remove_governed_grants(ids, &key, tilo_clock::wall())
+            .remove_member_grants(ids, &key, tilo_clock::wall())
             .expect("the host takes its workspace's grants back");
     }
     project_access(workspaces, workspace).await;

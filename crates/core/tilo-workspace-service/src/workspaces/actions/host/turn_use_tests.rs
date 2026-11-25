@@ -24,11 +24,11 @@ use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTa
 use tilo_actions::remote::{model_providers, person_accounts, person_vault};
 use tilo_user_identity::DeviceCert;
 
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, caller, hosted};
 use super::vault_tests::{a_provider, ask, ask_at, files_holding, kept_item};
 use crate::workspaces::fixtures::test_host;
 use crate::workspaces::hosted_use::HostedTurn;
-use crate::workspaces::tests::governor;
+use crate::workspaces::tests::hosting_device;
 use crate::workspaces::{WorkspaceId, Workspaces};
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -375,10 +375,10 @@ pub(super) async fn always(
 #[tokio::test]
 async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -442,10 +442,10 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
 #[tokio::test]
 async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -537,10 +537,10 @@ async fn she_alone_takes_the_leave_back(
 #[tokio::test]
 async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -680,10 +680,10 @@ pub(super) const HANDED: &str = "an agent her own device hands its session to";
 #[tokio::test]
 async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let as_ada = caller(&ada);
@@ -756,10 +756,10 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
 #[tokio::test]
 async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
@@ -829,10 +829,10 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
 #[tokio::test]
 async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
@@ -914,10 +914,10 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
 #[tokio::test]
 async fn a_use_the_vault_refuses_asks_nobody() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -991,10 +991,10 @@ async fn a_use_the_vault_refuses_asks_nobody() {
 #[tokio::test]
 async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
@@ -1097,11 +1097,11 @@ pub(super) fn narrowing(
 #[tokio::test]
 async fn a_turn_reaches_only_its_workspace_and_what_its_person_allowed() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
+    let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
-    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);

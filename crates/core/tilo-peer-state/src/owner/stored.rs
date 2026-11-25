@@ -16,7 +16,7 @@ pub(crate) mod format;
 
 /// The layout of a workspace's entry this build writes ([`StoredWorkspace`]):
 /// the workspace named once, by its id.
-pub(crate) const WORKSPACE_VERSION: u32 = 10;
+pub(crate) const WORKSPACE_VERSION: u32 = 11;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -78,19 +78,19 @@ pub(crate) struct StoredWorkspace {
     /// this device itself for a workspace its own host keeps.
     pub workspace_host: DeviceCert,
     pub device: DeviceCert,
-    /// How this device joined the workspace its host governs. A workspace it founded
+    /// How this device joined the workspace its host serves. A workspace it founded
     /// itself, its own host keeping it, holds neither this nor a vouch.
     #[serde(flatten)]
     pub enrollment: Option<StoredEnrollment>,
     /// The membership answer this device's host gave it for a workspace it
     /// holds without an enrollment of its own
-    /// ([`crate::NativeWorkspaceOwner::install_vouched`]). A record holds
+    /// ([`crate::DeviceWorkspaces::install_vouched`]). A record holds
     /// this or an enrollment, never both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vouched: Option<StoredVouch>,
     /// Where this device's own host of the workspace is reached, for a
     /// workspace founded here: the signed address its host keeps the
-    /// workspace's records at ([`crate::NativeWorkspaceOwner`] founded it, so
+    /// workspace's records at ([`crate::DeviceWorkspaces`] founded it, so
     /// no other device admitted this one and its record holds neither an
     /// enrollment nor a vouch to say where the host is).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,11 +99,6 @@ pub(crate) struct StoredWorkspace {
     pub peer: DurablePeer,
     pub generation: u64,
     pub continuity: u64,
-    /// The record layout a build before the one path kept: its outgoing
-    /// ownership and the answers it took for it. This build writes none and
-    /// reads what an entry holds so the journal beside it replays.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication: Option<crate::owner::publication::StoredPublication>,
     /// This device's own frames a peer has not been sent yet, oldest first:
     /// what makes a write durable here before any peer holds it, and sends it
     /// when one links. A frame is sent once and a peer that took it drops a
@@ -299,7 +294,7 @@ impl StoredWorkspace {
     }
 }
 
-/// The signed join a device enrolled in a host-governed workspace with, and the
+/// The signed join a device enrolled in a hosted workspace with, and the
 /// host it pinned then.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StoredEnrollment {

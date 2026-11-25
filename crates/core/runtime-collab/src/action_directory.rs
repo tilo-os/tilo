@@ -71,7 +71,7 @@ pub struct ActionDirectoryRow {
     pub has_children: bool,
     /// The permission-bearing action, and its contract, that discloses this
     /// row. An action row names itself; a container row names the action
-    /// whose permission governs seeing it.
+    /// whose permission decides whether it is seen.
     pub visibility: Option<RowVisibility>,
 }
 

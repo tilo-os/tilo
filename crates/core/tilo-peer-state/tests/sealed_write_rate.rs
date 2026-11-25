@@ -20,7 +20,7 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::testing::{
     APP, WORKSPACE, finalize, frames_touched, member_key, person_of, raw_fixture_at,
 };
-use tilo_peer_state::owner::{LocalWrite, NativeWorkspaceOwner, SealedHistoryKeys, open_file};
+use tilo_peer_state::owner::{DeviceWorkspaces, LocalWrite, SealedHistoryKeys, open_file};
 use web_time::SystemTime;
 
 /// Writes in a run: thousands, most of the bound of sealed writes one record holds before its
@@ -67,13 +67,13 @@ impl SealedHistoryKeys for Held {
     }
 }
 
-/// A member device enrolled into a governed workspace at `now`, its owner kept in a file store
+/// A member device added to a workspace at `now`, the owner's device in a file store
 /// under `directory`, holding the workspace channel's keys.
 fn enrolled(
     directory: &std::path::Path,
     now: SystemTime,
-) -> (NativeWorkspaceOwner, WorkspaceId, ContentKeys) {
-    let (intent, bootstrap, messages, governor, now) = raw_fixture_at(now);
+) -> (DeviceWorkspaces, WorkspaceId, ContentKeys) {
+    let (intent, bootstrap, messages, owner_copy, now) = raw_fixture_at(now);
     let owner = open_file(&directory.join("joined-workspaces.json")).unwrap();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     owner
@@ -84,7 +84,7 @@ fn enrolled(
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedServerDelta(governor),
+                TransportOrigin::RetainedServerDelta(owner_copy),
                 message,
                 now,
             )
@@ -92,7 +92,7 @@ fn enrolled(
     }
     let keys = key_group::KeyGroup::create(
         collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
-        key_group::MemberKey::generate("governor").unwrap(),
+        key_group::MemberKey::generate("host").unwrap(),
     )
     .unwrap()
     .content_keys()
@@ -253,7 +253,7 @@ async fn writes_to_many_records_at_once_are_each_there_after_a_restart() {
         "{} sealed writes to {RECORDS} records at once: {rate:.0} a second",
         RECORDS * EACH
     );
-    let held = |owner: &NativeWorkspaceOwner| {
+    let held = |owner: &DeviceWorkspaces| {
         let records = (0..RECORDS)
             .map(|writer| {
                 owner

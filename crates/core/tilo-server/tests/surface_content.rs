@@ -105,7 +105,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     let scratch = tempfile::tempdir().unwrap();
     let content_store = scratch.path().join("surfaces");
     tilo_workspace_service::surfaces::decide_receipt(&content_store);
-    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
+    let (key, cert) = tilo_workspace_service::workspaces::fixtures::hosting_device();
     let host =
         tilo_workspace_service::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();

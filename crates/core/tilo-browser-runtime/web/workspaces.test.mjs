@@ -132,7 +132,7 @@ test('a host started anew that knows this device under another certificate is jo
     calls.connected.push(connected);
     throw Object.assign(new Error(HOST_CHANGED), {name: 'AdmissionError', code: 'host-changed'});
   };
-  options.join = refusing(calls, ['governed certificate conflict']);
+  options.join = refusing(calls, ['certificate conflict']);
   assert.equal((await joinViaHost(options)).workspace, 'WORKSPACE');
   assert.equal(calls.posted.length, 2);
   assert.equal(calls.renewed[0].deviceKey, calls.deviceKeys[0]);

@@ -198,7 +198,7 @@ pub trait DeviceWrites: collab_types::signer::MaybeSendSync + 'static {
     /// `documents` — each an app and a document of it — before this call: the wait answers `Ok`
     /// once the serving device holds each of them, and `Err` with why once it refused one.
     ///
-    /// `None` when this holder has no serving device to ask: a workspace it governs and keeps
+    /// `None` when this holder has no serving device to ask: a workspace it hosts and keeps
     /// itself, and a copy whose writes the device's own link carries and follows
     /// ([`crate::owner::AppWrite`]). Whoever waits then waits on that link instead.
     fn served(&self, workspace: &str, documents: &[(&str, &str)]) -> Option<DocumentServing> {

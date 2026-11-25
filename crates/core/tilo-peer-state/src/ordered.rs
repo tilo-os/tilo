@@ -76,10 +76,6 @@ impl<K, V> Ordered<K, V> {
         self.len
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
     /// The entries in key order.
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> + '_ {
         self.chunks

@@ -281,7 +281,7 @@ pub(crate) struct WindowShares {
     /// The tabs this session put on the shell because the workspace's governance says another member
     /// shares the window there, by the workspace id it says it in: what it takes away again when
     /// the share ends.
-    governed: BTreeMap<TabId, Governed>,
+    share: BTreeMap<TabId, OthersShare>,
     /// The seat each member controlling a shared window acts at: its own pointer and keyboard in
     /// that window, beside the person's.
     seats: BTreeMap<(PeerId, SurfaceId), tilo_compositor::Seat>,
@@ -308,8 +308,8 @@ pub(crate) struct WindowShares {
     /// have changed with it.
     landed: Rc<Cell<bool>>,
     /// Who writes this session's shares into a workspace's governance when its device may write
-    /// none itself: a session in a workspace's VM asks its host ([`ShareGovernor`]).
-    governor: Option<Rc<dyn ShareGovernor>>,
+    /// none itself: a session in a workspace's VM asks its host ([`ShareSource`]).
+    share_source: Option<Rc<dyn ShareSource>>,
     /// How each window that runs on another device stands on this session ([`hosts`]).
     elsewhere: Vec<hosts::HostedTab>,
     /// Which apps' windows every device of a workspace opens on its own, on the record the window
@@ -317,15 +317,15 @@ pub(crate) struct WindowShares {
     everywhere: Option<fn(&str) -> bool>,
 }
 
-/// Who writes the shares of a session whose device governs nothing of its workspace: the workspace's
-/// host, which checks each names a window this device minted before it writes it.
-pub(crate) trait ShareGovernor {
+/// Who writes the shares of a session whose device has no part in its workspace's governance: the
+/// workspace's host, which checks each names a window this device minted before it writes it.
+pub(crate) trait ShareSource {
     /// Share the window `tab` of `app_id` with `workspace`'s members, or end that share.
     fn share(&self, workspace: &str, app_id: &str, tab: TabId, shared: bool);
 }
 
 /// A window another member shares, as this session shows it on the shell.
-struct Governed {
+struct OthersShare {
     /// The workspace whose governance says so.
     workspace: String,
     /// The tab of this session that pictures it: the one its sharer shows it in, or a tab this
@@ -396,9 +396,9 @@ impl WindowShares {
         self.landings = Some(landings);
     }
 
-    /// Have `governor` write this session's shares from now on, never the session itself.
-    pub(crate) fn governed_by(&mut self, governor: Rc<dyn ShareGovernor>) {
-        self.governor = Some(governor);
+    /// Have the given source write this session's shares from now on, never the session itself.
+    pub(crate) fn shares_from(&mut self, share_source: Rc<dyn ShareSource>) {
+        self.share_source = Some(share_source);
     }
 
     /// The members viewing `tab` of this device: the ones that asked to, in order.
@@ -439,7 +439,7 @@ impl WindowShares {
             if !self.commands.is_empty()
                 || !self.hosted.is_empty()
                 || !self.pages.is_empty()
-                || !self.governed.is_empty()
+                || !self.share.is_empty()
                 || !self.received.is_empty()
             {
                 self.commands.clear();
@@ -699,8 +699,8 @@ impl WindowShares {
         app_id: &str,
         workspace: &str,
     ) {
-        if let Some(governor) = &self.governor {
-            governor.share(workspace, app_id, tab, true);
+        if let Some(share_source) = &self.share_source {
+            share_source.share(workspace, app_id, tab, true);
             return;
         }
         let share = window_share_id(tab);
@@ -772,7 +772,7 @@ impl WindowShares {
         let shares = |policy: &tilo_action_policy::WorkspacePolicy| {
             policy.grants.iter().any(|grant| is_of_share(grant, &share))
         };
-        if let Some(governor) = &self.governor {
+        if let Some(share_source) = &self.share_source {
             let sharing: Vec<String> = session.read(|tree| {
                 tree.workspaces
                     .iter()
@@ -784,7 +784,7 @@ impl WindowShares {
                 return;
             }
             for workspace in sharing {
-                governor.share(&workspace, "", tab, false);
+                share_source.share(&workspace, "", tab, false);
             }
             self.changed();
             return;
@@ -949,7 +949,7 @@ impl WindowShares {
         live: &BTreeSet<TabId>,
     ) -> bool {
         let ended: Vec<TabId> = self
-            .governed
+            .share
             .keys()
             .copied()
             .filter(|tab| !live.contains(tab))
@@ -957,19 +957,19 @@ impl WindowShares {
         let mut changed = false;
         let mut made_strips = Vec::new();
         for tab in ended {
-            let Some(governed) = self.governed.remove(&tab) else {
+            let Some(share) = self.share.remove(&tab) else {
                 continue;
             };
-            self.watching.remove(&(governed.workspace, tab));
+            self.watching.remove(&(share.workspace, tab));
             // The tab this share put on the shell goes with it, and nothing else does: what the
             // session lists under the sharer's id is this device's own view of the window, or the
             // window itself where it runs only on its host, and goes on running when its share
             // ends.
-            let place = governed.shown_in;
+            let place = share.shown_in;
             if placed_for_share(tree, tab, place) {
                 self.end_tab(session, tab, WhyEnded::TabGone);
                 changed |= tree.remove_tab(place).is_some();
-                if governed.strip {
+                if share.strip {
                     made_strips.push(StripId(place));
                 }
             } else {
@@ -998,14 +998,11 @@ impl WindowShares {
         now: Instant,
     ) -> bool {
         let (tab, host, workspace) = (shared.tab, &shared.host, shared.workspace.clone());
-        let state = self.governed.get(&tab).map(|governed| governed.shown_in);
+        let state = self.share.get(&tab).map(|share| share.shown_in);
         let mut changed = false;
         if state.is_none_or(|place| hosted_window(tree, place).is_none()) {
-            let claimed: BTreeSet<TabId> = self
-                .governed
-                .values()
-                .map(|governed| governed.shown_in)
-                .collect();
+            let claimed: BTreeSet<TabId> =
+                self.share.values().map(|share| share.shown_in).collect();
             let held = tree
                 .workspaces
                 .iter()
@@ -1036,9 +1033,9 @@ impl WindowShares {
                     // again where the window stands.
                     self.unmount(session, tab);
                 }
-                self.governed.insert(
+                self.share.insert(
                     tab,
-                    Governed {
+                    OthersShare {
                         workspace: workspace.clone(),
                         shown_in,
                         strip,
@@ -1293,21 +1290,21 @@ impl WindowShares {
             }
         }
         self.renegotiate.clear();
-        self.end_governed(session);
+        self.end_listed_shares(session);
     }
 
     /// Take away every window this session showed because a workspace's governance said a member
     /// shared it: without the live session no stream of it comes, and the governance that named it is gone
     /// with it.
-    fn end_governed(&mut self, session: &DesktopHandle) {
-        let governed = std::mem::take(&mut self.governed);
-        if governed.is_empty() {
+    fn end_listed_shares(&mut self, session: &DesktopHandle) {
+        let share = std::mem::take(&mut self.share);
+        if share.is_empty() {
             return;
         }
         let mut tree = session.read(Clone::clone);
         let mut changed = false;
         let mut made_strips = Vec::new();
-        for (tab, entry) in governed {
+        for (tab, entry) in share {
             self.watching
                 .retain(|(workspace, watched), _| *watched != tab || *workspace != entry.workspace);
             self.end_tab(session, tab, WhyEnded::TabGone);
@@ -1636,15 +1633,15 @@ impl WindowShares {
     /// Show every stream whose window the session holds a tab for now, so its tile decodes it there: a
     /// stream that reached this device before the tab was made has waited for one.
     fn show_streams(&mut self, session: &DesktopHandle) {
-        let governed = &self.governed;
+        let share = &self.share;
         for ((peer, surface), stream) in &mut self.received {
             if stream.shown {
                 continue;
             }
             // The tab that pictures the window may have been made, or made anew, since the stream
             // was announced.
-            if let Some(governed) = governed.get(&stream.tab) {
-                stream.start.tab = governed.shown_in;
+            if let Some(share) = share.get(&stream.tab) {
+                stream.start.tab = share.shown_in;
             }
             if session.show_peer_surface(&stream.start).is_some() {
                 stream.shown = true;
@@ -1687,16 +1684,14 @@ impl WindowShares {
     /// The tab of this session that pictures the window its sharer shows in `tab`: the one the
     /// workspace's governance had it shown in, and `tab` itself for a window watched by hand.
     fn pictured_in(&self, tab: TabId) -> TabId {
-        self.governed
-            .get(&tab)
-            .map_or(tab, |governed| governed.shown_in)
+        self.share.get(&tab).map_or(tab, |share| share.shown_in)
     }
 
     /// The tab a window's sharer shows it in, for the window this session pictures in `tab`.
     fn shared_as(&self, tab: TabId) -> TabId {
-        self.governed
+        self.share
             .iter()
-            .find(|(_, governed)| governed.shown_in == tab)
+            .find(|(_, share)| share.shown_in == tab)
             .map_or(tab, |(shared, _)| *shared)
     }
 

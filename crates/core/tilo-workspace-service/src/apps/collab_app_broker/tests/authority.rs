@@ -564,8 +564,8 @@ tilo_test_env::scenario! {
                 .unwrap()
         };
 
-        // The owner's agent edits as their owner may, held to an Editor, and
-        // never governs.
+        // The owner's agent edits as their owner may, capped at an Editor, and
+        // is never an administrator.
         let scribe = delegate(&owner_root, "scribe", &tree).unwrap();
         assert_eq!(scribe.role, Role::Editor, "its owner's role, capped");
         assert!(workspace_control_role_allowed(scribe.role));
@@ -576,7 +576,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             answer(&scribe, &tree, &set_role, roles::GOVERNANCE_KIND),
             Answer::Deny,
-            "the owner's agent does not govern the workspace"
+            "the owner's agent is not an administrator of the workspace"
         );
         // Bob's session holds Bob's role, whatever it is called.
         let reader = delegate(&bob_root, "reader", &tree).unwrap();
@@ -706,7 +706,7 @@ fn the_persons_workspace_admits_only_its_own_roots_devices_as_owner() {
         },
     )
     .expect("the root's foreign device joins their own workspace");
-    let governs = foreign
+    let administers = foreign
         .with_authority(None, &route.cluster_id, |access| {
             access
                 .authority()
@@ -719,7 +719,7 @@ fn the_persons_workspace_admits_only_its_own_roots_devices_as_owner() {
         })
         .unwrap();
     assert_eq!(
-        governs,
+        administers,
         Answer::Deny,
         "a foreign device keeps the foreign-device bound in the person's own workspace too"
     );

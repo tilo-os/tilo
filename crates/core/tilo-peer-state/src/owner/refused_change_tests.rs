@@ -47,7 +47,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
 
     // The writes this device would send to the workspace, and whether one carries `change`.
     fn sends_change(
-        owner: &NativeWorkspaceOwner,
+        owner: &DeviceWorkspaces,
         workspace: WorkspaceId,
         _now: SystemTime,
         change: [u8; 32],
@@ -75,12 +75,12 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
         })
     }
 
-    let (fixture, mut governor_peer, governor_key) =
-        crate::owner::testing::governed_fixture_at(tilo_clock::wall());
+    let (fixture, mut owner_peer, owner_copy_key) =
+        crate::owner::testing::hosted_fixture_at(tilo_clock::wall());
     let joined = enrolled_with(fixture);
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
     let person = SigningKey::from_bytes(&[64; 32]).verifying_key().to_bytes();
-    let governor = governor_key.verifying_key().to_bytes();
+    let owner_copy = owner_copy_key.verifying_key().to_bytes();
     let later = now.checked_add(std::time::Duration::from_secs(1)).unwrap();
 
     // A change it makes while it may write is kept and sent.
@@ -100,16 +100,16 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
 
     // Its person may read and no longer write: the workspace says so to every device.
     assert!(
-        governor_peer
+        owner_peer
             .governance_mut()
-            .set_member_role(person, crate::join::Role::Viewer, &governor_key, later)
+            .set_member_role(person, crate::join::Role::Viewer, &owner_copy_key, later)
             .unwrap()
     );
     owner
         .receive(
             workspace,
-            TransportOrigin::ServerDelta(governor),
-            governor_peer.workspace_message(),
+            TransportOrigin::ServerDelta(owner_copy),
+            owner_peer.workspace_message(),
             later,
         )
         .unwrap();
@@ -149,16 +149,16 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
 
     // Its person may write again: the next change lands, and the verdict goes.
     assert!(
-        governor_peer
+        owner_peer
             .governance_mut()
-            .set_member_role(person, crate::join::Role::Editor, &governor_key, later)
+            .set_member_role(person, crate::join::Role::Editor, &owner_copy_key, later)
             .unwrap()
     );
     owner
         .receive(
             workspace,
-            TransportOrigin::ServerDelta(governor),
-            governor_peer.workspace_message(),
+            TransportOrigin::ServerDelta(owner_copy),
+            owner_peer.workspace_message(),
             later,
         )
         .unwrap();

@@ -4,7 +4,7 @@
 //! the computer that holds their root (`tilo login --server <its line>`).
 //!
 //! Both changes are signed on the computer that holds the owner's root, where the commands run:
-//! no server governs the workspace, the one it was made on included.
+//! no server signs them, the one it was made on included.
 //!
 //! The owner's computer came into the workspace on the old server through the invitation that
 //! server issued it when it logged in there, and that invitation expired long before the move:
@@ -282,7 +282,7 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
             .is_ok()
             && peer
                 .governance()
-                .governed_access(tilo_clock::wall())
+                .member_list_access(tilo_clock::wall())
                 .is_ok_and(|access| access.member_devices.contains(&laptop.device_pubkey()))
     })
     .await;

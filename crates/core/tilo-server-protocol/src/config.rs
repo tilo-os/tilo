@@ -117,7 +117,7 @@ pub struct ServerConfig {
     /// ([`WebTls::Dev`], the default), or a PEM chain and key ([`WebTls::Files`]).
     #[serde(default)]
     pub web_tls: WebTls,
-    /// Pre-admissions a governed workspace keeps, spent ones included. A
+    /// Pre-admissions a workspace keeps, spent ones included. A
     /// public workspace that pre-admits every visitor raises it. `None` keeps
     /// 1024. It keeps the key `max_workspace_grants` in `server.toml`.
     #[serde(

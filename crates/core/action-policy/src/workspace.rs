@@ -21,7 +21,7 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspacePolicy")]
 pub struct WorkspacePolicy {
-    /// The workspace this policy governs.
+    /// The workspace this policy names.
     pub workspace: String,
     /// The owner, by person id. Structural: holds everything and cannot be
     /// removed, demoted or denied by a grant.
@@ -514,7 +514,7 @@ impl WorkspacePolicy {
 
     /// Whether `person` is one of the workspace's administrators: they hold
     /// the administrator grant ([`roles::administrator_grant`]). The owner
-    /// governs by being the owner, not by this grant.
+    /// administers by being the owner, not by this grant.
     #[must_use]
     pub fn is_administrator(&self, person: &str) -> bool {
         let id = roles::administrator_grant_id(person);
@@ -819,7 +819,7 @@ impl WorkspacePolicy {
     /// grant on a
     /// more specific node (an administrator's, a Moderator's actions) would
     /// otherwise decide a governance action past it: a ban or a restriction
-    /// stops every change, governing others included. The owner is never
+    /// stops every change, changes to other members included. The owner is never
     /// held off.
     fn check_not_held_off(&self, actor: &Authority<'_>, cx: &Context<'_>) -> Result<(), Refusal> {
         for grantee in &actor.person.grantees {
@@ -942,7 +942,7 @@ impl WorkspacePolicy {
         if role == Role::Owner {
             return Err(Refusal::OwnerRole);
         }
-        // An administrator governs as the owner's equal in all but the
+        // An administrator administers as the owner's equal in all but the
         // owner's place: they hand out every role a workspace hands out.
         if self.may_make_administrators(actor, cx) {
             return Ok(());
@@ -1238,7 +1238,7 @@ impl WorkspacePolicy {
     }
 
     /// Make `person` the owner. They leave the members, as an owner is none,
-    /// and hold no administrator grant, as the owner governs by being the
+    /// and hold no administrator grant, as the owner administers by being the
     /// owner. Whoever owned the workspace stays as an Editor and an
     /// administrator, granted by themselves as its owner when they handed it
     /// over.

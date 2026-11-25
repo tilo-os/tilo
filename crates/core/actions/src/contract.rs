@@ -795,7 +795,7 @@ pub struct ActionContract {
     /// first follow from it. What a grant must allow is its
     /// [`need`](Self::need), which every API decides with the action's
     /// place in the published tree: the kind, unless the action's scope
-    /// reaches nothing a workspace governs ([`Self::scoped`]).
+    /// reaches nothing a workspace decides ([`Self::scoped`]).
     #[serde(default = "undoable")]
     pub kind: ActionKind,
     /// The one field of its resource the action writes, when it writes only
@@ -974,7 +974,7 @@ impl ActionContract {
     /// it back, whether it asks first); the need says what a grant must
     /// allow, and the scope is where they part: an outside effect on the
     /// person's own device ([`OWN_DEVICE_SCOPE`], [`ATTENDED_TAG`]) reaches
-    /// nothing a workspace's grants govern, so it needs only what reading
+    /// nothing a workspace's grants cover, so it needs only what reading
     /// needs. Every change of a record is the workspace's to decide.
     #[must_use]
     pub fn scoped(&self, mut need: ActionNeed) -> ActionNeed {

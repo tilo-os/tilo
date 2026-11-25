@@ -38,7 +38,7 @@ web = ["tilo-workspace-service/device-keys", "dep:tilo-font-catalog", "dep:tilo-
 # - Mostly a store-and-forward peer, not a passive one. Device deltas are
 #   received, retained and forwarded, but the host also originates, under
 #   its own device key:
-#   - governance commits for the workspaces it governs (`workspaces*`);
+#   - governance commits for the workspaces it hosts (`workspaces*`);
 #   - its retained `IdentityHello` certificate frame (`compaction`);
 #   - folded snapshots of unsealed document channels (`compaction`).
 #   It reads the desktop's peer-sync messages inside co-edit bodies to
@@ -224,7 +224,7 @@ tilo-files = { path = "../../platform/tilo-files" }
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../fs" }
 # A workspace's files as the record that carries them: the server reads a
-# governed workspace's tree to learn which content its files are made of.
+# workspace's tree to learn which content its files are made of.
 fs-protocol = { package = "tilo-fs-protocol", path = "../fs-protocol" }
 # A file the folder mount wrote is a manifest of chunks: a link to it reads
 # the manifest to stream its chunks in order.
@@ -234,15 +234,15 @@ crc32fast.workspace = true
 # The scope of a workspace's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { package = "tilo-runtime-fs", path = "../runtime-fs" }
-# The workspace-join exchange every governor answers, over this server's workspaces.
+# The workspace-join exchange every host answers, over this server's workspaces.
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
-# A node takes part in the encrypted channels of the workspaces it governs, through
+# A node takes part in the encrypted channels of the workspaces it hosts, through
 # the one channel service every device runs.
 key-group = { package = "tilo-key-group", path = "../key-group" }
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 tilo-workspace-keys = { path = "../workspace-keys" }
 # The workspace host every device runs, which the server embeds. Every server build
-# follows the sealed records of the workspaces it governs and opens them with
+# follows the sealed records of the workspaces it hosts and opens them with
 # the channels' keys it holds there, whether or not it serves pages.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["device-keys"] }
 # Waiting for this machine to be reached through a relay before it says it is.

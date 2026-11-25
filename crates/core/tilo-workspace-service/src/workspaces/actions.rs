@@ -1,4 +1,4 @@
-//! The workspaces this holder governs, as their own governance actions.
+//! The workspaces this device hosts, as their own governance actions.
 //!
 //! A workspace's administration is its public surface like any app's: provider
 //! [`WORKSPACE_GOVERNANCE_PROVIDER`] (`tilo.workspace`) publishes it on the
@@ -39,7 +39,7 @@
 //! and stopping one's run. Only a device of that person's own asks it, never
 //! an agent's.
 //!
-//! What the holder does for its embedder is unchanged: [`GovernedServer`]
+//! What the holder does for its embedder is unchanged: [`HostActionServer`]
 //! answers this provider and hands every other request to the app-serving
 //! app action server the embedder supplied, if any.
 
@@ -109,7 +109,7 @@ use super::weak::WeakWorkspaces;
 #[cfg(not(target_arch = "wasm32"))]
 use super::workspace_stores::Store;
 use super::{
-    CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
+    CancelInvitationRequest, CollaborationError, HostedWorkspace, IssueInvitationRequest,
     RemoveMemberRequest, Workspaces,
 };
 use crate::app_serving::AppActionServer;
@@ -252,7 +252,7 @@ const ADMINISTRATOR_ROLE: &str = "administrator";
 /// is kept for, who makes and unmakes its administrators and owners.
 const OWNER_ROLE: &str = "owner";
 
-/// One action a governed workspace publishes.
+/// One action a hosted workspace publishes.
 struct Verb {
     id: &'static str,
     label: &'static str,
@@ -1388,7 +1388,7 @@ impl Verb {
 /// caller ask, when `query` browses its apps: updating it to another version, keeping the one it
 /// runs or letting it be updated again, and uninstalling it.
 fn app_rows(
-    workspace: &super::GovernedWorkspace,
+    workspace: &super::HostedWorkspace,
     query: &CatalogueQuery,
     offered: impl Fn(&Verb) -> bool,
 ) -> Vec<CatalogueRow> {
@@ -1739,8 +1739,8 @@ fn request_id(person: &[u8; 32], invocation: InvocationId) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// A governed workspace, locked.
-type Governed = Arc<AsyncMutex<GovernedWorkspace>>;
+/// A hosted workspace, locked.
+type Listed = Arc<AsyncMutex<HostedWorkspace>>;
 
 /// Whether `caller` is the person's server key `certificate` certifies,
 /// reaching every workspace of its person: what may read that person's
@@ -1797,16 +1797,16 @@ impl Offer {
 impl Workspaces {
     /// The workspace `workspace_id` carries, and the certificate of `caller`'s
     /// device in it: the one the workspace's governance certified, or the server's
-    /// own. `None` for a workspace that carries no governed workspace, a device
+    /// own. `None` for a workspace that carries no hosted workspace, a device
     /// the workspace never certified, and a caller acting for nobody: a bot.
-    async fn governed_by(
+    async fn device_in_list(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-    ) -> Option<(Governed, DeviceCert)> {
+    ) -> Option<(Listed, DeviceCert)> {
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
-        let governed = self.held(workspace_id).await?;
-        let workspace = governed.lock().await;
+        let hosted = self.held(workspace_id).await?;
+        let workspace = hosted.lock().await;
         let host = &self.inner.host.cert;
         let cert = workspace
             .peer()
@@ -1816,7 +1816,7 @@ impl Workspaces {
             .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
         drop(workspace);
         (agents::acts_for_its_person(caller) && cert.user_public_key == *user)
-            .then_some((governed, cert))
+            .then_some((hosted, cert))
     }
 
     /// The certificate the workspace holds for `caller`'s device, when it holds one: the one a
@@ -1828,7 +1828,7 @@ impl Workspaces {
         caller: &Caller,
     ) -> Option<DeviceCert> {
         let workspace_id = workspace_id?;
-        self.governed_by(workspace_id, caller)
+        self.device_in_list(workspace_id, caller)
             .await
             .map(|(_, certificate)| certificate)
     }
@@ -1842,10 +1842,10 @@ impl Workspaces {
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-    ) -> Option<(Governed, DeviceCert)> {
+    ) -> Option<(Listed, DeviceCert)> {
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
-        let governed = self.held(workspace_id).await?;
-        let workspace = governed.lock().await;
+        let hosted = self.held(workspace_id).await?;
+        let workspace = hosted.lock().await;
         let host = &self.inner.host.cert;
         let cert = workspace
             .peer()
@@ -1858,7 +1858,7 @@ impl Workspaces {
             })
             .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
         drop(workspace);
-        (cert.user_public_key == *user).then_some((governed, cert))
+        (cert.user_public_key == *user).then_some((hosted, cert))
     }
 
     /// The actions of the workspace `workspace_id` this server runs itself (its
@@ -2135,11 +2135,11 @@ impl Workspaces {
         let operating = self
             .server_operator(workspace_id, caller, certificate)
             .await;
-        let Some((governed, device)) = self.governed_by(workspace_id, caller).await else {
+        let Some((hosted, device)) = self.device_in_list(workspace_id, caller).await else {
             // An agent of the person's asks what they ask of their servers: the workspace's
             // governance is not theirs.
-            if let Some((governed, _device)) = operating {
-                let workspace = governed.lock().await;
+            if let Some((hosted, _device)) = operating {
+                let workspace = hosted.lock().await;
                 offer.add(GOVERNANCE, workspace.workspace(), server::rows(&workspace));
             }
             return;
@@ -2151,7 +2151,7 @@ impl Workspaces {
         } else {
             Some(self.agent_grants(Some(workspace_id), caller).await)
         };
-        let workspace = governed.lock().await;
+        let workspace = hosted.lock().await;
         offer.generation = workspace.peer().governance().generation();
         let now = tilo_clock::unix_now_ns();
         let offered =
@@ -2503,12 +2503,12 @@ impl Workspaces {
         let action = address.action.as_str();
         let check = server::check_of(action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own grant is revoked by the key itself, whatever its grant may
-        // govern, or by the key that minted it. Its webhooks are its own records too.
+        // cover, or by the key that minted it. Its webhooks are its own records too.
         let key_revoke = matches!(
             action,
             REVOKE_KEY | WEBHOOKS | CREATE_WEBHOOK | DELETE_WEBHOOK
         );
-        let (governed, device) = match self.governed_by(workspace_id, caller).await {
+        let (hosted, device) = match self.device_in_list(workspace_id, caller).await {
             Some(found) => found,
             None if key_revoke => self
                 .grant_device(workspace_id, caller)
@@ -2516,13 +2516,8 @@ impl Workspaces {
                 .ok_or(ActionCallError::UnknownAction)?,
             None => return Err(ActionCallError::UnknownAction),
         };
-        if check == CHOOSES_SERVERS {
-            let mut workspace = governed.lock().await;
-            self.hand_kept_workspace_to(&mut workspace, device.user_public_key)
-                .await;
-        }
         let workspace = {
-            let workspace = governed.lock().await;
+            let workspace = hosted.lock().await;
             // A key its person revoked acts no longer: the workspace's record
             // of the revocation refuses every call it would make here, from
             // whichever API server it comes.
@@ -2912,11 +2907,11 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
         let id = call.args.required_text("grant")?.to_owned();
-        let governed = self
+        let hosted = self
             .workspace(call.workspace)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        let mut workspace = governed.lock().await;
+        let mut workspace = hosted.lock().await;
         let grant = workspace
             .peer()
             .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
@@ -3341,7 +3336,7 @@ impl Workspaces {
         &self,
         verb: &Verb,
         (caller, device): (&Caller, &DeviceCert),
-        workspace: &super::GovernedWorkspace,
+        workspace: &super::HostedWorkspace,
         grants: Option<&agents::AgentGrants>,
         now: u64,
     ) -> bool {
@@ -3365,7 +3360,7 @@ impl Workspaces {
             return false;
         }
         if verb.check == CHOOSES_SERVERS {
-            return self.may_choose_servers(workspace, device);
+            return Self::chooses_servers(workspace, device);
         }
         self.permits(
             device,
@@ -3381,7 +3376,7 @@ impl Workspaces {
     /// the server's person as anyone; the owner is removed by nobody, themselves included.
     fn member_rows(
         &self,
-        workspace: &super::GovernedWorkspace,
+        workspace: &super::HostedWorkspace,
         (query, own): (&CatalogueQuery, [u8; 32]),
         offered: impl Fn(&Verb) -> bool,
     ) -> Vec<CatalogueRow> {
@@ -3435,9 +3430,9 @@ impl Workspaces {
         let host = self
             .own()
             .map(|_| hex::encode(self.inner.host.cert.user_public_key));
-        let governed = self.workspace(workspace).await?;
-        let governed = governed.lock().await;
-        crate::workspaces::resources::member_rows(&governed.peer(), host.as_deref())
+        let hosted = self.workspace(workspace).await?;
+        let hosted = hosted.lock().await;
+        crate::workspaces::resources::member_rows(&hosted.peer(), host.as_deref())
             .map_err(CollaborationError::new)
     }
 
@@ -3765,16 +3760,16 @@ impl Workspaces {
                     && caller.user_public_key() == Some(&certificate.user_public_key)
             })
             .ok_or(ActionCallError::UnknownAction)?;
-        let governed = self
+        let hosted = self
             .held(workspace)
             .await
             .ok_or(ActionCallError::UnknownAction)?;
         let name = {
-            let governed = governed.lock().await;
-            if !governed.peer().is_member(&certificate.user_public_key) {
+            let hosted = hosted.lock().await;
+            if !hosted.peer().is_member(&certificate.user_public_key) {
                 return Err(ActionCallError::UnknownAction);
             }
-            governed.workspace().to_owned()
+            hosted.workspace().to_owned()
         };
         self.read_copies(&name).await
     }
@@ -4604,7 +4599,7 @@ fn addressed_workspace(address: &tilo_actions::ActionAddress) -> Option<Workspac
 impl Governing {
     /// What the workspace `workspace_id` names decides of its own tree, for `caller`: certified
     /// by this device's own certificate where the caller is this device, as its person on it
-    /// asks (the certificate [`Workspaces::governed_by`] reads for this device too), and
+    /// asks (the certificate [`Workspaces::device_in_list`] reads for this device too), and
     /// otherwise by the certificate the workspace reads itself.
     fn of(&self, workspace_id: Option<WorkspaceId>, caller: &Caller) -> InWorkspace {
         let certificate = self
@@ -4700,7 +4695,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 /// ([`super::person_learned`]).
 pub(super) const LEARNED: &str = "tilo.learned";
 
-/// The providers a server that governs workspaces answers itself.
+/// The providers a server that hosts workspaces answers itself.
 const PROVIDERS: [&str; 10] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
@@ -4721,17 +4716,17 @@ const PROVIDERS: [&str; 10] = [
     formats::PROVIDER,
 ];
 
-/// What a server that governs workspaces answers remote actions addressed to it
+/// What a server that hosts workspaces answers remote actions addressed to it
 /// with: the workspaces' governance (provider [`WORKSPACE_GOVERNANCE_PROVIDER`]), the
 /// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app action server its
 /// embedder supplied for everything else.
-pub(crate) struct GovernedServer {
+pub(crate) struct HostActionServer {
     pub(crate) governance: ServiceWorkspaceActions,
     /// Answers everything else, when the embedder serves apps.
     pub(crate) apps: Option<Arc<dyn AppActionServer>>,
 }
 
-impl GovernedServer {
+impl HostActionServer {
     /// Whether `message` from `caller` is the workspaces' to answer.
     fn governs(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
         match message {
@@ -4767,7 +4762,7 @@ impl GovernedServer {
     }
 }
 
-impl GovernedServer {
+impl HostActionServer {
     /// Whether `message` browses everything the workspace publishes: a
     /// catalogue page naming no provider, which the apps answer and the
     /// governance's own publishers join.
@@ -4803,9 +4798,9 @@ impl GovernedServer {
             if let RemoteActionMessage::CatalogueResponse {
                 result: Ok(page), ..
             } = &mut answer
-                && let Some(Ok(governed)) = publishers.await
+                && let Some(Ok(hosted)) = publishers.await
             {
-                for publisher in governed.providers {
+                for publisher in hosted.providers {
                     if publisher.browsable
                         && !page.providers.iter().any(|listed| {
                             listed.provider == publisher.provider
@@ -4850,7 +4845,7 @@ impl GovernedServer {
     }
 }
 
-impl AppActionServer for GovernedServer {
+impl AppActionServer for HostActionServer {
     fn shutdown(&self) {
         if let Some(apps) = &self.apps {
             apps.shutdown();

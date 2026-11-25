@@ -1,4 +1,4 @@
-//! A governed workspace record: one postcard struct whose field order is the
+//! A hosted workspace record: one postcard struct whose field order is the
 //! format, holding what the files beside it do not.
 //!
 //! The record ([`StoredResource`]) holds the join receipts not in the file
@@ -16,48 +16,14 @@ use tilo_user_identity::DeviceCert;
 
 use super::{DOCUMENT_VERSION, WorkspaceDocumentEntry};
 
-/// The record's layout.
+/// The record's layout. A record another build wrote is refused with the version it names, and
+/// left as it is.
 pub(super) const FORMAT: Format = Format {
-    name: "governed workspace document",
+    name: "hosted workspace document",
     version: DOCUMENT_VERSION,
-    oldest: 5,
-    steps: &[without_what_it_sent],
+    oldest: 6,
+    steps: &[],
 };
-
-/// Version 5 of the record, which kept the changes the workspace's host
-/// published in its own name.
-#[derive(Deserialize)]
-struct Version5 {
-    workspace: String,
-    workspace_id: WorkspaceId,
-    owner: DeviceCert,
-    peer: Vec<super::peer_parts::PeerPart>,
-    _generation: u64,
-    _outgoing: Vec<(Vec<u8>, bool)>,
-    _published: usize,
-    collaboration: JoinLog,
-    _filed_sends: u64,
-    filed_receipts: u64,
-}
-
-/// Version 5 brought up to 6: what the host published in its own name, and
-/// how far, goes. Each device sends what it wrote itself, and a member's
-/// change reaches the others as its device sent it.
-fn without_what_it_sent(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    let (_, rest) = postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
-    let kept: Version5 = postcard::from_bytes(rest).map_err(|error| error.to_string())?;
-    drop(bytes);
-    postcard::to_stdvec(&StoredResource {
-        version: 6,
-        workspace: kept.workspace,
-        workspace_id: kept.workspace_id,
-        owner: kept.owner,
-        peer: kept.peer,
-        collaboration: kept.collaboration,
-        filed_receipts: kept.filed_receipts,
-    })
-    .map_err(|error| error.to_string())
-}
 
 /// The record as it is written: the join receipts not in the file beside it
 /// yet, and how many that holds.

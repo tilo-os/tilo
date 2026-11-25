@@ -24,7 +24,7 @@ impl AppBrokerState {
     ///
     /// # Errors
     /// The call waits for the person ([`ActionCallError::ConfirmationRequired`]): it is for an
-    /// action the catalogue offers them, in a workspace this machine governs, that no grant of
+    /// action the catalogue offers them, in a workspace this machine hosts, that no grant of
     /// the workspace lets the app take or keeps it from. Without a person or a workspace, nobody
     /// can let it, and it is refused.
     pub(crate) fn app_action_consent(

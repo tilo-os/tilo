@@ -2,7 +2,7 @@
 //! the person joined, and the enrollment that brings a joined workspace's state
 //! here.
 //! A workspace's state — its people, what its apps recorded, its history — is held
-//! by the peer-state engine beside the layout ([`NativeWorkspaceOwner`]), in a file of
+//! by the peer-state engine beside the layout ([`DeviceWorkspaces`]), in a file of
 //! its own under this device's state ([`FILE`]). Joining redeems the invitation its
 //! entry answered with ([`tilo_peer_state::owner::enroll::prepare_and_complete`]),
 //! and a late joiner reads the whole history, not only what is recorded from now
@@ -33,7 +33,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::Change;
-use tilo_peer_state::owner::NativeWorkspaceOwner;
+use tilo_peer_state::owner::DeviceWorkspaces;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::{FileHost, open_file_with, owner_file_of};
 use tilo_user_identity::RevocationList;
@@ -170,7 +170,7 @@ impl Admission {
 
 /// This device's workspaces, and the identity they are held with.
 pub struct Engine {
-    owner: NativeWorkspaceOwner,
+    owner: DeviceWorkspaces,
     shown: Arc<Shown>,
     identity: DeviceIdentity,
     /// Where the workspaces' channels find this device's keys, once the channel service is running:
@@ -220,7 +220,7 @@ impl std::fmt::Debug for Engine {
 
 /// This device's channel keys, as its owner compacts the sealed histories of its records with
 /// them wherever it writes, linked or not
-/// ([`NativeWorkspaceOwner::keep_sealed_histories`]): those the workspace's host handed it
+/// ([`DeviceWorkspaces::keep_sealed_histories`]): those the workspace's host handed it
 /// ([`Engine::hand_keys`]), else its own channels'. A device that takes no part in a workspace's
 /// group (the host's own actions, which act as the host device) writes with the keys it was
 /// handed, so it compacts with them too: its records' histories fill with its writes, and a full
@@ -323,11 +323,7 @@ impl Engine {
     /// This device's workspaces as `owner` holds them, with the identity they are held under: what
     /// a host supplies whichever file, store or record it keeps them in.
     #[must_use]
-    pub fn holding(
-        owner: NativeWorkspaceOwner,
-        shown: Arc<Shown>,
-        identity: DeviceIdentity,
-    ) -> Self {
+    pub fn holding(owner: DeviceWorkspaces, shown: Arc<Shown>, identity: DeviceIdentity) -> Self {
         let keys = KeyProvider::default();
         let handed = Arc::<std::sync::Mutex<RouteKeys>>::default();
         let link = Arc::<std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>>::default();
@@ -780,9 +776,7 @@ impl Engine {
     pub fn members(&self, workspace: &str) -> Result<tilo_peer_state::MemberList, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
-            view.peer()
-                .governance()
-                .governed_members(tilo_clock::wall())
+            view.peer().governance().member_list(tilo_clock::wall())
         })
     }
 
@@ -808,7 +802,7 @@ impl Engine {
     pub fn policy(&self, workspace: &str) -> Result<WorkspacePolicy, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner
-            .with_current(workspace, |view| view.peer().governance().governed_policy())
+            .with_current(workspace, |view| view.peer().governance().member_policy())
     }
 
     /// Whether this device reads `app`'s `document` of `workspace` now, as its governance decides
@@ -1013,7 +1007,7 @@ impl Engine {
             .ok()
     }
 
-    /// Who governs the workspace, as the id its governance names. A joined workspace
+    /// Who owns the workspace, as the id its governance names. A joined workspace
     /// keeps the owner its host's governance has, never the person who joined.
     /// # Errors
     /// The workspace is not held here yet, or its governance cannot be read now.
@@ -1073,7 +1067,7 @@ impl Engine {
     }
 
     /// The engine's owner, for what holds the workspace's session.
-    pub fn owner(&self) -> &NativeWorkspaceOwner {
+    pub fn owner(&self) -> &DeviceWorkspaces {
         &self.owner
     }
 

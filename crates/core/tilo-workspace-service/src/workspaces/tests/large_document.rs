@@ -13,8 +13,8 @@ const APP: &str = "so.tilo.notes";
 fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     use automerge::transaction::Transactable as _;
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let mut workspace = GovernedWorkspace::create(
+    let (key, cert) = hosting_device();
+    let mut workspace = HostedWorkspace::create(
         dir.path(),
         "Team",
         &cert,
@@ -81,7 +81,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         "the parts it replaced are removed"
     );
 
-    let restored = GovernedWorkspace::open(workspace.path.clone(), None).unwrap();
+    let restored = HostedWorkspace::open(workspace.path.clone(), None).unwrap();
     assert_eq!(
         restored.peer().document(APP, "plan"),
         workspace.peer().document(APP, "plan")
@@ -104,7 +104,7 @@ fn the_large_record(text: &[u8]) -> Vec<u8> {
 }
 
 /// Every part of `workspace`'s record that is stored in a file of its own.
-fn stored(workspace: &GovernedWorkspace) -> Vec<peer_parts::PeerPart> {
+fn stored(workspace: &HostedWorkspace) -> Vec<peer_parts::PeerPart> {
     workspace
         .record
         .peer
@@ -115,7 +115,7 @@ fn stored(workspace: &GovernedWorkspace) -> Vec<peer_parts::PeerPart> {
 }
 
 /// When each of the record's stored parts was last written.
-fn written_at(workspace: &GovernedWorkspace) -> Vec<SystemTime> {
+fn written_at(workspace: &HostedWorkspace) -> Vec<SystemTime> {
     std::fs::read_dir(workspace.path.with_extension("parts"))
         .unwrap()
         .map(|entry| entry.unwrap().metadata().unwrap().modified().unwrap())
@@ -124,7 +124,7 @@ fn written_at(workspace: &GovernedWorkspace) -> Vec<SystemTime> {
 
 /// A stored part whose bytes no longer match its hash keeps `workspace` from opening.
 fn a_part_whose_hash_no_longer_matches_refuses_to_open(
-    workspace: &GovernedWorkspace,
+    workspace: &HostedWorkspace,
     parts: &[peer_parts::PeerPart],
 ) {
     let Some(peer_parts::PeerPart::Stored { digest, .. }) = parts.first() else {
@@ -137,5 +137,5 @@ fn a_part_whose_hash_no_longer_matches_refuses_to_open(
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[0] ^= 1;
     std::fs::write(&path, bytes).unwrap();
-    assert!(GovernedWorkspace::open(workspace.path.clone(), None).is_err());
+    assert!(HostedWorkspace::open(workspace.path.clone(), None).is_err());
 }

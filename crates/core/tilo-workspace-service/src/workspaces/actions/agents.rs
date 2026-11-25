@@ -95,7 +95,7 @@ pub(crate) fn acts_for_its_person(caller: &Caller) -> bool {
 /// What decides an agent's calls in one workspace: the grants there naming it,
 /// the bound the workspace's list of its agents keeps for it, as its person set
 /// it under Agents, and its delegation. Asked in no workspace, or in one not
-/// governed here, its delegation alone.
+/// hosted here, its delegation alone.
 pub(crate) struct AgentGrants {
     /// The agent: its id and the person its certificate chains to, whose grants alone reach
     /// it. `None` may do nothing here.
@@ -150,11 +150,11 @@ impl Workspaces {
         let Some(agent) = acting.member_id().filter(|member| member.is_agent()) else {
             return AgentGrants::NONE;
         };
-        let governed = match workspace_id {
+        let hosted = match workspace_id {
             Some(id) => self.held(id).await,
             None => None,
         };
-        let (Some(governed), Some(device)) = (governed, caller.device_public_key()) else {
+        let (Some(hosted), Some(device)) = (hosted, caller.device_public_key()) else {
             return AgentGrants {
                 agent: Some(agent.clone()),
                 workspace: String::new(),
@@ -163,7 +163,7 @@ impl Workspaces {
             };
         };
         let now = tilo_clock::unix_now_ns();
-        let member = governed
+        let member = hosted
             .lock()
             .await
             .peer()
@@ -189,7 +189,7 @@ impl Workspaces {
     /// read as `R`; `None` where the workspace has none.
     ///
     /// # Errors
-    /// The workspace is not governed here, or the resource does not read as `R`.
+    /// The workspace is not hosted here, or the resource does not read as `R`.
     pub async fn read_resource<R: tilo_resource::Resource>(
         &self,
         workspace: &str,

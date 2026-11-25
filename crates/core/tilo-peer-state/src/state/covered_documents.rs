@@ -3,7 +3,7 @@
 //!
 //! An empty record has no bytes to send anyone. Nothing of it travels: a device
 //! that joins after it was made is replayed no change of it, and no peer hands
-//! it over whole. The coverage row the governor signs says what it is — no
+//! it over whole. The coverage row an owner's device signs says what it is — no
 //! heads, the hash of the empty snapshot — and that is enough for a replica to
 //! hold it.
 
@@ -32,7 +32,7 @@ pub(super) fn hold_covered_empty_documents(peer: &mut StatePeer) -> Result<usize
         if coverage.workspace != peer.core.workspace
             || !coverage.heads.is_empty()
             || peer.core.documents.contains_key(&route)
-            || !peer.signed_by_governor(&coverage.author)
+            || !peer.signed_by_administrator(&coverage.author)
         {
             continue;
         }

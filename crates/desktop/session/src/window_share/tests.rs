@@ -256,7 +256,7 @@ fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> La
 
 /// `shell` under the governance the workspace's devices agree on: `owner` owns its workspace, and
 /// each of `members` holds their role there — the policy every member's messages are admitted by.
-fn governed(mut shell: Layout, owner: &str, members: &[(String, Role)]) -> Layout {
+fn with_member_list(mut shell: Layout, owner: &str, members: &[(String, Role)]) -> Layout {
     for workspace in &mut shell.workspaces {
         workspace.policy.owner = Some(owner.to_owned());
         for (person, role) in members {
@@ -1715,7 +1715,7 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     let viewer_person = person(0x32);
     let mut host = member_of(
         0x31,
-        governed(
+        with_member_list(
             own_shell(),
             &local_person,
             &[(viewer_person.clone(), Role::Viewer)],
@@ -1726,7 +1726,7 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     share(&mut host, APP, tab);
     let mut viewer = member_of(
         0x32,
-        governed(
+        with_member_list(
             showing(host.sync.publisher(), APP, tab),
             &local_person,
             &[(viewer_person, Role::Viewer)],
@@ -1782,7 +1782,7 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     let member_person = person(0x42);
     let mut host = member_of(
         0x41,
-        governed(
+        with_member_list(
             own_shell(),
             &local_person,
             &[(member_person.clone(), Role::Editor)],
@@ -1793,7 +1793,7 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     share(&mut host, APP, tab);
     let mut member = member_of(
         0x42,
-        governed(
+        with_member_list(
             showing(host.sync.publisher(), APP, tab),
             &local_person,
             &[(member_person, Role::Editor)],
@@ -1859,7 +1859,7 @@ mod menu;
 
 /// A window's share written into the workspace's own governance, and read from it on another
 /// device of the workspace.
-mod governed;
+mod listed_shares;
 
 /// Two members showing the one shared window at the same time, each a viewer of its own.
 mod viewers;

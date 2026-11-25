@@ -649,7 +649,7 @@ pub fn derived_rules(shortcut: &crate::Shortcut, catalog: &ActionCatalog) -> Vec
 /// The rules of `shortcut.grant` that no step and no trigger could use,
 /// judged by shape alone: an action rule must name the app and action of
 /// some step (or lowered `Ai` step), a read rule must be one a read step or
-/// a trigger needs. The governor runs this without a catalogue, so a program can never
+/// a trigger needs. The host runs this without a catalogue, so a program can never
 /// carry authority its steps do not even mention.
 #[must_use]
 pub fn unused_rules(shortcut: &crate::Shortcut) -> Vec<Rule> {

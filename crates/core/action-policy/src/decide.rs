@@ -76,7 +76,7 @@ pub fn decide<'g>(
     cx: &Context<'_>,
 ) -> Decision<'g> {
     let node = &*crate::roles::decided_node(node);
-    let governs = node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND);
+    let workspace_root = node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND);
     let mut best: Option<&'g Grant> = None;
     for grant in grants {
         if !grant.kinds.contains(kind)
@@ -88,7 +88,7 @@ pub fn decide<'g>(
         }
         let better = best.is_none_or(|held| {
             grant.node.cmp_specificity(&held.node).then_with(|| {
-                if governs {
+                if workspace_root {
                     held.answer.cmp(&grant.answer)
                 } else {
                     compare_content_rules(grant, held)
@@ -205,7 +205,8 @@ pub struct Cap {
 
 impl Cap {
     /// A device that is not the person's: it reads and changes content, asks
-    /// before reaching outside, and never governs.
+    /// before reaching outside, and never changes the workspace's members or
+    /// settings.
     pub const FOREIGN_DEVICE: Self = Self {
         content: Answer::Allow,
         outside: Answer::Ask,
@@ -237,7 +238,7 @@ impl Cap {
         }
     }
 
-    /// What this cap answers for `kind` at `node` in the workspace it governs.
+    /// What this cap answers for `kind` at `node` of the workspace it belongs to.
     fn answer(self, node: &TreePath, kind: ActionKind) -> Answer {
         if node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND) {
             return match kind {

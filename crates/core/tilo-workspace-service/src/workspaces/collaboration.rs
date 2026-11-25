@@ -1,8 +1,8 @@
-//! Invitations, their redemption and member administration of a governed
-//! workspace on this server.
+//! Invitations, their redemption and member administration of a workspace this
+//! server hosts.
 //!
-//! What a governor records between the steps of an exchange is the shared
-//! [`JoinLog`], the same on every host that governs workspaces; this module
+//! What a host records between the steps of an exchange is the shared
+//! [`JoinLog`], the same on every device that hosts workspaces; this module
 //! owns who may ask what of this server's workspaces, and the durability barrier
 //! before each answer.
 
@@ -11,7 +11,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::join::{JoinBootstrap, JoinCompleteRequest};
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
-use tilo_peer_state::join_log::{Administered, Governed, Signer};
+use tilo_peer_state::join_log::{Administered, Listed, Signer};
 pub use tilo_peer_state::join_log::{JoinError as CollaborationError, Redeeming};
 use tilo_server_protocol::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
@@ -24,10 +24,10 @@ use tilo_action_policy::{Actor, Grantee, MemberId, Role};
 use tilo_peer_state::ActionStamp;
 
 use super::authority::WorkspaceOp;
-use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
+use super::{HostedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
 use tilo_lock::MutexRecover as _;
 
-/// The person `person` (a root key in hex) as the governor's actor: who a
+/// The person `person` (a root key in hex) as the host's actor: who a
 /// governance change names as the one who decided it. `None` for a key that is
 /// no person.
 pub(super) fn actor_of(person: &str) -> Option<Actor> {
@@ -38,7 +38,7 @@ pub(super) fn actor_of(person: &str) -> Option<Actor> {
     .map(|person| Actor::Member(MemberId::person(person)))
 }
 
-/// The grantee `by` as the governor's actor: a person, or the workspace's
+/// The grantee `by` as the host's actor: a person, or the workspace's
 /// moderation bot.
 pub(super) fn actor_of_grantee(by: &Grantee) -> Option<Actor> {
     by.as_member().cloned().map(Actor::Member)
@@ -71,7 +71,7 @@ fn root(person: &str) -> Result<[u8; 32], String> {
 /// withdraws the member's invitations and keeps them out of the copy, an unban clears what kept
 /// them out.
 fn settle_moderation(
-    workspace: &mut GovernedWorkspace,
+    workspace: &mut HostedWorkspace,
     change: &tilo_action_policy::Change,
     target: Option<[u8; 32]>,
     now: u64,
@@ -158,21 +158,21 @@ pub(super) struct Written {
     answer: tokio::sync::oneshot::Sender<Result<(), CollaborationError>>,
 }
 
-impl GovernedWorkspace {
+impl HostedWorkspace {
     /// The workspace as its join log reads it: committed now, answered by
     /// `answering`, the device that answers its joins here.
-    pub(super) fn governed<'a>(&'a self, answering: &'a DeviceCert) -> Governed<'a> {
-        governed(&self.record, self.peer().into(), answering)
+    pub(super) fn hosted<'a>(&'a self, answering: &'a DeviceCert) -> Listed<'a> {
+        hosted(&self.record, self.peer().into(), answering)
     }
 
     /// The workspace as its join log reads it, from the state the caller
     /// holds: what a decision reads is what its commit is measured against.
-    pub(super) fn governed_from<'a>(
+    pub(super) fn logged_from<'a>(
         &'a self,
         peer: &'a tilo_peer_state::StatePeer,
         answering: &'a DeviceCert,
-    ) -> Governed<'a> {
-        governed(&self.record, peer.into(), answering)
+    ) -> Listed<'a> {
+        hosted(&self.record, peer.into(), answering)
     }
 
     /// Keep the people `removed` out of the workspace's public entry for the
@@ -196,14 +196,14 @@ impl GovernedWorkspace {
 
 /// `record` and `peer`, a workspace's committed state, as its join log reads
 /// it, answered by `answering`: the device that answers this workspace's
-/// joins here, which need not be the device that governs it.
-fn governed<'a>(
+/// joins here, which need not be the device that hosts it.
+fn hosted<'a>(
     record: &'a WorkspaceDocumentEntry,
     peer: tilo_peer_state::join_log::PeerRef<'a>,
     answering: &'a DeviceCert,
-) -> Governed<'a> {
+) -> Listed<'a> {
     let generation = peer.governance().generation();
-    Governed {
+    Listed {
         peer,
         host: answering,
         workspace_id: record.workspace_id,
@@ -287,11 +287,11 @@ impl Workspaces {
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let issued = {
-            let governed = self.workspace(workspace).await?;
-            let mut governed = governed.lock().await;
+            let hosted = self.workspace(workspace).await?;
+            let mut hosted = hosted.lock().await;
             self.authorize(
                 administrator,
-                Some(&governed),
+                Some(&hosted),
                 WorkspaceOp::admit(request.role, makes_administrator),
                 now,
             )?;
@@ -300,17 +300,17 @@ impl Workspaces {
             // workspace already shows for them, so the person it reaches
             // sees who asked them in, not "someone".
             if request.inviter_name.is_none() {
-                request.inviter_name = self.member_name(&governed, administrator);
+                request.inviter_name = self.member_name(&hosted, administrator);
             }
             if let Some(entry) = wait_list_entry
-                && !governed.wait_list.has(entry, now)
+                && !hosted.wait_list.has(entry, now)
             {
                 return Err(CollaborationError::new(
                     "that address is no longer on the wait list",
                 ));
             }
             let issued = self.stage_issue(
-                &mut governed,
+                &mut hosted,
                 administrator,
                 request,
                 makes_administrator,
@@ -318,7 +318,7 @@ impl Workspaces {
                 now,
             )?;
             if let Some(entry) = wait_list_entry {
-                governed
+                hosted
                     .wait_list
                     .invited(entry, issued.invite_id, now)
                     .map_err(CollaborationError::new)?;
@@ -337,7 +337,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, its policy does not read, its device
+    /// The workspace is not hosted here, its policy does not read, its device
     /// is no member, or the invitation cannot be issued.
     #[expect(
         clippy::significant_drop_tightening,
@@ -352,13 +352,13 @@ impl Workspaces {
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let issued = {
-            let governed = self.workspace(workspace).await?;
-            let mut governed = governed.lock().await;
+            let hosted = self.workspace(workspace).await?;
+            let mut hosted = hosted.lock().await;
             let person = hex::encode(device.user_public_key);
-            let policy = governed
+            let policy = hosted
                 .peer()
                 .governance()
-                .governed_policy()
+                .member_policy()
                 .map_err(CollaborationError::new)?;
             let role = match policy.active_role(&person) {
                 Some(role @ (Role::Viewer | Role::Commenter)) => role,
@@ -375,28 +375,28 @@ impl Workspaces {
                 recipient_user_public_key: Some(device.user_public_key),
                 invitee_name: None,
                 expires_at_ns,
-                inviter_name: self.member_name(&governed, device),
+                inviter_name: self.member_name(&hosted, device),
             };
-            self.stage_issue(&mut governed, device, request, false, address, now)?
+            self.stage_issue(&mut hosted, device, request, false, address, now)?
         };
         self.written(workspace, false).await?;
         Ok(issued)
     }
 
-    /// The name `governed` shows for the person `device` belongs to, where
-    /// they chose one an invitation can carry.
-    fn member_name(&self, governed: &GovernedWorkspace, device: &DeviceCert) -> Option<String> {
-        self.member_name_by_root(governed, device.user_public_key)
+    /// The name the hosted workspace shows for the person `device` belongs
+    /// to, where they chose one an invitation can carry.
+    fn member_name(&self, hosted: &HostedWorkspace, device: &DeviceCert) -> Option<String> {
+        self.member_name_by_root(hosted, device.user_public_key)
     }
 
-    /// The name `governed` shows for the person whose root is `root`, where
-    /// they chose one an invitation can carry.
+    /// The name the hosted workspace shows for the person whose root is
+    /// `root`, where they chose one an invitation can carry.
     pub(super) fn member_name_by_root(
         &self,
-        governed: &GovernedWorkspace,
+        hosted: &HostedWorkspace,
         root: [u8; 32],
     ) -> Option<String> {
-        self.people(governed)
+        self.people(hosted)
             .members
             .into_iter()
             .find(|member| member.root() == Some(root) && !member.removed)
@@ -407,7 +407,7 @@ impl Workspaces {
     /// `address` ([`Self::invitation_addr`]).
     pub(super) fn stage_issue(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
         makes_administrator: bool,
@@ -418,7 +418,7 @@ impl Workspaces {
         let transport = vec![self.invitation_hint(workspace, address)?];
         let mut log = workspace.collaboration().clone();
         let issued = log.issue_as(
-            &workspace.governed(self.device_cert()),
+            &workspace.hosted(self.device_cert()),
             administrator,
             request,
             makes_administrator,
@@ -531,20 +531,16 @@ impl Workspaces {
             .environments
             .refuse_joining(&device.device_public_key, now)?;
         let held = self.workspace(workspace).await?;
-        let mut governed = held.lock().await;
+        let mut hosted = held.lock().await;
         // A key whose grant this workspace records as revoked never enters it
         // again, whichever API server it comes through.
-        refuse_revoked(&governed, device)?;
-        if governed
-            .peer()
-            .governance()
-            .removed_from_member_list(device)
-        {
+        refuse_revoked(&hosted, device)?;
+        if hosted.peer().governance().removed_from_member_list(device) {
             return Err(CollaborationError::new(
                 tilo_peer_state::REMOVED_DEVICE_REFUSED,
             ));
         }
-        let governance = governed
+        let governance = hosted
             .peer()
             .governance_messages()
             .map_err(CollaborationError::new)?;
@@ -559,17 +555,17 @@ impl Workspaces {
         .map_err(CollaborationError::new)?;
         let changed = !row.is_empty();
         if changed {
-            self.take_own_row(&mut governed, device, &row, now)
+            self.take_own_row(&mut hosted, device, &row, now)
                 .await
                 .map_err(CollaborationError::new)?;
         } else if !self
-            .decides_for(governed.workspace_id(), device.device_public_key)
+            .decides_for(hosted.workspace_id(), device.device_public_key)
             .await
         {
             // Listed already, but an earlier entry can have been cut off between
             // committing its row and settling it: settle what governance holds
             // before answering, so the device's changes are decided against it.
-            self.settle(&mut governed).await?;
+            self.settle(&mut hosted).await?;
         }
         Ok(changed)
     }
@@ -803,7 +799,7 @@ impl Workspaces {
             }
             document
         };
-        let policy = workspace.peer().governance().governed_policy()?;
+        let policy = workspace.peer().governance().member_policy()?;
         let actor = hex::encode(caller.user_public_key);
         let changes = collab_types::document_access_changes(
             &policy,
@@ -868,7 +864,7 @@ impl Workspaces {
             request_digest(&grants)?,
             |peer| {
                 peer.governance_mut()
-                    .put_governed_grants(&grants, &key, system_time(now))
+                    .put_member_grants(&grants, &key, system_time(now))
             },
             now,
         )
@@ -911,7 +907,7 @@ impl Workspaces {
                 request_digest(&("workspace.grants.remove", &ids))?,
                 |peer| {
                     peer.governance_mut()
-                        .remove_governed_grants(&ids, &key, system_time(now))
+                        .remove_member_grants(&ids, &key, system_time(now))
                 },
                 now,
             )
@@ -1009,7 +1005,7 @@ impl Workspaces {
         let verb = if workspace
             .peer()
             .governance()
-            .governed_policy()
+            .member_policy()
             .map_err(CollaborationError::new)?
             .members
             .contains_key(&hex::encode(user_public_key))
@@ -1193,8 +1189,8 @@ impl Workspaces {
     }
 
     /// Remove, ban or unban, decided by who asks: a device of the server's
-    /// user governs its workspaces, and any other member by the workspace's grants on
-    /// the action (the Moderator role holds them).
+    /// user administers its workspaces, and any other member by the
+    /// workspace's grants on the action (the Moderator role has them).
     async fn change_membership(
         &self,
         workspace: &str,
@@ -1242,7 +1238,7 @@ impl Workspaces {
                         peer.governance_mut()
                             .unban_member(target, &key, system_time(now))
                     }
-                    Membership::Restrict(until_ms) => peer.governance_mut().put_governed_grants(
+                    Membership::Restrict(until_ms) => peer.governance_mut().put_member_grants(
                         &[tilo_action_policy::roles::restriction_grant(
                             &identity,
                             &person,
@@ -1252,7 +1248,7 @@ impl Workspaces {
                         &key,
                         system_time(now),
                     ),
-                    Membership::Unrestrict => peer.governance_mut().remove_governed_grants(
+                    Membership::Unrestrict => peer.governance_mut().remove_member_grants(
                         &[tilo_action_policy::roles::restriction_grant_id(&person)],
                         &key,
                         system_time(now),
@@ -1315,7 +1311,7 @@ impl Workspaces {
         let policy = workspace
             .peer()
             .governance()
-            .governed_policy()
+            .member_policy()
             .map_err(CollaborationError::new)?;
         let authority = tilo_action_policy::Authority::person(
             policy.party_of(tilo_action_policy::Grantee::bot(bot)),
@@ -1360,7 +1356,7 @@ impl Workspaces {
                         .governance_mut()
                         .unban_member(root(person)?, &key, system_time(now)),
                     tilo_action_policy::Change::Restrict { person, until_ms } => {
-                        peer.governance_mut().put_governed_grants(
+                        peer.governance_mut().put_member_grants(
                             &[tilo_action_policy::roles::restriction_grant(
                                 &identity,
                                 person,
@@ -1373,7 +1369,7 @@ impl Workspaces {
                     }
                     tilo_action_policy::Change::Unrestrict { person } => {
                         root(person)?;
-                        peer.governance_mut().remove_governed_grants(
+                        peer.governance_mut().remove_member_grants(
                             &[tilo_action_policy::roles::restriction_grant_id(person)],
                             &key,
                             system_time(now),
@@ -1397,12 +1393,12 @@ impl Workspaces {
         Ok(completion)
     }
 
-    /// Commit `command`, a membership change this host's own device makes, in `workspace` as the
-    /// workspace's governor, with `receipt`, what the workspace's history says of it, in the
-    /// same change. The host writes the workspace's history, so its history has one
-    /// writer, and the device's own replica only ever receives what is written here. The
-    /// workspace's policy decides the change against the host's grants, as it decides any
-    /// member's.
+    /// Commit `command`, a membership change this host's own device makes, in
+    /// `workspace` as its host, with `receipt`, what the workspace's history
+    /// says of it, in the same change. The host writes the workspace's history,
+    /// so its history has one writer, and the device's own replica only ever
+    /// receives what is written here. The workspace's policy decides the change
+    /// against the host's grants, as it decides any member's.
     ///
     /// Answers the workspace's generation that carries the change, and the
     /// changes it added to the workspace's document, for the device's replica
@@ -1475,7 +1471,7 @@ impl Workspaces {
     /// schedule's progress belongs there: it is the workspace's state
     /// whichever key holder holds the workspace, so a group of desktops with
     /// no server keeps it as a hosted workspace does. The receiver decides the
-    /// change against `device`'s grants as any member's write; a governor's
+    /// change against `device`'s grants as any member's write; the host's
     /// device may make any undoable change.
     ///
     /// Answers what `change` answered. A change that wrote nothing is not
@@ -1637,7 +1633,7 @@ impl Workspaces {
     /// Choose the version of an app `workspace` runs for every member, or take
     /// the choice back ([`WorkspaceMembershipCommand::InstallApp`],
     /// [`WorkspaceMembershipCommand::UninstallApp`]), as a member the workspace
-    /// lets install apps. The choice is a governed change every member
+    /// lets install apps. The choice is a workspace change every member
     /// reads ([`Self::app_versions`]); each is to run it, and a
     /// change made with another version waits until its author has.
     ///
@@ -1660,7 +1656,7 @@ impl Workspaces {
             Command::InstallApp(_) | Command::UninstallApp { .. }
         ) {
             return Err(CollaborationError::new(
-                "only installing or uninstalling an app version governs an app",
+                "only an install or uninstall changes an app version",
             ));
         }
         self.govern_as_member(
@@ -1712,7 +1708,7 @@ impl Workspaces {
                 | Command::RevokePublisher { .. }
         ) {
             return Err(CollaborationError::new(
-                "only a trust list change governs the packages a workspace trusts",
+                "only a trust list change decides the packages a workspace trusts",
             ));
         }
         self.govern_as_member(
@@ -1749,7 +1745,7 @@ impl Workspaces {
                 | Command::SetRegistryChannel { .. }
         ) {
             return Err(CollaborationError::new(
-                "only a registry change governs where a workspace fetches apps",
+                "only a registry change decides where a workspace fetches apps",
             ));
         }
         self.govern_as_member(
@@ -1841,7 +1837,7 @@ impl Workspaces {
     }
 
     /// Change what the call in `channel` of `workspace` allows, as `member`, whom the workspace
-    /// must grant `call`: a governed change every member's live session holds the call to.
+    /// must grant `call`: a workspace change every member's live session follows the call to.
     ///
     /// # Errors
     /// Refuses a malformed channel, and a member the workspace does not let moderate calls.
@@ -1953,7 +1949,7 @@ impl Workspaces {
 
     pub(super) async fn administer(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         request_id: [u8; 32],
         digest: [u8; 32],
         change: impl FnOnce(&mut tilo_peer_state::StatePeer) -> Result<bool, String>,
@@ -1969,7 +1965,7 @@ impl Workspaces {
     /// change is otherwise the same, in the same order and admitted the same.
     pub(super) async fn administer_as(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &mut HostedWorkspace,
         request_id: [u8; 32],
         digest: [u8; 32],
         change: impl FnOnce(&mut tilo_peer_state::StatePeer) -> Result<bool, String>,
@@ -2075,15 +2071,15 @@ impl Workspaces {
     }
 }
 
-/// A workspace of this server while a governor decides, under its lock: whether
+/// A workspace of this server while the host decides, under its lock: whether
 /// its log changed unwritten, and whether a governance change was
 /// committed that its members have not been sent yet.
 pub(super) struct HeldWorkspace<'a> {
     key: &'a SigningKey,
     /// The device answering this workspace's joins: this server's own, which
-    /// need not be the device that governs the workspace.
+    /// need not be the device that hosts the workspace.
     answering: &'a DeviceCert,
-    workspace: &'a mut GovernedWorkspace,
+    workspace: &'a mut HostedWorkspace,
     /// The workspace's state, held for the decision: a member's write reaches
     /// the replica over the link it syncs on, without this workspace's lock.
     replica: &'a mut tilo_peer_state::StatePeer,
@@ -2095,7 +2091,7 @@ impl<'a> HeldWorkspace<'a> {
     pub(super) const fn new(
         key: &'a SigningKey,
         answering: &'a DeviceCert,
-        workspace: &'a mut GovernedWorkspace,
+        workspace: &'a mut HostedWorkspace,
         replica: &'a mut tilo_peer_state::StatePeer,
     ) -> Self {
         Self {
@@ -2114,15 +2110,14 @@ impl<'a> HeldWorkspace<'a> {
         &mut self,
         peer: tilo_peer_state::StatePeer,
         now: u64,
-        log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
+        log: &mut dyn FnMut(&Listed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
         self.workspace.keep_held(
             self.replica,
             peer,
             (self.key, system_time(now)),
             |record, peer| {
-                log(&governed(record, peer.into(), self.answering))
-                    .map_err(|error| error.to_string())
+                log(&hosted(record, peer.into(), self.answering)).map_err(|error| error.to_string())
             },
         )?;
         // The commit wrote the whole record, the log staged before
@@ -2138,8 +2133,8 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         self.workspace.workspace()
     }
 
-    fn governed(&self) -> Governed<'_> {
-        self.workspace.governed_from(self.replica, self.answering)
+    fn hosted(&self) -> Listed<'_> {
+        self.workspace.logged_from(self.replica, self.answering)
     }
 
     fn log(&self) -> &CollaborationState {
@@ -2157,7 +2152,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         &mut self,
         peer: tilo_peer_state::StatePeer,
         now: u64,
-        log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
+        log: &mut dyn FnMut(&Listed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
         self.keep(peer, now, log)
     }
@@ -2166,13 +2161,13 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         &mut self,
         peer: tilo_peer_state::StatePeer,
         now: u64,
-        log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
+        log: &mut dyn FnMut(&Listed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
         self.keep(peer, now, log)
     }
 }
 
-/// This server's workspaces, to the governor that answers their workspace-join
+/// This server's workspaces, to the host that answers their workspace-join
 /// exchange: a change is staged in the workspace's record and written once for
 /// everyone who staged one meanwhile (`Workspaces::written`); a governance
 /// change is committed under the workspace's lock and published before the
@@ -2259,7 +2254,7 @@ impl JoinWorkspaces for Workspaces {
     }
 }
 
-impl GovernedWorkspace {
+impl HostedWorkspace {
     /// Whether a device redeemed the invitation `invite_id`.
     pub(super) fn redeemed(&self, invite_id: [u8; 32]) -> bool {
         self.collaboration().redeemed(invite_id)
@@ -2275,7 +2270,7 @@ pub(super) use tilo_peer_state::join_log::request_digest;
 
 /// A refusal of `device` when `workspace` keeps it as a revoked key.
 fn refuse_revoked(
-    workspace: &GovernedWorkspace,
+    workspace: &HostedWorkspace,
     device: &DeviceCert,
 ) -> Result<(), CollaborationError> {
     let revoked_ms = workspace
@@ -2293,7 +2288,7 @@ fn refuse_revoked(
 }
 
 /// The devices `workspace`'s governance keeps as keys its person revoked.
-pub(super) fn revoked_keys(workspace: &GovernedWorkspace) -> Vec<[u8; 32]> {
+pub(super) fn revoked_keys(workspace: &HostedWorkspace) -> Vec<[u8; 32]> {
     workspace
         .peer()
         .governance()

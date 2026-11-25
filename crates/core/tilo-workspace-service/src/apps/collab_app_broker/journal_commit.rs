@@ -360,7 +360,7 @@ impl AppBrokerState {
             return Ok(record);
         }
         self.owner_health()?;
-        // The normal service supplies actual current governor ownership and exact owner retry.
+        // The normal service supplies actual current host ownership and exact owner retry.
         // A saved request grants no authority, and no unavailable service fallback is allowed.
         let (workspace, redacted) = prepared.receipt();
         if let Err(error) = self

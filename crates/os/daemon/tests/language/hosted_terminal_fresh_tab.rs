@@ -1,4 +1,4 @@
-//! A Terminal window on a fresh tab of the workspace the daemon governs gets its shell.
+//! A Terminal window on a fresh tab of the workspace the daemon hosts gets its shell.
 //!
 //! The window shows its tab's default session record, which nothing wrote yet, and asks the
 //! workspace's host to open that session's shell on a terminal: the shell lives with the

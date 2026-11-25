@@ -62,7 +62,7 @@ fn device(name: &str, doc: crate::fixtures::Workspace, packages: &[(&str, &str)]
     device_with(name, policy(), doc, packages)
 }
 
-/// As [`device`], in a workspace governed by `policy`: a test of who reads what names the
+/// As [`device`], in a workspace with `policy`: a test of who reads what names the
 /// members and grants that decide it.
 fn device_with(
     name: &str,
