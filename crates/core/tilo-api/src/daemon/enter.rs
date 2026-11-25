@@ -118,8 +118,8 @@ pub async fn connect_signed(
         .server_address
         .as_ref()
         .ok_or_else(|| anyhow!(LOGIN_ENDED))?;
-    let signed = signed_over_iroh(device, address)?;
-    let entered = Entered::enter_lent(None, &signed, signer, lent).await?;
+    let sign_in = signed_over_iroh(device, address)?;
+    let entered = Entered::enter_lent(None, &sign_in, signer, lent).await?;
     enter_own_workspace(&entered);
     Ok(entered)
 }
