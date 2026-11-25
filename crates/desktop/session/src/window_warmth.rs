@@ -390,11 +390,15 @@ mod tests {
     }
 
     /// With no settings store (`stamp()` is `None`), `Windows::new` loads once and
-    /// `follow_settings` skips later passes.
+    /// `follow_settings` skips later passes. No store is no source installed, and no profile for
+    /// the file a session leaves its settings in for the processes outside it: an empty home and
+    /// no config root, which `source()` would otherwise answer through.
     #[test]
     fn without_a_settings_store_windows_follow_skips_reload() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("HOME", "").remove("XDG_DATA_HOME");
+        env.set("HOME", "")
+            .remove("XDG_DATA_HOME")
+            .remove("XDG_CONFIG_HOME");
         let _scope = settings_store::scoped_source(None);
         assert_eq!(settings_store::stamp(), None);
 
