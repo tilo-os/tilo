@@ -7,7 +7,5 @@
 
 #[path = "connector.rs"]
 mod connector;
-#[path = "voice.rs"]
-mod voice;
 #[path = "worker.rs"]
 mod worker;

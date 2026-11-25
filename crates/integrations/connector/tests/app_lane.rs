@@ -31,6 +31,7 @@ use tilo_actions::remote::call::{
 };
 use tilo_actions::remote::{ActionCallError, LineClient, RemoteActionFrame, TestProvider};
 use tilo_live::app_call::{AppLane, CallSetup, MIXED};
+use tilo_live::calls::{CallRule, Directions};
 use tilo_live::live::Track;
 use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::presence::{Board, Call, Own};
@@ -71,6 +72,11 @@ fn local_relay() -> Relay {
 }
 
 fn setup(relay: &Relay, keys: ContentKeys) -> CallSetup {
+    setup_ruled(relay, keys, BTreeMap::new())
+}
+
+/// The device's setup in a workspace whose calls hold `rules`.
+fn setup_ruled(relay: &Relay, keys: ContentKeys, rules: BTreeMap<String, CallRule>) -> CallSetup {
     // The session the device's daemon holds, as a local relay serves it here, and the device's
     // one word in it: a device with no desktop session says who it is from its certificate.
     let session = LiveSession::local(
@@ -85,7 +91,7 @@ fn setup(relay: &Relay, keys: ContentKeys) -> CallSetup {
         },
     )
     .expect("a local live session");
-    session.set_calls(BTreeMap::new(), BTreeMap::new());
+    session.set_calls(rules, BTreeMap::new());
     let session = Arc::new(session);
     let speaker = Speaker::start(
         &session,
@@ -639,5 +645,87 @@ fn two_people_speaking_at_once_reach_the_app_as_one_mixed_stream() {
         decoder.decode(&mixed.opus, &mut pcm, false).unwrap(),
         FRAME_SAMPLES as usize,
         "the mix is one 20 ms frame"
+    );
+}
+
+#[test]
+fn an_outside_person_the_call_denies_is_not_heard_in_it() {
+    let runtime = runtime();
+    let _entered = runtime.enter();
+    let relay = local_relay();
+    let keys = keys();
+    let roster = Roster::new([GRACE, ADA, BRIDGE]);
+    // The call lets Dana, reached through the bridge, listen but not speak.
+    let dana_key = collab_types::presence::stand_in(BRIDGE, "discord:7001");
+    let mut rule = CallRule::default();
+    rule.denied.insert(
+        hex::encode(dana_key),
+        Directions {
+            publish: true,
+            subscribe: false,
+        },
+    );
+    let rules = BTreeMap::from([(CALL.to_owned(), rule)]);
+    let (server, client) = UnixStream::pair().unwrap();
+    let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
+    let out: tilo_live::app_call::Out = {
+        let written = Arc::clone(&written);
+        Arc::new(move |line: String| {
+            let mut stream = written.lock().unwrap();
+            let _ = writeln!(stream, "{line}");
+            let _ = stream.flush();
+        })
+    };
+    let lane = AppLane::new(Ok(setup_ruled(&relay, keys.clone(), rules.clone())), out);
+    serve(server, lane, written);
+    let app = app(client);
+    let mut grace = Member::new(&relay, &keys, &roster, GRACE, "Grace");
+    grace.live.set_calls(rules, BTreeMap::new());
+    grace.live.set_call_keys(CALL, 0, keys);
+    app.carry_call(Some(BridgedCall {
+        outside: OUTSIDE.into(),
+        tilo: CALL.into(),
+    }))
+    .expect("the pair was carried");
+    app.report_call(SaidReport {
+        calls: vec![OutsideCall {
+            call: OUTSIDE.into(),
+            people: vec![OutsidePerson {
+                account: "7001".into(),
+                name: "Dana".into(),
+                avatar_url: None,
+                avatar: None,
+                muted: false,
+                deafened: false,
+            }],
+        }],
+        link: SaidLink::Joined {
+            call: OUTSIDE.into(),
+        },
+        status: String::new(),
+    })
+    .expect("the report was taken");
+    until(&mut grace, "the bridge carries the call", |grace| {
+        grace
+            .callers()
+            .into_iter()
+            .find(|caller| caller.bridge.is_some())
+    });
+    for _ in 0..100 {
+        app.hear_call(CallAudio {
+            speaker: "7001".into(),
+            opus: vec![6, 6],
+            skipped: 0,
+        })
+        .unwrap();
+        grace.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        grace
+            .voices
+            .iter()
+            .all(|(who, opus)| *who != Some(dana_key) && opus != &[6, 6]),
+        "a participant the call denies is not heard"
     );
 }
