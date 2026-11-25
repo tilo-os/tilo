@@ -60,6 +60,9 @@ type PrintDocument (readers: author) {
     failed: Text = ""
     /// Why the printer was not accepted, from the last try.
     trouble: Text = ""
+    /// Another app handed it over to print: the person's own windows show the print form until
+    /// they choose a place themselves. Their document, so no one else's window moves.
+    handed: Bool = false
 }
 
 /// An option a printer reports, with what it is called and whether it is its default.
@@ -84,9 +87,6 @@ type PrintCentre {
     documents: Collection<PrintDocument>
     scans: Collection<ScanSession>
     options: PrinterOptions
-    /// The place another app asked this window to show: a document it handed over is ready to
-    /// print. The person's own choice of place takes the window back.
-    showing: Text = ""
 }
 
 root print_centre: PrintCentre
@@ -274,12 +274,21 @@ action absorb_document(p: PrintCentre, file: File) {
 /// it over never needs this window's own files.
 action print_file(p: PrintCentre, file: File) {
     absorb_document(p, file)
-    p.showing = "print"
+    let doc = document_of(p)
+    doc.handed = true
 }
 
-/// Leaves the place another app asked this window to show, so the person's own choice stands.
-action clear_showing(p: PrintCentre) {
-    p.showing = ""
+/// Leaves the print form a handed-over document opened, so the person's own choice of place
+/// stands.
+action leave_handed(p: PrintCentre) {
+    if let doc = p.documents.first() {
+        doc.handed = false
+    }
+}
+
+/// Whether a document another app handed over waits on the person's print form.
+fn handed(p: PrintCentre) -> Bool {
+    if let doc = p.documents.first() { doc.handed } else { false }
 }
 
 /// Prints the chosen document on the chosen printer, with the form's settings.
@@ -576,16 +585,21 @@ view window(p: PrintCentre) {
     state crop_edges: List<Float> = [0.0, 0.0, 1.0, 1.0]
     let printers = device.printers
     let scanners = device.scanners
-    // A document another app handed over opens the print form, so the person chooses the
+    // A document another app handed over opens the person's print form, so they choose the
     // printer and how it prints; any place they pick takes the window back.
-    let here = if p.showing != "" { p.showing } else { place }
+    let here = if handed(p) { "print" } else { place }
+    on show dashboard "Print overview": set(place, "dashboard").then(leave_handed(p))
+    on show queue "Print queue": set(place, "queue").then(leave_handed(p))
+    on show history "Print history": set(place, "history").then(leave_handed(p))
+    on show print "Print a document": set(place, "print").then(leave_handed(p))
+    on show scan "Scanner": set(place, "scan").then(leave_handed(p))
     ui.NavShell(content_kind: .page, title: "Print Centre", sidebar_title: "Print Centre") {
         sidebar: {
             stack {
                 ui.NavList(selected: here) {
                     ui.NavSection("Printing") {
                         ui.NavItem("dashboard", "Overview", icon: .gauge) {
-                            on select: set(place, "dashboard").then(clear_showing(p))
+                            on select: set(place, "dashboard").then(leave_handed(p))
                         }
                         ui.NavItem(
                             "queue",
@@ -593,24 +607,24 @@ view window(p: PrintCentre) {
                             icon: .list,
                             count: printers.jobs.count(job -> job_active(job)),
                         ) {
-                            on select: set(place, "queue").then(clear_showing(p))
+                            on select: set(place, "queue").then(leave_handed(p))
                         }
                         ui.NavItem("history", "History", icon: .clock) {
-                            on select: set(place, "history").then(clear_showing(p))
+                            on select: set(place, "history").then(leave_handed(p))
                         }
                         ui.NavItem("print", "Print a document", icon: .printer) {
-                            on select: set(place, "print").then(clear_showing(p))
+                            on select: set(place, "print").then(leave_handed(p))
                         }
                     }
                     ui.NavSection("The machine") {
                         ui.NavItem("diagnostics", "Diagnostics", icon: .activity) {
-                            on select: set(place, "diagnostics").then(clear_showing(p))
+                            on select: set(place, "diagnostics").then(leave_handed(p))
                         }
                         ui.NavItem("discover", "Find printers", icon: .search) {
-                            on select: set(place, "discover").then(clear_showing(p))
+                            on select: set(place, "discover").then(leave_handed(p))
                         }
                         ui.NavItem("scan", "Scan", icon: .scan_line, count: scan_page_count(p)) {
-                            on select: set(place, "scan").then(clear_showing(p))
+                            on select: set(place, "scan").then(leave_handed(p))
                         }
                     }
                 }

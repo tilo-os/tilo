@@ -105,6 +105,14 @@ d-ekbl57nl-filter-copies = Kopien
 
 d-ekbl57nl-filter-two_sided = Beidseitig
 
+d-ekbl57nl-filter-handed = Übergeben
+
+d-6i7qoal4 = Übergeben
+    .doc = Eine andere App hat es zum Drucken übergeben: die eigenen Fenster der Person zeigen das Druckformular, bis sie selbst einen Ort wählt. Ihr Dokument, also bewegt sich kein anderes Fenster.
+
+d-v5umccuj = Übergabe verlassen
+    .doc = Verlässt das Druckformular, das ein übergebenes Dokument geöffnet hat, damit die eigene Wahl des Ortes gilt.
+
 d-z4uteclq = Wahl
     .doc = An option a printer reports, with what it is called and whether it is its default.
     .noun = { $count ->
@@ -291,16 +299,10 @@ d-evzstlhr = Dokument übernehmen
 
 d-evzstlhr-file = Datei
 
-d-juk2pzrk = Anzeige
-    .doc = Der Ort, den eine andere App dieses Fenster anzeigen lässt: ein übergebenes Dokument ist bereit zum Drucken.
-
 d-4bljtzpr = Datei drucken
     .doc = Nimmt ein von einer anderen App übergebenes Dokument als das, was dieses Fenster druckt, und zeigt das Druckformular, damit man den Drucker und die Art des Drucks wählt: die eine Aktion, die eine App für eine Datei aufruft, die sie erzeugt hat.
 
 d-4bljtzpr-file = Datei
-
-d-afraogqy = Anzeige aufheben
-    .doc = Verlässt den Ort, den eine andere App dieses Fenster anzeigen ließ, damit die eigene Wahl gilt.
 
 d-khrlaoyo = An den Drucker senden
     .doc = Druckt das gewählte Dokument auf dem gewählten Drucker mit den Einstellungen des Formulars.
@@ -464,6 +466,16 @@ d-m2njqkkd = Fenster
     .w-look-for-printers = Drucker suchen
     .w-no-printer-service = Kein Druckerdienst
     .w-this-computer-cannot-print-no-printer = Dieser Computer kann nicht drucken: kein Druckerdienst antwortet.
+
+d-v5noy2r3 = Druckübersicht
+
+d-4x3af6ql = Druckwarteschlange
+
+d-femxsmri = Druckverlauf
+
+d-x7ix7hae = Ein Dokument drucken
+
+d-apnoqrhc = Scanner
 
 d-bu6ryoak = Übersicht
     .w-printers = Drucker

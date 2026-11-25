@@ -495,8 +495,10 @@ fn choosing_a_document_on_a_printer_asks_the_engine_for_its_options() {
     );
 }
 
-/// A document another app hands over is what this window prints, and the window opens on the
-/// print form so the person chooses the printer and how it prints there.
+/// A document another app hands over is what this window prints, and the person's own window
+/// opens on the print form so they choose the printer and how it prints there. What sends the
+/// window there is their own document (`readers: author`), never a field of the shared record,
+/// so it reaches no other member's window.
 #[test]
 fn a_file_another_app_hands_over_becomes_the_document_to_print() {
     let app = Installed::new();
@@ -518,6 +520,7 @@ fn a_file_another_app_hands_over_becomes_the_document_to_print() {
         app.engine.ops()
     );
     let window = app.window();
+    assert_eq!(place_of(&window), Value::text("print"));
     assert!(
         contains(&window, "Example page.pdf"),
         "{:?}",
@@ -528,15 +531,26 @@ fn a_file_another_app_hands_over_becomes_the_document_to_print() {
         "the printer the document prints on is offered: {:?}",
         shown(&window)
     );
-
-    // The person's own choice of place takes the window back from the handed document.
-    app.call("clear_showing", vec![app.root_value()]);
+    // The person's own choice of place takes the window back from the handed document: a place
+    // they open from the launcher, as one they pick in the sidebar.
+    assert!(window.show_place("history").expect("the history opens"));
     let window = app.window();
+    assert_eq!(place_of(&window), Value::text("history"));
     assert!(
         !contains(&window, "Example page.pdf"),
         "{:?}",
         shown(&window)
     );
+}
+
+/// The place the window's sidebar shows chosen.
+fn place_of(view: &ViewInstance) -> Value {
+    view.tree()
+        .of_kind("ui.NavList")
+        .first()
+        .and_then(|list| list.props.get("selected"))
+        .cloned()
+        .unwrap_or(Value::Unit)
 }
 
 #[test]
