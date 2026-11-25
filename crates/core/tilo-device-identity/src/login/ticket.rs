@@ -213,8 +213,18 @@ pub struct Ticket {
 
 /// Why a string is not a ticket.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-#[error("this is not a Tilo ticket")]
-pub struct NotATicket;
+pub enum NotATicket {
+    /// It does not start the way every ticket does.
+    #[error("this is not a Tilo ticket, which starts with tilo1")]
+    Other,
+    /// It starts as a ticket does, and the rest does not read as one: part of it was lost or
+    /// changed on the way.
+    #[error(
+        "this starts like a Tilo ticket, but the rest of it is cut short or changed: copy the \
+         whole ticket again"
+    )]
+    Damaged,
+}
 
 /// A tab asking to be signed in ([`Direction::SignIn`]): its device key, and the name it asks the
 /// person's devices to list it by. The person's root signs it one of their member devices'
@@ -509,23 +519,30 @@ impl Ticket {
         format!("{PREFIX}{}", hex::encode(bytes))
     }
 
-    /// The ticket `text` spells, as [`Self::encode`] wrote it (spaces around it ignored).
+    /// The ticket `text` spells, as [`Self::encode`] wrote it. What surrounds it in a sentence
+    /// it was copied from is ignored: spaces, quotes, and the comma or full stop after it, none
+    /// of which a ticket's letters and digits ever are.
     ///
     /// # Errors
-    /// [`NotATicket`] when it is not one.
+    /// [`NotATicket`] when it is not one, saying why.
     pub fn parse(text: &str) -> Result<Self, NotATicket> {
-        let bytes = text
-            .trim()
+        let rest = Self::spelled(text)
             .strip_prefix(PREFIX)
-            .and_then(|rest| hex::decode(rest).ok())
-            .ok_or(NotATicket)?;
-        postcard::from_bytes(&bytes).map_err(|_| NotATicket)
+            .ok_or(NotATicket::Other)?;
+        let bytes = hex::decode(rest).map_err(|_| NotATicket::Damaged)?;
+        postcard::from_bytes(&bytes).map_err(|_| NotATicket::Damaged)
     }
 
     /// Whether `text` looks like a ticket rather than another thing `tilo login` takes.
     #[must_use]
     pub fn looks_like(text: &str) -> bool {
-        text.trim().starts_with(PREFIX)
+        Self::spelled(text).starts_with(PREFIX)
+    }
+
+    /// `text` without what surrounds a ticket in the sentence it was copied from: a ticket is
+    /// letters and digits alone.
+    fn spelled(text: &str) -> &str {
+        text.trim_matches(|letter: char| !letter.is_ascii_alphanumeric())
     }
 
     /// The secret as [`CertifyInput::secret`] carries it.
@@ -985,11 +1002,51 @@ mod tests {
         let text = ticket.encode();
         assert!(Ticket::looks_like(&text));
         assert_eq!(Ticket::parse(&format!("  {text}\n")), Ok(ticket));
-        assert_eq!(Ticket::parse("K7Q-MX2P"), Err(NotATicket));
+        assert_eq!(Ticket::parse("K7Q-MX2P"), Err(NotATicket::Other));
         assert_eq!(
             Ticket::parse(text.get(..text.len() - 4).unwrap()),
-            Err(NotATicket)
+            Err(NotATicket::Damaged)
         );
+    }
+
+    /// A ticket copied out of the sentence that shows it brings that sentence's punctuation and
+    /// quotes along: it still reads as the ticket, and `tilo login` still knows it for one.
+    #[test]
+    fn a_ticket_copied_with_the_punctuation_around_it_reads_as_itself() {
+        let ticket = ticket();
+        let text = ticket.encode();
+        for copied in [
+            format!("{text},"),
+            format!("{text}."),
+            format!("\"{text}\""),
+            format!("`{text}`"),
+            format!("({text})\n"),
+            format!("'{text}';"),
+        ] {
+            assert!(Ticket::looks_like(&copied), "{copied}");
+            assert_eq!(Ticket::parse(&copied), Ok(ticket.clone()), "{copied}");
+        }
+    }
+
+    /// What is not a ticket says why: another word altogether, or a ticket that lost or changed
+    /// part of itself on the way, which says to copy it again.
+    #[test]
+    fn what_is_not_a_ticket_says_what_is_wrong_with_it() {
+        let text = ticket().encode();
+        let other = Ticket::parse("hello").unwrap_err();
+        assert_eq!(other, NotATicket::Other);
+        assert!(other.to_string().contains("starts with tilo1"), "{other}");
+
+        let at = |range: std::ops::Range<usize>| text.get(range).unwrap();
+        let changed = format!("{}zz{}", at(0..20), at(22..text.len()));
+        for damaged in [at(0..text.len() / 2), at(0..PREFIX.len()), &changed] {
+            let why = Ticket::parse(damaged).unwrap_err();
+            assert_eq!(why, NotATicket::Damaged, "{damaged}");
+            assert!(
+                why.to_string().contains("copy the whole ticket again"),
+                "{why}"
+            );
+        }
     }
 
     #[test]

@@ -352,7 +352,7 @@ report.prompt = prompt;
 mark('the page copied its setup prompt');
 const setup = commandOf(prompt);
 if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
-if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login tilo1[0-9a-f]+, then do what it tells you\.$/.test(prompt)) {
+if (!/^Set up Tilo for me: run this command, then do what it tells you: curl -fsSL \S+ \| sh -s login tilo1[0-9a-f]+$/.test(prompt)) {
   await fail(`the prompt is not the one-line setup naming the ticket: ${prompt}`);
 }
 const login = tilo(['login', setup.ticket, '--agent', agentName]);

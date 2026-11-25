@@ -65,15 +65,20 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
 test('the setup prompt is one line: install, log in with the ticket by the installed path, follow what tilo says', () => {
+  // The command ends each prompt: no comma or full stop of the sentence touches the ticket, so
+  // the command copies out of it whole.
   // The installer starts `login` with the `tilo` it just put in place, by its full path: an agent's
   // shell on a fresh machine has no ~/.local/bin on its PATH (dist/install/tilo.sh).
   assert.equal(setupPrompt(TICKET),
-    `Set up Tilo for me: run curl -fsSL tilo.sh | sh -s login ${TICKET}, then do what it tells you.`);
+    `Set up Tilo for me: run this command, then do what it tells you: curl -fsSL tilo.sh | sh -s login ${TICKET}`);
   assert.equal(setupPrompt(TICKET, {site: 'https://tilo.sh'}), setupPrompt(TICKET), 'tilo.sh is the default site');
   // A ticket names the host it is served from, so no site is said, even on a site of another name.
   assert.equal(setupPrompt(TICKET, {site: 'https://dev.tilo.example'}),
-    `Set up Tilo for me: run curl -fsSL https://dev.tilo.example | sh -s login ${TICKET}, then do what it tells you.`);
-  assert.equal(signInPrompt(TICKET), `Sign me in to Tilo: run tilo device add ${TICKET}, then do what it tells you.`);
+    `Set up Tilo for me: run this command, then do what it tells you: curl -fsSL https://dev.tilo.example | sh -s login ${TICKET}`);
+  assert.equal(signInPrompt(TICKET), `Sign me in to Tilo: run this command, then do what it tells you: tilo device add ${TICKET}`);
+  for (const prompt of [setupPrompt(TICKET), signInPrompt(TICKET)]) {
+    assert.ok(prompt.endsWith(` ${TICKET}`), `the ticket ends the prompt, nothing glued to it: ${prompt}`);
+  }
   assert.equal(manualCommands(TICKET), `curl -fsSL tilo.sh | sh -s login ${TICKET}`);
   assert.equal(MCP_URL, 'https://mcp.tilo.sh');
 });
@@ -1141,7 +1146,7 @@ test('the prompt breaks only between its words: a flag and a URL each stay whole
   const document = {createTextNode: text => node('text', text), createElement: () => node('span')};
   const element = {ownerDocument: document, children: [], replaceChildren(...children) { this.children = children; },
     get textContent() { return this.children.map(child => child.textContent).join(''); }};
-  const prompt = 'Set up Tilo for me: run curl -fsSL https://tilo.example | sh -s login D9B-X4GK --site https://tilo.example, then do what it tells you.';
+  const prompt = 'Set up Tilo for me: run this command, then do what it tells you: curl -fsSL https://tilo.example | sh -s login D9B-X4GK --site https://tilo.example';
   showPrompt(element, prompt);
   assert.equal(element.textContent, prompt, 'what is copied from the box is the prompt itself');
   const words = element.children.filter(child => child.className === 'fr-word').map(child => child.textContent);

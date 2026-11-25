@@ -141,15 +141,17 @@ const loginArgs = code => `login ${code}`;
 export const loginCommand = code => `tilo ${loginArgs(code)}`;
 
 /** The prompt that has an agent set Tilo up: one line, complete on its own,
- * since `tilo login` tells the agent the rest. */
+ * since `tilo login` tells the agent the rest. The command ends it, so nothing
+ * of the sentence touches the ticket and the command copies as it is. */
 export function setupPrompt(code, {site} = {}) {
-  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code))}, then do what it tells you.`;
+  return `Set up Tilo for me: run this command, then do what it tells you: ${installCommand(site, loginArgs(code))}`;
 }
 
 /** The prompt that has an agent sign this tab in as the person, on a computer
- * that is already one of their devices: it approves this tab with the ticket. */
+ * that is already one of their devices: it approves this tab with the ticket,
+ * which ends the prompt with no punctuation after it. */
 export function signInPrompt(code) {
-  return `Sign me in to Tilo: run tilo device add ${code}, then do what it tells you.`;
+  return `Sign me in to Tilo: run this command, then do what it tells you: tilo device add ${code}`;
 }
 
 /** The command for someone who sets up by hand: their agent then adds the MCP server

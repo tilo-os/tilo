@@ -170,7 +170,7 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await again.waitFor(`document.getElementById('first-screen-prompt').textContent.match(/(?:tilo|sh -s) login /)`, {timeout: 10000});
     await again.evaluate(`globalThis.polled = {resolved: true, expired: false, steps: ['resolved'], claimed: {user: '${'ab'.repeat(32)}', invite: '${'cd'.repeat(16)}', by: 'Claude Code on build-box'}}`);
     await again.waitFor(`document.getElementById('first-screen-steps').textContent.includes('vouched for you')`, {timeout: 5000});
-    check(await again.evaluate(`document.getElementById('first-screen-prompt').textContent.startsWith('Sign me in to Tilo: run tilo login K7Q-MX2P')`),
+    check(await again.evaluate(`document.getElementById('first-screen-prompt').textContent === 'Sign me in to Tilo: run this command, then do what it tells you: tilo device add K7Q-MX2P'`),
       `${name}: the returning prompt is the short sign-in one`);
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}-returning.png`, await again.screenshot());
