@@ -2148,8 +2148,11 @@ fn an_edit_reports_the_text_and_no_choice() {
     ac.on_change(Event::View(Intent::new(&queue, "search", "change")));
     ac.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 34.0));
     ac.begin_edit();
+    // The host hears the text in its frame, as the driver updates it after each event.
+    let doc = automerge::AutoCommit::new();
     for ch in "cal".chars() {
         dispatch(&mut ac, &char_key(&ch.to_string()));
+        Widget::update(&mut ac, &doc, &automerge::ROOT);
     }
     let fired: Vec<(String, Option<String>)> = queue
         .take()
