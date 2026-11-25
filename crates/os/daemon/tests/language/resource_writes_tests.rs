@@ -611,9 +611,48 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
     server.shutdown().await;
 }
 
-/// A write of issue `id` titled `title` in `app`'s resource type `kind`, as the verb `verb`, made
-/// by the app outside any invocation: what a view's own press writes.
-fn viewed_put(kind: &str, id: &str, title: &str, verb: &str) -> Command {
+/// A write of issue `id` titled `title` in `app`'s resource type `kind`, as the verb `verb`,
+/// made by the app for a caller: what a view's own press writes. A caller with a device signs
+/// the invocation the change keeps, as the view executor carries it; a visitor, who has none,
+/// leaves the call to the entry's own opening.
+fn viewed_put(
+    (workspace, app): (&str, &str),
+    (kind, id, title): (&str, &str, &str),
+    verb: &str,
+    signer: Option<(&SigningKey, &tilo_user_identity::DeviceCert)>,
+) -> Command {
+    let invocation = uuid::Uuid::new_v4().to_string();
+    let signed = signer.map(|(key, cert)| {
+        let mut request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId(uuid::Uuid::parse_str(&invocation).unwrap()),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::RESOURCE_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(app, verb),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                workspace,
+                &request,
+                cert,
+                key,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the caller's invocation is signed"),
+        ));
+        Box::new(
+            tilo_actions::remote::SignedCall::of(&request)
+                .expect("a signed request is the call the change keeps"),
+        )
+    });
     Command::Put {
         kind: kind.to_owned(),
         id: id.to_owned(),
@@ -627,7 +666,8 @@ fn viewed_put(kind: &str, id: &str, title: &str, verb: &str) -> Command {
             verb: verb.to_owned(),
             // What the app claims is replaced by who the view was opened for.
             invoker: "the app's own claim".to_owned(),
-            invocation: uuid::Uuid::new_v4().to_string(),
+            invocation,
+            signed,
             ..Stamp::default()
         },
     }
@@ -729,7 +769,12 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     workspaces
         .resource_command(
             &view(APP, member(&editor)),
-            viewed_put(KIND, "i-1", "Edited", "$create"),
+            viewed_put(
+                (&workspace, APP),
+                (KIND, "i-1", "Edited"),
+                "$create",
+                Some((&editor_key, &editor)),
+            ),
         )
         .await
         .unwrap();
@@ -746,7 +791,12 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     let refused = workspaces
         .resource_command(
             &view(APP, member(&viewer)),
-            viewed_put(KIND, "i-2", "Viewed", "$create"),
+            viewed_put(
+                (&workspace, APP),
+                (KIND, "i-2", "Viewed"),
+                "$create",
+                Some((&viewer_key, &viewer)),
+            ),
         )
         .await
         .unwrap_err();
@@ -762,7 +812,12 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     workspaces
         .resource_command(
             &view(ENTRY, Caller::visitor(visitor)),
-            viewed_put(REQUEST, "r-1", "ada@example.com", "join"),
+            viewed_put(
+                (&workspace, ENTRY),
+                (REQUEST, "r-1", "ada@example.com"),
+                "join",
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -774,7 +829,12 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     let refused = workspaces
         .resource_command(
             &view(ENTRY, Caller::visitor(visitor)),
-            viewed_put(REQUEST, "r-2", "everyone", "remove"),
+            viewed_put(
+                (&workspace, ENTRY),
+                (REQUEST, "r-2", "everyone"),
+                "remove",
+                None,
+            ),
         )
         .await
         .unwrap_err();
