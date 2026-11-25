@@ -154,9 +154,13 @@ impl TurnElsewhere {
         else {
             return Err(Refusal::Unknown);
         };
+        let owner = caller
+            .user_public_key()
+            .map(hex::encode)
+            .unwrap_or_default();
         let policy = self
             .workspaces
-            .agent_policy(&self.workspace, &asked.agent)
+            .agent_policy(&self.workspace, &asked.agent, &owner)
             .await;
         let target = RemoteActionTarget {
             provider: PROVIDER.to_owned(),
@@ -165,7 +169,7 @@ impl TurnElsewhere {
         if asked.agent != self.agent.id.0
             || !agent_policy_allows(
                 policy.as_ref(),
-                Some(asked.agent.as_str()),
+                Some((asked.agent.as_str(), owner.as_str())),
                 &self.workspace,
                 &target,
             )

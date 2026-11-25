@@ -145,22 +145,15 @@ fn refusal(released: Result<PageText, Refusal>) -> String {
     }
 }
 
-/// The first fill of an item at a site waits for its person and releases nothing. What they
-/// are shown names the site and withholds the item; the same fill asked again waits again; a
-/// decline never admits it. Approved, that fill is released once, written down, and the one
-/// after asks again; another agent of hers is still asked.
-/// The agent a caller acts as, by its id.
-fn narrowed_agent(caller: &Caller) -> String {
-    caller.acting().agent_id().unwrap_or_default().to_owned()
-}
-
-/// A workspace policy whose grants on `agent` are `rules`, by the person who set them.
+/// A workspace policy whose grants on the agent `caller` acts as are `rules`, set by its own
+/// person.
 fn narrowing(
     workspace: &str,
-    agent: &str,
+    caller: &Caller,
     rules: &[tilo_action_policy::Rule],
 ) -> tilo_action_policy::WorkspacePolicy {
     let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    let (agent, person) = crate::workspaces::hosted_use::agent_of(caller).unwrap_or_default();
     for (index, rule) in rules.iter().enumerate() {
         policy.grants.push(tilo_action_policy::Grant::new(
             format!("test-narrowing:{index}"),
@@ -168,12 +161,16 @@ fn narrowing(
             rule.node.clone(),
             rule.kinds,
             rule.answer,
-            tilo_action_policy::Grantee::person("owner"),
+            tilo_action_policy::Grantee::person(person.clone()),
         ));
     }
     policy
 }
 
+/// The first fill of an item at a site waits for its person and releases nothing. What they
+/// are shown names the site and withholds the item; the same fill asked again waits again; a
+/// decline never admits it. Approved, that fill is released once, written down, and the one
+/// after asks again; another agent of hers is still asked.
 #[tokio::test]
 async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -461,7 +458,7 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
         ("no rule at all", Vec::new()),
         ("a rule for another action", vec![named(person_vault::LIST)]),
     ] {
-        let policy = narrowing(&workspace_id.to_string(), &narrowed_agent(&scout), &bound);
+        let policy = narrowing(&workspace_id.to_string(), &scout, &bound);
         let turn = HostedTurn {
             workspace: workspace_id,
             caller: &scout,
@@ -476,7 +473,7 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
         );
     }
     let bound = vec![named(person_vault::FILL_PAGE)];
-    let policy = narrowing(&workspace_id.to_string(), &narrowed_agent(&scout), &bound);
+    let policy = narrowing(&workspace_id.to_string(), &scout, &bound);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,

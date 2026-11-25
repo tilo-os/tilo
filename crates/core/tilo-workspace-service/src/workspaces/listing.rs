@@ -438,16 +438,18 @@ impl Workspaces {
             .map(|permissions| (*permissions.policy).clone())
     }
 
-    /// `workspace`'s policy where it answers something for `agent` now: `None` while its
-    /// person gave no answer for that agent, so nothing narrows it
-    /// ([`super::hosted_use::answers_narrow`]).
+    /// `workspace`'s policy where `person` answers something for their agent `agent` now:
+    /// `None` while they gave it no answer, so nothing narrows it
+    /// ([`tilo_action_policy::WorkspacePolicy::answers_narrow`]).
     pub async fn agent_policy(
         &self,
         workspace: &str,
         agent: &str,
+        person: &str,
     ) -> Option<tilo_action_policy::WorkspacePolicy> {
         let policy = self.policy_of(workspace).await?;
-        super::hosted_use::answers_narrow(&policy, agent).then_some(policy)
+        let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
+        policy.answers_narrow(agent, person, &now).then_some(policy)
     }
 
     /// The sandbox capabilities `workspace`'s governance grants its apps: the

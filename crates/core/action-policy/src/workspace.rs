@@ -707,15 +707,29 @@ impl WorkspacePolicy {
     }
 
     /// The grants naming the agent `agent` acting for `person`: those `person`
-    /// gave it.
+    /// gave it, and the workspace's own denials of that agent id, as
+    /// [`Self::party_of_agent`] reads them. Another member's grant or answer for
+    /// an agent of that id is for their own agent and is not among them.
     pub fn grants_of_agent<'a>(
         &'a self,
-        agent: &'a str,
-        person: &'a str,
-    ) -> impl Iterator<Item = &'a Grant> + 'a {
+        agent: &str,
+        person: &str,
+    ) -> impl Iterator<Item = &'a Grant> {
         self.grants.iter().filter(move |grant| {
-            grant.grantee.agent_id() == Some(agent) && grant.granted_by.person_id() == Some(person)
+            grant.grantee.agent_id() == Some(agent)
+                && (grant.granted_by.person_id() == Some(person)
+                    || (grant.answer == Answer::Deny && !crate::agent_answers::is_answer(grant)))
         })
+    }
+
+    /// Whether `person` narrowed their agent `agent` here: an answer they gave
+    /// it stands at `cx`. It then takes only what those answers name, and is
+    /// never asked for what they do not. A grant kept for one use of theirs
+    /// (the "Always" of a vault item's leave) is no answer and narrows nothing.
+    #[must_use]
+    pub fn answers_narrow(&self, agent: &str, person: &str, cx: &Context<'_>) -> bool {
+        self.grants_of_agent(agent, person)
+            .any(|grant| crate::agent_answers::is_answer(grant) && grant.is_live(cx))
     }
 
     /// Whether `person` stopped their agent `agent` here

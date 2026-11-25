@@ -467,6 +467,10 @@ fn a_person_answers_for_their_own_agent_without_governing() {
     }
     assert!(policy.stops(AGENT, "b0b", &cx()), "Bob stopped his own");
     assert!(!policy.stops(AGENT, PERSON, &cx()), "and not the person's");
+    assert!(
+        policy.answers_narrow(AGENT, "b0b", &cx()) && !policy.answers_narrow(AGENT, PERSON, &cx()),
+        "Bob's answers narrow his own agent of that id, and leave the person's as it was"
+    );
     let theirs = Acting::handed_agent(AGENT, PERSON);
     let preset = theirs.handed_preset(WORKSPACE);
     for (node, kind) in [
