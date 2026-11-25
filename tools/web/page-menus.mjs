@@ -1,16 +1,16 @@
-// Every menu of a page, opened in Chromium in both themes, set in the faces the page serves:
-// fails when a label is cut short once the menu has arrived, when a row draws what it only says
-// (an ask-first row shows its label and its marker, its sentence is for assistive technology),
-// when the page's face did not load, since a measurement in a fallback face says nothing about
-// the product, or when the menu draws less than the app does: its rules between sections, a
-// toggle's check, a nested menu's chevron, a destructive row's danger ink, one column its labels
-// start at, its labels set as wide as the app sets them, the panel's own edge and size, and its
-// button held while it is open.
+// Every menu of a page, opened in Chromium in light, dark and high contrast, set in the faces
+// the page serves: fails when a label is cut short once the menu has arrived, when a row draws
+// what it only says (an ask-first row shows its label and its marker, its sentence is for
+// assistive technology), when the page's face did not load, since a measurement in a fallback
+// face says nothing about the product, or when the page draws the menu otherwise than the app:
+// its rules between sections, a toggle's check, a nested menu's chevron, a destructive row's
+// danger ink, one column its labels start at, its labels as wide as the app sets them, the
+// panel's own edge and size, its button held and chevroned, and the edge of the buttons at rest.
 //
 // usage: node tools/web/page-menus.mjs DIR
 //
 // DIR holds what `cargo run --example page-menus -- DIR` wrote (`light.html`, `dark.html`,
-// `menus.json`) and the page's web fonts in `DIR/fonts`.
+// `contrast.html`, `menus.json`) and the page's web fonts in `DIR/fonts`.
 import {readFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {launch, serve} from './chrome.mjs';
@@ -70,6 +70,9 @@ const DRAWN = `(() => {
     held: resolved('backgroundColor', token('--tilo-held')),
     panel: (({width, height}) => [width, height])(menu.getBoundingClientRect()),
     trigger: trigger && getComputedStyle(trigger).backgroundColor,
+    // The other buttons at rest wear the face's edge (high contrast's hairline, else none).
+    faceEdge: token('--tilo-face-edge') === 'transparent' ? null : resolved('color', token('--tilo-face-edge')),
+    restShadows: [...document.querySelectorAll('button[aria-expanded=false]:not([role^=menuitem])')].map(b => getComputedStyle(b).boxShadow),
     triggerChevron: !!trigger?.lastElementChild?.matches('svg.tilo-glyph'),
     shadow: getComputedStyle(menu).boxShadow,
   };
@@ -79,7 +82,7 @@ const server = await serve(dir);
 const browser = await launch();
 const failures = [];
 try {
-  for (const scheme of ['light', 'dark']) {
+  for (const scheme of ['light', 'dark', 'contrast']) {
     for (const {menu, rows: items, panel, patches} of menus) {
       const tab = await browser.tab({});
       await tab.send('Emulation.setDeviceMetricsOverride', {width: 720, height: 480, deviceScaleFactor: 1, mobile: false});
@@ -134,6 +137,12 @@ try {
       const columns = new Set(labelled.map(row => Math.round(row.textX)));
       if (columns.size > 1) fail(`labels start at ${[...columns].join(', ')} px, not one column`);
       if (!drawn.shadow.includes(drawn.edge)) fail(`the panel's edge is not the theme's floating edge ${drawn.edge}: ${drawn.shadow}`);
+      if (drawn.faceEdge && !drawn.restShadows.every(shadow => shadow.includes(drawn.faceEdge))) {
+        fail(`a button at rest has no edge of ${drawn.faceEdge}: ${drawn.restShadows.join(' | ')}`);
+      }
+      if (!drawn.faceEdge && drawn.restShadows.some(shadow => shadow !== 'none' && !/rgba\([^)]*, 0\)/.test(shadow))) {
+        fail(`a button at rest draws an edge the app does not: ${drawn.restShadows.join(' | ')}`);
+      }
       if (!drawn.triggerChevron) fail('its button draws no down chevron, where the app draws one');
       if (drawn.trigger !== drawn.held) fail(`its button is not held while it is open (${drawn.trigger}, not ${drawn.held})`);
       if (drawn.panel.some((length, axis) => Math.abs(length - panel[axis]) > 0.5)) {

@@ -1,11 +1,12 @@
 //! A window with menu buttons, as the page shows it, and what opens each of its menus.
 //!
-//! `page-menus OUT` writes `light.html` and `dark.html` (the closed window in each theme) and
-//! `menus.json` (for each menu, the button's name, what its rows are and the patches the page
-//! applies when it opens) into `OUT`; with `--native` it also writes each menu as the app paints
-//! it, open in light, dark and high contrast, as `OUT/native/{theme}-{menu}.png`. `tools/web/page-menus.mjs` opens each menu in Chromium, set in the faces
-//! the page serves, and fails on any label cut short: the page lays a menu's rows out itself,
-//! and only a browser measures them in the face it draws.
+//! `page-menus OUT` writes `light.html`, `dark.html` and `contrast.html` (the closed window in
+//! each theme) and `menus.json` (for each menu, the button's name, what its rows are, its panel's
+//! size and the patches the page applies when it opens) into `OUT`; with `--native` it also
+//! writes each menu as the app paints it, open in light, dark and high contrast, as
+//! `OUT/native/{theme}-{menu}.png`. `tools/web/page-menus.mjs` opens each menu in Chromium, set
+//! in the faces the page serves, and fails where the page draws it otherwise than the app: the
+//! page lays a menu's rows out itself, and only a browser measures them in the face it draws.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -145,6 +146,7 @@ fn main() {
     for (scheme, theme) in [
         ("light", tilo_ui::Theme::light()),
         ("dark", tilo_ui::Theme::dark()),
+        ("contrast", tilo_ui::Theme::high_contrast()),
     ] {
         std::fs::write(
             out.join(format!("{scheme}.html")),
