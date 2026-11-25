@@ -596,6 +596,9 @@ fn serve_device(
             }
             Err(error) => return Err(error),
         };
+        // The origin connectors this device starts reach the one dispatch on the connection
+        // handed them, admitted as the app the launch record says they run.
+        session.hand_actions_to_connectors();
         // Migrations run on the device that holds the data they read.
         session.serve_migrations();
         // The secrets the apps the move carried over kept in this device's old keeper are the

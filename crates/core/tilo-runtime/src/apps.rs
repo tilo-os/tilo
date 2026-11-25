@@ -117,6 +117,12 @@ impl Apps {
     pub(crate) fn hand_sign_ins(&self, sign_ins: Box<connectors::SignIns>) {
         self.connectors.hand_sign_ins(sign_ins);
     }
+
+    /// Hand each origin connector this device starts the connection to its dispatch through
+    /// `actions` from now on.
+    pub(crate) fn hand_actions(&self, actions: Box<connectors::Actions>) {
+        self.connectors.hand_actions(actions);
+    }
 }
 
 /// Where a launch reads what the person granted the app it starts: the
@@ -413,6 +419,19 @@ impl Apps {
             .unwrap_or_default()
     }
 
+    /// Whether the build of `app` installed here declares `capability`.
+    pub(crate) fn declares(&self, app: &str, capability: &str) -> bool {
+        self.installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)
+            .is_some_and(|installed| {
+                installed
+                    .declared_capabilities()
+                    .iter()
+                    .any(|declared| declared == capability)
+            })
+    }
+
     /// The resource kinds the installed package `app_id` declared its
     /// records hold; `None` when it is not installed.
     #[must_use]
@@ -606,14 +625,21 @@ impl Apps {
                 &original,
                 (origin, socket.as_fd()),
             )?;
-            self.record_started(connectors::pid(&child), app_id, workspace);
+            self.launched.record_showing(
+                connectors::pid(&child),
+                app_id,
+                workspace,
+                Shows::Connection,
+                None,
+            );
             Ok(child)
         }
         #[cfg(target_os = "macos")]
         {
             let child = macos::connector(self, &app, workspace, (origin, socket.as_fd()))?;
             if let Some(pid) = connectors::pid(&child) {
-                self.record_started(pid, app_id, workspace);
+                self.launched
+                    .record_showing(pid, app_id, workspace, Shows::Connection, None);
             }
             Ok(child)
         }

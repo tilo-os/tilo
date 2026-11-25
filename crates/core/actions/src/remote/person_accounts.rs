@@ -80,9 +80,10 @@ pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 /// answering the accounts as [`MailAccounts`].
 pub const SET_SERVICES: &str = "set-services";
 /// Read the logins the workspace's vault keeps, as a [`MailSignIns`]: their names, sign-in
-/// names and the places each belongs to, never their secrets. An app picks from them the ones
-/// its own places name, as Mail's does for its `imap` and `smtp` servers; an item's secret
-/// comes only from `vault#release`.
+/// names, the places each belongs to and the account each signs in for, never their secrets. An
+/// app picks from them the ones its own places name, as Mail's does for its `imap` and `smtp`
+/// servers and Calendar's for its `https` server; an item's secret comes only from
+/// `vault#release`.
 pub const SIGN_INS: &str = "sign-ins";
 /// Say whether a cloud-storage account's files stay in sync or are copied into
 /// the workspace once ([`SetFilesMode`]), answering the accounts as
@@ -593,9 +594,33 @@ pub struct MailSignIn {
     /// The places it belongs to, each as the vault keeps one: `imap://<host>:<port>`,
     /// `smtp://<host>:<port>`, `https://<host>` and the like.
     pub places: Vec<String>,
+    /// The account of the workspace's it signs in for, where the workspace keeps one for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<SignedInAccount>,
 }
 
-/// Every login of the workspace's vault ([`SIGN_INS`]).
+/// An account of the workspace's that has a sign-in, as [`SIGN_INS`] shows it to the app that
+/// signs it in: where it signs in, never what it signs in with.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedInAccount {
+    /// The account's id, as every action names it.
+    pub id: String,
+    /// The kind of account it is (`caldav`, `email`).
+    pub kind: String,
+    /// What its person calls it.
+    pub name: String,
+    /// The address or name it signs in at.
+    pub address: String,
+    /// The server it signs in to, where its settings name one.
+    pub server: String,
+    /// Whether nothing is ever written to its server.
+    pub read_only: bool,
+    /// Whether the account is in use.
+    pub enabled: bool,
+}
+
+/// Every login of the workspace's vault ([`SIGN_INS`]), each with the account it signs in for.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MailSignIns {

@@ -43,6 +43,10 @@ struct Running {
 /// workspace.
 pub type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send + Sync;
 
+/// What hands a started connector its connection to the device's dispatch, before any reader:
+/// the connector's socket, its app, its workspace and its pid.
+pub type Actions = dyn Fn(&Descriptor, &str, &str, u32) -> std::io::Result<()> + Send + Sync;
+
 /// The pid a started connector runs as, as the launch record names it: the system's own.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 #[cfg_attr(
@@ -64,6 +68,7 @@ pub(crate) fn pid(process: &Process) -> Option<u32> {
 pub(crate) struct Connectors {
     running: Mutex<HashMap<Key, Running>>,
     sign_ins: std::sync::OnceLock<Box<SignIns>>,
+    actions: std::sync::OnceLock<Box<Actions>>,
 }
 
 impl Connectors {
@@ -71,6 +76,12 @@ impl Connectors {
     /// `sign_ins` from now on.
     pub(crate) fn hand_sign_ins(&self, sign_ins: Box<SignIns>) {
         let _ = self.sign_ins.set(sign_ins);
+    }
+
+    /// Hand each connector this device starts the connection to its dispatch through `actions`
+    /// from now on.
+    pub(crate) fn hand_actions(&self, actions: Box<Actions>) {
+        let _ = self.actions.set(actions);
     }
 
     /// Attach `theirs`, the connector's end of a reader's connection, to the connector of `app`'s
@@ -106,6 +117,10 @@ impl Connectors {
             .map_err(|error| format!("no socket for {app}'s {origin} connector: {error}"))?;
         let mut child = start(&socket)?;
         drop(socket);
+        #[cfg(target_os = "macos")]
+        let child_pid = pid(&child).unwrap_or(0);
+        #[cfg(not(target_os = "macos"))]
+        let child_pid = pid(&child);
         let attached = (|| {
             if signs_in {
                 // What a person sees when an app that signs in to their accounts is opened on a
@@ -118,6 +133,13 @@ impl Connectors {
                 })?;
                 sign_ins(&ours, app, workspace).map_err(|error| {
                     format!("{app}'s {origin} connector took no account sign-ins: {error}")
+                })?;
+            }
+            // The connection to this device's dispatch comes before any reader's: what an app
+            // that signs in calls the published actions over.
+            if let Some(actions) = self.actions.get() {
+                actions(&ours, app, workspace, child_pid).map_err(|error| {
+                    format!("{app}'s {origin} connector took no connection to this device: {error}")
                 })?;
             }
             origin_connector::send_attachment(&ours, theirs)

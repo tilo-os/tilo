@@ -12,7 +12,7 @@ use tilo_account_probe::mail_servers::MailServers;
 use tilo_actions::remote::person_accounts::{
     self, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts, MailSignIn,
     MailSignIns, Provider, ServerAt, Services, SetCalendars, SetFilesMode, SetServices,
-    SyncControl,
+    SignedInAccount, SyncControl,
 };
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
@@ -393,17 +393,24 @@ impl Workspaces {
         let Some(opened) = self.read_made_vault(workspace).await? else {
             return Ok(MailSignIns::default());
         };
+        let held = self.workspace_accounts(workspace).await?;
+        let items = opened.items();
         let sign_ins = opened
             .entries()
             .iter()
             .filter(|(entry, _)| entry.kind == accounts::SecretItemKind::Login)
             .filter_map(|(entry, _)| {
                 let id = tilo_actions::remote::person_vault::ItemRef::from_id(&entry.id.0)?;
+                let account = accounts::vault_items::ItemId::parse(&entry.id.0)
+                    .and_then(|id| items.kept_for(&id).map(str::to_owned))
+                    .and_then(|kept| held.account(&kept))
+                    .map(|account| signed_in_account(&account));
                 Some(MailSignIn {
                     id: id.to_string(),
                     title: entry.title.clone(),
                     username: entry.username.clone(),
                     places: entry.origins.iter().cloned().collect(),
+                    account,
                 })
             })
             .collect();
@@ -723,6 +730,35 @@ impl Workspaces {
             _ => return Ok(None),
         };
         Ok(Some(answered?))
+    }
+}
+
+/// The account `account`, as a sign-in of it shows the app that signs in: where it signs in,
+/// never what it signs in with.
+fn signed_in_account(account: &accounts::Account) -> SignedInAccount {
+    let address = field(account, "email");
+    let username = field(account, "username");
+    let address = if address.is_empty() {
+        if username.is_empty() {
+            account.id.to_string()
+        } else {
+            username
+        }
+    } else {
+        address
+    };
+    SignedInAccount {
+        id: account.id.to_string(),
+        kind: account.type_id.to_string(),
+        name: account.display_name.clone(),
+        address,
+        server: server_of(account),
+        read_only: account
+            .config
+            .get("read_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        enabled: account.enabled,
     }
 }
 

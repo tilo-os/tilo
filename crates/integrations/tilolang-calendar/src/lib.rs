@@ -129,11 +129,13 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
     }
     let socket = origin_connector::take_socket()
         .ok_or_else(|| "the launcher handed the connector no socket".to_owned())?;
-    // The session hands its account sign-ins before any reader.
-    let sign_ins = match origin_connector::receive(&socket) {
-        Ok(Some(Handed::SignIns(sign_ins))) => sign_ins,
-        Ok(Some(Handed::Reader(_))) => {
-            return Err("the session handed the calendar connector no account sign-ins".to_owned());
+    // The daemon hands the connector its connection to the one dispatch before any reader.
+    let link = match origin_connector::receive(&socket) {
+        Ok(Some(Handed::Actions(link))) => link,
+        Ok(Some(Handed::SignIns(_) | Handed::Reader(_))) => {
+            return Err(
+                "the daemon handed the calendar connector no connection to its dispatch".to_owned(),
+            );
         }
         Ok(None) => return Ok(()),
         Err(error) => return Err(format!("the calendar connector's socket: {error}")),
@@ -142,6 +144,6 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
         None => tracing::info!("the session closed the calendar connector's socket"),
         Some(error) => tracing::error!(%error, "the calendar connector's socket failed for good"),
     });
-    serve::serve(sign_ins, attachments);
+    serve::serve(link, attachments);
     Ok(())
 }

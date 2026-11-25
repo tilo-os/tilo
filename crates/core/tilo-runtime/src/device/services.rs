@@ -181,6 +181,38 @@ impl Daemon {
         self.live.get()
     }
 
+    /// Whether the app `app` installed here declares `capability` in its signed manifest.
+    pub(crate) fn app_declares(&self, app: &str, capability: &str) -> bool {
+        self.apps.declares(app, capability)
+    }
+
+    /// The person's id, hex of their root, as which this device acts.
+    pub(crate) fn person_id(&self) -> String {
+        hex::encode(self.cert.user_public_key)
+    }
+
+    /// Hand each origin connector this device starts the connection to this device's one
+    /// dispatch, admitted as the app the launch record says it runs: what a program that signs in
+    /// calls the published actions over, decided under that app's grants.
+    pub(crate) fn hand_actions_to_connectors(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        self.apps
+            .hand_actions(Box::new(move |connector, app, workspace, pid| {
+                let daemon = weak
+                    .upgrade()
+                    .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+                super::local::hand_to_connector(
+                    &daemon,
+                    connector,
+                    crate::seats::AppAt {
+                        app: app.to_owned(),
+                        workspace: workspace.to_owned(),
+                        pid,
+                    },
+                )
+            }));
+    }
+
     /// What an app's call lane needs to carry one of its calls into a workspace's call through
     /// the live session this device holds: the device's word there, and the way to join a call as
     /// the app, through the device's one dispatch under the app's grants. No key material and no

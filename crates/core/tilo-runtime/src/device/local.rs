@@ -105,6 +105,21 @@ impl Frames {
     pub(crate) fn of_an_app(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> Self {
         let own = super::vault_release::OwnProcess::new(daemon, at.pid, &at.app, &at.workspace);
         let caller = Caller::local_app(&at.app).in_workspace(&at.workspace);
+        // The app's signed manifest declares it signs in to the workspace's accounts: the grant
+        // that names it for them is the one its connection holds, never a person's.
+        let caller = if daemon.app_declares(&at.app, tilo_app_package::manifest::ACCOUNT_SIGN_INS) {
+            caller.granting(vec![tilo_action_policy::Grant::new(
+                format!("manifest:{}:{}", at.app, at.workspace),
+                tilo_action_policy::Grantee::app(at.app.as_str()),
+                tilo_action_policy::TreePath::workspace(at.workspace.clone())
+                    .app(tilo_actions::remote::person_accounts::PROVIDER),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(daemon.person_id()),
+            )])
+        } else {
+            caller
+        };
         let lane = daemon.app_call_setup(at);
         let (daemon, app, workspace) =
             (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
@@ -225,6 +240,38 @@ impl Frames {
                 .map(|lane| lane.as_ref() as &dyn remote::CallLanes),
         );
     }
+}
+
+/// Hand the connector behind `connector` its connection to this device's dispatch, answered as
+/// `at`, the app process the daemon started for it, and serve it on a thread of its own: what a
+/// program that signs in calls the published actions over, decided under that app's grants.
+///
+/// # Errors
+/// The connection cannot be made, or the connector took none.
+pub(crate) fn hand_to_connector(
+    daemon: &Arc<Daemon>,
+    connector: &runtime_portal::process_link::Descriptor,
+    at: crate::seats::AppAt,
+) -> io::Result<()> {
+    let (ours, theirs) = tilo_socket::pair()?;
+    runtime_portal::origin_connector::send_actions(
+        connector,
+        runtime_portal::packet::descriptor_of(theirs),
+    )?;
+    let frames = Frames::of_an_app(daemon, &at);
+    std::thread::Builder::new()
+        .name("tilo-connector-actions".into())
+        .spawn(move || {
+            let reader = match ours.try_clone() {
+                Ok(reader) => reader,
+                Err(error) => {
+                    tracing::debug!(%error, "a connector's action connection");
+                    return;
+                }
+            };
+            frames.serve(ours, &[], io::BufReader::new(reader));
+        })?;
+    Ok(())
 }
 
 /// Whether `line` is an action frame rather than MCP or the daemon's own requests.

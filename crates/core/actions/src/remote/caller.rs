@@ -89,6 +89,9 @@ pub struct Caller {
     // another device than the caller's own (`Self::forwarded_by`): a host handing a page action to
     // the window it placed.
     forwarded_by: Option<[u8; 32]>,
+    // The grants the transport that admitted this connection holds for it besides its
+    // certificate's: what a device hands an app it started, from its signed manifest.
+    granted: Vec<tilo_action_policy::Grant>,
 }
 
 /// The authority an invitation carries ([`Caller::invited`]): the signed invitation, and the
@@ -123,6 +126,7 @@ impl Caller {
             own_connection: false,
             invited: None,
             forwarded_by: None,
+            granted: Vec::new(),
         }
     }
 
@@ -708,7 +712,17 @@ impl Caller {
     /// the delegation at the root.
     #[must_use]
     pub fn granted(&self) -> Vec<tilo_action_policy::Grant> {
-        self.certified(self.workspace.as_deref().unwrap_or_default())
+        let mut held = self.granted.clone();
+        held.extend(self.certified(self.workspace.as_deref().unwrap_or_default()));
+        held
+    }
+
+    /// This caller with `grants` too, which the transport that admitted it holds for it: what a
+    /// device hands an app it started, from its signed manifest. Never accepted from a request.
+    #[must_use]
+    pub fn granting(mut self, grants: Vec<tilo_action_policy::Grant>) -> Self {
+        self.granted.extend(grants);
+        self
     }
 
     /// The group a session named `id` is, as this caller's provider admitted
@@ -875,6 +889,7 @@ impl KeptCaller {
             // A redemption never waits for a person's yes, so no kept call carries one.
             invited: None,
             forwarded_by: None,
+            granted: Vec::new(),
         }
     }
 }

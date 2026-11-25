@@ -8,10 +8,11 @@
 //! connections (`crate::process_link::InstanceFds::origin`) and the other to the connector on
 //! this socket, as one packet (`crate::packet`) carrying that one descriptor.
 //!
-//! Before any reader, the session hands the connector of an app whose signed manifest grants them
-//! its account sign-ins on the same socket: a connection that speaks `accounts::sign_ins`'s lines,
-//! scoped to the connector's workspace and app. A connector reaches the workspace's accounts and
-//! their sign-ins over it, and over nothing else: it opens no file of them.
+//! Before any reader, the session hands the connector the connections that are its own: the
+//! device's one dispatch, which answers the app's action frames as the app it launched, and the
+//! account sign-ins an app whose signed manifest grants them is still handed, until nothing
+//! speaks them. A connector reaches the workspace's accounts and their sign-ins over those, and
+//! over nothing else: it opens no file of them.
 //!
 //! On Windows the socket is the connector's process link (`crate::process_link::take`), which
 //! carries the connections the session duplicates into the connector it started; each connection
@@ -30,13 +31,16 @@ pub const CHILD_FD: i32 = 37;
 /// tilolang runtime runs that origin's connector instead of a window.
 pub const ORIGIN_ENV: &str = "TILO_TILOLANG_CONNECTOR";
 
-/// A connection handed to the connector: a reader's, or the connector's account sign-ins.
+/// A connection handed to the connector: a reader's, the connector's account sign-ins, or the
+/// connection to the device's dispatch that answers the app's action frames.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Attach {
     #[serde(with = "crate::packet::fd")]
     connection: Descriptor,
     #[serde(default)]
     sign_ins: bool,
+    #[serde(default)]
+    actions: bool,
 }
 
 /// What the session handed the connector.
@@ -47,6 +51,9 @@ pub enum Handed {
     Reader(tilo_socket::Stream),
     /// The connector's account sign-ins.
     SignIns(tilo_socket::Stream),
+    /// The connector's connection to the device's dispatch, which answers the app's action
+    /// frames as the app it was launched as.
+    Actions(tilo_socket::Stream),
 }
 
 impl crate::packet::Packet for Attach {}
@@ -120,6 +127,7 @@ pub fn send_attachment(socket: &Descriptor, connection: &Descriptor) -> io::Resu
     Attach {
         connection: crate::process_link::try_clone(connection)?,
         sign_ins: false,
+        actions: false,
     }
     .send(socket)
 }
@@ -132,6 +140,20 @@ pub fn send_sign_ins(socket: &Descriptor, connection: Descriptor) -> io::Result<
     Attach {
         connection,
         sign_ins: true,
+        actions: false,
+    }
+    .send(socket)
+}
+
+/// Hand the connector behind `socket` its connection to the device's dispatch, `connection`.
+///
+/// # Errors
+/// The socket's error.
+pub fn send_actions(socket: &Descriptor, connection: Descriptor) -> io::Result<()> {
+    Attach {
+        connection,
+        sign_ins: false,
+        actions: true,
     }
     .send(socket)
 }
@@ -148,7 +170,9 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
         return Ok(None);
     };
     let connection = stream(attach.connection)?;
-    Ok(Some(if attach.sign_ins {
+    Ok(Some(if attach.actions {
+        Handed::Actions(connection)
+    } else if attach.sign_ins {
         Handed::SignIns(connection)
     } else {
         Handed::Reader(connection)
@@ -165,9 +189,9 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
 pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<tilo_socket::Stream>> {
     match receive(socket)? {
         Some(Handed::Reader(connection)) => Ok(Some(connection)),
-        Some(Handed::SignIns(_)) => Err(io::Error::new(
+        Some(Handed::SignIns(_) | Handed::Actions(_)) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "the session handed account sign-ins to a connector not granted them",
+            "the session handed the connector a connection, not a reader's",
         )),
         None => Ok(None),
     }
@@ -180,11 +204,22 @@ pub fn attachments(
     socket: Descriptor,
     mut ended: impl FnMut(Option<io::Error>) + Send + 'static,
 ) -> impl Iterator<Item = tilo_socket::Stream> + Send + 'static {
-    std::iter::from_fn(move || match receive_attachment(&socket) {
-        Ok(Some(connection)) => Some(connection),
-        next => {
-            ended(next.err());
-            None
+    std::iter::from_fn(move || {
+        loop {
+            // A connection the session handed the connector for its own use, before any reader's,
+            // is no reader's: the readers are the ones that follow.
+            match receive(&socket) {
+                Ok(Some(Handed::Reader(connection))) => return Some(connection),
+                Ok(Some(Handed::Actions(_) | Handed::SignIns(_))) => {}
+                Ok(None) => {
+                    ended(None);
+                    return None;
+                }
+                Err(error) => {
+                    ended(Some(error));
+                    return None;
+                }
+            }
         }
     })
 }
