@@ -1864,8 +1864,9 @@ impl TrackTimeline {
     }
 
     #[cfg(test)]
-    pub(crate) fn pinch_for_test(&mut self, factor: f64, x: f64) {
-        self.zoom_by(factor, x);
+    pub(crate) fn pinch_for_test(&mut self, scale: f64, x: f64) {
+        // The fingers' scale, as the gesture reads it: apart magnifies.
+        self.zoom_by(1.0 / scale, x);
     }
 
     #[cfg(test)]
