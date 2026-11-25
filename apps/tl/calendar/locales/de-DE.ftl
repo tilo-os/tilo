@@ -952,16 +952,16 @@ d-qfoc7u6b = Take invitation~present
 d-nd2mftjh = Window
     .w-calendar = Calendar
     .w-sync-calendars = Kalender synchronisieren
-    .w-week = Week
-    .w-month = Month
+    .w-week = Woche
+    .w-month = Monat
     .w-agenda = Agenda
-    .w-day = Day
-    .w-tasks = Tasks
-    .w-task-lists = Task lists
-    .w-inbox = Inbox
-    .w-today = Today
-    .w-upcoming = Upcoming
-    .w-done = Done
+    .w-day = Tag
+    .w-tasks = Aufgaben
+    .w-task-lists = Aufgabenlisten
+    .w-inbox = Eingang
+    .w-today = Heute
+    .w-upcoming = Demnächst
+    .w-done = Erledigt
     .w-projects = Projects
     .w-calendars = Calendars
     .w-all-calendars = All calendars
@@ -978,6 +978,24 @@ d-nd2mftjh = Window
     .w-repeats = { $title } repeats
     .w-only-this-date = Only this date
     .w-this-and-all-following = This and all following
+
+d-li3ayrd7 = Woche
+
+d-dykpzvq6 = Monat
+
+d-clvn3fdl = Tag
+
+d-vcuynr7i = Agenda
+
+d-pfdg5ohd = Aufgaben
+
+d-yhmmif6d = Aufgabeneingang
+
+d-oijmpeik = Heutige Aufgaben
+
+d-afxicbuq = Anstehende Aufgaben
+
+d-ld4l5oag = Erledigte Aufgaben
 
 d-kergju7m = Account notices
     .w-sync-again = Erneut synchronisieren

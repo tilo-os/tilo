@@ -75,6 +75,9 @@ pub struct Env {
     pub named_imports: BTreeSet<String>,
     /// `view#anchor` to id.
     pub anchors: HashMap<String, String>,
+    /// `view.show.place` ([`crate::ids::place_key`]) to id: the places a view's window can be
+    /// opened at (`on show week: ...`).
+    pub places: HashMap<String, String>,
     pub enums: Vec<EnumInfo>,
     pub roots: Vec<TypeKey>,
     /// The roots each device keeps its own (`device root readings: Readings`), among [`Self::roots`].
@@ -2052,6 +2055,7 @@ impl Resolver<'_> {
             });
             if let Item::View(v) = item {
                 self.anchors(v, lock);
+                self.places(v, lock);
                 self.states(v, lock);
             }
         }
@@ -3298,6 +3302,26 @@ impl Resolver<'_> {
                 );
                 None
             }
+        }
+    }
+
+    /// The places the view's window can be opened at, each once: `on show week: ...`.
+    fn places(&mut self, v: &ast::ViewDecl, lock: &IdsLock) {
+        for place in v.body.iter().filter_map(ast::place_of) {
+            let key = crate::ids::place_key(&v.name.name, &place.name.name);
+            if self.env.places.contains_key(&key) {
+                self.err(
+                    "E011",
+                    place.name.span,
+                    format!(
+                        "the place `{}` is declared twice in view `{}`",
+                        place.name.name, v.name.name
+                    ),
+                );
+                continue;
+            }
+            let id = id_of(lock, &key);
+            self.env.places.insert(key, id);
         }
     }
 

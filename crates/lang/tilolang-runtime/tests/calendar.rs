@@ -847,6 +847,104 @@ mod cases {
         assert!(labels(w.tree()).iter().any(|x| x == "Write notes"));
     }
 
+    /// The place the window's sidebar has chosen.
+    fn chosen_place(w: &ViewInstance) -> Value {
+        w.tree()
+            .first_of_kind("ui.NavList")
+            .and_then(|list| list.props.get("selected"))
+            .cloned()
+            .expect("the sidebar says which place it shows")
+    }
+
+    /// A caller opens the window at a place by its name, as the launcher, the palette, an agent
+    /// or a script do: the week, the tasks, one of their lists, a project's. The window goes there
+    /// for the person at it and no one else, and the calendar itself does not change.
+    #[test]
+    fn a_caller_opens_the_window_at_a_place() {
+        let s = sheet();
+        s.opened();
+        let today = s.make_task("Write notes");
+        s.call("due_task_today", &[("t", Value::resource(&today))]);
+        s.make_task("Buy milk");
+        let done = s.make_task("File taxes");
+        s.call("check_task", &[("t", Value::resource(&done))]);
+        let garden = s.call_ref("new_project", &[("c", Value::resource(&s.root))]);
+        s.call(
+            "rename_project",
+            &[
+                ("p", Value::resource(&garden)),
+                ("name", Value::text("Garden")),
+            ],
+        );
+        let tulips = s.make_task("Plant tulips");
+        s.call(
+            "file_task",
+            &[
+                ("t", Value::resource(&tulips)),
+                ("p", Value::some(Value::resource(&garden))),
+            ],
+        );
+        let anchor = s.read(&s.root, "anchor_at");
+
+        // Bo is a member too, and looks at the same window.
+        s.rt.set_members(
+            vec![
+                tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
+                tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
+            ],
+            None,
+        );
+        let open = |who: &Actor| {
+            let mut window =
+                s.rt.open_window(
+                    who,
+                    "window-1",
+                    &s.app.view("window"),
+                    vec![Value::resource(&s.root)],
+                )
+                .unwrap();
+            window.set_lazy_rows(false).unwrap();
+            window
+        };
+        let mut w = open(&me());
+        let mut other = open(&person("bo"));
+        let shown = |w: &mut ViewInstance, place: &str| {
+            assert!(
+                w.show_place(place).unwrap(),
+                "the window has the place {place}"
+            );
+            w.poll_patches().unwrap();
+            labels(w.tree())
+        };
+        let tasks = shown(&mut w, "tasks");
+        assert_eq!(chosen_place(&w), Value::text("tasks"));
+        assert!(tasks.iter().any(|x| x == "Write notes"), "{tasks:?}");
+        let inbox = shown(&mut w, "inbox");
+        assert!(inbox.iter().any(|x| x == "Buy milk"), "{inbox:?}");
+        assert!(!inbox.iter().any(|x| x == "Write notes"), "{inbox:?}");
+        let finished = shown(&mut w, "done");
+        assert!(finished.iter().any(|x| x == "File taxes"), "{finished:?}");
+        assert!(!finished.iter().any(|x| x == "Buy milk"), "{finished:?}");
+        // A project is a resource: showing it lists its tasks, as choosing it in the sidebar does.
+        assert!(w.show(&garden).unwrap(), "the window answers for a project");
+        w.poll_patches().unwrap();
+        let planted = labels(w.tree());
+        assert!(planted.iter().any(|x| x == "Plant tulips"), "{planted:?}");
+        assert!(!planted.iter().any(|x| x == "Buy milk"), "{planted:?}");
+        shown(&mut w, "week");
+        assert_eq!(chosen_place(&w), Value::text("week"));
+        assert!(
+            !w.show_place("nowhere").unwrap(),
+            "a place it does not declare"
+        );
+
+        // The place is this window's, kept for its person: another window stands where it stood,
+        // and the calendar's own day is where it was.
+        other.poll_patches().unwrap();
+        assert_eq!(chosen_place(&other), Value::text("month"));
+        assert_eq!(s.read(&s.root, "anchor_at"), anchor);
+    }
+
     /// A calendar the person kept out is left out of the week, and shown again it returns.
     #[test]
     fn a_calendar_kept_out_is_left_out_and_comes_back() {

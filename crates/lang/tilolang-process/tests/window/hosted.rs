@@ -85,6 +85,8 @@ mod narrow;
 mod origins;
 #[path = "hosted/personal.rs"]
 mod personal;
+#[path = "hosted/places.rs"]
+mod places;
 #[path = "hosted/presence.rs"]
 mod presence;
 #[path = "hosted/selection.rs"]

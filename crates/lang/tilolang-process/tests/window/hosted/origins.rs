@@ -129,7 +129,10 @@ fn published(app: &mut TubeApp, action: &str, marker: Option<&str>) -> String {
         app.harness()
             .wait_until(ui::time::Duration::from_millis(10), |_| false);
     }
-    panic!("the window never offers `{action}`; it shows {:?}", app.texts());
+    panic!(
+        "the window never offers `{action}`; it shows {:?}",
+        app.texts()
+    );
 }
 
 #[test]

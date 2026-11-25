@@ -940,6 +940,10 @@ pub struct ViewMeta {
     /// it lists (`on show(x: T): ...`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shows: Vec<ShowMeta>,
+    /// The places its window can be opened at (`on show week: ...`), in the order it declares
+    /// them: the host publishes each as a way to open the window, there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<PlaceMeta>,
     /// The view declares `protect capture`: wherever it is shown, a capture or a stream leaves it
     /// out. A view showing this one, or a view it is a row of, says the same.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -954,6 +958,21 @@ pub struct ShowMeta {
     /// The id of the declared type of item the view answers for.
     pub ty: String,
     /// The function that makes the action, run with the item: `func.id` is its export.
+    pub func: FnMeta,
+}
+
+/// A place a view's window can be opened at (`on show week: set(place, "week")`): the launcher,
+/// the palette, an agent and a script open the window there by its name, and the view applies
+/// the action the function makes in its own state, for the person who opened it alone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlaceMeta {
+    /// Its id in `app.ids`: the key its words are translated under.
+    pub id: String,
+    /// Its name in the source, which a caller opens it by.
+    pub name: String,
+    /// Its words in the package's own language.
+    pub label: String,
+    /// The function that makes the action, run with nothing: `func.id` is its export.
     pub func: FnMeta,
 }
 
@@ -1116,6 +1135,14 @@ impl PackageMeta {
             .iter()
             .find(|d| d.ty == ty)
             .map(|d| d.view.as_str())
+    }
+
+    /// The places a window of `ty` (an id) can be opened at: those its default view declares.
+    #[must_use]
+    pub fn places_of(&self, ty: &str) -> &[PlaceMeta] {
+        self.default_view(ty)
+            .and_then(|view| self.views.iter().find(|v| v.id == view))
+            .map_or(&[], |view| view.places.as_slice())
     }
 
     /// The views a window of `ty` (an id) switches between, in the order declared.

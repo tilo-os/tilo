@@ -80,6 +80,7 @@ pub(super) fn package_of(app: &str) -> &'static str {
         "so.tilo.lang.counter" => "../../../apps/tl/counter",
         "so.tilo.lang.board" => "../../../apps/tl/board",
         "so.tilo.mail" => "../../../apps/tl/mail",
+        "so.tilo.calendar" => "../../../apps/tl/calendar",
         "so.tilo.lang.views" => "../../../apps/tl/views",
         "so.tilo.lang.grid" => "tests/window/grid",
         "so.tilo.lang.interaction" => "tests/window/interaction",

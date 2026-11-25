@@ -162,6 +162,9 @@ pub struct Module {
     /// What each view does when the window is asked to show an item: a function returning the
     /// action to apply.
     pub shows: Vec<ViewShow>,
+    /// The places each view's window can be opened at: a function returning the action that
+    /// takes the window there.
+    pub places: Vec<ViewPlace>,
     pub words: Vec<crate::meta::WordMeta>,
     /// The views a capture or a stream leaves out, by id: those that declare `protect capture`,
     /// those a protected template expanded in, and those showing one of either.
@@ -195,6 +198,27 @@ pub struct ViewShow {
     pub export: String,
     pub param: crate::resolve::ParamInfo,
     pub func: usize,
+}
+
+/// A place a view's window can be opened at (`on show week: set(place, "week")` in its body):
+/// the runtime runs the function and applies the action it returns in the view's state, as it
+/// does an item's [`ViewShow`]. Exported as `p_<place id>` ([`place_export`]).
+#[derive(Clone, Debug)]
+pub struct ViewPlace {
+    pub view: String,
+    /// Its name in the source: what a caller opens it by.
+    pub name: String,
+    /// Its id in `app.ids`, under which its words are translated.
+    pub id: String,
+    /// Its words, in the package's own language: the label written, or its name in sentence case.
+    pub label: String,
+    pub export: String,
+    pub func: usize,
+}
+
+/// The export of the function that takes a window to the place with id `id`.
+pub fn place_export(id: &str) -> String {
+    format!("p_{id}")
 }
 
 /// The export of the function a view answers a "show this item" of the type `ty` with: the

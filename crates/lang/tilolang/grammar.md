@@ -100,6 +100,7 @@ ui_stmt    = ( "window" | "lens" ) ident ":" type [ "=" expr ]     (* view state
            | "if" ( expr | let_binds ) ui_block [ "else" ( ui_if | ui_block ) ]
            | "match" expr "{" { pattern "=>" ( ui_block | ui_stmt ) ( "," | NL ) } "}"
            | "on" ident [ "(" ident [ ":" type ] ")" ] ":" expr    (* an event and its action *)
+           | "on" "show" ident [ string ] ":" expr               (* a place the window opens at *)
            | ident ":" ui_block                                    (* a named slot *)
            | string ":" expr                                       (* a fact: label and value *)
            | ui_call ;

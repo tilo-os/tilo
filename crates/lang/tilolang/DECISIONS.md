@@ -232,6 +232,23 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   this week") is no resource with a place view: it is a question, which the canvas sends to the
   person's agent, and the agent answers with a view of its own over a `find` (the Views app's
   `WrittenView`), placed as any view is.
+- **A window's places are openable: `on show week: <action>`.** Which place a window shows (a
+  calendar's week, month or tasks, a list of them) is view state, set by the window's own
+  controls, so before this the launcher, the palette, agents and scripts could open an app only
+  at whatever place it last showed. The view names each place a caller may open it at, beside
+  `on show(x: T)`, as the action that takes it there, computed from nothing: `on show tasks:
+  set(place, "tasks")`, with words of its own when its name does not say them (`on show inbox
+  "Task inbox": ...`). Each is published as a place of the view (`PlaceMeta`, id `view.show.name`
+  in `app.ids`, its words translated under that id) and, for a root's default view, as an action
+  on the root (`show-<name>`): the system's `OpenEffect::OpenWith` naming the place, so the
+  launcher, the palette, an agent and the layout's `open` reach it through the one open path
+  and no app writes a route. The window applies the action in the opener's own view state, as
+  it applies an item's `on show`: nothing in the workspace changes, and another person's window
+  stays where it is. A place is not a view: `place view` stands a resource as content without
+  the app around it, a declared view is a different drawing of the resource, and a place is
+  where the app's own window stands. Neither could say it, and a resource field (`anchor_at`)
+  would move every member's window. An item a window answers for with `on show(x: T)` opens
+  there even when its type has no page of its own (a calendar's project lists its tasks).
 - **An item's actions are on the item.** A row, card or tree node state for a resource
   carries its type's actions in its context menu (right-click, long press, Menu key) and, for
   a list row, as its swipe; the page of one item carries them behind the "…" beside its title.

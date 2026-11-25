@@ -635,4 +635,50 @@ tilo_test_env::scenario! {
         );
         crate::common::validate(&held.wasm);
     }
+
+    phase a_view_names_the_places_its_window_opens_at;
+    // `on show week: ...` names a place a caller opens the window at: the action it makes in the view's own
+    // state, run with nothing, called by its name or by the words written for it, which its catalogue
+    // carries under the place's id.
+    {
+        let source = "type Book {\n    title: Text\n}\nroot Book\ndefault view book for Book\n\
+                      view book(b: Book) {\n    state place: Text = \"month\"\n    \
+                      on show week: set(place, \"week\")\n    \
+                      on show inbox \"Task inbox\": set(place, \"tasks\")\n    \
+                      text(place)\n}\n";
+        let c = compile(source);
+        crate::common::validate(&c.wasm);
+        let places = &c.meta.views[0].places;
+        let named: Vec<(&str, &str)> = places
+            .iter()
+            .map(|place| (place.name.as_str(), place.label.as_str()))
+            .collect();
+        assert_eq!(named, [("week", "Week"), ("inbox", "Task inbox")]);
+        assert!(places.iter().all(|place| place.func.params.is_empty()), "given nothing");
+        assert_eq!(
+            places[0].id,
+            c.ids.get("book.show.week").expect("the place's id").to_owned()
+        );
+        assert_eq!(
+            c.meta.places_of(&c.meta.types[0].id).len(),
+            2,
+            "the places of a window of the type"
+        );
+        let catalogue = tilolang::messages::source_catalogue(&c.meta);
+        let inbox = tilolang::messages::key_of(&places[1].id);
+        assert!(catalogue.contains(&format!("\n{inbox} = Task inbox\n")), "{catalogue}");
+        // The canonical form writes it as it was written.
+        let printed = tilolang::print::print_module(
+            &tilolang::parse(&format!("app t.x \"X\"\n{source}")).expect("it parses"),
+        );
+        assert!(printed.contains("on show inbox \"Task inbox\": set(place, \"tasks\")"), "{printed}");
+        // A place declared twice, and one whose handler makes no action, are refused.
+        let twice = "type Book {\n    title: Text\n}\nview v(b: Book) {\n    state place: Text = \"\"\n    \
+                     on show week: set(place, \"week\")\n    on show week: set(place, \"w\")\n    \
+                     text(place)\n}";
+        assert_eq!(codes(twice), vec!["E011"]);
+        let not_an_action = "type Book {\n    title: Text\n}\nview v(b: Book) {\n    \
+                             on show week: 3\n    text(\"x\")\n}";
+        assert!(!codes(not_an_action).is_empty());
+    }
 }

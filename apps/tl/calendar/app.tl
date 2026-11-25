@@ -1732,6 +1732,26 @@ view window(c: Calendars) {
     state picked: Option<Date> = .none
     // A window asked to show an event shows the week it stands on and opens it.
     on show(e: Event): set(place, "week").then(open(e))
+    // A window asked to show a project lists its tasks.
+    on show(p: Project): set(place, "tasks").then(set(task_project, .some(p)))
+    // The places the launcher, the palette, an agent or a script opens the window at.
+    on show week: set(place, "week")
+    on show month: set(place, "month")
+    on show day: set(place, "day")
+    on show agenda: set(place, "agenda")
+    on show tasks: set(place, "tasks")
+    on show inbox "Task inbox": set(place, "tasks")
+        .then(set(smart, "inbox"))
+        .then(set(task_project, .none))
+    on show today "Today's tasks": set(place, "tasks")
+        .then(set(smart, "today"))
+        .then(set(task_project, .none))
+    on show upcoming "Upcoming tasks": set(place, "tasks")
+        .then(set(smart, "upcoming"))
+        .then(set(task_project, .none))
+    on show done "Done tasks": set(place, "tasks")
+        .then(set(smart, "done"))
+        .then(set(task_project, .none))
     let day = c.anchor_at.day()
     let week_start = day.start_of_week()
     let period = if place == "month" {

@@ -364,12 +364,22 @@ pub fn declared_names(m: &Module) -> Vec<String> {
                     if let crate::ast::UiKind::State(d) = &s.kind {
                         out.push(format!("{}.{}", v.name.name, d.name.name));
                     }
+                    if let Some(place) = crate::ast::place_of(s) {
+                        out.push(place_key(&v.name.name, &place.name.name));
+                    }
                 }
                 collect_anchors(&v.name.name, &v.body, &mut out);
             }
         }
     }
     out
+}
+
+/// The key a place of the view `view` (`on show week: ...`) has in `app.ids`: its words are
+/// translated under it.
+#[must_use]
+pub fn place_key(view: &str, place: &str) -> String {
+    format!("{view}.show.{place}")
 }
 
 fn collect_anchors(view: &str, stmts: &[crate::ast::UiStmt], out: &mut Vec<String>) {

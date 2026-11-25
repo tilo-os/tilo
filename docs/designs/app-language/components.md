@@ -264,6 +264,17 @@ does not answer for opens there too. The app says what showing an item means in 
 shell never guesses a place from a row's shape, so a scenario that returns a task lands in the
 list that holds it, not on a page over a place the person was not looking at.
 
+A window's places are opened the same way. `on show week: set(place, "week")` names a place of
+the window and the action that takes the view there; `on show inbox "Task inbox": ...` gives it
+words of its own where the name does not say them. The host publishes each place of a root's
+window as an action on the root (`show-week`), labelled in the reader's language, so the
+launcher, the palette, an agent and a script open the window at the place by the same address.
+The action is the system's `open` of the root through the place; the window answers it by
+applying the action in its own view state, the person's alone, so opening Tasks moves nobody
+else's window and changes nothing in the workspace. A place is not a view of its own: the
+window keeps its sidebar, bar and history, and the person moves on from the place as from any
+other.
+
 ## 4. Customizing a component: a ladder
 
 How deeply a view may make its UI its own, from saying nothing to shipping Rust. Each rung is a

@@ -891,11 +891,30 @@ pub enum UiKind {
     },
 }
 
+/// The place a view statement declares, when it is one: `on show week: ...` names a place of the
+/// window by `week`, where `on show(x: Task): ...` takes an item.
+#[must_use]
+pub fn place_of(s: &UiStmt) -> Option<&EventParam> {
+    match &s.kind {
+        UiKind::On {
+            event,
+            param: Some(param),
+            at: None,
+            ..
+        } if event.name == "show" && param.ty.is_none() => Some(param),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventParam {
     pub name: Ident,
-    /// Its type when written; else the type the component's description gives.
+    /// Its type when written; else the type the component's description gives. A view's `on show`
+    /// without one names a place of the window (`on show week: ...`), not an item.
     pub ty: Option<TypeExpr>,
+    /// The words a place is called by when its name does not say them (`on show inbox "Task
+    /// inbox": ...`).
+    pub label: Option<Box<str>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

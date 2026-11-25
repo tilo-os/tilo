@@ -388,6 +388,11 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         for word in meta.words.iter().filter(|word| word.view == view.id) {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
+        // A place a caller opens the window at is called by its own words, a message of its own
+        // after the view's attributes.
+        for place in &view.places {
+            message(&mut out, &place.id, &place.label, "");
+        }
     }
     out
 }
@@ -678,6 +683,7 @@ mod tests {
             presents: None,
             row_of: None,
             shows: Vec::new(),
+            places: Vec::new(),
             capture_protected: false,
         });
         meta

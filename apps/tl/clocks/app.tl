@@ -421,6 +421,11 @@ fn left_text(left: Option<Int>) -> Text {
 /// The Clocks window: world clocks, alarms, timers and the stopwatch, each a place of its own.
 view clocks_page(c: Clocks) {
     state place: Text = "timers"
+    // The places the launcher, the palette, an agent or a script opens the window at.
+    on show world "World clock": set(place, "world")
+    on show alarms: set(place, "alarms")
+    on show timers: set(place, "timers")
+    on show stopwatch: set(place, "stopwatch")
     ui.NavShell(content_kind: .page, sidebar_title: "Clocks", title: place_title(place)) {
         sidebar: {
             ui.NavList(selected: place) {

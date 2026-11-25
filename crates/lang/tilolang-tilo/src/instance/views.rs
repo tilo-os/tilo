@@ -114,6 +114,12 @@ impl Instance {
         with: Option<&str>,
         front: Option<ui::Front>,
     ) {
+        // A place of the window's own view is no view of its own: the window goes there.
+        if let Some(place) = with
+            && self.show_place(target, place, front)
+        {
+            return;
+        }
         let Some(app) = self.host() else {
             return;
         };
@@ -281,6 +287,44 @@ impl Instance {
             root.in_place = Some(target.clone());
         }
         shown
+    }
+
+    /// Take the window to the place `place` (a name or an id) its own view declares (`on show
+    /// week: ...`), when `target` is what that view shows: the view applies what the place makes
+    /// in this person's state of this window, so the workspace and everyone else's windows stay
+    /// as they were. A page over the window closes, since the person asked for the window's own
+    /// place. Whether the view declares that place.
+    pub(super) fn show_place(
+        &mut self,
+        target: &ResourceRef,
+        place: &str,
+        front: Option<ui::Front>,
+    ) -> bool {
+        let shown = self.root.as_ref().is_some_and(|root| {
+            root.target.doc == target.doc
+                && root.target.item == target.item
+                && match root.view.borrow().show_place(place) {
+                    Ok(shown) => shown,
+                    Err(error) => {
+                        tracing::warn!(%error, place, "a view did not go to its place");
+                        false
+                    }
+                }
+        });
+        if !shown {
+            return false;
+        }
+        self.leave_history();
+        let detail = self.detail.take();
+        let facts = self.facts.take();
+        if detail.is_some() || facts.is_some() {
+            self.lenses_changed = true;
+            self.out.push(ToUi::Close);
+        }
+        if let Some(front) = front {
+            self.out.push(ToUi::Front { front, shows: None });
+        }
+        true
     }
 
     /// Close the detail level: Back.

@@ -128,6 +128,16 @@ pub struct OpenPlan {
     pub view: Option<String>,
 }
 
+/// Whether the window of one of the package's roots answers a request to show an item of the
+/// type `ty` (an id) in its own view (`on show(x: T): ...`).
+fn shown_by_a_root(meta: &tilolang_runtime::meta::Meta, ty: &str) -> bool {
+    meta.roots.iter().any(|root| {
+        meta.default_view(root)
+            .and_then(|view| meta.views.iter().find(|v| v.id == view))
+            .is_some_and(|view| view.shows.iter().any(|show| show.ty == ty))
+    })
+}
+
 /// The id of the record type the field type `ty` (`List<WindowsApp>`) is a list of, when the
 /// package `meta` declares it.
 fn listed_type(meta: &tilolang_runtime::meta::Meta, ty: &str) -> Option<String> {
@@ -513,7 +523,9 @@ impl Host {
                 .store()
                 .type_of(&item)
                 .map_err(|error| error.to_string())?;
-            if package.meta.default_view(&ty).is_some() {
+            // An item opens on its own page, or where the window's own view shows it when that
+            // view answers for its kind (`on show(p: Project): ...`) though it has no page.
+            if package.meta.default_view(&ty).is_some() || shown_by_a_root(&package.meta, &ty) {
                 target = Some(ResourceRef { ty, ..item });
             }
         }

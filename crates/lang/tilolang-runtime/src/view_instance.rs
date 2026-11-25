@@ -825,6 +825,52 @@ impl ViewInstance {
         Ok(true)
     }
 
+    /// Take the window to its place `place`, by its name or its id: what the view's `on show
+    /// week: ...` applies in its own state. It is this person's view of this window alone, so
+    /// nothing in the workspace changes and no one else's window moves.
+    ///
+    /// Whether the view declares that place.
+    ///
+    /// # Errors
+    ///
+    /// As an invocation.
+    pub fn show_place(&self, place: &str) -> Result<bool, RuntimeError> {
+        let Some(root) = self.live.bound(crate::live::ROOT) else {
+            return Ok(false);
+        };
+        let Some(pkg) = self.core.registry.borrow().package(&root.target.module) else {
+            return Ok(false);
+        };
+        let Some(declared) = pkg
+            .view(&root.target.view)
+            .and_then(|view| {
+                view.places
+                    .iter()
+                    .find(|declared| declared.name == place || declared.id == place)
+            })
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let made = self.core.call_in_view(
+            &pkg,
+            &declared.func.id,
+            &declared.func.params,
+            &[],
+            &self.live.window,
+            &self.live.viewer,
+            &declared.func.result,
+        )?;
+        let Value::Action(mut aref) = made else {
+            return Err(RuntimeError::BadArgs(
+                "a place must make an action".to_owned(),
+            ));
+        };
+        self.read_states(&mut aref)?;
+        self.run(&aref)?;
+        Ok(true)
+    }
+
     fn state_key(&self, state: &str) -> StateKey {
         StateKey::view(
             self.live.window.clone(),

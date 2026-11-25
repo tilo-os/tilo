@@ -239,6 +239,58 @@ impl Checker<'_> {
         ));
     }
 
+    /// The function a view's window is taken to a place with (`on show week: set(place, "week")`):
+    /// run with nothing, in the view's own state, and what it returns is applied there, as an
+    /// item's `on show` is. `id` is the view's, and `name` what it is called.
+    pub(super) fn run_place(
+        &mut self,
+        id: &str,
+        name: &str,
+        place: &ast::EventParam,
+        show: &UiStmt,
+        body: &[UiStmt],
+        params: &BTreeSet<String>,
+    ) {
+        let UiKind::On { action, .. } = &show.kind else {
+            return;
+        };
+        let key = crate::ids::place_key(name, &place.name.name);
+        let Some(place_id) = self.env.places.get(&key).cloned() else {
+            // Declared twice: the resolver said so.
+            return;
+        };
+        let outer = std::mem::take(&mut self.st);
+        self.begin(Ctx::View, &[], Ty::Action, id);
+        self.st.ns.clone_from(&outer.ns);
+        self.st.types.clone_from(&outer.types);
+        self.at = self.outer_at;
+        self.state_parts(name, body, Some(params));
+        let act = self.expr_as(action, &Ty::Action);
+        self.emit(Stmt::Return(Some(act)));
+        let export = ir::place_export(&place_id);
+        let f = self.end(
+            ir::FuncKind::Fn,
+            &format!("{name} at {}", place.name.name),
+            &export,
+        );
+        self.st = outer;
+        let label = place
+            .label
+            .as_deref()
+            .map_or_else(|| crate::messages::label(&place.name.name), str::to_owned);
+        self.places.push((
+            f,
+            ir::ViewPlace {
+                view: id.to_owned(),
+                name: place.name.name.clone(),
+                id: place_id,
+                label,
+                export,
+                func: 0,
+            },
+        ));
+    }
+
     pub(super) fn state_names(&self) -> String {
         let mut names: Vec<&str> = self.st.states.keys().map(String::as_str).collect();
         names.sort_unstable();

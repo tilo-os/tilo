@@ -613,6 +613,9 @@ struct TypeActions {
     /// The views that show a resource of the type, each with the action that opens it through
     /// that view, when that is not the resource's own `open` ([`views_of`]).
     views: Vec<(ResourceViewSpec, Option<Arc<ActionType>>)>,
+    /// The places a window of a root of the type can be opened at, each with the action that
+    /// opens it there ([`places_of`]), by the place's id.
+    places: Vec<(Arc<ActionType>, String)>,
     /// What its resources are, as people name them: its noun, its app's name, and whether
     /// it is a root (each resource published with it says so, [`ResourceType`]).
     named: ResourceType,
@@ -656,6 +659,7 @@ impl ActionTypes {
                     edits: edit_types(meta, &declared.name, planner),
                     actions,
                     views: views_of(meta, &declared.name, words),
+                    places: places_of(meta, declared, words),
                     named: ResourceType {
                         // What one and several of the type are called, by count: the catalogue
                         // refines a noun English cannot derive ("notebooks", not "noteses").
@@ -737,6 +741,9 @@ impl ActionTypes {
                 resource = resource.with_action(open_with_spec(opens, id, &view.id));
             }
             resource = resource.with_view(view.clone());
+        }
+        for (opens, place) in &of_type.places {
+            resource = resource.with_action(open_with_spec(opens, id, place));
         }
         // The link to it, as the system's own verbs bind it to every resource with a view: the
         // palette, the context menu and an agent ask for "copy link" the same way they ask an
@@ -853,6 +860,44 @@ fn views_of(
             (spec.with_primary(is_primary).with_place(is_place), opens)
         })
         .collect()
+}
+
+/// The places a window of a root of `declared` can be opened at (`on show week: ...` in its
+/// default view), each with the action that opens the window there: an
+/// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) naming the place, labelled in
+/// the reader's words, which the launcher, the palette, an agent and a script invoke alike. The
+/// window answers it by taking its own view to the place, for the person who opened it: what
+/// another person's window shows, and the workspace, stay as they were.
+fn places_of(
+    meta: &Meta,
+    declared: &tilolang::meta::TypeMeta,
+    words: &dyn Words,
+) -> Vec<(Arc<ActionType>, String)> {
+    use tilo_resource::Effect as _;
+    if !meta.roots.contains(&declared.id) {
+        return Vec::new();
+    }
+    meta.places_of(&declared.id)
+        .iter()
+        .map(|place| {
+            let mut spec = crate::effects::OpenEffect::OpenWith {
+                anchor: String::new(),
+                view: place.id.clone(),
+            }
+            .bound();
+            let ty = spec.type_mut();
+            ty.id = show_place_id(&place.name);
+            ty.label = label_of(words, &place.id, &place.label);
+            ty.description = None;
+            (Arc::clone(spec.action_type()), place.id.clone())
+        })
+        .collect()
+}
+
+/// The id of the action that opens a window at its place named `place`.
+#[must_use]
+pub fn show_place_id(place: &str) -> String {
+    format!("show-{place}")
 }
 
 /// The id of the action that opens a resource through the view named `view`: published by its

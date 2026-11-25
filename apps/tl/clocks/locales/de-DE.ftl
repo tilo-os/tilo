@@ -277,6 +277,14 @@ d-qobxx5dl = Uhrenseite
     .w-timers = Timer
     .w-stopwatch = Stoppuhr
 
+d-rkqzryj7 = Weltuhr
+
+d-7pjh2v4w = Wecker
+
+d-6bdysva7 = Timer
+
+d-7am7gxbl = Stoppuhr
+
 d-sm7xxyrn = Weltseite
     .w-add-a-city = Eine Stadt hinzufügen
     .w-search-a-city-or-a-zone = Eine Stadt oder Zeitzone suchen

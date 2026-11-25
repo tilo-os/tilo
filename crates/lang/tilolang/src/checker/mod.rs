@@ -328,6 +328,9 @@ pub(crate) struct Checker<'a> {
     /// What each view answers a request to show an item with ([`ir::ViewShow`]); their functions
     /// follow the arguments.
     shows: Vec<(ir::Func, ir::ViewShow)>,
+    /// The places each view's window can be opened at ([`ir::ViewPlace`]); their functions follow
+    /// the shows'.
+    places: Vec<(ir::Func, ir::ViewPlace)>,
     /// How many handlers' steps after a binding were made: each is a function of its own, named by
     /// the view's id and this count ([`Checker::answer_steps`]).
     answer_n: usize,
@@ -461,6 +464,7 @@ fn lower(
         states: Vec::new(),
         at_event: Vec::new(),
         shows: Vec::new(),
+        places: Vec::new(),
         answer_n: 0,
         words: Vec::new(),
         offers: Vec::new(),
@@ -616,6 +620,7 @@ fn lower(
     let mut views = Vec::new();
     let mut at_event = Vec::new();
     let mut shows = Vec::new();
+    let mut places = Vec::new();
     if funcs.len() == c.synth_base {
         for (f, v) in std::mem::take(&mut c.synth) {
             funcs.push(f);
@@ -630,6 +635,11 @@ fn lower(
             show.func = funcs.len();
             funcs.push(f);
             shows.push(show);
+        }
+        for (f, mut place) in std::mem::take(&mut c.places) {
+            place.func = funcs.len();
+            funcs.push(f);
+            places.push(place);
         }
     } else if c.diags.is_empty() {
         c.err(
@@ -703,6 +713,7 @@ fn lower(
         states: c.states,
         at_event,
         shows,
+        places,
         words: c.words,
         capture_protected,
         view_calls,
@@ -726,6 +737,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         states: Vec::new(),
         at_event: Vec::new(),
         shows: Vec::new(),
+        places: Vec::new(),
         answer_n: 0,
         words: Vec::new(),
         protected: BTreeSet::new(),
@@ -767,6 +779,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             states: Vec::new(),
             at_event: Vec::new(),
             shows: Vec::new(),
+            places: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
             view_calls: Vec::new(),
@@ -787,6 +800,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         states: Vec::new(),
         at_event: Vec::new(),
         shows: Vec::new(),
+        places: Vec::new(),
         answer_n: 0,
         words: Vec::new(),
         protected: BTreeSet::new(),
@@ -814,6 +828,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             states: Vec::new(),
             at_event: Vec::new(),
             shows: Vec::new(),
+            places: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
             view_calls: Vec::new(),
@@ -1237,7 +1252,10 @@ impl Checker<'_> {
         let params: std::collections::BTreeSet<String> =
             c.params.iter().map(|p| p.name.clone()).collect();
         for show in &shows {
-            self.run_show(&c.id, &c.name, show, &v.body, &params);
+            match ast::place_of(show) {
+                Some(place) => self.run_place(&c.id, &c.name, place, show, &v.body, &params),
+                None => self.run_show(&c.id, &c.name, show, &v.body, &params),
+            }
         }
         let rest = rest.as_slice();
         let env = self.env;

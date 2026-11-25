@@ -10,7 +10,8 @@ use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
     ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta, Line, PackageMeta,
-    ParamMeta, ProposalMeta, ScenarioMeta, ShowMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
+    ParamMeta, PlaceMeta, ProposalMeta, ScenarioMeta, ShowMeta, StateMeta, TypeMeta, VariantMeta,
+    ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
@@ -513,6 +514,7 @@ fn template_views(
                 presents: None,
                 row_of: None,
                 shows: shows_of(shows, &id, &v.name.name, app),
+                places: Vec::new(),
                 capture_protected: false,
             })
         })
@@ -563,6 +565,7 @@ fn row_views(
             presents: None,
             row_of: Some(v.owner.clone()),
             shows: Vec::new(),
+            places: Vec::new(),
             capture_protected: ir.capture_protected.contains(&v.id),
         })
         .collect()
@@ -581,6 +584,27 @@ fn shows_of(shows: &[crate::ir::ViewShow], id: &str, name: &str, app: &str) -> V
                 name: format!("{name} shown an item"),
                 doc: String::new(),
                 params: params_meta(std::slice::from_ref(&show.param), app),
+                result: Ty::Action.meta_text(app),
+            },
+        })
+        .collect()
+}
+
+/// The places the window of the view `id` (called `name`) can be opened at, in the order it
+/// declares them.
+fn places_of(places: &[crate::ir::ViewPlace], id: &str, name: &str, app: &str) -> Vec<PlaceMeta> {
+    places
+        .iter()
+        .filter(|place| place.view == id)
+        .map(|place| PlaceMeta {
+            id: place.id.clone(),
+            name: place.name.clone(),
+            label: place.label.clone(),
+            func: FnMeta {
+                id: place.export.clone(),
+                name: format!("{name} at {}", place.name),
+                doc: String::new(),
+                params: Vec::new(),
                 result: Ty::Action.meta_text(app),
             },
         })
@@ -932,6 +956,7 @@ fn build_meta(
                         presents: Some(c.id.clone()),
                         row_of: None,
                         shows: Vec::new(),
+                        places: Vec::new(),
                         capture_protected: ir.capture_protected.contains(&v.id),
                     });
                 }
@@ -963,6 +988,7 @@ fn build_meta(
                     presents: None,
                     row_of: None,
                     shows: shows_of(shows, &c.id, &c.name, app),
+                    places: places_of(&ir.places, &c.id, &c.name, app),
                     capture_protected: ir.capture_protected.contains(&c.id),
                 });
             }

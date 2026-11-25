@@ -969,7 +969,11 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        Ok(crate::ast::EventParam { name, ty })
+        Ok(crate::ast::EventParam {
+            name,
+            ty,
+            label: None,
+        })
     }
 
     fn recover_item(&mut self) {
@@ -3095,6 +3099,36 @@ impl<'a> Parser<'a> {
                     block: Some(vec![tick]),
                     anchor: None,
                 })
+            }
+            // `on show week: set(place, "week")`, `on show inbox "Task inbox": ...`: a place of the
+            // window a caller can open it at, by its name, labelled by its words when they differ.
+            Tok::Ident(word)
+                if word == "on"
+                    && matches!(self.peek_at(1), Tok::Ident(show) if show == "show")
+                    && matches!(self.peek_at(2), Tok::Ident(_))
+                    && matches!(self.peek_at(3), Tok::Colon | Tok::Str(_)) =>
+            {
+                self.bump();
+                let event = self.ident("an event name")?;
+                let name = self.ident("the place's name")?;
+                let label = if matches!(self.peek(), Tok::Str(_)) {
+                    Some(self.plain_string("the place's label")?.into_boxed_str())
+                } else {
+                    None
+                };
+                self.expect(&Tok::Colon)?;
+                let action = self.expr()?;
+                UiKind::On {
+                    event,
+                    param: Some(crate::ast::EventParam {
+                        name,
+                        ty: None,
+                        label,
+                    }),
+                    at: None,
+                    action: Box::new(action),
+                    binds: None,
+                }
             }
             Tok::Ident(word)
                 if word == "on"

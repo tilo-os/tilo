@@ -1530,6 +1530,11 @@ impl Printer<'_> {
                     None => p.name.name.clone(),
                 };
                 let carried = match (param, at.as_ref()) {
+                    // A place of the window: `on show week "Label": ...`.
+                    (Some(p), None) if event.name == "show" && p.ty.is_none() => match &p.label {
+                        Some(label) => format!(" {} {}", p.name.name, quote(label)),
+                        None => format!(" {}", p.name.name),
+                    },
                     (Some(p), Some(at)) => format!("({}, {})", named(p), named(at)),
                     (Some(p), None) => format!("({})", named(p)),
                     _ => String::new(),
