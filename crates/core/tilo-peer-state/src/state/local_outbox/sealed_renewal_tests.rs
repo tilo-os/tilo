@@ -2,7 +2,7 @@ use super::super::sealed_compaction_tests::held;
 use super::*;
 use crate::{InputDisposition, TransportOrigin};
 use automerge::transaction::Transactable as _;
-use collab_types::{Ed25519PublicKey, EncryptionMetadata, OpKind, SignedOp};
+use collab_types::{EncryptionMetadata, SignedOp};
 use ed25519_dalek::SigningKey;
 use std::collections::BTreeMap;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -43,7 +43,7 @@ fn fixture() -> Fixture {
             .receive_from(origin(&governor_key), message, now)
             .unwrap();
     }
-    let write = sealed(&member, &key, now, b"sealed by this member's app");
+    let write = sealed(&member, &key, &cert, now, "sealed by this member's app");
     member
         .admit_new_local_document(APP, RECORD, envelope(&write).clone(), now)
         .unwrap();
@@ -66,23 +66,52 @@ fn metadata(epoch: u64) -> EncryptionMetadata {
     EncryptionMetadata::content_key(epoch, collab_types::ContentRetention::Delta)
 }
 
-fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8]) -> NeighbourMsg {
-    let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let mut envelope = SignedOp::new_unsigned_with_encryption(
-        ciphertext.to_vec(),
-        collab_types::document_artifact_id(APP, peer.workspace_id(), RECORD),
-        author,
-        collab_types::document_attestation_id(APP, peer.workspace_id(), RECORD),
-        OpKind::Change,
-        at,
-        1,
-        metadata(1),
+/// The member's app write to [`RECORD`], its `value` set to `text`: `cert`'s device drafts it
+/// through the production writer, which seals it under the workspace's member keys, and `key`,
+/// that device's key, signs it. The device's own edit names the person its certificate is for, as
+/// every change a device signs names who made it.
+fn sealed(
+    member: &StatePeer,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    at: SystemTime,
+    text: &str,
+) -> NeighbourMsg {
+    let keys = crate::sealed_records::members_keys(member.workspace_id());
+    let mut document = automerge::AutoCommit::load(&member.document(APP, RECORD).unwrap()).unwrap();
+    let heads = document.get_heads();
+    document.put(automerge::ROOT, "value", text).unwrap();
+    document.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(hex::encode(
+                cert.user_public_key,
+            ))),
+        ),
     );
+    let changes = document.save_after(&heads);
+    let (envelopes, _) = crate::owner::draft_local_write(
+        member,
+        member.workspace_id(),
+        &cert.device_public_key,
+        crate::owner::LocalWrite {
+            app: APP,
+            document: RECORD,
+            readers: None,
+            changes: &changes,
+            founding: false,
+            snapshot: false,
+            sealed: Some(&keys),
+            commit: None,
+            now: at,
+        },
+    )
+    .unwrap();
+    let [mut envelope] = <[_; 1]>::try_from(envelopes).expect("one frame");
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: APP.into(),
-        cluster_id: peer.workspace_id().into(),
+        cluster_id: member.workspace_id().into(),
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
         readers: None,
@@ -109,13 +138,43 @@ fn expired(now: SystemTime) -> SystemTime {
 /// admits, its signed durable receipt over the record's watermarks. The
 /// member holds no key for the record, so that receipt, not a cleartext
 /// checkpoint, is what acknowledges its write.
+///
+/// A renewal is numbered past the write it renews, so a governor that never saw
+/// that write holds the renewal for the history before it and asks its sender for
+/// it. The sender still keeps the original write, unretired, and answers with it
+/// as retained history; the renewal is taken in with it.
 fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
     let payload = envelope(&message).payload.clone();
+    let signature = envelope(&message).signature;
     let report = fixture
         .governor
         .receive_from_report(origin(&fixture.key), message, at)
         .unwrap();
-    assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
+    let primary = report.primary().clone();
+    let mut taken = matches!(primary, InputDisposition::Accepted(_));
+    if !taken {
+        let original = fixture.write.clone();
+        let history = fixture
+            .governor
+            .receive_from_report(
+                TransportOrigin::RetainedServerDelta(fixture.key.verifying_key().to_bytes()),
+                original,
+                at,
+            )
+            .unwrap();
+        assert!(
+            matches!(history.primary(), InputDisposition::Accepted(_)),
+            "the governor takes the write before the renewal as history: {:?}",
+            history.primary()
+        );
+        taken = history.released().iter().any(|released| {
+            matches!(
+                &released.message,
+                NeighbourMsg::AppDocument { envelope: held, .. } if held.signature == signature
+            )
+        });
+    }
+    assert!(taken, "the governor takes the renewal: {primary:?}");
     let governor = &mut fixture.governor;
     let authority = governor.owner_certificates()[0].device_public_key;
     let document = &governor.core.documents[&Route {
