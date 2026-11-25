@@ -48,6 +48,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import array
 import base64
 import contextlib
 import fnmatch
@@ -58,6 +59,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -490,10 +492,8 @@ class MachineFiles:
             self.log = None
 
 
-<<<<<<< ours
-=======
 def daemon_ask(socket_path: Path, path: str, args: dict,
-               within: float = 20.0, pid: int | None = None) -> tuple[dict, int | None]:
+               within: float = 20.0) -> tuple[dict, int | None]:
     """Ask this computer's daemon one of its own actions over its native endpoint, as the
     account this process runs as, and answer what the action answered and the descriptor the
     answer carried.
@@ -676,8 +676,7 @@ class MachineDaemon:
     def _signed_in(self, uid: int) -> tuple[dict, int | None]:
         """Say the account `uid` signed in, as `pam_tilo` does, and answer what the daemon said
         of the person and the descriptor the answer carried."""
-        person, fd = daemon_ask(self.NATIVE, "seats#signed-in", {"uid": uid},
-                                pid=self.proc.pid if self.proc is not None else None)
+        person, fd = daemon_ask(self.NATIVE, "seats#signed-in", {"uid": uid})
         if not person:
             raise Failed("the machine's daemon answered no person for the sign-in")
         return person, fd
@@ -730,7 +729,6 @@ class MachineDaemon:
             self.log = None
 
 
->>>>>>> theirs
 # --- what the app holds, read back ------------------------------------------------------------
 
 def app_action(session: Session, app: str, operation: str, resource: str | None = None):
@@ -1383,9 +1381,11 @@ class Walk:
         # The stand-in services this walk started beside the session (op `serve`),
         # stopped when its session goes.
         self.services: list = []
-        # The machine's files daemon, when this walk started its own session on a machine it
-        # root (a check's VM): a family's is the family's, stopped with its session.
+        # The machine's files daemon and its device daemon, when this walk started its own
+        # session on a machine it roots (a check's VM): a family's are the family's, stopped
+        # with its session.
         self.machine: MachineFiles | None = None
+        self.daemon: MachineDaemon | None = None
         # What the run answered and a later step may name: a stand-in's address,
         # a provider's id (`{"served": "provider.id"}`), a page server's address.
         self.served: dict = {}
@@ -3230,19 +3230,28 @@ class Walk:
             tapps = self.tapps()
             began = time.monotonic()
             machine = MachineFiles(self.state, self.out)
-            env = {**first_device_env(self.state, spec), **machine.start()}
+            daemon = MachineDaemon(self.state, self.out)
+            env = {**first_device_env(self.state, spec), **daemon.start()}
+            trouble = lambda: machine.failure() or daemon.failure()  # noqa: E731
+            # The person signs in before the machine's files daemon asks the device anything:
+            # what it serves is the person's, and a daemon with no person signed in has none.
+            def logged_in():
+                added, fds = daemon.login(env)
+                return {**machine.start(), **added}, fds
             try:
                 self.session.start(apps=apps_of(spec, self.variant),
                                    fresh=True, out=self.out / "logs", tag=self.variant,
                                    tapps=tapps, session_args=session_args_of(spec, self.variant),
-                                   env=env, abort=machine.failure)
+                                   env=env, abort=trouble, prepare=logged_in)
                 self.devices = start_devices(spec, self.variant, self.session, self.state,
                                              self.out, apps_of(spec, self.variant), tapps)
             except BaseException:
                 self.session.stop()
                 machine.stop()
+                daemon.stop()
                 raise
             self.machine = machine
+            self.daemon = daemon
             started = round((time.monotonic() - began) * 1000)
             print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
         began = time.monotonic()
@@ -3288,6 +3297,8 @@ class Walk:
                     self.devices.stop()
                 self.session.stop()
                 self.machine.stop()
+                if self.daemon is not None:
+                    self.daemon.stop()
             self.stop_services()
         return found
 
@@ -3820,6 +3831,18 @@ def walks() -> list[str]:
     return sorted(path.stem for path in WALKS.glob("*.json") if path != MOVED)
 
 
+def found_device(socket_path: Path) -> int:
+    """Found this computer's person as the account this runs as: the first command a computer
+    answers for itself (`devices#found`), which the daemon admits by the account it comes from.
+    Run as the session's account, never as root."""
+    try:
+        daemon_ask(socket_path, "devices#found", {})
+    except Failed as error:
+        print(f"app-walk: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Walk an app's first hour in each version its step file names.")
@@ -3846,10 +3869,15 @@ def main() -> int:
                         help="write OUT/index.md from a run's outputs (scripts/headless-examples/walk.sh)")
     parser.add_argument("--baseline-dir", type=Path,
                         help="with --side-by-side: the baseline run's outputs")
+    parser.add_argument("--found-device", type=Path, metavar="SOCKET",
+                        help="found this computer's person through the daemon at SOCKET, as the "
+                             "account this runs as (the walk's login runs this as its account)")
     parser.add_argument("--opens", type=Path, metavar="WALKS",
                         help="hold every open the walks under WALKS recorded to the open bar, "
                              f"{OPEN_BAR_MS} ms, writing opens.md to --out (the app-walk/open check)")
     options = parser.parse_args()
+    if options.found_device:
+        return found_device(options.found_device)
     if options.opens:
         return hold_opens(options.opens.resolve(), (options.out or Path.cwd()).resolve())
     if options.side_by_side:
@@ -3912,6 +3940,7 @@ def main() -> int:
             session = None
             devices = None
             machine = None
+            daemon = None
             started = 0
             if family:
                 packages = []
@@ -3924,16 +3953,25 @@ def main() -> int:
                 tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]
                 session = Session(state)
                 machine = MachineFiles(state, out)
-                env = {**first_device_env(state, first), **machine.start()}
+                daemon = MachineDaemon(state, out)
+                env = {**first_device_env(state, first), **daemon.start()}
+                trouble = lambda: machine.failure() or daemon.failure()  # noqa: E731
+                # The person signs in before the machine's files daemon asks the device
+                # anything: what it serves is the person's, and a daemon with no person
+                # signed in has none.
+                def logged_in():
+                    added, fds = daemon.login(env)
+                    return {**machine.start(), **added}, fds
                 began = time.monotonic()
                 try:
                     session.start(apps=apps, fresh=True, out=out / "logs", tag=variant,
                                   tapps=tapps, session_args=session_args_of(first, variant), env=env,
-                                  abort=machine.failure)
+                                  abort=trouble, prepare=logged_in)
                     devices = start_devices(first, variant, session, state, out, apps, tapps)
                 except BaseException:
                     session.stop()
                     machine.stop()
+                    daemon.stop()
                     raise
                 started = round((time.monotonic() - began) * 1000)
                 print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
@@ -3959,6 +3997,8 @@ def main() -> int:
                     session.stop()
                 if machine is not None:
                     machine.stop()
+                if daemon is not None:
+                    daemon.stop()
         verdict = 0
         printed = []
         for walk_name, report in reports.items():
