@@ -1069,11 +1069,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Some(surface) => Some(surface),
             None => self.host.installed_surface(app_id).await.flatten(),
         }?;
-        let mut surfaces = self.surfaces.lock_recover();
-        if surfaces.len() >= tilo_actions::tree::RESOLVED_PATHS {
-            surfaces.clear();
+        {
+            let mut surfaces = self.surfaces.lock_recover();
+            if surfaces.len() >= tilo_actions::tree::RESOLVED_PATHS {
+                surfaces.clear();
+            }
+            surfaces.insert(app_id.to_owned(), std::sync::Arc::new(found.clone()));
         }
-        surfaces.insert(app_id.to_owned(), std::sync::Arc::new(found.clone()));
         Some(found)
     }
 
