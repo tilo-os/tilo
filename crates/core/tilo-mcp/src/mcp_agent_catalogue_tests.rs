@@ -6,6 +6,16 @@
 
 use super::*;
 
+/// What the workspace's catalogue was asked: which apps run and which are installed. What an
+/// app answers about its own resources once it is found is not the catalogue, and a call that
+/// reads a resource asks the app every time.
+fn catalogue_asks(asked: &[String]) -> Vec<&String> {
+    asked
+        .iter()
+        .filter(|ask| ask.as_str() == "apps" || ask.starts_with(WORKSPACE))
+        .collect()
+}
+
 /// How many calls the catalogue is held to answering for: one session names the same app again
 /// and again, so what it found is kept.
 #[test]
@@ -30,7 +40,7 @@ fn a_session_reads_the_catalogue_once_for_an_app_it_names_again() {
         }
         let again = notes.take_asked();
         assert!(
-            again.is_empty(),
+            catalogue_asks(&again).is_empty(),
             "100 calls read the catalogue again: {again:?}"
         );
         let starts: Vec<_> = notes
@@ -75,6 +85,61 @@ fn a_name_no_app_answers_asks_the_catalogue_once() {
         assert!(
             took < std::time::Duration::from_secs(1),
             "100 refusals took {took:?}"
+        );
+    });
+}
+
+/// A grant the workspace withdraws is refused by the next call: what a session keeps is where
+/// the app runs, never that this caller may use it.
+#[test]
+fn a_grant_withdrawn_while_the_app_runs_is_refused_by_the_next_call() {
+    let notes = Notes::new(false);
+    let server = agent(&notes);
+    run(async {
+        // The agent may open Notes: the read starts it, and the session keeps where it runs.
+        let (text, failed) = tool(&server, "tilo_read", json!({ "path": "notes/Todo" })).await;
+        assert!(!failed, "the first read is the agent's: {text}");
+        assert!(
+            notes
+                .invoked()
+                .iter()
+                .any(|(_, action, _)| action == "start"),
+            "the read started Notes, which the calls after it reach"
+        );
+        // The workspace withdraws the grant while Notes keeps running.
+        *notes.workspace.lock().unwrap() = Installed::NotesClosedToAgent;
+        // The next call reaches Notes, whose connection admits it again as the workspace
+        // decides it: refused, though the session knows where the app runs.
+        let (text, failed) = tool(&server, "tilo_read", json!({ "path": "notes/Todo" })).await;
+        assert!(
+            failed,
+            "the call after the grant was withdrawn was answered: {text}"
+        );
+        assert!(text.contains("not_permitted"), "{text}");
+        // And the one after it: nothing the refusal left keeps the agent in.
+        let (text, failed) = tool(&server, "tilo_read", json!({ "path": "notes/Todo" })).await;
+        assert!(failed && text.contains("not_permitted"), "{text}");
+    });
+}
+
+/// A grant given after a call is the next call's: a refusal the session kept would hold the
+/// agent out of an app its person has just allowed it.
+#[test]
+fn a_grant_given_after_a_call_is_not_refused_from_what_the_session_kept() {
+    let notes = Notes::new(false).installed(Installed::NotesClosedToAgent);
+    let server = agent(&notes);
+    run(async {
+        let (text, _) = tool(&server, "tilo_read", json!({ "path": "notes/Todo" })).await;
+        assert!(
+            text.contains("may not open"),
+            "Notes is not this agent's to open yet: {text}"
+        );
+        // The workspace allows it.
+        *notes.workspace.lock().unwrap() = Installed::Openable;
+        let (text, failed) = tool(&server, "tilo_read", json!({ "path": "notes/Todo" })).await;
+        assert!(
+            !failed,
+            "the call after the grant was given was refused: {text}"
         );
     });
 }

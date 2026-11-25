@@ -167,6 +167,9 @@ enum Installed {
     WithWriter,
     /// Notes to open; the word processor named only, this agent may not open it.
     WriterClosedToAgent,
+    /// Notes, and Sheets for this agent to open, until the workspace withdraws its grant on
+    /// Notes while Notes runs: the app keeps running and its connection refuses every call.
+    NotesClosedToAgent,
     /// None at all.
     Nothing,
     /// It cannot be read.
@@ -675,6 +678,11 @@ impl Notes {
                     writer.action = None;
                     vec![open(APP, "Notes"), writer]
                 }
+                Installed::NotesClosedToAgent => {
+                    let mut notes = open(APP, "Notes");
+                    notes.action = None;
+                    vec![notes, open("so.tilo.sheets", "Sheets")]
+                }
                 Installed::Nothing | Installed::Unreadable => Vec::new(),
             };
             // An installed app's row carries the surface its package publishes.
@@ -925,6 +933,15 @@ impl Notes {
         }
         if provider != WORKSPACE && !running {
             return Pending::ready(Err(ActionCallError::UnknownAction));
+        }
+        // The workspace withdrew this caller's grant on Notes while Notes runs: the app's
+        // connection admits every call again as the workspace decides it, and refuses this
+        // one. A session that keeps only where the app runs asks again on the next call.
+        if provider != WORKSPACE
+            && provider != "2"
+            && *self.workspace.lock().unwrap() == Installed::NotesClosedToAgent
+        {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         let cannot_list = *self.cannot_list.lock().unwrap();
         if provider != WORKSPACE && query.target.is_none() && cannot_list > 0 {
