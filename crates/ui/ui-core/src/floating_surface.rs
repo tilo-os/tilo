@@ -2271,8 +2271,10 @@ fn a_window_loads_the_staged_theme_bundle_the_host_names() {
     // Nothing staged there: the set is never registered, the document naming it does not read, and
     // the window keeps the theme it has.
     let absent = bundle.path().join("not-staged");
+    let mut unregistered = document;
+    unregistered["material"]["window"] = serde_json::json!({ "painter": "test.absent-in-a-process" });
     assert!(
-        message(document, Some(&absent)).configured_theme().is_none(),
+        message(unregistered, Some(&absent)).configured_theme().is_none(),
         "a document naming a set nothing staged is no theme"
     );
 }

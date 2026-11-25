@@ -165,9 +165,10 @@ fn staging_places_only_the_bundle_files_a_theme_names() {
         })
         .collect();
     staged.sort();
+    let mut expected = vec![DOCUMENT.to_owned(), format!("{SET}.wasm")];
+    expected.sort();
     assert_eq!(
-        staged,
-        [DOCUMENT.to_owned(), format!("{SET}.wasm")],
+        staged, expected,
         "the document and the set it names, and nothing else"
     );
     assert_eq!(
