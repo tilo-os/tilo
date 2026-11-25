@@ -646,9 +646,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A record the workspace holds none of is asked for once, however often a list opens it, and
-/// asked for again once something arrived.
-#[test]
 /// A record the workspace holds none of, founded on a kind with no structure, holds no change: there
 /// is nothing to send, so it shows saved rather than waiting for a write that never goes.
 #[test]
@@ -675,6 +672,9 @@ fn a_record_holding_nothing_yet_is_saved() {
     );
 }
 
+/// A record the workspace holds none of is asked for once, however often a list opens it, and
+/// asked for again once something arrived.
+#[test]
 fn a_record_not_there_costs_one_question() {
     let port = Rc::new(MemoryWorkspace::default());
     let workspace = workspace_id();
