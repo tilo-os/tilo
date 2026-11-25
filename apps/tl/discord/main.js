@@ -34,7 +34,6 @@ import {
   webhookDelete,
   react,
   startThread,
-  voiceStatus,
   whyRefused,
 } from "./src/rest.js";
 
@@ -238,10 +237,6 @@ export async function openGateway({
         calls,
         lane,
         makeVoice: makeVoice ?? ((options) => connectVoice(options)),
-        showStatus: (channel, status) =>
-          calls.webCall(
-            voiceStatus({ tokenItem: account.token_item, origin: account.api_origin }, channel, status),
-          ),
         log,
         gateway: {
           get user() {
@@ -249,6 +244,7 @@ export async function openGateway({
           },
           joinVoice: (guild, channel) => client.joinVoice(guild, channel),
           leaveVoice: (guild) => client.leaveVoice(guild),
+          standing: (guild) => client?.standing?.(guild) ?? null,
         },
       })
     : null;

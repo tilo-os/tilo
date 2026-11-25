@@ -6,6 +6,8 @@
 // the package's `[sandbox.net]` grant, reached through the launcher; the token arrives from the
 // workspace's vault and stays in this process's memory.
 
+import { standingOf } from "./permissions.js";
+
 /// The gateway events the bridge needs: guilds, members, moderation, emoji, voice states,
 /// messages, reactions, and message content.
 /// `GUILDS|GUILD_MEMBERS|GUILD_MODERATION|GUILD_EMOJIS_AND_STICKERS|GUILD_VOICE_STATES|
@@ -194,6 +196,8 @@ export class Gateway {
   /// token Discord answers with.
   voice = new Map();
   #joining = new Map();
+  /// What decides the bot's permissions in each server, by guild ([`standingOf`]).
+  #standing = new Map();
 
   constructor({ log = () => {} } = {}) {
     this.#log = log;
@@ -226,6 +230,12 @@ export class Gateway {
     });
     this.#open();
     return ready;
+  }
+
+  /// What decides the bot's permissions in `guild`, as the gateway last heard it, or `null`
+  /// before Discord described the server.
+  standing(guild) {
+    return this.#standing.get(String(guild)) ?? null;
   }
 
   /// Move the bot into `channel` of `guild`. Answers once Discord said both the session and the
@@ -429,11 +439,30 @@ export class Gateway {
       case "MESSAGE_REACTION_REMOVE":
         this.#emit("messageReactionRemove", reactionOf(data), userOf(data));
         return;
-      case "GUILD_MEMBER_UPDATE":
+      case "GUILD_MEMBER_UPDATE": {
+        const standing = this.#standing.get(String(data?.guild_id ?? ""));
+        if (standing && String(data?.user?.id ?? "") === standing.bot) {
+          standing.botRoles = (data?.roles ?? []).map(String);
+        }
         this.#emit("guildMemberUpdate", null, memberOf(data));
         return;
+      }
+      case "CHANNEL_CREATE":
+      case "CHANNEL_UPDATE": {
+        const standing = this.#standing.get(String(data?.guild_id ?? ""));
+        standing?.overwrites.set(String(data?.id ?? ""), data?.permission_overwrites ?? []);
+        return;
+      }
+      case "GUILD_ROLE_CREATE":
+      case "GUILD_ROLE_UPDATE": {
+        const standing = this.#standing.get(String(data?.guild_id ?? ""));
+        const role = data?.role;
+        if (standing && role) standing.roles.set(String(role.id), String(role.permissions ?? "0"));
+        return;
+      }
       case "GUILD_CREATE":
       case "GUILD_UPDATE":
+        this.#keepStanding(type, data);
         this.#emit("layout", {
           ...data,
           botUser: this.user?.id ?? "",
@@ -453,6 +482,19 @@ export class Gateway {
       default:
         return;
     }
+  }
+
+  /// What GUILD_CREATE says of the server, and what GUILD_UPDATE changes of it.
+  #keepStanding(type, data) {
+    const id = String(data?.id ?? "");
+    const known = this.#standing.get(id);
+    const told = standingOf(data, this.user?.id ?? "");
+    if (type === "GUILD_CREATE" || !known) {
+      this.#standing.set(id, told);
+      return;
+    }
+    known.owner = told.owner || known.owner;
+    if (data?.roles) known.roles = told.roles;
   }
 
   /// A voice state: who is in which call. The bot's own state says when Discord moved it, so a

@@ -108,9 +108,11 @@ function harness({ makeVoice } = {}) {
     lane,
     gateway,
     makeVoice: makeVoice ?? opened,
-    showStatus: (channel, status) => {
-      shown.push([channel, status]);
-      return Promise.resolve();
+    // Discord's REST, as the vault makes the call: the lines shown on the channel's status.
+    webCall: (request) => {
+      const channel = /channels\/([^/]+)\/voice-status$/.exec(request.url)?.[1];
+      if (channel) shown.push([channel, JSON.parse(request.body).status ?? ""]);
+      return Promise.resolve({ status: 204 });
     },
     log: () => {},
   });

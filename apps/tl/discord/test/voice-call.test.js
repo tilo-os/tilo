@@ -9,6 +9,7 @@ import { startCalls } from "../src/call.js";
 import { connect } from "../src/voice.js";
 import { fakeProxy } from "./fake-socks.js";
 import { USER, fakeVoiceServer } from "./fake-voice.js";
+import { standingOf } from "../src/permissions.js";
 
 const HASH = "ab".repeat(32);
 
@@ -70,14 +71,42 @@ function daemonLane({ refuse = null } = {}) {
   };
 }
 
-async function bridge({ refuse } = {}) {
+/// The server as the gateway described it to the bot "900": `everyone` is what `@everyone` may.
+function server(everyone) {
+  return standingOf(
+    {
+      id: "123",
+      owner_id: "1",
+      roles: [{ id: "123", permissions: String(everyone) }],
+      members: [{ user: { id: "900" }, roles: [] }],
+      channels: [{ id: "458", permission_overwrites: [] }],
+    },
+    "900",
+  );
+}
+
+const VIEW = 1n << 10n;
+const CONNECT = 1n << 20n;
+const SPEAK = 1n << 21n;
+const NICKNAME = 1n << 26n;
+const SET_STATUS = 1n << 48n;
+
+/// `standing` is the server as the gateway described it, or null before it did; `statusAnswer`
+/// is how Discord answers setting the voice channel's status.
+async function bridge({ refuse, standing = null, statusAnswer = 204 } = {}) {
   const voiceServer = await fakeVoiceServer();
   const proxy = await fakeProxy();
   const lane = daemonLane({ refuse });
   const recorded = [];
   const shown = [];
+  const nicks = [];
+  const requests = [];
   const gateway = {
     user: { id: "900" },
+    server: standing,
+    standing(guild) {
+      return guild === "123" ? this.server : null;
+    },
     joined: [],
     left: [],
     joinVoice(guild, channel) {
@@ -116,9 +145,17 @@ async function bridge({ refuse } = {}) {
         }),
       ),
     content: () => Promise.resolve(`tilo.content:${HASH}`),
-    showStatus: (channel, status) => {
-      shown.push([channel, status]);
-      return Promise.resolve();
+    // Discord's REST, as the vault makes the call: the lines shown on the channel's status.
+    webCall: (request) => {
+      requests.push(request);
+      const channel = /channels\/([^/]+)\/voice-status$/.exec(request.url)?.[1];
+      if (channel) {
+        if (statusAnswer >= 300) return Promise.resolve({ status: statusAnswer });
+        shown.push([channel, JSON.parse(request.body).status ?? ""]);
+      }
+      const guild = /guilds\/([^/]+)\/members\/@me$/.exec(request.url)?.[1];
+      if (guild) nicks.push([guild, JSON.parse(request.body).nick ?? ""]);
+      return Promise.resolve({ status: 204 });
     },
     log: () => {},
   });
@@ -130,6 +167,8 @@ async function bridge({ refuse } = {}) {
     carried,
     recorded,
     shown,
+    nicks,
+    requests,
     stop() {
       carried.close();
       proxy.stop();
@@ -232,6 +271,83 @@ test("a workspace that grants the bridge no call is said so, and the bot joins n
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(host.gateway.joined).toEqual([]);
     expect(host.voiceServer.seen).toEqual([]);
+  } finally {
+    host.stop();
+  }
+});
+
+test("a channel the bot may not speak in is said so by the permission's name, and joined once given", async () => {
+  const host = await bridge({ standing: server(VIEW | CONNECT) });
+  try {
+    await host.carried.start();
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+    await until(
+      () => host.recorded.some((call) => call.action === "report_voice"),
+      "the missing permission recorded",
+    );
+    const problem = host.recorded.find((call) => call.action === "report_voice").args.problem;
+    expect(problem).toBe(
+      "The bot lacks Speak in this voice channel. Give it that permission in Discord.",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(host.gateway.joined).toEqual([]);
+    expect(host.voiceServer.seen).toEqual([]);
+
+    // Someone gives the bot Speak in Discord: the call it was asked into is joined.
+    host.gateway.server = server(VIEW | CONNECT | SPEAK | SET_STATUS);
+    await until(() => host.gateway.joined.length === 1, "the bot in once it may speak", 4_000);
+    expect(host.gateway.joined).toEqual([["123", "458"]]);
+    expect(host.shown).toEqual([["458", "On Tilo: Grace"]]);
+  } finally {
+    host.stop();
+  }
+});
+
+test("a server that lacks several permissions names each", async () => {
+  const host = await bridge({ standing: server(VIEW) });
+  try {
+    await host.carried.start();
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+    await until(
+      () => host.recorded.some((call) => call.action === "report_voice"),
+      "the missing permissions recorded",
+    );
+    expect(host.recorded.find((call) => call.action === "report_voice").args.problem).toBe(
+      "The bot lacks Connect and Speak in this voice channel. Give it those permissions in Discord.",
+    );
+    expect(host.gateway.joined).toEqual([]);
+  } finally {
+    host.stop();
+  }
+});
+
+test("where Discord refuses the bot the channel's status, the bot's nickname says who is on Tilo", async () => {
+  const host = await bridge({ statusAnswer: 403 });
+  try {
+    await host.carried.start();
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+    await until(() => host.nicks.length === 1, "the nickname set");
+    expect(host.nicks).toEqual([["123", "On Tilo: Grace"]]);
+    expect(host.shown).toEqual([]);
+    await until(() => host.gateway.joined.length === 1, "the bot in the call");
+
+    // Nobody is left on either side: the bot leaves and takes its own name back.
+    host.lane.asks.push({ call: null, status: null });
+    await until(() => host.nicks.length === 2, "the nickname cleared");
+    expect(host.nicks.at(-1)).toEqual(["123", ""]);
+  } finally {
+    host.stop();
+  }
+});
+
+test("a bot the server does not let set a channel's status does not try, and uses its nickname", async () => {
+  const host = await bridge({ standing: server(VIEW | CONNECT | SPEAK | NICKNAME) });
+  try {
+    await host.carried.start();
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+    await until(() => host.nicks.length === 1, "the nickname set");
+    expect(host.nicks).toEqual([["123", "On Tilo: Grace"]]);
+    expect(host.requests.some((request) => request.url.endsWith("/voice-status"))).toBe(false);
   } finally {
     host.stop();
   }
