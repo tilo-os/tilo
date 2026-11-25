@@ -333,6 +333,26 @@ impl Namespace {
         let Some(document_id) = self.document_id_for_id(id) else {
             return;
         };
+        self.index_put_row(id, document_id, |namespace| {
+            namespace.reaches_root(id).then(|| IndexedDocument {
+                document_id,
+                node_id: id.to_string(),
+                parent_id: namespace.parent_of(id).unwrap_or_default(),
+                name: namespace.name_of(id).unwrap_or_default(),
+                is_dir: namespace.kind_of(id) == NodeKind::Dir,
+            })
+        });
+    }
+
+    /// Bring node `id`'s catalogue row, of record `document_id`, in line with what `row` reads
+    /// of it: the node's row where it reaches the root, else none. A node just made hands over
+    /// the row it wrote rather than reading each field of it back from the document.
+    pub(super) fn index_put_row(
+        &mut self,
+        id: &str,
+        document_id: FileDocumentId,
+        row: impl FnOnce(&Self) -> Option<IndexedDocument>,
+    ) {
         let existing = self.document_index.get(&document_id).cloned();
         if let Some(row) = existing.as_ref().filter(|row| row.node_id != id) {
             // A duplicate durable identity is withheld until a full reconciliation can represent
@@ -346,13 +366,7 @@ impl Namespace {
         let desired = if self.document_index_ambiguous.contains(&document_id) {
             None
         } else {
-            self.reaches_root(id).then(|| IndexedDocument {
-                document_id,
-                node_id: id.to_string(),
-                parent_id: self.parent_of(id).unwrap_or_default(),
-                name: self.name_of(id).unwrap_or_default(),
-                is_dir: self.kind_of(id) == NodeKind::Dir,
-            })
+            row(self)
         };
         if existing == desired {
             return;

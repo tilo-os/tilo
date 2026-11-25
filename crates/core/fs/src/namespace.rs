@@ -1620,7 +1620,15 @@ impl Namespace {
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
         self.tree.bind_document(&id, document_id);
-        self.index_refresh_node(&id);
+        self.index_put_row(&id, document_id, |namespace| {
+            namespace.reaches_root(&id).then(|| IndexedDocument {
+                document_id,
+                node_id: id.clone(),
+                parent_id: parent_id.to_owned(),
+                name: FileNameV1(name.to_vec()),
+                is_dir: kind == NodeKind::Dir,
+            })
+        });
         Some(id)
     }
 
