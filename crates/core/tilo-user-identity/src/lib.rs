@@ -90,7 +90,7 @@ pub use approval::{
 };
 pub use canonical::CanonicalError;
 pub use cert::{
-    AgentScope, BINARY_LAYOUT, DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
+    AgentGrant, AgentScope, BINARY_LAYOUT, DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
     DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, MAX_PLACED_DEVICE_LIFETIME_NS,
     MAX_PLACED_RECORDS, PlacedRecords, RememberedRefusal, RetiredFlags, STAND_IN_LIFETIME_NS,
     UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, binary_layout_of, check_agent_grant,

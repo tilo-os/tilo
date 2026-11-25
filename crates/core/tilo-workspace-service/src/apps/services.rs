@@ -748,12 +748,21 @@ pub struct FilesEntry {
 
 /// The call a put into a workspace's folder is made for: the context the tree's change is made
 /// in (who asked, in which run and work), and the request they sent. The change keeps the request
-/// as its caller signed it, or, for an agent's call signed otherwise, as the device carrying it
-/// out signs it for the agent's person, so every replica checks who asked.
+/// as its caller signed it, so every replica checks who asked; a person's call nobody signed is
+/// signed by the device carrying it out for its own person, and an agent's never is
+/// ([`KEYLESS_AGENT`]).
 pub struct FilesPutCall<'a> {
     pub context: tilo_actions::ActionContext,
     pub request: &'a tilo_actions::remote::InvokeRequest,
 }
+
+/// What an agent asking to put files under no key of its own is told: every device that takes
+/// the files checks who asked against the call's signature, so an agent's put is the call it
+/// signed with the key its person's root certified for it.
+pub const KEYLESS_AGENT: &str = "This agent can't put files into the workspace's folder: it asks \
+     under no key of its own. Each device that takes the files checks who asked, so an agent \
+     puts them with the key its person approved for it. Connect the agent again so its person's \
+     device gives it one.";
 
 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
 impl FilesTreePuts for crate::files::OpenedFiles {

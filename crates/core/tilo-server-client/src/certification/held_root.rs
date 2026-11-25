@@ -250,9 +250,9 @@ pub async fn answer_sign_in(
         return Ok(SignedIn { proof, grant: None });
     };
     let capabilities = if grant.server_key {
-        DeviceCapabilities::own_key_grant(grant.scope)
+        DeviceCapabilities::own_key_grant(grant.scope.clone())
     } else if grant.expires_at_ns.is_some() {
-        DeviceCapabilities::agent_grant(grant.scope)
+        DeviceCapabilities::agent_grant(grant.scope.clone())
     } else {
         return Err(CertifyError::Request(
             "an agent's grant lasts until a time it names; only a server key may last until \
@@ -452,14 +452,14 @@ mod tests {
             &root,
             agent,
             "Claude Code via entry.example",
-            DeviceCapabilities::agent_grant(scope),
+            DeviceCapabilities::agent_grant(scope.clone()),
             Some(now + week),
         )
         .await
         .unwrap();
         assert_eq!(verify_device_cert_at(&grant, grant.issued_at_ns), Ok(()));
         assert_eq!(grant.user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(grant.capabilities, DeviceCapabilities::agent_grant(scope));
+        assert_eq!(grant.capabilities, DeviceCapabilities::agent_grant(scope.clone()));
         assert!(grant.capabilities.agent_grant_holds());
         assert_eq!(grant.expires_at_ns, Some(now + week));
         assert_eq!(grant.device_label, "Claude Code via entry.example");

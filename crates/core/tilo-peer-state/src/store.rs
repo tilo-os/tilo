@@ -1969,16 +1969,19 @@ const WORKSPACES: &str = "workspaces";
 /// The layout of the frames a store keeps: segments of records, each frame one
 /// [`NeighbourMsg`] whose claims carry the caller's signed call, which the claim's signature
 /// covers, and whose identity hello may name a placed device's certificate or a placement grant
-/// ([`tilo_user_identity::DeviceCapabilities::records`]). Version 10 is version 9's layout, whose
+/// ([`tilo_user_identity::DeviceCapabilities::records`]). Version 11 is version 10's layout,
+/// whose identity hello may name an agent's grant that names its agent by its id
+/// ([`tilo_user_identity::AgentScope::Agent`]), which a build of version 10 refuses; version 10
+/// is version 9's layout, whose
 /// messages may be the word that pushed content is kept or let go of
 /// ([`NeighbourMsg::DocumentContentKept`] and [`NeighbourMsg::DocumentContentReleased`]), which a
 /// build of version 9 refuses; version 9 is version 8's, whose messages may be the content asked
 /// for and answered with many at a time ([`NeighbourMsg::DocumentContentWants`] and
 /// [`NeighbourMsg::DocumentContentPieces`]); version 8 is version 7's, whose identity hello a
-/// build of version 7 refuses. A store of version 7 to 9 is relabelled as it opens
+/// build of version 7 refuses. A store of version 7 to 10 is relabelled as it opens
 /// ([`RELABELLED_FRAMES`]), its frames left as they are. A store of any other version is refused
 /// as it opens, by its version, and left as it is.
-pub(crate) const FRAMES_VERSION: u32 = 10;
+pub(crate) const FRAMES_VERSION: u32 = 11;
 /// The oldest version whose frames read as this build's: a store of it or a later one records
 /// the newer version and keeps its segments as they are.
 const RELABELLED_FRAMES: u32 = 7;
@@ -3385,6 +3388,39 @@ mod tests {
             );
         }
 
+        phase a_store_of_version_10_is_relabelled_and_keeps_its_segments;
+        {
+            // Version 10's frames read as this build's: a certificate an identity hello names
+            // reads as it was, and only an agent's grant naming its agent by its id, which no
+            // frame of version 10 holds, is new.
+            let dir = tempfile::tempdir().unwrap();
+            let key = device(5);
+            let frames: Vec<Frame> = (1..=3)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            let mut segment = Vec::new();
+            for frame in &frames {
+                segment.extend(
+                    frame_record(frame, &postcard::to_allocvec(&frame.message).unwrap()).unwrap(),
+                );
+            }
+            let path = segment_path(dir.path(), workspace(), 0, 0);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, &segment).unwrap();
+            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"10").unwrap();
+
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(
+                store.replay(workspace(), &[], Budget::default()).unwrap().frames,
+                frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
+                "every frame of version 10 is served"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
+                FRAMES_VERSION.to_string()
+            );
+            assert_eq!(fs::read(&path).unwrap(), segment, "the segment is kept as it was");
+        }
 
         phase a_store_older_or_newer_than_this_build_reads_is_refused_and_left_whole;
         {

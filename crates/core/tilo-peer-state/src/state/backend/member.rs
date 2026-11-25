@@ -90,7 +90,25 @@ fn current(
     // agent by the agent preset. It does not govern the workspace, and never
     // rises above an Editor.
     let delegate = match identity.delegate.as_ref() {
-        None => None,
+        // A key its person's root certified as one of their agents is that agent, by the id the
+        // certificate names, whichever device holds the key: one agent on every device, acting
+        // with its grants here and never as its person.
+        None => match cert.capabilities.agent.as_ref() {
+            Some(scope @ tilo_user_identity::AgentScope::Agent(grant)) => {
+                if !scope.reaches(&peer.workspace) {
+                    return Err(MembershipError::Delegate(DelegateInactive::OtherWorkspace));
+                }
+                Some(crate::state::ActingAs {
+                    actor: tilo_action_policy::Actor::Member(MemberId::agent(
+                        grant.agent.clone(),
+                        person.as_str(),
+                    )),
+                    grants: tilo_action_policy::Acting::handed_agent(&grant.agent, person.as_str())
+                        .handed_preset(&peer.workspace),
+                })
+            }
+            _ => None,
+        },
         Some(row) => {
             // An active delegation names an agent: a retired bot's never verifies.
             let agent_id = row

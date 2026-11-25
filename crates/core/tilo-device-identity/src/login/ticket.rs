@@ -954,6 +954,7 @@ mod tests {
         assert!(
             cert.capabilities
                 .agent
+                .as_ref()
                 .is_some_and(|scope| scope.is_agent("claude"))
         );
         assert_eq!(cert.capabilities.workspace, None);

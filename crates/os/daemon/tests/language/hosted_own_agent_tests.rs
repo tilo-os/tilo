@@ -613,7 +613,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         hosted.bea_root.verifying_key().to_bytes(),
         "certified by Bea's root"
     );
-    let scope = signer.capabilities.agent.expect("an agent's grant");
+    let scope = signer.capabilities.agent.as_ref().expect("an agent's grant");
     assert!(scope.is_agent(SCOUT), "for Scout alone");
     assert_eq!(scope.workspace(), Some(*workspace_id.as_uuid().as_bytes()));
 

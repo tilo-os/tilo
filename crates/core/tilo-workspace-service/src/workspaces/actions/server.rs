@@ -193,6 +193,7 @@ impl Workspaces {
             || certificate
                 .capabilities
                 .agent
+                .as_ref()
                 .is_some_and(|scope| !scope.reaches(&workspace_id.to_string()))
         {
             return None;

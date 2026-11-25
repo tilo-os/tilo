@@ -264,7 +264,7 @@ impl Workspaces {
         }
         // A grant reaches the workspaces its person approved it for, and no others: a key for
         // one workspace acts in that one alone.
-        if let Some(scope) = key.capabilities.agent
+        if let Some(scope) = &key.capabilities.agent
             && !scope.reaches(workspace)
         {
             return Err("this key's grant does not reach that workspace".into());

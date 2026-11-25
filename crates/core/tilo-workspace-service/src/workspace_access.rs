@@ -626,7 +626,7 @@ pub(crate) fn decide_in(
     if let Some(crate::environment::Environment::Placed(scope)) = environment {
         return environment_decision(workspace, scope, op);
     }
-    if let Some(scope) = peer.cert.capabilities.agent {
+    if let Some(scope) = &peer.cert.capabilities.agent {
         return grant_decision(workspace, peer, scope, op);
     }
     #[cfg(any(test, feature = "agents"))]
@@ -697,13 +697,11 @@ fn environment_decision(
 fn grant_decision(
     workspace: WorkspaceFacts<'_>,
     peer: &AuthenticatedPeer,
-    scope: tilo_user_identity::AgentScope,
+    scope: &tilo_user_identity::AgentScope,
     op: WorkspaceOperation,
 ) -> Decision {
     let here = workspace.workspace_id();
-    let reaches = scope
-        .workspace_name()
-        .is_none_or(|one| WorkspaceId::parse(&one) == Some(here));
+    let reaches = scope.reaches_id(here.as_uuid().as_bytes());
     let agents_protocol = matches!(
         op,
         WorkspaceOperation::Subscribe

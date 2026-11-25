@@ -439,19 +439,57 @@ tilo_test_env::scenario! {
         assert!(AgentScope::AllWorkspaces.reaches(workspace));
         assert!(AgentScope::AllWorkspaces.makes_workspaces());
         // One workspace narrows what all of them was, and never the reverse.
-        assert!(one.within(AgentScope::AllWorkspaces));
-        assert!(one.within(one));
-        assert!(AgentScope::AllWorkspaces.within(AgentScope::AllWorkspaces));
-        assert!(!AgentScope::AllWorkspaces.within(one));
-        // One agent's key names that agent, in one workspace, and stands for no other.
-        let scribe = AgentScope::agent_in(one.workspace().unwrap(), "scribe");
-        assert_eq!(AgentScope::parse(&scribe.name()), Some(scribe));
+        let all = AgentScope::AllWorkspaces;
+        assert!(one.within(&all));
+        assert!(one.within(&one));
+        assert!(all.within(&all));
+        assert!(!all.within(&one));
+        // One agent's key names that agent by its id, in its workspaces, and stands for no other.
+        let id = one.workspace().unwrap();
+        let scribe = AgentScope::agent_in(id, "scribe");
+        assert_eq!(scribe.name(), "agent:scribe");
+        assert_eq!(AgentScope::parse(&scribe.name()), None, "no text a person writes");
         assert!(scribe.reaches(workspace) && !scribe.makes_workspaces());
         assert!(scribe.is_agent("scribe") && !scribe.is_agent("critic"));
+        assert_eq!(scribe.agent_grant().map(|grant| grant.agent.as_str()), Some("scribe"));
         assert!(!one.is_agent("scribe"));
-        assert!(scribe.within(one) && scribe.within(AgentScope::AllWorkspaces));
-        assert!(!one.within(scribe));
-        assert!(!AgentScope::agent_in(one.workspace().unwrap(), "critic").within(scribe));
+        assert!(scribe.within(&one) && scribe.within(&all));
+        assert!(!one.within(&scribe));
+        assert!(!AgentScope::agent_in(id, "critic").within(&scribe));
+        // What layout 3 named an agent's key by still names that agent, and reads back from text.
+        let hashed = AgentScope::AgentHash {
+            workspace: id,
+            agent: AgentScope::agent_of("scribe"),
+        };
+        assert_eq!(AgentScope::parse(&hashed.name()), Some(hashed.clone()));
+        assert!(hashed.is_agent("scribe") && !hashed.is_agent("critic"));
+        assert_eq!(hashed.agent_grant(), None);
+        // An agent's grant reaches the workspaces it names, and acts in the apps it names.
+        let other = [0x22; 16];
+        let wide = AgentScope::Agent(AgentGrant {
+            agent: "scribe".to_owned(),
+            workspaces: vec![id, other],
+            apps: vec!["notes".to_owned(), "writer".to_owned()],
+        });
+        assert!(wide.reaches_id(&id) && wide.reaches_id(&other) && !wide.reaches_id(&[0x33; 16]));
+        assert_eq!(wide.workspace(), None, "no one workspace");
+        assert!(!wide.within(&one));
+        let grant = wide.agent_grant().unwrap();
+        assert!(grant.permits_app("notes") && !grant.permits_app("mail"));
+        for unbounded in [
+            AgentGrant { agent: String::new(), ..grant.clone() },
+            AgentGrant { agent: "a".repeat(MAX_AGENT_ID_BYTES + 1), ..grant.clone() },
+            AgentGrant { workspaces: Vec::new(), ..grant.clone() },
+            AgentGrant { workspaces: vec![other, id], ..grant.clone() },
+            AgentGrant { workspaces: vec![[0; 16]], ..grant.clone() },
+            AgentGrant { apps: vec!["writer".to_owned(), "notes".to_owned()], ..grant.clone() },
+        ] {
+            assert!(!unbounded.is_well_formed(), "{unbounded:?}");
+            let refused = golden_cert_with(DeviceCapabilities::nothing());
+            let mut cert = refused.clone();
+            cert.capabilities = DeviceCapabilities::agent_grant(AgentScope::Agent(unbounded));
+            assert!(postcard::to_allocvec(&cert).is_err(), "never written");
+        }
         for malformed in [
             "",
             "ALL",
@@ -464,8 +502,8 @@ tilo_test_env::scenario! {
             assert_eq!(AgentScope::parse(malformed), None, "{malformed}");
         }
 
-        for scope in [AgentScope::AllWorkspaces, one, scribe] {
-            let grant = golden_cert_with(DeviceCapabilities::agent_grant(scope));
+        for scope in [all.clone(), one.clone(), scribe, hashed, wide] {
+            let grant = golden_cert_with(DeviceCapabilities::agent_grant(scope.clone()));
             verify_device_cert(&grant).unwrap();
             assert_eq!(
                 device_cert_signing_digest(&grant).unwrap(),
@@ -479,8 +517,10 @@ tilo_test_env::scenario! {
             // Another scope under the same signature does not verify.
             let mut moved = grant.clone();
             moved.capabilities.agent = Some(match scope {
-                AgentScope::AllWorkspaces => one,
-                AgentScope::Workspace(_) | AgentScope::Agent { .. } => AgentScope::AllWorkspaces,
+                AgentScope::AllWorkspaces => one.clone(),
+                AgentScope::Workspace(_) | AgentScope::Agent(_) | AgentScope::AgentHash { .. } => {
+                    all.clone()
+                }
             });
             assert_eq!(
                 verify_device_cert(&moved),
@@ -511,9 +551,9 @@ tilo_test_env::scenario! {
             ..DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
         };
         for (capabilities, expiry) in [
-            (DeviceCapabilities::agent_grant(one), None),
+            (DeviceCapabilities::agent_grant(one.clone()), None),
             (
-                DeviceCapabilities::agent_grant(one),
+                DeviceCapabilities::agent_grant(one.clone()),
                 Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS + 1),
             ),
             (wide, Some(2_000)),
@@ -1252,7 +1292,7 @@ tilo_test_env::scenario! {
             sign_device_cert(&mut cert, &root).map(|()| cert)
         };
         let scope = AgentScope::Workspace([7; 16]);
-        let operating = granted(DeviceCapabilities::agent_grant(scope).with_browser_pages(true))
+        let operating = granted(DeviceCapabilities::agent_grant(scope.clone()).with_browser_pages(true))
             .expect("a person signs the key their agent acts with");
         verify_device_cert_at(&operating, 2_000).unwrap();
         assert!(operating.capabilities.browser_pages);

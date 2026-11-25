@@ -940,6 +940,7 @@ impl Workspaces {
                 let makes = device
                     .capabilities
                     .agent
+                    .as_ref()
                     .is_none_or(|scope| scope.makes_workspaces());
                 let moving = args.text("workspace")?;
                 let named = args.text("name")?.is_some();
@@ -1242,6 +1243,7 @@ impl Workspaces {
         let makes = device
             .capabilities
             .agent
+            .as_ref()
             .is_none_or(|scope| scope.makes_workspaces());
         if !makes && Self::a_grant_asks_for_more(device, (name, moving), labels.as_ref()) {
             return Err(ActionCallError::refused(
@@ -1500,6 +1502,7 @@ impl Workspaces {
                 device
                     .capabilities
                     .agent
+                    .as_ref()
                     .is_some_and(|scope| scope.reaches(workspace))
             })
     }

@@ -585,3 +585,143 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A key `person`'s root granted the agent `AGENT` in `workspace`, as each of their devices
+/// that runs it makes one: the agent by its id in the certificate.
+fn agent_key(
+    person: &SigningKey,
+    seed: u8,
+    workspace: &str,
+    now: SystemTime,
+) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let id = *WorkspaceId::parse(workspace).unwrap().as_uuid().as_bytes();
+    let mut cert = DeviceCert {
+        user_public_key: person.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("Scribe on device {seed}"),
+        capabilities: DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
+            id, AGENT,
+        )),
+        issued_at_ns: ns(now - Duration::from_secs(1)),
+        expires_at_ns: Some(ns(now + Duration::from_secs(3600))),
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, person).unwrap();
+    (key, cert)
+}
+
+#[test]
+fn one_agent_on_two_devices_is_one_agent_in_permissions_and_in_history() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let person = SigningKey::from_bytes(&ROOT_SEED);
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let mut owner = DeviceCert {
+        user_public_key: person.verifying_key().to_bytes(),
+        device_public_key: owner_key.verifying_key().to_bytes(),
+        device_label: "laptop".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut owner, &person).unwrap();
+    // The same agent of the person's, on their laptop and on their phone: a key each.
+    let laptop = agent_key(&person, 8, workspace, now);
+    let phone = agent_key(&person, 9, workspace, now);
+    // A key of the same agent whose grant names another workspace alone.
+    let elsewhere = agent_key(&person, 10, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", now);
+    let roster = [
+        owner.clone(),
+        laptop.1.clone(),
+        phone.1.clone(),
+        elsewhere.1.clone(),
+    ];
+    let mut peer = StatePeer::new(
+        workspace,
+        owner.clone(),
+        roster.to_vec(),
+        tilo_user_identity::RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "native").unwrap();
+    collab_types::CommitNamed::commit_edit(
+        &mut document,
+        "fixture",
+        "value",
+        &owner.user_public_key,
+    );
+    peer.install_seed(
+        crate::SeedState {
+            workspace_changes: crate::seed_workspace(workspace, &owner, &roster).unwrap(),
+            documents: vec![crate::SeedDocument {
+                app_id: "test.app".into(),
+                document_id: "tab:1".into(),
+                kind: "test".into(),
+                bytes: document.save(),
+            }],
+        },
+        &owner_key,
+        now,
+    )
+    .unwrap();
+
+    // Permissions: both keys are the one agent, for its person, and never the person.
+    let one = tilo_action_policy::MemberId::agent(
+        AGENT.to_owned(),
+        hex::encode(person.verifying_key().to_bytes()).as_str(),
+    );
+    for (_, cert) in [&laptop, &phone] {
+        let access = peer.permissions(cert.device_public_key, now).unwrap();
+        assert_eq!(access.acting.member_id(), Some(&one), "{:?}", access.acting);
+        assert_eq!(
+            peer.role(&cert.device_public_key, now).unwrap(),
+            collab_types::Role::Editor,
+            "its person owns the workspace; the agent governs nothing"
+        );
+    }
+
+    // The certificate's grant bounds where the agent acts: a key granted another workspace alone
+    // acts in none here, though the roster lists it.
+    assert!(
+        peer.permissions(elsewhere.1.device_public_key, now).is_err(),
+        "a grant for another workspace reaches none here"
+    );
+
+    // History: what either key writes as that agent is taken as that agent's.
+    for (key, cert) in [&laptop, &phone] {
+        let mut own = peer.clone();
+        let message = edit(&mut own, (key, cert), now);
+        assert!(
+            peer.receive_from(
+                TransportOrigin::ServerDelta(cert.device_public_key),
+                message,
+                now
+            )
+            .unwrap()
+            .changed,
+            "{}",
+            cert.device_label
+        );
+    }
+    let mut doc = AutoCommit::load(&peer.document("test.app", "tab:1").unwrap()).unwrap();
+    let invokers: Vec<_> = doc
+        .get_changes(&[])
+        .into_iter()
+        .filter_map(|change| change.message().map(str::to_owned))
+        .filter_map(|message| tilo_actions::ActionContext::from_change_message(&message))
+        .filter_map(|context| context.invoker)
+        .collect();
+    assert_eq!(invokers.len(), 2, "{invokers:?}");
+    assert!(
+        invokers
+            .iter()
+            .all(|invoker| invoker.acting.member_id() == Some(&one)),
+        "{invokers:?}"
+    );
+}

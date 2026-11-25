@@ -622,6 +622,7 @@ impl Workspaces {
             && device
                 .capabilities
                 .agent
+                .as_ref()
                 .is_none_or(|scope| scope.reaches(workspace))
     }
 

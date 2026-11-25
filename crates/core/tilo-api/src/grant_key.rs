@@ -105,7 +105,9 @@ impl GrantKey {
         let certified = cert
             .capabilities
             .agent
-            .filter(|certified| certified.within(asked));
+            .as_ref()
+            .filter(|certified| certified.within(&asked))
+            .cloned();
         let Some(scope) = certified else {
             return Err(Refused(
                 "the certificate does not grant what was approved".into(),
@@ -152,7 +154,7 @@ impl GrantKey {
         cert: DeviceCert,
         now_ns: u64,
     ) -> Result<Self, Refused> {
-        if let Some(scope) = cert.capabilities.agent {
+        if let Some(scope) = cert.capabilities.agent.clone() {
             let (server_key, browser_pages) = (
                 cert.capabilities.server_key,
                 cert.capabilities.browser_pages,
@@ -220,8 +222,8 @@ impl GrantKey {
     /// What the grant reaches: the scope the person certified, which is what
     /// the server holds to from then on.
     #[must_use]
-    pub const fn scope(&self) -> AgentScope {
-        self.scope
+    pub fn scope(&self) -> AgentScope {
+        self.scope.clone()
     }
 
     /// Whether the person let this key operate web pages in Browser.

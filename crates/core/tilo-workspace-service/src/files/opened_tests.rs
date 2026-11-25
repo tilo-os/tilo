@@ -261,6 +261,15 @@ impl Put {
     /// The `files#open` of `arguments`, signed by the workspace's owner on their device.
     fn signed_open(&self, arguments: &Value) -> tilo_actions::remote::InvokeRequest {
         let (key, cert) = hosting_device();
+        self.open_signed_by(arguments, (&key, &cert))
+    }
+
+    /// The `files#open` of `arguments`, signed by the key `cert` certifies.
+    fn open_signed_by(
+        &self,
+        arguments: &Value,
+        (key, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
+    ) -> tilo_actions::remote::InvokeRequest {
         let mut request = tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
@@ -288,8 +297,8 @@ impl Put {
             tilo_server_protocol::invocation::sign_invocation_now(
                 &self.name,
                 &request,
-                &cert,
-                &key,
+                cert,
+                key,
                 tilo_clock::unix_now_ns(),
             )
             .unwrap(),
@@ -404,7 +413,8 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
 
 /// The tree's change of a put keeps the request it was made for, and the workspace takes it in:
 /// the person's as they signed it, decided by their own grants on the tree's verbs, and an
-/// agent's that asked under no key of its own as this device signs it for the agent's person.
+/// agent's as it signed it with the key its person's root certified for it. An agent's call
+/// nobody signed for it puts nothing: this device signs no agent's put for it.
 #[tokio::test]
 async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
     let put = fixture().await;
@@ -419,36 +429,44 @@ async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
         "the workspace took the change in"
     );
 
-    // An agent of the person's, which the workspace admitted as one of its members, asked under
-    // no key of its own: this device, which keeps the workspace's records, signs the call as the
-    // one that carried it out for the person, and the workspace takes the change in as the
-    // agent's.
+    // An agent of the person's signed its open with the key their root certified for it: the
+    // workspace takes the change in as the agent's.
     let agents = put_content(&put.shelf, put.workspace, b"an agent's\n");
     let arguments = json!({"content": agents, "name": "agent.txt", "dir": "signed"});
     let owner = hex::encode(hosting_device().1.user_public_key);
-    crate::workspaces::fixtures::admit_agent(
-        &put.workspaces,
-        &put.name,
-        &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
-        "porter",
-    )
-    .await;
     put.allow_agent("porter", &owner).await;
-    let mut request = put.signed_open(&arguments);
-    request.signed = None;
-    let porter = tilo_actions::ActionContext {
-        source_invocation: Some(request.invocation),
-        ..tilo_actions::ActionContext::default()
-    }
-    .with_invoker(tilo_actions::ActionInvoker::admitted(
-        &tilo_action_policy::Acting::agent("porter", owner.as_str())
-            .acting_for(tilo_action_policy::Acting::person(owner.as_str())),
-    ));
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Porter".to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::agent_in(*put.workspace.as_uuid().as_bytes(), "porter"),
+        ),
+        issued_at_ns: now - 1,
+        expires_at_ns: Some(now + 3_600_000_000_000),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let porter = |request: &tilo_actions::remote::InvokeRequest| {
+        tilo_actions::ActionContext {
+            source_invocation: Some(request.invocation),
+            ..tilo_actions::ActionContext::default()
+        }
+        .with_invoker(tilo_actions::ActionInvoker::admitted(
+            &tilo_action_policy::Acting::agent("porter", owner.as_str())
+                .acting_for(tilo_action_policy::Acting::person(owner.as_str())),
+        ))
+    };
+    let request = put.open_signed_by(&arguments, (&key, &cert));
     let answer = put
         .put_for(
             &arguments,
             Some(crate::apps::services::FilesPutCall {
-                context: porter,
+                context: porter(&request),
                 request: &request,
             }),
         )
@@ -456,6 +474,24 @@ async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
     assert_eq!(answer["path"], "signed/agent.txt", "{answer}");
     let tree = tree_of(&put.workspaces, &put.name).await;
     assert!(file_at(&tree, "signed", "agent.txt").is_some());
+
+    // The same agent's call nobody signed: the workspace takes no change this device signed for
+    // it, and nothing is put.
+    let unsigned = json!({"content": agents, "name": "unsigned.txt", "dir": "signed"});
+    let mut request = put.signed_open(&unsigned);
+    request.signed = None;
+    let refused = put
+        .put_for(
+            &unsigned,
+            Some(crate::apps::services::FilesPutCall {
+                context: porter(&request),
+                request: &request,
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(refused, crate::apps::services::KEYLESS_AGENT);
+    let tree = tree_of(&put.workspaces, &put.name).await;
+    assert!(file_at(&tree, "signed", "unsigned.txt").is_none());
 }
 
 /// A folder of files goes in as one change, whether the list is given inline or as content of

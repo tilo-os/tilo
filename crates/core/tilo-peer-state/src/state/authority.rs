@@ -1304,6 +1304,7 @@ impl StatePeer {
                 let cert = self.certificate(device, now).ok()?;
                 cert.capabilities
                     .agent
+                    .as_ref()
                     .filter(|scope| scope.reaches(workspace))?;
                 Some(
                     tilo_action_policy::Acting::handed_agent(
@@ -1670,13 +1671,6 @@ impl StatePeer {
                     claim,
                     Some(&published_name),
                 );
-            self.carried_for_admitted_agent(
-                (&route, source, envelope),
-                invoker,
-                &certificate,
-                keeper.is_some() && !effect,
-                authorization_time,
-            )?;
             // A call the keeper carried out for an agent, and signed as the device that did, is
             // the call of the person the agent acts for.
             let person = match invoker.acted_for_person() {
@@ -1697,49 +1691,6 @@ impl StatePeer {
             caller.effect = false;
         }
         Ok(caller)
-    }
-
-    /// Refuses a call the device that keeps the workspace's records signed as the one that
-    /// carried it out (`carried`: it signed the change too, and the change is no step the call
-    /// declares) for `acting`, an agent with no key of its own acting for its person, unless the
-    /// workspace admitted that agent and still lets it act here ([`Self::agent_acts`]). That
-    /// device's word names the agent; it never makes it one of the workspace's members. What an
-    /// admitted agent may do is decided as any agent's is: by its grants, within what the person
-    /// whose device signed may do ([`allowing`]).
-    fn carried_for_admitted_agent(
-        &self,
-        (route, source, envelope): (&Route, &[u8; 32], &SignedOp),
-        acting: &tilo_action_policy::Acting,
-        certificate: &DeviceCert,
-        carried: bool,
-        authorization_time: SystemTime,
-    ) -> Result<(), AuthorizeRefusal> {
-        let agent = acting
-            .member_id()
-            .and_then(tilo_action_policy::MemberId::as_agent)
-            .filter(|_| !acting.handed && acting.acted_for_person().is_some());
-        let Some((agent, person)) = agent else {
-            return Ok(());
-        };
-        if !carried || certificate.device_public_key != *source {
-            return Ok(());
-        }
-        if self.agent_acts(
-            (agent, person.as_str()),
-            &route.app,
-            crate::state::now_ns(authorization_time),
-        ) {
-            return Ok(());
-        }
-        Err(refused_invocation(
-            route,
-            source,
-            envelope,
-            &format!(
-                "the agent `{agent}` a change was carried out for is no agent this workspace \
-                 admitted, or it no longer acts here"
-            ),
-        ))
     }
 
     /// `held`, the caller the changes of one write named so far, with `person`, whom the next
@@ -1875,13 +1826,6 @@ impl StatePeer {
                         app_id,
                         Some(&published_name),
                     );
-                self.carried_for_admitted_agent(
-                    (route, source, envelope),
-                    &invoker.acting,
-                    &certificate,
-                    keeper.is_some() && !effect,
-                    authorization_time,
-                )?;
                 Ok(NamedCall::For {
                     person: called_person(&invoker.acting, &certificate, source, effect),
                     effect,

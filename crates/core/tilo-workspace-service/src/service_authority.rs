@@ -220,7 +220,7 @@ impl ServiceOperation {
         {
             return false;
         }
-        let Some(scope) = caller.capabilities.agent else {
+        let Some(scope) = &caller.capabilities.agent else {
             return true;
         };
         match self {

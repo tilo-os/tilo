@@ -338,10 +338,11 @@ pub fn verify_recorded(
     )?;
     // The device that keeps the record carried the call out itself, for an agent acting for a
     // person (a turn it runs, or a call it admitted again on its person's yes), and signed it
-    // as the device that did: the step is one the called action declares, or the put of files
-    // the call is, and the change names the agent and its person. It never names the person as
-    // having made it themselves.
-    if (declared || puts_files(context, &statement.target, app))
+    // as the device that did: the step is one the called action declares, and the change names
+    // the agent and its person. It never names the person as having made it themselves. A put
+    // of files is never such a step: an agent puts files under its own key, as the call it
+    // signed.
+    if declared
         && keeper.is_some_and(|keeper| *keeper.device == cert.device_public_key)
         && invoker.is_some_and(|acting| acting.is_agent() && acting.acted_for_person().is_some())
     {
@@ -560,7 +561,6 @@ pub fn verify_carried(
     // claim names is a step the called action declares it takes there.
     let outside = carried_effect(signed, record, claim, published_name);
     let verbs = claimed_verbs(claim);
-    let puts = puts_files_claimed(&statement.target, record.app, &verbs);
     let declared = keeper.is_some()
         && if verbs.is_empty() {
             // A store's change claims only the kinds of the records it writes: what a receiver
@@ -587,7 +587,7 @@ pub fn verify_carried(
     let invoker = claim.invoker.as_deref();
     // The keeper carried out a call for an agent acting for a person, and signed it as the
     // device that did: as [`verify_recorded`] reads it.
-    if (outside || puts)
+    if outside
         && keeper.is_some_and(|device| *device == cert.device_public_key)
         && invoker.is_some_and(|acting| acting.is_agent() && acting.acted_for_person().is_some())
     {
@@ -816,7 +816,7 @@ pub fn verify_agent_invocation(
 fn certified_for(cert: &DeviceCert, agent: &str) -> bool {
     match tilo_action_policy::key_of_agent(agent) {
         Some(key) => key == cert.device_public_key,
-        None => cert.capabilities.agent.map_or_else(
+        None => cert.capabilities.agent.as_ref().map_or_else(
             || cert.capabilities == tilo_user_identity::DeviceCapabilities::nothing(),
             |scope| scope.is_agent(agent),
         ),
@@ -920,6 +920,7 @@ fn signer_of(
     if cert
         .capabilities
         .agent
+        .as_ref()
         .is_some_and(|scope| !scope.reaches(workspace))
     {
         return Err(InvocationError::OutOfScope);

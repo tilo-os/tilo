@@ -82,6 +82,7 @@ fn certificate_grants(
     ) && certificate
         .capabilities
         .agent
+        .as_ref()
         .is_some_and(|scope| scope.makes_workspaces());
     workspace.is_none() && its_own && makes
 }

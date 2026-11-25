@@ -181,37 +181,6 @@ impl PeerGovernance<'_> {
         Ok(agents)
     }
 }
-impl crate::StatePeer {
-    /// Whether the workspace keeps a live row for the agent `agent` of the person `person` (their
-    /// root key in hex): admitted ([`PeerGovernanceMut::admit_agent`]), still on the member list,
-    /// its device unrevoked, and acting in this workspace and in `app` at `at_ns` by the one rule
-    /// ([`GovernedDelegateRow::acting`]): never withdrawn by then, its delegation current. A grant
-    /// naming an agent admits no agent: only its row here does.
-    pub(super) fn agent_acts(&self, (agent, person): (&str, &str), app: &str, at_ns: u64) -> bool {
-        let Some(doc) = self.core.workspace_doc.as_ref() else {
-            return false;
-        };
-        doc.identities().values().any(|identity| {
-            let Ok(identity) = identity else {
-                return false;
-            };
-            let Some(row) = identity.delegate.as_ref() else {
-                return false;
-            };
-            let cert = &identity.device_cert;
-            row.delegation.delegate.agent_id() == Some(agent)
-                && hex::encode(cert.user_public_key) == person
-                && !identity.removed
-                && row.delegation.permits_app(app)
-                && !self.core.revocations.refuses(cert)
-                && !identity
-                    .revocations
-                    .iter()
-                    .any(|entry| entry.revoked_device_public_key == cert.device_public_key)
-                && row.acting(cert, &self.core.workspace, at_ns).is_ok()
-        })
-    }
-}
 
 impl PeerGovernanceMut<'_> {
     /// Admit the certified agent device `cert` to this workspace as a delegated

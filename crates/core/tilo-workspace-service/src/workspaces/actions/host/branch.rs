@@ -79,6 +79,7 @@ impl Workspaces {
         let makes = device
             .capabilities
             .agent
+            .as_ref()
             .is_none_or(|scope| scope.makes_workspaces());
         // Only a workspace of the person's own, which they read whole, is
         // theirs to branch; anyone else's is not theirs, as for deleting it.

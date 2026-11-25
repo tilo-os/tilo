@@ -94,7 +94,7 @@ fn page_answers(
                 let capabilities = if asked.server_key {
                     DeviceCapabilities::server_key_grant()
                 } else {
-                    DeviceCapabilities::agent_grant(asked.scope)
+                    DeviceCapabilities::agent_grant(asked.scope.clone())
                 };
                 let grant = issue_agent_grant(
                     &person.root,

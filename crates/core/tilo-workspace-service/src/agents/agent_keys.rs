@@ -863,7 +863,7 @@ mod tests {
             signer.user_public_key, person,
             "certified by its person's root"
         );
-        let scope = signer.capabilities.agent.expect("an agent's grant");
+        let scope = signer.capabilities.agent.as_ref().expect("an agent's grant");
         assert_eq!(
             scope.workspace(),
             Some(*workspace.as_uuid().as_bytes()),

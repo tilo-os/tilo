@@ -138,7 +138,7 @@ impl Person {
     pub(crate) fn allow(&self, asked: &Asked) -> String {
         let proof =
             SignInProof::sign(self.cert.clone(), &self.device, ISSUER, asked.challenge).unwrap();
-        let cert = self.certify(asked, asked.scope, asked.expires_ms);
+        let cert = self.certify(asked, asked.scope.clone(), asked.expires_ms);
         answer_form(asked, &proof, &cert)
     }
 }
@@ -627,23 +627,23 @@ async fn the_grant_is_exactly_what_the_server_asked_the_person_to_certify() {
                     pending: asked.pending.clone(),
                     challenge: asked.challenge,
                     key: [7; 32],
-                    scope: asked.scope,
+                    scope: asked.scope.clone(),
                     expires_ms: asked.expires_ms,
                     server_key: asked.server_key,
                     browser_pages: asked.browser_pages,
                     client: asked.client.clone(),
                 };
-                alice.certify(&other, asked.scope, asked.expires_ms)
+                alice.certify(&other, asked.scope.clone(), asked.expires_ms)
             }),
         ),
         (
             "someone else's root",
-            Box::new(|asked| mallory.certify(asked, asked.scope, asked.expires_ms)),
+            Box::new(|asked| mallory.certify(asked, asked.scope.clone(), asked.expires_ms)),
         ),
         (
             "already expired",
             Box::new(|asked| {
-                let mut cert = alice.certify(asked, asked.scope, asked.expires_ms);
+                let mut cert = alice.certify(asked, asked.scope.clone(), asked.expires_ms);
                 cert.issued_at_ns = 1;
                 cert.expires_at_ns = Some(2);
                 tilo_user_identity::sign_device_cert(&mut cert, &alice.root).unwrap();
@@ -663,7 +663,7 @@ async fn the_grant_is_exactly_what_the_server_asked_the_person_to_certify() {
     // A proof for another challenge signs nobody in.
     let asked = authorize(&server, &client, ISSUER).await;
     let stale = SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, [9; 32]).unwrap();
-    let cert = alice.certify(&asked, asked.scope, asked.expires_ms);
+    let cert = alice.certify(&asked, asked.scope.clone(), asked.expires_ms);
     let reply = answer(&server, &answer_form(&asked, &stale, &cert)).await;
     assert_eq!(reply.status(), StatusCode::FORBIDDEN);
     assert!(server.store.grants_of(&alice.id()).is_empty());
@@ -700,9 +700,9 @@ async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
     // The agent asked for all of them and the person chose one: the grant is
     // that workspace's, not the agent's request.
     let asked = authorize(&server, &client, ISSUER).await;
-    assert_eq!(asked.scope, AgentScope::AllWorkspaces);
+    assert_eq!(asked.scope.clone(), AgentScope::AllWorkspaces);
     let narrowed = AgentScope::parse(studio).unwrap();
-    let cert = alice.certify(&asked, narrowed, asked.expires_ms);
+    let cert = alice.certify(&asked, narrowed.clone(), asked.expires_ms);
     let grant = granted(&server, &client, &alice, asked, cert).await;
     assert_eq!(grant.scope, store::Scope::Workspace(studio.to_owned()));
     assert_eq!(grant.key().unwrap().scope(), narrowed);
@@ -715,13 +715,13 @@ async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
         ("another workspace", AgentScope::parse(studio).unwrap()),
     ] {
         let asked = authorize(&server, &client, &pinned).await;
-        assert_eq!(asked.scope, AgentScope::parse(garden).unwrap());
+        assert_eq!(asked.scope.clone(), AgentScope::parse(garden).unwrap());
         let cert = alice.certify(&asked, scope, asked.expires_ms);
         let reply = answer(&server, &answer_form(&asked, &proof(&asked), &cert)).await;
         assert_eq!(reply.status(), StatusCode::FORBIDDEN, "{why}");
     }
     let asked = authorize(&server, &client, &pinned).await;
-    let cert = alice.certify(&asked, asked.scope, asked.expires_ms);
+    let cert = alice.certify(&asked, asked.scope.clone(), asked.expires_ms);
     let grant = granted(&server, &client, &alice, asked, cert).await;
     assert_eq!(grant.scope, store::Scope::Workspace(garden.to_owned()));
 }
@@ -735,7 +735,7 @@ async fn a_grant_past_its_certificate_issues_no_token() {
     let proof =
         SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
     let soon = tilo_clock::unix_now_ms() + 1_500;
-    let cert = alice.certify(&asked, asked.scope, Some(soon));
+    let cert = alice.certify(&asked, asked.scope.clone(), Some(soon));
     let code =
         returned(&answer(&server, &answer_form(&asked, &proof, &cert)).await)["code"].clone();
     let tokens = json_body(redeem(&server, &client, &code, VERIFIER).await).await;
@@ -906,7 +906,7 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     let (poll, asked) = ask_for_key(&server, &json!({"name": "Visa backend"})).await;
     assert!(asked.server_key);
     assert_eq!(
-        (asked.scope, asked.expires_ms),
+        (asked.scope.clone(), asked.expires_ms),
         (AgentScope::AllWorkspaces, None)
     );
     assert!(
@@ -1078,7 +1078,7 @@ async fn a_key_a_terminal_asks_for_holds_the_person_to_the_one_workspace() {
     let (poll, asked) =
         ask_for_key(&server, &json!({"name": "Nightly", "workspace": studio})).await;
     assert_eq!(
-        asked.scope,
+        asked.scope.clone(),
         AgentScope::parse(studio).unwrap(),
         "the link names the workspace the key reaches"
     );

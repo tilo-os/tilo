@@ -293,6 +293,14 @@ impl OpenedFiles {
             .invoker
             .as_ref()
             .map(|invoker| invoker.acting.clone());
+        // An agent's put is the call it signed: this device signs none for it.
+        if let Some(acting) = acting.as_ref().filter(|acting| acting.is_agent())
+            && request.signed.as_deref().is_none_or(|signed| {
+                !tilo_server_protocol::invocation::signs_for(acting, signed)
+            })
+        {
+            return Err(crate::apps::services::KEYLESS_AGENT.to_owned());
+        }
         let kept = tilo_rt::app()
             .block_on(self.workspaces.carried_call(
                 &workspace.to_string(),

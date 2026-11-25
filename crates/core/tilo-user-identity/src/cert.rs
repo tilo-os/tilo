@@ -147,6 +147,14 @@ const PLACED_BINARY_MARKER: u8 = 5;
 /// the extended form. [`BINARY_LAYOUT`] 3 added it with the placed marker, and a
 /// build of layout 2 refuses it whole the same way.
 const PLACING_BINARY_MARKER: u8 = 6;
+/// First byte of an agent's grant's capabilities in binary encodings
+/// ([`AgentScope::Agent`]): the grant follows (its agent's id, its workspaces and its apps, as
+/// postcard writes an [`AgentGrant`]), then the extended form with [`EXTENDED_AGENT`] set and no
+/// scope after its byte. It is what [`BINARY_LAYOUT`] 4 added. A build of layout 3 names this
+/// byte a later layout where it asks [`binary_layout_of`], and reads it as a capability flag
+/// that is neither 0 nor 1 where it decodes it, so it refuses such a certificate whole rather
+/// than reading it as anyone's.
+const AGENT_BINARY_MARKER: u8 = 7;
 const SCOPE_ALL: u8 = 0;
 const SCOPE_WORKSPACE: u8 = 1;
 const SCOPE_AGENT: u8 = 2;
@@ -173,7 +181,12 @@ const SCOPE_AGENT: u8 = 2;
 /// same way: what layouts 1 and 2 wrote reads in layout 3 as it is, and a placed
 /// device's certificate and a placement grant exist only in layout 3, which a
 /// build of layout 2 refuses whole.
-pub const BINARY_LAYOUT: u32 = 3;
+///
+/// Layout 4 added [`AGENT_BINARY_MARKER`]: an agent's grant names its agent by its id, so a
+/// workspace records the key as that agent of its person. What layouts 1 to 3 wrote reads in
+/// layout 4 as it is (an agent's key layout 3 named by the hash of its id included, as
+/// [`AgentScope::AgentHash`]), and a build of layout 3 refuses an agent's grant of layout 4 whole.
+pub const BINARY_LAYOUT: u32 = 4;
 
 /// The binary layout version of the certificate encoded in `bytes`: what its
 /// first capabilities byte names, which is [`BINARY_LAYOUT`] for every
@@ -187,7 +200,7 @@ pub fn binary_layout_of(bytes: &[u8]) -> Result<u32, CanonicalError> {
     let (_, rest) = postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(bytes)
         .map_err(|error| CanonicalError::Deserialize(error.to_string()))?;
     match rest.first() {
-        Some(0..=PLACING_BINARY_MARKER) => Ok(BINARY_LAYOUT),
+        Some(0..=AGENT_BINARY_MARKER) => Ok(BINARY_LAYOUT),
         Some(_) => Ok(BINARY_LAYOUT.saturating_add(1)),
         None => Err(CanonicalError::Deserialize(
             "a device certificate ends before its capabilities".into(),
@@ -198,16 +211,21 @@ pub fn binary_layout_of(bytes: &[u8]) -> Result<u32, CanonicalError> {
 /// What the key of an agent's grant reaches: the person approved an agent
 /// (through a service that holds the key for it) to act in these of their
 /// workspaces, and nowhere else.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AgentScope {
     /// Every workspace of the person, and making new ones.
     AllWorkspaces,
     /// One workspace, by its id: a UUID's 16 bytes.
     Workspace([u8; 16]),
-    /// One agent's key in one workspace: the workspace by its id, and the agent by
-    /// [`AgentScope::agent_of`] its id, so the grant names the agent it was certified for
-    /// and no other of the person's agents may sign under it.
-    Agent {
+    /// One agent of the person's: the key acts as that agent, by its id, where the grant says.
+    /// Whichever device holds such a key, a workspace it enters records it as this agent of its
+    /// person, so one agent stays one agent on every device. Its expiry is the certificate's own,
+    /// which an agent's grant always has ([`MAX_AGENT_GRANT_LIFETIME_NS`]).
+    Agent(AgentGrant),
+    /// What [`BINARY_LAYOUT`] 3 named one agent's key by: the hash of its id
+    /// ([`AgentScope::agent_of`]), in one workspace. A certificate signed so reads and verifies
+    /// as it was signed; no build issues it any more.
+    AgentHash {
         /// The workspace's UUID, 16 bytes.
         workspace: [u8; 16],
         /// [`AgentScope::agent_of`] the agent's id.
@@ -215,61 +233,147 @@ pub enum AgentScope {
     },
 }
 
-impl AgentScope {
-    /// One agent's key in one workspace: `agent` is the agent's id.
+/// The longest agent id an [`AgentGrant`] names.
+pub const MAX_AGENT_ID_BYTES: usize = 64;
+/// The most workspaces one [`AgentGrant`] reaches.
+pub const MAX_AGENT_WORKSPACES: usize = 16;
+/// The most apps one [`AgentGrant`] names.
+pub const MAX_AGENT_APPS: usize = 64;
+/// The longest app id an [`AgentGrant`] names.
+pub const MAX_AGENT_APP_BYTES: usize = 128;
+
+/// One agent's grant: which agent of the person the key acts as, and its authority. How the
+/// agent is shown (its name and colour) is its record in each workspace, never part of a
+/// certificate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentGrant {
+    /// The agent's id, 1..=[`MAX_AGENT_ID_BYTES`] bytes: what a workspace records it under for
+    /// its person.
+    pub agent: String,
+    /// The workspaces it acts in, by their UUIDs' bytes: 1..=[`MAX_AGENT_WORKSPACES`], none
+    /// nil, ascending and each once.
+    pub workspaces: Vec<[u8; 16]>,
+    /// The apps it acts in, by their ids, ascending and each once; empty for every app of
+    /// those workspaces.
+    pub apps: Vec<String>,
+}
+
+impl AgentGrant {
+    /// Whether the grant keeps its bounds: a certificate carrying it is signed and read only
+    /// when it does.
     #[must_use]
-    pub fn agent_in(workspace: [u8; 16], agent: &str) -> Self {
-        Self::Agent {
-            workspace,
-            agent: Self::agent_of(agent),
-        }
+    pub fn is_well_formed(&self) -> bool {
+        !self.agent.is_empty()
+            && self.agent.len() <= MAX_AGENT_ID_BYTES
+            && !self.workspaces.is_empty()
+            && self.workspaces.len() <= MAX_AGENT_WORKSPACES
+            && self.workspaces.iter().all(|id| *id != [0; 16])
+            && self.workspaces.is_sorted_by(|a, b| a < b)
+            && self.apps.len() <= MAX_AGENT_APPS
+            && self
+                .apps
+                .iter()
+                .all(|app| !app.is_empty() && app.len() <= MAX_AGENT_APP_BYTES)
+            && self.apps.is_sorted_by(|a, b| a < b)
     }
 
-    /// What an [`AgentScope::Agent`] grant names an agent by: the hash of its id.
+    /// Whether the agent may act in `app`: every app when the grant names none.
+    #[must_use]
+    pub fn permits_app(&self, app: &str) -> bool {
+        self.apps.is_empty() || self.apps.iter().any(|named| named == app)
+    }
+}
+
+impl AgentScope {
+    /// One agent's key in one workspace, in every app there: `agent` is the agent's id.
+    #[must_use]
+    pub fn agent_in(workspace: [u8; 16], agent: &str) -> Self {
+        Self::Agent(AgentGrant {
+            agent: agent.to_owned(),
+            workspaces: vec![workspace],
+            apps: Vec::new(),
+        })
+    }
+
+    /// What an [`AgentScope::AgentHash`] grant names an agent by: the hash of its id.
     #[must_use]
     pub fn agent_of(agent: &str) -> [u8; 32] {
         *blake3::hash(agent.as_bytes()).as_bytes()
+    }
+
+    /// The agent's grant, where the key acts as one agent it names by its id.
+    #[must_use]
+    pub const fn agent_grant(&self) -> Option<&AgentGrant> {
+        match self {
+            Self::Agent(grant) => Some(grant),
+            Self::AllWorkspaces | Self::Workspace(_) | Self::AgentHash { .. } => None,
+        }
     }
 
     /// Whether the grant was certified for the agent whose id is `agent` alone. A grant that
     /// names no agent is no agent's own key.
     #[must_use]
     pub fn is_agent(&self, agent: &str) -> bool {
-        matches!(self, Self::Agent { agent: named, .. } if *named == Self::agent_of(agent))
-    }
-
-    /// The one workspace the grant reaches, by its id; `None` for one reaching them all.
-    #[must_use]
-    pub const fn workspace(&self) -> Option<[u8; 16]> {
         match self {
-            Self::AllWorkspaces => None,
-            Self::Workspace(id) | Self::Agent { workspace: id, .. } => Some(*id),
+            Self::Agent(grant) => grant.agent == agent,
+            Self::AgentHash { agent: named, .. } => *named == Self::agent_of(agent),
+            Self::AllWorkspaces | Self::Workspace(_) => false,
         }
     }
 
-    /// The canonical UUID of the one workspace the grant reaches; `None` for one reaching
-    /// them all.
+    /// The workspaces the grant reaches, by their ids; `None` for one reaching them all.
+    #[must_use]
+    pub fn workspaces(&self) -> Option<&[[u8; 16]]> {
+        match self {
+            Self::AllWorkspaces => None,
+            Self::Workspace(id) | Self::AgentHash { workspace: id, .. } => {
+                Some(std::slice::from_ref(id))
+            }
+            Self::Agent(grant) => Some(&grant.workspaces),
+        }
+    }
+
+    /// The one workspace the grant reaches, by its id; `None` for one reaching them all or
+    /// more than one.
+    #[must_use]
+    pub fn workspace(&self) -> Option<[u8; 16]> {
+        match self.workspaces()? {
+            [one] => Some(*one),
+            _ => None,
+        }
+    }
+
+    /// The canonical UUID of the one workspace the grant reaches; `None` for one reaching them
+    /// all or more than one. Whether a grant reaches a workspace is [`Self::reaches`]'s answer,
+    /// never this one's.
     #[must_use]
     pub fn workspace_name(&self) -> Option<String> {
         self.workspace().map(|id| uuid_text(&id))
     }
 
-    /// The scope as text: `all`, the workspace's canonical UUID, or that UUID, `/` and
-    /// the agent's hash in hex.
+    /// Whether the grant reaches the workspace whose id is `id`.
+    #[must_use]
+    pub fn reaches_id(&self, id: &[u8; 16]) -> bool {
+        self.workspaces().is_none_or(|ids| ids.contains(id))
+    }
+
+    /// The scope as text: `all`, the workspace's canonical UUID, that UUID, `/` and the
+    /// agent's hash in hex, or `agent:` and the agent's id.
     #[must_use]
     pub fn name(&self) -> String {
         match self {
             Self::AllWorkspaces => "all".to_owned(),
             Self::Workspace(id) => uuid_text(id),
-            Self::Agent { workspace, agent } => {
+            Self::AgentHash { workspace, agent } => {
                 format!("{}/{}", uuid_text(workspace), hex::encode(agent))
             }
+            Self::Agent(grant) => format!("agent:{}", grant.agent),
         }
     }
 
-    /// The scope [`Self::name`] wrote: `all`, or a canonical (lower-case,
-    /// hyphenated) UUID other than the nil one, alone or followed by `/` and an
-    /// agent's hash in lower-case hex.
+    /// The scope a key is asked to reach by text: `all`, or a canonical (lower-case,
+    /// hyphenated) UUID other than the nil one, alone or followed by `/` and an agent's hash in
+    /// lower-case hex. An agent's grant names its agent by id, which no text here does.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         if text == "all" {
@@ -281,7 +385,7 @@ impl AgentScope {
         let lower = agent
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-        Some(Self::Agent {
+        Some(Self::AgentHash {
             workspace: uuid_bytes(workspace)?,
             agent: lower
                 .then(|| hex::decode(agent).ok()?.try_into().ok())
@@ -292,9 +396,9 @@ impl AgentScope {
     /// Whether the grant reaches the workspace `workspace` names (its UUID).
     #[must_use]
     pub fn reaches(&self, workspace: &str) -> bool {
-        match self.workspace() {
+        match self.workspaces() {
             None => true,
-            Some(id) => uuid_bytes(workspace).is_some_and(|asked| asked == id),
+            Some(ids) => uuid_bytes(workspace).is_some_and(|asked| ids.contains(&asked)),
         }
     }
 
@@ -303,11 +407,11 @@ impl AgentScope {
     /// where they were asked to approve all their workspaces — one of them.
     /// A wider grant never stands for a narrower request.
     #[must_use]
-    pub fn within(self, asked: Self) -> bool {
+    pub fn within(&self, asked: &Self) -> bool {
         match asked {
             Self::AllWorkspaces => true,
-            Self::Workspace(id) => self.workspace() == Some(id),
-            Self::Agent { .. } => self == asked,
+            Self::Workspace(id) => self.workspaces() == Some(std::slice::from_ref(id)),
+            Self::Agent(_) | Self::AgentHash { .. } => self == asked,
         }
     }
 
@@ -372,21 +476,77 @@ impl<'de> Deserialize<'de> for WorkspaceOnly {
     }
 }
 
+/// An agent's grant as JSON names it: its workspaces by their canonical UUIDs.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentGrantJson {
+    agent: String,
+    workspaces: Vec<WorkspaceOnly>,
+    apps: Vec<String>,
+}
+
 impl Serialize for AgentScope {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.name())
+        match self {
+            Self::Agent(grant) if serializer.is_human_readable() => AgentGrantJson {
+                agent: grant.agent.clone(),
+                workspaces: grant.workspaces.iter().copied().map(WorkspaceOnly).collect(),
+                apps: grant.apps.clone(),
+            }
+            .serialize(serializer),
+            // A binary form carries an agent's grant inside a certificate's capabilities alone,
+            // which encode it themselves.
+            Self::Agent(_) => Err(serde::ser::Error::custom(
+                "an agent's grant is encoded within a certificate's capabilities",
+            )),
+            _ => serializer.serialize_str(&self.name()),
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for AgentScope {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        Self::parse(&text).ok_or_else(|| {
-            serde::de::Error::invalid_value(
-                serde::de::Unexpected::Str(&text),
-                &"`all`, a canonical workspace UUID, or one followed by `/` and an agent's hash",
-            )
-        })
+        struct Scope;
+        impl<'de> serde::de::Visitor<'de> for Scope {
+            type Value = AgentScope;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(
+                    "`all`, a canonical workspace UUID, one followed by `/` and an agent's hash, \
+                     or an agent's grant",
+                )
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<AgentScope, E> {
+                AgentScope::parse(text)
+                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(text), &self))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<AgentScope, A::Error> {
+                let json =
+                    AgentGrantJson::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                let grant = AgentGrant {
+                    agent: json.agent,
+                    workspaces: json.workspaces.into_iter().map(|WorkspaceOnly(id)| id).collect(),
+                    apps: json.apps,
+                };
+                if !grant.is_well_formed() {
+                    return Err(serde::de::Error::custom(
+                        "an agent's grant names its agent, one to 16 workspaces and at most 64 \
+                         apps, each once and in order",
+                    ));
+                }
+                Ok(AgentScope::Agent(grant))
+            }
+        }
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(Scope)
+        } else {
+            deserializer.deserialize_str(Scope)
+        }
     }
 }
 
@@ -711,7 +871,7 @@ impl Serialize for DeviceCapabilities {
                 can_own_workspaces: self.can_own_workspaces,
                 can_admit_devices: self.can_admit_devices,
                 foreign: self.foreign,
-                agent: self.agent,
+                agent: self.agent.clone(),
                 stand_in: self.stand_in,
                 server_key: self.server_key,
                 browser_pages: self.browser_pages,
@@ -747,14 +907,36 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         capabilities.retired.act_as_host,
         capabilities.retired.read_all_workspaces,
     ];
-    let scope: Vec<u8> = match capabilities.agent {
+    // An agent's grant goes first, after its own marker, and its extended form names no scope
+    // again.
+    let mut named = None;
+    let scope: Vec<u8> = match &capabilities.agent {
         None => Vec::new(),
         Some(AgentScope::AllWorkspaces) => vec![SCOPE_ALL],
-        Some(AgentScope::Workspace(id)) => [&[SCOPE_WORKSPACE][..], &id].concat(),
-        Some(AgentScope::Agent { workspace, agent }) => {
-            [&[SCOPE_AGENT][..], &workspace, &agent].concat()
+        Some(AgentScope::Workspace(id)) => [&[SCOPE_WORKSPACE][..], id].concat(),
+        Some(AgentScope::AgentHash { workspace, agent }) => {
+            [&[SCOPE_AGENT][..], workspace, agent].concat()
+        }
+        Some(AgentScope::Agent(grant)) => {
+            if !grant.is_well_formed() {
+                return Err(serde::ser::Error::custom(
+                    "an agent's grant names its agent, one to 16 workspaces and at most 64 apps, \
+                     each once and in order",
+                ));
+            }
+            named = Some(grant);
+            Vec::new()
         }
     };
+    if named.is_some()
+        && (capabilities.workspace.is_some()
+            || capabilities.records.is_some()
+            || capabilities.placing.is_some())
+    {
+        return Err(serde::ser::Error::custom(
+            "an agent's grant reaches the workspaces it names, and no device's confinement",
+        ));
+    }
     let bit = |set: bool, bit: u8| if set { bit } else { 0 };
     let extended = bit(capabilities.foreign, EXTENDED_FOREIGN)
         | bit(capabilities.agent.is_some(), EXTENDED_AGENT)
@@ -797,6 +979,7 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         ));
     }
     let len = len.saturating_add(if workspace.is_some() { 17 } else { 0 });
+    let len = len.saturating_add(if named.is_some() { 2 } else { 0 });
     let len = len.saturating_add(records.map_or(0, |records| {
         18_usize.saturating_add(records.channels.len().saturating_mul(32))
     }));
@@ -812,6 +995,10 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         for byte in records.channels.iter().flatten() {
             tuple.serialize_element(byte)?;
         }
+    }
+    if let Some(grant) = named {
+        tuple.serialize_element(&AGENT_BINARY_MARKER)?;
+        tuple.serialize_element(grant)?;
     }
     if let Some(id) = &workspace {
         tuple.serialize_element(&WORKSPACE_BINARY_MARKER)?;
@@ -891,7 +1078,7 @@ struct BinaryCapabilities;
 /// device's marker, workspace, count and its channels as one element, then the
 /// extended form with an agent's scope and four flags. A reader that bounds
 /// what it decodes is told no more than that, whatever follows.
-const MAX_BINARY_CAPABILITIES: usize = 19 + 2 + 49 + 4;
+const MAX_BINARY_CAPABILITIES: usize = 19 + 2 + 2 + 49 + 4;
 
 /// A placed device's channels in a certificate's binary form: `self.0` of them,
 /// 32 bytes each, read as one element whose length the count before it gives.
@@ -1008,7 +1195,7 @@ fn agent_scope<E: serde::de::Error>(
             for byte in &mut agent {
                 *byte = next()?;
             }
-            Ok(AgentScope::Agent { workspace, agent })
+            Ok(AgentScope::AgentHash { workspace, agent })
         }
         other => Err(E::invalid_value(
             serde::de::Unexpected::Unsigned(other.into()),
@@ -1051,6 +1238,29 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
         } else {
             (records, None)
         };
+        let mut named = if first == AGENT_BINARY_MARKER {
+            let grant: AgentGrant = seq
+                .next_element()?
+                .ok_or_else(|| A::Error::invalid_length(read, &"an agent's grant"))?;
+            read = read.saturating_add(1);
+            if !grant.is_well_formed() {
+                return Err(A::Error::custom(
+                    "an agent's grant names its agent, one to 16 workspaces and at most 64 apps, \
+                     each once and in order",
+                ));
+            }
+            first = capability_byte(&mut seq, &mut read)?;
+            // Its extended form follows, and nothing confines it besides.
+            if first != EXTENDED_BINARY_MARKER {
+                return Err(A::Error::invalid_value(
+                    serde::de::Unexpected::Unsigned(first.into()),
+                    &"the extended capabilities of an agent's grant",
+                ));
+            }
+            Some(grant)
+        } else {
+            None
+        };
         let mut next = || capability_byte(&mut seq, &mut read);
         let workspace = if first == WORKSPACE_BINARY_MARKER {
             let id = workspace_id::<A::Error>(&mut next)?;
@@ -1092,10 +1302,16 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                           or name an issuer",
                     ));
                 }
-                let agent = if extended & EXTENDED_AGENT == 0 {
-                    None
-                } else {
-                    Some(agent_scope::<A::Error>(&mut next)?)
+                let agent = match (extended & EXTENDED_AGENT == 0, named.take()) {
+                    (true, None) => None,
+                    (true, Some(_)) => {
+                        return Err(A::Error::invalid_value(
+                            serde::de::Unexpected::Unsigned(extended.into()),
+                            &"the extended capabilities of an agent's grant, which grant it",
+                        ));
+                    }
+                    (false, Some(grant)) => Some(AgentScope::Agent(grant)),
+                    (false, None) => Some(agent_scope::<A::Error>(&mut next)?),
                 };
                 (extended, agent, [next()?, next()?, next()?, next()?])
             }
@@ -1285,7 +1501,7 @@ impl DeviceCapabilities {
     /// UUID, or `all` for the account): where it acts as the person.
     #[must_use]
     pub fn own_key_in(&self, workspace: &str) -> bool {
-        self.server_key && self.agent.is_some_and(|scope| scope.reaches(workspace))
+        self.server_key && self.agent.as_ref().is_some_and(|scope| scope.reaches(workspace))
     }
 
     /// Whether these are an agent's grant's capabilities that hold: the
@@ -1964,13 +2180,13 @@ fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
             && minted.saturating_sub(cert.issued_at_ns) <= MAX_AGENT_GRANT_LIFETIME_NS
             && issuer.expires_at_ns.is_none_or(|parent| minted <= parent)
     });
-    let one_workspace = match cert.capabilities.agent {
+    let one_workspace = match &cert.capabilities.agent {
         Some(scope @ AgentScope::Workspace(_)) => {
             cert.capabilities
                 == DeviceCapabilities {
                     retired: RetiredFlags::default(),
                     server_key: issuer.capabilities.server_key,
-                    ..DeviceCapabilities::agent_grant(scope)
+                    ..DeviceCapabilities::agent_grant(scope.clone())
                         .with_browser_pages(cert.capabilities.browser_pages)
                 }
         }

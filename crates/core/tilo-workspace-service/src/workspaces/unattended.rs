@@ -99,6 +99,7 @@ impl Workspaces {
         let reaches = certificate
             .capabilities
             .agent
+            .as_ref()
             .is_none_or(|scope| scope.reaches(&workspace));
         if !reaches || own.owner_of(&workspace) != Some(person) {
             return Err(ActionCallError::refused(

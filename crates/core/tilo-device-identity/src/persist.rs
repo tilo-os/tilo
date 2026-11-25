@@ -1286,9 +1286,9 @@ pub const DEVICE_CERT: Format = Format {
     name: "device certificate",
     // The identity crate owns the layout number ([`tilo_user_identity::cert::BINARY_LAYOUT`]);
     // a test beside the golden bytes keeps this in step with it.
-    version: 3,
+    version: 4,
     oldest: 1,
-    steps: &[layout_one_is_layout_two, layout_two_is_layout_three],
+    steps: &[layout_one_is_layout_two, layout_two_is_layout_three, layout_three_is_layout_four],
 };
 
 /// Layout 2 only added a certificate that reaches one workspace alone: what layout 1 wrote is
@@ -1311,6 +1311,17 @@ fn layout_one_is_layout_two(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     reason = "a migration step's signature, which every step has"
 )]
 fn layout_two_is_layout_three(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    Ok(bytes)
+}
+
+/// Layout 4 only added an agent's grant that names its agent by its id: what layout 3 wrote is
+/// the same certificate in layout 4, byte for byte (an agent's key it named by the hash of its id
+/// included), and its signature covers those bytes. So this step too leaves them as they are.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a migration step's signature, which every step has"
+)]
+fn layout_three_is_layout_four(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
@@ -1649,7 +1660,7 @@ mod tests {
         let kept = kept_v3();
         assert_eq!(
             tilo_user_identity::cert::binary_layout_of(&kept).unwrap(),
-            3
+            tilo_user_identity::cert::BINARY_LAYOUT
         );
         let dir = identity_tempdir();
         let path = dir.path().join("cert.bin");
@@ -1684,16 +1695,112 @@ mod tests {
 
     #[test]
     fn the_step_from_layout_two_leaves_its_certificate_as_it_was() {
+        let migrated = DEVICE_CERT.migrate(kept_v2(), 2).unwrap();
+        assert_eq!(migrated, kept_v2());
+        let cert: DeviceCert =
+            tilo_user_identity::canonical::from_canonical_bytes(&migrated).unwrap();
+        verify_device_cert(&cert).unwrap();
+    }
+
+    #[test]
+    fn the_step_from_layout_three_leaves_its_certificate_as_it_was() {
         tilo_files::native::migration::assert_step_reads_previous(
             &DEVICE_CERT,
-            &kept_v2(),
+            &kept_v3(),
             |migrated| {
-                assert_eq!(migrated, kept_v2().as_slice());
+                assert_eq!(migrated, kept_v3().as_slice());
                 let cert: DeviceCert =
                     tilo_user_identity::canonical::from_canonical_bytes(migrated).unwrap();
                 verify_device_cert(&cert).unwrap();
             },
         );
+    }
+
+    /// An agent's key as its person's root grants it in layout 4: the agent by its id, two
+    /// workspaces and one app, for an hour.
+    fn kept_v4() -> Vec<u8> {
+        let text = include_str!("../golden/device-certificate/v4.hex");
+        hex::decode(text.split_whitespace().collect::<String>()).unwrap()
+    }
+
+    /// The grant the layout 4 golden certificate carries.
+    fn golden_agent_grant() -> tilo_user_identity::AgentScope {
+        tilo_user_identity::AgentScope::Agent(tilo_user_identity::AgentGrant {
+            agent: "claude-code-0a1b2c3d4e".to_owned(),
+            workspaces: vec![[0x11; 16], [0x22; 16]],
+            apps: vec!["notes".to_owned()],
+        })
+    }
+
+    #[test]
+    fn an_agents_grant_reads_verifies_and_writes_as_it_was() {
+        let kept = kept_v4();
+        assert_eq!(
+            tilo_user_identity::cert::binary_layout_of(&kept).unwrap(),
+            tilo_user_identity::cert::BINARY_LAYOUT
+        );
+        assert_eq!(
+            DEVICE_CERT.version,
+            tilo_user_identity::cert::BINARY_LAYOUT,
+            "the declared version is the one the identity crate writes"
+        );
+        let dir = identity_tempdir();
+        let path = dir.path().join("cert.bin");
+        let read = std::cell::RefCell::new(None);
+        tilo_files::native::migration::assert_golden_bytes(
+            DEVICE_CERT.name,
+            &kept,
+            |bytes| {
+                fs::write(&path, bytes).unwrap();
+                let cert = read_device_cert(&path).unwrap();
+                verify_device_cert_at(&cert, 1_000_001).unwrap();
+                assert_eq!(
+                    cert.capabilities,
+                    DeviceCapabilities::agent_grant(golden_agent_grant())
+                );
+                assert!(cert.capabilities.agent.as_ref().unwrap().is_agent("claude-code-0a1b2c3d4e"));
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                *read.borrow_mut() = Some(cert);
+            },
+            || {
+                let written = dir.path().join("written.bin");
+                write_device_cert(&written, read.borrow().as_ref().unwrap()).unwrap();
+                fs::read(written).unwrap()
+            },
+        );
+    }
+
+    /// What a build of layout 3 does with an agent's grant of layout 4 after a device rolls back:
+    /// it names the certificate a later layout than its own and refuses the file with that, never
+    /// reading it as a certificate it knows.
+    #[test]
+    fn a_build_of_layout_three_refuses_an_agents_grant_with_why() {
+        // The format as a build of layout 3 declared it.
+        let layout_three = Format {
+            version: 3,
+            steps: &[layout_one_is_layout_two, layout_two_is_layout_three],
+            ..DEVICE_CERT
+        };
+        let kept = kept_v4();
+        // Layout 3 knew first capabilities bytes up to its placement grant's marker (6), and
+        // named any byte above them a later layout.
+        let (_, capabilities) =
+            postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(&kept).unwrap();
+        let first = capabilities[0];
+        assert!(first > 6, "layout 3 names this certificate a later layout: {first}");
+        let stored = 3 + 1;
+        let dir = identity_tempdir();
+        let path = dir.path().join("cert.bin");
+        fs::write(&path, &kept).unwrap();
+        let refused = layout_three
+            .bring_up(&path, kept.clone(), stored)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            refused,
+            "device certificate version 4 was written by a newer build than this one (3)"
+        );
+        assert_eq!(fs::read(&path).unwrap(), kept, "the file stays as it was");
     }
 
     #[test]

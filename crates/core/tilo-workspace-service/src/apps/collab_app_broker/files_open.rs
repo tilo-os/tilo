@@ -29,6 +29,7 @@ use tilo_server_protocol::WorkspaceId;
 use super::action_provider::refusal;
 use super::host_action_admission::HostActionAdmission;
 use super::{AppBrokerState, BrokerActor, InvocationCaller};
+use crate::apps::services::KEYLESS_AGENT;
 
 /// The descriptor a put into the workspace's folder is admitted under: Files' `open` of a
 /// workspace's own folder, which takes the file's `content` and the `name` and `dir` it goes
@@ -208,6 +209,16 @@ impl AppBrokerState {
                 "putting a file into a workspace was refused: the workspace does not let the caller write its files"
             );
             return Err(ActionCallError::NotPermitted);
+        }
+        // Every replica of the tree checks who asked against the signature the change keeps, so
+        // an agent's put is the call it signed with the key its person's root certified for it.
+        // One asking under no key of its own is refused before anything is put.
+        if caller.acting().is_agent()
+            && request.signed.as_deref().is_none_or(|signed| {
+                !tilo_server_protocol::invocation::signs_for(caller.acting(), signed)
+            })
+        {
+            return Err(refusal(KEYLESS_AGENT.into()));
         }
         let puts =
             self.services.files_open.clone().ok_or_else(|| {

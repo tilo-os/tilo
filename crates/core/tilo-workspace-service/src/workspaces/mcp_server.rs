@@ -152,6 +152,7 @@ impl McpServer {
                     .cert
                     .capabilities
                     .agent
+                    .as_ref()
                     .and_then(|scope| scope.workspace_name())
                 {
                     Some(id) => Reach::Workspace {

@@ -168,6 +168,7 @@ impl KeySessions {
         if key
             .capabilities
             .agent
+            .as_ref()
             .is_some_and(|scope| !scope.reaches(&workspace))
             || !key.capabilities.reaches_workspace(&workspace)
         {

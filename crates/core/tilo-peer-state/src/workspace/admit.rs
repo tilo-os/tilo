@@ -649,6 +649,7 @@ fn own_grant(
     let Some(scope) = author
         .capabilities
         .agent
+        .as_ref()
         .map(|scope| scope.workspace_name())
     else {
         return Err(WorkspaceRefusal::WriteForbidden.into());

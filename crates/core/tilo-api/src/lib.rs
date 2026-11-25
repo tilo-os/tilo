@@ -111,7 +111,7 @@ enum Purpose {
 }
 
 /// The grant the person is asked to certify.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct GrantAsk {
     /// The workspace the agent was pointed at, or all of them. The
     /// certificate they answer with may be narrower — one of their
@@ -545,7 +545,7 @@ impl Server {
             challenge: &challenge,
             client,
             key: &key,
-            grant,
+            grant: grant.clone(),
         });
         let mut pending = lock(&self.pending);
         pending.retain(|_, pending| pending.expires_ms > now);
@@ -620,7 +620,7 @@ impl Server {
     /// No challenge can be minted, or too many sign-ins are in progress.
     fn restart(&self, pending: &Pending) -> Result<String, &'static str> {
         let now = now_ms();
-        match (&pending.purpose, pending.grant) {
+        match (&pending.purpose, pending.grant.clone()) {
             (Purpose::Agent(request), Some(grant)) => {
                 let mut challenge = [0u8; 32];
                 let (Ok(()), Ok(id), Ok(key)) = (
@@ -766,7 +766,7 @@ impl Server {
         if cert.user_public_key != proof.cert.user_public_key {
             return Err("the grant was certified by someone else than who signed in".into());
         }
-        let (Some(key), Some(grant)) = (&pending.key, pending.grant) else {
+        let (Some(key), Some(grant)) = (&pending.key, pending.grant.clone()) else {
             return Err("the sign-in asked for no grant".into());
         };
         let outlasts = match (grant.expires_ms, cert.expires_at_ns) {

@@ -24,8 +24,38 @@ use crate::apps::test_support::{Grantee, Grants as _, KindSet, Role, WorkspaceId
 
 use super::*;
 
+/// The person's root.
+fn root() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+}
+
 fn owner_id() -> String {
-    "a1".repeat(32)
+    hex::encode(root().verifying_key().to_bytes())
+}
+
+/// `request` as the key its person's root certified for the agent `id` in `workspace` signed it.
+fn signed_by_agent(id: &str, workspace: &str, mut request: InvokeRequest) -> InvokeRequest {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let workspace_id = *WorkspaceId::parse(workspace).unwrap().as_uuid().as_bytes();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root().verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: id.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::agent_in(workspace_id, id),
+        ),
+        issued_at_ns: now - 1,
+        expires_at_ns: Some(now + 3_600_000_000_000),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root()).unwrap();
+    request.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation_now(workspace, &request, &cert, &key, now)
+            .unwrap(),
+    ));
+    request
 }
 
 /// One put that reached the workspace's folder: the workspace, the open's arguments, and the
@@ -318,11 +348,27 @@ async fn a_person_puts_a_file_and_a_caller_the_workspace_does_not_let_is_refused
         );
     }
 
-    // An agent the workspace lets write the folder puts as its person's device does.
+    // An agent asking under no key of its own puts nothing: every device that takes the files
+    // checks who asked against the call's signature.
     let porter = agent("porter", &fixture.workspace);
-    let request = open(
+    let keyless = open(
         &fixture.workspace,
         &json!({"content": "tilo.content:abc", "name": "plan.md"}),
+    );
+    match settled(fixture.state.action_invoke(&porter, None, None, &keyless)).await {
+        Err(ActionCallError::Refused { reason }) => assert_eq!(reason, KEYLESS_AGENT),
+        other => panic!("a keyless agent's put is refused with why: {other:?}"),
+    }
+    assert_eq!(fixture.recorder.0.lock().unwrap().len(), 1, "nothing was put");
+
+    // An agent the workspace lets write the folder puts the open it signed with its own key.
+    let request = signed_by_agent(
+        "porter",
+        &fixture.workspace,
+        open(
+            &fixture.workspace,
+            &json!({"content": "tilo.content:abc", "name": "plan.md"}),
+        ),
     );
     settled(fixture.state.action_invoke(&porter, None, None, &request))
         .await

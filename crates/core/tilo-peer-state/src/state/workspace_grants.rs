@@ -117,7 +117,7 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let Some(scope) = own.capabilities.agent else {
+        let Some(scope) = &own.capabilities.agent else {
             return Ok(false);
         };
         let id = WorkspaceGrant::id_of(&own.device_public_key);
