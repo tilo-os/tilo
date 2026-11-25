@@ -31,7 +31,7 @@ use super::{AppBrokerState, BrokerActor, InvocationCaller};
 /// The descriptor a put into the workspace's folder is admitted under: Files' `open` of a
 /// workspace's own folder, which takes the file's `content` and the `name` and `dir` it goes
 /// under, or many at once as `files`.
-fn files_open_descriptor() -> ActionDescriptor {
+fn open_descriptor() -> ActionDescriptor {
     ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),
@@ -220,7 +220,7 @@ impl AppBrokerState {
         // The tree's change waits on the workspace carrying it, and the call answers what it
         // answered then, as the writes a file into a mounted folder are answered: the caller
         // reads where its file is, not an invocation to follow.
-        let descriptor = files_open_descriptor();
+        let descriptor = open_descriptor();
         let admitted = self.admit_host_action(
             caller,
             origin,
@@ -270,10 +270,10 @@ impl AppBrokerState {
 /// The identity a put into a workspace's folder changes its tree as: the person the caller acts
 /// for, a person's own call staying theirs.
 fn change_as(caller: &Caller) -> tilo_actions::Acting {
-    caller
-        .acting()
-        .acted_for_person()
-        .map_or_else(|| caller.acting().clone(), |person| tilo_actions::Acting::person(person))
+    if let Some(person) = caller.acting().acted_for_person() {
+        return tilo_actions::Acting::person(person);
+    }
+    caller.acting().clone()
 }
 
 /// The outcome of a put the tree refused.
