@@ -29,7 +29,7 @@ use tilo_peer_state::StatePeer;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::{Answered, DirectSync, Kept};
 use tilo_peer_state::join::{
-    JoinBootstrap, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
+    JoinBootstrap, JoinChallengeRequest, JoinCompleteRequest, JoinProof, JoinTransportRequest,
     JoinTransportResponse, Role, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
 };
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
@@ -725,20 +725,8 @@ impl Workspaces {
         .await?;
         let proof =
             tilo_peer_state::join::sign_join_proof(answer.challenge, device.signer.as_ref())?;
-        let bootstrap = match client
-            .request(
-                address.endpoint_addr.clone(),
-                JoinTransportRequest::Complete(JoinCompleteRequest { proof, admission }),
-            )
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            JoinTransportResponse::Complete(bootstrap) => bootstrap,
-            JoinTransportResponse::Error { message, .. } => {
-                return Err(format!("the workspace's device refused: {message}"));
-            }
-            _ => return Err("the host did not complete the enrollment".into()),
-        };
+        let bootstrap =
+            Self::complete_join(&client, &address.endpoint_addr, proof, admission).await?;
         if bootstrap.workspace_id != workspace {
             return Err("the device admitted this to another workspace".into());
         }
@@ -755,6 +743,30 @@ impl Workspaces {
             tracing::debug!(%why, "the person is not named in the workspace they joined");
         }
         Ok(joined)
+    }
+
+    /// The join's second exchange: this device's proof of possession and the admission it signed,
+    /// which the device that answers carries to the workspace and answers the copy to hold here.
+    async fn complete_join(
+        client: &WorkspaceJoinClient,
+        endpoint_addr: &iroh::EndpointAddr,
+        proof: JoinProof,
+        admission: Vec<Vec<u8>>,
+    ) -> Result<JoinBootstrap, String> {
+        match client
+            .request(
+                endpoint_addr.clone(),
+                JoinTransportRequest::Complete(JoinCompleteRequest { proof, admission }),
+            )
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            JoinTransportResponse::Complete(bootstrap) => Ok(bootstrap),
+            JoinTransportResponse::Error { message, .. } => {
+                Err(format!("the workspace's device refused: {message}"))
+            }
+            _ => Err("the host did not complete the enrollment".into()),
+        }
     }
 
     /// Ask the device at `addr` to name this device's person `name` in `workspace`.
