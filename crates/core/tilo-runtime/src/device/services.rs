@@ -5678,6 +5678,19 @@ impl RuntimeActionProvider {
             tilo_workspace_service::agents::workspace_agent(record.copies(), id, &listed, &person)
                 .await;
         });
+        // The key enters the workspace as every key of its person's does, by the admission it
+        // signs itself, so the workspace reads it as that agent, with its person's grants.
+        let (cert, key) = signer.signing().map_err(io::Error::other)?;
+        let (record, named) = (Arc::clone(&self.workspaces), workspace.to_owned());
+        block_on_owned(async move {
+            record
+                .copies()
+                .enter_agent_key((key.as_ref(), &cert), &named, &cert.device_label)
+                .await
+        })
+        .map_err(|why| {
+            io::Error::other(format!("the agent can't act in this workspace: {why}"))
+        })?;
         // Once listed, the agent's calls are a run of the person's admission, delegated to this
         // agent: what owns a host action they start, rechecked against the workspace's record of
         // its agents. The agent's signature on each call is checked too, but never stands in for

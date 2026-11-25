@@ -6,9 +6,10 @@
 //! workspace's member list decides for every device alike, this server's own
 //! included. The answer comes in three steps:
 //!
-//! 1. The device must be a person's current device: certified now, not
-//!    revoked, and not one of the server's agents (an agent administers
-//!    nothing; it joins workspaces through its delegation).
+//! 1. The device must be certified now and not revoked. A key its person's
+//!    root certified for an agent is held to its certificate's scope: the host
+//!    operations that scope allows ([`ServiceOperation::permits`]), and in a
+//!    workspace the agent's grants, which administer nothing.
 //! 2. What no workspace decides ([`ServiceOperation`]: making this host's
 //!    workspaces, its machines, which workspaces it holds) is this host's
 //!    person's, but for making a person's own workspace and keeping their

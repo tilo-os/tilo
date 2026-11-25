@@ -12,9 +12,8 @@ use crate::workspaces::fixtures::{TestHost, list_itself_on_link};
 use std::time::Duration;
 use tilo_server_client::LinkError;
 use tilo_server_client::link::{Dialer, Purpose};
-use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry,
 };
 
 /// How long a link or the host may take to do what a test waits for.
@@ -552,8 +551,8 @@ async fn a_hosted_environments_link_reads_its_one_record() {
     server.shutdown().await;
 }
 
-/// An agent's device outside its delegation's workspaces is refused the
-/// workspace's link: the admission hook reads the server's live delegations.
+/// A key its person's root certified for an agent in another workspace alone is refused this
+/// workspace's link, though it offers its certificate: the grant it carries reaches no further.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_agent_outside_its_grant_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -562,43 +561,20 @@ async fn an_agent_outside_its_grant_is_refused() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
     let other = WorkspaceId::from_u128(u128::MAX - 7);
-    let (agent_key, agent) = device_cert(
+    let (_agent_key, agent) = device_cert(
         &SigningKey::from_bytes(&[1; 32]),
         "agent",
-        DeviceCapabilities::member(),
-    );
-    workspaces
-        .enter(&created.workspace, (&agent, &agent_key))
-        .await
-        .expect("the agent's device lists itself");
-    workspaces.inner.host.agents.write().unwrap().insert(
-        agent.device_public_key,
-        Some(Delegation {
-            user_public_key: agent.user_public_key,
-            device_public_key: agent.device_public_key,
-            delegate: Delegate::Agent {
-                agent_id: "agent".into(),
-            },
-            label: "Agent".into(),
-            color: [0; 3],
-            scope: DelegateScope {
-                workspaces: vec![other],
-                apps: Vec::new(),
-            },
-            issued_at_ns: 1,
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
-            signature: [0; 64],
-        }),
+        DeviceCapabilities::agent_grant(AgentScope::agent_in(
+            *other.as_uuid().as_bytes(),
+            "agent",
+        )),
     );
     let link = workspaces
         .direct()
         .link(created.workspace_id)
         .expect("the server serves the workspace over a direct link");
-    match workspaces.admit_link(agent.device_public_key, None, &link) {
-        Err(tilo_server_protocol::refusal::Refusal::NotAMember(reason)) => assert!(
-            reason.contains("delegated"),
-            "the refusal says the agent is not delegated this workspace: {reason}"
-        ),
+    match workspaces.admit_link(agent.device_public_key, Some(&agent), &link) {
+        Err(tilo_server_protocol::refusal::Refusal::NotAMember(_)) => {}
         Err(refusal) => panic!("an agent outside its grant is refused as no member: {refusal}"),
         Ok(_) => panic!("an agent outside its grant never links to the workspace"),
     }

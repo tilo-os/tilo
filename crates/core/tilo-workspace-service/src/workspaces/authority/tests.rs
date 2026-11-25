@@ -1721,3 +1721,59 @@ async fn a_person_renames_themselves_and_the_last_name_is_the_one_kept() {
         "and the one kept with their profile"
     );
 }
+
+/// A key its person's root certified for an agent administers nothing of its person's: it makes,
+/// deletes and branches no workspace and changes no one's place, where its person's own device
+/// does all of it. What it does is bounded by its certificate's scope, whatever person signed it.
+#[tokio::test]
+async fn an_agents_key_administers_nothing_its_persons_device_does() {
+    use super::WorkspaceOp;
+    use crate::service_authority::ServiceOperation;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+    let agent = device_of(
+        &SigningKey::from_bytes(&[1; 32]),
+        "Scribe",
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
+            *id.as_uuid().as_bytes(),
+            "scribe",
+        )),
+    );
+    let now = tilo_clock::unix_now_ns();
+    for operation in [
+        ServiceOperation::CreateWorkspace,
+        ServiceOperation::DeleteOwnWorkspace,
+        ServiceOperation::BranchOwnWorkspace,
+    ] {
+        assert!(
+            workspaces
+                .decide(&agent, None, WorkspaceOp::Host(operation), now)
+                .is_err(),
+            "the agent's key does {operation:?}"
+        );
+        assert!(
+            workspaces
+                .decide(&owner, None, WorkspaceOp::Host(operation), now)
+                .is_ok(),
+            "its person's device does {operation:?}"
+        );
+    }
+    let guest = admit(workspaces, &workspace, &owner, 61).await;
+    assert!(
+        workspaces
+            .set_member_role(
+                &workspace,
+                &agent,
+                role_request(&guest, Role::Viewer, rand::random())
+            )
+            .await
+            .is_err(),
+        "the agent's key changes a member's place"
+    );
+    set_role(workspaces, &workspace, &owner, &guest, Role::Viewer).await;
+    server.shutdown().await;
+}

@@ -1140,35 +1140,7 @@ impl Workspaces {
         (key, cert): (&SigningKey, &DeviceCert),
         entry: tilo_server_protocol::entering::Entry,
     ) -> tilo_server_protocol::entering::Entered {
-        use crate::handshake::Admit;
-        use tilo_server_protocol::entering::{Entered, Through};
-        let answered = Admit::enter(self, cert, entry.clone()).await;
-        let Entered::Sign {
-            governance,
-            through,
-        } = answered
-        else {
-            return answered;
-        };
-        let invitation = match &through {
-            Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
-            Through::Entry => None,
-        };
-        let entering = &entry.entering;
-        let admission = tilo_peer_state::own_admission::sign_entry(
-            &entering.workspace,
-            &governance,
-            (invitation, entering.request_id),
-            Some(entering.name.as_str()),
-            (cert, key),
-            tilo_clock::wall(),
-        )
-        .await
-        .unwrap();
-        let mut signed = entry;
-        signed.entering.through = through;
-        signed.entering.admission = admission;
-        Admit::enter(self, cert, signed).await
+        self.enter_signed_by((key, cert), entry).await.unwrap()
     }
 
     /// Admit the device `cert` certifies with `invitation`, under the request

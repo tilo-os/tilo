@@ -668,6 +668,77 @@ fn entered(reply: JoinReply) -> Entered {
     }
 }
 
+impl Workspaces {
+    /// `cert`'s device asking for `entry` here, as a device does on its session: where the host
+    /// answers that it may come in once it signs its own admission, `signer` (its key) signs it
+    /// ([`tilo_peer_state::own_admission::sign_entry`]) and it asks again. The host's last
+    /// answer.
+    ///
+    /// # Errors
+    /// The key does not sign what the host answered.
+    pub async fn enter_signed_by(
+        &self,
+        (signer, cert): (&dyn collab_types::signer::DeviceSigner, &DeviceCert),
+        entry: Entry,
+    ) -> Result<Entered, String> {
+        let answered = Admit::enter(self, cert, entry.clone()).await;
+        let Entered::Sign {
+            governance,
+            through,
+        } = answered
+        else {
+            return Ok(answered);
+        };
+        let invitation = match &through {
+            Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
+            Through::Entry => None,
+        };
+        let entering = &entry.entering;
+        let admission = tilo_peer_state::own_admission::sign_entry(
+            &entering.workspace,
+            &governance,
+            (invitation, entering.request_id),
+            Some(entering.name.as_str()),
+            (cert, signer),
+            tilo_clock::wall(),
+        )
+        .await?;
+        let mut signed = entry;
+        signed.entering.through = through;
+        signed.entering.admission = admission;
+        Ok(Admit::enter(self, cert, signed).await)
+    }
+
+    /// Bring the key `cert` certifies for an agent of its person into `workspace`, named `name`,
+    /// as every key of theirs enters one: through the workspace's entry, with the admission the
+    /// key signs itself (`signer`). A key already listed there is let in as it is.
+    ///
+    /// # Errors
+    /// The workspace does not let the key in, or the key does not sign.
+    pub async fn enter_agent_key(
+        &self,
+        (signer, cert): (&dyn collab_types::signer::DeviceSigner, &DeviceCert),
+        workspace: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let entry = Entry {
+            entering: Entering {
+                workspace: workspace.to_owned(),
+                name: name.to_owned(),
+                request_id: rand::random(),
+                through: Through::Entry,
+                admission: Vec::new(),
+            },
+            access: None,
+            proof: [0; 64],
+        };
+        match self.enter_signed_by((signer, cert), entry).await? {
+            Entered::Admitted { .. } => Ok(()),
+            refused => Err(format!("the workspace did not let the agent's key in: {refused:?}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
