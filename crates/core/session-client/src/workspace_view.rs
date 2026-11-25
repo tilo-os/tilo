@@ -194,9 +194,9 @@ impl WorkspaceView {
         workspace: WorkspaceId,
         part: Part,
     ) -> Option<T> {
-        let parts = self.parts.lock_recover();
-        let reading = parts.get(&(workspace, part))?;
-        serde_json::from_str(reading)
+        // The reading is copied out so other readers are not held while it is parsed.
+        let reading = self.parts.lock_recover().get(&(workspace, part))?.clone();
+        serde_json::from_str(&reading)
             .map_err(|error| tracing::error!(%workspace, ?part, %error, "a workspace's part does not read"))
             .ok()
     }
