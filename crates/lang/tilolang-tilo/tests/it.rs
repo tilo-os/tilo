@@ -14,6 +14,7 @@
 mod action_ids;
 mod activity;
 mod agent_queries;
+mod asking_at_press;
 mod asking_effects;
 mod asking_form;
 mod atomic;
@@ -115,6 +116,7 @@ mod settings_storage;
 mod settings_windows;
 mod shell_compiles;
 mod shell_media;
+mod shell_staged;
 mod slides_agent_words;
 mod slides_search;
 mod spaces;

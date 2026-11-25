@@ -3413,7 +3413,8 @@ scenario "the problem report's picker" -> Layout {
 }
 
 /// A press that needs the person's yes: Notes' Share asked before it gives Mia the note, and the
-/// question stands over the window it was pressed in, with what it would share and with whom.
+/// question stands at the control it was pressed on in that window, its Share under the press,
+/// with what it would share and with whom.
 scenario "a press that needs a yes" {
     let d = root Layout
     d.person = "Ada Lovelace"
@@ -3494,6 +3495,7 @@ scenario "a press that needs a yes" {
                         app: "so.tilo.notes",
                         instance: "p1",
                         resource: "",
+                        at: .some(invocations.PressPoint(x: 640, y: 212)),
                     ),
                 ),
                 .none,
