@@ -41,7 +41,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tracing.workspace = true
 # The workspace store the sections are kept in: its commands, stamps and versions.
 tilo-resource-store = { path = "../../core/resource-store" }
-collab-types = { package = "tilo-collab-types", path = "../../core/collab-types", optional = true }
+# The store's history, records and commands the sections write through.
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 # The invocation one change's writes share.
 uuid.workspace = true
 # The device's installed packages: the theme packages Appearance offers, and the one it applies.
@@ -52,7 +53,7 @@ runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-p
 
 [features]
 # Settings over the person's and the device owner's workspaces in memory, for tests.
-test-support = ["dep:collab-types"]
+test-support = []
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
