@@ -6,7 +6,7 @@
 use serde_json::{Value, json};
 use tilo_actions::remote::person_accounts::{self, ConnectedAccount, SignInStep};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, InvocationReceipt, ReceiptStatus,
+    ActionCallError, ActionProvider, Caller, InvocationReceipt, ReceiptStatus,
 };
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 
@@ -51,12 +51,50 @@ fn connect(server: &FakeAuthorizationServer, port: u16) -> Value {
     })
 }
 
+/// `who` asks `page` to connect at `issuer`, the browser goes there and back, and the page waits
+/// for what came of it.
+async fn connected(
+    page: &(impl ActionProvider + Sync),
+    who: &Caller,
+    issuer: Value,
+) -> Result<ConnectedAccount, ActionCallError> {
+    let step: SignInStep = answered(
+        settled(page.invoke(who, asking(person_accounts::CONNECT_ACCOUNT, issuer)))
+            .await
+            .unwrap(),
+    );
+    let open = step.open.clone();
+    let browser = tokio::task::spawn_blocking(move || browse(&open));
+    let came = settled(page.invoke(
+        who,
+        asking(
+            person_accounts::FINISH_CONNECT_ACCOUNT,
+            json!({"signIn": step.id}),
+        ),
+    ))
+    .await;
+    browser.await.unwrap().expect("the browser came back");
+    came.map(answered)
+}
+
+/// How many grants for `name` the workspace's vault keeps.
+fn grants(vault: &crate::workspaces::vault::OpenVault, name: &str) -> usize {
+    vault
+        .entries()
+        .iter()
+        .filter(|(item, _)| item.username == name)
+        .count()
+}
+
+fn refused_with(error: &ActionCallError, words: &str) -> bool {
+    matches!(error, ActionCallError::Refused { reason } if reason.contains(words))
+}
+
 #[tokio::test]
 async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     let server = FakeAuthorizationServer::start();
     server.set_account("80351110224678912", "ada");
     let port = free_port();
-
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let host = test_host(dir.path(), &key, &owner).await;
@@ -75,33 +113,11 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     ))
     .await
     .unwrap_err();
-    assert!(
-        matches!(&outside, ActionCallError::Refused { reason } if reason.contains("from the app")),
-        "{outside:?}"
-    );
+    assert!(refused_with(&outside, "from the app"), "{outside:?}");
 
-    let step: SignInStep = answered(
-        settled(page.invoke(
-            &in_bridge,
-            asking(person_accounts::CONNECT_ACCOUNT, connect(&server, port)),
-        ))
+    let account = connected(&page, &in_bridge, connect(&server, port))
         .await
-        .unwrap(),
-    );
-    let open = step.open.clone();
-    let browser = tokio::task::spawn_blocking(move || browse(&open));
-    let account: ConnectedAccount = answered(
-        settled(page.invoke(
-            &in_bridge,
-            asking(
-                person_accounts::FINISH_CONNECT_ACCOUNT,
-                json!({"signIn": step.id}),
-            ),
-        ))
-        .await
-        .unwrap(),
-    );
-    browser.await.unwrap().expect("the browser came back");
+        .expect("the account is connected");
     assert_eq!(
         account,
         ConnectedAccount {
@@ -144,21 +160,13 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
             .connected_account(&here, (&person, BRIDGE, "other"))
             .is_none()
     );
-    assert_eq!(
-        workspaces.connected_accounts(&here, &person),
-        vec![account.clone()]
-    );
+    assert_eq!(workspaces.connected_accounts(&here, &person), vec![account]);
 
     // The grant is in the person's vault, and only there.
-    let grants = |vault: &crate::workspaces::vault::OpenVault| {
-        vault
-            .entries()
-            .iter()
-            .filter(|(item, _)| item.username == "ada")
-            .count()
-    };
-    let vault = workspaces.open_vault(&here).await.unwrap();
-    assert_eq!(grants(&vault), 1);
+    assert_eq!(
+        grants(&workspaces.open_vault(&here).await.unwrap(), "ada"),
+        1
+    );
     let kept = std::fs::read_to_string(
         workspaces
             .workspace_root(&here)
@@ -174,59 +182,19 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     );
 
     // Connecting the same account again keeps one grant, the new one.
-    server.set_account("80351110224678912", "ada");
-    let again: SignInStep = answered(
-        settled(page.invoke(
-            &in_bridge,
-            asking(person_accounts::CONNECT_ACCOUNT, connect(&server, port)),
-        ))
+    connected(&page, &in_bridge, connect(&server, port))
         .await
-        .unwrap(),
-    );
-    let open = again.open.clone();
-    let browser = tokio::task::spawn_blocking(move || browse(&open));
-    let _: ConnectedAccount = answered(
-        settled(page.invoke(
-            &in_bridge,
-            asking(
-                person_accounts::FINISH_CONNECT_ACCOUNT,
-                json!({"signIn": again.id}),
-            ),
-        ))
-        .await
-        .unwrap(),
-    );
-    browser.await.unwrap().expect("the browser came back");
+        .expect("connected again");
     let vault = workspaces.open_vault(&here).await.unwrap();
-    assert_eq!(grants(&vault), 1, "the earlier grant went");
+    assert_eq!(grants(&vault, "ada"), 1, "the earlier grant went");
 
     // An issuer that refuses the address the browser came back to says which to register.
     server.refuse_redirect();
-    let refused: SignInStep = answered(
-        settled(page.invoke(
-            &in_bridge,
-            asking(person_accounts::CONNECT_ACCOUNT, connect(&server, port)),
-        ))
+    let error = connected(&page, &in_bridge, connect(&server, port))
         .await
-        .unwrap(),
-    );
-    let open = refused.open.clone();
-    let browser = tokio::task::spawn_blocking(move || browse(&open));
-    let error = settled(page.invoke(
-        &in_bridge,
-        asking(
-            person_accounts::FINISH_CONNECT_ACCOUNT,
-            json!({"signIn": refused.id}),
-        ),
-    ))
-    .await
-    .unwrap_err();
-    browser.await.unwrap().expect("the browser came back");
+        .unwrap_err();
     let register = format!("Add http://127.0.0.1:{port}/oauth to your app's redirects");
-    assert!(
-        matches!(&error, ActionCallError::Refused { reason } if reason.contains(&register)),
-        "{error:?}"
-    );
+    assert!(refused_with(&error, &register), "{error:?}");
 
     // Another app cannot wait for a connect it did not begin.
     let stray: SignInStep = answered(
@@ -246,20 +214,61 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     ))
     .await
     .unwrap_err();
-    assert!(
-        matches!(&other, ActionCallError::Refused { reason } if reason.contains("not begun here")),
-        "{other:?}"
-    );
-    // The app that began it still finishes it.
-    let open = stray.open.clone();
-    let browser = tokio::task::spawn_blocking(move || browse(&open));
-    let _ = settled(page.invoke(
-        &in_bridge,
+    assert!(refused_with(&other, "not begun here"), "{other:?}");
+    // Its browser still comes back, so the connect is over.
+    tokio::task::spawn_blocking(move || browse(&stray.open))
+        .await
+        .unwrap()
+        .expect("the browser came back");
+}
+
+#[tokio::test]
+async fn a_person_forgets_an_account_they_connected() {
+    let server = FakeAuthorizationServer::start();
+    server.set_account("80351110224678912", "ada");
+    let port = free_port();
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let host = test_host(dir.path(), &key, &owner).await;
+    let workspaces = host.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.device_page(workspace_id, &device);
+    let person = hex::encode(device.user_public_key);
+    let here = workspace_id.to_string();
+    connected(
+        &page,
+        &caller(&device).through_app(BRIDGE),
+        connect(&server, port),
+    )
+    .await
+    .expect("the account is connected");
+
+    // The grant leaves the vault and goes back to the issuer.
+    let forget = || {
         asking(
-            person_accounts::FINISH_CONNECT_ACCOUNT,
-            json!({"signIn": stray.id}),
-        ),
-    ))
-    .await;
-    browser.await.unwrap().expect("the browser came back");
+            person_accounts::FORGET_CONNECTED_ACCOUNT,
+            json!({"app": BRIDGE, "issuer": "fake"}),
+        )
+    };
+    let left: Vec<ConnectedAccount> = answered(
+        settled(page.invoke(&caller(&device), forget()))
+            .await
+            .unwrap(),
+    );
+    assert!(left.is_empty());
+    assert!(
+        workspaces
+            .connected_account(&here, (&person, BRIDGE, "fake"))
+            .is_none()
+    );
+    assert_eq!(
+        grants(&workspaces.open_vault(&here).await.unwrap(), "ada"),
+        0
+    );
+    assert_eq!(server.revoked().len(), 1, "the issuer took the grant back");
+    let again = settled(page.invoke(&caller(&device), forget()))
+        .await
+        .unwrap_err();
+    assert!(refused_with(&again, "not connected"), "{again:?}");
 }

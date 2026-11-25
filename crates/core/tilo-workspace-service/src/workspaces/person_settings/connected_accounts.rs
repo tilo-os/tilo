@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_actions::remote::person_accounts::{
     AccountIssuer, CONNECT_ACCOUNT, ConnectAccount, ConnectedAccount, FINISH_CONNECT_ACCOUNT,
-    FinishConnectAccount, SignInStep,
+    FORGET_CONNECTED_ACCOUNT, FinishConnectAccount, ForgetConnectedAccount, SignInStep,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_lock::MutexRecover as _;
@@ -38,6 +38,10 @@ use crate::workspaces::Workspaces;
 
 /// How long a connect waits for the person's browser.
 const CONNECT_WAIT: Duration = Duration::from_secs(10 * 60);
+/// How long the person's page waits for a connect: a little past the connect's own wait.
+const FINISH_WAIT: Duration = Duration::from_secs(10 * 60 + 30);
+/// When a connect nobody waited for to the end is forgotten.
+const FORGOTTEN_AFTER: Duration = Duration::from_secs(20 * 60);
 /// The folder of a workspace's root the connected accounts are kept in, one folder per person.
 const DIR: &str = "connected-accounts";
 /// The most connects waiting at once on this host.
@@ -48,6 +52,7 @@ const MAX_NAME: usize = 128;
 const ONLY_A_PERSON: &str = "Only a person connects their own account, from the app that asks";
 const NOT_BEGUN: &str = "That connect was not begun here, or is over. Connect again";
 const NOT_KEPT: &str = "The account was confirmed, but could not be kept here. Connect again";
+const NOT_CONNECTED: &str = "That account is not connected here";
 
 /// What a connect comes to: the account, or why not in words the person reads.
 type Outcome = Option<Result<ConnectedAccount, String>>;
@@ -209,6 +214,22 @@ fn words(issuer: &DescribedIssuer, error: &OAuthError) -> String {
     }
 }
 
+/// The person forgetting an account they connected: a person, from any app of theirs, never an
+/// agent.
+fn forgetter(caller: &Caller) -> Result<String, ActionCallError> {
+    let acting = caller.acting();
+    if !acting.is_person() || acting.is_agent() {
+        return Err(ActionCallError::Refused {
+            reason: "Only a person forgets an account they connected".to_owned(),
+        });
+    }
+    acting
+        .person_id()
+        .filter(|person| plain(person))
+        .map(str::to_owned)
+        .ok_or(ActionCallError::UnknownAction)
+}
+
 /// The person and app a connect is asked by: a person, through the app that describes the
 /// issuer. Anyone else is told the action does not exist for them.
 fn asker(caller: &Caller) -> Result<(String, String), ActionCallError> {
@@ -222,10 +243,10 @@ fn asker(caller: &Caller) -> Result<(String, String), ActionCallError> {
     let person = acting.person_id().filter(|person| plain(person));
     let app = acting
         .app()
-        .map(|app| app.as_str())
+        .map(ToString::to_string)
         .filter(|app| plain(app));
     match (person, app) {
-        (Some(person), Some(app)) => Ok((person.to_owned(), app.to_owned())),
+        (Some(person), Some(app)) => Ok((person.to_owned(), app)),
         _ => Err(refused()),
     }
 }
@@ -250,14 +271,46 @@ impl Workspaces {
         connected_accounts(&self.workspace_root(workspace), person)
     }
 
-    /// Answer [`CONNECT_ACCOUNT`] and [`FINISH_CONNECT_ACCOUNT`] for `caller` in the workspace
-    /// `workspace` (its UUID).
+    /// Answer `request` when it is one of a person's connected accounts' actions
+    /// ([`CONNECT_ACCOUNT`], [`FINISH_CONNECT_ACCOUNT`], [`FORGET_CONNECTED_ACCOUNT`]) in the
+    /// workspace `workspace_id` names; `None` for any other action.
     pub(super) async fn connected_accounts_invoke(
+        &self,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<Result<Value, ActionCallError>> {
+        if !matches!(
+            request.target.address.action.as_str(),
+            CONNECT_ACCOUNT | FINISH_CONNECT_ACCOUNT | FORGET_CONNECTED_ACCOUNT
+        ) {
+            return None;
+        }
+        let Some(workspace) = workspace_id else {
+            return Some(Err(ActionCallError::UnknownAction));
+        };
+        Some(
+            self.connected_invoke(&workspace.to_string(), caller, request)
+                .await,
+        )
+    }
+
+    async fn connected_invoke(
         &self,
         workspace: &str,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
+        if request.target.address.action == FORGET_CONNECTED_ACCOUNT {
+            let person = forgetter(caller)?;
+            let forgetting: ForgetConnectedAccount =
+                super::argument(request, "the app and issuer of the account to forget")?;
+            return super::answer(
+                &self
+                    .forget_connected(workspace, &person, &forgetting, request)
+                    .await,
+            );
+        }
         let (person, app) = asker(caller)?;
         match request.target.address.action.as_str() {
             CONNECT_ACCOUNT => {
@@ -300,7 +353,7 @@ impl Workspaces {
         let mut waiting = WAITING.lock_recover();
         // A connect nobody waited for to the end is forgotten once it could no longer finish.
         waiting.retain(|_, begun| {
-            tilo_clock::now().saturating_duration_since(begun.began) < CONNECT_WAIT * 2
+            tilo_clock::now().saturating_duration_since(begun.began) < FORGOTTEN_AFTER
         });
         let full = waiting.len() >= MAX_WAITING;
         drop(waiting);
@@ -415,19 +468,102 @@ impl Workspaces {
     }
 }
 
+impl Workspaces {
+    /// Forget the account `person` connected at `forgetting`'s issuer: the grant leaves their
+    /// vault, the issuer is given it back where it takes one back, and nothing of it is kept.
+    /// Answers the accounts still connected.
+    async fn forget_connected(
+        &self,
+        workspace: &str,
+        person: &str,
+        forgetting: &ForgetConnectedAccount,
+        call: &InvokeRequest,
+    ) -> Result<Vec<ConnectedAccount>, String> {
+        let (app, issuer) = (forgetting.app.as_str(), forgetting.issuer.as_str());
+        if !(plain(app) && plain(issuer)) {
+            return Err(NOT_CONNECTED.to_owned());
+        }
+        let root = self.workspace_root(workspace);
+        let path = file_of(&root, (person, app, issuer));
+        let kept = read_kept(&path).ok_or_else(|| NOT_CONNECTED.to_owned())?;
+        let acting = tilo_action_policy::Acting::person(person.to_owned());
+        let grant = match (
+            ItemId::parse(&kept.grant),
+            Place::parse(&kept.issuer.token_endpoint),
+        ) {
+            (Some(id), Ok(place)) => self
+                .vault_for(workspace, &acting)
+                .serving(call)
+                .changing(|items| {
+                    let released = items.use_at(&id, &place, person).ok();
+                    items.remove(&id);
+                    Ok(released)
+                })
+                .await
+                .map_err(|error| {
+                    tracing::warn!(%error, "a connected account's grant stays in the vault");
+                    "The account's grant could not be taken out of your vault. Try again".to_owned()
+                })?,
+            _ => None,
+        };
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(%error, "a forgotten connected account stays kept");
+                return Err("The account could not be forgotten here. Try again".to_owned());
+            }
+        }
+        if let Some(released) = grant
+            && let Ok(tokens) = serde_json::from_str::<tilo_oauth::TokenSet>(&released.secret)
+        {
+            give_back(kept, tokens).await;
+        }
+        self.person_settings_changed();
+        Ok(connected_accounts(&root, person))
+    }
+}
+
+/// Give a forgotten account's grant back to its issuer, where the issuer takes one back. The
+/// account is forgotten here either way; an issuer that did not answer keeps a grant nobody
+/// holds any more, which runs out on its own.
+async fn give_back(kept: Kept, tokens: tilo_oauth::TokenSet) {
+    if kept.issuer.revocation_endpoint.is_none() {
+        return;
+    }
+    let given = tokio::task::spawn_blocking(move || {
+        let client = tilo_oauth::client::OAuthClient::new()?;
+        client.revoke(
+            &kept.issuer.provider(),
+            &kept.issuer.registration(&kept.client_id),
+            &tokens,
+        )
+    })
+    .await;
+    match given {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "an issuer did not take back a forgotten account's grant");
+        }
+        Err(error) => {
+            tracing::warn!(%error, "giving a forgotten account's grant back did not finish");
+        }
+    }
+}
+
 /// Stop a connect `person` began for the same account through the same app, and wait until its
 /// loopback let go of the port.
 async fn stop_earlier((person, app, issuer): (&str, &str, &str)) {
     let earlier: Vec<Waiting> = {
         let mut waiting = WAITING.lock_recover();
-        let ids: Vec<String> = waiting
-            .iter()
-            .filter(|(_, begun)| {
+        let (theirs, others): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut *waiting)
+            .into_iter()
+            .partition(|(_, begun)| {
                 begun.person == person && begun.app == app && begun.issuer == issuer
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        ids.iter().filter_map(|id| waiting.remove(id)).collect()
+            });
+        *waiting = others;
+        drop(waiting);
+        theirs.into_values().collect()
     };
     for mut begun in earlier {
         if let Some(stop) = begun.stop.take() {
@@ -449,16 +585,15 @@ async fn finish(person: &str, app: &str, id: &str) -> Result<ConnectedAccount, S
             .get(id)
             .filter(|begun| begun.person == person && begun.app == app)
             .ok_or_else(|| NOT_BEGUN.to_owned())?;
-        begun.outcome.clone()
+        let outcome = begun.outcome.clone();
+        drop(waiting);
+        outcome
     };
-    let came = tokio::time::timeout(
-        CONNECT_WAIT + Duration::from_secs(30),
-        outcome.wait_for(Option::is_some),
-    )
-    .await
-    .map_err(|_| "The sign-in took too long. Connect again".to_owned())?
-    .map_err(|_| NOT_BEGUN.to_owned())?
-    .clone();
+    let came = tokio::time::timeout(FINISH_WAIT, outcome.wait_for(Option::is_some))
+        .await
+        .map_err(|_| "The sign-in took too long. Connect again".to_owned())?
+        .map_err(|_| NOT_BEGUN.to_owned())?
+        .clone();
     WAITING.lock_recover().remove(id);
     came.unwrap_or_else(|| Err(NOT_BEGUN.to_owned()))
 }

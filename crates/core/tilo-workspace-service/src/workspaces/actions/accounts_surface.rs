@@ -11,7 +11,7 @@ use super::Verb;
 use super::mail;
 
 /// The `tilo.accounts` actions a person asks of the workspace's accounts, in catalogue order.
-const VERBS: [Verb; 22] = [
+const VERBS: [Verb; 23] = [
     Verb {
         id: person_accounts::ADD_MAIL,
         label: "Add a mail account",
@@ -144,6 +144,13 @@ const VERBS: [Verb; 22] = [
         check: "",
         kind: ActionKind::Undoable,
         params: account_params,
+    },
+    Verb {
+        id: person_accounts::FORGET_CONNECTED_ACCOUNT,
+        label: "Forget a connected account",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: forget_connected_params,
     },
     Verb {
         id: person_accounts::CLOUD_ACCOUNTS,
@@ -427,6 +434,21 @@ fn no_params() -> Vec<ActionParam> {
     Vec::new()
 }
 
+fn forget_connected_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "app",
+            ParamType::Text,
+            "The app that described the account's issuer.",
+        ),
+        ActionParam::required(
+            "issuer",
+            ParamType::Text,
+            "The issuer's id, as that app names it.",
+        ),
+    ]
+}
+
 fn account_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
         "account",
@@ -455,11 +477,18 @@ mod surface_tests {
             person: false,
             readers: None,
             verbs: VERBS.iter().map(verb_surface).collect(),
-            fields: vec![reading(
-                "accounts",
-                list(named("AccountView".to_owned())),
-                "The accounts the workspace connected, in the record's order.",
-            )],
+            fields: vec![
+                reading(
+                    "accounts",
+                    list(named("AccountView".to_owned())),
+                    "The accounts the workspace connected, in the record's order.",
+                ),
+                reading(
+                    "connected",
+                    list(named("ConnectedAccount".to_owned())),
+                    "The accounts this device's person connected at issuers their apps describe.",
+                ),
+            ],
             types: vec![
                 account_view(),
                 mail_sign_in(),
@@ -468,6 +497,7 @@ mod surface_tests {
                 calendar_view(),
                 account_services(),
                 sign_in_step(),
+                connected_account(),
                 account_kind(),
                 account_status(),
             ],
@@ -762,6 +792,29 @@ mod surface_tests {
     }
 
     /// Where a sign-in goes, and what it waits for.
+    fn connected_account() -> NamedType {
+        record(
+            "ConnectedAccount",
+            "An account its person connected at an issuer an app describes: who they are there, \
+             never what signs them in.",
+            &[
+                ("app", FieldType::Text, "The app that described the issuer."),
+                (
+                    "issuer",
+                    FieldType::Text,
+                    "The issuer's id, as that app names it.",
+                ),
+                ("label", FieldType::Text, "What the issuer is called."),
+                ("id", FieldType::Text, "The account's id there."),
+                (
+                    "name",
+                    FieldType::Text,
+                    "The name the account goes by there.",
+                ),
+            ],
+        )
+    }
+
     fn sign_in_step() -> NamedType {
         record(
             "SignInStep",

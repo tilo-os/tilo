@@ -29,7 +29,7 @@ view accounts_pane() {
     state sign_in_choices: List<accounts.MailSignIn> = []
     let a = accounts.accounts
     ui.Section("Connected accounts") {
-        if a.accounts.is_empty() {
+        if a.accounts.is_empty() and a.connected.is_empty() {
             ui.Text(
                 "You have no accounts yet. Add one below to bring this workspace its mail, calendars and files.",
                 role: .caption,
@@ -254,6 +254,31 @@ view accounts_pane() {
                             ui.MenuItem("Remove {account.name}") {
                                 on choose: accounts.remove(accounts.accounts, account: account.id)
                             }
+                        }
+                    }
+                }
+            }
+        }
+        // The accounts this person connected from an app, so the app knows who they are there:
+        // theirs alone, and forgotten here.
+        for connected in a.connected {
+            ui.ListRow(
+                connected.name,
+                secondary: "{connected.label} · for {app_name(device.apps.installed, connected.app)}",
+                icon: .user,
+            ) {
+                trailing: {
+                    ui.MenuButton(
+                        "More for {connected.name}",
+                        icon: .more_horizontal,
+                        icon_only: true,
+                    ) {
+                        ui.MenuItem("Forget {connected.name}") {
+                            on choose: accounts.forget_connected_account(
+                                accounts.accounts,
+                                app: connected.app,
+                                issuer: connected.issuer,
+                            )
                         }
                     }
                 }

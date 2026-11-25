@@ -441,16 +441,12 @@ impl Workspaces {
             ))
             .await;
         }
-        // A person connecting their own account at an issuer an app describes, from that app:
-        // kept with their own things, never the workspace's accounts.
-        if matches!(
-            action,
-            person_accounts::CONNECT_ACCOUNT | person_accounts::FINISH_CONNECT_ACCOUNT
-        ) {
-            let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
-            return self
-                .connected_accounts_invoke(&workspace.to_string(), caller, request)
-                .await;
+        // A person's own accounts at issuers their apps describe: never the workspace's.
+        if let Some(answered) = self
+            .connected_accounts_invoke(workspace_id, caller, request)
+            .await
+        {
+            return answered;
         }
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);

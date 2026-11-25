@@ -155,6 +155,9 @@ pub const CONNECT_ACCOUNT: &str = "connect-account";
 /// ([`FinishConnectAccount`]), answering the [`ConnectedAccount`] the issuer confirmed, or why
 /// it did not, in words the person reads.
 pub const FINISH_CONNECT_ACCOUNT: &str = "finish-connect-account";
+/// Forget an account the person connected ([`ForgetConnectedAccount`]): its grant leaves their
+/// vault and is given back to the issuer where it takes one back. Only the person asks it.
+pub const FORGET_CONNECTED_ACCOUNT: &str = "forget-connected-account";
 /// The kind of the record Settings keeps the workspace's accounts in, without their secrets.
 pub const ACCOUNTS_RECORD_KIND: &str = "tilo.accounts";
 /// The accounts record's step that keeps an account, added or changed.
@@ -202,6 +205,8 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
         // A connected account keeps its grant in the person's vault, in place of the one an
         // earlier connect of the same account kept.
         (RESOURCE, CONNECT_ACCOUNT) => (&[KEEP_SEALED, REMOVE_SEALED], &[]),
+        // Forgetting one reads its grant once, to give it back to the issuer, and removes it.
+        (RESOURCE, FORGET_CONNECTED_ACCOUNT) => (&[KEEP_USES, REMOVE_SEALED], &[]),
         // A mount asking for its account's sign-in writes down the use, as every sign-in to a
         // server with what the workspace's vault keeps does, and keeps a grant it renewed; what
         // it reports is the record's.
@@ -661,6 +666,15 @@ pub struct ConnectAccount {
 #[serde(rename_all = "camelCase")]
 pub struct FinishConnectAccount {
     pub sign_in: String,
+}
+
+/// A connected account to forget ([`FORGET_CONNECTED_ACCOUNT`]): the app that described its
+/// issuer, and the issuer's id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetConnectedAccount {
+    pub app: String,
+    pub issuer: String,
 }
 
 /// An account of the person's an issuer confirmed: all of it an app reads.

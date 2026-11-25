@@ -47,7 +47,17 @@ async fn reading(workspaces: &Workspaces, workspace: &str) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    let reading = Reading { accounts };
+    // The accounts this device's person connected at issuers their apps describe: theirs alone,
+    // so a device reads its own person's and nobody else's.
+    let own = workspaces.acting_or_own(None);
+    let connected = own
+        .person_id()
+        .map(|person| workspaces.connected_accounts(workspace, person))
+        .unwrap_or_default();
+    let reading = Reading {
+        accounts,
+        connected,
+    };
     serde_json::to_value(reading).unwrap_or(Value::Null)
 }
 
@@ -55,6 +65,7 @@ async fn reading(workspaces: &Workspaces, workspace: &str) -> Value {
 #[derive(Debug, Serialize)]
 struct Reading {
     accounts: Vec<View>,
+    connected: Vec<tilo_actions::remote::person_accounts::ConnectedAccount>,
 }
 
 /// One account of the workspace's, without its secret.
