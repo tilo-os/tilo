@@ -2490,6 +2490,15 @@ impl Driver {
             other => other,
         };
         self.run_frame();
+        // A call the app hands the workspace carries no yes: the workspace keeps it asked, and the
+        // approve the caller brings is the person's answer to that ask, admitted again by the
+        // device ([`Self::confirm_asked`]).
+        if let Some(approval) = approval
+            && started.is_ok()
+            && self.asking().is_some_and(|(asked, _)| asked == *address)
+        {
+            self.resolve_asked(approval.clone());
+        }
         started
     }
 

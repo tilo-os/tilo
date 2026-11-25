@@ -452,6 +452,15 @@ impl Driver {
     /// Answers the action it ran; `None` when nothing waits.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         let approval = self.approval();
+        self.resolve_asked(approval)
+    }
+
+    /// [`Self::confirm_asked`] with `approval`, the approve the person gave: the device admits the
+    /// kept call again in its own dispatch, never on a frame the app sends.
+    pub(super) fn resolve_asked(
+        &mut self,
+        approval: tilo_actions::remote::asked::Approval,
+    ) -> Option<tilo_actions::ActionAddress> {
         let asked = self.peer.as_mut()?.asked.take()?;
         let address = asked.request.target.address.clone();
         let mut request = asked.request;
@@ -517,7 +526,7 @@ impl Driver {
 
     /// Why the peer refused the app's own call `invocation`, as its caller hears it: none when
     /// it admitted the call.
-    pub(super) fn own_refusal(
+    pub(crate) fn own_refusal(
         &self,
         invocation: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::ApiError> {
@@ -740,6 +749,20 @@ impl Driver {
                     continue;
                 }
             };
+            // As the workspace's broker refuses it: a person's approve never travels on the app's
+            // own frame, where the app would answer by its own word what its person was asked.
+            // Their yes reaches the call only through the device's re-admission
+            // ([`Driver::confirm_asked`]).
+            if let Err(forged) = tilo_actions::remote::asked::admit_frame(None, &request) {
+                if request.target.provider == tilo_actions::remote::OWN_PROVIDER {
+                    peer.refused.push((request.invocation, forged.clone()));
+                }
+                peer.answer(tilo_actions::remote::refuse(
+                    &RemoteActionMessage::Invoke(request),
+                    forged,
+                ));
+                continue;
+            }
             if request.target.provider == tilo_actions::remote::OWN_PROVIDER {
                 peer.admit_own(&resources, request, actor.clone());
                 continue;
