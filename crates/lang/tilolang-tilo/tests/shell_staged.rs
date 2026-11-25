@@ -28,6 +28,38 @@ pub(crate) fn ada() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
+/// Load the shell's package and the packages it uses into `host`, each asked record in `asked`
+/// (`studio/invocations/alarm-2`) publishing its `resolve`, as the session publishes the verbs of
+/// the workspace's records; what the shell's views call is told to `called`.
+pub(crate) fn load(host: &Host, called: &Called, asked: &[&str]) {
+    let (built, published) = built();
+    for meta in published {
+        host.runtime()
+            .load_foreign(meta.clone())
+            .unwrap_or_else(|why| panic!("{}: {why}", meta.app));
+    }
+    for compiled in built {
+        host.load_compiled(compiled)
+            .unwrap_or_else(|why| panic!("{}: {why}", compiled.meta.app));
+    }
+    host.runtime().set_foreign_invoker(called.clone());
+    let mut published = tilolang_runtime::published::Published::default();
+    for record in asked {
+        published.insert(
+            *record,
+            "resolve",
+            tilolang_runtime::published::PublishedAction {
+                app: "tilo.invocations".to_owned(),
+                // The host's `resolve`, in the order it declares its arguments.
+                params: ["resolution", "choice", "chosen", "typed", "files", "edits"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            },
+        );
+    }
+    host.runtime().set_published_actions(published);
+}
+
 /// The shell's package and the packages it uses, built once from `apps/tl/shell`, with the
 /// platform's and the native apps' descriptions they compile against.
 fn built() -> &'static (Vec<tilolang::Compiled>, Vec<tilolang::PackageMeta>) {
@@ -49,34 +81,9 @@ fn built() -> &'static (Vec<tilolang::Compiled>, Vec<tilolang::PackageMeta>) {
 /// publishing its `resolve`, as the session publishes the verbs of the workspace's records; what
 /// its views call is told to the [`Called`].
 pub(crate) fn staged(scenario: &str, asked: &[&str]) -> (Host, Called) {
-    let (built, published) = built();
     let host = Host::new(ada(), || None).unwrap();
-    for meta in published {
-        host.runtime()
-            .load_foreign(meta.clone())
-            .unwrap_or_else(|why| panic!("{}: {why}", meta.app));
-    }
-    for compiled in built {
-        host.load_compiled(compiled)
-            .unwrap_or_else(|why| panic!("{}: {why}", compiled.meta.app));
-    }
     let called = Called::default();
-    host.runtime().set_foreign_invoker(called.clone());
-    let mut published = tilolang_runtime::published::Published::default();
-    for record in asked {
-        published.insert(
-            *record,
-            "resolve",
-            tilolang_runtime::published::PublishedAction {
-                app: "tilo.invocations".to_owned(),
-                // The host's `resolve`, in the order it declares its arguments.
-                params: ["resolution", "choice", "chosen", "typed", "files", "edits"]
-                    .map(str::to_owned)
-                    .to_vec(),
-            },
-        );
-    }
-    host.runtime().set_published_actions(published);
+    load(&host, &called, asked);
     host.root_of(SHELL).unwrap();
     let action = host
         .package(SHELL)

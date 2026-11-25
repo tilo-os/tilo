@@ -15,6 +15,7 @@ mod action_ids;
 mod activity;
 mod agent_queries;
 mod asking_at_press;
+mod asking_at_press_shot;
 mod asking_effects;
 mod asking_form;
 mod atomic;
