@@ -572,7 +572,10 @@ impl Driver {
             }
         }
         let _ = self.damage.take();
-        let _ = self.app.refresh_semantic_tree();
+        // The semantics, and the placing of every widget far from any view they read, are built
+        // when something reads them ([`Self::semantic_tree`]), as a window builds them when an
+        // assistive technology asks: never on every frame, where a walk of every widget costs a
+        // frame of a scroll more than drawing it.
         self.note_retained_frame();
         self.check_retained_geometry_if_due();
         // What the app asked of its broker in this frame is answered in the frame after.
@@ -2385,12 +2388,16 @@ impl Driver {
         Ok(())
     }
 
-    /// The window's semantics tree as the last frame built it: every node a person, a reader and
-    /// an agent reach, with its role, name, state, bounds and the actions it offers. A renderer
-    /// that presents the window from its semantics reads it here and runs a node's action with
+    /// The window's semantics tree as it stands now: every node a person, a reader and an agent
+    /// reach, with its role, name, state, bounds and the actions it offers. A renderer that
+    /// presents the window from its semantics reads it here and runs a node's action with
     /// [`Self::perform_semantic`].
-    #[must_use]
-    pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
+    ///
+    /// It is built when it is read, as a window builds it when an assistive technology asks:
+    /// a frame nobody reads the semantics of builds none, so a scroll's frames cost the window
+    /// what it draws, not a walk of every widget it holds.
+    pub fn semantic_tree(&mut self) -> &crate::a11y_tree::SemanticTree {
+        let _ = self.app.refresh_semantic_tree();
         self.app.semantic_tree()
     }
 

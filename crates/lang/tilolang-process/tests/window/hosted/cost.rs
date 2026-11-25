@@ -1525,12 +1525,14 @@ fn a_step_reaches_the_window_in_one_frame(seeded: &Rc<tilolang_process::testing:
 // them reads the same in a workspace ten times the size.
 
 /// What a frame asked the layout for: the nodes it built, whether it recomposed the tree, and
-/// how many nodes it invalidated to be measured again.
+/// how many nodes it invalidated to be measured again; and the times the window built its
+/// semantics, a walk of every widget it holds.
 #[derive(Debug)]
 struct Lay {
     built: u64,
     rebuilt: u64,
     nodes: u64,
+    semantics: u64,
 }
 
 impl Lay {
@@ -1540,12 +1542,14 @@ impl Lay {
             built: window.layout_nodes_built(),
             rebuilt: window.rebuilt_frames(),
             nodes: u64::try_from(window.layout_node_ids().len()).unwrap_or(u64::MAX),
+            semantics: window.app().semantic_tree_builds_for_test(),
         }
     }
 }
 
 /// A step lays out what it changes, not the window: a keystroke in the entry and a notch of the
-/// scroll recompose at most the one frame their change composes, and the frames after it place
+/// scroll build none of the window's semantics while nothing reads them, recompose at most the
+/// one frame their change composes, and the frames after it place
 /// only the widgets a view moved, ask the layout to measure the field (or the row) that changed
 /// and the nodes above it, and build no node of the window's composition again. The frames a
 /// step runs are also the ones its work asks for: a window at rest runs none, and neither does a
@@ -1641,6 +1645,15 @@ fn a_step_lays_out_what_it_changes(seeded: &Rc<tilolang_process::testing::Bus>) 
             "{label} placed every widget of the window's {} with nothing composed or measured, \
              in {} of the {ran} frames it ran",
             after.nodes, rest.full_unasked
+        );
+        // Nothing read the window's semantics during the step: a window builds them when an
+        // assistive technology or an agent asks, so a frame of a scroll or a keystroke walks no
+        // widget for them, however many widgets the window holds.
+        let semantics = after.semantics.saturating_sub(before.semantics);
+        assert_eq!(
+            semantics, 0,
+            "{label} built the window's semantics {semantics} times in its {ran} frames, with \
+             nothing reading them"
         );
         let built = after.built.saturating_sub(before.built);
         // What a step builds is what it composes or mounts once: a frame that recomposed the

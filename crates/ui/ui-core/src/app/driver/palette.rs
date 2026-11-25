@@ -74,7 +74,10 @@ impl Driver {
     /// text, else the one control its action is bound to. `None` when no single place shows it, or
     /// when something stands over the app (its search, a History review, the close dialog).
     #[must_use]
-    pub fn semantic_locus(&self, interaction: &tilo_actions::SemanticInteraction) -> Option<Rect> {
+    pub fn semantic_locus(
+        &mut self,
+        interaction: &tilo_actions::SemanticInteraction,
+    ) -> Option<Rect> {
         if !interaction.actor.is_person()
             && let Some(member) = interaction.actor.by.member_id()
             && let Some((_, rect)) = self.text_locus(member)
@@ -82,6 +85,7 @@ impl Driver {
             return Some(rect);
         }
         let bindings = self.action_bindings()?;
+        let _ = self.app.refresh_semantic_tree();
         crate::action_locus::interaction_bounds(self.app.semantic_tree(), &bindings, interaction)
     }
 
@@ -114,6 +118,7 @@ impl Driver {
             followed.shown = true;
             return self.reveal(widget, rect);
         }
+        let _ = self.app.refresh_semantic_tree();
         let locus = self.action_bindings().and_then(|bindings| {
             let node = crate::action_locus::interaction_node(
                 self.app.semantic_tree(),

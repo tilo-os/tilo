@@ -59,7 +59,7 @@ fn press(driver: &mut Driver, name: &str, aim: Aim) {
 }
 
 /// What the control named `name` shows as its value, or its check.
-fn shown(driver: &Driver, name: &str) -> (Option<String>, Option<bool>) {
+fn shown(driver: &mut Driver, name: &str) -> (Option<String>, Option<bool>) {
     driver
         .semantic_tree()
         .find_by_name(name)
@@ -74,12 +74,12 @@ fn refused_out_loud<I: 'static>(
     presses: &[(&str, Aim)],
 ) -> Driver {
     let (mut driver, ran) = before_a_viewer(control);
-    let held = shown(&driver, presses[0].0);
+    let held = shown(&mut driver, presses[0].0);
     for (name, aim) in presses {
         press(&mut driver, name, *aim);
     }
     assert_eq!(
-        shown(&driver, presses[0].0),
+        shown(&mut driver, presses[0].0),
         held,
         "the control keeps what it held"
     );
@@ -246,7 +246,7 @@ fn a_refused_dropdown_sends_the_choice_and_keeps_its_own() {
                 .on_action(binding),
         )
     });
-    let held = shown(&driver, "Outbox");
+    let held = shown(&mut driver, "Outbox");
     press(&mut driver, "Outbox", centre);
     assert!(
         driver
@@ -262,7 +262,7 @@ fn a_refused_dropdown_sends_the_choice_and_keeps_its_own() {
         driver.control_failures()
     );
     assert_eq!(
-        shown(&driver, "Outbox"),
+        shown(&mut driver, "Outbox"),
         held,
         "the chooser keeps what it held"
     );
@@ -294,7 +294,7 @@ fn a_refused_text_edit_says_why_and_keeps_the_text() {
                 .on_action(binding),
         )
     });
-    let held = shown(&driver, "Note");
+    let held = shown(&mut driver, "Note");
     press(&mut driver, "Note", centre);
     driver.type_text("x");
     driver.relayout();
@@ -304,7 +304,7 @@ fn a_refused_text_edit_says_why_and_keeps_the_text() {
         "the edit is refused out loud: {:?}",
         driver.control_failures()
     );
-    assert_eq!(shown(&driver, "Note"), held, "the field keeps what it held");
+    assert_eq!(shown(&mut driver, "Note"), held, "the field keeps what it held");
 }
 
 /// Relays an agent's call to the send action: its `relay` handler, which changes only the

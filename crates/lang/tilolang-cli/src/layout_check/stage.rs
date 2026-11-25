@@ -698,7 +698,7 @@ mod tests {
     ) -> (u32, u32, u32, u32) {
         let event = interaction(descriptor);
         let locus = staged
-            .harness()
+            .harness_mut()
             .semantic_locus(&event)
             .expect("the control the app binds the action to");
         assert!(

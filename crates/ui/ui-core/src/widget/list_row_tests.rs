@@ -906,13 +906,13 @@ fn a_refused_check_says_why_and_keeps_its_mark() {
     };
     let check = the_check(&driver);
     let name = check.name.clone().unwrap_or_default();
-    let marked = |driver: &Driver| {
+    let marked = |driver: &mut Driver| {
         driver
             .semantic_tree()
             .find_by_name(&name)
             .and_then(|node| node.state.checked)
     };
-    assert_eq!(marked(&driver), Some(false));
+    assert_eq!(marked(&mut driver), Some(false));
     let at = check
         .bounds
         .expect("the check stands where it is drawn")
@@ -925,5 +925,5 @@ fn a_refused_check_says_why_and_keeps_its_mark() {
         "the check is refused out loud: {:?}",
         driver.control_failures()
     );
-    assert_eq!(marked(&driver), Some(false), "the box keeps its mark");
+    assert_eq!(marked(&mut driver), Some(false), "the box keeps its mark");
 }
