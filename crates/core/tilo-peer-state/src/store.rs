@@ -551,7 +551,7 @@ fn records(bytes: &[u8]) -> (Vec<(u64, u64, Record<'_>)>, u64) {
 fn set_aside_earlier(disk: &Disk, kept: u32) -> Result<PathBuf, StoreError> {
     let root = &disk.root;
     let earlier = root.join(EARLIER_SEGMENTS);
-    if (SEGMENTS_VERSION..FRAMES_VERSION).contains(&kept) {
+    if (SEGMENTS_VERSION..RELABELLED_FRAMES).contains(&kept) {
         if disk.is_dir(&earlier) {
             if disk.is_dir(&root.join(WORKSPACES)) {
                 disk.remove_all(&root.join(WORKSPACES))?;
@@ -643,7 +643,7 @@ impl Store {
                     .channels
                     .insert(route, channel);
             }
-            if kept < FRAMES_VERSION {
+            if kept < RELABELLED_FRAMES {
                 store.pack_frame_files(&mut held)?;
                 store.pack_earlier_segments(&mut held, &earlier)?;
             }
@@ -2147,7 +2147,11 @@ const WORKSPACES: &str = "workspaces";
 /// layout, whose identity hello names a certificate whose capabilities carry the retired grants
 /// they already wrote in their binary form
 /// ([`tilo_user_identity::DeviceCapabilities`]). Version 7 is the frames whose claims carry the
-/// caller's signed call, which the claim's signature covers. A build before a version refuses
+/// caller's signed call, which the claim's signature covers. Version 8 is version 7's layout,
+/// whose identity hello may name a placed device's certificate or a placement grant
+/// ([`tilo_user_identity::DeviceCapabilities::records`]), which a build of version 7 refuses: a
+/// store of version 7 is relabelled as it opens ([`RELABELLED_FRAMES`]), its frames left as they
+/// are. A build before a version refuses
 /// the store by version instead of reading what it cannot; a store opening an earlier version
 /// moves its frames into segments, each written as today
 /// ([`crate::before_own_removal::frame`]), before it records the version it keeps.
@@ -2156,7 +2160,10 @@ const WORKSPACES: &str = "workspaces";
 /// bytes that name no call, and this build writes every claim with one. The store drops such a
 /// frame as it opens, and the workspace's devices answer for what it lost on the next replay
 /// ([`gaps`]).
-pub(crate) const FRAMES_VERSION: u32 = 7;
+pub(crate) const FRAMES_VERSION: u32 = 8;
+/// The version before [`FRAMES_VERSION`], whose frames read as this build's: a store of it records
+/// the newer version and keeps its segments as they are.
+const RELABELLED_FRAMES: u32 = 7;
 /// The first version that kept frames in segments.
 const SEGMENTS_VERSION: u32 = 4;
 /// Where a store opening segments of an earlier version sets them aside while it packs their
@@ -3563,6 +3570,44 @@ mod tests {
             drop(store);
             let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
             assert_eq!(again.replay(workspace(), &[], Budget::default()).unwrap().frames, replay.frames);
+        }
+
+        phase a_store_of_version_7_is_relabelled_and_keeps_its_segments;
+        {
+            // Version 7's frames read as this build's: the store records the newer version and
+            // serves them from the segments they are in, without packing them again.
+            let dir = tempfile::tempdir().unwrap();
+            let key = device(5);
+            let frames: Vec<Frame> = (1..=3)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            let mut segment = Vec::new();
+            for frame in &frames {
+                segment.extend(
+                    frame_record(frame, &postcard::to_allocvec(&frame.message).unwrap()).unwrap(),
+                );
+            }
+            let path = segment_path(dir.path(), workspace(), 0, 0);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, &segment).unwrap();
+            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"7").unwrap();
+
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(
+                store.replay(workspace(), &[], Budget::default()).unwrap().frames,
+                frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
+                "every frame of version 7 is served"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
+                FRAMES_VERSION.to_string()
+            );
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                segment,
+                "the segment is kept as version 7 wrote it"
+            );
+            assert!(!dir.path().join(EARLIER_SEGMENTS).exists(), "nothing was set aside");
         }
 
         phase frames_of_version_6_are_not_served_again;

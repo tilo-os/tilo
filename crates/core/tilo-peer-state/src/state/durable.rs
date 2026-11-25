@@ -19,27 +19,35 @@ use automerge::transaction::Transactable as _;
 /// stored bumps this: a build refuses state of another version by name
 /// rather than reading it as this one's, except the version before, which it
 /// brings up ([`brought_up`]).
-pub const DURABLE_VERSION: u32 = 15;
+pub const DURABLE_VERSION: u32 = 16;
 
-/// The version before [`DURABLE_VERSION`]: the same layout, whose governance rows may carry a
-/// removal's mark, so a build that does not read the mark refuses it rather than taking the
-/// device back ([`brought_up`]).
-pub(super) const PREVIOUS: u32 = 14;
+/// The version before [`DURABLE_VERSION`]: the same layout, whose certificates may not name a
+/// placed device or a placement grant ([`tilo_user_identity::DeviceCapabilities::records`],
+/// [`tilo_user_identity::DeviceCapabilities::placing`]), so a build that reads neither refuses a
+/// state that carries one rather than reading its certificates wrong ([`brought_up`]).
+pub(super) const PREVIOUS: u32 = 15;
 
-/// The newest version before [`PREVIOUS`] that this build brings up ([`brought_up`]).
+/// The version before [`PREVIOUS`]: the same layout again, whose governance rows may not carry a
+/// removal's mark ([`brought_up`]).
+pub(super) const BEFORE_PREVIOUS: u32 = 14;
+
+/// The newest version before [`BEFORE_PREVIOUS`] that this build brings up ([`brought_up`]).
 pub(super) const BROUGHT_UP: u32 = 13;
 
 /// Whether this build brings up a state of durable layout `version` ([`brought_up`]).
 fn brings_up(version: u32) -> bool {
-    version == PREVIOUS || version == BROUGHT_UP
+    version == PREVIOUS || version == BEFORE_PREVIOUS || version == BROUGHT_UP
 }
 
-/// `bytes`, a durable state, in this build's layout: version 14 ([`PREVIOUS`]) relabelled, version
-/// 13 ([`brings_up`]) brought up to it, any other as it is, for [`Durable::read`] to read or
-/// refuse.
+/// `bytes`, a durable state, in this build's layout: versions 15 ([`PREVIOUS`]) and 14
+/// ([`BEFORE_PREVIOUS`]) relabelled, version 13 ([`brings_up`]) brought up to it, any other as it
+/// is, for [`Durable::read`] to read or refuse.
 ///
-/// Version 14 differs from this one only in what a governance row may say of a device the
-/// workspace removed: this build marks the row, and there is no other byte of itself to change.
+/// Version 15 differs from this one only in what a certificate it keeps may name: this build's
+/// may name a placed device's records or a placement grant, under binary markers version 15's
+/// builds refuse, and a certificate version 15 wrote reads the same here. Version 14 differs
+/// from version 15 only in what a governance row may say of a device the workspace removed:
+/// version 15 marks the row, and there is no other byte of itself to change.
 ///
 /// Version 13 kept the writes it held for a prerequisite and each encrypted record's sealed
 /// writes as signed ops whose claims name no call. This build's claims write the call, which the
@@ -49,9 +57,10 @@ fn brings_up(version: u32) -> bool {
 /// them comes up as it was.
 pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
     let (version, rest) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
-    if version == PREVIOUS {
-        // This build's layout with its version relabelled: the mark a removed
-        // device's row carries needs no other change to read.
+    if version == PREVIOUS || version == BEFORE_PREVIOUS {
+        // This build's layout with its version relabelled: a placed device's
+        // certificate and the mark a removed device's row carries need no
+        // other change to read.
         let mut kept = postcard::to_allocvec(&DURABLE_VERSION).map_err(err)?;
         kept.extend_from_slice(rest);
         return Ok(kept.into());

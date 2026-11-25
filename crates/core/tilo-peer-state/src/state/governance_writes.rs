@@ -151,7 +151,11 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Option<ActionStamp> {
-        let by = self.membership(key.device_public_key(), now).ok()?.acting.by;
+        let by = self
+            .membership(key.device_public_key(), now)
+            .ok()?
+            .acting
+            .by;
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.core.workspace.as_bytes());
         for head in self.workspace_heads().unwrap_or_default() {
