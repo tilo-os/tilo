@@ -176,6 +176,10 @@ fn uninstall_theme_package(store: &std::path::Path) {
 #[test]
 fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
     let _home = tilo_test_env::TestHome::new().expect("a home");
+    // The person's settings as a workspace keeps them, with their history: a session whose
+    // daemon holds no workspace yet would keep the change on the device, and an undo of it
+    // takes a step the store keeps.
+    let _settings = settings_sections::in_memory::scoped();
     // This device's own store, which its session reads, holding only the theme package: the
     // session's shell stands in where the store holds none.
     let store = package_store::layout::default_user_root().expect("the device's store");
@@ -246,9 +250,32 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
         SET
     );
 
-    // The package is taken away: this device falls back to the theme the mode shows, and the
-    // appearance still names the package for the devices that have it. An undo of the step, and
-    // that it draws the previous theme again, is the section's own test's.
+    // Undo takes the person's step back: nothing is applied, and the theme the mode shows is the
+    // one drawn again.
+    session
+        .invoke_with_actor(&common::as_person(PERSON), APPEARANCE, "undo", &json!({}))
+        .expect("the action runs");
+    step(&mut session, 300);
+    assert_eq!(published(&session), Value::Null, "no package is applied");
+    let undone = frame(&mut session);
+    assert!(
+        differing_pixels(&stock, &undone) < differing_pixels(&stock, &applied) / 4,
+        "the previous theme draws again: {} pixels differ from it, where the bundle's {} pixels did",
+        differing_pixels(&stock, &undone),
+        differing_pixels(&stock, &applied)
+    );
+
+    // Applied once more, then the package is taken away: this device falls back to the theme the
+    // mode shows, and the appearance still names the package for the devices that have it.
+    session
+        .invoke_with_actor(
+            &common::as_person(PERSON),
+            APPEARANCE,
+            "apply-theme",
+            &json!({ "package": PACKAGE }),
+        )
+        .expect("the action runs");
+    step(&mut session, 300);
     uninstall_theme_package(&store);
     session
         .invoke(
