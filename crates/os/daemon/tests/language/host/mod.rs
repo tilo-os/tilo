@@ -274,7 +274,7 @@ pub fn also_trace(layer: AlsoTraced) {
 /// Run `test` again, alone, in a process whose home, identity and profile are a new
 /// directory's: what [`run`] does everywhere but in that process.
 fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
     // A short path: the launcher names its service sockets below this one, and a Unix socket's
     // path has a small bound. The test environment's own temporary directory is deep enough to
     // pass it, so this is made at the filesystem's root's temporary directory instead.
@@ -299,6 +299,21 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     // processes reach (the account sign-ins among them): the test's own, never the login's.
     let runtime = place("r");
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // The account's socket directory is this test's own and private, made before anything
+    // else writes there: the display publishes its GPU health beside the daemon's sockets, and
+    // the daemon refuses a directory that is not private.
+    let sockets = runtime.join("tilo");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&sockets)
+        .unwrap();
+    std::fs::set_permissions(&sockets, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // The apps the daemon starts draw on a display: a headless compositor for this test's
+    // runtime directory, publishing its name in the login as a nested session's compositor
+    // does, so the daemon reads it through the path a session's daemon reads.
+    #[cfg(target_os = "linux")]
+    headless_display(&runtime);
     // The daemon's own profile is private to its person, as a login's is: a shell session it
     // starts is refused a profile anyone else could read.
     let profile = place("p");
@@ -353,6 +368,40 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
         "{test} on its own daemon: {}\n{out}\n{said}",
         output.status
     );
+}
+
+/// A headless compositor for the test's runtime directory `runtime`, listening on a
+/// `wayland-N` socket there and publishing its name in the login the daemon reads
+/// ([`tilo_paths::login::WAYLAND_DISPLAY_FILE`]), as a nested session's compositor publishes
+/// its own. It runs until this test process ends.
+#[cfg(target_os = "linux")]
+fn headless_display(runtime: &Path) {
+    let (ready, listening) = std::sync::mpsc::channel();
+    let runtime = runtime.to_path_buf();
+    std::thread::Builder::new()
+        .name("tilo-display".to_owned())
+        .spawn(move || {
+            let mut compositor = {
+                // The compositor names its socket, and publishes it, in the runtime directory
+                // it is told: the environment is held for that alone, and let go before the
+                // test's own daemon starts, which takes the environment lock to spawn it.
+                let mut environment = tilo_test_env::ScopedEnv::new();
+                environment.set("XDG_RUNTIME_DIR", &runtime);
+                environment.remove("WAYLAND_DISPLAY");
+                let mut compositor =
+                    tilo_compositor::Compositor::headless(Box::new(tilo_compositor::StackPolicy))
+                        .expect("a headless compositor");
+                compositor
+                    .add_output(&tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800))
+                    .expect("the headless output");
+                compositor.listen().expect("the display listens");
+                compositor
+            };
+            ready.send(()).expect("the test waits for its display");
+            compositor.run(|_| false).expect("the compositor runs");
+        })
+        .expect("the display's thread");
+    listening.recv().expect("the display listens");
 }
 
 /// The daemon a test runs against, and its person.

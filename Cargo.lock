@@ -16664,6 +16664,7 @@ dependencies = [
  "tilo-clock",
  "tilo-collab-types",
  "tilo-collaboration",
+ "tilo-compositor",
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-endpoint-reachability",
