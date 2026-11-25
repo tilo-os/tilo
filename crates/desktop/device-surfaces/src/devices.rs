@@ -272,6 +272,9 @@ pub enum AccessKind {
     Agent,
     /// A key they made for their own script or backend.
     Script,
+    /// A host they let run their workspace's computer: none of their devices, it certifies that
+    /// computer for the workspace's records it names, until they remove it.
+    Placing,
 }
 
 /// The Devices section as a view of another language reads it (`device.devices`).

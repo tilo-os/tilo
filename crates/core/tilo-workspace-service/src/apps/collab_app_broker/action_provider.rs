@@ -872,6 +872,11 @@ impl AppBrokerState {
     /// was admitted to it by its connection; any other caller must be a
     /// member.
     pub(crate) fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
+        // A placed device's caller takes part in no workspace's actions: it reads its records
+        // where records are read, and nothing here.
+        if caller.placed_records().is_some() {
+            return false;
+        }
         match caller.workspace() {
             // Confinement says which workspace a connection was admitted to, not
             // that an agent still belongs to it: an agent whose membership

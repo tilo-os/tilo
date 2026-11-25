@@ -230,17 +230,6 @@ impl Server {
         self.web.link.get().cloned()
     }
 
-    /// The stand-in certificate and key this host keeps for `user`, when it
-    /// keeps a live one: what it approves for them with.
-    #[cfg(all(feature = "web", feature = "agents"))]
-    #[must_use]
-    pub fn stand_in(
-        &self,
-        user: &[u8; 32],
-    ) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
-        crate::web::stand_in_for(self.state_root(), user)
-    }
-
     /// Name the device of the session beside this node (the shell that runs
     /// the person's apps), which pages address to open apps there. Named
     /// once; a later call keeps the first.
@@ -764,44 +753,35 @@ impl Server {
             Ok(None) => None,
             Ok(Some(browsers)) => {
                 let browsers = Arc::new(browsers);
-                // A session's device is certified by the person's stand-in: a host that holds
-                // none places no window, so it serves no Browser and registers no provider for
-                // one. An open is then answered by the dispatch's own refusal, which says
-                // Browser does not run here.
-                match crate::web::stand_in_for(&cfg.state_root, &identity.user_public_key) {
-                    Some((key, cert)) => {
-                        browsers.serve_from(crate::hosted_browser::Authority {
-                            user_public_key: identity.user_public_key,
-                            cert,
-                            key,
-                            server: endpoint.addr(),
-                            workspaces: Some(governed.clone()),
-                            environments: handler.environments.clone(),
-                            runtime: tokio::runtime::Handle::current(),
-                            hand: governed.hand(),
-                        });
-                        browsers.ask_from(
-                            governed.action_service(),
-                            endpoint.clone(),
-                            governed.clone(),
-                            tokio::runtime::Handle::current(),
-                        );
-                        if let Some(store) = governed.asked_store() {
-                            browsers.keep_asked_in(&store);
-                        }
-                        // The host's one dispatch answers the workspace's open of Browser and
-                        // the page actions of the window it places, as it answers every other
-                        // action.
-                        browsers.provide_in(&governed.providers());
-                        Some(browsers)
-                    }
-                    None => {
-                        tracing::warn!(
-                            "this host holds no stand-in for its person, so it places no Browser"
-                        );
-                        None
-                    }
+                // A workspace's VM joins with a ticket this host serves for it, and this host
+                // certifies its daemon's key with its own for the VM's records alone.
+                let server = crate::hosted_browser::server_address().map_err(|error| {
+                    ServerError::Identity(format!("this host's Browser: {error}"))
+                })?;
+                browsers.serve_from(crate::hosted_browser::Authority {
+                    user_public_key: identity.user_public_key,
+                    host: identity.device_cert.clone(),
+                    host_key: identity.device_signing_key.clone(),
+                    server,
+                    workspaces: Some(governed.clone()),
+                    environments: handler.environments.clone(),
+                    runtime: tokio::runtime::Handle::current(),
+                    hand: governed.hand(),
+                    actions: governed.action_service(),
+                });
+                browsers.ask_from(
+                    governed.action_service(),
+                    endpoint.clone(),
+                    governed.clone(),
+                    tokio::runtime::Handle::current(),
+                );
+                if let Some(store) = governed.asked_store() {
+                    browsers.keep_asked_in(&store);
                 }
+                // The host's one dispatch answers the workspace's open of Browser and the page
+                // actions of the window it places, as it answers every other action.
+                browsers.provide_in(&governed.providers());
+                Some(browsers)
             }
             Err(error) => {
                 return Err(ServerError::Identity(format!(

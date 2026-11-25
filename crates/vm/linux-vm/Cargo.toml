@@ -39,9 +39,10 @@ blake3.workspace = true
 # A refusal carries the host contract's typed reason and next steps.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 fnv.workspace = true
-# The material a browser environment's session is started with, and the
-# endpoint address it names the server by: one type the server and this host
-# both build against.
+# The placement a workspace VM's daemon is started with, and the endpoint
+# address a guest names the server by: one type the server and this host both
+# build against. The daemon's device is read as hex.
+hex.workspace = true
 iroh-base.workspace = true
 tilo-server-protocol = { version = "0.1.0", path = "../../core/tilo-server-protocol" }
 linux-vm-protocol = { path = "../linux-vm-protocol" }
@@ -67,8 +68,8 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
-# A device certificate, for a material's device.
-tilo-user-identity = { version = "0.1.0", path = "../../core/tilo-user-identity" }
+# The ticket a placement carries.
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [lints]
 workspace = true

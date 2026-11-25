@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tilo_actions::remote::{CatalogueQuery, RemoteActionMessage};
 
 /// The account the daemon runs as in these tests: the person's own.
-const OWN: u32 = 4242;
+pub(crate) const OWN: u32 = 4242;
 /// Another account of the same computer, signed in as nobody the daemon serves.
 const STRANGER: u32 = 4243;
 
@@ -30,7 +30,7 @@ fn test_peer(_: &UnixStream) -> io::Result<crate::seats::Peer> {
 
 /// `daemon`'s native endpoint, served in `root` as the daemon process serves it once the
 /// person's services run, the person's own account being [`OWN`].
-fn native_endpoint(daemon: &Arc<Daemon>, root: &Path) -> PathBuf {
+pub(crate) fn native_endpoint(daemon: &Arc<Daemon>, root: &Path) -> PathBuf {
     let keys = tilo_api::calls::device_keys();
     let key = tilo_device_identity::persist::load_device_key(&keys).unwrap();
     let place = tilo_device_identity::login::Place::here(keys).unwrap();
@@ -50,7 +50,7 @@ fn native_endpoint(daemon: &Arc<Daemon>, root: &Path) -> PathBuf {
 }
 
 /// A client of the daemon's frames on a connection of its own, as `uid`.
-fn line_client(socket: &Path, uid: u32) -> Arc<tilo_actions::remote::LineClient> {
+pub(crate) fn line_client(socket: &Path, uid: u32) -> Arc<tilo_actions::remote::LineClient> {
     PEER.store(uid, Ordering::SeqCst);
     let stream = UnixStream::connect(socket).unwrap();
     let client = Arc::new(tilo_actions::remote::LineClient::of_stream(stream).unwrap());

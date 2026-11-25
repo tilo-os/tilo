@@ -517,6 +517,12 @@ pub(super) struct PeerCore {
     /// governed from it.
     pub(super) origin: [u8; 32],
     pub(super) certificates: Shared<BTreeMap<[u8; 32], VerifiedCertificate>>,
+    /// The devices placed for records of this workspace alone, each by the
+    /// certificate it proved itself with
+    /// ([`tilo_user_identity::DeviceCapabilities::records`]). None of them is
+    /// in [`Self::certificates`], the workspace's roster or any list of its
+    /// devices; what each may write and read is its certificate's alone.
+    pub(super) placed_devices: Shared<BTreeMap<[u8; 32], VerifiedCertificate>>,
     pub(super) revocations: RevocationList,
     pub(super) receipts: Shared<BTreeMap<String, Vec<u8>>>,
     pub(super) workspace_doc: Option<CachedDocument>,
@@ -533,6 +539,7 @@ impl Clone for PeerCore {
             owner: self.owner,
             origin: self.origin,
             certificates: self.certificates.clone(),
+            placed_devices: self.placed_devices.clone(),
             revocations: self.revocations.clone(),
             receipts: self.receipts.clone(),
             workspace_doc: self.workspace_doc.clone(),
@@ -580,6 +587,33 @@ impl PeerCore {
         Ok(certificate)
     }
 
+    /// The certificate of `source`, a device placed for records of this
+    /// workspace, and those records: valid at `now`, neither it nor the
+    /// host's certificate that issued it (or the device that signed that
+    /// host's placement grant) revoked by its person's root.
+    pub(super) fn placed_certificate(
+        &self,
+        source: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<(&DeviceCert, &tilo_user_identity::PlacedRecords), CertificateLookupError> {
+        let certificate = self
+            .placed_devices
+            .get(source)
+            .ok_or(CertificateLookupError::Missing)?
+            .current_typed(now_ns(now))
+            .map_err(CertificateLookupError::Validity)?;
+        let records = certificate
+            .capabilities
+            .placed_in(&self.workspace)
+            .ok_or(CertificateLookupError::OtherWorkspace)?;
+        // Its own revocation, its host's, and that of the device that signed its host's grant,
+        // whenever each was revoked: nothing a host placed outlives the host.
+        if self.revocations.refuses(certificate) {
+            return Err(CertificateLookupError::Revoked);
+        }
+        Ok((certificate, records))
+    }
+
     /// [`Self::certificate_typed`] of a device whether or not its person
     /// removed it since: the certificate a write of its history is decided
     /// with ([`crate::removals`]). Never an answer to what the device may do
@@ -602,6 +636,11 @@ impl PeerCore {
             .map_err(CertificateLookupError::Validity)?;
         if !certificate.capabilities.reaches_workspace(&self.workspace) {
             return Err(CertificateLookupError::OtherWorkspace);
+        }
+        // A device placed for records is no member's device, whatever roster lists it: it is
+        // decided by its certificate alone ([`Self::placed_certificate`]).
+        if certificate.capabilities.records.is_some() {
+            return Err(CertificateLookupError::Missing);
         }
         Ok(certificate)
     }

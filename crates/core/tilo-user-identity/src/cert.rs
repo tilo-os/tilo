@@ -80,6 +80,16 @@ pub const STAND_IN_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 /// The keys a server key mints for one workspace stay within this bound.
 pub const MAX_AGENT_GRANT_LIFETIME_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
 
+/// The longest a placed device's certificate may last
+/// ([`DeviceCapabilities::records`]): the host that placed the device
+/// certifies it again to keep it, and a certificate that leaked from where
+/// the device ran ends soon after.
+pub const MAX_PLACED_DEVICE_LIFETIME_NS: u64 = 2 * 60 * 60 * 1_000_000_000;
+
+/// The most records one placed device's certificate names
+/// ([`PlacedRecords`]).
+pub const MAX_PLACED_RECORDS: usize = 64;
+
 /// First byte of a foreign device's capabilities in binary encodings.
 const FOREIGN_BINARY_MARKER: u8 = 2;
 
@@ -120,6 +130,23 @@ const EXTENDED_WORKSPACE_SERVICE: u8 = 128;
 /// only be 0 or 1, so it refuses such a certificate whole rather than reading
 /// it as one that reaches every workspace.
 const WORKSPACE_BINARY_MARKER: u8 = 4;
+/// First byte of a device's capabilities in binary encodings when its
+/// certificate reaches the records the host that placed it named, alone
+/// ([`DeviceCapabilities::records`]): the workspace's 16 bytes follow, then
+/// the number of records as one byte (1 to [`MAX_PLACED_RECORDS`], postcard's
+/// length prefix for that many), then each record's 32-byte channel in
+/// ascending order, then the capabilities in the extended form (such a
+/// certificate always names its issuer). It is what [`BINARY_LAYOUT`] 3 added. A build of layout 2 names
+/// this byte a later layout where it asks [`binary_layout_of`], and reads it as
+/// a capability flag that is neither 0 nor 1 where it decodes it, so it refuses
+/// such a certificate whole rather than reading it as a device of the person.
+const PLACED_BINARY_MARKER: u8 = 5;
+/// First byte of a placement grant's capabilities in binary encodings
+/// ([`DeviceCapabilities::placing`]): the workspace, the count and the
+/// channels follow as after [`PLACED_BINARY_MARKER`], then the capabilities in
+/// the extended form. [`BINARY_LAYOUT`] 3 added it with the placed marker, and a
+/// build of layout 2 refuses it whole the same way.
+const PLACING_BINARY_MARKER: u8 = 6;
 const SCOPE_ALL: u8 = 0;
 const SCOPE_WORKSPACE: u8 = 1;
 const SCOPE_AGENT: u8 = 2;
@@ -141,7 +168,12 @@ const SCOPE_AGENT: u8 = 2;
 /// reads, where it asks [`binary_layout_of`], and as a capability flag that is
 /// neither 0 nor 1 where it decodes it, so no build can take it for a device
 /// that reaches every workspace.
-pub const BINARY_LAYOUT: u32 = 2;
+///
+/// Layout 3 added [`PLACED_BINARY_MARKER`] and [`PLACING_BINARY_MARKER`] the
+/// same way: what layouts 1 and 2 wrote reads in layout 3 as it is, and a placed
+/// device's certificate and a placement grant exist only in layout 3, which a
+/// build of layout 2 refuses whole.
+pub const BINARY_LAYOUT: u32 = 3;
 
 /// The binary layout version of the certificate encoded in `bytes`: what its
 /// first capabilities byte names, which is [`BINARY_LAYOUT`] for every
@@ -155,7 +187,7 @@ pub fn binary_layout_of(bytes: &[u8]) -> Result<u32, CanonicalError> {
     let (_, rest) = postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(bytes)
         .map_err(|error| CanonicalError::Deserialize(error.to_string()))?;
     match rest.first() {
-        Some(0..=WORKSPACE_BINARY_MARKER) => Ok(BINARY_LAYOUT),
+        Some(0..=PLACING_BINARY_MARKER) => Ok(BINARY_LAYOUT),
         Some(_) => Ok(BINARY_LAYOUT.saturating_add(1)),
         None => Err(CanonicalError::Deserialize(
             "a device certificate ends before its capabilities".into(),
@@ -453,6 +485,34 @@ pub struct DeviceCapabilities {
     /// encoding ([`WORKSPACE_BINARY_MARKER`]), so a certificate cannot lose it.
     pub workspace: Option<[u8; 16]>,
 
+    /// The records of one workspace this device reaches, and nothing else, or
+    /// `None` for a device that is not confined to records. A host that
+    /// places a device to do work for a person certifies it with its own
+    /// device key for exactly the records the work needs: as one of the
+    /// person's devices, or under the person's placement grant for those
+    /// records ([`Self::placing`]). The device writes and reads those as the
+    /// person, and history names them. It is no member of the workspace, is
+    /// listed among no members, and every device that keeps the workspace
+    /// confines it by this field alone. Such a certificate grants nothing
+    /// else, names the host's certificate as its issuer, always expires
+    /// (within [`MAX_PLACED_DEVICE_LIFETIME_NS`] and no later than its
+    /// issuer), and issues nothing. It is part of the signed encoding
+    /// ([`PLACED_BINARY_MARKER`]), so a certificate cannot lose it.
+    pub records: Option<PlacedRecords>,
+
+    /// A placement grant: the person lets the host whose device key this is
+    /// place devices for these records of one workspace, though the host is
+    /// none of their devices (a hosting provider's server). The host then
+    /// signs a placed device's certificate ([`Self::records`]) with its own
+    /// key, for records within these, naming this certificate as its issuer.
+    /// Such a certificate grants nothing else, is signed by the person's root
+    /// or by one of their devices the root signed (ending no later than that
+    /// device), is no device of the person ([`verify_device_cert`] refuses it),
+    /// and is revoked like any device: from the revocation on, nothing it
+    /// placed is admitted. It is part of the signed encoding
+    /// ([`PLACING_BINARY_MARKER`]).
+    pub placing: Option<PlacedRecords>,
+
     /// Grants a certificate signed before they were retired may carry, which mean nothing now
     /// (see [`RetiredFlags`]). New certificates set none.
     pub retired: RetiredFlags,
@@ -475,6 +535,130 @@ impl RetiredFlags {
     #[must_use]
     pub const fn any(self) -> bool {
         self.act_as_host || self.read_all_workspaces
+    }
+}
+
+/// The records of one workspace a placed device reaches
+/// ([`DeviceCapabilities::records`]): the workspace by its id, and each record
+/// by the channel every protocol of the workspace tells it by. Never empty,
+/// sorted and without repeats, so each set of records has one encoding, and
+/// at most [`MAX_PLACED_RECORDS`] of them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PlacedRecords {
+    workspace: [u8; 16],
+    channels: Vec<[u8; 32]>,
+}
+
+impl PlacedRecords {
+    /// The records `channels` of the workspace `workspace` (a UUID's 16
+    /// bytes), in ascending order and each once.
+    ///
+    /// # Errors
+    ///
+    /// [`DeviceCertError::InvalidPlacedDevice`] for the nil workspace, a
+    /// channel of all zeroes, no channel, or more than
+    /// [`MAX_PLACED_RECORDS`] of them.
+    pub fn new(
+        workspace: [u8; 16],
+        channels: impl IntoIterator<Item = [u8; 32]>,
+    ) -> Result<Self, DeviceCertError> {
+        let mut channels: Vec<[u8; 32]> = channels.into_iter().collect();
+        channels.sort_unstable();
+        channels.dedup();
+        let records = Self {
+            workspace,
+            channels,
+        };
+        if records.is_well_formed() {
+            Ok(records)
+        } else {
+            Err(DeviceCertError::InvalidPlacedDevice)
+        }
+    }
+
+    /// Whether these name a workspace and between one and
+    /// [`MAX_PLACED_RECORDS`] records of it, each once and in order.
+    fn is_well_formed(&self) -> bool {
+        self.workspace != [0; 16]
+            && !self.channels.is_empty()
+            && self.channels.len() <= MAX_PLACED_RECORDS
+            && self.channels.iter().all(|channel| *channel != [0; 32])
+            && self.channels.is_sorted_by(|before, after| before < after)
+    }
+
+    /// The workspace's id, a UUID's 16 bytes.
+    #[must_use]
+    pub const fn workspace(&self) -> &[u8; 16] {
+        &self.workspace
+    }
+
+    /// The canonical UUID of the workspace the records are in.
+    #[must_use]
+    pub fn workspace_name(&self) -> String {
+        uuid_text(&self.workspace)
+    }
+
+    /// Each record's channel, in ascending order.
+    #[must_use]
+    pub fn channels(&self) -> &[[u8; 32]] {
+        &self.channels
+    }
+
+    /// Whether the record told by `channel` is one of these.
+    #[must_use]
+    pub fn reaches(&self, channel: &[u8; 32]) -> bool {
+        self.channels.binary_search(channel).is_ok()
+    }
+
+    /// Whether these are records of the workspace `granted` names, each one of
+    /// those: what a placement grant for `granted` may place a device for.
+    #[must_use]
+    pub fn within(&self, granted: &Self) -> bool {
+        self.workspace == granted.workspace
+            && self.channels.iter().all(|channel| granted.reaches(channel))
+    }
+}
+
+/// A placed device's records as JSON names them: the workspace's canonical
+/// UUID and each channel in hex, in the order the binary form keeps.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlacedJson {
+    workspace: WorkspaceOnly,
+    channels: Vec<String>,
+}
+
+impl PlacedJson {
+    fn of(records: &PlacedRecords) -> Self {
+        Self {
+            workspace: WorkspaceOnly(records.workspace),
+            channels: records.channels.iter().map(hex::encode).collect(),
+        }
+    }
+
+    fn records<E: serde::de::Error>(self) -> Result<PlacedRecords, E> {
+        let mut channels = Vec::with_capacity(self.channels.len());
+        for text in &self.channels {
+            let mut channel = [0u8; 32];
+            hex::decode_to_slice(text, &mut channel).map_err(|_| {
+                E::invalid_value(
+                    serde::de::Unexpected::Str(text),
+                    &"a record's channel as 64 hex digits",
+                )
+            })?;
+            channels.push(channel);
+        }
+        let records = PlacedRecords {
+            workspace: self.workspace.0,
+            channels,
+        };
+        if !records.is_well_formed() {
+            return Err(E::invalid_value(
+                serde::de::Unexpected::Seq,
+                &"between one and 64 records' channels, none all zeroes, in ascending order",
+            ));
+        }
+        Ok(records)
     }
 }
 
@@ -506,6 +690,13 @@ struct CapabilitiesJson {
     /// reaches every workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<WorkspaceOnly>,
+    /// Written only when set, like `workspace`: a reader that does not know it
+    /// refuses the whole certificate, never reads it as a device of the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    records: Option<PlacedJson>,
+    /// Written only when set, like `records`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    placing: Option<PlacedJson>,
     /// Retired ([`RetiredFlags`]): read from certificates signed with them, written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     can_act_as_host: bool,
@@ -526,6 +717,8 @@ impl Serialize for DeviceCapabilities {
                 browser_pages: self.browser_pages,
                 workspace_service: self.workspace_service,
                 workspace: self.workspace.map(WorkspaceOnly),
+                records: self.records.as_ref().map(PlacedJson::of),
+                placing: self.placing.as_ref().map(PlacedJson::of),
                 can_act_as_host: self.retired.act_as_host,
                 can_read_all_workspaces: self.retired.read_all_workspaces,
             }
@@ -570,7 +763,11 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         | bit(capabilities.server_key, EXTENDED_SERVER_KEY)
         | bit(capabilities.browser_pages, EXTENDED_BROWSER_PAGES)
         | bit(capabilities.workspace_service, EXTENDED_WORKSPACE_SERVICE);
-    let extended_form = extended & !EXTENDED_FOREIGN != 0;
+    // A placed device and a placement grant always take the extended form,
+    // which is the one form their marker is followed by.
+    let extended_form = extended & !EXTENDED_FOREIGN != 0
+        || capabilities.records.is_some()
+        || capabilities.placing.is_some();
     let len = if extended_form {
         scope.len().saturating_add(6)
     } else if capabilities.foreign {
@@ -579,8 +776,43 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         4
     };
     let workspace = capabilities.workspace;
+    let (marker, records) = match (&capabilities.records, &capabilities.placing) {
+        (Some(_), Some(_)) => {
+            return Err(serde::ser::Error::custom(
+                "a certificate is a placed device's or a placement grant, never both",
+            ));
+        }
+        (Some(records), None) => (PLACED_BINARY_MARKER, Some(records)),
+        (None, Some(granted)) => (PLACING_BINARY_MARKER, Some(granted)),
+        (None, None) => (PLACED_BINARY_MARKER, None),
+    };
+    if records.is_some() && workspace.is_some() {
+        return Err(serde::ser::Error::custom(
+            "a device reaches placed records or one workspace, never both",
+        ));
+    }
+    if records.is_some_and(|records| !records.is_well_formed()) {
+        return Err(serde::ser::Error::custom(
+            "a placed device's records are between one and 64, each once and in order",
+        ));
+    }
     let len = len.saturating_add(if workspace.is_some() { 17 } else { 0 });
+    let len = len.saturating_add(records.map_or(0, |records| {
+        18_usize.saturating_add(records.channels.len().saturating_mul(32))
+    }));
     let mut tuple = serializer.serialize_tuple(len)?;
+    if let Some(records) = records {
+        tuple.serialize_element(&marker)?;
+        for byte in &records.workspace {
+            tuple.serialize_element(byte)?;
+        }
+        let count = u8::try_from(records.channels.len())
+            .map_err(|_| serde::ser::Error::custom("more records than a certificate names"))?;
+        tuple.serialize_element(&count)?;
+        for byte in records.channels.iter().flatten() {
+            tuple.serialize_element(byte)?;
+        }
+    }
     if let Some(id) = &workspace {
         tuple.serialize_element(&WORKSPACE_BINARY_MARKER)?;
         for byte in id {
@@ -616,6 +848,8 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 browser_pages: json.browser_pages,
                 workspace_service: json.workspace_service,
                 workspace: json.workspace.map(|WorkspaceOnly(id)| id),
+                records: json.records.map(PlacedJson::records).transpose()?,
+                placing: json.placing.map(PlacedJson::records).transpose()?,
                 retired: RetiredFlags {
                     act_as_host: json.can_act_as_host,
                     read_all_workspaces: json.can_read_all_workspaces,
@@ -644,12 +878,103 @@ impl<'de> Deserialize<'de> for BinaryCapabilitiesOf {
         // bound admits the four native flags, marker + four flags, and the
         // extended marker + its byte + an agent's scope (up to 49 bytes) +
         // four flags, each after the workspace marker and a workspace's 16
-        // bytes.
-        deserializer.deserialize_tuple(72, BinaryCapabilities)
+        // bytes, or after the placed marker, a workspace's 16 bytes, a count
+        // and its channels, read as one element of their own
+        // ([`PlacedChannels`]).
+        deserializer.deserialize_tuple(MAX_BINARY_CAPABILITIES, BinaryCapabilities)
     }
 }
 
 struct BinaryCapabilities;
+
+/// The most elements a certificate's binary capabilities are read as: a placed
+/// device's marker, workspace, count and its channels as one element, then the
+/// extended form with an agent's scope and four flags. A reader that bounds
+/// what it decodes is told no more than that, whatever follows.
+const MAX_BINARY_CAPABILITIES: usize = 19 + 2 + 49 + 4;
+
+/// A placed device's channels in a certificate's binary form: `self.0` of them,
+/// 32 bytes each, read as one element whose length the count before it gives.
+#[derive(Clone, Copy)]
+struct PlacedChannels(usize);
+
+impl<'de> serde::de::DeserializeSeed<'de> for PlacedChannels {
+    type Value = Vec<[u8; 32]>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_tuple(self.0.saturating_mul(32), self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for PlacedChannels {
+    type Value = Vec<[u8; 32]>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} channels of 32 bytes", self.0)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error;
+        let mut channels = Vec::with_capacity(self.0);
+        for index in 0..self.0 {
+            let mut channel = [0u8; 32];
+            for (at, byte) in channel.iter_mut().enumerate() {
+                *byte = seq.next_element::<u8>()?.ok_or_else(|| {
+                    A::Error::invalid_length(index.saturating_mul(32).saturating_add(at), &self)
+                })?;
+            }
+            channels.push(channel);
+        }
+        Ok(channels)
+    }
+}
+
+/// The next byte of `seq`, counted in `read` for the error a short sequence names.
+fn capability_byte<'de, A: serde::de::SeqAccess<'de>>(
+    seq: &mut A,
+    read: &mut usize,
+) -> Result<u8, A::Error> {
+    use serde::de::Error;
+    let index = *read;
+    *read = read.saturating_add(1);
+    seq.next_element::<u8>()?
+        .ok_or_else(|| A::Error::invalid_length(index, &"four capability flags"))
+}
+
+/// The records a placed device's or a placement grant's marker is followed by: the workspace, the
+/// count, then the channels, well formed.
+fn placed_records<'de, A: serde::de::SeqAccess<'de>>(
+    seq: &mut A,
+    read: &mut usize,
+) -> Result<PlacedRecords, A::Error> {
+    use serde::de::Error;
+    let workspace = workspace_id::<A::Error>(&mut || capability_byte(seq, read))?;
+    let count = usize::from(capability_byte(seq, read)?);
+    if count == 0 || count > MAX_PLACED_RECORDS {
+        return Err(A::Error::invalid_length(
+            count,
+            &"between one and 64 records of a placed device",
+        ));
+    }
+    let channels = seq
+        .next_element_seed(PlacedChannels(count))?
+        .ok_or_else(|| A::Error::invalid_length(*read, &"a placed device's channels"))?;
+    *read = read.saturating_add(1);
+    let records = PlacedRecords {
+        workspace,
+        channels,
+    };
+    if !records.is_well_formed() {
+        return Err(A::Error::invalid_value(
+            serde::de::Unexpected::Bytes(&workspace),
+            &"records' channels, none all zeroes, each once and in ascending order",
+        ));
+    }
+    Ok(records)
+}
 
 /// Reads a workspace's 16 bytes, refusing the nil UUID: no workspace has it,
 /// so a certificate naming it would name nothing.
@@ -702,16 +1027,31 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         use serde::de::Error;
-        // Each element is one byte; `read` counts them for the error a short
-        // sequence names.
+        // Each element is one byte but a placed device's channels; `read`
+        // counts them for the error a short sequence names.
         let mut read = 0usize;
-        let mut next = || {
-            let index = read;
-            read = read.saturating_add(1);
-            seq.next_element::<u8>()?
-                .ok_or_else(|| A::Error::invalid_length(index, &"four capability flags"))
+        let mut first = capability_byte(&mut seq, &mut read)?;
+        let grant = first == PLACING_BINARY_MARKER;
+        let records = if first == PLACED_BINARY_MARKER || grant {
+            let records = placed_records(&mut seq, &mut read)?;
+            first = capability_byte(&mut seq, &mut read)?;
+            // The extended form follows, and nothing confines it twice.
+            if first != EXTENDED_BINARY_MARKER {
+                return Err(A::Error::invalid_value(
+                    serde::de::Unexpected::Unsigned(first.into()),
+                    &"the extended capabilities of a placed device or a placement grant",
+                ));
+            }
+            Some(records)
+        } else {
+            None
         };
-        let mut first = next()?;
+        let (records, placing) = if grant {
+            (None, records)
+        } else {
+            (records, None)
+        };
+        let mut next = || capability_byte(&mut seq, &mut read);
         let workspace = if first == WORKSPACE_BINARY_MARKER {
             let id = workspace_id::<A::Error>(&mut next)?;
             first = next()?;
@@ -741,7 +1081,10 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                     | EXTENDED_BROWSER_PAGES
                     | EXTENDED_WORKSPACE_SERVICE;
                 if extended & !known != 0
-                    || (written == extended && extended & !EXTENDED_FOREIGN == 0)
+                    || (written == extended
+                        && extended & !EXTENDED_FOREIGN == 0
+                        && records.is_none()
+                        && placing.is_none())
                 {
                     return Err(A::Error::invalid_value(
                         serde::de::Unexpected::Unsigned(extended.into()),
@@ -777,6 +1120,8 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
                 workspace_service: extended & EXTENDED_WORKSPACE_SERVICE != 0,
                 workspace,
+                records,
+                placing,
                 retired: RetiredFlags {
                     act_as_host: flag(flags[2])?,
                     read_all_workspaces: flag(flags[3])?,
@@ -802,6 +1147,8 @@ impl DeviceCapabilities {
             browser_pages: false,
             workspace_service: false,
             workspace: None,
+            records: None,
+            placing: None,
             retired: RetiredFlags {
                 act_as_host: false,
                 read_all_workspaces: false,
@@ -812,30 +1159,68 @@ impl DeviceCapabilities {
     /// The capabilities of a device that reaches `workspace` (its id, a
     /// UUID's 16 bytes) alone: a workspace's own VM (see [`Self::workspace`]).
     #[must_use]
-    pub const fn workspace_device(workspace: [u8; 16]) -> Self {
+    pub fn workspace_device(workspace: [u8; 16]) -> Self {
         Self {
             workspace: Some(workspace),
             ..Self::nothing()
         }
     }
 
+    /// The capabilities of a device placed for `records` alone (see
+    /// [`Self::records`]).
+    #[must_use]
+    pub fn placed(records: PlacedRecords) -> Self {
+        Self {
+            records: Some(records),
+            ..Self::nothing()
+        }
+    }
+
+    /// The capabilities of a placement grant for `records` (see
+    /// [`Self::placing`]).
+    #[must_use]
+    pub fn placing(records: PlacedRecords) -> Self {
+        Self {
+            placing: Some(records),
+            ..Self::nothing()
+        }
+    }
+
     /// Whether a device with these capabilities reaches the workspace
     /// `workspace` names (its canonical UUID): every one, unless it is
-    /// confined to one ([`Self::workspace`]); then that one alone. A name
-    /// that is no canonical UUID is no workspace a confined device reaches.
+    /// confined to one ([`Self::workspace`]) or to records of one
+    /// ([`Self::records`]); then that one alone. A name that is no canonical
+    /// UUID is no workspace a confined device reaches.
     #[must_use]
     pub fn reaches_workspace(&self, workspace: &str) -> bool {
-        match self.workspace {
+        match self
+            .workspace
+            .or_else(|| self.records.as_ref().map(|records| records.workspace))
+        {
             None => true,
             Some(id) => uuid_bytes(workspace).is_some_and(|named| named == id),
         }
     }
 
     /// The canonical UUID of the one workspace a confined device reaches
-    /// ([`Self::workspace`]); `None` for one that reaches every workspace.
+    /// ([`Self::workspace`], or the workspace of its placed records,
+    /// [`Self::records`]); `None` for one that reaches every workspace.
     #[must_use]
     pub fn workspace_name(&self) -> Option<String> {
-        self.workspace.as_ref().map(uuid_text)
+        self.workspace
+            .or_else(|| self.records.as_ref().map(|records| records.workspace))
+            .as_ref()
+            .map(uuid_text)
+    }
+
+    /// The records a placed device reaches in the workspace `workspace` names
+    /// (its canonical UUID; [`Self::records`]): `None` for a device that is
+    /// not placed, or was placed in another workspace.
+    #[must_use]
+    pub fn placed_in(&self, workspace: &str) -> Option<&PlacedRecords> {
+        self.records
+            .as_ref()
+            .filter(|records| uuid_bytes(workspace).is_some_and(|named| named == records.workspace))
     }
 
     /// Whether these capabilities grant nothing `held` does not: a renewal
@@ -853,12 +1238,14 @@ impl DeviceCapabilities {
             && within(self.browser_pages, held.browser_pages)
             && self.workspace_service == held.workspace_service
             && self.workspace == held.workspace
+            && self.records == held.records
+            && self.placing == held.placing
     }
 
     /// The capabilities of an agent's grant reaching `scope`: nothing but
     /// the scope (see [`Self::agent`]).
     #[must_use]
-    pub const fn agent_grant(scope: AgentScope) -> Self {
+    pub fn agent_grant(scope: AgentScope) -> Self {
         Self {
             agent: Some(scope),
             ..Self::nothing()
@@ -869,7 +1256,7 @@ impl DeviceCapabilities {
     /// all their workspaces that lasts until revoked (see
     /// [`Self::server_key`]).
     #[must_use]
-    pub const fn server_key_grant() -> Self {
+    pub fn server_key_grant() -> Self {
         Self::own_key_grant(AgentScope::AllWorkspaces)
     }
 
@@ -877,7 +1264,7 @@ impl DeviceCapabilities {
     /// reaching `scope`: a server key ([`Self::server_key`]), which acts as
     /// the person there.
     #[must_use]
-    pub const fn own_key_grant(scope: AgentScope) -> Self {
+    pub fn own_key_grant(scope: AgentScope) -> Self {
         Self {
             server_key: true,
             ..Self::agent_grant(scope)
@@ -916,6 +1303,8 @@ impl DeviceCapabilities {
                 || self.stand_in
                 || self.workspace_service
                 || self.workspace.is_some()
+                || self.records.is_some()
+                || self.placing.is_some()
                 || self.retired.any())
     }
 
@@ -923,7 +1312,7 @@ impl DeviceCapabilities {
     /// capabilities: it owns workspaces when the device does, is foreign when
     /// it is, and may do nothing else (see [`Self::workspace_service`]).
     #[must_use]
-    pub const fn service_of(device: &Self) -> Self {
+    pub fn service_of(device: &Self) -> Self {
         Self {
             can_own_workspaces: device.can_own_workspaces,
             foreign: device.foreign,
@@ -935,7 +1324,7 @@ impl DeviceCapabilities {
     /// The capabilities of a person's stand-in approver: nothing but being
     /// one (see [`Self::stand_in`]).
     #[must_use]
-    pub const fn stand_in_approver() -> Self {
+    pub fn stand_in_approver() -> Self {
         Self {
             stand_in: true,
             ..Self::nothing()
@@ -1051,7 +1440,9 @@ pub struct DeviceCert {
     /// the root signed itself: a device of the person signing a browser tab
     /// in (see the module), a person's stand-in approver, or an
     /// all-workspaces agent's grant that minted a grant for one workspace
-    /// ([`prepare_minted_grant`]).
+    /// ([`prepare_minted_grant`]). A placed device's issuer is the host that
+    /// placed it: one of the person's devices, or the person's placement grant
+    /// to that host, which may itself name the device of theirs that signed it.
     /// Encoded only when present; its signed bytes include the issuer's whole
     /// certificate.
     pub issuer: Option<Box<DeviceCert>>,
@@ -1152,11 +1543,14 @@ impl<'de> Deserialize<'de> for DeviceCert {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
             let json = DeviceCertJsonIn::deserialize(deserializer)?;
-            if json
-                .issuer
-                .as_ref()
-                .is_some_and(|issuer| issuer.issuer.is_some())
-            {
+            // One step, but for a placed device under a grant one of the person's devices signed:
+            // its issuer is that grant, whose own issuer names none.
+            let placed = json.capabilities.records.is_some();
+            if json.issuer.as_ref().is_some_and(|issuer| {
+                issuer.issuer.as_ref().is_some_and(|by| {
+                    !placed || issuer.capabilities.placing.is_none() || by.issuer.is_some()
+                })
+            }) {
                 return Err(serde::de::Error::custom(
                     "a certificate's issuer has no issuer itself",
                 ));
@@ -1172,15 +1566,22 @@ impl<'de> Deserialize<'de> for DeviceCert {
                 issuer: json.issuer,
             });
         }
-        serde::de::DeserializeSeed::deserialize(BinaryCert { nested: false }, deserializer)
+        serde::de::DeserializeSeed::deserialize(BinaryCert::Certificate, deserializer)
     }
 }
 
-/// Reads a certificate's binary form. An issuer's certificate (`nested`)
-/// names no issuer of its own, so decoding never recurses past one level.
-#[derive(Clone, Copy)]
-struct BinaryCert {
-    nested: bool,
+/// Reads a certificate's binary form, at the step of its chain it is read at. An issuer's
+/// certificate names no issuer of its own, but for the placement grant a placed device names,
+/// which one of the person's devices may have signed: decoding never recurses past two levels.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BinaryCert {
+    /// The certificate itself.
+    Certificate,
+    /// The issuer of a placed device's certificate: a device of the person, or a placement grant
+    /// that may name the device that signed it.
+    IssuerOfPlaced,
+    /// Any other issuer, which names none.
+    Issuer,
 }
 
 impl<'de> serde::de::DeserializeSeed<'de> for BinaryCert {
@@ -1214,14 +1615,18 @@ impl<'de> serde::de::Visitor<'de> for BinaryCert {
         let signature: serde_bytes::ByteArray<64> =
             seq.next_element()?.ok_or_else(|| missing(6))?;
         let issuer = if names_issuer {
-            if self.nested {
-                return Err(A::Error::custom(
-                    "a certificate's issuer has no issuer itself",
-                ));
-            }
+            let next = match self {
+                Self::Certificate if capabilities.records.is_some() => Self::IssuerOfPlaced,
+                Self::Certificate => Self::Issuer,
+                Self::IssuerOfPlaced if capabilities.placing.is_some() => Self::Issuer,
+                Self::IssuerOfPlaced | Self::Issuer => {
+                    return Err(A::Error::custom(
+                        "a certificate's issuer has no issuer itself",
+                    ));
+                }
+            };
             Some(Box::new(
-                seq.next_element_seed(BinaryCert { nested: true })?
-                    .ok_or_else(|| missing(7))?,
+                seq.next_element_seed(next)?.ok_or_else(|| missing(7))?,
             ))
         } else {
             None
@@ -1308,13 +1713,16 @@ impl DeviceCert {
 
     /// Whether the person's root signed this certificate itself, for one of
     /// their devices: no issuer, and no agent's grant, workspace service,
-    /// stand-in or device confined to one workspace. The root's own statement
+    /// stand-in, placement grant or device confined to one workspace or placed
+    /// for records. The root's own statement
     /// that the key is a device of theirs, which is the authority to add
     /// another.
     #[must_use]
     pub fn is_root_signed_device(&self) -> bool {
         self.issuer.is_none()
             && self.capabilities.workspace.is_none()
+            && self.capabilities.records.is_none()
+            && self.capabilities.placing.is_none()
             && self.capabilities.agent.is_none()
             && !self.capabilities.stand_in
             && !self.capabilities.workspace_service
@@ -1399,6 +1807,32 @@ pub enum DeviceCertError {
     )]
     InvalidWorkspaceDevice,
 
+    /// A placed device's certificate grants more than its records, names no
+    /// record or more than [`MAX_PLACED_RECORDS`], does not expire within
+    /// [`MAX_PLACED_DEVICE_LIFETIME_NS`] or after its issuer, or was not
+    /// issued, while its issuer was valid, by one of its person's devices or
+    /// by a host under their placement grant for those records, for a key that
+    /// is neither the issuer's nor the root's.
+    #[error(
+        "a placed device must reach its records and nothing more, be issued by a device of its \
+         person's or under their placement grant, and expire within two hours"
+    )]
+    InvalidPlacedDevice,
+
+    /// A placement grant grants more than its records, certifies the root's
+    /// own key, or was signed by neither the person's root nor one of their
+    /// devices the root signed (while that was valid, ending no later).
+    #[error(
+        "a placement grant must grant its records and nothing more, and be signed by its \
+         person's root or one of their devices"
+    )]
+    InvalidPlacingGrant,
+
+    /// A placement grant was offered as a device's: the host it was given to
+    /// is no device of the person.
+    #[error("a placement grant is no device")]
+    PlacingGrantIsNoDevice,
+
     /// Canonical-encoding failure. Effectively unreachable but
     /// propagated for hygiene.
     #[error("canonicalisation failed: {0}")]
@@ -1469,6 +1903,13 @@ fn check_stand_in(cert: &DeviceCert) -> Result<(), DeviceCertError> {
 /// issue: a device's or a stand-in's browser members, or a grant's
 /// one-workspace grants. The signatures are checked by the caller.
 fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
+    if cert.capabilities.records.is_some() {
+        return check_placed_device(cert, issuer);
+    }
+    if cert.capabilities.placing.is_some() {
+        // Its issuer was checked with its shape ([`check_placing_grant`]).
+        return Ok(());
+    }
     if issuer.capabilities.agent.is_some() {
         return check_minted(cert, issuer);
     }
@@ -1590,11 +2031,171 @@ fn check_shape(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     check_agent_grant(&cert.capabilities, cert.issued_at_ns, cert.expires_at_ns)?;
     check_stand_in(cert)?;
     check_workspace_device(cert)?;
+    check_placing_grant(cert)?;
     match &cert.issuer {
         Some(issuer) => check_issued(cert, issuer),
-        // A workspace service is always its device's: the device issues it.
-        None if cert.capabilities.workspace_service => Err(DeviceCertError::InvalidIssuer),
+        // A workspace service is always its device's: the device issues it; a
+        // placed device is always the host's that placed it.
+        None if cert.capabilities.workspace_service || cert.capabilities.records.is_some() => {
+            Err(DeviceCertError::InvalidIssuer)
+        }
         None => Ok(()),
+    }
+}
+
+/// Whether `issuer` was valid when `cert` was issued.
+fn valid_when_issued(cert: &DeviceCert, issuer: &DeviceCert) -> bool {
+    issuer.issued_at_ns <= cert.issued_at_ns
+        && issuer
+            .expires_at_ns
+            .is_none_or(|expiry| cert.issued_at_ns < expiry)
+}
+
+/// Whether `cert` ends no later than `issuer`: never, when `issuer` never
+/// ends, else when it ends, at the latest.
+fn ends_with(cert: &DeviceCert, issuer: &DeviceCert) -> bool {
+    match (cert.expires_at_ns, issuer.expires_at_ns) {
+        (_, None) => true,
+        (Some(ends), Some(issuer_ends)) => ends <= issuer_ends,
+        (None, Some(_)) => false,
+    }
+}
+
+/// Whether `cert`, when it is a placement grant, has its shape: its records
+/// and nothing else, for a key that is not the root's, signed by the root or by
+/// one of the person's devices the root signed, valid then and ending no later
+/// than the grant, for a key that is not its own.
+fn check_placing_grant(cert: &DeviceCert) -> Result<(), DeviceCertError> {
+    let Some(records) = &cert.capabilities.placing else {
+        return Ok(());
+    };
+    let signed_by = cert.issuer.as_deref().is_none_or(|device| {
+        device.is_root_signed_device()
+            && device.user_public_key == cert.user_public_key
+            && valid_when_issued(cert, device)
+            && ends_with(cert, device)
+            && cert.device_public_key != device.device_public_key
+    });
+    if records.is_well_formed()
+        && cert.capabilities == DeviceCapabilities::placing(records.clone())
+        && cert.device_public_key != cert.user_public_key
+        && signed_by
+    {
+        Ok(())
+    } else {
+        Err(DeviceCertError::InvalidPlacingGrant)
+    }
+}
+
+/// Whether `cert`, a placed device's, has its shape: its records and nothing
+/// else, issued by the host that placed it while the host's certificate was
+/// valid, expiring within [`MAX_PLACED_DEVICE_LIFETIME_NS`] and no later than
+/// that certificate, for a key that is neither the host's nor the root's. The
+/// host's certificate is one of the person's devices, or the person's placement
+/// grant to the host for records these are within.
+fn check_placed_device(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
+    let Some(records) = &cert.capabilities.records else {
+        return Ok(());
+    };
+    let ends_within = cert.expires_at_ns.is_some_and(|expiry| {
+        expiry > cert.issued_at_ns
+            && expiry.saturating_sub(cert.issued_at_ns) <= MAX_PLACED_DEVICE_LIFETIME_NS
+    }) && ends_with(cert, issuer);
+    let may_place = match &issuer.capabilities.placing {
+        Some(granted) => check_placing_grant(issuer).is_ok() && records.within(granted),
+        None => issuer.is_root_signed_device(),
+    };
+    if records.is_well_formed()
+        && cert.capabilities == DeviceCapabilities::placed(records.clone())
+        && may_place
+        && issuer.user_public_key == cert.user_public_key
+        && valid_when_issued(cert, issuer)
+        && ends_within
+        && cert.device_public_key != issuer.device_public_key
+        && cert.device_public_key != cert.user_public_key
+    {
+        Ok(())
+    } else {
+        Err(DeviceCertError::InvalidPlacedDevice)
+    }
+}
+
+/// The unsigned placement grant the person's root (`user_public_key`) signs to
+/// let the host whose device key is `host` place devices for `records`, from
+/// `issued_at_ns` until `expires_at_ns` (or until it is revoked). Sign it with
+/// [`sign_device_cert`] and the root, or have one of the person's devices sign
+/// it instead ([`prepare_placing_grant_by`]).
+#[must_use]
+pub fn prepare_placing_grant(
+    user_public_key: [u8; 32],
+    host: [u8; 32],
+    records: PlacedRecords,
+    label: &str,
+    issued_at_ns: u64,
+    expires_at_ns: Option<u64>,
+) -> DeviceCert {
+    DeviceCert {
+        user_public_key,
+        device_public_key: host,
+        device_label: label.to_owned(),
+        capabilities: DeviceCapabilities::placing(records),
+        issued_at_ns,
+        expires_at_ns,
+        signature: [0; 64],
+        issuer: None,
+    }
+}
+
+/// [`prepare_placing_grant`] signed by `device`, one of the person's devices
+/// their root signed, ending no later than it. Sign it with
+/// [`sign_device_cert`] and the device's key.
+#[must_use]
+pub fn prepare_placing_grant_by(
+    device: &DeviceCert,
+    host: [u8; 32],
+    records: PlacedRecords,
+    label: &str,
+    issued_at_ns: u64,
+    expires_at_ns: Option<u64>,
+) -> DeviceCert {
+    DeviceCert {
+        issuer: Some(Box::new(device.clone())),
+        ..prepare_placing_grant(
+            device.user_public_key,
+            host,
+            records,
+            label,
+            issued_at_ns,
+            expires_at_ns,
+        )
+    }
+}
+
+/// The unsigned certificate the host whose certificate is `issuer` signs to
+/// make `key` a device placed for `records` alone, from `issued_at_ns` until
+/// `expires_at_ns` (at most [`MAX_PLACED_DEVICE_LIFETIME_NS`] later, and no
+/// later than `issuer` ends). `issuer` is the host's own certificate as one of
+/// the person's devices, or the person's placement grant to the host for
+/// records `records` are within. Sign it with [`sign_device_cert`] and the
+/// host's device key.
+#[must_use]
+pub fn prepare_placed_device_cert(
+    issuer: &DeviceCert,
+    key: [u8; 32],
+    records: PlacedRecords,
+    label: &str,
+    issued_at_ns: u64,
+    expires_at_ns: u64,
+) -> DeviceCert {
+    DeviceCert {
+        user_public_key: issuer.user_public_key,
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities: DeviceCapabilities::placed(records),
+        issued_at_ns,
+        expires_at_ns: Some(expires_at_ns),
+        signature: [0; 64],
+        issuer: Some(Box::new(issuer.clone())),
     }
 }
 
@@ -1832,6 +2433,35 @@ pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceC
 pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     if cert.capabilities.stand_in {
         return Err(DeviceCertError::StandInIsNoDevice);
+    }
+    if cert.capabilities.placing.is_some() {
+        return Err(DeviceCertError::PlacingGrantIsNoDevice);
+    }
+    verify_signed(cert)
+}
+
+/// Verify a placement grant at `now_ns` ([`DeviceCapabilities::placing`]): its
+/// shape, every signature, and its validity then. Its revocation is the
+/// caller's to check, as a device's is.
+///
+/// # Errors
+///
+/// [`DeviceCertError::InvalidPlacingGrant`] for a certificate that is no
+/// placement grant, what [`verify_device_cert`] returns for its signatures, or
+/// [`DeviceCertError::NotYetValid`] / [`DeviceCertError::Expired`].
+pub fn verify_placing_grant_at(cert: &DeviceCert, now_ns: u64) -> Result<(), DeviceCertError> {
+    verify_placing_grant(cert)?;
+    check_validity_at(cert, now_ns)
+}
+
+/// [`verify_placing_grant_at`] whenever: its shape and every signature.
+///
+/// # Errors
+///
+/// As [`verify_placing_grant_at`], but for its validity in time.
+pub fn verify_placing_grant(cert: &DeviceCert) -> Result<(), DeviceCertError> {
+    if cert.capabilities.placing.is_none() {
+        return Err(DeviceCertError::InvalidPlacingGrant);
     }
     verify_signed(cert)
 }

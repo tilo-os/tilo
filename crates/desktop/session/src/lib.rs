@@ -188,8 +188,6 @@ mod device_state;
 #[cfg(target_os = "linux")]
 mod device_tickets;
 #[cfg(target_os = "linux")]
-mod device_trust;
-#[cfg(target_os = "linux")]
 mod device_workspaces;
 #[cfg(target_os = "linux")]
 pub mod devices;
@@ -258,8 +256,6 @@ mod host_account;
 pub mod hosted;
 #[cfg(target_os = "linux")]
 pub mod hosted_browser;
-#[cfg(target_os = "linux")]
-mod hosted_workspaces;
 mod i18n;
 #[cfg(target_os = "linux")]
 pub mod identity;

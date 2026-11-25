@@ -25,10 +25,19 @@ impl std::fmt::Debug for Sessions {
 /// A browser session that is up, and the window it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Window {
-    /// The device of the workspace the session in the VM joined as.
+    /// The device the workspace's VM joined as: the one its placement's ticket was certified
+    /// for, since one VM joins with one ticket.
     pub device: [u8; 32],
     /// The provider token the window publishes under (`browser@42`): what a
     /// page action names in place of the app.
+    pub provider: String,
+}
+
+/// What a session in the workspace's VM answers once it is up: the provider token its window
+/// publishes under (`browser@42`). The device it runs as is the one its ticket certified, which
+/// the host knows already.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Started {
     pub provider: String,
 }
 
@@ -46,7 +55,7 @@ pub trait BrowserSessions: Send + Sync {
     ///
     /// The words to refuse the open with: no host had room, or the host
     /// would not start it.
-    fn start(&self, material: &Material) -> Result<Window, String>;
+    fn start(&self, material: &Material) -> Result<Started, String>;
 
     /// The workspace's browser session stopped, or must: its device is
     /// forgotten and its window no longer exists.
@@ -61,7 +70,7 @@ pub trait BrowserSessions: Send + Sync {
     ///
     /// The words to refuse the open with, and the plans' typed refusal when
     /// the account may not run Linux.
-    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Window, AppRefusal> {
+    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Started, AppRefusal> {
         let _ = (material, launch);
         Err(AppRefusal::Words(
             "this host starts no Linux apps session".to_owned(),
@@ -71,6 +80,22 @@ pub trait BrowserSessions: Send + Sync {
     /// The workspace's Linux apps session stopped, or must.
     fn stop_apps(&self, workspace: &str) {
         let _ = workspace;
+    }
+
+    /// The workspace's VM device was certified again, with `cert`, before its certificate ended:
+    /// hand it to the VM, whose daemon holds it from then on. Sessions whose VM takes no
+    /// certificate from its host ignore it.
+    ///
+    /// # Errors
+    ///
+    /// The VM was not reached, or did not take it.
+    fn renewed(
+        &self,
+        workspace: &str,
+        cert: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        let _ = (workspace, cert);
+        Ok(())
     }
 
     /// Ask the hosts that run sessions as `actions`'s device, from `endpoint`:

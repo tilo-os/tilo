@@ -1,61 +1,39 @@
-//! What a host hands the browser session in a workspace's VM when it gives it the
-//! workspace (`docs/hosted-browser.md`).
+//! What a host hands the machine keeper of a workspace's VM when it places the workspace there
+//! (`docs/hosted-browser.md`).
 //!
-//! A hosted workspace's Browser runs in the workspace's own VM,
-//! beside its Linux VM, and the session in that VM is a device of the
-//! workspace: this host certifies it one, for as long as the session may
-//! run, and lists it in that one workspace. [`Material`] is what the session
-//! is started with — the workspace it joins, the record whose window it
-//! opens, its own device certificate and key, and where the host is reached.
-//! It travels as one line of the session's input; nothing here is the host's
-//! secret.
+//! A hosted workspace's VM runs the device daemon: one device of the person the workspace
+//! belongs to, which runs Browser and the workspace's Linux apps as its own apps. It joins with a
+//! join request, never a key: the daemon makes the VM's one device key itself and logs in with the
+//! ticket [`Material`] carries, which this host serves for that one placement, and the host has
+//! the person's root certify the key for this workspace alone. [`Material`] is what the machine
+//! keeper starts the VM's daemon with. Nothing in it is the host's secret, and the ticket's own
+//! secret is spent by the first daemon that brings it.
 
 use collab_types::WorkspaceId;
 use std::net::ToSocketAddrs as _;
 
 use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
-use tilo_user_identity::DeviceCert;
 
-/// What a host hands a workspace's Browser when it gives it a workspace: the
-/// device it certified for it, and where to be that device.
+/// What a host hands the machine keeper of a workspace's VM when it places the workspace there:
+/// the workspace, the record its Browser opens on, and the ticket the VM's daemon logs in with.
+/// The host is reached where the ticket's issuer is.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Material {
-    /// The workspace, by its UUID: the one that lists the device.
+    /// The workspace, by its UUID: the one workspace the VM's device reaches.
     pub workspace: String,
     /// The workspace, as the host carries it.
     pub workspace_id: WorkspaceId,
     /// The Browser record the window opens on.
     pub record: String,
-    /// The device the workspace lists while the workspace's VM runs, and no
-    /// other: certified by the host as a member device of the person the
-    /// workspace belongs to.
-    pub device: DeviceCert,
-    /// That device's signing key, the only copy: the session holds it.
-    pub secret: [u8; 32],
-    /// Where the session joins the workspace: the host's endpoint, at the
-    /// address a machine outside its network reaches it by.
-    pub server: EndpointAddr,
+    /// The ticket the VM's daemon logs in with (devices#logIn), served by this host for this
+    /// placement: the daemon makes the VM's one device key, and the host certifies that key
+    /// with its own for the VM's records alone.
+    pub ticket: tilo_device_identity::login::Ticket,
     /// The person the workspace belongs to.
     pub user_public_key: [u8; 32],
     /// Who pays for the workspace's machines, as the host knows it.
     pub account: String,
-}
-
-impl Material {
-    /// This device's signing key.
-    ///
-    /// # Errors
-    ///
-    /// The secret is not a key.
-    pub fn key(&self) -> Result<ed25519_dalek::SigningKey, String> {
-        let bytes: [u8; 32] = self
-            .secret
-            .as_slice()
-            .try_into()
-            .map_err(|_| "an environment's secret is a 32-byte key".to_owned())?;
-        Ok(ed25519_dalek::SigningKey::from_bytes(&bytes))
-    }
 }
 
 /// The endpoint `text` names, written `KEY@HOST:PORT`: the device key in hex,

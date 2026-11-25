@@ -827,10 +827,6 @@ impl Session {
         // session shows is claimed in the pass that shows it, never a pass later — a person's action in
         // it is decided against that ownership.
         self.shared.own_workspaces();
-        // The broker decides a person's own action against the copy of the session taken here, which
-        // follows every change this pass made, so a workspace the person just came into is theirs
-        // there too when their first action in it arrives.
-        self.publish_layout();
         // What the bar and the session's roles asked of the chrome is carried out: the session
         // this pass lays out and publishes names it, not the one after.
         self.shared.follow_intents();

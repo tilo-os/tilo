@@ -317,7 +317,7 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
             Reply::Busy("The machine is full until one of its VMs goes idle.".into()),
             Reply::Opened {
                 opened_ms: Some(900),
-                provider: "42".into(),
+                device: "ab".repeat(32),
             },
         ],
     );
@@ -327,8 +327,9 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
     let opened = opened(&runs, &host(), receipt.invocation).unwrap();
     assert_eq!(opened.opened_ms, Some(900), "the spare was handed over");
     assert_eq!(
-        opened.provider, "42",
-        "and with it the window the session in it opened"
+        opened.device,
+        "ab".repeat(32),
+        "and with it the device its daemon logged in as"
     );
     let asked = asked.lock().unwrap().clone();
     assert_eq!(asked.len(), 2, "asked again once there was room");

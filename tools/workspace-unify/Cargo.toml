@@ -1149,7 +1149,6 @@ doc = false
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-host-search" = { path = "../../crates/integrations/tilo-host-search", default-features = false, features = [] }
 "tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = ["test-support"] }
-"tilo-identity-authority" = { path = "../../crates/core/identity-authority", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
 "tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
@@ -3621,7 +3620,6 @@ doc = false
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-host-search" = { path = "../../crates/integrations/tilo-host-search", default-features = false, features = [] }
 "tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = [] }
-"tilo-identity-authority" = { path = "../../crates/core/identity-authority", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
 "tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }

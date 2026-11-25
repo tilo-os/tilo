@@ -1519,6 +1519,7 @@ mod identity_admin_tests {
                                 reach: Reach::ThisDevice,
                                 answers: steps as Arc<dyn ActionProvider + Send + Sync>,
                                 published: Vec::new(),
+                                placed_for: None,
                             };
                             state
                                 .invoke_registered(&caller, Some(&origin), None, &registered, asked)

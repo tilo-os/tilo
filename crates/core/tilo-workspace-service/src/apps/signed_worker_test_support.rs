@@ -51,6 +51,13 @@ impl crate::apps::certificate_authority::CertificateAuthority for CurrentHost {
                     .is_some_and(|cert| &cert.device_public_key == device)
             })
     }
+    fn device(&self) -> Option<[u8; 32]> {
+        self.certificate
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|cert| cert.device_public_key)
+    }
     fn authorize(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         if workspace.to_string() != self.route.cluster_id
             || (self.certificate.lock().unwrap().as_ref() != Some(cert)

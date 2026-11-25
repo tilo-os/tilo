@@ -25,7 +25,6 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionDescriptor, ActionFailure, ActionSpec, ResourceSpec};
 use tilo_broker_core::BrokerActor;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::platform::steps::SessionSteps;
 
@@ -86,17 +85,6 @@ impl SettingsSteps {
     /// The rows the settings stand in now.
     fn offered(&self) -> Vec<tilo_actions::api::PlacedAction> {
         tilo_actions::api::survey_placed(&self.resources.read_recover())
-    }
-
-    /// Answer the settings' changes from now on, admitted by the grants of Settings' app, for
-    /// the person at this device alone.
-    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(
-            wire::PROVIDER,
-            settings_sections::APP_ID,
-            Reach::ThisDevice,
-            self,
-        );
     }
 
     /// The published action at `address`, as one invocation with `argument` (its slot form) is:
@@ -208,6 +196,3 @@ fn reason(error: &ActionCallError) -> String {
         other => other.to_string(),
     }
 }
-
-#[cfg(test)]
-mod tests;

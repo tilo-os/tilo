@@ -46,8 +46,7 @@ impl Session {
             app_wire.carets.narrate(sync.take_narrated());
             // The people of the workspace in front, as its governance names them, those it
             // removed among them, and whoever is here named and coloured as the bar and People
-            // draw them: the apps there are told, so a caret wears its person's face and a
-            // message names its author after they went offline or left.
+            // draw them: the workspace's history names them the same way.
             if let Some((workspace, _)) = sync.front_members() {
                 let governed = self
                     .shared
@@ -111,7 +110,6 @@ impl Session {
                 self.shared
                     .activity
                     .set_people(&workspace, crate::activity::Members { members, writers });
-                app_wire.layout.set_people(&workspace, people);
             }
         }
         // Whose view this device follows: their window here comes forward each time the place they

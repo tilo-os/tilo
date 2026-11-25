@@ -17,7 +17,7 @@ missing() {
 [ -x "$engine" ] || missing "no Chromium engine host at $engine"
 # The session runs on its own session bus, which this root filesystem serves
 # itself: there is no systemd here to have started one.
-command -v dbus-run-session >/dev/null || missing 'no dbus-run-session'
+command -v dbus-daemon >/dev/null || missing 'no dbus-daemon'
 command -v setpriv >/dev/null || missing 'no setpriv'
 
 work=$(mktemp -d)
@@ -73,9 +73,9 @@ exec 3>&-
 wait "$engine_pid" 2>/dev/null || true
 
 # ---- The session --------------------------------------------------------------
-# Through the script the guest agent runs, so the smoke proves that path too.
-# Its identity is not proved here: a session is handed one by the server at
-# every start, and the image holds none.
+# Through the script the VM's daemon runs, so the smoke proves that path too.
+# Its daemon is not proved here: a VM's daemon logs in with its workspace's
+# ticket at every start, and the image holds no identity.
 printf 'TILO_SESSION_ARGS=\n' > "$work/session.env"
 chown tilo-browser:tilo-browser "$work/session.env"
 # Started directly, not through a function, so $! is the script itself, which
@@ -118,7 +118,7 @@ wait "$session_pid" 2>/dev/null || true
 echo 'session: ends on SIGTERM'
 
 # ---- The Linux apps session ---------------------------------------------------
-# The same session, as the tenant, through the script the guest agent runs for a
+# The same session, as the tenant, through the script the VM's daemon runs for a
 # workspace's Linux apps: it serves a display, and a Wayland program of this
 # root filesystem connects to it and draws. Nothing it made is kept.
 apps_home=/home/tilo

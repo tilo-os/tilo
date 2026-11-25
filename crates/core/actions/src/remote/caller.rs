@@ -96,6 +96,40 @@ pub struct Caller {
     // (`Self::launched`): the one caller that acts as that app itself. No payload, kept caller or
     // shell link carries it.
     launched_app: Option<tilo_app_id::AppId>,
+    // The person and records a placed device's certificate names (`Self::placed`): set only by
+    // the transport that read them from the verified certificate.
+    placed: Option<PlacedCaller>,
+}
+
+/// What a placed device's certificate says of the caller ([`Caller::placed`]): the person whose
+/// host placed it, whom history names, and the records of its workspace it reaches. The
+/// person is no authority: a placed caller acts as its device's key alone, decided by the
+/// records it reaches.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PlacedCaller {
+    person: [u8; 32],
+    channels: Vec<[u8; 32]>,
+}
+
+impl PlacedCaller {
+    /// The root key of the person whose host placed the device: whom history names for
+    /// what it writes. Never whom it acts as.
+    #[must_use]
+    pub const fn person(&self) -> &[u8; 32] {
+        &self.person
+    }
+
+    /// The channel of each record it reaches, in ascending order.
+    #[must_use]
+    pub fn channels(&self) -> &[[u8; 32]] {
+        &self.channels
+    }
+
+    /// Whether the record told by `channel` is one it reaches.
+    #[must_use]
+    pub fn reaches(&self, channel: &[u8; 32]) -> bool {
+        self.channels.binary_search(channel).is_ok()
+    }
 }
 
 /// The authority an invitation carries ([`Caller::invited`]): the signed invitation, and the
@@ -132,6 +166,7 @@ impl Caller {
             forwarded_by: None,
             granted: Vec::new(),
             launched_app: None,
+            placed: None,
         }
     }
 
@@ -155,6 +190,32 @@ impl Caller {
         let mut caller = Self::admitted(Acting::visitor(&device_public_key), None);
         caller.device_public_key = Some(device_public_key);
         caller
+    }
+
+    /// A device placed for records of `workspace`, the `channels` its certificate names, by
+    /// a host for `person`: the transport read them from that verified certificate. It acts as
+    /// its device's key alone, never as the person and never as a member's device: it has no
+    /// person, no user key and nobody it acts for, so nothing that decides by those reaches it,
+    /// and what it may do is decided by the records it reaches ([`Self::placed_records`]).
+    #[must_use]
+    pub fn placed(
+        device_public_key: [u8; 32],
+        person: [u8; 32],
+        workspace: impl Into<String>,
+        channels: impl IntoIterator<Item = [u8; 32]>,
+    ) -> Self {
+        let mut channels: Vec<[u8; 32]> = channels.into_iter().collect();
+        channels.sort_unstable();
+        channels.dedup();
+        let mut caller = Self::visitor(device_public_key).in_workspace(workspace);
+        caller.placed = Some(PlacedCaller { person, channels });
+        caller
+    }
+
+    /// What a placed device's certificate says of this caller ([`Self::placed`]).
+    #[must_use]
+    pub const fn placed_records(&self) -> Option<&PlacedCaller> {
+        self.placed.as_ref()
     }
 
     /// A visitor redeeming `invited`: the device `device_public_key` its connection proved,
@@ -851,6 +912,25 @@ impl Caller {
     /// kept: it ended with the process.
     #[must_use]
     pub fn kept(&self) -> KeptCaller {
+        // A placed caller is kept as the key it is and nothing more: restored, it is a visitor,
+        // never its person.
+        if self.placed.is_some() {
+            return KeptCaller {
+                acting: Acting::visitor(&self.device_public_key.unwrap_or_default()),
+                user_public_key: None,
+                device_public_key: self.device_public_key,
+                workspace: self.workspace.clone(),
+                session_delegated: false,
+                within: None,
+                turn: None,
+                roster_created_at: None,
+                approved_as: None,
+                turn_person: None,
+                agent_name: None,
+                asked: None,
+                system: false,
+            };
+        }
         KeptCaller {
             acting: self.acting.clone(),
             user_public_key: self.user_public_key,
@@ -931,6 +1011,7 @@ impl KeptCaller {
             // Only the daemon's own attestation of the process it launched makes a caller the
             // app itself; a kept or carried caller is never that.
             launched_app: None,
+            placed: None,
         }
     }
 }
@@ -1119,6 +1200,40 @@ mod tests {
         assert_eq!(label(&session).as_deref(), Some("Claude Code"));
         let asked = session.asked("Fill Jane's application");
         assert_eq!(label(&asked).as_deref(), Some("Fill Jane's application"));
+    }
+
+    /// A placed device's caller is its key and nothing more: no person it acts as, no user key,
+    /// nobody it acts for, and nothing whose decisions read the person reaches it. Its person is
+    /// only named, for history. Kept and restored, it is a plain visitor.
+    #[test]
+    fn a_placed_device_is_never_its_person() {
+        let (device, person) = ([7; 32], [1; 32]);
+        let placed = Caller::placed(device, person, "w", [[3; 32], [2; 32], [3; 32]]);
+        assert_eq!(placed.user_public_key(), None);
+        assert_eq!(placed.acting().person_id(), None);
+        assert_eq!(placed.acting_for_person(), None);
+        assert_eq!(placed.acting().visitor_key(), Some(device));
+        assert_eq!(placed.device_public_key(), Some(&device));
+        assert_eq!(placed.workspace(), Some("w"));
+        assert!(!placed.is_system());
+        assert_eq!(placed.approved_agent(), None);
+        assert_eq!(placed.turn_person(), None);
+        let records = placed
+            .placed_records()
+            .expect("the placed records are said");
+        assert_eq!(records.person(), &person);
+        assert_eq!(records.channels(), &[[2; 32], [3; 32]]);
+        assert!(records.reaches(&[2; 32]) && records.reaches(&[3; 32]));
+        assert!(!records.reaches(&[4; 32]));
+        assert_ne!(
+            placed,
+            Caller::authenticated(person, device).in_workspace("w")
+        );
+        let restored = placed.kept().restored();
+        assert_eq!(restored.placed_records(), None);
+        assert_eq!(restored.user_public_key(), None);
+        assert_eq!(restored.acting().person_id(), None);
+        assert_eq!(restored.acting().visitor_key(), Some(device));
     }
 
     /// One person's agent under one name is one agent, however the name is typed; another name

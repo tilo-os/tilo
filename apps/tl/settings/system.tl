@@ -211,7 +211,9 @@ view devices_pane() {
                 }
             }
         }
-        let computers = listed.access.filter(one -> one.kind == .device and one.agent == "")
+        let computers = listed.access.filter(
+            one -> one.kind == .device and one.agent == "" or one.kind == .placing,
+        )
         ui.Section("Browsers and computers") {
             if computers.is_empty() {
                 ui.Text(
@@ -225,10 +227,12 @@ view devices_pane() {
                     if one.current { "This computer" } else { one.label },
                     secondary: if one.current and not one.revoked {
                         "This computer; your other devices reach it"
+                    } else if one.kind == .placing and not one.revoked {
+                        "Runs a workspace's computer for you"
                     } else { access_words(one) },
                     note: one.fingerprint,
                     selected: one.current,
-                    icon: .monitor,
+                    icon: if one.kind == .placing { .server } else { .monitor },
                 ) {
                     trailing: {
                         row(gap: .tight, align: .center) {

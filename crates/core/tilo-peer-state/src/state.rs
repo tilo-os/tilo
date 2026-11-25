@@ -83,6 +83,7 @@ pub use local_admission::NotAdmitted;
 mod local_outbox;
 mod membership_error;
 mod owner_membership;
+pub use authority::PlacedDevice;
 pub use membership_error::MembershipError;
 mod workspace_delta;
 mod workspace_effects;

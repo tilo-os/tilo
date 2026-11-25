@@ -28,8 +28,8 @@ pub struct ShareRequest {
     pub read_only: bool,
 }
 
-/// A workspace's browser session to start or attach to: headless Browser in the workspace's VM,
-/// joining the workspace with `material`.
+/// A workspace's VM to wake for its Browser, its daemon started with `material` when it does not
+/// run.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OpenBrowser {
     pub workspace: String,
@@ -40,20 +40,20 @@ pub struct OpenBrowser {
     /// Where the session keeps its profile between runs: a folder of the workspace's files, at the
     /// same path in the VM, which it restores from and writes back.
     pub store: Option<PathBuf>,
-    /// What the session joins the workspace with, opaque here: the first line of its input.
+    /// The host's placement (`tilo_server_protocol::hosted::Material`), in JSON: its ticket is
+    /// what the daemon logs in with.
     pub material: String,
 }
 
-/// A Linux app to start in a workspace's VM, in its apps session; it needs the account's plan and,
-/// on a host that sells its VMs, a card.
+/// A workspace's VM to wake for its Linux apps, its daemon started with `material` when it does
+/// not run; it needs the account's plan and, on a host that sells its VMs, a card.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OpenApp {
     pub workspace: String,
     pub account: String,
     pub size: VmSize,
-    /// The app to start: one later line of the session's input.
+    /// The host's placement, as [`OpenBrowser::material`].
     pub material: String,
-    pub launch: tilo_actions::remote::linux_apps::AppLaunch,
 }
 
 /// New variants go last: the encoding names a variant by its place.
@@ -184,12 +184,11 @@ pub enum Reply {
     Error(String),
     /// The VM waits for room, in words for whoever ran it; ask again.
     Busy(String),
-    /// A workspace's browser session is up, joined to the workspace. `opened_ms`: what opening
-    /// took, when this request opened it; `provider`: the token the window it holds publishes
-    /// under.
+    /// A workspace VM's daemon logged in. `opened_ms`: what starting it took, when this request
+    /// started it; `device`: the device it logged in as, its key in hex.
     Opened {
         opened_ms: Option<u64>,
-        provider: String,
+        device: String,
     },
     /// Workspace `workspace` has no VM to branch: nothing was made, and the branch's workspace
     /// starts as any new one does, at its first Linux command.
@@ -404,10 +403,9 @@ mod tests {
                         account: "a".into(),
                         size: VmSize::Small,
                         material: "m".into(),
-                        launch: tilo_actions::remote::linux_apps::AppLaunch::new("xterm").unwrap(),
                     },
                 },
-                b"\x07\x02ws\x01a\x00\x01m\x05xterm".to_vec(),
+                b"\x07\x02ws\x01a\x00\x01m".to_vec(),
             ),
             (
                 Request::StopApps {

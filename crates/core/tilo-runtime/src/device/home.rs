@@ -1,9 +1,11 @@
 //! Where this device of the person's goes: the server it enters their workspaces through.
 //!
-//! Nothing of it is written down. The ticket a computer logs in with names that server, which the
+//! A device that keeps a copy of its person's workspace writes none of it down. The ticket a computer logs in with names that server, which the
 //! daemon keeps in memory while it takes the person's own workspace in from there; from then on,
 //! and after every later start, the device's copy of that workspace names it: the host that keeps
-//! the workspace's keys and is not this device. The device and its person are its certificate's,
+//! the workspace's keys and is not this device. A device placed for records of one workspace keeps
+//! no copy: its host is the one its ticket's login names on this start ([`super::confined`]). The device and its
+//! person are its certificate's,
 //! and so is the agent that runs on it, which its label names first ([`agent_of`]).
 
 use std::sync::{Arc, Mutex};

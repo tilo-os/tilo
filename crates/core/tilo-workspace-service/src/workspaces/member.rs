@@ -46,6 +46,23 @@ use super::{GovernedWorkspace, Held, Workspaces, appended, peer_parts};
 const NAMING_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 use crate::workspace_documents::HostCommit;
 
+/// Why a device its person's root confined to one workspace (a workspace's VM) keeps no copy of
+/// any: it holds no workspace's keys, that one's included, and its workspace's host keeps the
+/// workspace and seals what the device proposes there.
+pub const CONFINED_HOLDS_NONE: &str =
+    "this device reaches its one workspace through that workspace's host and keeps no copy of it";
+
+/// [`CONFINED_HOLDS_NONE`] for a device whose certificate `cert` confines it to one workspace.
+///
+/// # Errors
+/// `cert` confines its device to one workspace.
+pub fn holds_copies(cert: &DeviceCert) -> Result<(), String> {
+    if cert.capabilities.workspace_name().is_some() {
+        return Err(CONFINED_HOLDS_NONE.to_owned());
+    }
+    Ok(())
+}
+
 /// The member copies a device holds: the links of the workspaces it joined,
 /// by workspace while each is up, and the device they act as.
 pub(super) struct Members {
@@ -620,6 +637,7 @@ impl Workspaces {
         name: Option<&str>,
     ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
+        holds_copies(&device.cert)?;
         let now_ns = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(
             invitation,
@@ -783,6 +801,7 @@ impl Workspaces {
         hint: &TransportHint,
     ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
+        holds_copies(&device.cert)?;
         self.hold_member(&device, bootstrap, hint, false).await
     }
 
@@ -802,6 +821,7 @@ impl Workspaces {
         hint: &TransportHint,
     ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
+        holds_copies(&device.cert)?;
         let (address, _) =
             WorkspaceDeviceHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
         let client = WorkspaceJoinClient::new(self.inner.host.endpoint.clone());
@@ -862,6 +882,7 @@ impl Workspaces {
         hint: &TransportHint,
         asked: bool,
     ) -> Result<WorkspaceId, String> {
+        holds_copies(&device.cert)?;
         let (address, _) =
             WorkspaceDeviceHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
         if hosted_by(hint, &device.cert.device_public_key) {

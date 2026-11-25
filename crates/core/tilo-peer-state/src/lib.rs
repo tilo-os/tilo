@@ -101,12 +101,12 @@ pub use state::{
     MemberId, MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenSealedError,
     OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError,
     PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
-    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, Reseal, RowError,
-    SCHEDULES_KEY, SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin,
-    UnmergedReason, UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision,
-    decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
-    seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
-    workspace_host_actor, workspace_seed,
+    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PlacedDevice, ReceiveOutcome, Reseal,
+    RowError, SCHEDULES_KEY, SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer,
+    TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY,
+    committed_document_revision, decide_with_surfaces, default_surfaces, holder_role,
+    keeping_devices_of, peer_handle, seed_workspace, seed_workspace_at, trigger_mark, unranked,
+    workspace_grants_of, workspace_host_actor, workspace_seed,
 };
 pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
 pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};

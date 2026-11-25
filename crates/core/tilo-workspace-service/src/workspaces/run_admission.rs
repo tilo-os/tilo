@@ -203,6 +203,11 @@ impl Workspaces {
         if selected.is_nil() || selected.to_string() != workspace {
             return Err("noncanonical MCP workspace".into());
         }
+        // A device placed for records runs nothing as its person: what it asks is decided by its
+        // host, from its certificate, as the records it reaches.
+        if own.capabilities.records.is_some() {
+            return Err("a device placed for records runs nothing as its person".into());
+        }
         let pinned = if let Some(material) = self.member_material(selected) {
             if material.cert.device_public_key != own.device_public_key {
                 return Err("the member copy acts as another device".into());

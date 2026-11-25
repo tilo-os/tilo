@@ -129,6 +129,8 @@ impl super::Workspaces {
         person: Option<[u8; 32]>,
         seed_defaults: bool,
     ) -> Result<WorkspaceSummary, String> {
+        // A device confined to one workspace makes none: it would hold the new one's keys.
+        super::member::holds_copies(&self.signing_device().cert)?;
         // A workspace placed under an identity waits for another placing the
         // same one, so two devices placing it at once create it once. Others
         // are made side by side, a few at a time: making one writes and syncs

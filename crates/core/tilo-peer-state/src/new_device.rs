@@ -262,7 +262,8 @@ impl ServedTicket {
             .secret
             .spend(&input.secret, now)
             .map_err(|why| ActionCallError::refused(why.to_string()))?;
-        let capability = if self.0.browser {
+        // A device placed for records is that and nothing else, whatever system it runs.
+        let capability = if self.0.browser || self.0.capability.records.is_some() {
             self.0.capability.clone()
         } else {
             tilo_user_identity::DeviceCapabilities {

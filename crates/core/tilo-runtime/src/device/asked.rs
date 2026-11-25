@@ -301,11 +301,12 @@ impl DeviceAsked {
             }),
         );
         let receipt = state.receipt();
-        Standing::stand(&self.standing, caller, state);
+        // Forgotten before it shows: whoever reads that it ended finds no record left.
         if ended.is_some() {
             self.handed_on.lock_recover().remove(&invocation);
             self.store.settled(&ask.at);
         }
+        Standing::stand(&self.standing, caller, state);
         receipt
     }
 

@@ -27,7 +27,6 @@ use tilo_actions::{
 };
 use tilo_broker_core::BrokerActor;
 use tilo_desktop_model::WorkspaceId;
-use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::workspace_view::WorkspaceView;
 
@@ -146,17 +145,6 @@ impl ModelSteps {
     /// none and so no workspace.
     pub(crate) fn session(view: Option<Arc<WorkspaceView>>) -> Arc<Self> {
         Arc::new(Self { view })
-    }
-
-    /// Answer the workspace's model steps from now on, admitted by the grants of Settings' app,
-    /// for the person at this device alone.
-    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(
-            model_providers::PROVIDER,
-            settings_sections::APP_ID,
-            Reach::ThisDevice,
-            self,
-        );
     }
 }
 

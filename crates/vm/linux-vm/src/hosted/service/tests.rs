@@ -523,7 +523,6 @@ fn a_linux_app_without_a_card_is_refused_before_anything_starts() {
             account: "acct-free".into(),
             size: VmSize::Small,
             material: browser::test_material("127.0.0.1:7704"),
-            launch: tilo_actions::remote::linux_apps::AppLaunch::new("xterm").unwrap(),
         },
     }) else {
         panic!("a Linux app without a card is refused");
@@ -543,7 +542,7 @@ fn a_linux_app_without_a_card_is_refused_before_anything_starts() {
 }
 
 #[test]
-fn a_workspace_is_handed_the_address_its_session_dials_the_server_at() {
+fn a_workspace_is_handed_the_address_its_daemon_dials_the_server_at() {
     use super::super::network::Endpoint;
 
     let dir = tempfile::tempdir().unwrap();
@@ -552,16 +551,15 @@ fn a_workspace_is_handed_the_address_its_session_dials_the_server_at() {
         config.settings.server = Some(Endpoint::parse(server).unwrap());
         open_at(&config, 0)
     };
-    let dialled = |line: &str| -> std::net::SocketAddr {
-        let line: tilo_server_protocol::hosted::Material = serde_json::from_str(line).unwrap();
-        line.server
-            .addrs
-            .into_iter()
-            .find_map(|address| match address {
-                iroh_base::TransportAddr::Ip(socket) => Some(socket),
-                _ => None,
-            })
-            .unwrap()
+    let dialled = |material: &tilo_server_protocol::hosted::Material| -> std::net::SocketAddr {
+        assert_eq!(
+            material.ticket.issuer.relay, None,
+            "a VM dials its host directly"
+        );
+        let [socket] = material.ticket.issuer.direct[..] else {
+            panic!("one address: {:?}", material.ticket.issuer.direct);
+        };
+        socket
     };
     let local = with_server("127.0.0.1:7704");
     let line = local
@@ -577,7 +575,7 @@ fn a_workspace_is_handed_the_address_its_session_dials_the_server_at() {
         .hand_off(&browser::test_material("203.0.113.9:7704"))
         .unwrap();
     assert_eq!(dialled(&line), "10.0.0.9:7704".parse().unwrap());
-    // and a material the session could not join with refuses the open
+    // and a placement the daemon could not log in with refuses the open
     assert!(matches!(
         local.hand_off("{}"),
         Err(BrowserError::Invalid(_))

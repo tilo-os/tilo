@@ -51,8 +51,8 @@ pub const RECOVERY_WORDS: &str = "recoveryWords";
 /// `passphrase` into a portable backup, answered as `backup`, hex, for them to keep.
 pub const BACKUP: &str = "backup";
 /// The action a daemon that holds the person's root answers the person: certify `key` (hex) with
-/// that root for what `for` names ([`KeyFor`]: one agent in one workspace, or a device that
-/// reaches one workspace alone), or, naming nothing, as an agent's grant in every workspace of
+/// that root for what `for` names ([`KeyFor`]: one agent in one workspace), or, naming nothing,
+/// as an agent's grant in every workspace of
 /// theirs; unless it is revoked or certified for long enough already. The certificate is listed
 /// among the person's devices before it is answered. Answers `{identity, expires_at_ns?, cert?}`,
 /// or `{revoked: true}`.
@@ -217,9 +217,9 @@ pub struct Tab {
 pub enum KeyFor {
     /// One of the person's agents, in one workspace: the key is that agent's grant there alone.
     Agent(AgentAsked),
-    /// A device of the person's that reaches this one workspace alone, by its id: the
-    /// workspace's VM. It is listed with their devices and revoked like them, and every other
-    /// workspace refuses its key.
+    /// Retired: a workspace's computer, by the workspace's id, as a ticket once asked for it.
+    /// It still reads, and the person's root certifies nothing for it: the host that places a
+    /// workspace's computer certifies it itself.
     Workspace(String),
 }
 
@@ -237,10 +237,7 @@ impl KeyFor {
                 tilo_user_identity::DeviceCapabilities::agent_grant(agent.scope()?),
                 Some(AGENT_KEY_LIFETIME_NS),
             ),
-            Self::Workspace(workspace) => (
-                tilo_user_identity::DeviceCapabilities::workspace_device(workspace_id(workspace)?),
-                None,
-            ),
+            Self::Workspace(_) => return Err(TabCertError::PlacedByItsHost),
         })
     }
 
@@ -258,9 +255,7 @@ impl KeyFor {
     pub fn capability(&self) -> String {
         match self {
             Self::Agent(agent) => format!("{} in your workspace, for 30 days", agent.agent),
-            Self::Workspace(_) => {
-                "a device of yours that reaches one workspace alone, until you remove it".to_owned()
-            }
+            Self::Workspace(_) => "a workspace's computer, which its server certifies".to_owned(),
         }
     }
 }
@@ -382,6 +377,9 @@ pub enum TabCertError {
     /// What it is asked for names no workspace.
     #[error("the key is asked for no workspace by its id")]
     Workspace,
+    /// It asks to be a workspace's computer, which the host that placed it certifies instead.
+    #[error("a workspace's computer is certified by the server that runs it, not by your identity")]
+    PlacedByItsHost,
 }
 
 /// Why a string is not a tab's request.
@@ -742,7 +740,9 @@ pub enum NotApproved {
 /// The certificate `approved` gives for `asked`, checked: the approver is a live, unrevoked
 /// device the person's root certified (no agent's key, no device it issued), it signed exactly
 /// `asked`'s digest, and the certificate is the root's over exactly the asked key and label with
-/// member capabilities and nothing more.
+/// member capabilities and nothing more. A device asked to be placed for records is certified by
+/// the approving host itself instead: one of the person's devices, or a host holding their live
+/// placement grant, and the certificate names the approver as its issuer.
 ///
 /// # Errors
 /// What does not hold.
@@ -753,10 +753,15 @@ pub fn check_approval(
     now_ns: u64,
 ) -> Result<DeviceCert, NotApproved> {
     let by = &approved.approver;
-    if by.user_public_key != asked.user_public_key
-        || !by.is_root_signed_device()
-        || tilo_user_identity::verify_device_cert_at(by, now_ns).is_err()
-    {
+    // A device placed for records is certified by the host that placed it, with its own key: as
+    // one of the person's devices, or under their placement grant, which then approves.
+    let placed = asked.cert.capabilities.records.is_some();
+    let approver_holds = if placed && by.capabilities.placing.is_some() {
+        tilo_user_identity::verify_placing_grant_at(by, now_ns).is_ok()
+    } else {
+        by.is_root_signed_device() && tilo_user_identity::verify_device_cert_at(by, now_ns).is_ok()
+    };
+    if by.user_public_key != asked.user_public_key || !approver_holds {
         return Err(NotApproved::Approver);
     }
     if revocations.refuses(by) {
@@ -772,7 +777,20 @@ pub fn check_approval(
         .map_err(|_| NotApproved::Signature)?;
     let mut unsigned = approved.cert.clone();
     unsigned.signature = [0; 64];
+    if placed {
+        // The host signed it, naming its own certificate, until a time of its choosing that the
+        // certificate's own checks bound, and from no earlier than asked: later where its grant
+        // began within the second a ticket's certificate is dated back.
+        if unsigned.issuer.as_deref() != Some(by) || unsigned.issued_at_ns < asked.cert.issued_at_ns
+        {
+            return Err(NotApproved::Certificate);
+        }
+        unsigned.issuer = None;
+        unsigned.expires_at_ns = None;
+        unsigned.issued_at_ns = asked.cert.issued_at_ns;
+    }
     if unsigned != asked.cert
+        || revocations.refuses(&approved.cert)
         || tilo_user_identity::verify_device_cert_at(&approved.cert, now_ns).is_err()
     {
         return Err(NotApproved::Certificate);
@@ -886,10 +904,10 @@ mod tests {
         })
     }
 
-    /// What a key is asked for decides the one certificate the person's root signs for it: a
-    /// workspace's VM is a device of theirs that reaches its workspace alone, until revoked; an
+    /// What a key is asked for decides the one certificate the person's root signs for it: an
     /// agent's key is that agent's grant there, for 30 days; a browser is a member for its
-    /// lifetime.
+    /// lifetime. A ticket that asks for a workspace's computer still reads, and the root
+    /// certifies nothing for it: the host that places a workspace's computer certifies it itself.
     #[test]
     fn a_key_is_certified_for_what_it_is_asked_for() {
         let workspace = "11111111-1111-4111-8111-111111111111";
@@ -898,22 +916,17 @@ mod tests {
             label: "Workspace computer".into(),
             key_for,
         };
-        let vm = tab(Some(KeyFor::Workspace(workspace.into())));
-        let cert = vm.certificate([1; 32], 5).unwrap();
-        let mut id = [0x11; 16];
-        (id[6], id[8]) = (0x41, 0x81);
+        let vm: Tab = serde_json::from_value(serde_json::json!({
+            "device_public_key": hex::encode([9; 32]),
+            "label": "Workspace computer",
+            "for": { "workspace": workspace },
+        }))
+        .unwrap();
+        assert_eq!(vm, tab(Some(KeyFor::Workspace(workspace.into()))));
         assert_eq!(
-            cert.capabilities,
-            tilo_user_identity::DeviceCapabilities::workspace_device(id)
+            vm.certificate([1; 32], 5),
+            Err(TabCertError::PlacedByItsHost)
         );
-        assert_eq!(
-            cert.capabilities.workspace_name().as_deref(),
-            Some(workspace)
-        );
-        assert_eq!(cert.expires_at_ns, None);
-        let json = serde_json::to_value(&vm).unwrap();
-        assert_eq!(json["for"], serde_json::json!({ "workspace": workspace }));
-        assert_eq!(serde_json::from_value::<Tab>(json).unwrap(), vm);
 
         let agent = tab(Some(KeyFor::Agent(AgentAsked {
             workspace: workspace.into(),
@@ -933,7 +946,11 @@ mod tests {
         assert!(browser.capabilities.agent.is_none());
 
         assert_eq!(
-            tab(Some(KeyFor::Workspace("not a workspace".into()))).certificate([1; 32], 5),
+            tab(Some(KeyFor::Agent(AgentAsked {
+                workspace: "not a workspace".into(),
+                agent: "claude".into(),
+            })))
+            .certificate([1; 32], 5),
             Err(TabCertError::Workspace)
         );
     }

@@ -305,13 +305,13 @@ impl LinkFrame {
 /// less than a member device.
 /// A scope that names nothing admits nothing beyond the workspace's own
 /// admission: a host says what a link reaches, and says it fails closed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LinkScope {
-    /// The one record channel the link's device reaches, when it reaches no
-    /// more: it is sent frames of that record and frames of no record, and
+    /// The record channels the link's device reaches, when it reaches no
+    /// more: it is sent frames of those records and frames of no record, and
     /// nothing of any other, and an open of another record is answered with
-    /// nothing.
-    pub reads: Option<[u8; 32]>,
+    /// nothing. An empty list reaches no record at all.
+    pub reads: Option<Vec<[u8; 32]>>,
     /// Whether the link carries only frames its own device authored: a device
     /// that may not pass another device's frame on, nor name another as the
     /// source of one. Every link from a device that does not keep the
@@ -333,6 +333,36 @@ pub struct LinkScope {
 }
 
 impl LinkScope {
+    /// The scope of a link from the device `certificate` certifies when it
+    /// was placed for records of `workspace` alone
+    /// ([`tilo_user_identity::DeviceCapabilities::records`]): those records,
+    /// its own frames, and none of the workspace's channel keys. `None` for a
+    /// certificate placed for no records of `workspace`. Whoever serves the
+    /// link reads the confinement from the certificate, whatever else it knows.
+    #[must_use]
+    pub fn of_placed_device(
+        certificate: &tilo_user_identity::DeviceCert,
+        workspace: &str,
+    ) -> Option<Self> {
+        certificate
+            .capabilities
+            .placed_in(workspace)
+            .map(|records| Self {
+                reads: Some(records.channels().to_vec()),
+                own_frames_only: true,
+                key_access: false,
+                lists_itself: false,
+            })
+    }
+
+    /// Whether the link's device reaches the record told by `channel`.
+    #[must_use]
+    pub fn reaches(&self, channel: &[u8; 32]) -> bool {
+        self.reads
+            .as_ref()
+            .is_none_or(|reads| reads.contains(channel))
+    }
+
     /// The scope of a device a host admits to everything its membership
     /// allows: every record, its own frames, and the workspace's channel keys.
     /// A host with no admission hook admits its members' devices so.
@@ -361,7 +391,7 @@ impl LinkScope {
 
 /// What a link may send and be sent, beyond the workspace's admission: a
 /// scope for what it is sent, and the checks on what it may send.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct LinkAdmit {
     /// The scope of what the link is sent ([`LinkScope::reads`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -385,16 +415,41 @@ struct LinkAdmit {
 }
 
 impl LinkAdmit {
-    /// What a link is limited to: the scope the host admitted it with, and,
-    /// while its device does not keep the workspace, its own frames alone.
+    /// What a link from `remote` is limited to: the scope the host admitted it
+    /// with, and, while its device does not keep the workspace, its own frames
+    /// alone.
+    ///
+    /// A device this replica knows as placed for records reaches those
+    /// records alone, its own frames and no channel keys, whatever the host's
+    /// admission answered: its certificate says so on every device.
     #[cfg(not(target_arch = "wasm32"))]
-    const fn of(scope: LinkScope, records_only: bool) -> Self {
+    fn of(link: &DirectSync, remote: [u8; 32], scope: LinkScope, records_only: bool) -> Self {
+        let scope = {
+            let replica = link.0.replica.lock();
+            match replica.placed_device(&remote, tilo_clock::wall()) {
+                Some(Ok(placed)) => LinkScope {
+                    reads: Some(placed.records.channels().to_vec()),
+                    own_frames_only: true,
+                    key_access: false,
+                    lists_itself: false,
+                },
+                // One whose certificate ran out or was revoked, or whose person left, reaches no
+                // record at all.
+                Some(Err(_)) => LinkScope {
+                    reads: Some(Vec::new()),
+                    own_frames_only: true,
+                    key_access: false,
+                    lists_itself: false,
+                },
+                None => scope,
+            }
+        };
         Self {
-            scope,
             own_frames_only: scope.own_frames_only,
             keeping_only: true,
             records_only,
             key_access: scope.key_access,
+            scope,
         }
     }
 
@@ -417,19 +472,17 @@ impl LinkAdmit {
     /// channel's commit only from a device admitted for its keys
     /// ([`Self::key_access`]).
     fn permits(
-        self,
+        &self,
         remote: [u8; 32],
         authored: &Authored,
         keeps_workspace: impl FnOnce() -> bool,
     ) -> bool {
-        // A device the host confined to one record writes that record and no
-        // other: what it sends of another is refused here, as the same scope
-        // refuses to send it another's frames. A hosted environment's device is
-        // the one a host admits this way, and its own record is all it has.
+        // A placed device writes the records it was placed for and no other:
+        // what it sends of another is refused here, as the same scope refuses
+        // to send it another's frames.
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(only) = self.scope.reads
-            && matches!(&authored.message, NeighbourMsg::AppDocument { .. })
-            && record_of(&authored.message).is_some_and(|record| record != only)
+        if matches!(&authored.message, NeighbourMsg::AppDocument { .. })
+            && record_of(&authored.message).is_some_and(|record| !self.scope.reaches(&record))
         {
             return false;
         }
@@ -1129,9 +1182,9 @@ impl DirectSync {
     }
 
     /// Prove this device by `certificate`, the one the host that placed it issued, where the
-    /// workspace's roster does not list it: a device placed to serve one record is no member,
-    /// and the host admits its link by the certificate it placed it with, confined to that
-    /// record. Call it before cloning the link to its handlers.
+    /// workspace's roster does not list it: a device placed for records is no member, and the
+    /// host admits its link by the certificate it placed it with, confined to those records.
+    /// Call it before cloning the link to its handlers.
     ///
     /// # Errors
     ///
@@ -1139,6 +1192,25 @@ impl DirectSync {
     pub fn placed(&self, certificate: tilo_user_identity::DeviceCert) -> Result<Self, String> {
         if certificate.device_public_key != self.device() {
             return Err("the certificate it was placed with is another device's".into());
+        }
+        // Its own replica decides its writes as every other does, by the certificate: a placed
+        // device takes in what it writes to its records and nothing else. A replica
+        // without the workspace's rules yet defers it until they arrive.
+        if certificate.capabilities.records.is_some() {
+            let hello = NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(certificate.clone()),
+                revocations: Vec::new(),
+            };
+            self.0
+                .replica
+                .lock()
+                .receive_from(
+                    crate::TransportOrigin::ServerDelta(certificate.device_public_key),
+                    hello,
+                    tilo_clock::wall(),
+                )
+                .map_err(|error| error.to_string())?;
         }
         Ok(Self(Arc::new(Inner {
             placed: Some(certificate),
@@ -1192,7 +1264,7 @@ impl DirectSync {
 
     /// Whether the workspace names `device` among the devices keeping it: one
     /// that holds its records and may pass another device's frames on, rather
-    /// than the device of a page or an environment that reaches one record.
+    /// than the device of a page, or a device placed for records.
     fn keeps_workspace(&self, device: [u8; 32]) -> bool {
         self.0
             .replica
@@ -2298,7 +2370,7 @@ impl DirectSync {
             return self.give_store(transport, control, scope).await;
         }
         let live = self.0.outgoing.subscribe();
-        let admit = LinkAdmit::of(scope, opens);
+        let admit = LinkAdmit::of(self, transport.remote(), scope, opens);
         self.link(transport, None, control, live, opens, admit)
             .await
     }
@@ -2369,7 +2441,7 @@ impl DirectSync {
         // The device that accepted a dial refuses one of the workspace's
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies. A
-        // device the host placed and confined to one record is in no roster:
+        // device the host placed for records is in no roster:
         // the host's admission, which confined it, is what admits it.
         #[cfg(not(target_arch = "wasm32"))]
         let placed = admit.scope.reads.is_some() || admit.scope.lists_itself;
@@ -2445,7 +2517,7 @@ impl DirectSync {
                 // this side's catch-up already obeys.
                 opens: opens && !dialing,
                 #[cfg(not(target_arch = "wasm32"))]
-                scope: admit.scope,
+                scope: admit.scope.clone(),
                 #[cfg(target_arch = "wasm32")]
                 scope: LinkScope::default(),
                 catch_up,
@@ -2467,15 +2539,22 @@ impl DirectSync {
             Answering {
                 sender: answering.as_ref(),
             },
-            admit,
+            admit.clone(),
         ));
         let history = async {
             #[cfg(not(target_arch = "wasm32"))]
             if !dialing {
                 // The other device asks for the history as the link starts,
                 // and again whenever it wants what it let go.
-                self.answer_store(&mut control, remote, &answered, admit.scope, opens, &opened)
-                    .await?;
+                self.answer_store(
+                    &mut control,
+                    remote,
+                    &answered,
+                    admit.scope.clone(),
+                    opens,
+                    &opened,
+                )
+                .await?;
                 self.0.caught_up.send_replace(true);
                 return std::future::pending().await;
             }
@@ -2747,7 +2826,7 @@ impl DirectSync {
         // The state an ask opens with that earlier answers had not allocated.
         let mut state = std::collections::VecDeque::new();
         let own = self.device();
-        let reaches = self.reach_of(remote, scope);
+        let reaches = self.reach_of(remote, scope.clone());
         while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
             let cursors = match frame {
                 LinkFrame::Cursors(cursors) => cursors,
@@ -2756,7 +2835,7 @@ impl DirectSync {
                     // answered as one this device keeps nothing of: the
                     // device that asked is told nothing of it, and nothing of
                     // it reaches the link from then on.
-                    let answer = self.openable(scope, channel);
+                    let answer = self.openable(&scope, channel);
                     if let Some(answer) = answer {
                         let mut opened = opened.write_recover();
                         opened.insert(channel);
@@ -2891,8 +2970,8 @@ impl DirectSync {
     /// `scope`: the record itself, or the newest part of the chain whose head
     /// it named. `None` for a record outside the scope, which the link is
     /// answered nothing of.
-    fn openable(&self, scope: LinkScope, channel: [u8; 32]) -> Option<[u8; 32]> {
-        if scope.reads.is_some_and(|only| only != channel) {
+    fn openable(&self, scope: &LinkScope, channel: [u8; 32]) -> Option<[u8; 32]> {
+        if !scope.reaches(&channel) {
             return None;
         }
         Some(self.newest_part(channel).unwrap_or(channel))
@@ -2999,7 +3078,7 @@ impl DirectSync {
     }
 
     /// What the recipient may read when each frame is sent, `scope` naming the
-    /// one record its device reaches when it reaches no more
+    /// records its device reaches when it reaches no more
     /// ([`LinkScope::reads`]).
     fn reach_of(
         &self,
@@ -3011,9 +3090,8 @@ impl DirectSync {
             if scope.lists_itself && !own_row_frame(message) {
                 return false;
             }
-            if let Some(only) = scope.reads
-                && let Some(record) = record_of(message)
-                && record != only
+            if let Some(record) = record_of(message)
+                && !scope.reaches(&record)
             {
                 return false;
             }
@@ -3320,7 +3398,8 @@ impl DirectSync {
             }
             Ok::<(), String>(())
         };
-        let admitting = self.admit_in_order(remote, link, answering.sender, frames, history, admit);
+        let admitting =
+            self.admit_in_order(remote, link, answering.sender, frames, history, &admit);
         let received = async {
             tokio::try_join!(reading, async {
                 admitting.await;
@@ -3331,7 +3410,7 @@ impl DirectSync {
         tokio::select! {
             result = received => result,
             result = Box::pin(self.take_answers(answers_accepted)) => result,
-            result = Box::pin(self.receive_content(content_accepted, remote, admit)) => result,
+            result = Box::pin(self.receive_content(content_accepted, remote, &admit)) => result,
             result = sorting => result,
         }
     }
@@ -3343,7 +3422,7 @@ impl DirectSync {
         &self,
         stream: tokio::sync::oneshot::Receiver<StreamRecv>,
         remote: [u8; 32],
-        admit: LinkAdmit,
+        admit: &LinkAdmit,
     ) -> Result<(), String> {
         let Ok(mut recv) = stream.await else {
             return std::future::pending().await;
@@ -3360,7 +3439,7 @@ impl DirectSync {
     /// workspace's host carries it on to the links it goes to
     /// ([`Self::content_targets`]); the readers here take an ask, and an
     /// answer to this device's own.
-    async fn take_content(&self, remote: [u8; 32], admit: LinkAdmit, authored: Authored) {
+    async fn take_content(&self, remote: [u8; 32], admit: &LinkAdmit, authored: Authored) {
         let refused = if !content_frame(&authored.message) {
             Some("a link's content stream carried another frame".to_owned())
         } else if !admit.permits(remote, &authored, || self.keeps_workspace(remote)) {
@@ -3455,7 +3534,7 @@ impl DirectSync {
         answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         mut frames: tokio::sync::mpsc::Receiver<Authored>,
         mut history: watch::Receiver<bool>,
-        admit: LinkAdmit,
+        admit: &LinkAdmit,
     ) {
         let mut waiting = Vec::new();
         loop {
@@ -3564,7 +3643,7 @@ impl DirectSync {
         link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
         answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         authored: Authored,
-        admit: LinkAdmit,
+        admit: &LinkAdmit,
     ) {
         // What a link from a device that does not keep the workspace carries:
         // its own frames, and none but those a device that opens the records
@@ -4347,7 +4426,7 @@ async fn carry_content(
         device
             .take_content(
                 from,
-                LinkAdmit::dialling(),
+                &LinkAdmit::dialling(),
                 Authored {
                     published: false,
                     ..authored
@@ -4601,8 +4680,8 @@ struct Sending {
     /// when the record is one every device is sent.
     opens: bool,
     /// What the host admitted the device on the other end to
-    /// ([`LinkScope::reads`]): a device confined to one record is sent that
-    /// record's live writes and no other's, as its history is.
+    /// ([`LinkScope::reads`]): a placed device is sent its records' live
+    /// writes and no other's, as its history is.
     scope: LinkScope,
     /// What this stream opens with.
     catch_up: Vec<Authored>,
@@ -4885,13 +4964,13 @@ mod tests {
         // of the workspace is refused all the same.
         sync.take_content(
             member,
-            LinkAdmit::dialling(),
+            &LinkAdmit::dialling(),
             want(stranger, stranger, "aa"),
         )
         .await;
-        sync.take_content(member, admit, want(member, stranger, "bb"))
+        sync.take_content(member, &admit, want(member, stranger, "bb"))
             .await;
-        sync.take_content(member, admit, want(member, member, "cc"))
+        sync.take_content(member, &admit, want(member, member, "cc"))
             .await;
 
         let heard = tokio::time::timeout(std::time::Duration::from_secs(5), reader.recv())
@@ -4946,9 +5025,9 @@ mod tests {
             ..LinkAdmit::dialling()
         };
 
-        sync.take_content(member, admit, lacks(member, other, server, "aa"))
+        sync.take_content(member, &admit, lacks(member, other, server, "aa"))
             .await;
-        sync.take_content(member, admit, lacks(member, member, server, "bb"))
+        sync.take_content(member, &admit, lacks(member, member, server, "bb"))
             .await;
 
         let heard = tokio::time::timeout(std::time::Duration::from_secs(5), reader.recv())
@@ -5146,15 +5225,9 @@ mod tests {
             in_hand.send_replace(true);
             drop(live);
         };
+        let admit = LinkAdmit::dialling();
         tokio::join!(
-            member.admit_in_order(
-                host.device(),
-                &asks,
-                None,
-                frames,
-                history,
-                LinkAdmit::dialling(),
-            ),
+            member.admit_in_order(host.device(), &asks, None, frames, history, &admit),
             reading_history
         );
 

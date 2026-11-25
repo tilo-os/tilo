@@ -55,7 +55,6 @@ SCOPES += (
     Path("crates/core/session-client"),
     Path("crates/os/connectivity-service"),
     Path("crates/services/crash-reports"),
-    Path("crates/core/identity-authority"),
     Path("crates/os/network-secret-agent"),
     Path("crates/os/polkit-agent"),
     Path("crates/os/power-service"),

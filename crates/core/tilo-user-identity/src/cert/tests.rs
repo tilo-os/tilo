@@ -116,6 +116,8 @@ tilo_test_env::scenario! {
                 browser_pages: false,
                 workspace_service: false,
                 workspace: None,
+                records: None,
+                placing: None,
             },
             issued_at_ns: 1_000_000,
             expires_at_ns: None,
@@ -1620,5 +1622,555 @@ tilo_test_env::scenario! {
         assert_eq!(crate::canonical::canonical_bytes(&read).unwrap(), kept);
         let json: DeviceCert = serde_json::from_str(GOLDEN_V1_JSON).unwrap();
         assert_eq!(serde_json::to_string(&json).unwrap(), GOLDEN_V1_JSON);
+    }
+}
+
+/// The records a placed device's tests certify it for: two of the confined VM's workspace, on
+/// channels of their own.
+fn placed_records() -> PlacedRecords {
+    PlacedRecords::new(VM_WORKSPACE, [[0x44; 32], [0x33; 32]]).unwrap()
+}
+
+/// A host that is one of its person's devices: root `[1; 32]` certified its key `[3; 32]` at
+/// `1_000` for thirty days.
+fn host_device() -> (ed25519_dalek::SigningKey, DeviceCert) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+    let cert = root_signed_device(
+        &root,
+        &key,
+        DeviceCapabilities::member(),
+        Some(1_000 + STAND_IN_LIFETIME_NS),
+    );
+    (key, cert)
+}
+
+/// The records a placement grant's tests give a host: the placed device's two, and one more.
+fn granted_records() -> PlacedRecords {
+    PlacedRecords::new(VM_WORKSPACE, [[0x33; 32], [0x44; 32], [0x55; 32]]).unwrap()
+}
+
+/// A host that is none of its person's devices, key `[5; 32]`, under the placement grant root
+/// `[1; 32]` signed it for [`granted_records`] at `1_000`, ending at `expires_at_ns`.
+fn granted_host(expires_at_ns: Option<u64>) -> (ed25519_dalek::SigningKey, DeviceCert) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let mut grant = prepare_placing_grant(
+        root.verifying_key().to_bytes(),
+        key.verifying_key().to_bytes(),
+        granted_records(),
+        "tilo.example",
+        1_000,
+        expires_at_ns,
+    );
+    sign_device_cert(&mut grant, &root).unwrap();
+    (key, grant)
+}
+
+/// An unsigned certificate the host whose certificate is `issuer` issues for device `[9; 32]`,
+/// reaching `capabilities`, from `issued_at_ns` for `lifetime_ns`.
+fn placed_device_of(
+    issuer: &DeviceCert,
+    capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
+    lifetime_ns: u64,
+) -> DeviceCert {
+    DeviceCert {
+        capabilities,
+        ..prepare_placed_device_cert(
+            issuer,
+            [9; 32],
+            placed_records(),
+            "Placed",
+            issued_at_ns,
+            issued_at_ns.saturating_add(lifetime_ns),
+        )
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_placed_device_reaches_its_records_alone;
+
+    phase its_records_are_sorted_once_each_and_bounded;
+    {
+        let records = placed_records();
+        assert_eq!(records.channels(), &[[0x33; 32], [0x44; 32]]);
+        assert_eq!(
+            PlacedRecords::new(VM_WORKSPACE, [[0x44; 32], [0x33; 32], [0x44; 32]]).unwrap(),
+            records,
+            "a channel named twice is one record"
+        );
+        assert!(records.reaches(&[0x33; 32]) && records.reaches(&[0x44; 32]));
+        assert!(!records.reaches(&[0x55; 32]));
+        assert_eq!(records.workspace(), &VM_WORKSPACE);
+        assert_eq!(records.workspace_name(), uuid_text(&VM_WORKSPACE));
+        for nothing in [
+            PlacedRecords::new(VM_WORKSPACE, []),
+            PlacedRecords::new([0; 16], [[0x33; 32]]),
+            PlacedRecords::new(VM_WORKSPACE, [[0x33; 32], [0; 32]]),
+            PlacedRecords::new(VM_WORKSPACE, (1..=MAX_PLACED_RECORDS + 1).map(|at| [u8::try_from(at).unwrap(); 32])),
+        ] {
+            assert_eq!(nothing, Err(DeviceCertError::InvalidPlacedDevice));
+        }
+        let most = PlacedRecords::new(
+            VM_WORKSPACE,
+            (1..=MAX_PLACED_RECORDS).map(|at| [u8::try_from(at).unwrap(); 32]),
+        )
+        .unwrap();
+        let (key, host) = host_device();
+        let mut cert = placed_device_of(&host, DeviceCapabilities::placed(most), 2_000, 60);
+        sign_device_cert(&mut cert, &key).unwrap();
+        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+        let read: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(read, cert, "the most records a certificate names read back");
+        verify_device_cert(&read).unwrap();
+    }
+
+    phase it_round_trips_and_verifies_in_the_current_layout;
+    {
+        let (key, host) = host_device();
+        let mut cert = placed_device_of(
+            &host,
+            DeviceCapabilities::placed(placed_records()),
+            2_000,
+            MAX_PLACED_DEVICE_LIFETIME_NS,
+        );
+        sign_device_cert(&mut cert, &key).unwrap();
+        verify_device_cert(&cert).unwrap();
+        verify_device_cert_at(&cert, 3_000).unwrap();
+        assert_eq!(
+            verify_device_cert_at(&cert, 2_000 + MAX_PLACED_DEVICE_LIFETIME_NS),
+            Err(DeviceCertError::Expired),
+            "it lasts no longer than its bound"
+        );
+        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+        assert_eq!(binary_layout_of(&bytes).unwrap(), BINARY_LAYOUT);
+        let read: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(read, cert);
+        verify_device_cert(&read).unwrap();
+        let text = serde_json::to_string(&cert).unwrap();
+        let channels = format!(r#""channels":["{}","{}"]"#, "33".repeat(32), "44".repeat(32));
+        assert!(text.contains(&format!(
+            r#""records":{{"workspace":"11111111-1111-1111-1111-111111111111",{channels}}}"#
+        )));
+        let json: DeviceCert = serde_json::from_str(&text).unwrap();
+        assert_eq!(json, cert);
+        // JSON naming its records out of order, or one twice, is no certificate.
+        for wrong in [
+            format!(r#""channels":["{}","{}"]"#, "44".repeat(32), "33".repeat(32)),
+            format!(r#""channels":["{}","{}"]"#, "33".repeat(32), "33".repeat(32)),
+            r#""channels":[]"#.to_owned(),
+        ] {
+            assert!(serde_json::from_str::<DeviceCert>(&text.replace(&channels, &wrong)).is_err());
+        }
+        let vm = uuid_text(&VM_WORKSPACE);
+        assert!(cert.capabilities.reaches_workspace(&vm));
+        assert!(!cert.capabilities.reaches_workspace(&uuid_text(&OTHER_WORKSPACE)));
+        assert_eq!(cert.capabilities.workspace_name().as_deref(), Some(vm.as_str()));
+        assert_eq!(cert.capabilities.placed_in(&vm), Some(&placed_records()));
+        assert_eq!(cert.capabilities.placed_in(&uuid_text(&OTHER_WORKSPACE)), None);
+        // No device of its person's: it adds no devices, keeps no workspace's keys, owns none,
+        // and a renewal keeps it to its records.
+        assert!(!cert.is_root_signed_device());
+        assert!(!cert.capabilities.holds_workspace_keys());
+        assert!(!cert.capabilities.is_personal_device());
+        assert!(!DeviceCapabilities::nothing().grants_no_more_than(&cert.capabilities));
+        assert!(!cert.capabilities.grants_no_more_than(&DeviceCapabilities::member()));
+        let fewer = DeviceCapabilities::placed(PlacedRecords::new(VM_WORKSPACE, [[0x33; 32]]).unwrap());
+        assert!(
+            !fewer.grants_no_more_than(&cert.capabilities),
+            "a renewal names exactly the records it renews"
+        );
+    }
+
+    phase the_restriction_cannot_be_stripped_or_moved_and_an_older_layout_refuses_it;
+    {
+        let (key, host) = host_device();
+        let mut cert = placed_device_of(
+            &host,
+            DeviceCapabilities::placed(placed_records()),
+            2_000,
+            MAX_PLACED_DEVICE_LIFETIME_NS,
+        );
+        sign_device_cert(&mut cert, &key).unwrap();
+        let mut stripped = cert.clone();
+        stripped.capabilities.records = None;
+        assert!(verify_device_cert(&stripped).is_err());
+        let mut moved = cert.clone();
+        moved.capabilities.records =
+            Some(PlacedRecords::new(VM_WORKSPACE, [[0x33; 32], [0x55; 32]]).unwrap());
+        assert_eq!(verify_device_cert(&moved), Err(DeviceCertError::BadSignature));
+        let mut widened = cert.clone();
+        widened.capabilities.records =
+            Some(PlacedRecords::new(VM_WORKSPACE, [[0x33; 32], [0x44; 32], [0x55; 32]]).unwrap());
+        assert_eq!(verify_device_cert(&widened), Err(DeviceCertError::BadSignature));
+        // The bytes a build of layout 2 would be handed: the capabilities' first byte is the
+        // placed marker, which that build names a later layout and reads as a capability flag of
+        // neither 0 nor 1.
+        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+        let (_, rest) =
+            postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(&bytes).unwrap();
+        assert_eq!(rest.first(), Some(&PLACED_BINARY_MARKER));
+        assert!(rest.first().is_some_and(|byte| *byte > WORKSPACE_BINARY_MARKER));
+        assert_eq!(rest.get(1..17), Some(&VM_WORKSPACE[..]));
+        assert_eq!(rest.get(17), Some(&2), "a count of its records");
+        assert_eq!(rest.get(18..50), Some(&[0x33; 32][..]));
+        assert_eq!(rest.get(50..82), Some(&[0x44; 32][..]));
+        let at = bytes.len() - rest.len();
+        // Cutting the records out of the bytes reads no valid certificate.
+        let mut cut = bytes[..at].to_vec();
+        cut.extend_from_slice(&rest[82..]);
+        let cut = crate::canonical::from_canonical_bytes::<DeviceCert>(&cut);
+        assert!(cut.is_err() || verify_device_cert(&cut.unwrap()).is_err());
+        // Neither a workspace or channel of nothing, nor records out of order or named twice,
+        // nor a count of none or above the bound, reads.
+        let edited = |edit: &dyn Fn(&mut Vec<u8>)| {
+            let mut bytes = bytes.clone();
+            edit(&mut bytes);
+            crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes)
+        };
+        assert!(edited(&|bytes| bytes[at + 1..at + 17].fill(0)).is_err());
+        assert!(edited(&|bytes| bytes[at + 18..at + 50].fill(0)).is_err());
+        assert!(edited(&|bytes| bytes[at + 50..at + 82].fill(0x33)).is_err());
+        assert!(edited(&|bytes| bytes[at + 18..at + 82].rotate_left(32)).is_err());
+        assert!(edited(&|bytes| bytes[at + 17] = 0).is_err());
+        assert!(edited(&|bytes| bytes[at + 17] = u8::try_from(MAX_PLACED_RECORDS + 1).unwrap()).is_err());
+        // A count that names fewer records than follow leaves bytes no extended form reads.
+        assert!(edited(&|bytes| bytes[at + 17] = 1).is_err());
+        // Nor does one followed by any form but the extended one.
+        assert!(edited(&|bytes| bytes[at + 82] = FOREIGN_BINARY_MARKER).is_err());
+    }
+
+    phase it_is_its_hosts_alone_and_grants_nothing_else;
+    {
+        let (key, host) = host_device();
+        let refused = |cert: DeviceCert, signer: &ed25519_dalek::SigningKey| {
+            let mut signed = cert.clone();
+            let refusal = sign_device_cert(&mut signed, signer).unwrap_err();
+            assert!(verify_device_cert(&forced(cert, signer)).is_err());
+            refusal
+        };
+        // Its person's root does not sign one itself: the host that places the device does, with
+        // its own key.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut by_root =
+            placed_device_of(&host, DeviceCapabilities::placed(placed_records()), 2_000, 60);
+        by_root.issuer = None;
+        assert_eq!(refused(by_root, &root), DeviceCertError::InvalidIssuer);
+        // No key signs in the person's place: their stand-in places nothing.
+        let (tab_key, tab_signer) = make_stand_in(1);
+        let by_tab_key =
+            placed_device_of(&tab_signer, DeviceCapabilities::placed(placed_records()), 2_000, 60);
+        assert_eq!(refused(by_tab_key, &tab_key), DeviceCertError::InvalidPlacedDevice);
+        // Nor does an agent's grant, or a device another person's root certified.
+        let (grant_key, grant) = make_grant(DAY_NS);
+        let by_grant =
+            placed_device_of(&grant, DeviceCapabilities::placed(placed_records()), 2_000, 60);
+        assert!(matches!(
+            refused(by_grant, &grant_key),
+            DeviceCertError::InvalidPlacedDevice | DeviceCertError::InvalidIssuer
+        ));
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let theirs = root_signed_device(&stranger, &key, DeviceCapabilities::member(), None);
+        let mut by_stranger =
+            placed_device_of(&theirs, DeviceCapabilities::placed(placed_records()), 2_000, 60);
+        by_stranger.user_public_key = host.user_public_key;
+        assert_eq!(refused(by_stranger, &key), DeviceCertError::InvalidPlacedDevice);
+        // It grants nothing beside its records.
+        for wider in [
+            DeviceCapabilities {
+                can_own_workspaces: true,
+                ..DeviceCapabilities::placed(placed_records())
+            },
+            DeviceCapabilities {
+                foreign: true,
+                ..DeviceCapabilities::placed(placed_records())
+            },
+            DeviceCapabilities {
+                agent: Some(AgentScope::Workspace(VM_WORKSPACE)),
+                ..DeviceCapabilities::placed(placed_records())
+            },
+            DeviceCapabilities {
+                records: Some(placed_records()),
+                ..DeviceCapabilities::member()
+            },
+        ] {
+            refused(placed_device_of(&host, wider, 2_000, 60), &key);
+        }
+        // A workspace and records together are neither signed nor written.
+        let both = placed_device_of(
+            &host,
+            DeviceCapabilities {
+                workspace: Some(VM_WORKSPACE),
+                ..DeviceCapabilities::placed(placed_records())
+            },
+            2_000,
+            60,
+        );
+        assert!(crate::canonical::canonical_bytes(&both).is_err());
+        let mut signed = both;
+        assert!(sign_device_cert(&mut signed, &key).is_err());
+        // Records of nothing, or not in their one order, are none: built past
+        // `PlacedRecords::new`, they are neither signed nor written.
+        for nothing in [
+            PlacedRecords { workspace: [0; 16], channels: vec![[0x33; 32]] },
+            PlacedRecords { workspace: VM_WORKSPACE, channels: vec![[0; 32]] },
+            PlacedRecords { workspace: VM_WORKSPACE, channels: vec![] },
+            PlacedRecords { workspace: VM_WORKSPACE, channels: vec![[0x44; 32], [0x33; 32]] },
+            PlacedRecords { workspace: VM_WORKSPACE, channels: vec![[0x33; 32], [0x33; 32]] },
+        ] {
+            let mut cert =
+                placed_device_of(&host, DeviceCapabilities::placed(nothing), 2_000, 60);
+            assert!(crate::canonical::canonical_bytes(&cert).is_err());
+            assert_eq!(
+                sign_device_cert(&mut cert, &key),
+                Err(DeviceCertError::InvalidPlacedDevice)
+            );
+        }
+    }
+
+    phase it_always_expires_within_its_bound_and_its_issuer;
+    {
+        let (key, host) = host_device();
+        let placed = DeviceCapabilities::placed(placed_records());
+        let mut forever = placed_device_of(&host, placed.clone(), 2_000, 60);
+        forever.expires_at_ns = None;
+        let mut signed = forever.clone();
+        assert_eq!(
+            sign_device_cert(&mut signed, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        assert!(verify_device_cert(&forced(forever, &key)).is_err());
+        let too_long = placed_device_of(
+            &host,
+            placed.clone(),
+            2_000,
+            MAX_PLACED_DEVICE_LIFETIME_NS + 1,
+        );
+        let mut signed = too_long;
+        assert_eq!(
+            sign_device_cert(&mut signed, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        // It ends no later than the device that issued it.
+        let issuer_ends = host.expires_at_ns.unwrap();
+        let mut past_issuer = placed_device_of(&host, placed.clone(), issuer_ends - 10, 60);
+        assert_eq!(
+            sign_device_cert(&mut past_issuer, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        // Nor is it issued before that device was.
+        let mut before = placed_device_of(&host, placed.clone(), 500, 60);
+        assert_eq!(
+            sign_device_cert(&mut before, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        // Nor for the issuing device's own key, or another person's.
+        let mut own = placed_device_of(&host, placed.clone(), 2_000, 60);
+        own.device_public_key = host.device_public_key;
+        assert_eq!(
+            sign_device_cert(&mut own, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        let mut other_person = placed_device_of(&host, placed, 2_000, 60);
+        other_person.user_public_key = [7; 32];
+        assert!(sign_device_cert(&mut other_person, &key).is_err());
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_placement_grant_lets_a_host_place_its_records_alone;
+
+    phase the_grant_is_no_device_and_reads_back_as_signed;
+    {
+        let (_, grant) = granted_host(None);
+        verify_placing_grant_at(&grant, 2_000).unwrap();
+        assert_eq!(
+            verify_device_cert(&grant),
+            Err(DeviceCertError::PlacingGrantIsNoDevice),
+            "the host it was given to is none of the person's devices"
+        );
+        assert!(!grant.is_root_signed_device());
+        assert!(!grant.capabilities.is_personal_device());
+        assert!(!grant.capabilities.holds_workspace_keys());
+        let bytes = crate::canonical::canonical_bytes(&grant).unwrap();
+        let (_, rest) =
+            postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(&bytes).unwrap();
+        assert_eq!(rest.first(), Some(&PLACING_BINARY_MARKER));
+        assert_eq!(binary_layout_of(&bytes).unwrap(), BINARY_LAYOUT);
+        let read: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(read, grant);
+        let json: DeviceCert = serde_json::from_str(&serde_json::to_string(&grant).unwrap()).unwrap();
+        assert_eq!(json, grant);
+        // It grants nothing beside its records, and is never a device's grant to itself.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut wider = grant.clone();
+        wider.capabilities.can_own_workspaces = true;
+        assert_eq!(
+            sign_device_cert(&mut wider, &root),
+            Err(DeviceCertError::InvalidPlacingGrant)
+        );
+        let mut for_root = grant.clone();
+        for_root.device_public_key = grant.user_public_key;
+        assert_eq!(
+            sign_device_cert(&mut for_root, &root),
+            Err(DeviceCertError::InvalidPlacingGrant)
+        );
+    }
+
+    phase the_host_places_records_within_it_and_no_others;
+    {
+        let (key, grant) = granted_host(Some(1_000 + DAY_NS));
+        let mut cert = placed_device_of(
+            &grant,
+            DeviceCapabilities::placed(placed_records()),
+            2_000,
+            MAX_PLACED_DEVICE_LIFETIME_NS,
+        );
+        sign_device_cert(&mut cert, &key).unwrap();
+        verify_device_cert_at(&cert, 3_000).unwrap();
+        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+        let read: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(read, cert);
+        verify_device_cert(&read).unwrap();
+        // A record the grant does not name, or another workspace's, is not the host's to place.
+        let beyond = PlacedRecords::new(VM_WORKSPACE, [[0x33; 32], [0x66; 32]]).unwrap();
+        let mut wider = placed_device_of(&grant, DeviceCapabilities::placed(beyond), 2_000, 60);
+        assert_eq!(
+            sign_device_cert(&mut wider, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        let elsewhere = PlacedRecords::new(OTHER_WORKSPACE, [[0x33; 32]]).unwrap();
+        let mut moved = placed_device_of(&grant, DeviceCapabilities::placed(elsewhere), 2_000, 60);
+        assert_eq!(
+            sign_device_cert(&mut moved, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        // It ends no later than the grant.
+        let mut past_grant =
+            placed_device_of(&grant, DeviceCapabilities::placed(placed_records()), 1_000 + DAY_NS - 10, 60);
+        assert_eq!(
+            sign_device_cert(&mut past_grant, &key),
+            Err(DeviceCertError::InvalidPlacedDevice)
+        );
+        // A grant does not certify a device of the person's, nor grant again.
+        let mut member = placed_device_of(&grant, DeviceCapabilities::member(), 2_000, 60);
+        assert!(sign_device_cert(&mut member, &key).is_err());
+        let mut regranted = prepare_placing_grant(
+            grant.user_public_key,
+            [9; 32],
+            placed_records(),
+            "again",
+            2_000,
+            None,
+        );
+        regranted.issuer = Some(Box::new(grant));
+        assert!(sign_device_cert(&mut regranted, &key).is_err());
+    }
+
+    phase a_device_of_the_persons_may_sign_the_grant_for_as_long_as_it_lasts;
+    {
+        let (laptop_key, laptop) = host_device();
+        let host_key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let laptop_ends = laptop.expires_at_ns.unwrap();
+        let mut grant = prepare_placing_grant_by(
+            &laptop,
+            host_key.verifying_key().to_bytes(),
+            granted_records(),
+            "tilo.example",
+            2_000,
+            Some(laptop_ends),
+        );
+        sign_device_cert(&mut grant, &laptop_key).unwrap();
+        verify_placing_grant_at(&grant, 3_000).unwrap();
+        let mut cert = placed_device_of(&grant, DeviceCapabilities::placed(placed_records()), 3_000, 60);
+        sign_device_cert(&mut cert, &host_key).unwrap();
+        verify_device_cert(&cert).unwrap();
+        // Two steps read back, as bytes and as JSON.
+        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+        let read: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(read, cert);
+        let json: DeviceCert = serde_json::from_str(&serde_json::to_string(&cert).unwrap()).unwrap();
+        assert_eq!(json, cert);
+        // A grant past the device that signed it, or one a stand-in signed, is none.
+        let mut forever = prepare_placing_grant_by(
+            &laptop,
+            host_key.verifying_key().to_bytes(),
+            granted_records(),
+            "tilo.example",
+            2_000,
+            None,
+        );
+        assert_eq!(
+            sign_device_cert(&mut forever, &laptop_key),
+            Err(DeviceCertError::InvalidPlacingGrant)
+        );
+        let (tab_key, tab_signer) = make_stand_in(1);
+        let mut by_tab_key = prepare_placing_grant_by(
+            &tab_signer,
+            host_key.verifying_key().to_bytes(),
+            granted_records(),
+            "tilo.example",
+            2_000,
+            Some(3_000),
+        );
+        assert_eq!(
+            sign_device_cert(&mut by_tab_key, &tab_key),
+            Err(DeviceCertError::InvalidPlacingGrant)
+        );
+        // Three steps never read: a device certificate a device issued names no issuer that
+        // names one again.
+        let mut three = cert.clone();
+        if let Some(grant) = three.issuer.as_mut()
+            && let Some(device) = grant.issuer.as_mut()
+        {
+            device.issuer = Some(Box::new(laptop));
+        }
+        let bytes = crate::canonical::canonical_bytes(&three).unwrap();
+        assert!(crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).is_err());
+        assert!(serde_json::from_str::<DeviceCert>(&serde_json::to_string(&three).unwrap()).is_err());
+    }
+
+    phase revoking_the_grant_or_the_device_that_signed_it_ends_what_it_placed;
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let revoked = |key: [u8; 32]| {
+            let mut entry = crate::RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: key,
+                revoked_at_ns: 5_000,
+                reason: crate::RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            crate::sign_revocation_entry(&mut entry, &root).unwrap();
+            let mut revocations = crate::RevocationList::new();
+            revocations.insert(entry).unwrap();
+            revocations
+        };
+        let (key, grant) = granted_host(None);
+        let mut cert = placed_device_of(&grant, DeviceCapabilities::placed(placed_records()), 2_000, 60);
+        sign_device_cert(&mut cert, &key).unwrap();
+        assert!(!crate::RevocationList::new().refuses(&cert));
+        // Whatever it placed before the revocation ends with it.
+        assert!(revoked(grant.device_public_key).refuses(&cert));
+        let (laptop_key, laptop) = host_device();
+        let mut by_laptop = prepare_placing_grant_by(
+            &laptop,
+            key.verifying_key().to_bytes(),
+            granted_records(),
+            "tilo.example",
+            2_000,
+            laptop.expires_at_ns,
+        );
+        sign_device_cert(&mut by_laptop, &laptop_key).unwrap();
+        let mut under = placed_device_of(&by_laptop, DeviceCapabilities::placed(placed_records()), 3_000, 60);
+        sign_device_cert(&mut under, &key).unwrap();
+        assert!(revoked(laptop.device_public_key).refuses(&by_laptop));
+        assert!(revoked(laptop.device_public_key).refuses(&under));
+        // A host that is the person's device places nothing once they revoke it.
+        let (host_key, host) = host_device();
+        let mut placed = placed_device_of(&host, DeviceCapabilities::placed(placed_records()), 2_000, 60);
+        sign_device_cert(&mut placed, &host_key).unwrap();
+        assert!(revoked(host.device_public_key).refuses(&placed));
     }
 }

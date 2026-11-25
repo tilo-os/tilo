@@ -23,7 +23,6 @@ use tilo_actions::{
 use tilo_broker_core::BrokerActor;
 use tilo_lock::MutexRecover as _;
 use tilo_server_account::ServerAccountSource;
-use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// Where the account is read from.
 #[derive(Clone)]
@@ -100,17 +99,6 @@ impl ServerAccountApi {
     /// The account as the host knows it now.
     fn read(&self) -> ServerAccount {
         self.source.read(tilo_clock::unix_now_ms())
-    }
-
-    /// Answer the account's read from now on, admitted by the grants of the app that shows it,
-    /// for the person at this device alone.
-    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(
-            wire::PROVIDER,
-            settings_sections::APP_ID,
-            Reach::ThisDevice,
-            self,
-        );
     }
 }
 

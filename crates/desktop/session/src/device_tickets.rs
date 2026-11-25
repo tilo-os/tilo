@@ -4,15 +4,12 @@
 //! computer's daemon, which holds the person's root and identity store and serves every device
 //! action. The desktop only hands the call on, so no app reads a secret or signs with the root.
 
-use std::sync::Arc;
-
 use tilo_actions::remote::Admits;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
     Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, device_tickets as wire,
 };
 use tilo_actions::{ActionDescriptor, ActionOutput};
-use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// The application whose window adds a device here.
 const APP_ID: &str = "so.tilo.settings";
@@ -44,12 +41,6 @@ fn refused(message: impl Into<String>) -> tilo_actions::ActionFailure {
 }
 
 impl DeviceTickets {
-    /// Answer the person's devices from now on (a ticket for a new computer, names and
-    /// revocations), admitted by the grants of Settings' app, for the person at this device alone.
-    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(wire::PROVIDER, APP_ID, Reach::ThisDevice, self);
-    }
-
     fn descriptors() -> Vec<ActionDescriptor> {
         wire::HANDED_ON
             .into_iter()

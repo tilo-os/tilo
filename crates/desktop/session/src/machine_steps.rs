@@ -25,7 +25,6 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, OperationKind,
 };
 use tilo_broker_core::BrokerActor;
-use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::workspace_view::WorkspaceView;
 
@@ -43,12 +42,6 @@ impl MachineSteps {
     /// none and so answers no plan.
     pub(crate) fn session(view: Option<Arc<WorkspaceView>>) -> Arc<Self> {
         Arc::new(Self { view })
-    }
-
-    /// Answer the machines' steps from now on, admitted by the grants of the installer's app,
-    /// for the person at this device alone.
-    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(machines::PROVIDER, APP_ID, Reach::ThisDevice, self);
     }
 
     /// The arguments the step carries, as its descriptor's parameters take

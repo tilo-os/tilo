@@ -37,6 +37,9 @@ pub enum Refusal {
     /// A key made for an agent asked for a workspace its scope does not
     /// reach, or named none.
     OutOfScope,
+    /// A device a host placed for records of a workspace: it reaches those records alone and is
+    /// none of its person's devices.
+    Placed,
 }
 
 impl Refusal {
@@ -59,6 +62,10 @@ impl Refusal {
             }
             Self::OutOfScope => {
                 "this key reaches only the workspaces it was made for: name one of them".to_owned()
+            }
+            Self::Placed => {
+                "that device was placed for records of a workspace; it reaches those records alone"
+                    .to_owned()
             }
         }
     }
@@ -90,6 +97,9 @@ impl PersonalDevices {
     pub fn admit(&self, dialer: [u8; 32], certificate: &DeviceCert) -> Result<Whose, Refusal> {
         if certificate.device_public_key != dialer {
             return Err(Refusal::NotTheDialer);
+        }
+        if certificate.capabilities.records.is_some() {
+            return Err(Refusal::Placed);
         }
         tilo_user_identity::verify_device_cert_at(certificate, now_ns(SystemTime::now()))
             .map_err(|error| Refusal::NotCertified(error.to_string()))?;

@@ -83,6 +83,7 @@ impl StatePeer {
                 owner,
                 origin,
                 certificates: certificates.into(),
+                placed_devices: Shared::default(),
                 revocations,
                 receipts: Shared::default(),
                 workspace_doc: None,

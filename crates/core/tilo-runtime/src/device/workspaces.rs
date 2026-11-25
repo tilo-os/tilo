@@ -91,6 +91,9 @@ pub(crate) struct Opening<'a> {
 pub(crate) struct ServiceWorkspaces {
     service: Arc<WorkspaceService>,
     identity: DeviceIdentity,
+    /// The certificate the device holds now: the one it started with, until the host that placed
+    /// it certified it again ([`Self::renew`]).
+    current: std::sync::RwLock<tilo_user_identity::DeviceCert>,
     endpoint: iroh::Endpoint,
     /// The endpoint as the login's session is lent it.
     bound: Arc<OnceLock<iroh::Endpoint>>,
@@ -122,6 +125,9 @@ pub(crate) struct ServiceWorkspaces {
     /// What changed in the records of these workspaces, as a watch of a whole workspace reads
     /// it: one log a workspace for every connection, made on the first ask.
     changes: OnceLock<Arc<tilo_workspace_service::change_feed::DocumentsFeed>>,
+    /// The host of the one workspace this device's certificate confines it to, once its login
+    /// named it ([`super::confined`]).
+    confined: OnceLock<super::confined::ConfinedHost>,
 }
 
 impl ServiceWorkspaces {
@@ -140,6 +146,19 @@ impl ServiceWorkspaces {
             configure,
             itself,
         } = opening;
+        // A device confined to one workspace issues no certificate, so no service key of its
+        // own: its service acts as the device itself. It makes and governs no workspace, so the
+        // two never number changes from one count.
+        let itself = itself.or_else(|| {
+            super::confined::workspace_of(&identity.device_cert).map(|_| {
+                tilo_workspace_service::service::ServiceIdentity {
+                    user_public_key: identity.device_cert.user_public_key,
+                    device_signing_key: key.clone(),
+                    device_cert: identity.device_cert.clone(),
+                    revocations: tilo_user_identity::RevocationList::new(),
+                }
+            })
+        });
         let own_device::Opened { service, keys } = own_device::open_in(
             dir,
             own_device::Device {
@@ -201,6 +220,7 @@ impl ServiceWorkspaces {
         let _ = bound.set(endpoint.clone());
         Self {
             service,
+            current: std::sync::RwLock::new(identity.device_cert.clone()),
             identity,
             endpoint,
             bound,
@@ -214,7 +234,50 @@ impl ServiceWorkspaces {
             records: OnceLock::new(),
             hosts: OnceLock::new(),
             changes: OnceLock::new(),
+            confined: OnceLock::new(),
         }
+    }
+
+    /// The one workspace this device's certificate confines it to (a workspace's VM), when it
+    /// does: it keeps no copy of any workspace then, and reaches that one through its host.
+    pub(crate) fn confined(&self) -> Option<WorkspaceId> {
+        super::confined::workspace_of(&self.identity.device_cert)
+    }
+
+    /// Reach the workspace this device is confined to through `host` from now on: the host its
+    /// login entered through, the one device whose requests it answers, and the one it takes its
+    /// certificate again from ([`super::confined::Renewals`]).
+    pub(crate) fn confine_to(self: &Arc<Self>, host: super::confined::ConfinedHost) {
+        let device = host.device;
+        if self.confined.set(host).is_ok()
+            && let Some(workspace) = self.confined()
+        {
+            let copies = self.copies();
+            copies
+                .action_service()
+                .answer_only(device, workspace.to_string());
+            copies.providers().answer_placing_host(device);
+            copies.provide(
+                tilo_actions::remote::environment_window::PLACEMENT,
+                Arc::new(super::confined::Renewals(Arc::downgrade(self))),
+            );
+        }
+    }
+
+    /// Hold `cert`, the device certified again, from now on: what [`Self::device_cert`] answers
+    /// and what the device proves itself with on its next link. The caller checked it is this
+    /// device's ([`super::confined::take_renewal`]).
+    pub(crate) fn renew(&self, cert: tilo_user_identity::DeviceCert) {
+        self.copies().action_service().answer_under(cert.clone());
+        *self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cert;
+    }
+
+    /// The host of the workspace this device is confined to, once its login named it.
+    pub(crate) fn confined_host(&self) -> Option<&super::confined::ConfinedHost> {
+        self.confined.get()
     }
 
     /// Keep the device's records `records`, once the person's services run: what the settings
@@ -424,6 +487,12 @@ impl ServiceWorkspaces {
     /// its first session, at the address its endpoint answers on, as a server does on each start:
     /// the server finds it there for its workspaces' Linux turns.
     pub(crate) async fn hold(&self, device: &Entered) {
+        // A device confined to one workspace keeps no copy of it, nor of the person's own: its
+        // host keeps them, and answers what it asks there.
+        if self.confined().is_some() {
+            let _ = self.session.set(device.clone());
+            return;
+        }
         if self.session.set(device.clone()).is_ok()
             && self.takes_work.load(std::sync::atomic::Ordering::Relaxed)
         {
@@ -487,9 +556,12 @@ impl ServiceWorkspaces {
         Arc::clone(&self.identity.signer)
     }
 
-    /// The device certificate this profile's ownership holds.
-    pub(crate) fn device_cert(&self) -> &tilo_user_identity::DeviceCert {
-        &self.identity.device_cert
+    /// The device certificate this profile's ownership holds now.
+    pub(crate) fn device_cert(&self) -> tilo_user_identity::DeviceCert {
+        self.current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The person this device belongs to: whose devices may ask it for work, and whose own ask

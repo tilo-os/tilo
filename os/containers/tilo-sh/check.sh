@@ -75,7 +75,11 @@
 #      their shell in their own browser and types a command into it, and the
 #      file the command wrote is read back from the VM; the app runs as the
 #      tenant, not as Browser's account, and the VM's memory with it open is
-#      measured, in the guest and on the host.
+#      measured, in the guest and on the host;
+#  19. the VM's session changes its wallpaper with that app shown, both kept
+#      in the environment's one record, the VM is stopped and woken, and the
+#      session shows both again from the record, never from the VM's disk;
+#      the person's own settings records are unchanged by any of it.
 #
 # usage: check.sh [WORK]
 # The stack runs this checkout's programs natively (the outputs a check hands
@@ -90,7 +94,7 @@
 # startup person are answered on their page, which step 1 keeps open on the
 # site and whose answers the check writes to and reads from
 # (integration/page_person.py), so it is opened whenever a step that asks runs.
-# TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-18`, comma
+# TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-19`, comma
 # separated) to chase one of them without the rest; the stack is brought up
 # either way and each step's own seconds are printed beside it.
 #
@@ -133,7 +137,7 @@ startup_identity() {
   local invitation
   invitation=$(invite_link) || fail 'the Lounge made no invitation for the startup'
   local args=(--invite "$invitation" --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages)
-  if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_any 12 13 14 15 16 17 18; then
+  if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_any 12 13 14 15 16 17 18 19; then
     # The person stays on the site in their browser, whose page holds their
     # identity: the hosted steps have them answer what their agent's page and
     # their workspaces' VMs put to them, on its question sheet. The check
@@ -259,9 +263,9 @@ report=$work/report.json
 # a step that failed is chased with, instead of the whole check around it.
 # Naming none runs them all. A step that reads what an earlier one made is run
 # with that one: the visa run (2-6) and the hosted Browser and its Linux
-# commands (8-18) read the key and the person the startup made in 1, and the
+# commands (8-19) read the key and the person the startup made in 1, and the
 # Linux commands read the workspace the open made in 10, so naming any of them
-# wants those too (`TILO_SH_ONLY=10,13-18`). The stack is brought up either
+# wants those too (`TILO_SH_ONLY=10,13-19`). The stack is brought up either
 # way.
 only=${TILO_SH_ONLY:-}
 runs_step() {
@@ -311,7 +315,7 @@ else
   say "the Lounge keeps the moderation setting its person last chose"
 fi
 
-if runs_any 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18; then
+if runs_any 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18 19; then
   startup_identity
 fi
 
@@ -344,7 +348,7 @@ if [[ $hosted == 1 ]]; then
   [[ -n $server_address ]] || fail 'the VM host names no server address for Browser sessions'
   # Steps 12-18 ask the person (a submission held, a Linux command outside the
   # workspace's records): their page answers, and step 1 opened it for them.
-  if runs_any 12 13 14 15 16 17 18; then
+  if runs_any 12 13 14 15 16 17 18 19; then
     [[ -n ${person_asks:-} ]] || fail "the person's page is not open to answer these steps (WORK/startup)"
   fi
 
@@ -352,10 +356,10 @@ if [[ $hosted == 1 ]]; then
   # 14: without it a person's own command waits for the card rather than
   # running, and the step that runs one would sit there. Naming the commands
   # without the steps that add the card says so instead.
-  if runs_any 15 16 17 18 && ! runs_any 13 14; then
+  if runs_any 15 16 17 18 19 && ! runs_any 13 14; then
     python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in (json.load(open(sys.argv[1])).get("accounts") or {}) else 1)' \
         "$plans" "$vm_account" \
-      || fail "the plans file $plans names no card for $vm_account: run steps 13 and 14 too (TILO_SH_ONLY=10,13-18)"
+      || fail "the plans file $plans names no card for $vm_account: run steps 13 and 14 too (TILO_SH_ONLY=10,13-19)"
   fi
 
   if runs_any 8 10 12; then
@@ -663,6 +667,24 @@ report["host_resident_mib"] = {"before": int(before) if before else None, "after
 json.dump(report, open(path, "w"), indent=2)
 EOF_GUI
     echo "ok: a Linux app opened in the VM and on the person's shell, and took their typing, in $((SECONDS - at))s"
+  fi
+
+  if runs_step 19; then
+    step "19. the VM session's wallpaper and what it shows come back after a restart"
+    # The window it keeps shown is the Linux app step 18 opened.
+    runs_step 18 || fail 'step 19 restarts the VM with the Linux app step 18 opens: run 18 with it (TILO_SH_ONLY=10,13-19)'
+    hosted_terminal --restart-change \
+      || fail "the VM session's wallpaper or its shown window did not reach the environment's record (see $work/hosted/restart-record.json)"
+    restart_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$work/hosted/open.json")
+    # A stop, not a suspend: the VM's memory goes, so what its session shows
+    # next can only come from the record.
+    sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
+      --init-groups --inh-caps=-all tilo-linux-vm hosted stop --run /run/tilo-hosted \
+      "$restart_workspace" default \
+      || fail "the VM host did not stop $restart_workspace's VM"
+    hosted_terminal --restart-back \
+      || fail "the VM session did not take its wallpaper and shown window back from the record, or the person's own settings changed (see $work/hosted/restart.json)"
+    echo "ok: the VM session's wallpaper and window came back from its record after a restart, in $((SECONDS - at))s"
   fi
 fi
 

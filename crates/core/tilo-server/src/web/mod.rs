@@ -19,8 +19,6 @@ pub(crate) mod live;
 mod page;
 mod page_errors;
 mod profiles;
-#[cfg(feature = "agents")]
-mod stand_in;
 #[cfg(test)]
 mod tests;
 mod tls;
@@ -294,14 +292,6 @@ fn follow_endpoint(address: &mut ServerAddress, now: iroh_base::EndpointAddr) {
     address.endpoint_addr = now;
 }
 
-/// Where this server keeps the stand-ins that certify the browser sessions it
-/// places.
-#[cfg(feature = "agents")]
-#[must_use]
-pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
-    state_root.join("stand-ins")
-}
-
 /// The site a host belongs to, as a link opened at the host's own address is
 /// answered: the page that takes it is the site's.
 #[derive(Clone, Debug)]
@@ -342,32 +332,6 @@ fn without_default_port(authority: &str) -> &str {
         .strip_suffix(":443")
         .or_else(|| authority.strip_suffix(":80"))
         .unwrap_or(authority)
-}
-
-/// Make this host the stand-in approver of `root`'s person, with a certificate
-/// their root signs: what a host that places browser sessions certifies them
-/// with. Placing sessions is the agents feature's, which is the only thing
-/// that keeps one.
-///
-/// # Errors
-///
-/// The state directory cannot be read or written, or the root would not sign.
-#[cfg(feature = "agents")]
-pub(crate) fn keep_stand_in(
-    state_root: &std::path::Path,
-    root: &ed25519_dalek::SigningKey,
-) -> Result<(), String> {
-    stand_in::keep(&stand_ins_dir(state_root), root)
-}
-
-/// The stand-in certificate and key this host keeps for `user`, when it keeps
-/// a live one.
-#[cfg(feature = "agents")]
-pub(crate) fn stand_in_for(
-    state_root: &std::path::Path,
-    user: &[u8; 32],
-) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
-    stand_in::kept(&stand_ins_dir(state_root), user)
 }
 
 /// Checks the published origins against the listeners they front. `also` are

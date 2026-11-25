@@ -64,8 +64,6 @@ mod adopt;
 mod network;
 
 #[cfg(target_os = "linux")]
-pub(crate) use network::Reached;
-#[cfg(target_os = "linux")]
 use network::{Serving, Wire, run};
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
@@ -1108,9 +1106,6 @@ pub struct Client {
     /// The thread running the peer actor, stopped when this drops.
     #[cfg(target_os = "linux")]
     thread: Option<std::thread::JoinHandle<()>>,
-    /// Where this device was given and reached its hosts ([`live_session::Reached`]).
-    #[cfg(target_os = "linux")]
-    reached: network::Reached,
 }
 
 impl std::fmt::Debug for Client {
@@ -1214,7 +1209,6 @@ impl Client {
         let (network_link, enrolling) = (link.clone(), engine.clone());
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
-        let reached = binding.reached.clone();
         // The workspaces' live sessions run through this device's daemon, which holds the relay
         // and the device's endpoint ([`Self::live_through`]).
         let live = engine
@@ -1274,14 +1268,7 @@ impl Client {
             reachability,
             live,
         });
-        Ok(Self::started(
-            inner,
-            hosting,
-            outgoing,
-            thread,
-            reached,
-            entry.hosts,
-        ))
+        Ok(Self::started(inner, hosting, outgoing, thread, entry.hosts))
     }
 
     /// The client, hearing the person's other devices and then the hosts the entry names.
@@ -1291,7 +1278,6 @@ impl Client {
         hosting: Rc<Hosting>,
         outgoing: Arc<dyn Outbox>,
         thread: std::thread::JoinHandle<()>,
-        reached: network::Reached,
         hosts: Vec<EndpointAddr>,
     ) -> Self {
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
@@ -1300,7 +1286,6 @@ impl Client {
             hosting,
             outgoing,
             thread: Some(thread),
-            reached,
         };
         // The person's other devices are heard from the start, so a list one of them published is
         // taken even when this session shows none of their workspaces yet.
@@ -1340,9 +1325,6 @@ impl Client {
             outgoing,
             #[cfg(target_os = "linux")]
             thread: None,
-            #[cfg(target_os = "linux")]
-            #[cfg(target_os = "linux")]
-            reached: network::Reached::default(),
         }
     }
 
@@ -1404,7 +1386,6 @@ impl Client {
             hosting,
             outgoing: outbox,
             thread: None,
-            reached: network::Reached::default(),
         };
         for host in hosts {
             let _ = client.outgoing.send(Cmd::Connect(host));
@@ -1693,14 +1674,6 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn hold_relays_with(&self, reachability: Reachability) {
         *self.hosting.local.reachability.borrow_mut() = reachability;
-    }
-
-    /// Where this device notes the hosts it was given an address for and reached there: its
-    /// endpoint dials them there from then on, beside whatever they say of themselves
-    /// ([`Reached`]).
-    #[cfg(target_os = "linux")]
-    pub(crate) fn reached(&self) -> Reached {
-        self.reached.clone()
     }
 
     /// This device's collaboration endpoint, once it has bound.

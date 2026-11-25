@@ -82,8 +82,8 @@ pub struct Options {
     pub identity_backup: fn(bool) -> Result<tilo_onboarding_session::view::OnboardingView, String>,
     /// Whether this session is Tilo installed as a desktop session on an existing Linux host.
     pub host_desktop: bool,
-    /// The workspace's Browser this session holds, when a host started it for one: the device,
-    /// workspace and record it was handed, and what it reports of the window it holds
+    /// What this session holds of a workspace, when a workspace VM's daemon started it for one:
+    /// its Browser window or its Linux apps' windows, opened as the daemon launches them
     /// ([`crate::hosted_browser::HostedBrowser`]). A session a person starts has none, and does
     /// nothing a hosted Browser's session is spared.
     #[cfg(target_os = "linux")]

@@ -28,18 +28,12 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use settings_sections::network_usage::{ConnectionKind, Reading};
-use tilo_identity::broker::{
-    GroupKeySource, IdentityBrokerHandle, PersonResourceTypes, WorkspaceMembership,
-};
 use tilo_portal::PortalCaller;
 use tilo_service::{AskSender, Services};
 use tilo_system_stats::Grant;
 use tilo_system_stats::hub::Hub;
 use tilo_system_stats::protocol::Handoff;
 use tilo_system_stats::server::{Prompter, Server};
-use tilo_workspace_keys::KeyProvider;
-
-use crate::app_wire::LayoutAuthority;
 
 use crate::render;
 use crate::tools;
@@ -222,8 +216,8 @@ pub(crate) const TABLE: &[Row] = &[
 /// The services this session started, kept for as long as it runs.
 #[derive(Default)]
 pub(crate) struct Served {
-    /// The identity service apps sign in through.
-    identity: Option<Identity>,
+    /// The identity service apps sign in through: the daemon's, each connection handed to it.
+    identity: Option<crate::app_socket::AppSocket>,
     /// The machine's readings, served to the apps the launcher connects.
     system_info: Option<Server>,
     /// What this device's traffic counters said since the last pass.
@@ -255,18 +249,12 @@ pub(crate) struct Serving {
     /// Whether the session serves its apps an app wire: one that serves none serves no identity
     /// and no Windows programs either.
     pub serves_apps: bool,
-    /// The workspaces a session the host placed in a workspace's VM signs its apps' identity in,
-    /// when it serves them an app wire: such a session runs no device daemon whose identity
-    /// service would.
-    pub shell: Option<Arc<LayoutAuthority>>,
     /// The person at this device: whose workspaces are theirs alone, so their apps share one render
     /// service.
     pub person: String,
     /// The render node the compositor composites on: what a render service draws on, and opens for
     /// its buffers.
     pub render_node: Option<std::path::PathBuf>,
-    /// Where the identity service finds this device's channel keys.
-    pub keys: KeyProvider,
     /// What a capability is asked through, when there is anyone to ask.
     pub questions: Option<AskSender>,
     /// The person's answers, which the portal keeps: an answer given to one question stands for the
@@ -287,22 +275,11 @@ pub(crate) struct Serving {
     /// daemon.
     pub view: Option<Arc<crate::workspace_view::WorkspaceView>>,
     /// The shell link the device's daemon handed this session: its identity service is the one
-    /// the apps sign in through. `None` for a session the host placed in a workspace's VM, which
-    /// runs no device daemon and serves its apps' identity itself.
+    /// the apps sign in through. `None` when the daemon handed it none, and then no app signs in.
     pub daemon: Option<runtime_collab::ShellClient>,
     /// The notifications the session shows: what an app sends over its connection reaches the
     /// same daemon as the desktop's own notices. `None` when the session serves no notifications.
     pub notifications: Option<tilo_notifications_service::Notifications>,
-}
-
-/// The identity service apps sign in through, held for as long as the session serves it.
-enum Identity {
-    /// The device daemon's, each connection handed to it.
-    Daemon {
-        _socket: crate::app_socket::AppSocket,
-    },
-    /// This session's own, in a workspace's VM.
-    Hosted { _broker: IdentityBrokerHandle },
 }
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves them for as long as the
@@ -326,14 +303,10 @@ pub(crate) fn start(mut serving: Serving) -> Served {
         };
         match service {
             Service::Identity => {
-                served.identity = match serving.daemon.clone() {
-                    Some(daemon) => identity_at_daemon(serving.serves_apps, daemon),
-                    None => identity(
-                        serving.shell.as_ref().map(Arc::clone),
-                        std::mem::take(&mut serving.keys),
-                    )
-                    .map(|broker| Identity::Hosted { _broker: broker }),
-                };
+                served.identity = serving
+                    .daemon
+                    .clone()
+                    .and_then(|daemon| identity_at_daemon(serving.serves_apps, daemon));
             }
             Service::Render => {
                 match render::Broker::start(
@@ -485,7 +458,10 @@ fn windows(serving: &mut Serving) -> Option<crate::windows_compat::Served> {
 /// to the daemon over its shell link `daemon`: the daemon signs in the workspace an app names, as
 /// the one identity service of the device. A session that serves no app wire (`serves`) has
 /// nothing to sign in.
-fn identity_at_daemon(serves: bool, daemon: runtime_collab::ShellClient) -> Option<Identity> {
+fn identity_at_daemon(
+    serves: bool,
+    daemon: runtime_collab::ShellClient,
+) -> Option<crate::app_socket::AppSocket> {
     if !serves {
         return None;
     }
@@ -497,60 +473,12 @@ fn identity_at_daemon(serves: bool, daemon: runtime_collab::ShellClient) -> Opti
     match crate::app_socket::serve_identity(&path, daemon) {
         Ok(socket) => {
             tracing::info!("serving the device's app identity to the apps the launcher starts");
-            Some(Identity::Daemon { _socket: socket })
+            Some(socket)
         }
         Err(error) => {
             tracing::warn!(%error, "the identity service is unavailable");
             None
         }
-    }
-}
-
-/// The identity service of a session in a workspace's VM, which runs no device daemon, at the
-/// launcher's socket for it, signing in the workspace the shell shows.
-fn identity(
-    shell: Option<Arc<LayoutAuthority>>,
-    keys: KeyProvider,
-) -> Option<IdentityBrokerHandle> {
-    // An app reaches its identity the way it reaches its actions: over the app wire this session
-    // serves it. A session that serves none has nothing to sign in.
-    let shell = shell?;
-    if let Err(error) = launcher::services::ensure_services_root() {
-        tracing::warn!(%error, "the identity service is unavailable");
-        return None;
-    }
-    let path = launcher::services::socket_for(launcher::services::IDENTITY_SERVICE);
-    let membership = shell as Arc<dyn WorkspaceMembership>;
-    let keys = Arc::new(keys) as Arc<dyn GroupKeySource>;
-    match tilo_identity::broker::spawn(path, membership, keys, Arc::new(InstalledApps::read())) {
-        Ok(handle) => {
-            tracing::info!("serving app identity to the apps the launcher starts");
-            Some(handle)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "the identity service is unavailable");
-            None
-        }
-    }
-}
-
-/// What the identity service knows of the apps it signs for: the person records their surfaces
-/// declare.
-struct InstalledApps;
-
-impl InstalledApps {
-    fn read() -> Self {
-        Self
-    }
-}
-
-impl PersonResourceTypes for InstalledApps {
-    fn person_resource_types(&self, app_id: &str) -> Vec<String> {
-        tilo_workspace_service::apps::SurfacePersonDocuments.person_resource_types(app_id)
-    }
-
-    fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
-        tilo_workspace_service::apps::SurfacePersonDocuments.reads_documents_of(reader, owner)
     }
 }
 

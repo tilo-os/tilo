@@ -27,6 +27,13 @@ pub const UNREACHED: &str = "Tilo can't be reached from here right now; try agai
 /// What a computer with no login says.
 pub const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to run `tilo device add` on one of their devices and give you the ticket it prints; then run tilo login with it, like: tilo login tilo1…";
 
+/// What a device its person's root confined to one workspace (that workspace's VM) says when asked
+/// to open a session of its own: it has no copy of the workspace to open one on, and reaches it
+/// through the workspace's host, whose session shows who is there.
+pub const CONFINED_OPENS_NO_SESSION: &str = "This computer is one workspace's VM: it reaches that \
+     workspace through the workspace's host and opens no session of its own. Open the workspace \
+     from one of your own devices to see who is in it.";
+
 /// What a device joined over iroh keeps where a web origin would be: the server's endpoint id
 /// after it, since such a server has no origin.
 pub const IROH_ONLY: &str = "iroh:";
@@ -44,7 +51,9 @@ pub fn debug_why(what: &str, why: &dyn std::fmt::Display) {
 pub fn enter_said(error: &anyhow::Error) -> String {
     let chain = format!("{error:#}");
     let says = |needle: &str| chain.contains(needle);
-    if says("Tilo login has ended") || says("device cert has expired") || says("revoked") {
+    if says(CONFINED_OPENS_NO_SESSION) {
+        CONFINED_OPENS_NO_SESSION.to_owned()
+    } else if says("Tilo login has ended") || says("device cert has expired") || says("revoked") {
         LOGIN_ENDED.to_owned()
     } else if says("certificate is damaged")
         || says("not hex")
@@ -77,14 +86,21 @@ pub fn enter_said(error: &anyhow::Error) -> String {
 /// Enter the workspace `device` names, as that device, dialing its server at the address the
 /// login keeps; its session runs on what the device's own service `lent` it where it runs one.
 ///
+/// A device its person's root confined to one workspace opens no session on what its service
+/// lends: that service keeps no copy of the workspace, so the link the session would read through
+/// never comes. It is refused at once ([`CONFINED_OPENS_NO_SESSION`]).
+///
 /// # Errors
 /// The login names no server address, or the server is not reached or does not let this device
-/// in.
+/// in, or the device is confined to one workspace and is lent its service.
 pub async fn connect(
     key: &SigningKey,
     device: &Device,
     lent: Option<tilo_session_client::Lent>,
 ) -> Result<Entered> {
+    if lent.is_some() && device.cert.capabilities.workspace_name().is_some() {
+        return Err(anyhow!(CONFINED_OPENS_NO_SESSION));
+    }
     let address = device
         .server_address
         .as_ref()

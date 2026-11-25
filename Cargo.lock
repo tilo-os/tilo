@@ -7998,6 +7998,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "fnv",
+ "hex",
  "iroh-base",
  "libc",
  "linux-vm-agent",
@@ -8016,6 +8017,7 @@ dependencies = [
  "tilo-clock",
  "tilo-collab-types",
  "tilo-desktop-entry",
+ "tilo-device-identity",
  "tilo-egress",
  "tilo-files",
  "tilo-libvirt-domain",
@@ -8023,7 +8025,6 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-server-protocol",
  "tilo-test-env",
- "tilo-user-identity",
  "tilo-wire-frame",
  "workspace-hack",
 ]
@@ -17711,23 +17712,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-identity-authority"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek 3.0.0",
- "tempfile",
- "tilo-clock",
- "tilo-device-identity",
- "tilo-identity",
- "tilo-test-env",
- "tilo-user-identity",
- "tilo-workspace-service",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-identity-client"
 version = "0.1.0"
 dependencies = [
@@ -20371,7 +20355,6 @@ dependencies = [
  "tilo-fs-client",
  "tilo-fs-protocol",
  "tilo-identity",
- "tilo-identity-authority",
  "tilo-identity-client",
  "tilo-key-group",
  "tilo-keyboard-map",
@@ -27615,7 +27598,6 @@ dependencies = [
  "tilo-history",
  "tilo-host-search",
  "tilo-identity",
- "tilo-identity-authority",
  "tilo-identity-client",
  "tilo-image-codec",
  "tilo-image-info",

@@ -3,24 +3,26 @@
 //!
 //! The relay runs no apps. Browser's page actions exist only on a live
 //! Browser window, so a workspace hosted here opens Browser by starting a
-//! headless Tilo session in the workspace's VM, the one its Linux programs
-//! run in (`docs/hosted-browser.md`). That session is a device of the
-//! workspace — a fresh key this host certifies for this one workspace — and it
-//! opens the Browser window on the record the open made, so the window is
-//! live and published like any other.
+//! the device daemon in the workspace's VM, the one its Linux programs run in
+//! (`docs/hosted-browser.md`). That daemon is a device this host places for
+//! the workspace's person: the host certifies its key with its own for the
+//! VM's two records alone, and it opens the Browser window on the record the
+//! open made, so the window is live and published like any other.
 //!
 //! This module is what the server does about it:
 //!
 //! - **Place** ([`HostedBrowsers::place`]): the workspace's open of Browser
 //!   (`app.so.tilo.browser#open`) reaches this host as a provider on its
-//!   device's one dispatch ([`HostedBrowsers::provide_in`]); it certifies a
-//!   device for the session scoped to the workspace's one record and places
-//!   it in this host's register, which is all that admits its link here (no
-//!   other device lists it, and it takes no key of the workspace's), asks the
-//!   hosted-VM service to start it
-//!   ([`BrowserSessions::start`]) with that material, and remembers the window
-//!   it answered. The open answers once the window is live; a second open
-//!   attaches to the same session.
+//!   device's one dispatch ([`HostedBrowsers::provide_in`]); it serves a
+//!   ticket for the VM's daemon to join with ([`placement`]), asks the
+//!   hosted-VM service to start it ([`BrowserSessions::start`]) with that
+//!   material, and remembers the window it answered. This host certifies the
+//!   daemon's key at once, as one of the person's devices or under the
+//!   placement grant they gave it, and renews the certificate while the
+//!   session runs ([`HostedBrowsers::renew_placed`]). A host with neither
+//!   refuses to place, in words. The daemon's device is listed by no device
+//!   and takes no key of the workspace's. The open answers once the window is
+//!   live; a second open attaches to the same session.
 //! - **Route** ([`HostedBrowsers::route`]): an action addressed to that
 //!   window reaches this host (an agent's calls go to the workspace's
 //!   host device) through the same registry, which answers the window's
@@ -44,7 +46,7 @@
 //!   posting, a download — is the same call, invoked by the session that runs
 //!   the window: nobody stands at the page, so its own session carries it
 //!   and the host relays it. A key its person let operate web pages
-//!   ([`DeviceCapabilities::browser_pages`]) is not asked about the page
+//!   ([`tilo_user_identity::DeviceCapabilities::browser_pages`]) is not asked about the page
 //!   actions that lets it take — [`OPERATING_ACTIONS`], never a submission —
 //!   and this host answers for them where their answer would have: the
 //!   window runs it once, as theirs, and counts it.
@@ -74,8 +76,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod environment_device;
+mod placement;
 mod turn_fills;
 
+pub use placement::{NOT_ALLOWED_TO_PLACE, TAKEN_BACK};
 pub use turn_fills::FILL_PAGE_ITEM;
 
 use crate::WorkspaceId;
@@ -92,7 +96,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionFailure, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::windows::{
     Ends, Releasing, TurnFill, Windows, opened_resource, opens_browser_at, page_action,
 };
@@ -112,10 +116,7 @@ pub const PROVIDER: &str = APP;
 
 /// The record a workspace's Browser window opens on, in the workspace's Browser app: one per
 /// workspace, so opening Browser again attaches to the window already holding it.
-const RECORD: &str = "browser";
-
-/// The label the workspace shows a Linux apps session's device under.
-pub const APPS_DEVICE_LABEL: &str = "Linux apps";
+const RECORD: &str = crate::environment::VM_RECORD;
 
 /// Browser, as the app this host places, is a declared type: the thing a workspace opens here.
 struct HostedBrowser;
@@ -151,22 +152,7 @@ fn published() -> Vec<ResourceSpec> {
     vec![resource]
 }
 
-/// Make this host the person's stand-in approver, from their root:
-/// a browser session joins a workspace as a device of theirs, and a stand-in
-/// is what certifies one. A host its person's owner runs holds their root
-/// (a deployment's root file); a stand-in this host already keeps live is
-/// left as it is.
-///
-/// # Errors
-///
-/// `state_root` is not writable, or the root would not sign the certificate.
-pub fn keep_stand_in(
-    state_root: &std::path::Path,
-    root: &ed25519_dalek::SigningKey,
-) -> Result<(), String> {
-    crate::web::keep_stand_in(state_root, root)
-}
-/// The page actions a key holding [`DeviceCapabilities::browser_pages`]
+/// The page actions a key holding [`tilo_user_identity::DeviceCapabilities::browser_pages`]
 /// runs without asking: navigating, filling and choosing in a page, clicking
 /// and pressing what it found, scrolling and pointing. Submitting the page,
 /// uploading the person's files into it, filling in a password, and whatever
@@ -189,7 +175,8 @@ pub use tilo_actions::remote::browser::KEEP_HELD;
 pub use tilo_actions::remote::browser::SEND_HELD;
 /// How long a device certified for a session lasts: as long as the session
 /// may run.
-pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
+pub const DEVICE_LIFETIME: Duration =
+    Duration::from_nanos(tilo_user_identity::MAX_PLACED_DEVICE_LIFETIME_NS);
 /// How long an environment device whose last connection here ended has to
 /// come back before its environment stops. A session in a VM that dies is
 /// gone; one whose connection dropped is back in a moment, and its window
@@ -204,8 +191,6 @@ const NOT_READY_WAITS: [Duration; 4] = [
     Duration::from_secs(2),
 ];
 
-/// The label the workspace shows the session's device under.
-pub const DEVICE_LABEL: &str = "Browser";
 /// The address the sessions in the sessions reach this host at, written
 /// `KEY@HOST:PORT` ([`tilo_server_protocol::hosted::endpoint`]): this host's
 /// device key and its **public** address.
@@ -238,7 +223,7 @@ pub fn server_address() -> Result<EndpointAddr, String> {
 /// cannot disagree about what it holds.
 pub use tilo_server_protocol::hosted::Material;
 
-pub use crate::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Window};
+pub use crate::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Started, Window};
 
 /// What a host counts page actions against: its plans and the account's
 /// member access.
@@ -269,28 +254,27 @@ impl BrowserMeter for Unmetered {
     fn record(&self, _: &str, _: &str) {}
 }
 
-/// What placing needs of the host itself, once it runs: the certificate it
-/// makes browser sessions' devices with, where it is reached, the workspaces
-/// it serves, and the register that confines each session's device to the one
-/// record it was placed for.
+/// What placing needs of the host itself, once it runs: its own device, whose key certifies a
+/// VM's device and is where the VM enters, where it is reached, the workspaces it serves (the
+/// person's devices record among them, which holds the placement grants they gave it), and the
+/// register that confines each VM's device to its workspace.
 pub struct Authority {
+    /// The person the workspaces here belong to.
     pub user_public_key: [u8; 32],
-    /// The person's stand-in approver for this host
-    /// ([`tilo_user_identity::prepare_stand_in_cert`]): what a session's
-    /// device is certified with, as a member device of the workspace's person
-    /// for as long as the session may run. A host the person did not give
-    /// one holds no certificate to make a session a device, and placing
-    /// one is refused.
-    pub cert: DeviceCert,
-    /// That stand-in's own signing key.
-    pub key: SigningKey,
-    /// Where the session joins the workspace.
+    /// This host's own device certificate: what the VM enters through, and what certifies the
+    /// VM's device when the person's root signed it as one of their devices.
+    pub host: DeviceCert,
+    /// This host's device key, which signs every VM's certificate.
+    pub host_key: SigningKey,
+    /// Where the VM's daemon reaches this host: the address its ticket names.
     pub server: EndpointAddr,
     pub workspaces: Option<crate::workspaces::Workspaces>,
-    /// The server's environments' devices, confined to the record each was
-    /// placed for ([`crate::environment`]): what every protocol of the workspace
-    /// asks before it lets one in, or hands it a change.
+    /// The workspaces' VM devices this host placed, each confined to its workspace's one record
+    /// ([`crate::environment`]): what every protocol of the workspace asks before it lets one
+    /// in, or hands it a change.
     pub environments: crate::environment::EnvironmentRegistry,
+    /// This host's device action service, where a placement's ticket is served.
+    pub actions: tilo_peer_state::actions::ActionService,
     /// The runtime the workspaces run on: listing a device writes membership
     /// there.
     pub runtime: tokio::runtime::Handle,
@@ -431,6 +415,9 @@ pub struct HostedBrowsers {
     /// The Linux apps sessions up now, by workspace: each holds the windows
     /// of the apps it started, which it shares with the workspace itself.
     apps: Mutex<BTreeMap<WorkspaceId, Open>>,
+    /// Each workspace's VM placement, under way or up, by workspace: the ticket its daemon
+    /// joins with ([`placement`]).
+    placements: Mutex<BTreeMap<WorkspaceId, placement::Placing>>,
     authority: Mutex<Option<Authority>>,
     /// The page actions handed to a window and not yet answered, by
     /// invocation: what a count is owed for once it ran.
@@ -490,6 +477,7 @@ impl HostedBrowsers {
             open: Mutex::default(),
             placing: Mutex::default(),
             apps: Mutex::default(),
+            placements: Mutex::default(),
             authority: Mutex::default(),
             handed: Arc::default(),
             asked: Mutex::default(),
@@ -560,8 +548,9 @@ impl HostedBrowsers {
 
     /// Answer the page actions of the window published under `provider`: the provider is named by
     /// the window's own device, so a caller naming it reaches this host, which hands the action to
-    /// the device.
-    fn publish_window(&self, provider: &str) {
+    /// the device. `device`, the device this host placed for the window, reaches it too, as
+    /// the one provider it may call beside its records.
+    fn publish_window(&self, provider: &str, device: [u8; 32]) {
         let Some(RegisteredAs {
             providers, answers, ..
         }) = self.publishing.lock_recover().clone()
@@ -571,7 +560,7 @@ impl HostedBrowsers {
         let (Some(providers), Some(answers)) = (providers.upgrade(), answers.upgrade()) else {
             return;
         };
-        if let Err(error) = providers.serve(provider, APP, Reach::Devices, answers) {
+        if let Err(error) = providers.serve_placed(provider, APP, device, answers) {
             tracing::warn!(%error, "a Browser window's provider is served on this device already");
         }
     }
@@ -659,7 +648,7 @@ impl HostedBrowsers {
 
     /// [`Self::route`], with the certificate the server's handshake verified
     /// for the caller's device: a key whose person let it operate web pages
-    /// ([`DeviceCapabilities::browser_pages`]) has its page actions of
+    /// ([`tilo_user_identity::DeviceCapabilities::browser_pages`]) has its page actions of
     /// [`OPERATING_ACTIONS`] answered for them here, as their own answer
     /// answers a question. The window still decides: the caller's key reaches
     /// no workspace it was not admitted to, and Browser still holds every
@@ -745,15 +734,11 @@ impl HostedBrowsers {
         {
             return answered_with(message, ActionCallError::NotPermitted);
         }
-        let permitted = match &request.confirmation {
-            None => true,
-            // The person approved the asked record this call was kept as: the
-            // dispatch admitted the same call again carrying their answer, and
-            // the window runs it with it. Admission drops an answer from
-            // anything a caller sent, so what reaches here is the dispatch's.
-            Some(Confirmation::Asked(_)) => true,
-            Some(_) => false,
-        };
+        // With an answer, only the person's approval of the asked record this call was kept as:
+        // the dispatch admitted the same call again carrying their answer, and the window runs it
+        // with it. Admission drops an answer from anything a caller sent, so what reaches here is
+        // the dispatch's.
+        let permitted = matches!(&request.confirmation, None | Some(Confirmation::Asked(_)));
         if !permitted {
             return answered_with(message, ActionCallError::NotPermitted);
         }
@@ -969,7 +954,7 @@ impl HostedBrowsers {
                     self.handed.lock_recover().remove(&receipt.invocation);
                     return None;
                 };
-                let Ok(record) = records.write_asked(&workspace, &caller, &request, &facts) else {
+                let Ok(record) = records.write_asked(&workspace, &caller, &request, facts) else {
                     self.handed.lock_recover().remove(&receipt.invocation);
                     return None;
                 };
@@ -1220,10 +1205,16 @@ impl HostedBrowsers {
     /// live. A Browser already up is the same window: a second open attaches
     /// to it.
     ///
+    /// The workspace's VM joins with the ticket its placement serves: this
+    /// host certifies its daemon's key at once for the VM's records alone, as
+    /// one of the person's devices or under their placement grant, and renews
+    /// that certificate while the placement is up.
+    ///
     /// # Errors
     ///
-    /// The words to refuse the open with: this host is not running, no device
-    /// could be certified, or the session would not start.
+    /// The words to refuse the open with: this host is not running, may not
+    /// place the workspace's computer, the session would not start, or its
+    /// daemon did not join.
     pub fn place(
         &self,
         workspace: &str,
@@ -1239,45 +1230,25 @@ impl HostedBrowsers {
             return Ok(up.window.clone());
         }
         tracing::info!(%workspace, record, "placing the workspace's Browser in its VM");
-        let (device, material) = {
-            let authority = self.authority.lock_recover();
-            let authority = authority
-                .as_ref()
-                .ok_or("Browser is still starting. Try again in a minute.")?;
-            let (device, secret) = certified(&authority.cert, &authority.key, DEVICE_LABEL)?;
-            let material = Material {
-                workspace: workspace.to_owned(),
-                workspace_id,
-                record: record.to_owned(),
-                device: device.clone(),
-                secret,
-                server: authority.server.clone(),
-                user_public_key: authority.user_public_key,
-                account: self.account.clone(),
+        let (material, served) = self.placement(workspace, workspace_id, record)?;
+        let joined = self.sessions.start(&material).and_then(|started| {
+            let device = self.certified_device(workspace_id, &served)?;
+            let window = Window {
+                device: device.device_public_key,
+                provider: started.provider,
             };
-            (device, material)
-        };
-        // Confine the device to that record before it can ask for anything
-        // and before the workspace lists it: the register is the server's own
-        // state, written down here, so a server that restarts still confines
-        // it. The device itself is asked nothing.
-        let until_ns = device
-            .expires_at_ns
-            .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
-        if let Err(error) = self.confine(
-            &device,
-            crate::environment::EnvironmentScope::for_resource(workspace_id, APP, record),
-            until_ns,
-        ) {
-            tracing::warn!(%error, "the Browser's device could not be confined");
-            return Err("Browser couldn't start. Try again in a minute.".to_owned());
-        }
-        let window = match self.sessions.start(&material) {
-            Ok(window) => window,
+            Ok((window, device))
+        });
+        let (window, device) = match joined {
+            Ok(joined) => joined,
             Err(error) => {
-                // The device never left this host: it is forgotten rather
-                // than left placed.
-                self.forget(&device);
+                // A VM that never joined holds nothing: its ticket goes with it, and the VM is
+                // stopped.
+                let apps_up = self.apps.lock_recover().contains_key(&workspace_id);
+                if !apps_up {
+                    self.sessions.stop(workspace);
+                }
+                self.unjoined(workspace_id, &served, apps_up);
                 return Err(error);
             }
         };
@@ -1287,6 +1258,8 @@ impl HostedBrowsers {
             device = %hex::encode(window.device),
             "the workspace's Browser window is up in its VM"
         );
+        let placed_device = device.device_public_key;
+        self.keep_renewing(workspace_id, device.clone());
         self.open.lock_recover().insert(
             workspace_id,
             Open {
@@ -1299,22 +1272,21 @@ impl HostedBrowsers {
         );
         // A page action names the window's own provider: from now on this host answers it, and
         // hands the action to the device holding the window.
-        self.publish_window(&window.provider);
+        self.publish_window(&window.provider, placed_device);
         Ok(window)
     }
 
     /// Start `launch` in `workspace_id`'s Linux apps session — the workspace
     /// whose UUID is `workspace`, opened on the record `record` — starting
-    /// that session when none runs: a device certified for it, confined to
-    /// that record and the workspace's own document (the shell its windows
-    /// stand on), and listed as a member device, as a Browser session is. A
+    /// that session when none runs, in the workspace's VM, whose daemon joins
+    /// with the ticket of the workspace's placement as Browser's does. A
     /// session already up is told to start the app.
     ///
     /// # Errors
     ///
-    /// What to refuse the open with: this host is not running, no device
-    /// could be certified, the account may not run Linux, or the session
-    /// would not start.
+    /// What to refuse the open with: this host is not running, the account may
+    /// not run Linux, the session would not start, or its daemon was not
+    /// certified.
     pub fn place_app(
         &self,
         workspace: &str,
@@ -1324,64 +1296,34 @@ impl HostedBrowsers {
     ) -> Result<Window, AppRefusal> {
         let words = AppRefusal::Words;
         let mut apps = self.apps.lock_recover();
-        let (device, material) = {
-            let authority = self.authority.lock_recover();
-            let authority = authority.as_ref().ok_or_else(|| {
-                words("Linux apps are still starting. Try again in a minute.".to_owned())
-            })?;
-            // A session already up keeps its device: the material only
-            // starts a session, and the VM host hands the app to the one
-            // running.
-            let (device, secret) = match apps.get(&workspace_id) {
-                Some(up) => (up.device.clone(), [0; 32]),
-                None => certified(&authority.cert, &authority.key, APPS_DEVICE_LABEL).map_err(
-                    |error| {
-                        tracing::warn!(%error, "the Linux apps device could not be certified");
-                        words("The app couldn't start. Try again in a minute.".to_owned())
-                    },
-                )?,
-            };
-            let material = Material {
-                workspace: workspace.to_owned(),
-                workspace_id,
-                record: record.to_owned(),
-                device: device.clone(),
-                secret,
-                server: authority.server.clone(),
-                user_public_key: authority.user_public_key,
-                account: self.account.clone(),
-            };
-            (device, material)
-        };
+        let (material, served) = self
+            .placement(workspace, workspace_id, record)
+            .map_err(words)?;
         let fresh = !apps.contains_key(&workspace_id);
-        if fresh {
-            let until_ns = device
-                .expires_at_ns
-                .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
-            self.confine(
-                &device,
-                crate::environment::EnvironmentScope::for_resource(
-                    workspace_id,
-                    linux_apps::APP,
-                    record,
-                ),
-                until_ns,
-            )
-            .map_err(|error| {
-                tracing::warn!(%error, "the Linux app's device could not be confined");
-                words("The app couldn't start. Try again in a minute.".to_owned())
-            })?;
-        }
-        let window = match self.sessions.start_app(&material, launch) {
-            Ok(window) => window,
-            Err(refusal) => {
+        // The VM keeps running for a window it holds already.
+        let up = !fresh || self.open.lock_recover().contains_key(&workspace_id);
+        let started = self
+            .sessions
+            .start_app(&material, launch)
+            .inspect_err(|_| self.unjoined(workspace_id, &served, up))?;
+        // The VM joined with the placement's one ticket, whichever session started it: the
+        // device the apps run as is the one that ticket certified.
+        let device = match self.certified_device(workspace_id, &served) {
+            Ok(device) => device,
+            Err(error) => {
                 if fresh {
-                    self.forget(&device);
+                    self.sessions.stop_apps(workspace);
+                    self.unjoined(workspace_id, &served, up);
                 }
-                return Err(refusal);
+                return Err(words(error));
             }
         };
+        let window = Window {
+            device: device.device_public_key,
+            provider: started.provider,
+        };
         if fresh {
+            self.keep_renewing(workspace_id, device.clone());
             apps.insert(
                 workspace_id,
                 Open {
@@ -1396,6 +1338,27 @@ impl HostedBrowsers {
         Ok(window)
     }
 
+    /// A placement whose VM did not join: its ticket goes, and a device its daemon was certified
+    /// as anyway is refused here from now on. A VM that is `up` with another window keeps both.
+    fn unjoined(
+        &self,
+        workspace_id: WorkspaceId,
+        served: &tilo_peer_state::new_device::ServedTicket,
+        up: bool,
+    ) {
+        if up {
+            return;
+        }
+        let certified = served.certified().borrow().clone();
+        self.unplace(workspace_id);
+        if let Some(device) = certified {
+            self.refuse(std::iter::once((
+                device.device_public_key,
+                device.expires_at_ns.unwrap_or(u64::MAX),
+            )));
+        }
+    }
+
     /// The workspace's browser session stopped: refuse its device on every
     /// protocol, end the session in the VM, forget the device and its window, and
     /// cut every connection the device has here.
@@ -1406,6 +1369,7 @@ impl HostedBrowsers {
     pub fn stopped(&self, workspace_id: WorkspaceId) {
         let stopped = self.open.lock_recover().remove(&workspace_id);
         let stopped_apps = self.apps.lock_recover().remove(&workspace_id);
+        self.unplace(workspace_id);
         if let Some(stopped) = &stopped {
             // The window's provider is gone with it: a call naming it reaches no page action now.
             self.unpublish_window(&stopped.window.provider);
@@ -1456,6 +1420,12 @@ impl HostedBrowsers {
         };
         if let Some(stopped) = &stopped {
             self.unpublish_window(&stopped.window.provider);
+        }
+        // The VM is one device: once it holds no window here, its placement is over.
+        if !self.open.lock_recover().contains_key(&workspace_id)
+            && !self.apps.lock_recover().contains_key(&workspace_id)
+        {
+            self.unplace(workspace_id);
         }
         if let Some(stopped) = stopped.as_ref().or(stopped_apps.as_ref()) {
             tracing::info!(
@@ -1521,11 +1491,12 @@ impl HostedBrowsers {
                 open.lock_recover()
                     .get(&workspace_id)
                     .filter(|up| up.window.device == device)
-                    .and_then(|up| up.device.expires_at_ns)
+                    .map(|up| up.device.expires_at_ns.unwrap_or(u64::MAX))
             };
+            // A VM's device lasts until the person removes it: refused here for as long.
             let until_ns = held(&browsers.open)
                 .or_else(|| held(&browsers.apps))
-                .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
+                .unwrap_or(u64::MAX);
             // Stopping asks VM hosts and writes workspace membership: never on
             // a runtime thread.
             let _ = tokio::task::spawn_blocking(move || {
@@ -1533,33 +1504,6 @@ impl HostedBrowsers {
             })
             .await;
         });
-    }
-
-    /// Register what a session's device reaches, before it is handed to the
-    /// session: the register is what this host admits the device's link by.
-    fn confine(
-        &self,
-        device: &DeviceCert,
-        scope: crate::environment::EnvironmentScope,
-        until_ns: u64,
-    ) -> Result<(), String> {
-        let authority = self.authority.lock_recover();
-        let Some(authority) = authority.as_ref() else {
-            return Err("The workspace isn't ready yet.".to_owned());
-        };
-        authority
-            .environments
-            .place_certified(device, scope, until_ns)
-    }
-
-    /// Forget a device that never left this host: one whose session could not
-    /// be started.
-    fn forget(&self, device: &DeviceCert) {
-        let authority = self.authority.lock_recover();
-        let Some(authority) = authority.as_ref() else {
-            return;
-        };
-        authority.environments.forget(&device.device_public_key);
     }
 }
 
@@ -1837,8 +1781,10 @@ impl ActionProvider for HostedBrowsers {
         let device = *caller.device_public_key()?;
         let handed = self.handed.lock_recover();
         let entry = handed.get(id)?;
-        (entry.caller.device_public_key() == Some(&device))
-            .then(|| InvocationState::new(*id, entry.stage.state(*id)))
+        let state = (entry.caller.device_public_key() == Some(&device))
+            .then(|| InvocationState::new(*id, entry.stage.state(*id)));
+        drop(handed);
+        state
     }
 
     fn cancel(
@@ -1846,49 +1792,22 @@ impl ActionProvider for HostedBrowsers {
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
-        // The window runs it where it is: there is nothing here to stop.
+        // A page action: the window runs it where it is, and there is nothing here to stop.
         Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "the Browser window holds it".to_owned(),
         }))
     }
 }
 
-/// [`DEVICE_LIFETIME`] in nanoseconds: how long a session's certificate lasts.
-fn lifetime_ns() -> u64 {
-    u64::try_from(DEVICE_LIFETIME.as_nanos()).unwrap_or(u64::MAX)
-}
-
-/// A fresh device for a session, certified by the host's stand-in as a
-/// member device of the workspace's person, for as long as the session
-/// may run.
-fn certified(
-    stand_in: &DeviceCert,
-    key: &SigningKey,
-    label: &str,
-) -> Result<(DeviceCert, [u8; 32]), String> {
-    if !stand_in.capabilities.stand_in {
-        return Err(
-            "this host holds no stand-in certificate for the workspace's person, so it cannot \
-             make a browser session a device"
-                .to_owned(),
-        );
-    }
-    let mut secret = [0_u8; 32];
-    getrandom::fill(&mut secret).map_err(|error| error.to_string())?;
-    let device = SigningKey::from_bytes(&secret);
-    let now = tilo_clock::unix_now_ns();
-    let mut minted = DeviceCert {
-        user_public_key: stand_in.user_public_key,
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: now,
-        expires_at_ns: Some(now.saturating_add(lifetime_ns())),
-        signature: [0; 64],
-        issuer: Some(Box::new(stand_in.clone())),
-    };
-    sign_device_cert(&mut minted, key).map_err(|error| error.to_string())?;
-    Ok((minted, secret))
+/// `work`, run to its end on `runtime` from a thread of the runtime's own: a
+/// session's device is listed from the blocking thread that placed it, which
+/// carries the runtime's context, where waiting on the runtime is refused.
+/// `None` when that thread panicked.
+fn waited_on_its_own_thread<T: Send>(
+    runtime: &tokio::runtime::Handle,
+    work: impl std::future::Future<Output = T> + Send,
+) -> Option<T> {
+    std::thread::scope(|scope| scope.spawn(|| runtime.block_on(work)).join().ok())
 }
 
 /// What the server says of a page action handed to the window with nobody's
@@ -2555,7 +2474,7 @@ mod tests {
 
         struct NoMachines;
         impl BrowserSessions for NoMachines {
-            fn start(&self, _: &Material) -> Result<Window, String> {
+            fn start(&self, _: &Material) -> Result<Started, String> {
                 Err("no machines".into())
             }
             fn stop(&self, _: &str) {}

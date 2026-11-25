@@ -524,26 +524,20 @@ async fn a_hosted_environments_link_reads_its_one_record() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
+    // The workspace's VM is certified for this one workspace, and the host that placed it
+    // confines it in its register.
     let (_browser_key, browser) = device_cert(
         &SigningKey::from_bytes(&[1; 32]),
         "browser",
-        DeviceCapabilities::member(),
+        DeviceCapabilities::workspace_device(*created.workspace_id.as_uuid().as_bytes()),
     );
-    let scope = crate::environment::EnvironmentScope::for_resource(
-        created.workspace_id,
-        "so.tilo.browser",
-        "record-1",
-    );
-    workspaces
+    let scope = workspaces
         .inner
         .host
         .environments
-        .place_certified(
-            &browser,
-            scope,
-            tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
-        )
-        .unwrap();
+        .confine(&browser)
+        .unwrap()
+        .expect("a device of one workspace is that workspace's VM");
     let link = workspaces
         .direct()
         .link(created.workspace_id)
@@ -553,7 +547,7 @@ async fn a_hosted_environments_link_reads_its_one_record() {
         .expect("the server admits the environment it placed");
     assert_eq!(
         reached.reads,
-        Some(scope.channel),
+        Some(vec![scope.channel]),
         "the environment's device reads its own record and no other"
     );
     assert!(

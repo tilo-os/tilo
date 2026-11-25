@@ -183,20 +183,19 @@ impl Inner {
         self: &Arc<Self>,
         run: Run,
         workspace: String,
-        asked: Option<OpenBrowser>,
+        mut asked: OpenBrowser,
         browsers: Option<BrowserHost>,
     ) {
         let inner = Arc::clone(self);
         let invocation = run.state().invocation();
         std::thread::spawn(move || {
-            let outcome = match (asked, browsers) {
-                (Some(mut asked), Some(browsers)) => {
+            let outcome = match browsers {
+                Some(browsers) => {
                     asked.workspace.clone_from(&workspace);
                     let store = inner.shells.files(&workspace).join(PROFILE_STORE);
                     browsers.open(&asked, store).map(Some)
                 }
-                (None, Some(browsers)) => browsers.stop(&workspace).map(|()| None),
-                _ => Err("this member runs no workspace VMs".to_owned()),
+                None => Err("this member runs no workspace VMs".to_owned()),
             };
             let update = match outcome {
                 Ok(opened) => InvocationUpdate::Succeeded {
@@ -220,7 +219,7 @@ impl Inner {
         });
     }
 
-    /// Answer `run` by starting (or ending) `workspace`'s Linux apps in its
+    /// Answer `run` by starting `workspace`'s Linux apps in its
     /// VM on this host's hosted-VM service. A refusal by the account's plan
     /// is answered as one, carrying the plans' typed refusal, so whoever
     /// opened the app reads what would let it through.
@@ -228,22 +227,18 @@ impl Inner {
         self: &Arc<Self>,
         run: Run,
         workspace: String,
-        asked: Option<OpenApp>,
+        mut asked: OpenApp,
         browsers: Option<BrowserHost>,
     ) {
         let inner = Arc::clone(self);
         let invocation = run.state().invocation();
         std::thread::spawn(move || {
-            let outcome = match (asked, browsers) {
-                (Some(mut asked), Some(browsers)) => {
+            let outcome = match browsers {
+                Some(browsers) => {
                     asked.workspace.clone_from(&workspace);
                     browsers.open_app(&asked).map(Some)
                 }
-                (None, Some(browsers)) => browsers
-                    .stop_apps(&workspace)
-                    .map(|()| None)
-                    .map_err(AppRefused::Error),
-                _ => Err(AppRefused::Error(
+                None => Err(AppRefused::Error(
                     "this member runs no workspace VMs".to_owned(),
                 )),
             };
@@ -585,9 +580,7 @@ impl EnvironmentCommands {
         let action = target.address.action.as_str();
         let in_vm = [
             browser::OPEN,
-            browser::STOP,
             linux_apps::OPEN,
-            linux_apps::STOP,
             environment_machines::BRANCH,
             environment_machines::DELETE,
         ]
@@ -625,10 +618,8 @@ impl EnvironmentCommands {
                     .ok_or(ActionCallError::NotPermitted)?;
                 Asked::Terminal(program_argument(request, "a terminal to open")?, device)
             }
-            browser::OPEN => Asked::Browser(Some(open_argument(request, "Browser")?)),
-            browser::STOP => Asked::Browser(None),
-            linux_apps::OPEN => Asked::App(Some(open_argument(request, "a Linux app")?)),
-            linux_apps::STOP => Asked::App(None),
+            browser::OPEN => Asked::Browser(open_argument(request, "Browser")?),
+            linux_apps::OPEN => Asked::App(open_argument(request, "a Linux app")?),
             environment_machines::BRANCH => Asked::Machine(Some(branch_argument(request)?)),
             environment_machines::DELETE => Asked::Machine(None),
             _ => return Err(not_served()),
@@ -674,8 +665,8 @@ impl EnvironmentCommands {
 
 enum Asked {
     Command(CommandRequest),
-    Browser(Option<OpenBrowser>),
-    App(Option<OpenApp>),
+    Browser(OpenBrowser),
+    App(OpenApp),
     /// A branch of the workspace's machine from another's, or its deletion.
     Machine(Option<BranchMachine>),
     /// A session's shell to open on a terminal, for the server's device that asked.

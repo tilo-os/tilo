@@ -9,20 +9,18 @@
 //!
 //! - [`target`] names a Browser open, an action of the workspace's
 //!   environment ([`RESOURCE`]); the argument is an [`OpenBrowser`].
-//! - It succeeds with an [`OpenedBrowser`] once the session is
-//!   up in the workspace: what opening took, whether this call opened it or
-//!   attached to the one already serving the workspace, and the provider
-//!   token of the window it holds (what a page action names). A host with no
-//!   room answers
+//! - It succeeds with an [`OpenedBrowser`] once the VM's daemon logged in with
+//!   the ticket the material carries: what starting it took, whether this call
+//!   started it or found it running, and the VM's device. The window itself is
+//!   opened and read on that device ([`super::environment_window`]). A host with
+//!   no room answers
 //!   [`Unavailable`](super::ActionCallError::Unavailable) with the words to
 //!   wait on.
-//! - [`STOP`] ends the session; the VM then sleeps like any idle VM.
+//! - [`STOP`] ends the VM's daemon and its sessions; the VM then sleeps like any
+//!   idle VM.
 //!
-//! The session in the workspace's VM reports through its standard output, one
-//! line per event ([`Report`]): [`READY`] once its engine is up with no
-//! workspace, [`UP`] with the window's provider once it has joined and opened
-//! the window, and [`USED`] whenever the page is used. [`MARK`] is set in its
-//! environment, so the session knows it holds a hosted Browser.
+//! [`MARK`] is set in the environment of the session the daemon starts for
+//! Browser, so the session knows it holds a hosted Browser.
 //!
 //! Only the workspace's host asks, as a device of the operator the member's
 //! own identity belongs to: the workspace it opens is the caller's, never one
@@ -39,8 +37,6 @@ pub const PROVIDER: &str = "tilo.environment";
 pub const RESOURCE: &str = "environment";
 /// Start the browser session in a workspace's VM, or attach to it.
 pub const OPEN: &str = "open-browser";
-/// End it now.
-pub const STOP: &str = "stop-browser";
 /// The page action that lets a held request leave, by the id the window
 /// published it with: what a departure nothing asked for is answered with.
 pub const SEND_HELD: &str = "send-held-request";
@@ -103,57 +99,8 @@ pub fn departure_asked(facts: Vec<(String, String)>) -> super::asked::AskedFacts
     }
 }
 
-/// Set in the session's own environment: it serves a browser
-/// environment, and reports on its standard output.
+/// Set in the environment of the session a workspace VM's daemon starts for Browser.
 pub const MARK: &str = "TILO_HOSTED_BROWSER";
-/// The line the session prints once its engine is up and it waits for a
-/// workspace.
-pub const READY: &str = "ready";
-/// The word the session prints with the window's provider once it has joined
-/// its workspace and opened the window: `up <provider>`.
-pub const UP: &str = "up";
-/// The line the session prints whenever the page is used: an action ran, or
-/// somebody is viewing it.
-pub const USED: &str = "used";
-
-/// What the session in a workspace's VM printed on its standard output.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Report {
-    /// Its engine is up, and it waits for a workspace.
-    Ready,
-    /// It joined its workspace and opened the window, whose provider token
-    /// this is: what a page action names in place of the app.
-    Up { provider: String },
-    /// The page was used: an action ran, or somebody views it.
-    Used,
-}
-
-impl Report {
-    /// The report `line` is, if it is one.
-    #[must_use]
-    pub fn parse(line: &str) -> Option<Self> {
-        let line = line.trim();
-        if line == READY {
-            return Some(Self::Ready);
-        }
-        if line == USED {
-            return Some(Self::Used);
-        }
-        let provider = line.strip_prefix(UP)?.strip_prefix(' ')?.trim().to_owned();
-        (!provider.is_empty() && !provider.contains(char::is_whitespace))
-            .then_some(Self::Up { provider })
-    }
-
-    /// The line it prints, without its end.
-    #[must_use]
-    pub fn line(&self) -> String {
-        match self {
-            Self::Ready => READY.to_owned(),
-            Self::Up { provider } => format!("{UP} {provider}"),
-            Self::Used => USED.to_owned(),
-        }
-    }
-}
 
 /// What [`OPEN`] is invoked on.
 #[must_use]
@@ -161,15 +108,6 @@ pub fn target() -> RemoteActionTarget {
     RemoteActionTarget {
         provider: PROVIDER.to_owned(),
         address: ActionAddress::new(RESOURCE, OPEN),
-    }
-}
-
-/// What [`STOP`] is invoked on.
-#[must_use]
-pub fn stop_target() -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: PROVIDER.to_owned(),
-        address: ActionAddress::new(RESOURCE, STOP),
     }
 }
 
@@ -182,22 +120,22 @@ pub struct OpenBrowser {
     /// Who the machine's time is booked to, as the server knows the account.
     #[serde(default)]
     pub account: String,
-    /// What the session joins the workspace with — the workspace, the record
-    /// to open, the device certificate — opaque to the host running it and to
-    /// the VM service: one line of the session's input.
+    /// The host's placement (`tilo_server_protocol::hosted::Material`): the
+    /// workspace, the record to open and the ticket the VM's daemon logs in
+    /// with, in JSON.
     pub material: String,
 }
 
-/// A workspace's Browser, up.
+/// A workspace VM's daemon, logged in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenedBrowser {
-    /// What opening took, when this call opened it; absent when it attached
-    /// to the session already running.
+    /// What starting it took, when this call started it; absent when it was
+    /// running already.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_ms: Option<u64>,
-    /// The provider token of the window the session holds (`42`): what a
-    /// page action on it is addressed to.
-    pub provider: String,
+    /// The VM's device, its key in hex: where its sessions are launched and
+    /// read ([`super::environment_window`]).
+    pub device: String,
 }
 
 /// The host that placed a window, as the window's own session was handed it: the device that
@@ -297,54 +235,24 @@ mod tests {
         );
     }
 
-    tilo_test_env::scenario! {
-        fn a_browser_environment_names_its_actions_and_windows;
-
-        phase an_opened_environment_names_its_window;
-        {
-            // An opening that attached says nothing about time, but always names
-            // the window it attached to.
-            assert_eq!(
-                serde_json::to_string(&OpenedBrowser {
-                    opened_ms: None,
-                    provider: "42".into()
-                })
-                .unwrap(),
-                r#"{"provider":"42"}"#
-            );
-            assert_eq!(
-                serde_json::to_string(&OpenedBrowser {
-                    opened_ms: Some(900),
-                    provider: "42".into()
-                })
-                .unwrap(),
-                r#"{"opened_ms":900,"provider":"42"}"#
-            );
-        }
-
-        phase a_session_reports_its_lines_and_reads_them_back;
-        {
-            for report in [
-                Report::Ready,
-                Report::Up {
-                    provider: "42".into(),
-                },
-                Report::Used,
-            ] {
-                assert_eq!(Report::parse(&report.line()), Some(report));
-            }
-            assert_eq!(Report::parse(" ready\n"), Some(Report::Ready));
-            assert_eq!(
-                Report::parse("up 42"),
-                Some(Report::Up {
-                    provider: "42".into()
-                }),
-                "the window's provider is what the line carries"
-            );
-            // and nothing else is a report
-            for line in ["up", "up ", "uptime", "used it", "ready now", "notup"] {
-                assert_eq!(Report::parse(line), None, "{line:?}");
-            }
-        }
+    #[test]
+    fn an_opened_vm_names_its_device() {
+        // A daemon that was running says nothing about time, but always names its device.
+        assert_eq!(
+            serde_json::to_string(&OpenedBrowser {
+                opened_ms: None,
+                device: "ab".into()
+            })
+            .unwrap(),
+            r#"{"device":"ab"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&OpenedBrowser {
+                opened_ms: Some(900),
+                device: "ab".into()
+            })
+            .unwrap(),
+            r#"{"opened_ms":900,"device":"ab"}"#
+        );
     }
 }

@@ -90,11 +90,13 @@ pub use approval::{
 pub use canonical::CanonicalError;
 pub use cert::{
     AgentScope, BINARY_LAYOUT, DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
-    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, RetiredFlags,
-    STAND_IN_LIFETIME_NS, UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, binary_layout_of,
-    check_agent_grant, device_cert_signing_digest, device_name, prepare_minted_grant,
-    prepare_service_cert, prepare_stand_in_cert, retract_signature_checks, sign_device_cert,
-    sign_device_cert_async, signature_checks, verify_device_cert, verify_device_cert_at,
+    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, MAX_PLACED_DEVICE_LIFETIME_NS,
+    MAX_PLACED_RECORDS, PlacedRecords, RememberedRefusal, RetiredFlags, STAND_IN_LIFETIME_NS,
+    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, binary_layout_of, check_agent_grant,
+    device_cert_signing_digest, device_name, prepare_minted_grant, prepare_placed_device_cert,
+    prepare_placing_grant, prepare_placing_grant_by, prepare_service_cert, prepare_stand_in_cert,
+    retract_signature_checks, sign_device_cert, sign_device_cert_async, signature_checks,
+    verify_device_cert, verify_device_cert_at, verify_placing_grant, verify_placing_grant_at,
     verify_remembered, verify_stand_in_cert, verify_stand_in_cert_at,
 };
 pub use certification::{

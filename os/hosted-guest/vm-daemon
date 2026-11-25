@@ -1,0 +1,74 @@
+#!/bin/sh
+# The device daemon of a workspace's VM (docs/hosted-browser.md): the VM's one
+# device of the workspace. It logs in with the ticket the workspace's placement
+# hands it, and starts the VM's sessions (Browser's and the Linux apps') as its
+# clients when the machine that runs the VM asks it for a window
+# (`environment#launch`), as a login's daemon starts a person's shell.
+#
+# The machine's keeper runs this through the guest agent, as the tenant, once the
+# VM woke (`crates/vm/linux-vm/src/hosted/browser.rs`), never at the image's
+# boot: a VM cloned from a template must make its own device key, not share the
+# template's. It becomes root (the tenant may: the VM is theirs), because the
+# sessions it starts run as two other accounts, and each session's entry script
+# drops to its own (browser-session, apps-session).
+#
+# Usage:
+#   vm-daemon                    start the daemon; TILO_VM_TICKET holds the
+#                                ticket it logs in with (tilo1...)
+#   vm-daemon --device           print the device it is, as JSON, once it has one
+#   vm-daemon --browser-store DIR
+#                                name the folder of the workspace's files Browser
+#                                keeps its profile in between runs
+#
+# SIGTERM ends the daemon, and with it its sessions; Browser writes its profile
+# back first.
+set -eu
+
+if [ "$(id -u)" != 0 ]; then
+    exec sudo -n --preserve-env=TILO_VM_TICKET -- "$0" "$@"
+fi
+
+state=/var/lib/tilo/vm
+run=/run/tilo/vm
+umask 077
+mkdir -p -m 0700 "$state" "$state/identity" "$state/profile"
+mkdir -p -m 0755 "$run"
+# The tenant's own way to this daemon, and the only other account the VM's programs run as:
+# a socket in a directory the tenant's group may enter, which the daemon serves the tenant's
+# account alone and refuses every other by name, Browser's included. The tenant's sessions
+# find it as any client of a daemon whose sockets are in a named profile does.
+tenant=$run/tenant
+install -d -o root -g "$(id -gn tilo)" "$tenant"
+chmod 0750 "$tenant"
+export TILO_VM_TENANT_UID="$(id -u tilo)" TILO_VM_TENANT_SOCKETS=$tenant
+# The device's key and certificate: the daemon's own, never a session's.
+export TILO_IDENTITY_ROOT=$state/identity
+runtime=/usr/libexec/tilo/tilo-runtime
+
+case ${1:-} in
+    --device)
+        # Fails until the daemon made its key; names no person until it logged in.
+        exec "$runtime" --device-info ;;
+    --browser-store)
+        [ -n "${2:-}" ] || { echo 'usage: vm-daemon --browser-store DIR' >&2; exit 2; }
+        # Read by browser-session at its start; replaced whole.
+        printf '%s\n' "$2" > "$run/browser-store.new"
+        chmod 0644 "$run/browser-store.new"
+        mv -f "$run/browser-store.new" "$run/browser-store"
+        exit 0 ;;
+    '') ;;
+    *) echo 'usage: vm-daemon [--device | --browser-store DIR]' >&2; exit 2 ;;
+esac
+
+[ -n "${TILO_VM_TICKET:-}" ] || { echo 'vm-daemon: TILO_VM_TICKET names no ticket' >&2; exit 2; }
+# The daemon spends a handed ticket from its credentials, as systemd hands one to
+# a login's daemon; it is gone from the environment before anything starts.
+credentials=$run/credentials
+mkdir -p -m 0700 "$credentials"
+printf '%s' "$TILO_VM_TICKET" > "$credentials/tilo.ticket"
+unset TILO_VM_TICKET
+mkdir -p -m 0700 "$run/runtime"
+export CREDENTIALS_DIRECTORY=$credentials XDG_RUNTIME_DIR=$run/runtime HOME=$state
+# The daemon serves the machine's `environment` resource only with this mark.
+export TILO_VM_ENVIRONMENT=1
+exec "$runtime" --standalone --profile "$state/profile"

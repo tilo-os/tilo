@@ -333,6 +333,45 @@ impl DeviceWork {
         answer
     }
 
+    /// `request`, a placed device's `settings#set` (`placed`), kept in its workspace's environment
+    /// record by this host ([`crate::environment::keep_setting`]): answered once it is written.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_setting(
+        &self,
+        placed: &tilo_actions::remote::PlacedCaller,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(workspaces) = self.turns.get().and_then(super::WeakWorkspaces::upgrade) else {
+            return Pending::ready(Err(not_served()));
+        };
+        let Some(workspace) = caller.workspace().map(str::to_owned) else {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        };
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = request.argument else {
+            return Pending::ready(Err(ActionCallError::InvalidRequest {
+                reason: "a setting action asks with its arguments".into(),
+            }));
+        };
+        let (placed, invocation) = (placed.clone(), request.invocation);
+        let (completer, answer) = tilo_actions::remote::pending();
+        self.runtime.spawn(async move {
+            let kept =
+                crate::environment::keep_setting(&workspaces, &placed, &workspace, &arguments)
+                    .await;
+            completer.complete(kept.map(|value| InvocationReceipt {
+                invocation,
+                status: tilo_actions::remote::ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(value),
+                        ..ActionOutput::default()
+                    },
+                },
+            }));
+        });
+        answer
+    }
+
     /// Take `request`, a device's ask that this one take a turn of work
     /// (`tilo.work#take`): claim it when it is this device's turn and answer at
     /// once that it runs, then run it, renewing the claim while it does. A turn
@@ -702,7 +741,10 @@ pub(crate) fn action_service(
     let action_service = ActionService::over(
         device,
         Arc::clone(&answers) as Arc<dyn ActionProvider + Send + Sync>,
-        Arc::new(HeldWorkspaces(workspaces)),
+        Arc::new(HeldWorkspaces {
+            held: workspaces,
+            work: Arc::clone(&work),
+        }),
     );
     (action_service, work, answers)
 }
@@ -716,16 +758,24 @@ pub(crate) async fn certificate_of(
 ) -> Option<tilo_user_identity::DeviceCert> {
     let kept = workspaces.lock().await.get(workspace).cloned()?;
     let kept = kept.lock().await;
-    kept.peer()
-        .certificates()
+    let peer = kept.peer();
+    // A device placed for records is listed in no roster: the certificate it proved itself with
+    // is the one this copy decides it by.
+    peer.certificates()
         .into_iter()
         .find(|certificate| certificate.device_public_key == device)
+        .or_else(|| peer.placed_device_certificate(&device))
 }
 
 /// The workspaces this device holds, as the action service reads them: each is
 /// locked for the read, so a change of its members reaches the action service
 /// as it happens.
-struct HeldWorkspaces(Arc<WorkspacesMap>);
+struct HeldWorkspaces {
+    held: Arc<WorkspacesMap>,
+    /// What reaches the host's workspaces, whose admission a placed device's certificate is taken
+    /// in by.
+    work: Arc<DeviceWork>,
+}
 
 impl Workspaces for HeldWorkspaces {
     fn read<'a>(
@@ -734,7 +784,7 @@ impl Workspaces for HeldWorkspaces {
         read: &'a mut (dyn FnMut(&StatePeer) + Send),
     ) -> ReadFuture<'a> {
         Box::pin(async move {
-            let held = self.0.lock().await.get(workspace).cloned();
+            let held = self.held.lock().await.get(workspace).cloned();
             // A workspace this device does not hold is one it is no member of:
             // there is no state here to answer from.
             let Some(held) = held else {
@@ -743,6 +793,26 @@ impl Workspaces for HeldWorkspaces {
             let held = held.lock().await;
             read(&held.peer());
             true
+        })
+    }
+
+    fn admit_placed<'a>(
+        &'a self,
+        workspace: &'a str,
+        certificate: &'a tilo_user_identity::DeviceCert,
+    ) -> ReadFuture<'a> {
+        Box::pin(async move {
+            let Some(workspaces) = self
+                .work
+                .turns
+                .get()
+                .and_then(super::WeakWorkspaces::upgrade)
+            else {
+                return false;
+            };
+            workspaces
+                .admit_placed_device(workspace, certificate.clone())
+                .await
         })
     }
 }
@@ -838,6 +908,16 @@ impl ActionProvider for Answers {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        // A device placed for records reads what it may call here: the providers registered for
+        // it. The workspace's apps and this device's own actions are none of its to call.
+        if caller.placed_records().is_some()
+            && let Some(device) = caller.device_public_key()
+        {
+            return Pending::ready(Ok(self
+                .work
+                .providers
+                .placed_catalogue(caller, *device, &query)));
+        }
         if query
             .provider
             .as_deref()
@@ -1247,6 +1327,29 @@ impl Answers {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // A device a host placed keeps its session's settings with the same `settings#set` as
+        // any device: this host writes them into the workspace's environment record, when the
+        // device's certificate names that record ([`crate::environment::keep_setting`]).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(placed) = caller.placed_records()
+            && crate::environment::is_setting(&request.target)
+        {
+            return self.work.keep_setting(placed, caller, request);
+        }
+        // A device a host placed reaches a provider registered on this device, which decides it as
+        // that device ([`super::providers::Providers::serve_placed`]), and the records its
+        // certificate names. Nothing else this device answers is its to call.
+        if let Some(placed) = caller.placed_records()
+            && !self.work.providers.serves(&request.target.provider)
+            && self
+                .work
+                .providers
+                .published(&request.target, super::providers::Reach::Devices)
+                .is_none()
+            && !record_channel(&request.target).is_some_and(|channel| placed.reaches(&channel))
+        {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
         // What an agent's turn asks of what its workspace keeps for the person who asked it
         // (their vault's uses by reference, mail, calendars, connections) is decided for that
         // turn, before anything a person's device asks of the same providers.
@@ -1293,6 +1396,19 @@ impl Answers {
             Pending::ready(Err(ActionCallError::UnknownAction))
         }
     }
+}
+
+/// The channel of the app record `target` calls an action of, when it names one.
+fn record_channel(target: &tilo_actions::remote::RemoteActionTarget) -> Option<[u8; 32]> {
+    let app = tilo_actions::remote::resource_parts(&target.provider)
+        .map(|(app, _)| app)
+        .or_else(|| {
+            tilo_actions::remote::application_provider(&target.provider).map(|(_, app)| app)
+        })?;
+    Some(crate::environment::document_channel(
+        app,
+        &target.address.resource,
+    ))
 }
 
 /// A device that runs no apps serves none of their calls.

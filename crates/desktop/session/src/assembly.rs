@@ -158,6 +158,9 @@ pub(crate) struct Shared {
     /// sheet for.
     #[cfg(target_os = "linux")]
     pub(crate) nearby_shares: Rc<RefCell<Vec<String>>>,
+    /// The session's Nearby Send: what a send asks of the seat's shell is answered on the pass.
+    #[cfg(target_os = "linux")]
+    pub(crate) nearby: crate::nearby_send::Served,
     /// The services the session serves its apps itself.
     #[cfg(target_os = "linux")]
     pub(crate) table: crate::services::Served,
@@ -630,9 +633,6 @@ pub struct Session {
     /// The shortcuts the person saved, started by their triggers.
     #[cfg(target_os = "linux")]
     pub(crate) automation: crate::automation::Automation,
-    /// The shell revision the app wire's layout was last brought level with.
-    #[cfg(target_os = "linux")]
-    pub(crate) layout_published: Option<u64>,
     /// The runtime the shortcuts' runs execute on, which the apps' broker
     /// starts them on. Kept for the session's life: dropping it stops the
     /// record feed and the runs still executing on it.

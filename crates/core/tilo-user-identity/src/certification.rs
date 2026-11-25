@@ -275,6 +275,11 @@ impl CertificationPolicy {
             // A device confined to one workspace is certified for it by its
             // person's root, never enrolled through a device's request.
             workspace: None,
+            // A placed device is issued by the host that placed it, and a
+            // placement grant is given to a host, never enrolled through a
+            // device's request.
+            records: None,
+            placing: None,
         }
     }
 

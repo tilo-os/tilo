@@ -433,7 +433,7 @@ async fn an_environment_scope_reads_one_record_only() {
     let reaches = app_document_group(APP, EAGER);
     let hook: Arc<Admitting> = Arc::new(move |_remote, _certificate, _link| {
         Ok(LinkScope {
-            reads: Some(reaches),
+            reads: Some(vec![reaches]),
             own_frames_only: true,
             key_access: false,
             lists_itself: false,

@@ -86,8 +86,8 @@ pub struct Settings {
     pub templates: Option<PathBuf>,
 }
 
-/// What a template's guest reads before it is snapshotted: the session's, Browser's and Chromium's
-/// files, so each clone finds them in the page cache it shares with every other clone.
+/// What a template's guest reads before it is snapshotted: the daemon's, the session's, Browser's
+/// and Chromium's files, so each clone finds them in the page cache it shares with every other clone.
 const WARM: &str = "find /usr/bin/tilo-session /usr/libexec/tilo /usr/lib/tilo-runtime \
     /usr/share/tilo-apps -type f -exec cat {} + >/dev/null 2>&1; sync";
 

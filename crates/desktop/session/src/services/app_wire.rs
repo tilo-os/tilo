@@ -13,11 +13,9 @@ use ui::host_operation::ResourceOperationStart;
 use tilo_workspace_service::apps::collab_broker::FanoutState;
 
 use crate::app_wire::AppWire;
-use crate::app_wire::{LayoutAuthority, Sealed};
 use crate::{
     AppSocket, Options, Service, Services, activity, activity_provider, app_wire, surfaces,
 };
-use tilo_session_core::desktop::state::DesktopHandle;
 
 /// What a service answered, as a caller of the action protocol reads it. Work that answers later
 /// is taken: it goes on, and what it changes lands in the readings.
@@ -139,32 +137,25 @@ impl Published for ServiceSurface {
     }
 }
 
-/// What the app wire decides against on the collaboration side: what each of this device's workspaces
-/// revokes, the client to the person's peer network when there is one, and the broker and
-/// keys a workspace's sealed records are opened with.
+/// What the app wire decides against on the collaboration side: the client to the person's peer
+/// network when there is one, and the device's daemon its apps are handed to.
 pub(crate) struct Collaboration<'a> {
-    pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
     /// The shell link the device's daemon handed this session, or why it has none.
     pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
     /// This session's own workspaces, as its engine holds them, when it has an identity to hold
-    /// them with: what a change to a workspace's people is written through, whatever the session's
-    /// peer network.
+    /// them with.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// How the person's workspaces stand, as the device's daemon publishes them, and the actions
     /// that change them.
     pub view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
-    pub sealed: Sealed,
-    /// What the broker hands the apps that have a record open: the one this session hands a
-    /// sibling's writes to, so those reach the apps on the route this device's own writes do.
+    /// What the apps that have a record open are handed: the one this session hands a sibling's
+    /// writes to, so those reach the apps on the route this device's own writes do.
     pub fanout: std::sync::Arc<FanoutState>,
 
     /// What notes the workspaces' records changing, for the roles that follow them.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
-    /// The programs agents write in this session's tasks, run by it.
-    pub task_programs:
-        Option<std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>>,
-    /// The session's own actions, offered to a turn's agent as the broker's steps.
+    /// The session's own actions, as the daemon's endpoint and its agents ask them.
     pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
     /// The person's settings, offered where Settings' window invokes them: the provider its
     /// controls name, answered by the session's settings service.
@@ -190,29 +181,17 @@ fn app_wire_path(options: &Options) -> Result<Option<std::path::PathBuf>, Error>
     })
 }
 
-/// The device fabric this session acts on: the one its collaboration endpoint runs, or a stand-in a
-/// test handed its options.
-fn acting_fabric(
-    options: &Options,
-    sync: Option<&crate::sync::Client>,
-) -> Option<crate::platform::fabric::SharedLink> {
-    options
-        .fabric
-        .clone()
-        .or_else(|| sync.and_then(crate::sync::Client::fabric))
-}
-
-/// The app wire the apps read and invoke this session's services on, when it serves one: the socket
-/// the launcher hands its apps, and the link the loop answers their calls through.
-/// The broker it serves on is `collaboration` 's, which the session's channel service checks a
-/// workspace's sealed records with, and whose keys an endpoint asks a record's keys from. What the
-/// app wire takes from the session besides its broker: who keeps its agents and the sessions they
-/// work in.
+/// What the app wire takes from the session: who keeps its agents and the sessions they work in.
 pub(crate) struct Knitted {
     pub(crate) agents: Option<std::sync::Arc<crate::agents::Roster>>,
     pub(crate) agent_sessions: Option<std::sync::Arc<crate::agent_sessions::AgentSessions>>,
 }
 
+/// The app wire the apps read and invoke this session's services on, when it serves one: the socket
+/// the launcher hands its apps, each connection attested here and handed to the device's daemon,
+/// and the link the loop answers their calls through. What only this seat answers is served to
+/// the daemon on the shell's link. A session the daemon handed no shell link serves its apps
+/// nothing, and says why.
 #[expect(
     clippy::too_many_lines,
     reason = "the app wire's services are all decided in one place, so a service added is not missed"
@@ -220,29 +199,31 @@ pub(crate) struct Knitted {
 pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
-    handle: &DesktopHandle,
     activity: &activity::Activity,
     services: Knitted,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<AppWire>, Error> {
     let Collaboration {
-        revocations,
         sync,
         daemon,
         engine,
         view,
-        sealed,
         fanout,
         records,
-        task_programs,
         session_actions,
         settings_steps,
     } = collaboration;
     let Some(path) = app_wire_path(options)? else {
         return Ok(None);
     };
+    let shell = match daemon {
+        Ok(shell) => shell,
+        Err(reason) => {
+            tracing::error!(%reason, "this session serves its apps nothing");
+            return Ok(None);
+        }
+    };
     let link = app_wire::Link::new(options.wake.handle());
-    let layout = layout_authority(options, handle, revocations, engine.clone());
     // The workspace's activity as this session's apps read it: the shell's own model.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
@@ -251,19 +232,7 @@ pub(crate) fn start_app_wire(
     // the app's channels show.
     let calls = crate::calls::Calls::new();
     let calls_service = calls_service(sync, &calls, options);
-    // An app's action on another of the person's own devices is carried to the device's daemon
-    // over the shell link it started this session on, which forwards it from there.
-    let own_device = daemon.as_ref().ok().map(|link| {
-        std::sync::Arc::new(crate::daemon_actions::AnotherDevice::over(link))
-            as std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>
-    });
-    // An offloadable action is placed by the device's daemon over the same link: the daemon holds
-    // the endpoint that reaches the workspace's other devices, and the session does not.
-    let action_offload = daemon.as_ref().ok().map(|link| {
-        std::sync::Arc::new(crate::daemon_actions::Offload::over(link))
-            as std::sync::Arc<dyn tilo_actions::offload::ActionOffload>
-    });
-    // Files' clipboard lives beside the broker, its copies reaching the compositor's loop alike.
+    // Files' clipboard lives beside the link, its copies reaching the compositor's loop alike.
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
     ));
@@ -276,123 +245,56 @@ pub(crate) fn start_app_wire(
     // The device's one dispatch as this session's person, over the shell's link: what the
     // session's own callers (its automations, its agent servers, the palette's actions) and the
     // person's other devices reach the workspaces through.
-    let dispatch = daemon
-        .as_ref()
-        .ok()
-        .map(|shell| std::sync::Arc::new(shell.dispatch()));
+    let dispatch = std::sync::Arc::new(shell.dispatch());
     // The Workspace package's own actions (`workspace/content`) run on that dispatch, where the
     // workspace's governance publishes them: an app's call on the package's roots goes there.
-    if let Some(dispatch) = &dispatch {
-        link.dispatching(std::sync::Arc::clone(dispatch)
-            as std::sync::Arc<dyn crate::app_wire::WorkspaceActions>);
-    }
+    link.dispatching(
+        std::sync::Arc::clone(&dispatch) as std::sync::Arc<dyn crate::app_wire::WorkspaceActions>
+    );
     // What only this seat answers is served on that dispatch under the ids apps call it by.
-    let seat = daemon.as_ref().ok().map(|shell| {
-        crate::session_providers::serve_on(
-            shell,
-            crate::session_providers::SeatProviders {
-                activity: std::sync::Arc::clone(&activity_wire),
-                machines: crate::machine_steps::MachineSteps::session(view.clone()),
-                models: crate::model_steps::ModelSteps::session(view.clone()),
-                settings: settings_steps.clone(),
-            },
-        )
-    });
-    // A person session reaches the hosts of its workspaces through the daemon's dispatch.
-    let hosts = daemon
-        .as_ref()
-        .ok()
-        .zip(view.as_ref())
-        .map(|(shell, view)| {
-            std::sync::Arc::new(crate::broker_services::DaemonHosts {
-                view: std::sync::Arc::clone(view),
-                dispatch: shell.dispatch(),
-            })
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
-        });
-    let fabric = acting_fabric(options, sync);
-    let (hosted, socket) = match &daemon {
-        // The device's daemon serves this session's apps: each connection is attested here and
-        // handed to it, and what only this seat answers is served to it on the shell's link.
-        Ok(shell) => {
-            link.admitting(std::sync::Arc::clone(&options.launches));
-            options.launches.watching(options.lists.clone());
-            crate::seat_services::serve_on(
-                shell.clone(),
-                seat_parts(SeatInputs {
-                    options,
-                    live_activities,
-                    link: &link,
-                    layout: &layout,
-                    calls_service: calls_service.as_ref(),
-                    records,
-                    view: view.as_ref(),
-                    engine: engine.as_ref(),
-                    shell,
-                    file_clipboard: &file_clipboard,
-                    item_lending: &item_lending,
-                    agents: services
-                        .agents
-                        .clone()
-                        .zip(services.agent_sessions.clone())
-                        .map(|(roster, sessions)| crate::seat_services::SeatAgents {
-                            roster,
-                            sessions,
-                        }),
-                }),
-            );
-            // The session's own actions, as the daemon's endpoint and its agents ask them of the
-            // layout, the windows and the notices.
-            if let Some(actions) = &session_actions {
-                actions.serve_on(shell.clone());
-            }
-            let socket = crate::app_socket::serve(
-                &path,
-                std::sync::Arc::clone(&options.launches),
-                shell.clone(),
-            )?;
-            (None, Some(socket))
-        }
-        // A session the host placed in a workspace's VM runs no daemon yet: its window's page is
-        // served by the broker it keeps itself ([`app_wire::serve_hosted`]).
-        Err(_) => {
-            let broker = app_wire::serve_hosted(
-                path.clone(),
-                std::sync::Arc::clone(&link),
-                std::sync::Arc::clone(&options.launches),
-                fabric,
-                app_wire::Hosted {
-                    live_activities: std::sync::Arc::clone(live_activities),
-                    native_media: calls_service.clone(),
-                    layout: std::sync::Arc::clone(&layout),
-                    activity: activity_wire,
-                    agents: services.agents.map(|roster| roster as _),
-                    agent_sessions: services.agent_sessions.map(|sessions| sessions as _),
-                    sealed,
-                    own_device,
-                    action_offload,
-                    engine,
-                    view,
-                    endpoint: sync.map(|sync| sync.endpoint_handle()),
-                    journal_root: match options.state.as_deref() {
-                        Some(state) => {
-                            std::fs::create_dir_all(state.join("tilo"))?;
-                            Some(app_wire::journal_root(state))
-                        }
-                        None => None,
-                    },
-                    lists: options.lists.clone(),
-                    task_programs,
-                    session_actions,
-                    settings_steps,
-                    file_clipboard: std::sync::Arc::clone(&file_clipboard),
-                    item_lending: std::sync::Arc::clone(&item_lending),
-                    fanout: std::sync::Arc::clone(&fanout),
-                },
-            )?;
-            (Some(broker), None)
-        }
-    };
+    let seat = crate::session_providers::serve_on(
+        &shell,
+        crate::session_providers::SeatProviders {
+            activity: std::sync::Arc::clone(&activity_wire),
+            machines: crate::machine_steps::MachineSteps::session(view.clone()),
+            models: crate::model_steps::ModelSteps::session(view.clone()),
+            settings: settings_steps,
+        },
+    );
+    // The device's daemon serves this session's apps: each connection is attested here and
+    // handed to it, and what only this seat answers is served to it on the shell's link.
+    link.admitting(std::sync::Arc::clone(&options.launches));
+    options.launches.watching(options.lists.clone());
+    crate::seat_services::serve_on(
+        shell.clone(),
+        seat_parts(SeatInputs {
+            options,
+            live_activities,
+            link: &link,
+            calls_service: calls_service.as_ref(),
+            records,
+            view: view.as_ref(),
+            engine: engine.as_ref(),
+            shell: &shell,
+            file_clipboard: &file_clipboard,
+            item_lending: &item_lending,
+            agents: services
+                .agents
+                .clone()
+                .zip(services.agent_sessions.clone())
+                .map(|(roster, sessions)| crate::seat_services::SeatAgents { roster, sessions }),
+        }),
+    );
+    // The session's own actions, as the daemon's endpoint and its agents ask them of the
+    // layout, the windows and the notices.
+    if let Some(actions) = &session_actions {
+        actions.serve_on(shell.clone());
+    }
+    let socket = crate::app_socket::serve(
+        &path,
+        std::sync::Arc::clone(&options.launches),
+        shell.clone(),
+    )?;
     // The person's other devices are dialled as this session's siblings, and the session's pass
     // wakes when their own workspace moves: the session between two of theirs is where they tell
     // each other what they hold, and what their device fabric says.
@@ -407,13 +309,10 @@ pub(crate) fn start_app_wire(
     Ok(Some(AppWire {
         call_lane: std::sync::Mutex::new(None),
         call_card: std::sync::Mutex::default(),
-        dispatch,
-        hosts,
-        seat,
+        dispatch: Some(dispatch),
+        seat: Some(seat),
         link,
         path,
-        layout,
-        hosted,
         _socket: socket,
         calls,
         calls_service,
@@ -428,7 +327,6 @@ struct SeatInputs<'a> {
     options: &'a Options,
     live_activities: &'a std::sync::Arc<runtime_collab::LiveActivities>,
     link: &'a std::sync::Arc<app_wire::Link>,
-    layout: &'a std::sync::Arc<LayoutAuthority>,
     calls_service: Option<&'a tilo_native_media::NativeMediaService>,
     records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
@@ -447,7 +345,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         options,
         live_activities,
         link,
-        layout,
         calls_service,
         records,
         view,
@@ -463,7 +360,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
     let display_control = settings.as_ref().map(|source| {
         std::sync::Arc::new(crate::display_control::DisplayControl::native(
             std::sync::Arc::clone(source),
-            layout,
         ))
             as std::sync::Arc<dyn tilo_workspace_service::apps::services::DisplayControlServices>
     });
@@ -503,28 +399,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         file_clipboard: Some(std::sync::Arc::clone(file_clipboard)),
         agents,
     }
-}
-
-/// What the broker decides against, from this pass on: the shell as it is
-/// before the person touches anything, and every shell it shows after — and,
-/// beside it, every workspace this device holds that no shell shows.
-fn layout_authority(
-    options: &Options,
-    handle: &DesktopHandle,
-    revocations: crate::engine::Revocations,
-    held: Option<std::sync::Arc<crate::engine::Engine>>,
-) -> std::sync::Arc<LayoutAuthority> {
-    std::sync::Arc::new(
-        LayoutAuthority::new(
-            handle.read(Clone::clone),
-            revocations,
-            crate::app_wire::Names {
-                person: options.person.clone(),
-                earlier: options.earlier.clone(),
-            },
-        )
-        .holding(held),
-    )
 }
 
 /// The calls the apps reach on this session's peer network, or none when it has no endpoint.

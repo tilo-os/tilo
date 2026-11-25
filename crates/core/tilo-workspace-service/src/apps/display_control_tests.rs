@@ -560,3 +560,101 @@ async fn identify_displays(
         .unwrap(),
     )
 }
+
+/// A computer's displays change only from its own Settings: a Settings worker another device of
+/// the same person runs is admitted to read them, and every change it asks is refused before the
+/// seat hears of it.
+#[tokio::test(flavor = "current_thread")]
+async fn another_devices_settings_worker_reads_the_displays_and_changes_nothing() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.route.app_id = "so.tilo.settings".into();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let delegate = Arc::new(DisplayDelegate {
+                calls: Mutex::new(vec![]),
+            });
+            let mut services = env.membership.services();
+            services.settings = Some(Arc::new(settings_store::HostDocument::new(
+                serde_json::Map::default(),
+                |_| Ok(()),
+            )));
+            services.display_control = Some(delegate.clone());
+            let fanout = Arc::new(FanoutState::new());
+            let (state, bridge) = AppBrokerState::new_configured(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.authority()),
+                None,
+                None,
+                services,
+            );
+            assert!(
+                state
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge));
+            // Another computer of the same person, admitted to the workspace, runs Settings.
+            let elsewhere = member_device_certificate(&env, 97, false);
+            let (worker, _authorizer) =
+                join_worker(&state, &directories, &env.route, &elsewhere, 411).await;
+            let settings = worker.handle.settings();
+            settings
+                .display_control(
+                    br#"{"operation":"inspect"}"#,
+                    runtime_collab::settings::DisplayOrigin::LocalHost,
+                )
+                .await
+                .expect("another device's Settings reads this computer's displays");
+            assert_eq!(
+                *delegate.calls.lock().unwrap(),
+                vec![(
+                    env.route.cluster_id.clone(),
+                    elsewhere.user_public_key,
+                    elsewhere.device_public_key
+                )]
+            );
+            for change in [
+                br#"{"operation":"identify"}"#.as_slice(),
+                br#"{"operation":"keep","transaction":1}"#.as_slice(),
+                b"not a display command".as_slice(),
+            ] {
+                let refused = settings
+                    .display_control(change, runtime_collab::settings::DisplayOrigin::LocalHost)
+                    .await
+                    .expect_err("another device's Settings changes nothing here");
+                assert!(
+                    format!("{refused:?}").contains("own Settings"),
+                    "the refusal says whose Settings may: {refused:?}"
+                );
+            }
+            assert_eq!(
+                delegate.calls.lock().unwrap().len(),
+                1,
+                "no refused change reached the seat"
+            );
+
+            // This computer's own Settings changes them.
+            let (own, _own_authorizer) =
+                join_worker(&state, &directories, &env.route, &env.cert, 412).await;
+            own.handle
+                .settings()
+                .display_control(
+                    br#"{"operation":"identify"}"#,
+                    runtime_collab::settings::DisplayOrigin::LocalHost,
+                )
+                .await
+                .expect("this computer's own Settings identifies its displays");
+            assert_eq!(delegate.calls.lock().unwrap().len(), 2);
+            for connection in [worker, own] {
+                connection.server.abort();
+                connection.client.abort();
+            }
+            state.stop();
+        })
+        .await;
+}
