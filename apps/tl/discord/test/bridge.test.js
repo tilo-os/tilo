@@ -3,7 +3,7 @@
 // account's name, and an edit, a deletion and a reaction follow it there.
 
 import { test, expect } from "bun:test";
-import { adoptServer, readBack, run } from "../main.js";
+import { adoptServer, carryFromDiscord, readBack, run } from "../main.js";
 
 /// Wait until `check()` is true, or fail the test after `timeout`.
 async function until(check, what, timeout = 3_000) {
@@ -787,4 +787,51 @@ test("a Discord account a moderator blocks loses what was mirrored of it here", 
   ]);
   workspace.finish();
   await running;
+});
+
+test("a linked member's new names and avatar are the link's, the avatar kept as their picture", async () => {
+  const done = [];
+  const calls = { do: async (call) => done.push([call.action, call.args]) };
+  const fetched = [];
+  const png = new Uint8Array([137, 80, 78, 71]);
+  const fetch = async (url) => {
+    fetched.push(url);
+    return {
+      status: 200,
+      headers: new Headers({ "content-type": "image/png" }),
+      arrayBuffer: async () => png.buffer,
+    };
+  };
+  const member = (user, avatar) => ({
+    source: "MEMBER_CHANGED",
+    payload: { guild_id: "123", user_id: "3001", roles: [], banned: false, left: false, user, avatar },
+  });
+  await carryFromDiscord({
+    calls,
+    account: account(),
+    event: member({ name: "ada_l", display_name: "Ada L." }, "def"),
+    fetch,
+  });
+  expect(fetched).toEqual(["https://cdn.discordapp.com/avatars/3001/def.png?size=64"]);
+  expect(done).toEqual([
+    ["rename_link", { discord_user: "3001", user_name: "ada_l", display_name: "Ada L.", avatar: "def" }],
+    ["set_link_photo", { discord_user: "3001", avatar: "def", photo: "data:image/png;base64,iVBORw==" }],
+  ]);
+
+  // Nothing new about them: nothing is written, nothing fetched.
+  done.length = 0;
+  fetched.length = 0;
+  await carryFromDiscord({
+    calls,
+    account: account({
+      links: [{ ...account().links[0], user_name: "ada", display_name: "Ada", avatar: "abc", photo_avatar: "abc" }],
+    }),
+    event: member({ name: "ada", display_name: "Ada" }, "abc"),
+    fetch,
+  });
+  expect([done, fetched]).toEqual([[], []]);
+
+  // An account nobody linked is no one's to follow.
+  await carryFromDiscord({ calls, account: account({ links: [] }), event: member({ name: "x" }, "f"), fetch });
+  expect(done).toEqual([]);
 });

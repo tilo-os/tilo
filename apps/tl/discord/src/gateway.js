@@ -130,7 +130,7 @@ export function discordMember(member, { banned = false, left = false } = {}) {
       roles: [...(member?.roles?.cache?.keys?.() ?? [])],
       banned,
       left,
-      user: { name: member?.user?.username ?? "Someone" },
+      user: { name: member?.user?.username ?? "", display_name: member?.user?.globalName ?? "" },
       avatar: member?.user?.avatar ?? null,
     },
   };
@@ -660,6 +660,10 @@ function memberOf(data) {
     guild: { id: data?.guild_id ?? "" },
     id: data?.user?.id ?? "",
     roles: { cache: { keys: () => [...(data?.roles ?? [])] } },
-    user: { username: data?.user?.username ?? "Someone", avatar: data?.user?.avatar ?? null },
+    user: {
+      username: data?.user?.username ?? "",
+      globalName: data?.user?.global_name ?? "",
+      avatar: data?.user?.avatar ?? null,
+    },
   };
 }

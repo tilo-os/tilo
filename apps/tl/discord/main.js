@@ -4,6 +4,7 @@
 // call is bridged through.
 
 import { startCalls } from "./src/call.js";
+import { linkPhoto } from "./src/avatars.js";
 import { connect as connectVoice } from "./src/voice.js";
 import {
   fromDiscord,
@@ -455,6 +456,13 @@ export async function carryFromDiscord({
 }) {
   for (const call of fromDiscord(account, event)) {
     try {
+      if (call.photo) {
+        // A link's picture is the avatar's bytes: one that does not come over is left as it was.
+        const photo = await linkPhoto(call.photo, { fetch });
+        delete call.photo;
+        if (!photo) continue;
+        call.args = { ...call.args, photo };
+      }
       const files = await keptFiles(calls, call.attachments, { fetch, log });
       if (files.length > 0) call.args = { ...call.args, attachments: files };
       delete call.attachments;

@@ -424,9 +424,12 @@ export function fromDiscord(state, event) {
   }
   if (event.source === "MEMBER_CHANGED") {
     // A member Discord banned is blocked here, and what was mirrored of them goes, as a
-    // moderator's block does. One who only left keeps what they said.
+    // moderator's block does. One who only left keeps what they said. A linked member's newer
+    // names and avatar are the link's.
     const payload = event.payload;
-    if (!payload.banned || !payload.user_id || blocked(state, payload.user_id)) return [];
+    if (!payload.user_id || payload.left) return [];
+    if (!payload.banned) return linkFollows(state, payload);
+    if (blocked(state, payload.user_id)) return [];
     return [
       self("block_persona", { discord_user: payload.user_id }),
       ...mirroredOf(state, payload.user_id),
@@ -792,4 +795,38 @@ export function blocksPersona(event) {
     verb === "block_persona" &&
     (event.resources ?? []).some((resource) => resource?.app === SELF || event.app === SELF)
   );
+}
+
+/// A linked account's newer names and avatar, taken into its link: the names it shows as, and the
+/// avatar kept as the person's picture until they upload their own. A `set_link_photo` call
+/// carries `photo`, where Discord serves the avatar: the program fetches it and hands the call
+/// the picture.
+function linkFollows(state, payload) {
+  const link = linkOfUser(state, payload.user_id);
+  if (!link) return [];
+  const name = payload.user?.name ?? "";
+  const display = payload.user?.display_name ?? "";
+  const avatar = payload.avatar ?? "";
+  const calls = [];
+  if (
+    name &&
+    (name !== (link.user_name ?? "") ||
+      display !== (link.display_name ?? "") ||
+      (avatar && avatar !== (link.avatar ?? "")))
+  ) {
+    calls.push(
+      self("rename_link", {
+        discord_user: link.discord_user,
+        user_name: name,
+        display_name: display,
+        avatar,
+      }),
+    );
+  }
+  if (avatar && avatar !== (link.photo_avatar ?? "")) {
+    const photo = self("set_link_photo", { discord_user: link.discord_user, avatar, photo: "" });
+    photo.photo = `https://cdn.discordapp.com/avatars/${link.discord_user}/${avatar}.png?size=64`;
+    calls.push(photo);
+  }
+  return calls;
 }
