@@ -16,12 +16,28 @@ pub const RELAY_WAIT: Duration = Duration::from_secs(iroh::NET_REPORT_TIMEOUT);
 pub async fn relay_addr(endpoint: &Endpoint, within: Duration) -> EndpointAddr {
     let relayed = async {
         let mut watch = endpoint.watch_addr();
+        let mut relays = endpoint.home_relay_status();
         loop {
             let addr = watch.get();
             if addr.relay_urls().next().is_some() {
                 return addr;
             }
-            if watch.updated().await.is_err() {
+            // No relay of this endpoint's answers: every one it was given has failed, and the
+            // address it has is the one to name. Waiting the whole time would hold a ticket
+            // (or a server) back for a relay that is not there.
+            let statuses = relays.get();
+            if !statuses.is_empty()
+                && statuses
+                    .iter()
+                    .all(|relay| !relay.is_connected() && relay.last_error().is_some())
+            {
+                return addr;
+            }
+            let changed = n0_future::future::or(async { watch.updated().await.is_ok() }, async {
+                relays.updated().await.is_ok()
+            })
+            .await;
+            if !changed {
                 return addr;
             }
         }

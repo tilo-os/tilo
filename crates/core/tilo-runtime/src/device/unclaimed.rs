@@ -389,6 +389,16 @@ impl Answering {
             .insert(invocation, state);
         receipt
     }
+
+    /// Whether this device took any call a caller may follow.
+    fn keeps_calls(&self) -> bool {
+        !self.founding.calls().lock_recover().is_empty()
+    }
+
+    /// Whether this device took the call `id`.
+    fn keeps(&self, id: &InvocationId) -> bool {
+        self.founding.calls().lock_recover().contains_key(id)
+    }
 }
 
 impl DeviceOnly {
@@ -503,6 +513,16 @@ impl DeviceOnly {
 
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
         self.0.keep(invocation, update)
+    }
+
+    /// Whether this device took any call a caller may follow.
+    pub(crate) fn keeps_calls(&self) -> bool {
+        self.0.keeps_calls()
+    }
+
+    /// Whether this device took the call `id`, whose stage it answers from now on.
+    pub(crate) fn keeps(&self, id: &InvocationId) -> bool {
+        self.0.keeps(id)
     }
 
     /// Report `stage` on `invocation`, as the report numbered `sequence`: what a caller
