@@ -36,9 +36,18 @@ pub fn which(binary: &str) -> bool {
 
 /// A name with a separator is a path, not a `$PATH` lookup, as `execvp` treats it.
 fn path_lookup(binary: &str) -> bool {
+    /// Whether `p` names something this system runs: an executable file on Unix, and on Windows
+    /// a file, whose extension `CreateProcess` takes from `PATHEXT` when the name carries none.
     fn is_executable_file(p: &std::path::Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::metadata(p).is_ok_and(|m| m.is_file())
+        }
     }
 
     #[cfg(test)]
@@ -47,7 +56,7 @@ fn path_lookup(binary: &str) -> bool {
     if binary.is_empty() {
         return false;
     }
-    if binary.contains('/') {
+    if binary.contains('/') || binary.contains(std::path::MAIN_SEPARATOR) {
         return is_executable_file(std::path::Path::new(binary));
     }
     let Some(path) = std::env::var_os("PATH") else {
