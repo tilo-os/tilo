@@ -46,6 +46,21 @@ pub(super) mod walks {
 /// do, and whether it is history of a device its person removed since.
 type Written = (MemberAccess, bool);
 
+/// The action a change names is the one its caller signed, once the app's own surface publishes
+/// the two names as one action.
+fn published_name(id: &str) -> Option<String> {
+    collab_types::app_surface::published_name(id)
+}
+
+/// What a change of a write names: the caller it was made for, or that it records no call.
+enum NamedCall {
+    /// The change records no call and is passed over. `bare` is set when it names no maker at
+    /// all, which leaves a write nobody was named for bare.
+    Passed { bare: bool },
+    /// The change was made for `person`; `effect` says whether it is a step its action declares.
+    For { person: String, effect: bool },
+}
+
 /// A caller a change was made for, as the change's history entry names them
 /// and the signed invocation it keeps proves it: the person who asked, and
 /// their access in the governance this copy judges the write by.
@@ -1482,9 +1497,6 @@ impl StatePeer {
             document: record,
         };
         let keeper = self.signed_by_governor(source).then_some(source);
-        // The action a change names is the one its caller signed, once the app's own surface
-        // publishes the two names as one action.
-        let published_name = |id: &str| collab_types::app_surface::published_name(id);
         let mut caller: Option<CallerAccess> = None;
         let mut bare = false;
         for claim in &envelope.claims {
@@ -1624,6 +1636,103 @@ impl StatePeer {
         }
     }
 
+    /// What `change` of `envelope`, signed by `source` for the record `route`, names: the caller
+    /// it was made for, or that it records no call. `keeper` is the host that keeps the record,
+    /// when this device is one.
+    ///
+    /// # Errors
+    /// The change names a caller whose invocation does not check, or names no one where the
+    /// workspace requires one.
+    fn change_named(
+        &self,
+        route: &Route,
+        source: &[u8; 32],
+        envelope: &SignedOp,
+        change: &automerge::Change,
+        keeper: Option<tilo_server_protocol::invocation::RecordHost<'_>>,
+        authorization_time: SystemTime,
+    ) -> Result<NamedCall, AuthorizeRefusal> {
+        let app_id = route.app.as_str();
+        let Some(context) = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+        else {
+            // A resource store's change keeps the invocation its caller signed in its stamp,
+            // where its history entry is the verb it ran.
+            if let Some(certificate) =
+                self.stamped_certificate(app_id, route, source, envelope, change)?
+            {
+                return Ok(NamedCall::For {
+                    person: hex::encode(certificate.user_public_key),
+                    effect: false,
+                });
+            }
+            // A change with no history entry names its maker in its own message, or is one every
+            // holder derives alike; one that names no one is refused, unless an import step
+            // holds the write as the person's.
+            if collab_admission::maker_of(change) == collab_admission::Maker::Nobody
+                && self
+                    .governance()
+                    .imported_invoker(source, app_id, &route.record, envelope.seq)
+                    .is_none()
+            {
+                return Err(refused_no_invoker(route, source, envelope));
+            }
+            return Ok(NamedCall::Passed { bare: false });
+        };
+        // Every invocation a change keeps is checked, whether or not it names a caller
+        // elsewhere.
+        let certificate = tilo_server_protocol::invocation::verify_recorded(
+            &context,
+            (&self.core.workspace, keeper),
+            &self.core.revocations,
+            crate::state::now_ns(authorization_time),
+            Some(&published_name),
+        )
+        .map_err(|error| {
+            refused_invocation(
+                route,
+                source,
+                envelope,
+                &format!("the invocation a change made for a caller does not check: {error}"),
+            )
+        })?;
+        let Some(invoker) = context.invoker.as_ref() else {
+            // Made naming no one: the person's own, when an import step holds the write.
+            if self
+                .governance()
+                .imported_invoker(source, app_id, &route.record, envelope.seq)
+                .is_some()
+            {
+                return Ok(NamedCall::Passed { bare: false });
+            }
+            return Err(refused_no_invoker(route, source, envelope));
+        };
+        // A change that carries the invocation its caller signed was made for that caller: its
+        // certificate says who they are. One that carries none was made by the device itself,
+        // for its own member — unless it names a device it was made from, which must prove it.
+        match certificate {
+            Some(certificate) => {
+                let effect = keeper.is_some()
+                    && tilo_server_protocol::invocation::declared_effect(
+                        &context,
+                        Some(&published_name),
+                    );
+                Ok(NamedCall::For {
+                    person: called_person(&invoker.acting, &certificate, source, effect),
+                    effect,
+                })
+            }
+            None if invoker.device.is_none() => Ok(NamedCall::Passed { bare: true }),
+            None => Err(refused_invocation(
+                route,
+                source,
+                envelope,
+                "a change made for a caller carries no invocation that caller signed",
+            )),
+        }
+    }
+
     /// The caller the changes `changes` of `envelope` name, each invocation
     /// they keep checked — in a history entry, or in a resource store's
     /// change in its stamp: what [`Self::recorded_caller`] asks of a received
@@ -1651,113 +1760,29 @@ impl StatePeer {
                 device: source,
             },
         );
-        // The action a change names is the one its caller signed, once the app's own surface
-        // publishes the two names as one action.
-        let published_name = |id: &str| collab_types::app_surface::published_name(id);
         let mut caller: Option<CallerAccess> = None;
         let mut bare = false;
-        'changes: for change in changes {
-            let certificate = 'named: {
-                let Some(context) = change
-                    .message()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
-                else {
-                    // A resource store's change keeps the invocation its
-                    // caller signed in its stamp, where its history entry is
-                    // the verb it ran.
-                    if let Some(certificate) =
-                        self.stamped_certificate(app_id, &route, source, envelope, change)?
-                    {
-                        break 'named certificate;
-                    }
-                    // A change with no history entry names its maker in its own message, or is
-                    // one every holder derives alike; one that names no one is refused, unless
-                    // an import step holds the write as the person's.
-                    if collab_admission::maker_of(change) == collab_admission::Maker::Nobody
-                        && self
-                            .governance()
-                            .imported_invoker(source, app_id, record, envelope.seq)
-                            .is_none()
-                    {
-                        return Err(refused_no_invoker(&route, source, envelope));
-                    }
-                    continue 'changes;
-                };
-                // Every invocation a change keeps is checked, whether or not
-                // it names a caller elsewhere.
-                let certificate = tilo_server_protocol::invocation::verify_recorded(
-                    &context,
-                    (&self.core.workspace, keeper),
-                    &self.core.revocations,
-                    crate::state::now_ns(authorization_time),
-                    Some(&published_name),
-                )
-                .map_err(|error| {
-                    refused_invocation(
-                        &route,
-                        source,
-                        envelope,
-                        &format!(
-                            "the invocation a change made for a caller does not check: {error}"
-                        ),
-                    )
-                })?;
-                let Some(invoker) = context.invoker.as_ref() else {
-                    // Made naming no one: the person's own, when an import step holds the write.
-                    if self
-                        .governance()
-                        .imported_invoker(source, app_id, record, envelope.seq)
-                        .is_some()
-                    {
-                        continue 'changes;
-                    }
-                    return Err(refused_no_invoker(&route, source, envelope));
-                };
-                // A change that carries the invocation its caller signed was
-                // made for that caller: its certificate says who they are. One
-                // that carries none was made by the device itself, for its own
-                // member — unless it names a device it was made from, which
-                // must prove it.
-                match certificate {
-                    Some(certificate) => {
-                        let effect = keeper.is_some()
-                            && tilo_server_protocol::invocation::declared_effect(
-                                &context,
-                                Some(&published_name),
-                            );
-                        let person = called_person(&invoker.acting, &certificate, source, effect);
-                        caller = Some(self.called_by(
-                            (&route, source, envelope),
-                            caller,
-                            person,
-                            (member, authorization_time),
-                            effect,
-                        )?);
-                        continue 'changes;
-                    }
-                    None if invoker.device.is_none() => {
-                        bare = true;
-                        continue 'changes;
-                    }
-                    None => {
-                        return Err(refused_invocation(
-                            &route,
-                            source,
-                            envelope,
-                            "a change made for a caller carries no invocation that caller signed",
-                        ));
-                    }
+        for change in changes {
+            let (person, effect) = match self.change_named(
+                &route,
+                source,
+                envelope,
+                change,
+                keeper,
+                authorization_time,
+            )? {
+                NamedCall::Passed { bare: named_bare } => {
+                    bare |= named_bare;
+                    continue;
                 }
+                NamedCall::For { person, effect } => (person, effect),
             };
-            // A resource store's change keeps its call in its stamp: it is the call's own, never
-            // a step another action declares.
-            let person = hex::encode(certificate.user_public_key);
             caller = Some(self.called_by(
                 (&route, source, envelope),
                 caller,
                 person,
                 (member, authorization_time),
-                false,
+                effect,
             )?);
         }
         if bare && let Some(caller) = caller.as_mut() {
