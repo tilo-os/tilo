@@ -47,7 +47,6 @@ pub mod appstream;
 pub use registry_types::block;
 pub mod catalogue;
 pub mod entry;
-pub mod flathub;
 pub mod tilo;
 
 pub use apps::{DeclaredActions, InstalledApp};

@@ -157,24 +157,6 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
     }))
 }
 
-/// The next reader's connection on `socket`; `None` at end of file, when the session closed its
-/// end.
-///
-/// # Errors
-/// The socket's error; a message that is no reader's attachment with its one descriptor;
-/// [`io::ErrorKind::Unsupported`] off Linux and Windows.
-#[cfg(any(unix, windows))]
-pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<tilo_socket::Stream>> {
-    match receive(socket)? {
-        Some(Handed::Reader(connection)) => Ok(Some(connection)),
-        Some(Handed::Actions(_)) => Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "the session handed the connector a connection, not a reader's",
-        )),
-        None => Ok(None),
-    }
-}
-
 /// The readers' connections the session hands the connector on `socket`, until it closes its end
 /// or the socket fails: `ended` is told which, with the failure.
 #[cfg(any(unix, windows))]

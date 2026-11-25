@@ -4,7 +4,6 @@
 //! every client returns [`NotAvailable::ServiceFdMissing`] and the app falls
 //! back to a local-only mode.
 
-pub mod agent_transport;
 #[cfg(unix)]
 pub mod environment_socket;
 /// What a process says first on its connection to its session's services:
@@ -48,8 +47,6 @@ pub mod packet;
 pub mod pending_connection;
 pub mod process_binding;
 pub mod process_link;
-#[cfg(unix)]
-pub mod request_rendezvous;
 pub mod service_socket;
 /// The session services a launcher connects on an app's behalf, and what it says first on each.
 pub mod session_services;
