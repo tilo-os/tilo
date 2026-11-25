@@ -91,7 +91,9 @@ test("a message written on Discord is relayed as its author, with their picture 
   expect(call.args.service).toBe("Discord");
   // The account ada linked wears her face and colour here.
   expect(call.args.member).toEqual({ member: { person: "ada" } });
-  expect(call.args.avatar).toBe("https://cdn.discordapp.com/avatars/3001/abc.png?size=128");
+  // An avatar the workspace does not keep yet is fetched first, never hot-linked.
+  expect(call.args.avatar).toBe("");
+  expect(call.avatar).toEqual({ hash: "abc", url: "https://cdn.discordapp.com/avatars/3001/abc.png?size=128" });
   expect(call.args.outside_emoji).toEqual([
     { name: "party", picture: "https://cdn.discordapp.com/emojis/22.png" },
   ]);

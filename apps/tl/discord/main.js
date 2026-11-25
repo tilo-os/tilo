@@ -4,7 +4,7 @@
 // call is bridged through.
 
 import { startCalls } from "./src/call.js";
-import { linkPhoto } from "./src/avatars.js";
+import { keepAvatar, linkPhoto } from "./src/avatars.js";
 import { connect as connectVoice } from "./src/voice.js";
 import {
   fromDiscord,
@@ -26,6 +26,7 @@ import {
   byDiscord,
   memberToDiscord,
   blockedToChat,
+  BLOB_SCHEME,
   blocksPersona,
   CHAT,
   SELF,
@@ -462,6 +463,16 @@ export async function carryFromDiscord({
         delete call.photo;
         if (!photo) continue;
         call.args = { ...call.args, photo };
+      }
+      if (call.avatar) {
+        // Kept once and remembered: an avatar that does not come over leaves the message
+        // without a picture rather than one only Discord serves.
+        const blob = await keepAvatar(call.avatar.url, { fetch, content: (bytes) => calls.content(bytes) });
+        if (blob) {
+          await calls.do({ app: SELF, action: "remember_avatar", args: { hash: call.avatar.hash, blob } });
+          call.args = { ...call.args, avatar: `${BLOB_SCHEME}${blob}` };
+        }
+        delete call.avatar;
       }
       const files = await keptFiles(calls, call.attachments, { fetch, log });
       if (files.length > 0) call.args = { ...call.args, attachments: files };

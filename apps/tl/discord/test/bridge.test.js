@@ -195,6 +195,8 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   const running = run({
     tilo: workspace.tilo,
     makeClient: () => gateway,
+    // Discord's CDN is out of reach here: the author's avatar does not come over.
+    fetch: async () => ({ status: 404, ok: false }),
     log: () => {},
   });
 
@@ -218,7 +220,8 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   expect(relay.args.to).toBe(CONVERSATION);
   expect(relay.args.by).toBe("ada");
   expect(relay.args.service).toBe("Discord");
-  expect(relay.args.avatar).toBe("https://cdn.discordapp.com/avatars/3001/abc.png?size=128");
+  // An avatar that did not come over leaves no picture, never an address only Discord serves.
+  expect(relay.args.avatar).toBe("");
   expect(
     workspace.done.some(
       (call) => call.address === "so.tilo.discord.preview#map" && call.args.discord === "777",
@@ -430,7 +433,9 @@ test("a file posted on Discord is kept here and the message carries it", async (
   const relay = workspace.done.find(
     (call) => call.address === "so.tilo.chat#relay" && call.args.attachments?.length,
   );
-  expect(fetched).toEqual(["https://cdn.discordapp.com/attachments/456/1/shot.png"]);
+  expect(fetched.filter((url) => url.includes("/attachments/"))).toEqual([
+    "https://cdn.discordapp.com/attachments/456/1/shot.png",
+  ]);
   expect(relay.args.attachments).toEqual([
     { file: { name: "shot.png", media: "image/png", size: 3, content: "tilo.content:abc123" } },
   ]);
@@ -834,4 +839,49 @@ test("a linked member's new names and avatar are the link's, the avatar kept as 
   // An account nobody linked is no one's to follow.
   await carryFromDiscord({ calls, account: account({ links: [] }), event: member({ name: "x" }, "f"), fetch });
   expect(done).toEqual([]);
+});
+
+test("a Discord author's avatar is kept here once and the message shows the workspace's copy", async () => {
+  const done = [];
+  const kept = [];
+  const hash = "c".repeat(64);
+  const calls = {
+    do: async (call) => done.push([call.action, call.args]),
+    content: async (bytes) => {
+      kept.push([...bytes]);
+      return `tilo.content:${hash}`;
+    },
+  };
+  const fetched = [];
+  const fetch = async (url) => {
+    fetched.push(url);
+    return {
+      status: 200,
+      headers: new Headers({ "content-type": "image/png" }),
+      arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer,
+    };
+  };
+  const said = (id) => ({
+    source: "MESSAGE_CREATED",
+    payload: {
+      id,
+      channel_id: "456",
+      content: "hi",
+      timestamp_ms: 1000,
+      author: { id: "3009", name: "eve", avatar: "e1" },
+    },
+  });
+  await carryFromDiscord({ calls, account: account(), event: said("801"), fetch });
+  expect(fetched).toEqual(["https://cdn.discordapp.com/avatars/3009/e1.png?size=128"]);
+  expect(kept).toEqual([[137, 80, 78, 71]]);
+  expect(done.map(([action]) => action)).toEqual(["remember_avatar", "relay"]);
+  expect(done[0][1]).toEqual({ hash: "e1", blob: hash });
+  expect(done[1][1].avatar).toBe(`tilo-blob://${hash}`);
+
+  // Once the record keeps it, the next message names it without asking Discord again.
+  done.length = 0;
+  fetched.length = 0;
+  await carryFromDiscord({ calls, account: account({ avatars: { e1: hash } }), event: said("802"), fetch });
+  expect(fetched).toEqual([]);
+  expect(done.map(([action, args]) => [action, args.avatar])).toEqual([["relay", `tilo-blob://${hash}`]]);
 });

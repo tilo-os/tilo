@@ -356,9 +356,7 @@ export function fromDiscord(state, event) {
       by: payload.author.name,
       written_in: "Discord",
       written: payload.timestamp_ms ?? 0,
-      avatar: payload.author.avatar
-        ? `https://cdn.discordapp.com/avatars/${payload.author.id}/${payload.author.avatar}.png?size=128`
-        : "",
+      avatar: keptAvatar(state, payload.author.avatar),
       service: "Discord",
       outside_emoji: emojiIn(state, payload.content),
       reply_to: payload.reference?.message_id
@@ -369,6 +367,14 @@ export function fromDiscord(state, event) {
     // The files it carries come over as the bytes Discord serves: the program fetches each and
     // keeps it in the workspace, then hands the message on with them.
     call.attachments = payload.attachments ?? [];
+    // An avatar the workspace does not keep yet is fetched once and kept, so the message shows
+    // a picture of the workspace's own, never one each reader's device asks Discord for.
+    if (payload.author.avatar && !call.args.avatar) {
+      call.avatar = {
+        hash: payload.author.avatar,
+        url: `https://cdn.discordapp.com/avatars/${payload.author.id}/${payload.author.avatar}.png?size=128`,
+      };
+    }
     call.map = {
       kind: "message",
       discord: payload.id,
@@ -829,4 +835,22 @@ function linkFollows(state, payload) {
     calls.push(photo);
   }
   return calls;
+}
+
+/// Where a picture the workspace keeps is read from: its content's address.
+export const BLOB_SCHEME = "tilo-blob://";
+
+/// The address of the avatar `hash` the record keeps in the workspace, or empty when it keeps
+/// none.
+export function keptAvatar(state, hash) {
+  if (!hash) return "";
+  const avatars = state?.avatars ?? {};
+  let blob = "";
+  if (Array.isArray(avatars)) {
+    const entry = avatars.find((item) => (item?.key ?? item?.[0]) === hash);
+    blob = entry?.value ?? entry?.[1] ?? "";
+  } else if (avatars && typeof avatars === "object") {
+    blob = avatars[hash] ?? "";
+  }
+  return blob ? `${BLOB_SCHEME}${blob}` : "";
 }
