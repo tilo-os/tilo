@@ -6,6 +6,7 @@
 //! handle duplicated into the process at the other end on Windows.
 
 use std::fs::File;
+#[cfg(any(unix, windows))]
 use std::io;
 
 /// An open file or connection, carried beside a message on a local connection.
@@ -114,6 +115,7 @@ mod windows {
 
 impl Descriptor {
     /// A descriptor for `held`.
+    #[cfg(any(unix, windows))]
     #[must_use]
     fn of(held: Held) -> Self {
         Self(held)

@@ -5804,7 +5804,7 @@ impl ActionProvider for RuntimeActionProvider {
     fn invoke(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
+        mut request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
