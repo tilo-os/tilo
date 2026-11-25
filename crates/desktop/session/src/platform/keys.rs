@@ -453,11 +453,13 @@ impl Shared {
                 }
                 // A strip under the fingers is the shell's own drawing, as the strip deck is: the
                 // fingers move it here, where the frame is, rather than through a published action
-                // that would arrive a pass later.
+                // that would arrive a pass later. The gesture reports its total toward later
+                // windows; the scroll carries what is new since the last report, so the strip
+                // follows the fingers rather than against them.
                 ShellGesture::StripDrag { travel, began } => {
                     let before = if began { 0.0 } else { self.carried.get() };
                     self.carried.set(travel);
-                    carried.push(Scroll::Pixels(before - travel, 0.0));
+                    carried.push(Scroll::Pixels(travel - before, 0.0));
                     continue;
                 }
                 ShellGesture::StripDragEnd { .. } => {
