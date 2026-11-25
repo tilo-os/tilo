@@ -400,8 +400,8 @@ impl Moves {
     /// window wrote, and stays where it is when the app could not say so.
     fn checkpointing(&self, shared: &Shared, crossing: Crossing, token: u64, since: Instant) {
         match self.claim(&crossing, token) {
-            Some(HandoffReport::Done { .. }) => self.carry_record(shared, crossing),
-            Some(HandoffReport::Failed { reason, .. }) => {
+            Some(Ok(())) => self.carry_record(shared, crossing),
+            Some(Err(reason)) => {
                 tracing::warn!(app = %crossing.app, %reason, "the window's app did not save what it shows");
                 self.give_up(shared, &crossing, &t("window-move-reason-unsaved"));
             }
@@ -626,7 +626,9 @@ impl Moves {
     }
 
     /// What the window's app said about the step asked under `token` , if it said anything.
-    fn claim(&self, crossing: &Crossing, token: u64) -> Option<HandoffReport> {
+    /// The app's answer to the step `token`: saved, or why it could not; `None` while it has
+    /// not answered.
+    fn claim(&self, crossing: &Crossing, token: u64) -> Option<Result<(), String>> {
         let (from, app, instance) = (
             crossing.from_id.as_str(),
             crossing.app.as_str(),
@@ -643,7 +645,13 @@ impl Moves {
                         | HandoffReport::Failed { token: said, .. } if *said == token
                 )
         })?;
-        Some(notes.remove(at).report)
+        match notes.remove(at).report {
+            HandoffReport::Done { .. } => Some(Ok(())),
+            HandoffReport::Failed { reason, .. } => Some(Err(reason)),
+            HandoffReport::OwnerSubscribe { .. } | HandoffReport::OwnerTakeover { .. } => {
+                unreachable!("only a step's own answer is claimed")
+            }
+        }
     }
 
     fn next_token(&self) -> u64 {
