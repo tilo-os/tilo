@@ -696,7 +696,7 @@ pub fn write_capability_file(
 
 /// Write what the person gave a launch of `app` a choice on where `--grants`
 /// reads it, under `directory`: the file's path, or `None` when it was given
-/// nothing.
+/// nothing. A grant is a launch's, and a launch is the Linux desktop's.
 ///
 /// # Errors
 /// The directory or the file could not be written.
