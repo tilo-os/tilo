@@ -4277,6 +4277,7 @@ fn an_address_in_the_subject_or_the_body_is_no_recipient() {
             .iter()
             .any(|line| line.contains("eve@elsewhere.test")),
         "an address in the subject or the words is no recipient: {sent}"
+    );
 }
 
 // USER REQUIREMENT: a message that went but whose server kept no copy in Sent says so, where it
