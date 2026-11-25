@@ -1176,7 +1176,8 @@ mod tests {
 
         phase a_persons_call_opens_where_they_are_and_an_apps_beside_it;
         // A call the person's press admitted runs as the person, whichever app asked: their view
-        // is where it opens. An app's own call, with no press behind it, opens beside it.
+        // is where it opens. A call made by an app acting for the person opens beside that app
+        // instead, not where the person looks: being the person's app is not being the person.
         {
             let workspace = workspace();
             let workspace_id = workspace.id().to_string();
@@ -1198,6 +1199,14 @@ mod tests {
                 state.launch_place(&chat, &workspace_id, None),
                 beside_chat,
                 "Chat's own call opens beside it"
+            );
+            // Chat asking for its person is still Chat, so its view stands beside it rather
+            // than moving theirs: being the person's app is not being the person.
+            let chat_for_the_person = chat.clone().acting_for("owner");
+            assert_eq!(
+                state.launch_place(&chat_for_the_person, &workspace_id, None),
+                beside_chat,
+                "an app's call for its person opens beside the app, not where the person looks"
             );
             let scope = crate::apps::services::LaunchScope {
                 app_id: "so.tilo.chat".into(),
