@@ -389,8 +389,11 @@ fn certify_this_computers_key(identity_path: &Path) {
 
 /// Make this account's person here when it signed in with none: the daemon founds them, the one
 /// way a person is made, and this account takes up their public record; then the key the daemon
-/// made it is certified with the root the daemon keeps for the account. An account that signed
-/// in as a person whose identity another device of theirs holds makes none.
+/// made it is certified with the root the daemon keeps for the account. A person the daemon
+/// founded for the account already (asked by another of its programs before this session
+/// started) is taken up the same way: the daemon, not this account's store, says whether the
+/// person exists. An account that signed in as a person whose identity another device of theirs
+/// holds makes none.
 fn found_here(identity_dir: &Path) {
     match found_and_certify(identity_dir) {
         Ok(true) => {
@@ -405,15 +408,18 @@ fn found_here(identity_dir: &Path) {
 
 /// [`found_here`], answering whether an identity was made and its key certified, and why not.
 pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
-    if !tilo_api::daemon::who::founding()? {
-        return Ok(false);
+    let founds = tilo_api::daemon::who::founding()?;
+    if founds {
+        tilo_api::daemon::this_computer()?.found(&tilo_api::daemon::Founding::default())?;
     }
-    tilo_api::daemon::this_computer()?.found(&tilo_api::daemon::Founding::default())?;
     let who = tilo_api::daemon::who::who()?;
-    let person = who
-        .certify_person
-        .or(who.person)
-        .ok_or("this computer's daemon made this account no person")?;
+    let Some(person) = who.certify_person.or(who.person) else {
+        return if founds {
+            Err("this computer's daemon made this account no person".to_owned())
+        } else {
+            Ok(false)
+        };
+    };
     let taken = tilo_identity::provisioning::take_up_certified_person(
         identity_dir,
         &firstboot::collaboration_identity_paths(),
@@ -422,8 +428,14 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
         &tilo_identity::provisioning::login_account_display_name(),
     )
     .map_err(|error| error.to_string())?;
-    if !taken {
-        return Err("this computer's daemon certified no person for this account".to_owned());
+    match (taken, founds) {
+        (true, _) => {}
+        // A person another device of theirs certified this one for, with no certificate here
+        // naming them yet: nothing is this account's to take up.
+        (false, false) => return Ok(false),
+        (false, true) => {
+            return Err("this computer's daemon certified no person for this account".to_owned());
+        }
     }
     // The account a person's own daemon runs as holds the root it just made, and certifies its
     // key itself; another account's session holds the public record, and the daemon signs with
