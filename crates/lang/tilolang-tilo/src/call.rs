@@ -578,7 +578,12 @@ fn result_of(
             .into_iter()
             .flatten()
             .filter_map(Json::as_str)
-            .find_map(|id| ResourceRef::parse_id(id.strip_prefix(&prefix)?, declared.id.clone()))
+            // A resource is answered by the id its app names it by (`issues/i1`), as its own
+            // published id may be (`tl:so.tilo.tasks:issues/i1`).
+            .find_map(|id| {
+                let id = id.strip_prefix(&prefix).unwrap_or(id);
+                ResourceRef::parse_id(id, declared.id.clone())
+            })
             .map(|at| Value::resource(&at))
             .ok_or_else(|| {
                 format!(
