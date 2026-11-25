@@ -213,6 +213,7 @@ fn a_workspace_refusal_is_read_back_typed() {
             part: "the record uuid:plan of so.tilo.notes".into(),
         },
         AdminRefusal::NoDeviceToFound,
+        AdminRefusal::FoundOnYourDevice,
     ] {
         assert_eq!(
             AdminRefusal::from_reason(&refusal.to_reason()),

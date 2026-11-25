@@ -67,6 +67,46 @@ impl super::Workspaces {
         Ok(summary)
     }
 
+    /// Found a workspace called `name`, under the identity `workspace` when given, on this device
+    /// for its person, place it at their server and list it in their own list as kept there: what
+    /// a person's device does when they make a workspace, so their other devices find it at the
+    /// server. Where no server of theirs holds their own workspace yet, it is kept here alone.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create_for`], or their server did not take the workspace in: it stays here.
+    pub async fn found(
+        &self,
+        name: &str,
+        workspace: Option<&str>,
+    ) -> Result<WorkspaceSummary, String> {
+        let person = self.device_cert().user_public_key;
+        let summary = self.create_for(name, workspace, person).await?;
+        let Some((server, addr)) = self.persons_server(&person).await else {
+            return Ok(summary);
+        };
+        let device = server.host.device_public_key;
+        let hint = self
+            .attach_server(
+                &summary.workspace,
+                device,
+                addr,
+                tilo_peer_state::CopyRole::KeyHolder,
+            )
+            .await?;
+        let kept = tilo_server_protocol::workspaces::KeptWorkspace {
+            workspace: summary.workspace.clone(),
+            name: summary.name.clone(),
+            host_hint: hex::encode(
+                postcard::to_allocvec(&hint).map_err(|error| error.to_string())?,
+            ),
+        };
+        if !self.list_kept_by(&person, device, &[kept]).await {
+            tracing::warn!(workspace = %summary.workspace, "a workspace placed at the person's server was not listed as kept there");
+        }
+        Ok(summary)
+    }
+
     /// Create a hosted workspace named `name`, under the identity `workspace` when
     /// given: a workspace moving here keeps the workspace it is. Refused when
     /// this host holds that workspace already.

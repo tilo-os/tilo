@@ -698,8 +698,31 @@ async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them()
     server.shutdown().await;
 }
 
+/// A grant `root`'s person signed for `key`, with `capabilities`, good for an hour from `now`.
+fn grant_of(
+    root: &SigningKey,
+    key: &SigningKey,
+    capabilities: DeviceCapabilities,
+    now: u64,
+) -> DeviceCert {
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "agent".into(),
+        capabilities,
+        issued_at_ns: now,
+        expires_at_ns: now.checked_add(3_600_000_000_000),
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
+/// A key its person made for their own programs founds their own workspace at a server, as they
+/// do themselves from a page.
 #[tokio::test]
-async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspaces() {
+async fn a_persons_own_key_founds_their_own_workspace_at_a_server() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -712,22 +735,11 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
     let now = tilo_clock::unix_now_ns();
     let grant_key = SigningKey::from_bytes(&rand::random());
-    let grant = |scope| {
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: grant_key.verifying_key().to_bytes(),
-            device_label: "agent".into(),
-            capabilities: DeviceCapabilities::agent_grant(scope),
-            issued_at_ns: now,
-            expires_at_ns: Some(now + 3_600_000_000_000),
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        cert
-    };
+    let grant = |capabilities| grant_of(&root, &grant_key, capabilities, now);
     // A grant for one workspace makes none, and asks for no other than its own.
-    let narrow = grant(AgentScope::Workspace([7; 16]));
+    let narrow = grant(DeviceCapabilities::agent_grant(AgentScope::Workspace(
+        [7; 16],
+    )));
     assert!(matches!(
         create_own(&host, &narrow, json!({})).await,
         Err(ActionCallError::Refused { .. })
@@ -741,15 +753,15 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         .await,
         Err(ActionCallError::Refused { .. })
     ));
-    let all = grant(AgentScope::AllWorkspaces);
-    // The grant asks as its session makes it: its person's agent.
+    let all = grant(DeviceCapabilities::server_key_grant());
+    // The key asks as its session makes it: its person's program.
     let agent =
         Caller::authenticated(all.user_public_key, all.device_public_key).delegated_to("grant");
     let receipt = on_host(&host, &all, &agent, own_request(json!({})))
         .await
         .unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
-        panic!("the grant's person's own workspace is made: {receipt:?}");
+        panic!("the key's person's own workspace is made: {receipt:?}");
     };
     let created: CreatedWorkspace = serde_json::from_value(output.value.unwrap()).unwrap();
     // The invitation is the person's, which the grant redeems as any new
@@ -812,6 +824,39 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     server.shutdown().await;
 }
 
+/// A grant its person's consent gave an agent founds no workspace at a server, even one for all
+/// their workspaces: it is told their device founds it, and nothing is made.
+#[tokio::test]
+async fn an_agents_grant_founds_nothing_at_a_server_and_is_sent_to_its_persons_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = super::super::tests::host_dispatch(workspaces);
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let consented = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let agent = Caller::authenticated(consented.user_public_key, consented.device_public_key)
+        .delegated_to("grant");
+    let refused = on_host(&host, &consented, &agent, own_request(json!({}))).await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason })
+            if AdminRefusal::from_reason(reason) == Some(AdminRefusal::FoundOnYourDevice)),
+        "{refused:?}"
+    );
+    assert!(
+        workspaces.own_workspaces_of(&person).is_empty(),
+        "nothing is founded for the agent"
+    );
+    server.shutdown().await;
+}
+
 /// An agent's certificate is its person's yes only to what it grants. A grant for one workspace
 /// grants making none, so its agent asks before making its person's own workspace, and with
 /// nothing of theirs here to keep the question in, it is refused for that. A grant that makes
@@ -848,17 +893,24 @@ async fn an_agent_asks_before_a_host_operation_its_certificate_does_not_grant() 
         "nothing is made"
     );
 
+    // A key the person made for their own programs founds their workspace; an agent's grant
+    // for all of them then asks before deleting it.
+    let own_key = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::server_key_grant(),
+    );
+    let made = on_host(&host, &own_key, &as_agent(&own_key), own_request(json!({})))
+        .await
+        .unwrap();
+    let ReceiptStatus::Completed { output } = made.status else {
+        panic!("their key makes their own workspace at once: {made:?}");
+    };
     let all = certified(
         &root,
         &SigningKey::from_bytes(&rand::random()),
         DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
     );
-    let made = on_host(&host, &all, &as_agent(&all), own_request(json!({})))
-        .await
-        .unwrap();
-    let ReceiptStatus::Completed { output } = made.status else {
-        panic!("its grant makes its person's own workspace at once: {made:?}");
-    };
     let created: CreatedWorkspace = serde_json::from_value(output.value.unwrap()).unwrap();
     let workspace = created.workspace.workspace.clone();
     assert!(workspaces.owns(&person, &workspace));
@@ -1866,7 +1918,7 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
 /// A person the site let in (the home workspace's invitation redeemed, as
 /// its entry hands one) makes a second and a third workspace of their own:
 /// the wait list is at the entry, never in the way of someone already in.
-/// Their agent's grant makes one too, within its scope; a key for one
+/// A key they made for their own programs makes one too; a key for one
 /// workspace makes none but enters its own. The stranger who only left an
 /// address keeps nothing.
 #[tokio::test]
@@ -1891,16 +1943,16 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
     }
     assert_eq!(workspaces.own_workspaces_of(&person).len(), 3);
 
-    // Their agent's grant, reaching all their workspaces, makes another.
-    let grant = certified(
+    // A key they made for their own programs, reaching all their workspaces, makes another.
+    let own_key = certified(
         &root,
         &SigningKey::from_bytes(&rand::random()),
-        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        DeviceCapabilities::server_key_grant(),
     );
-    let agents = own_as_key(&host, &grant, json!({"name": "Agent's"})).await;
-    assert_eq!(agents.workspace.name, "Agent's");
+    let keys = own_as_key(&host, &own_key, json!({"name": "Key's"})).await;
+    assert_eq!(keys.workspace.name, "Key's");
     let mine = workspaces.own_workspaces_of(&person);
-    assert_eq!(mine.len(), 4, "the grant's is the person's own: {mine:?}");
+    assert_eq!(mine.len(), 4, "the key's is the person's own: {mine:?}");
 
     // A key for one of them makes none, and enters that one.
     let work: [u8; 16] = hex::decode(first.workspace.workspace.replace('-', ""))

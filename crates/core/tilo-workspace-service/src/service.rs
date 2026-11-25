@@ -899,6 +899,7 @@ impl WorkspaceService {
 #[must_use]
 pub fn local_caller(cert: &DeviceCert) -> tilo_actions::remote::Caller {
     tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+        .in_process()
 }
 
 /// Where an embedder whose router is built before any workspace is placed on it

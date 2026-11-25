@@ -324,6 +324,49 @@ async fn holds_its_workspace_and_lists_what_the_server_keeps(
         "an address for another workspace lists nothing"
     );
 
+    // A workspace the person makes after the hand-over is founded on this device, placed at
+    // their server and listed there: their other device reads it in the list the server answers
+    // and enters it at the server, with this device away from the call.
+    let labs = tilo_test_env::within(
+        "the device founds a workspace and places it at the server",
+        own.copies().found("Labs", None),
+    )
+    .await
+    .expect("the device founds the workspace");
+    assert!(
+        hosted.summary(&labs.workspace).await.is_ok(),
+        "the server keeps the workspace its person's device founded"
+    );
+    tilo_test_env::within("the server's list names the new workspace", async {
+        loop {
+            let listed = account
+                .listed(
+                    &laptop_cert.user_public_key,
+                    &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+                    Some(&labs.workspace),
+                )
+                .await;
+            if listed.is_ok_and(|listed| {
+                listed
+                    .workspaces
+                    .iter()
+                    .any(|listed| listed.workspace == labs.workspace && listed.host.is_some())
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let (phone_key, phone_cert) = enrol(&root, "phone", DeviceCapabilities::member());
+    assert!(
+        hosted
+            .enter(&labs.workspace, (&phone_cert, &phone_key))
+            .await
+            .is_ok(),
+        "the person's other device enters the workspace at their server"
+    );
+
     entered.close();
     server.shutdown().await;
 }

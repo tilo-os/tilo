@@ -2463,9 +2463,13 @@ async fn workspaces(key: &Connection, server: &Server, args: &Value) -> Outcome 
     }
 }
 
+/// What a device that founds no workspace itself answers a create with: the code of its refusal.
+pub const NO_FOUNDING_DEVICE: &str = "no_founding_device";
+
 /// What a desktop answers `op` with `args`: the workspaces it keeps, kept or left at the
-/// person's word, and everything else as the person's account at their server answers it.
-/// A workspace made there is kept here too, and one deleted there is kept here no more.
+/// person's word, and everything else but making one as the person's account at their server
+/// answers it. A workspace branched there is kept here too, and one deleted there is kept here
+/// no more.
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per action a desktop answers for its person, each a few lines"
@@ -2532,6 +2536,16 @@ async fn here_answers(
     let Some(account) = here.account().await else {
         return refused(&ServerError::NoAccountHere);
     };
+    // A workspace is founded on the person's device that founded their own, which places it at
+    // their server; this device founds none, and their server founds none for it.
+    if op == Op::CreateWorkspace {
+        return failed(
+            NO_FOUNDING_DEVICE,
+            "this device doesn't make your workspaces, and the device of yours that does can't be \
+             reached from here",
+            "make the workspace on the device that keeps your workspaces",
+        );
+    }
     let asked = match op {
         Op::RenameWorkspace | Op::Unattended | Op::Usage | Op::AskModel => account_target(op, args),
         _ => server_operation(op, args).map(|(action, arguments)| (host(action), arguments)),
@@ -2547,12 +2561,7 @@ async fn here_answers(
     let Some(workspace) = arguments
         .get("workspace")
         .and_then(Value::as_str)
-        .filter(|_| {
-            matches!(
-                op,
-                Op::CreateWorkspace | Op::BranchWorkspace | Op::DeleteWorkspace
-            )
-        })
+        .filter(|_| matches!(op, Op::BranchWorkspace | Op::DeleteWorkspace))
     else {
         return Outcome::Ok(answer);
     };

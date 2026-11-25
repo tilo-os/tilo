@@ -36,6 +36,17 @@ pub fn device_agent_id(person: &[u8; 32], name: &str) -> String {
     format!("{stem}-{tag}")
 }
 
+/// How a call came to the service that answers it ([`Caller`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Came {
+    /// Over a link.
+    OverALink,
+    /// On the person's plain connection to their own device's daemon.
+    OwnConnection,
+    /// From the device's own code, in process.
+    InProcess,
+}
+
 /// The authenticated actor behind a request.
 ///
 /// Built only by the transport that authenticated the connection — from the
@@ -78,10 +89,11 @@ pub struct Caller {
     pub(super) asked: Option<String>,
     // The device's operating system (`Self::local_system`), which acts for nobody.
     system: bool,
-    // The person on a plain connection to their own device's daemon, which the kernel says is
-    // their own account (`Self::own_person`): such a call is the person's own act, and the
-    // CLI's own prompt on it may confirm what the workspace asks them. The call never does.
-    own_connection: bool,
+    // How the call came: over a link, on the person's plain connection to their own device's
+    // daemon, which the kernel says is their own account (`Self::own_person`), where their CLI's
+    // own prompt may confirm what the workspace asks them (the call never does), or from the
+    // device's own code in process (`Self::in_process`).
+    came: Came,
     // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
     // which the action checks against the issuer's grant when it runs.
     invited: Option<Invited>,
@@ -161,7 +173,7 @@ impl Caller {
             agent_name: None,
             asked: None,
             system: false,
-            own_connection: false,
+            came: Came::OverALink,
             invited: None,
             forwarded_by: None,
             granted: Vec::new(),
@@ -248,7 +260,7 @@ impl Caller {
     #[must_use]
     pub fn own_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self {
-            own_connection: true,
+            came: Came::OwnConnection,
             ..Self::admitted(Acting::person(person.into()), None)
         }
     }
@@ -257,14 +269,28 @@ impl Caller {
     /// ([`Self::own_person`]).
     #[must_use]
     pub const fn is_own_connection(&self) -> bool {
-        self.own_connection
+        matches!(self.came, Came::OwnConnection)
     }
 
     /// The same caller, as the person on their own device's daemon connection.
     #[must_use]
     pub const fn on_own_connection(mut self) -> Self {
-        self.own_connection = true;
+        self.came = Came::OwnConnection;
         self
+    }
+
+    /// The same caller, asked by the device's own code in process rather than over a link:
+    /// only the service that answers it sets this.
+    #[must_use]
+    pub const fn in_process(mut self) -> Self {
+        self.came = Came::InProcess;
+        self
+    }
+
+    /// Whether the device's own code asked this in process ([`Self::in_process`]).
+    #[must_use]
+    pub const fn is_in_process(&self) -> bool {
+        matches!(self.came, Came::InProcess)
     }
 
     /// The device's operating system on a local connection the provider admitted as its
@@ -1007,7 +1033,7 @@ impl KeptCaller {
             system: self.system,
             // A kept call is admitted again for what it was made for, never as a live
             // connection's own act.
-            own_connection: false,
+            came: Came::OverALink,
             // A redemption never waits for a person's yes, so no kept call carries one.
             invited: None,
             forwarded_by: None,

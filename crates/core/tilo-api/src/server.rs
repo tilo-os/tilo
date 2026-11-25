@@ -174,6 +174,10 @@ impl std::fmt::Display for ServerError {
                         "This server can't make a workspace: it has no device of its own to make \
                          it on. Make it on one of your devices.",
                     ),
+                    WorkspaceRefusal::FoundOnYourDevice => f.write_str(
+                        "Your workspaces are made on your own device, which places them on your \
+                         server. Make it there.",
+                    ),
                 }
             }
         }

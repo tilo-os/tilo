@@ -762,12 +762,14 @@ impl Workspaces {
             ServiceOperation::CreateWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                self.create_invoke(device, &args, request_id, now).await
+                self.create_invoke((caller, device), &args, request_id, now)
+                    .await
             }
             ServiceOperation::CreateOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                self.create_own_invoke(device, &args, request_id, now).await
+                self.create_own_invoke((caller, device), &args, request_id, now)
+                    .await
             }
             ServiceOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -1077,7 +1079,7 @@ impl Workspaces {
     /// with its first invitation when asked.
     async fn create_invoke(
         &self,
-        device: &DeviceCert,
+        (caller, device): (&Caller, &DeviceCert),
         args: &Args,
         request_id: [u8; 32],
         now: u64,
@@ -1095,10 +1097,7 @@ impl Workspaces {
         };
         // The workspace is its maker's: their person owns it from the step
         // that makes it, and this host administers it for them.
-        let summary = self
-            .create_for(name, workspace, device.user_public_key)
-            .await
-            .map_err(ActionCallError::refused)?;
+        let summary = self.found_for((caller, device), name, workspace).await?;
         let invitation = match first {
             Some((terms, makes_administrator)) => Some(ActionInvitation::of(
                 &self
@@ -1217,7 +1216,7 @@ impl Workspaces {
     /// refused: the host never answers a workspace the ask did not name.
     async fn create_own_invoke(
         &self,
-        device: &DeviceCert,
+        (caller, device): (&Caller, &DeviceCert),
         args: &Args,
         request_id: [u8; 32],
         now: u64,
@@ -1327,7 +1326,7 @@ impl Workspaces {
             // Another one, for a person the site let in ([`Self::check_account`]): one they did
             // not name is named in their language. The person's own workspace and the entry in
             // their list are their own device's to write: this host founds and writes neither.
-            self.make_own_workspace(person, (name, moving, language), own)
+            self.make_own_workspace((caller, device), (name, moving, language), own)
                 .await?
         };
         if let Some(labels) = labels {
@@ -1375,22 +1374,64 @@ impl Workspaces {
         Ok(())
     }
 
-    /// `person`'s new workspace, made under `name` or the one its language names, and recorded
-    /// as theirs: their own device writes the entry in their list.
+    /// `device`'s person's new workspace, made under `name` or the one its language names, and
+    /// recorded as theirs ([`Self::found_for`]).
     async fn make_own_workspace(
         &self,
-        person: [u8; 32],
+        (caller, device): (&Caller, &DeviceCert),
         (name, moving, language): (Option<&str>, Option<&str>, Option<&str>),
         own: &crate::workspaces::own::OwnWorkspaces,
     ) -> Result<WorkspaceSummary, ActionCallError> {
         let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
-        let summary = self
-            .create_for(&name, moving, person)
-            .await
-            .map_err(ActionCallError::refused)?;
-        own.record(&person, &summary.workspace)
+        let summary = self.found_for((caller, device), &name, moving).await?;
+        own.record(&device.user_public_key, &summary.workspace)
             .map_err(ActionCallError::refused)?;
         Ok(summary)
+    }
+
+    /// Found the workspace `device` asks for, called `name` (under `workspace` when given), for
+    /// its person. The device that founded their own workspace (or one of theirs where they have
+    /// none yet) founds it as theirs for them and their agents: it places the workspace at their
+    /// server and lists it ([`Workspaces::found`]). Any other host founds one for this device's
+    /// own code, asked in process, for a device of the person's asking itself and for a key they
+    /// made for their own programs; an agent their consent let in is refused: their person's
+    /// device founds theirs.
+    async fn found_for(
+        &self,
+        (caller, device): (&Caller, &DeviceCert),
+        name: &str,
+        workspace: Option<&str>,
+    ) -> Result<WorkspaceSummary, ActionCallError> {
+        let person = device.user_public_key;
+        let here = self.device_cert();
+        let founded_here = person == here.user_public_key
+            && self
+                .state(&tilo_server_protocol::servers::person_workspace_id(&person))
+                .await
+                .is_none_or(|theirs| theirs.governance().founder() == Some(here.device_public_key));
+        // The person's own device asking itself, or a key they made for their own programs; an
+        // agent's grant from their consent is neither.
+        let persons_own = caller.device_public_key() == Some(&device.device_public_key)
+            && !device.capabilities.stand_in
+            && if device.capabilities.agent.is_none() {
+                caller.acting().is_person()
+            } else {
+                device.capabilities.own_key_in("all")
+            };
+        if founded_here {
+            self.found(name, workspace).await
+        } else if caller.is_in_process()
+            // Pages and hosted agents can't found on their own device yet; this path goes once
+            // they can.
+            || persons_own
+        {
+            self.create_for(name, workspace, person).await
+        } else {
+            return Err(ActionCallError::refused(
+                AdminRefusal::FoundOnYourDevice.to_reason(),
+            ));
+        }
+        .map_err(ActionCallError::refused)
     }
 
     /// The workspace `person` already has under exactly `labels`, which an ask naming no

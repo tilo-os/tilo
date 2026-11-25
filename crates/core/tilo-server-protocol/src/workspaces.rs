@@ -830,6 +830,9 @@ pub enum AdminRefusal {
     /// A workspace is founded by a device, which signs its founding and seals
     /// its records, and the host asked to found one has none of its own.
     NoDeviceToFound,
+    /// The caller's person has a device that keeps their own workspace: that device founds
+    /// their workspaces, places them on their server and lists them, and the server founds none.
+    FoundOnYourDevice,
 }
 
 impl AdminRefusal {
@@ -859,6 +862,9 @@ impl std::fmt::Display for AdminRefusal {
             }
             Self::NoDeviceToFound => f.write_str(
                 "a workspace is founded on a device, and this host has no device to found it on",
+            ),
+            Self::FoundOnYourDevice => f.write_str(
+                "your workspaces are founded on your own device, which places them on your server",
             ),
         }
     }

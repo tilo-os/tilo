@@ -554,46 +554,23 @@ mod tests {
     }
 
     const SHARED: &str = "0a6c1f5e-9d84-4b0e-8f2d-4c3a1b2e7d90";
-    const MADE: &str = "5b1d7c3e-2a4f-4e6b-9c8d-7f0e1a2b3c4d";
 
-    /// The person's account at their server: it makes the workspaces it is asked to, owned by
-    /// the person, and lists them beside [`SHARED`], which another person shared with them.
+    /// The person's account at their server: it lists [`SHARED`], which another person shared
+    /// with them, and keeps every action it is asked, which it answers none of.
     #[derive(Default)]
     struct HomeServer {
-        made: std::sync::Mutex<Vec<(String, String)>>,
+        asked: std::sync::Mutex<Vec<String>>,
     }
 
     impl crate::session::AccountServer for HomeServer {
         fn call(
             &self,
             target: tilo_actions::remote::RemoteActionTarget,
-            arguments: serde_json::Map<String, serde_json::Value>,
+            _arguments: serde_json::Map<String, serde_json::Value>,
         ) -> crate::session::Asked<'_, serde_json::Value> {
-            use tilo_server_protocol::workspaces as ws;
-            let text = |name: &str| arguments[name].as_str().unwrap().to_owned();
-            let action = target.address.action.as_str();
-            let answer = match action {
-                ws::CREATE_OWN_WORKSPACE => {
-                    let (id, name) = (text("workspace"), text("name"));
-                    self.made.lock().unwrap().push((id.clone(), name.clone()));
-                    serde_json::to_value(ws::CreatedWorkspace {
-                        workspace: ws::WorkspaceListing {
-                            workspace_id: tilo_server_protocol::WorkspaceId::parse(&id).unwrap(),
-                            workspace: id,
-                            name,
-                            generation: 1,
-                            role: Some("owner".to_owned()),
-                            labels: ws::WorkspaceLabels::new(),
-                            unattended: false,
-                            made_at_ms: None,
-                        },
-                        invitation: None,
-                    })
-                    .map_err(|error| error.to_string())
-                }
-                _ => Err(format!("{action} is not this server's")),
-            };
-            Box::pin(async move { answer })
+            let action = target.address.action;
+            self.asked.lock().unwrap().push(action.clone());
+            Box::pin(async move { Err(format!("{action} is not this server's")) })
         }
 
         fn listed(
@@ -603,28 +580,26 @@ mod tests {
             workspace: Option<&str>,
         ) -> crate::session::Asked<'_, tilo_server_protocol::workspaces::PersonWorkspaces> {
             use tilo_server_protocol::workspaces as ws;
-            let row = |id: &str, name: &str, role: &str| ws::ListedWorkspace {
-                workspace: id.to_owned(),
-                name: name.to_owned(),
+            let mut workspaces = vec![ws::ListedWorkspace {
+                workspace: SHARED.to_owned(),
+                name: "Shared".to_owned(),
                 host: None,
-                role: Some(role.to_owned()),
+                role: Some("editor".to_owned()),
                 labels: ws::WorkspaceLabels::new(),
                 made_at_ms: None,
                 unattended: false,
                 host_device: None,
                 host_hint: None,
-            };
-            let mut workspaces = vec![row(SHARED, "Shared", "editor")];
-            workspaces.extend(
-                self.made
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .map(|(id, name)| row(id, name, "owner")),
-            );
+            }];
             workspaces.retain(|row| workspace.is_none_or(|only| row.workspace == only));
             Box::pin(async move { Ok(ws::PersonWorkspaces { workspaces }) })
         }
+    }
+
+    /// The account [`Device`] reaches, shared by every test of it.
+    fn home() -> std::sync::Arc<HomeServer> {
+        static HOME: std::sync::OnceLock<std::sync::Arc<HomeServer>> = std::sync::OnceLock::new();
+        HOME.get_or_init(std::sync::Arc::default).clone()
     }
 
     impl crate::session::Here for Device {
@@ -646,11 +621,8 @@ mod tests {
         }
 
         fn account(&self) -> crate::session::FoundAccount<'_> {
-            static HOME: std::sync::OnceLock<std::sync::Arc<HomeServer>> =
-                std::sync::OnceLock::new();
             Box::pin(async {
-                let home: std::sync::Arc<dyn crate::session::AccountServer> =
-                    HOME.get_or_init(std::sync::Arc::default).clone();
+                let home: std::sync::Arc<dyn crate::session::AccountServer> = home();
                 Some(home)
             })
         }
@@ -667,11 +639,11 @@ mod tests {
         }
     }
 
-    /// A device with no login answers the person's account itself: a workspace it makes at
-    /// their server is kept here, its list says which of theirs it keeps, and it enters and
-    /// leaves one shared with them at their word.
+    /// A device with no login that founds no workspace itself answers the person's account
+    /// itself: it makes no workspace, and never asks their server to, its list says which of
+    /// theirs it keeps, and it enters and leaves one shared with them at their word.
     #[tokio::test]
-    async fn a_device_makes_lists_enters_and_leaves_workspaces_from_its_own_state() {
+    async fn a_device_that_founds_nothing_lists_enters_and_leaves_workspaces_from_its_own_state() {
         let (key, cert) = ada_laptop(13);
         let direct = Direct::here(
             std::sync::Arc::new(Device::default()),
@@ -680,7 +652,7 @@ mod tests {
             "Ada's laptop",
         )
         .unwrap();
-        let ask = |action: &'static str, body: serde_json::Value| {
+        let answered = |action: &'static str, body: serde_json::Value| {
             let target = format!("/v1/resources/account/workspaces/actions/{action}");
             let direct = &direct;
             async move {
@@ -691,9 +663,13 @@ mod tests {
                 let status = answer.status();
                 let bytes = answer.into_body().collect().await.unwrap().to_bytes();
                 let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                assert_eq!(status, 200, "{action}: {json}");
-                json["result"].clone()
+                (status, json)
             }
+        };
+        let ask = |action: &'static str, body: serde_json::Value| async move {
+            let (status, json) = answered(action, body).await;
+            assert_eq!(status, 200, "{action}: {json}");
+            json["result"].clone()
         };
         let kept = |listed: &serde_json::Value| -> Vec<(String, bool, bool)> {
             listed["workspaces"]
@@ -710,24 +686,27 @@ mod tests {
                 .collect()
         };
 
-        let made = ask(
+        let (status, refused) = answered(
             "create",
-            serde_json::json!({"name": "Made here", "id": MADE}),
+            serde_json::json!({"name": "Made here", "id": "5b1d7c3e-2a4f-4e6b-9c8d-7f0e1a2b3c4d"}),
         )
         .await;
-        assert_eq!(made["workspace"]["id"], MADE, "{made}");
-        assert_eq!(
-            made["workspace"]["kept_here"], true,
-            "made here is kept here: {made}"
+        assert_ne!(status, 200, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains(crate::account::NO_FOUNDING_DEVICE),
+            "the person is told the device that makes their workspaces is not reached: {refused}"
+        );
+        assert!(
+            home().asked.lock().unwrap().is_empty(),
+            "a device that founds nothing asks no server to found a workspace for it"
         );
 
         let listed = ask("list", serde_json::json!({})).await;
         assert_eq!(
             kept(&listed),
-            [
-                (MADE.to_owned(), true, true),
-                (SHARED.to_owned(), false, false)
-            ],
+            [(SHARED.to_owned(), false, false)],
             "{listed}"
         );
 

@@ -363,6 +363,61 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
     server.shutdown().await;
 }
 
+/// An agent's `workspace.create` reaches the device of its person's that runs it: that device
+/// founds the workspace itself, once its person said yes, and what they were asked names the
+/// agent, not them.
+#[tokio::test]
+async fn an_agents_create_is_founded_on_its_persons_device_and_names_the_agent() {
+    use tilo_action_policy::agent_answers::ACCOUNT_APP;
+    use tilo_server_protocol::workspaces::CREATE_WORKSPACE;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let device = test_host(dir.path(), &key, &owner).await;
+    let workspaces = device.workspaces();
+    let (_, workspace_id, actions) = hosted(workspaces).await;
+    let agent = agent_of(&owner);
+    let approving = Answering::approving();
+    let mut making = request("", CREATE_WORKSPACE, json!({"name": "The agent's"}));
+    making.target = tilo_actions::remote::RemoteActionTarget {
+        provider: ACCOUNT_APP.into(),
+        address: tilo_actions::api::ActionAddress::new(
+            tilo_server_protocol::workspaces::HOST_WORKSPACES_RESOURCE,
+            CREATE_WORKSPACE,
+        ),
+    };
+    let first = settled(
+        actions
+            .device_page(workspace_id, &owner)
+            .invoke(&agent, making.clone()),
+    )
+    .await;
+    let created = answered(
+        workspaces,
+        (Some(workspace_id), Some(&owner)),
+        &agent,
+        &making,
+        first,
+    )
+    .await;
+    assert!(created.is_ok(), "{created:?}");
+    assert!(
+        workspaces
+            .list()
+            .await
+            .iter()
+            .any(|made| made.name == "The agent's"),
+        "the person's device founds the agent's workspace"
+    );
+    let asked = approving.asked();
+    assert!(
+        matches!(&asked[..], [facts]
+            if matches!(&facts.by, tilo_actions::remote::asked::AskedBy::Agent(named)
+                if named.id == "claude")),
+        "what the person answered names the agent: {asked:?}"
+    );
+    device.shutdown().await;
+}
+
 #[tokio::test]
 async fn its_person_is_asked_last_once_their_own_checks_pass() {
     let dir = tempfile::tempdir().unwrap();

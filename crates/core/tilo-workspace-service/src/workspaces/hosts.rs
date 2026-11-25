@@ -329,6 +329,33 @@ impl Workspaces {
         Ok(())
     }
 
+    /// The server of `person`'s that holds their own workspace, at the address it signed there:
+    /// a device of theirs other than this one that holds its keys and did not found it. `None`
+    /// while no server of theirs holds it.
+    pub(super) async fn persons_server(
+        &self,
+        person: &[u8; 32],
+    ) -> Option<(TransportHint, EndpointAddr)> {
+        let state = self
+            .state(&tilo_server_protocol::servers::person_workspace_id(person))
+            .await?;
+        let governance = state.governance();
+        let own = self.inner.host.cert.device_public_key;
+        let founder = governance.founder();
+        let holding = governance.key_holders(tilo_clock::wall()).ok()?;
+        governance.keeping_devices().into_iter().find_map(|hint| {
+            let device = host_device(&hint);
+            let theirs = hint.host.user_public_key == *person
+                && device != own
+                && Some(device) != founder
+                && holding.contains(&device);
+            let addr = WorkspaceDeviceHintV1::from_transport_hint(&hint)
+                .ok()?
+                .endpoint_addr;
+            theirs.then_some((hint, addr))
+        })
+    }
+
     /// Have the server `device`, at `addr`, hold `workspace` as well, as
     /// `role`, as its owners chose ([`Workspaces::chooses_servers`]): ask the
     /// address it signs for the workspace, name it among the workspace's
