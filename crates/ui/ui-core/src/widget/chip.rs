@@ -1936,6 +1936,7 @@ mod tests {
             removable_chip_fires_remove_on_x_click();
             removable_and_selectable_x_wins_over_toggle();
             accessibility_toggle_vs_static();
+            accessibility_a_chip_whose_words_are_news_is_a_live_region();
             a_selected_chip_with_a_press_runs_the_press();
             a_chip_whose_remove_is_bound_runs_the_action_it_names_once();
         }
