@@ -1621,129 +1621,190 @@ mod tests {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.compiled.last().expect("the app").meta.app.clone();
-        // The task the scenario answers with is the one open;
-        // another row of the same list takes its place when
-        // pressed.
-        let answered = "Call the landlord about the boiler";
-        let label = "Book a haircut";
-        for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
+        for size in [(1280_u32, 800_u32), (390, 844)] {
             // A window too narrow for the list and the item at once shows one thing at a time: pressing a
             // row opens the task's page in front of the list, where the shell's back returns to the rows.
-            let narrow = width <= 390;
+            let narrow = size.0 <= 390;
             let mut staged = Staged::over(
                 &app,
                 &packages,
                 "today",
-                (width, height),
+                size,
                 ui::Theme::light(),
                 None,
                 &[],
             )
             .expect("the scenario stages");
             staged.window.harness.relayout();
-            let id = super::super::button_named(&staged.harness().inspection().root, label)
-                .expect("the task's row is a row of the list");
-            {
-                let root = &staged.harness().inspection().root;
-                named(root, ROWS, label).expect("the row shows before it opens");
+            if narrow {
+                // The task the scenario answers with stands in front of the list, as a row
+                // pressed there does; the shell's back shows the list behind it.
                 assert!(
-                    !shows_open(root, label),
-                    "the row stands closed before anyone presses it"
+                    page_shows(&staged.harness().inspection().root, ANSWERED),
+                    "a narrow window shows the task the scenario answers with in front at {}×{}",
+                    size.0,
+                    size.1
                 );
-                if narrow {
-                    assert!(
-                        !shows_open(root, answered),
-                        "a narrow window opens no row into its item at {width}×{height}"
-                    );
-                    assert!(
-                        named(root, ROWS, answered).is_some(),
-                        "the task the scenario answers with is a row of the place's list at \
-                         {width}×{height}"
-                    );
-                } else {
-                    // The list is the window's overview and the task's page stands in the
-                    // content column beside it, so the row stays a row and says by its choice
-                    // that its task is the one open.
-                    assert!(
-                        page_shows(root, answered),
-                        "the task the scenario answers with is the one the content column holds"
-                    );
-                    assert!(
-                        chosen_named(root, answered),
-                        "the task's row stands chosen, so the list says what is open"
-                    );
-                    assert!(
-                        !page_shows(root, label),
-                        "no other task's page stands beside the list"
-                    );
-                }
+                back_to_the_list(&mut staged, size);
             }
+            let id = super::super::button_named(&staged.harness().inspection().root, PRESSED)
+                .expect("the task's row is a row of the list");
+            stands_before_the_press(&staged.harness().inspection().root, narrow, size);
 
             staged.press(&id, false).expect("the row presses");
 
             let root = &staged.harness().inspection().root;
             assert!(
-                !shows_open(root, answered),
-                "one row is open at a time: the other closed at {width}×{height}"
+                !shows_open(root, ANSWERED),
+                "one row is open at a time: the other closed at {}×{}",
+                size.0,
+                size.1
             );
             if narrow {
-                assert!(
-                    !shows_open(root, label),
-                    "the list behind the page keeps no row open at {width}×{height}"
-                );
-                assert!(
-                    shown_named(root, "Subtasks"),
-                    "pressing the row opens the task in front of the list at {width}×{height}"
-                );
-                assert!(
-                    crate::layout_check::back_chip(&staged, (width, height)),
-                    "the page carries the shell's way back at {width}×{height}"
-                );
-                staged
-                    .press_shell(ui::widget::WINDOW_BACK)
-                    .expect("the shell's back presses");
-                staged.freshen().expect("the list comes back to rest");
-                let root = &staged.harness().inspection().root;
-                assert!(
-                    !shown_named(root, "Subtasks"),
-                    "the shell's back puts the page away again at {width}×{height}"
-                );
-                assert!(
-                    named(root, ROWS, label).is_some(),
-                    "the list comes back with its rows at {width}×{height}"
-                );
-                continue;
+                opens_in_front_and_back_returns(&mut staged, size);
+            } else {
+                opens_beside_the_list(root, size);
             }
-            assert!(
-                page_shows(root, label),
-                "the pressed task stands in the content column at {width}×{height}"
-            );
-            assert!(
-                chosen_named(root, label),
-                "the pressed row is the one the list says is open at {width}×{height}"
-            );
-            assert!(
-                !chosen_named(root, answered),
-                "the row of the task before it is no longer chosen at {width}×{height}"
-            );
-            assert!(
-                !page_shows(root, answered),
-                "the task before it left the content column at {width}×{height}"
-            );
-            assert!(
-                shown_named(root, "Subtasks"),
-                "the content column holds the task's document at {width}×{height}"
-            );
-            assert!(
-                named(root, ROWS, label).is_some(),
-                "the list keeps the row while its page stands beside it at {width}×{height}"
-            );
         }
+    }
+
+    /// The task the "today" scenario answers with: the one its window holds open.
+    const ANSWERED: &str = "Call the landlord about the boiler";
+    /// Another row of the same list, which takes the answered task's place when pressed.
+    const PRESSED: &str = "Book a haircut";
+
+    /// What the window of the "today" scenario shows before anyone presses a row: at a narrow
+    /// `size`, back on the list behind the answered task, the list alone with that task a row of
+    /// it; wider, the answered task's page in the content column beside the list, whose row
+    /// stands chosen.
+    fn stands_before_the_press(
+        root: &ui::headless::InspectionNode,
+        narrow: bool,
+        size: (u32, u32),
+    ) {
+        let (width, height) = size;
+        named(root, ROWS, PRESSED).expect("the row shows before it opens");
+        assert!(
+            !shows_open(root, PRESSED),
+            "the row stands closed before anyone presses it"
+        );
+        if narrow {
+            assert!(
+                !shows_open(root, ANSWERED),
+                "the list behind the task's page opens no row into its item at {width}×{height}"
+            );
+            assert!(
+                named(root, ROWS, ANSWERED).is_some(),
+                "the task the scenario answers with is a row of the place's list at \
+                 {width}×{height}"
+            );
+            return;
+        }
+        // The list is the window's overview and the task's page stands in the content column
+        // beside it, so the row stays a row and says by its choice that its task is the one open.
+        assert!(
+            page_shows(root, ANSWERED),
+            "the task the scenario answers with is the one the content column holds"
+        );
+        assert!(
+            chosen_named(root, ANSWERED),
+            "the task's row stands chosen, so the list says what is open"
+        );
+        assert!(
+            !page_shows(root, PRESSED),
+            "no other task's page stands beside the list"
+        );
+    }
+
+    /// After a press on a row of a narrow window: the task's page stands in front of the list,
+    /// carrying the shell's way back, and Back puts it away and shows the rows again.
+    fn opens_in_front_and_back_returns(staged: &mut Staged, size: (u32, u32)) {
+        let (width, height) = size;
+        let root = &staged.harness().inspection().root;
+        assert!(
+            !shows_open(root, PRESSED),
+            "the list behind the page keeps no row open at {width}×{height}"
+        );
+        assert!(
+            shown_named(root, "Subtasks"),
+            "pressing the row opens the task in front of the list at {width}×{height}"
+        );
+        assert!(
+            crate::layout_check::back_chip(staged, size),
+            "the page carries the shell's way back at {width}×{height}"
+        );
+        staged
+            .press_shell(ui::widget::WINDOW_BACK)
+            .expect("the shell's back presses");
+        staged.freshen().expect("the list comes back to rest");
+        let root = &staged.harness().inspection().root;
+        assert!(
+            !shown_named(root, "Subtasks"),
+            "the shell's back puts the page away again at {width}×{height}"
+        );
+        assert!(
+            named(root, ROWS, PRESSED).is_some(),
+            "the list comes back with its rows at {width}×{height}"
+        );
+    }
+
+    /// The shell's back of a narrow window that shows a task's page in front of its list: the
+    /// page carries it, and it shows the list again.
+    fn back_to_the_list(staged: &mut Staged, size: (u32, u32)) {
+        let (width, height) = size;
+        assert!(
+            shown_named(&staged.harness().inspection().root, "Subtasks"),
+            "the task's page stands in front of the list at {width}×{height}"
+        );
+        assert!(
+            crate::layout_check::back_chip(staged, size),
+            "the task's page carries the shell's way back at {width}×{height}"
+        );
+        staged
+            .press_shell(ui::widget::WINDOW_BACK)
+            .expect("the shell's back presses");
+        staged.freshen().expect("the list comes back to rest");
+        assert!(
+            !shown_named(&staged.harness().inspection().root, "Subtasks"),
+            "the shell's back puts the page away at {width}×{height}"
+        );
+    }
+
+    /// After a press on a row of a window wide enough for both: the pressed task's page takes
+    /// the content column, its row stands chosen in place of the answered one's, and the list
+    /// keeps the row.
+    fn opens_beside_the_list(root: &ui::headless::InspectionNode, size: (u32, u32)) {
+        let (width, height) = size;
+        assert!(
+            page_shows(root, PRESSED),
+            "the pressed task stands in the content column at {width}×{height}"
+        );
+        assert!(
+            chosen_named(root, PRESSED),
+            "the pressed row is the one the list says is open at {width}×{height}"
+        );
+        assert!(
+            !chosen_named(root, ANSWERED),
+            "the row of the task before it is no longer chosen at {width}×{height}"
+        );
+        assert!(
+            !page_shows(root, ANSWERED),
+            "the task before it left the content column at {width}×{height}"
+        );
+        assert!(
+            shown_named(root, "Subtasks"),
+            "the content column holds the task's document at {width}×{height}"
+        );
+        assert!(
+            named(root, ROWS, PRESSED).is_some(),
+            "the list keeps the row while its page stands beside it at {width}×{height}"
+        );
     }
 
     /// A scenario that answers with a task stages that task's place with its page in the content
     /// column and its row chosen in the list: the window a script answers in is the list and the
-    /// task beside it, not a page laid over the list.
+    /// task beside it, not a page laid over the list. A window too narrow for both shows the
+    /// task's page in front, as a press on its row does, with the list a step back.
     #[test]
     fn a_scenario_that_answers_with_a_task_shows_its_row_open_in_its_place() {
         tilo_app_window::i18n::ensure();
@@ -1765,20 +1826,23 @@ mod tests {
             // too narrow for an item beside its row settles as it draws.
             staged.window.harness.relayout();
 
-            let root = &staged.harness().inspection().root;
             if width <= 390 {
-                // One thing at a time in a window too narrow for the list beside the item: the task
-                // is a row of the place's list, and pressing it opens its page in front.
+                // One thing at a time in a window too narrow for the list beside the item: the
+                // task's page stands in front, and the shell's back shows the place's list behind
+                // it, the task a row of it.
                 assert!(
-                    !shown_named(root, "Subtasks"),
-                    "a narrow window opens no row into its item at {width}×{height}"
+                    page_shows(&staged.harness().inspection().root, label),
+                    "a narrow window shows the task in front of its list at {width}×{height}"
                 );
+                back_to_the_list(&mut staged, (width, height));
                 assert!(
-                    named(root, ROWS, label).is_some(),
+                    named(&staged.harness().inspection().root, ROWS, label).is_some(),
                     "the task the scenario answers with is a row of the place's list at \
                      {width}×{height}"
                 );
-            } else {
+            }
+            let root = &staged.harness().inspection().root;
+            if width > 390 {
                 // The task the scenario answers with stands in the content column beside the
                 // list, and its row says by its choice that it is the one open.
                 assert!(
@@ -1862,7 +1926,8 @@ mod tests {
     /// A task's steps stand on the column of the words over them when none of them holds a step of its
     /// own: a tree keeps a column for a chevron only where a row of that level has something to fold.
     ///
-    /// The narrow window's list is read first, as it stands before its row is pressed: where a
+    /// The narrow window's list is read first, as it stands behind the task the scenario
+    /// answers with and before its row is pressed: where a
     /// step another day heads stands in it
     /// (`a_step_due_another_day_stands_at_its_lists_first_level`).
     #[test]
@@ -1885,6 +1950,9 @@ mod tests {
             .expect("the scenario stages");
             staged.window.harness.relayout();
             if width <= 390 {
+                // The scenario answers with the task, which a narrow window shows in front of the
+                // list: the shell's back reads the list it stands over.
+                back_to_the_list(&mut staged, (width, height));
                 a_step_due_another_day_stands_at_its_lists_first_level(&staged);
                 // A window too narrow for the list and the item at once: the task's row opens its
                 // page in front of the list, and the steps stand in the page.
