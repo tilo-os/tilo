@@ -59,7 +59,8 @@ async fn a_handed_ticket_is_spent_once_and_files_the_persons_certificate() {
     }
     let keys = tilo_api::calls::device_keys();
     let key = SigningKey::from_bytes(&[0x5a; 32]);
-    tilo_device_identity::persist::adopt_device_key(&keys, &key.to_bytes()).unwrap();
+    // Its daemon spends the ticket at its start, holding the key it took.
+    let _machine_daemon = super::ticket_tests::the_daemons_key(&keys, &key);
     let place = Place::here(keys.clone()).unwrap();
     let credentials = root.join("credentials");
     std::fs::create_dir_all(&credentials).unwrap();

@@ -33,8 +33,10 @@ const NATIVE: &str = tilo_paths::machine::DAEMON_NATIVE;
 /// Linux), its closing NUL among them.
 const SOCKET_PATH_MAX: usize = 103;
 
-/// How long one read of a followed call waits for it to move before it is read again.
-const FOLLOW_WAIT_MS: u64 = 60_000;
+/// How long one read of a followed call waits for it to move before it is read again: within
+/// [`ANSWERING_WITHIN`], so a stage that lasts longer than one answer is waited for (a person's
+/// part that takes a while to start) is still answered, as pending, before the caller's deadline.
+const FOLLOW_WAIT_MS: u64 = 5_000;
 
 /// How long a call's answer is waited for, and how long a followed call may go without a report
 /// before the caller is told the daemon took it and did not answer. A daemon whose person's part

@@ -362,7 +362,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     // `tilo login <ticket>` on the desk: its daemon's `devices#logIn` asks the laptop.
     let desk_endpoint = endpoint(&desk_key).await;
     let keys = tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys"));
-    tilo_device_identity::persist::adopt_device_key(&keys, &desk_key.to_bytes()).unwrap();
+    let _desk_daemon = the_daemons_key(&keys, &desk_key);
     let place = tilo_device_identity::login::Place::at(state.path().join("desk"), keys);
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
@@ -547,7 +547,7 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
     let (desk_key, desk_cert) = enrol(&root, "the desk", DeviceCapabilities::member());
     let desk_endpoint = endpoint(&desk_key).await;
     let keys = tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys"));
-    tilo_device_identity::persist::adopt_device_key(&keys, &desk_key.to_bytes()).unwrap();
+    let _desk_daemon = the_daemons_key(&keys, &desk_key);
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
         desk_endpoint.clone(),
@@ -747,6 +747,17 @@ async fn listed_by(
         .collect()
 }
 
+/// The computer's device key `key`, kept at `keys` and taken there as its daemon takes it when
+/// it starts: the device's actions this test serves are that daemon's, which alone signs and
+/// files as the device, while the returned lock lives.
+pub(super) fn the_daemons_key(
+    keys: &tilo_device_identity::IdentityPaths,
+    key: &SigningKey,
+) -> tilo_device_identity::persist::DeviceKeyLock {
+    tilo_device_identity::persist::adopt_device_key(keys, &key.to_bytes()).unwrap();
+    tilo_device_identity::persist::take_device_key(keys).unwrap()
+}
+
 /// No root on this computer: a test whose daemon holds none.
 pub(super) fn no_root() -> RootSource {
     Arc::new(|| Ok(None))
@@ -816,8 +827,7 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         state.path().join("desk"),
         tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
     );
-    tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
-        .unwrap();
+    let _desk_daemon = the_daemons_key(desk_place.keys(), &desk_key);
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
         desk_endpoint.clone(),
@@ -1035,8 +1045,7 @@ async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_a
         state.path().join("desk"),
         tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
     );
-    tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
-        .unwrap();
+    let _desk_daemon = the_daemons_key(desk_place.keys(), &desk_key);
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
         desk_endpoint.clone(),
@@ -1350,8 +1359,7 @@ async fn a_logged_in_issuers_server_ticket_leaves_the_entry_on_the_host() {
         state.path().join("desk"),
         tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
     );
-    tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
-        .unwrap();
+    let _desk_daemon = the_daemons_key(desk_place.keys(), &desk_key);
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
         desk_endpoint,
@@ -1463,8 +1471,7 @@ async fn a_claimed_computer_serves_its_new_person_through_their_server_after_a_r
         state.path().join("desk"),
         tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
     );
-    tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
-        .unwrap();
+    let _desk_daemon = the_daemons_key(desk_place.keys(), &desk_key);
     tilo_device_identity::login::file_certificate(&desk_place, &before).unwrap();
     let desk = Tickets::new(
         (desk_key.clone(), before),
@@ -1844,6 +1851,10 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     // The person whose root this daemon keeps, as founding left it: the root is sealed with this
     // computer's own device key, where the daemon keeps it.
     let identity_dir = crate::device::services::this_accounts_root_dir().unwrap();
+    let _daemon = tilo_identity::provisioning::device_key_taken_as_daemon(
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+    )
+    .unwrap();
     let ada = tilo_identity::provisioning::create_person(
         &identity_dir,
         &tilo_identity::provisioning::collaboration_identity_paths(),

@@ -1765,6 +1765,24 @@ impl Daemon {
         let inherited = founding
             .map(|founding| founding.calls())
             .unwrap_or_default();
+        let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
+        // The identity signs with the device's key, which only the process that took it reads: a
+        // daemon whose start locked nothing takes it first, before anything here opens the
+        // identity: a server's enrolment, the owner root a deployment hands it, its person.
+        let lock = match locked {
+            Some(_) => None,
+            None => {
+                stage("locking the device");
+                let lock = super::serve::lock_device(&place)?;
+                // As a computer's first start: the key is made here when its system made none.
+                let keys = tilo_api::calls::device_keys();
+                tilo_device_identity::persist::load_or_create_device_key(&keys).map_err(
+                    |error| io::Error::other(format!("this computer's device key: {error}")),
+                )?;
+                let key = super::unclaimed::take(&keys)?;
+                Some((key, lock))
+            }
+        };
         // A server keeps the workspaces placed on it: it takes no other server's work. A node
         // whose unit points at an install token waits for its page to install its certificate
         // before anything else is read: until then, this machine is nobody's device.
@@ -1775,17 +1793,6 @@ impl Daemon {
         // The owner's root a deployment hands this daemon is kept here before the identity is
         // read, so this computer is the person's own device and founds its workspaces under it.
         adopt_owner_root(root)?;
-        let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
-        // The identity signs with the device's key, which only the process that took it reads: a
-        // daemon whose start locked nothing takes it before reading the identity.
-        let lock = if locked.is_some() {
-            None
-        } else {
-            stage("locking the device");
-            let lock = super::serve::lock_device(&place)?;
-            let key = super::unclaimed::take(&tilo_api::calls::device_keys())?;
-            Some((key, lock))
-        };
         let identity = Identity::here(root)?;
         tilo_files::native::private::directory(identity.place.dir())?;
         if locked.is_some_and(|device| device != identity.key.verifying_key().to_bytes()) {

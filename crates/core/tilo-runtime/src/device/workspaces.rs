@@ -1187,7 +1187,8 @@ impl ServiceWorkspaces {
     /// A service governing `workspace` alone, on a profile of its own, as a machine whose person
     /// this account holds: a real identity store, its own key service, and no login. What the
     /// stack's own person is, and what a test that founds the person's Servers workspace needs.
-    /// Answers the device's key and certificate, and where its identity is kept.
+    /// Answers the device's key and certificate, and the key taken as the device's daemon takes
+    /// it when it starts: the service is that daemon's, and signs as the device while it lives.
     pub(crate) async fn test_hosting_person(
         workspace: WorkspaceId,
     ) -> (
@@ -1195,7 +1196,7 @@ impl ServiceWorkspaces {
         tempfile::TempDir,
         ed25519_dalek::SigningKey,
         tilo_user_identity::DeviceCert,
-        tilo_device_identity::IdentityPaths,
+        tilo_device_identity::persist::DeviceKeyLock,
     ) {
         let opened = Self::test_of_person().await;
         opened.0.found(workspace, "Home").await.unwrap();
@@ -1208,10 +1209,11 @@ impl ServiceWorkspaces {
         tempfile::TempDir,
         ed25519_dalek::SigningKey,
         tilo_user_identity::DeviceCert,
-        tilo_device_identity::IdentityPaths,
+        tilo_device_identity::persist::DeviceKeyLock,
     ) {
         let directory = tempfile::tempdir().unwrap();
         let paths = tilo_device_identity::IdentityPaths::under(directory.path().join("keys"));
+        let taken = tilo_identity::provisioning::device_key_taken_as_daemon(&paths).unwrap();
         tilo_identity::provisioning::create_person(
             directory.path(),
             &paths,
@@ -1220,7 +1222,7 @@ impl ServiceWorkspaces {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        Self::test_of_device(directory, paths).await
+        Self::test_of_device(directory, paths, taken).await
     }
 
     /// [`Self::test_of_person`] for the person the account `uid` founded on this computer: their
@@ -1233,25 +1235,28 @@ impl ServiceWorkspaces {
         tempfile::TempDir,
         ed25519_dalek::SigningKey,
         tilo_user_identity::DeviceCert,
-        tilo_device_identity::IdentityPaths,
+        tilo_device_identity::persist::DeviceKeyLock,
     ) {
         let paths = tilo_api::calls::device_keys();
+        let taken = tilo_identity::provisioning::device_key_taken_as_daemon(&paths).unwrap();
         super::services::found_account_person(&paths, "Synthetic runtime", uid).unwrap();
-        Self::test_of_device(tempfile::tempdir().unwrap(), paths).await
+        Self::test_of_device(tempfile::tempdir().unwrap(), paths, taken).await
     }
 
-    /// The service kept below `directory` as the device whose key and certificate are at `paths`.
+    /// The service kept below `directory` as the device whose key and certificate are at `paths`,
+    /// its key `taken` as its daemon.
     async fn test_of_device(
         directory: tempfile::TempDir,
         paths: tilo_device_identity::IdentityPaths,
+        taken: tilo_device_identity::persist::DeviceKeyLock,
     ) -> (
         Arc<Self>,
         tempfile::TempDir,
         ed25519_dalek::SigningKey,
         tilo_user_identity::DeviceCert,
-        tilo_device_identity::IdentityPaths,
+        tilo_device_identity::persist::DeviceKeyLock,
     ) {
-        let key = tilo_device_identity::persist::read_device_key(&paths.device_privkey).unwrap();
+        let key = taken.key().clone();
         let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         let identity = DeviceIdentity::held(
             cert.clone(),
@@ -1275,7 +1280,7 @@ impl ServiceWorkspaces {
         })
         .await
         .unwrap();
-        (workspaces, directory, key, cert, paths)
+        (workspaces, directory, key, cert, taken)
     }
 
     /// The service a logged-in computer keeps below `dir` as the device `key` certified by

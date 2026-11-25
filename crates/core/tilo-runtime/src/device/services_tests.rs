@@ -126,6 +126,8 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     {
         return;
     }
+    // No daemon runs here: this process signs as the device, as the daemon does.
+    let _daemon_key = taking_the_device_key();
 
     let placed = WorkspaceId::new();
     let (workspaces, directory) = ServiceWorkspaces::test_hosting(placed).await;
@@ -467,11 +469,32 @@ pub(crate) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
 /// the computer's key for the founding, made here when the computer has none yet, and lets go of
 /// it after, for the daemon the test starts to take.
 pub(crate) fn found_here() {
-    let keys = tilo_identity::provisioning::collaboration_identity_paths();
-    tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
-    let taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
-    super::found_account_person(&keys, "", rustix::process::geteuid().as_raw()).unwrap();
-    drop(taken);
+    as_the_daemon(|| {
+        super::found_account_person(
+            &tilo_identity::provisioning::collaboration_identity_paths(),
+            "",
+            rustix::process::geteuid().as_raw(),
+        )
+        .unwrap()
+    });
+}
+
+/// This computer's device key, taken as its daemon takes it at a first start: made here when the
+/// computer has none yet. What signs as the device, or opens an account's identity, in a test
+/// with no daemon running does it while this is held; a daemon the test starts takes the key
+/// once this is dropped.
+pub(crate) fn taking_the_device_key() -> tilo_device_identity::persist::DeviceKeyLock {
+    tilo_identity::provisioning::device_key_taken_as_daemon(
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+    )
+    .unwrap()
+}
+
+/// `step`, run as this computer's daemon runs it: holding the device key
+/// ([`taking_the_device_key`]), which it lets go of after.
+pub(crate) fn as_the_daemon<T>(step: impl FnOnce() -> T) -> T {
+    let _taken = taking_the_device_key();
+    step()
 }
 
 /// An SDK app's collaboration manager once it has joined the broker.
@@ -1045,6 +1068,8 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     let place = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys()).unwrap();
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
+    // No daemon runs here: this process holds the key it adopted, as the daemon does.
+    let _daemon_key = taking_the_device_key();
     tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
     assert!(
         tilo_identity::trusted_device::current("").is_err(),
@@ -1745,6 +1770,9 @@ fn identity_steps_list_change_and_protect_the_store_without_answering_a_secret()
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", profile.path())
         .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    // No daemon runs here: this process opens the account's identity holding the key, as the
+    // daemon does.
+    let _daemon_key = taking_the_device_key();
     let dir = super::this_accounts_root_dir().unwrap();
     tilo_identity::provisioning::create_person(
         &dir,
@@ -1881,12 +1909,13 @@ fn a_confined_daemons_connection_is_no_person() {
         return;
     };
     // The identity this account founded, whose root signs the confined certificate, and the
-    // device key this computer holds.
+    // device key this computer holds, taken as its daemon takes it until the daemon starts.
+    let daemon_key = taking_the_device_key();
     let dir = super::this_accounts_root_dir().unwrap();
     let record = tilo_identity::store::resolve_active_identity(&dir).unwrap();
     let identity = tilo_identity::store::load_from_path(record).unwrap();
     let keys = tilo_api::calls::device_keys();
-    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let key = daemon_key.key().clone();
     let now = tilo_clock::unix_now_ns();
     let mut confined = tilo_user_identity::DeviceCert {
         user_public_key: identity.group_public_key(),
@@ -1904,6 +1933,7 @@ fn a_confined_daemons_connection_is_no_person() {
     let place = tilo_device_identity::login::Place::here(keys).unwrap();
     tilo_device_identity::login::file_certificate(&place, &confined).unwrap();
     tilo_api::daemon::enter::adopt(&place, &confined).unwrap();
+    drop(daemon_key);
 
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
     assert_eq!(
@@ -2322,8 +2352,12 @@ fn a_deployment_is_handed_its_owner_root_once_and_kept_as_that_persons_device() 
     let dir = tempfile::tempdir().unwrap();
     let identity = dir.path().join("identity");
     tilo_files::native::private::directory(&identity).unwrap();
-    let keys = tilo_device_identity::IdentityPaths::under(&identity);
-    tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    // The deployment's identity is this computer's, whose device key seals the account's root:
+    // the daemon adopts the root it is handed once it has taken that key.
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_IDENTITY_ROOT", &identity);
+    let keys = tilo_identity::provisioning::collaboration_identity_paths();
+    let _daemon = tilo_identity::provisioning::device_key_taken_as_daemon(&keys).unwrap();
     let account = identity.join("accounts").join("1000");
     let write_root = |name: &str, seed: &[u8; 32], mode: u32| {
         let file = dir.path().join(name);

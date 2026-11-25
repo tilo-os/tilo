@@ -45,7 +45,10 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
     let place = tilo_device_identity::login::Place::here(keys.clone()).unwrap();
-    tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
+    // Filed as the login files it, in the process holding the key; the daemon takes it after.
+    crate::device::services::tests::as_the_daemon(|| {
+        tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
+    });
     // Where a login of this person's device said it enters, kept beside the certificate: the
     // daemon starts again from it, and asks as the person's own account hear it.
     let server = iroh::SecretKey::from_bytes(&[0x3c; 32]);
@@ -589,14 +592,16 @@ fn a_second_accounts_store_naming_the_same_person_is_never_picked() {
     let founding = 7_001;
     let founding_store = store(founding);
     std::fs::create_dir_all(&founding_store).unwrap();
-    let person_key = tilo_identity::provisioning::create_person(
-        &founding_store,
-        &keys,
-        "Ada",
-        "",
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .unwrap();
+    let person_key = crate::device::services::tests::as_the_daemon(|| {
+        tilo_identity::provisioning::create_person(
+            &founding_store,
+            &keys,
+            "Ada",
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap()
+    });
     // A second account enrolled for the same person: its store is a public record naming them,
     // as an account that joined from another device keeps.
     let second = 7_002;
