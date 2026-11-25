@@ -2001,12 +2001,21 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     let proof = sign_membership_proof(answer.challenge, &laptop)
         .await
         .unwrap();
+    // The device signs its renewed row itself, as its client does.
+    let own = tilo_peer_state::own_admission::further_device_row;
+    let row = own(
+        &created.workspace,
+        &answer.governance,
+        &renewed,
+        &laptop,
+        tilo_clock::wall(),
+    );
     let JoinTransportResponse::MembershipComplete(current) = service
         .handle(
             endpoint,
             JoinTransportRequest::MembershipComplete(MembershipCompleteRequest {
                 proof,
-                admission: Vec::new(),
+                admission: row.unwrap(),
             }),
         )
         .await
