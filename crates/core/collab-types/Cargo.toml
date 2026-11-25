@@ -74,8 +74,9 @@ serde_json.workspace = true
 [dev-dependencies]
 # `scenario!`: one test function holds the cases of one subject.
 tilo-test-env = { path = "../../../tools/test-env" }
-# The build tool that compiles an author's `surface.toml` for the fixtures.
-tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
+# The build tool that compiles an author's `surface.toml` for the fixtures. Path only: a
+# published collab-types carries no dev-dependency on it, which is not published.
+tilo-surface-compile = { path = "../tilo-surface-compile" }
 
 [[test]]
 name = "it"
