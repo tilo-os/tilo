@@ -96,10 +96,12 @@ pub(crate) fn launch_failed(message: &str) {
     let mut destroyed = false;
     while !destroyed {
         app.poll_events(None, |event| {
-            if let winit::platform::android::activity::PollEvent::Main(
-                winit::platform::android::activity::MainEvent::Destroy,
-            ) = event
-            {
+            if matches!(
+                event,
+                winit::platform::android::activity::PollEvent::Main(
+                    winit::platform::android::activity::MainEvent::Destroy,
+                )
+            ) {
                 destroyed = true;
             }
         });
@@ -169,7 +171,7 @@ fn install_environment(app: &AndroidApp) {
 /// process the system started without an activity installs, as a file provider's is, so the
 /// device daemon it starts reads and keeps everything in the app's sandbox too.
 pub fn install_environment_in(files: &std::path::Path) {
-    let mut vars: Vec<(&str, std::ffi::OsString)> = super::android_env::directories(files)
+    let vars: Vec<(&str, std::ffi::OsString)> = super::android_env::directories(files)
         .into_iter()
         .map(|(name, dir)| {
             let _ = std::fs::create_dir_all(&dir);

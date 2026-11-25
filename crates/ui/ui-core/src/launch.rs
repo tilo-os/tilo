@@ -549,7 +549,8 @@ impl std::error::Error for LaunchError {
 
 impl LaunchError {
     /// A record, grant or component failure: one only Tilo's model raises.
-    #[cfg(all(feature = "native", feature = "model"))]
+    // An Android app shows why it did not open and exits with no status.
+    #[cfg(all(feature = "native", feature = "model", not(target_os = "android")))]
     const fn is_model_failure(&self) -> bool {
         matches!(
             self,
@@ -560,7 +561,8 @@ impl LaunchError {
         )
     }
 
-    #[cfg(all(feature = "native", feature = "model"))]
+    // An Android app shows why it did not open and exits with no status.
+    #[cfg(all(feature = "native", feature = "model", not(target_os = "android")))]
     fn exit_code(&self) -> i32 {
         if matches!(
             self,

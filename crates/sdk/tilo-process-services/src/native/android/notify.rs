@@ -94,7 +94,7 @@ impl SystemNotifier {
     }
 
     /// `show` with the notification's link and its buttons' labels and links.
-    fn show_with_links(&self, notification: &Notification) -> Result<(), NotifyError> {
+    fn show_with_links(notification: &Notification) -> Result<(), NotifyError> {
         let refusal = super::with_activity(|env, activity| {
             let notifications = bridge::class(env, activity, NOTIFICATIONS)?;
             let tag = env.new_string(&notification.tag)?;
@@ -143,7 +143,7 @@ impl SystemNotifier {
 impl Notifier for SystemNotifier {
     fn show(&self, notification: &Notification) -> Result<(), NotifyError> {
         self.permitted()?;
-        self.show_with_links(notification)
+        Self::show_with_links(notification)
     }
 
     fn withdraw(&self, tag: &str) -> Result<(), NotifyError> {

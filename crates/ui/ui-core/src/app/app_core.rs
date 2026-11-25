@@ -62,6 +62,7 @@ impl App {
     }
 
     /// Whether the window's History is open.
+    #[cfg(all(feature = "native", not(target_os = "android")))]
     pub(crate) fn history_open(&self) -> bool {
         #[cfg(feature = "model")]
         let open = self
