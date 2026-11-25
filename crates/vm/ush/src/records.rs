@@ -480,7 +480,9 @@ impl Records {
         let held = self
             .load_current(key)?
             .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
-        let mut replica = Replica::<Environment>::from_doc(held.doc).as_author(AUTHOR);
+        let mut replica = Replica::<Environment>::from_doc(held.doc)
+            .as_author(AUTHOR)
+            .in_app(tilo_environment::OWNER_APP_ID, "Terminal");
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
         let before = replica
             .state()
@@ -534,7 +536,8 @@ impl Records {
         let held = self
             .load_current(key)?
             .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
-        let replica = Replica::<Environment>::from_doc(held.doc);
+        let replica = Replica::<Environment>::from_doc(held.doc)
+            .in_app(tilo_environment::OWNER_APP_ID, "Terminal");
         let replica = match invoker {
             Invoker::Person(person) => replica.as_author(person),
             Invoker::Agent { agent, person } => replica.as_agent_for(agent, person),
@@ -897,6 +900,30 @@ mod tests {
                     Environment::GRANT_DIR.with(("/var/home/you/src".into(), true)),
                 )
                 .unwrap();
+
+            // Every change of an environment record names Terminal, whose documents the records
+            // are: a host decides each of them against Terminal's surface.
+            let apps: Vec<String> = records
+                .history(DEFAULT_RECORD)
+                .unwrap()
+                .iter()
+                .filter_map(|version| {
+                    version
+                        .context
+                        .as_ref()?
+                        .app
+                        .as_ref()
+                        .map(|app| app.id.clone())
+                })
+                .collect();
+            assert!(
+                !apps.is_empty(),
+                "the changes reach the record's history"
+            );
+            assert!(
+                apps.iter().all(|app| app == tilo_environment::OWNER_APP_ID),
+                "{apps:?}"
+            );
 
             let err = records
                 .apply(

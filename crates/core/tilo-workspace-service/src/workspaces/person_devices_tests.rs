@@ -514,3 +514,67 @@ async fn a_computer_seals_its_person_s_records_across_a_restart() {
         assert!(devices.devices.get(&id).is_some(), "both writes read back");
     }
 }
+
+/// A write to the record of the person's devices after the one that founded it names the app
+/// whose record it is: every device decides a change of a document against that app's surface,
+/// and a change naming no app has one guessed from the kind's id, which the app publishes no
+/// verb of.
+#[tokio::test]
+async fn a_change_of_the_devices_record_names_the_app_that_keeps_it() {
+    let one = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let desk = test_host_holding(one.path(), &key, &cert, group_keys()).await;
+    let own = person_workspace::found(desk.workspaces())
+        .await
+        .expect("the desktop founds the person's own workspace");
+    apply_on(
+        desk.workspaces(),
+        &own,
+        DEVICES,
+        Devices::keeping(&cert).unwrap(),
+    )
+    .await
+    .expect("the desktop is among the person's devices");
+    // A change of the record the first write founded: the device it keeps says its session.
+    apply_on(
+        desk.workspaces(),
+        &own,
+        DEVICES,
+        Devices::saying_session(
+            &cert.device_public_key,
+            OwnerSession {
+                locked: false,
+                changed_ms: 1_700_000_000_000,
+                active_ms: 1_699_999_990_000,
+                using: true,
+            },
+        ),
+    )
+    .await
+    .expect("the change is decided against the record's app");
+
+    let bytes = desk
+        .workspaces()
+        .resource_document(&own, DEVICES.0, DEVICES.1)
+        .await
+        .unwrap()
+        .expect("the record is here");
+    let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+    let apps: Vec<String> = tilo_resource::history::versions(&mut doc)
+        .iter()
+        .filter_map(|version| {
+            version
+                .context
+                .as_ref()?
+                .app
+                .as_ref()
+                .map(|app| app.id.clone())
+        })
+        .collect();
+    assert_eq!(
+        apps,
+        [DEVICES.0, DEVICES.0],
+        "the founding write and the change each name the record's app"
+    );
+    drop(desk);
+}

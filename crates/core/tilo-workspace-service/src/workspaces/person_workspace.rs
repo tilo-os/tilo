@@ -153,7 +153,7 @@ pub async fn apply_on<R: Resource>(
         (workspace, &cert),
         (app, name),
         Some(start),
-        |doc| invoke(doc, &cert, action),
+        |doc| invoke(doc, &cert, app, action),
     ))
     .await
     .map_err(|error| error.to_string());
@@ -178,7 +178,7 @@ async fn apply_as_member<R: Resource>(
     let cert = workspaces.device_cert().clone();
     let start = Box::new(genesis::<R>(workspace)?);
     edit_as_member(workspaces, workspace, (app, name), Some(start), |doc| {
-        invoke(doc, &cert, action)
+        invoke(doc, &cert, app, action)
     })
     .await
 }
@@ -252,21 +252,24 @@ where
     .map_err(|refusal| refusal.to_string())
 }
 
-/// Apply `action` to `doc`, a resource `R`, as `cert`'s person on `cert`'s
-/// device.
+/// Apply `action` to `doc`, a resource `R` of the app `app`, as `cert`'s person on
+/// `cert`'s device.
 ///
 /// # Errors
 /// The action was refused.
 pub(super) fn invoke<R: Resource>(
     doc: &mut automerge::AutoCommit,
     cert: &tilo_user_identity::DeviceCert,
+    app: &str,
     action: Invoke<R>,
 ) -> Result<(), String> {
-    let mut replica =
+    let replica =
         Replica::<R>::from_doc(std::mem::take(doc)).as_invoker(&hex::encode(cert.user_public_key));
-    // This device's own actor: the genesis is one actor's change
-    // already, and two devices continuing it under that actor would
-    // make one sequence with two different changes.
+    // The record is the app's: every device decides the change against that app's surface, and
+    // a change naming no app has one guessed from the kind's id, which the record's app does
+    // not publish. This device's own actor is the genesis' already, and two devices continuing
+    // it under that actor would make one sequence with two different changes.
+    let mut replica = replica.in_app(app, &app_label::<R>(app));
     replica
         .doc_mut()
         .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
@@ -276,6 +279,21 @@ pub(super) fn invoke<R: Resource>(
         .map_err(|error| error.to_string());
     std::mem::swap(doc, replica.doc_mut());
     applied
+}
+
+/// The name the app `app` shows in a record's history: the title `R`'s kind declares for it,
+/// else the last segment of its id as a name.
+fn app_label<R: Resource>(app: &str) -> String {
+    if let Some(title) = tilo_resource::ResourceKind::of::<R>().app_title() {
+        return title.to_owned();
+    }
+    let last = app.rsplit('.').next().unwrap_or(app);
+    let mut chars = last.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |first| {
+            first.to_uppercase().collect::<String>() + chars.as_str()
+        })
 }
 
 /// The resource `(app, name)` of this device's person's workspace as this

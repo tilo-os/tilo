@@ -141,7 +141,7 @@ impl PersonResources {
                         name.to_owned(),
                         Authoring {
                             genesis: Some(genesis),
-                            edit: Box::new(move |doc| person_workspace::invoke(doc, &cert, invoke)),
+                            edit: Box::new(move |doc| person_workspace::invoke(doc, &cert, app, invoke)),
                         },
                     )
                     .await
