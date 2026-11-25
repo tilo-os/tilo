@@ -1040,7 +1040,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
 
 /// This computer provisioned as one of its person's devices: where the session reads the device
 /// it signs with, and the fleet that admits it.
-fn provisioned_identity(
+pub(crate) fn provisioned_identity(
     home: &mut tilo_test_env::TestHome,
 ) -> (
     tempfile::TempDir,
