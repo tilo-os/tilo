@@ -54,6 +54,9 @@ d-y4vctfc6 = Erstellt von
     .w-made-by-you = Von dir erstellt
     .w-made-by = Von { $agent } erstellt
 
+d-5c36n5a2 = Client-Konfiguration
+    .w-text = {"{"}"mcpServers": {"{"}"tilo": {"{"}"type": "http", "url": "{ $endpoint }"{"}"}{"}"}{"}"}{"}"}
+
 d-a4jk4ymn = Reichweite
     .w-only = Nur { $name }
     .w-only-one-workspace = Nur ein Arbeitsbereich
@@ -128,6 +131,34 @@ d-bildylqf = Agent widerrufen
 d-i7fkliog = Agent weiterarbeiten lassen
     .doc = Lässt die Aufrufe eines angehaltenen Clients wieder durch.
 
+d-3xt6mvxc = Client stoppen
+    .doc = Stoppt die Arbeitssitzung des Clients und behält seine Freigabe: das eigene Stoppen der Karte, über den Client, den eine Karte, eine Palette oder ein Agent nennt.
+
+d-3xt6mvxc-client = Client
+
+d-xie7cmha = Client übernehmen
+    .doc = Stoppt die Sitzung des Clients und öffnet, was er zuletzt geändert hat: das eigene Übernehmen der Karte, über den Client, den eine Karte, eine Palette oder ein Agent nennt.
+
+d-xie7cmha-client = Client
+
+d-xxhzqb7e = Client-Sitzung rückgängig machen
+    .doc = Nimmt jede Änderung der neuesten Sitzung des Clients zurück: das eigene Sitzung-rückgängig der Karte, über den Client, den eine Karte, eine Palette oder ein Agent nennt.
+
+d-xxhzqb7e-client = Client
+
+d-tf6gn3yw = Client widerrufen
+    .doc = Nimmt die Freigabe zurück, mit der der Client hereinkam: das eigene Widerrufen der Karte, über den Client, den eine Karte, eine Palette oder ein Agent nennt.
+
+d-tf6gn3yw-client = Client
+
+d-4r4wjpt6 = Client weiterarbeiten lassen
+    .doc = Lässt die Aufrufe eines gestoppten Clients wieder durch: das eigene Weiterarbeiten lassen der Karte, über den Client, den eine Karte, eine Palette oder ein Agent nennt.
+
+d-4r4wjpt6-client = Client
+
+d-mgw7foer = Verbinden öffnen
+    .doc = Zeigt, wie ein Agent oder ein anderer Computer sich als diese Person verbindet: das Fenster öffnet sich bei Verbinden.
+
 d-4aroerqe = Sitzung des Agenten rückgängig machen~present
 
 d-3tum3xzo = Sitzungszeile
@@ -156,6 +187,7 @@ d-6spmk7tc = Client-Karte
     .w-let-it-go-on = Weiterarbeiten lassen
     .w-revoke = Widerrufen
     .w-sessions = Sitzungen
+    .w-copy-link = Link kopieren
 
 d-a4focscl = Kartenbefehle
     .w-stop = Stoppen

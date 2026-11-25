@@ -2235,6 +2235,15 @@ d-v7aky4jd-taper = Verjüngung
 
 d-3nneq3xo-lasso = Lasso
 
+d-2dlalwep = Medium gesagt
+    .w-plain-paint = einfache Farbe
+
+d-cbfr2svg = Mischung aus
+    .w-normal = normal
+
+d-so3ktapd = Pinsel
+    .w-eraser = Radierer
+
 d-zci3ltpl = Maske hinzufügen~present
 
 d-ipba7qqv = Maske festlegen~present

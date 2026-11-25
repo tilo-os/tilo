@@ -1200,6 +1200,108 @@ d-2i4xepvu = Graph antippen
 
 d-2i4xepvu-index = Index
 
+d-tw273e3b = Ablehnungswörter
+    .w-an-endpoint-no-longer-exists = Ein Endpunkt existiert nicht mehr
+    .w-a-port-no-longer-exists = Ein Port existiert nicht mehr
+    .w-port-shapes-differ = Die Port-Formen unterscheiden sich
+    .w-another-connection-occupies-this-input = Eine andere Verbindung belegt diesen Eingang
+    .w-this-connection-would-create-a-cycle = Diese Verbindung erzeugte einen Zyklus
+    .w-the-device-refused-this-connection = Das Gerät hat diese Verbindung abgelehnt
+
+d-s6okr33x = Artwörter
+    .w-input = Eingang
+    .w-gate-input = Gate-Eingang
+    .w-normalization-weights = Normalisierungsgewichte
+    .w-rms-normalization = RMS-Normalisierung
+    .w-apply-normalization-weights = Normalisierungsgewichte anwenden
+    .w-silu-activation = SiLU-Aktivierung
+    .w-multiply = Multiplizieren
+    .w-sum = Summieren
+    .w-projection-input = Projektionseingang
+    .w-matrix-weights = Matrixgewichte
+    .w-linear-projection = Lineare Projektion
+
+d-wigjid4m = Portwörter
+    .w-value = Wert
+    .w-weights = Gewichte
+    .w-result = Ergebnis
+    .w-left-operand = Linker Operand
+    .w-right-operand = Rechter Operand
+
+d-pr4gzj3v = Statuswörter
+    .w-reported-failed = Als fehlgeschlagen gemeldet
+    .w-reported-cancelled = Als abgebrochen gemeldet
+    .w-reported-passed = Als bestanden gemeldet
+
+d-sijgqczt = Prüfungswörter
+    .w-reported-failed = Als fehlgeschlagen gemeldet
+    .w-reported-passed = Als bestanden gemeldet
+
+d-mfu7hrb3 = Stufenwörter
+    .w-numerical-verification = Numerische Prüfung
+    .w-fault-controls = Fehlerkontrollen
+    .w-generic-synthesis = Generische Synthese
+    .w-linked-comparison = Verknüpfter Vergleich
+    .w-preparation = Vorbereitung
+
+d-iosocdmu = Abhängigkeitswörter
+    .w-build-dependency = Build-Abhängigkeit
+    .w-verification-dependency = Prüfabhängigkeit
+    .w-data-dependency = Datenabhängigkeit
+
+d-q7pbq4xx = Vergleichswörter
+    .w-backend-characterization = Backend-Charakterisierung
+    .w-exact-comparison = Exakter Vergleich
+
+d-ehamip6c = Ergebniswörter
+    .w-expected-refusal-no-completed-result = Erwartete Ablehnung; kein abgeschlossenes Ergebnis
+    .w-completed-simulation = Abgeschlossene Simulation
+
+d-3ndeu67e = Beobachtungswörter
+    .w-cpu-reference = CPU-Referenz
+    .w-rtl-simulation = RTL-Simulation
+    .w-generic-synthesis = Generische Synthese
+    .w-extracted-library-estimate = Schätzung aus extrahierter Bibliothek
+    .w-no-numerical-observations-reported = Keine numerischen Beobachtungen gemeldet
+
+d-sl6rfikz = Hinweis zum Beleg
+    .w-reported-evidence-only-artifacts-are-not = Nur gemeldete Nachweise. Artefakte werden weder authentifiziert noch ausgeführt. Schätzungen der Bibliothek sind keine Siliziummessungen, Freigabe, Fertigungsgenehmigung oder Modellqualität.
+    .w-producer-reported-architecture-comparison-stage-links = Vom Hersteller gemeldeter Architekturvergleich. Stufenverbindungen und Artefaktidentitäten sind hier nicht geprüft. Zyklen und generische Zellen belegen keine Taktfrequenz, physische Fläche, Energie oder Codequalität.
+    .w-imported-reported-cpu-numerical-observations-artifact = Importierte gemeldete numerische CPU-Beobachtungen. Artefaktidentität und Echtheit sind hier nicht geprüft; das belegt keine Ausführung des vollständigen Modells, keine Modellqualität, kein RTL und keine physische PPA.
+    .w-imported-reported-research-library-mapping-evidence = Importierte gemeldete Zuordnungsnachweise aus einer Forschungsbibliothek. Artefaktidentität und Echtheit sind hier nicht geprüft; das belegt kein fertigbares Layout, keinen Timing-Abschluss und keine Modellqualität.
+    .w-imported-reported-integer-hardware-evidence-artifact = Importierte gemeldete Integer-Hardware-Nachweise. Artefaktidentität und Echtheit sind hier nicht geprüft; das belegt keine PPA des ganzen Chips und keine Modellqualität.
+
+d-zofzh5ki = Beobachtung gesagt
+    .w-words-compared-differing = { $compared_words } Wörter verglichen, { $differing_words } davon abweichend
+    .w-accepted-inputs-outputs-cycles = { $accepted_inputs } übernommene Eingaben, { $accepted_outputs } Ausgaben, { $cycles } Zyklen
+    .w-logic-cells-logical-memory-bits = { $logic_cells } Logikzellen, { $logical_memory_bits } logische Speicherbits
+    .w-routed-nets-router-violations = { $library }: { $routed_signal_nets } verlegte Netze, { $router_violations } Verstöße des Routers
+
+d-ojf6ymem = Fenstertitel
+    .w-operator-graph = Operatorgraph
+    .w-chip-design = Chip-Entwurf
+
+d-h3ulwtvt = Bezeichnung der Prüfungen
+    .w-producer-reported-stage-checks = Vom Hersteller gemeldete Stufenprüfungen
+    .w-reported-numerical-checks = Gemeldete numerische Prüfungen
+    .w-reported-integer-checks = Gemeldete Integer-Prüfungen
+
+d-m3lopvjx = Ausrichtungswörter
+    .w-r90 = R90
+    .w-r180 = R180
+    .w-r270 = R270
+    .w-mx = MX
+    .w-my = MY
+    .w-mxr90 = MXR90
+    .w-myr90 = MYR90
+    .w-r0 = R0
+
+d-a2o6nstv = Verbindungszeile
+    .w-connecting-from-the-output-of = Verbindet vom Ausgang { $port_words } von { $from }
+
+d-engplagq = Konfliktzeile
+    .w-cannot-feed = { $from_node }.{ $port_words } kann { $to_node }.{ $port_words2 } nicht speisen: { $refusal_words }
+
 d-b53kihl2 = Bericht importieren
 
 d-frkvs7gt = Fenster

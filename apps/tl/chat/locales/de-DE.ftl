@@ -272,6 +272,10 @@ d-ymtess4x = Kanal
     .w-the-workspace-s-owners-can-raise = Die Eigentümer des Arbeitsbereichs können sie in den Einstellungen unter Inhaltsgrenzen erhöhen.
     .w-reply = Antworten
     .w-edit = Bearbeiten
+    .w-1-thread = 1 Thread
+    .w-threads = { $len } Threads
+    .w-1-reply = 1 Antwort
+    .w-replies = { $len } Antworten
 
 d-27cntb22 = Mitglieder des Kanals
     .w-members = Mitglieder
@@ -329,6 +333,9 @@ d-enkgjyn7 = Thread
     .w-the-host-didn-t-keep-it-2 = Der Host behielt { $name } nicht: es ist mehr als die { $mib }, die dieser Host behält.
     .w-the-host-s-person-can-raise = Die Person des Hosts kann es in den Einstellungen des Servers erhöhen.
     .w-the-workspace-s-owners-can-raise = Die Eigentümer des Arbeitsbereichs können es in den Einstellungen unter Inhaltsgrenzen erhöhen.
+    .w-this-thread-is-archived-a-reply = Dieser Thread ist archiviert. Eine Antwort öffnet ihn wieder.
+    .w-reopen-thread = Thread wieder öffnen
+    .w-archive-thread = Thread archivieren
 
 d-rydgecpc = Hier wird geschrieben
     .w-is-typing = { $who } schreibt …
@@ -801,6 +808,14 @@ d-z7ux3t5k = Kanal archivieren
 
 d-z7ux3t5k-archived = Archiviert
 
+d-2z76tvdn = Thread archivieren
+    .doc = Legt einen Thread beiseite, wenn das Gespräch vorbei ist, und behält alles darin Gesagte, oder öffnet ihn wieder.
+    .w-only-who-started-it-or-a = Nur wer ihn begonnen hat oder ein Moderator archiviert einen Thread
+    .w-archive-thread = Thread archivieren
+    .w-reopen-thread = Thread wieder öffnen
+
+d-2z76tvdn-archived = Archiviert
+
 d-yjc4fmrk = Bearbeiten
     .doc = Ändert, was eine Nachricht sagt.
     .w-only-its-author-can-edit-a = Nur ihr Autor kann eine Nachricht bearbeiten
@@ -858,6 +873,8 @@ d-maq2lipz = Thema setzen
 d-vrzrke7n = Kategorie umbenennen
 
 d-g5hhjpdz = Kanal archivieren
+
+d-3j54b6u3 = Thread archivieren~present
 
 d-7ioawutl = Bearbeiten
 
@@ -1018,6 +1035,23 @@ d-ejjotbyg = Anrufstatus
     .w-camera-on = Kamera an
     .w-sharing-their-screen = Teilt den Bildschirm
 
+d-bacw3hcw = Stand
+    .w-working = Arbeitet
+    .w-needs-you = Braucht dich
+    .w-done = Fertig: { $line }
+    .w-done-2 = Fertig
+
+d-kftueou2 = Verbrauchswörter
+    .w-with-no-day-limit = { $spent } ohne Tageslimit
+    .w-of-a-day = { $spent } von { $money } pro Tag
+
+d-mvp4n4pe = Zug gesagt
+    .w-working = Arbeitet…
+    .w-waiting-for-your-answer = Wartet auf deine Antwort
+    .w-failed = Fehlgeschlagen
+    .w-stopped = Angehalten
+    .w-done = Fertig
+
 d-tvcqqdxd = Meldungen
     .w-reports = Meldungen
     .w-only-moderators-read-reports = Nur Moderierende lesen Meldungen
@@ -1050,6 +1084,7 @@ d-qjqtfdyr = Kein Assistent
     .w-you-have-no-assistant-in-this = Du hast keinen Assistenten in diesem Arbeitsbereich
     .w-an-assistant-works-for-the-workspace = Ein Assistent arbeitet für den Arbeitsbereich und antwortet in der direkten Unterhaltung unter Direktnachrichten.
     .w-create-assistant = Assistent erstellen
+    .w-the-workspace-s-agents-could-not = Die Agenten des Arbeitsbereichs konnten nicht gelesen werden
 
 d-4cgtoeqz = Unteragenten starten
     .doc = Bittet den Assistenten, einen Unteragenten für `job` zu starten, in der direkten Unterhaltung, in der er antwortet: `start-sub-agent` im Datensatz ist dort seine eigene Aktion, und der Unteragent meldet sich in dieser Unterhaltung, wo die Person ihn verfolgt.
@@ -1160,6 +1195,12 @@ d-u4nfj5zx = Prozent
 d-xtnm4w32 = Stummgeschaltet
     .doc = Gar nicht abgespielt, gleich bei welcher Lautstärke.
 
+d-rcybqyag-filter-who = Wer
+
+d-rcybqyag-filter-percent = Prozent
+
+d-rcybqyag-filter-silenced = Stummgeschaltet
+
 d-a2np4gvd = Wer
 
 d-n3jzxecf = Hören
@@ -1181,11 +1222,19 @@ d-vpyg3qt4 = Festlegen, wie laut jemand klingt
     .did = hat festgelegt, wie laut jemand klingt
     .w-a-level-is-between-0-and = Eine Lautstärke liegt zwischen 0 und 200 Prozent
 
+d-vpyg3qt4-who = Wer
+
+d-vpyg3qt4-percent = Prozent
+
 d-we3jqglq = Festlegen, wie laut jemand klingt
 
 d-z5deq3xd = Jemanden für mich stummschalten
     .doc = Schaltet `who` in Anrufen auf diesem Gerät stumm, oder hört die Person wieder mit der Lautstärke, die sie hatte.
     .did = hat jemanden für sich stummgeschaltet
+
+d-z5deq3xd-who = Wer
+
+d-z5deq3xd-on = An
 
 d-v4cscgro = Über die Person
     .w-about = Über { $name }
