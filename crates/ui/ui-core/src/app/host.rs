@@ -1090,11 +1090,12 @@ fn lay_out_window(
         } else {
             None
         };
+        // Seated as any other move of the keyboard is: the control is told it holds it, so a
+        // field rebuilt under the person's typing takes their next letter.
         if let Some(node) = built.or(fallback)
             && app.focused_node != Some(node)
         {
-            app.focused_node = Some(node);
-            app.focus_anchor = app.answer_name(node);
+            app.place_focus(Some(node));
         }
     }
     // The keyboard follows the tree this pass built: a control that no longer takes it gives it

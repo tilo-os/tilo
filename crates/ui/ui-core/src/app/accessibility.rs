@@ -941,7 +941,7 @@ impl App {
     }
 
     /// Move the keyboard to `new_id`, leaving where the view stands alone. Whether it moved.
-    fn place_focus(&mut self, new_id: Option<NodeId>) -> bool {
+    pub(super) fn place_focus(&mut self, new_id: Option<NodeId>) -> bool {
         self.mark_semantic_tree_stale();
         #[cfg(feature = "model")]
         self.suspend_history_focus(new_id);

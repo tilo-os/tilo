@@ -1246,15 +1246,27 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         );
         part.prepare_frame();
     }
-    assert_eq!(
-        link.asked.borrow().front().map(|(ask, _)| ask.clone()),
-        Some(Ask {
-            resource: "desktop:shell".to_owned(),
-            action: "search".to_owned(),
-            arguments: BTreeMap::from([("query".to_owned(), "quarterly".into())]),
-            from: None,
-        }),
-    );
+    // The shell's search follows the field letter by letter, so each letter that reached it is
+    // a search for the text so far; Enter then asks for what was typed whole.
+    let searched: Vec<Ask> = link
+        .asked
+        .borrow()
+        .iter()
+        .map(|(ask, _)| ask.clone())
+        .filter(|ask| ask.action == "search")
+        .collect();
+    let search = |query: &str| Ask {
+        resource: "desktop:shell".to_owned(),
+        action: "search".to_owned(),
+        arguments: BTreeMap::from([("query".to_owned(), query.into())]),
+        from: None,
+    };
+    let typed = "quarterly";
+    let expected: Vec<Ask> = (1..=typed.len())
+        .map(|letters| search(&typed[..letters]))
+        .chain(std::iter::once(search(typed)))
+        .collect();
+    assert_eq!(searched, expected);
 }
 
 /// A part told its display only after it settled (the session's first frames can run before
