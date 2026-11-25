@@ -61,14 +61,14 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_link",
-            "A link a person opens to see what a path names (`notes/Todo`); only workspace members can open it. mode: app or desktop.",
+            "A link a person opens to see what a path names (`notes/Todo`); only members open it. mode: app or desktop.",
             json!({"path":string,"mode":{"enum":["app","desktop"]}}),
             json!(["path"]),
             read.clone(),
         ),
         (
             "tilo_view",
-            "What a person's window shows for `path`: its labels, values and controls in reading order, each with its action. picture: the view as a PNG. Starts the app when it is not running.",
+            "What a person's window shows for `path`: its labels, values and controls in reading order, each with its action. picture: the view as a PNG. Starts the app if needed.",
             json!({"path":string,"picture":{"type":"boolean"},"scale":{"type":"number"}}),
             json!(["path"]),
             read.clone(),
@@ -89,7 +89,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_watch",
-            "What changed since cursor: a resource's changes (`path`), invocations starting and ending, who is in the workspace. A change says `what` it did to its resource: `created`, `edited` or `removed`. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
+            "Changes since cursor: a resource's changes (`path`) and their `what` (created, edited or removed), invocations starting and ending, who is in the workspace. Held until one comes, at most wait_ms (default 25000); pass back the cursor it answers.",
             json!({"cursor":string,"path":string,"wait_ms":integer}),
             json!([]),
             json!({"readOnlyHint":true,"openWorldHint":false}),
