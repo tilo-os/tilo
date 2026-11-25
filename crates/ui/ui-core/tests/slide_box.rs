@@ -14,18 +14,19 @@ use tilo_ui::{
 
 const DEVICE: (u32, u32) = (800, 600);
 /// The page's own size, as a slide's is.
-const PAGE: (i64, i64) = (1280, 720);
+const PAGE: (i32, i32) = (1280, 720);
 /// Where the box stands on the page, and how large it is.
-const BOX: (i64, i64, i64, i64) = (96, 90, 600, 160);
+const BOX: (i32, i32, i32, i32) = (96, 90, 600, 160);
 /// The box's words start here.
 const WORDS: &str = "The rail is there";
 
 /// The scale a fitted 1280 × 720 page takes in an 800 × 600 window, and where its top-left
 /// corner lands.
 fn fitted() -> (f64, f64, f64) {
-    let scale = (f64::from(DEVICE.0) / PAGE.0 as f64).min(f64::from(DEVICE.1) / PAGE.1 as f64);
-    let left = (f64::from(DEVICE.0) - PAGE.0 as f64 * scale) / 2.0;
-    let top = (f64::from(DEVICE.1) - PAGE.1 as f64 * scale) / 2.0;
+    let scale =
+        (f64::from(DEVICE.0) / f64::from(PAGE.0)).min(f64::from(DEVICE.1) / f64::from(PAGE.1));
+    let left = (f64::from(DEVICE.0) - f64::from(PAGE.0) * scale) / 2.0;
+    let top = (f64::from(DEVICE.1) - f64::from(PAGE.1) * scale) / 2.0;
     (scale, left, top)
 }
 
@@ -37,15 +38,15 @@ fn slide_box(markdown: &str) -> (Driver, Intents<Fired>) {
         "stage",
         StageProps {
             name: Some("Slide".into()),
-            canvas: vec![PAGE.0, PAGE.1],
+            canvas: vec![i64::from(PAGE.0), i64::from(PAGE.1)],
             pins: vec![StagePinProps {
                 key: "box-0".into(),
                 name: Some("Title".into()),
                 item: Some("box-0".into()),
-                x: Some(BOX.0),
-                y: Some(BOX.1),
-                width: Some(BOX.2),
-                height: Some(BOX.3),
+                x: Some(i64::from(BOX.0)),
+                y: Some(i64::from(BOX.1)),
+                width: Some(i64::from(BOX.2)),
+                height: Some(i64::from(BOX.3)),
                 moves: true,
                 menu: Vec::new(),
                 body: vec![Box::new(BlockEditor::from_markdown(markdown))],
@@ -85,8 +86,8 @@ fn editor(host: &mut Driver) -> &mut BlockEditor {
 /// near its first word.
 fn in_the_words() -> (f64, f64) {
     let (scale, left, top) = fitted();
-    let x = left + (BOX.0 as f64 + 40.0) * scale;
-    let y = top + (BOX.1 as f64 + 20.0) * scale;
+    let x = left + (f64::from(BOX.0) + 40.0) * scale;
+    let y = top + (f64::from(BOX.1) + 20.0) * scale;
     (x, y)
 }
 
@@ -251,12 +252,14 @@ fn a_slide_box_formats_the_words_a_person_selected_with_the_chord() {
 /// A slide stage holding `count` text boxes on the page, each a line of its own.
 fn deck(count: i64) -> (Driver, Intents<Fired>) {
     let queue = Intents::default();
+    // Each box stands 240 to the right of the one before, the first at 96.
     let pins = (0..count)
-        .map(|index| StagePinProps {
+        .zip((96..).step_by(240))
+        .map(|(index, x)| StagePinProps {
             key: format!("box-{index}"),
             name: Some(format!("Box {index}")),
             item: Some(format!("box-{index}")),
-            x: Some(96 + index * 240),
+            x: Some(x),
             y: Some(90),
             width: Some(200),
             height: Some(120),
@@ -271,7 +274,7 @@ fn deck(count: i64) -> (Driver, Intents<Fired>) {
         "stage",
         StageProps {
             name: Some("Slide".into()),
-            canvas: vec![PAGE.0, PAGE.1],
+            canvas: vec![i64::from(PAGE.0), i64::from(PAGE.1)],
             pins,
             select: Event::View(Intent::new(&queue, "stage", "select")),
             open: Event::View(Intent::new(&queue, "stage", "open")),
@@ -336,8 +339,8 @@ fn a_slide_box_keeps_its_words_while_it_moves_and_idles_after_the_drop() {
     let (scale, left, top) = fitted();
     let on_page = |page_x: f64, page_y: f64| {
         (
-            left + (BOX.0 as f64 + page_x) * scale,
-            top + (BOX.1 as f64 + page_y) * scale,
+            left + (f64::from(BOX.0) + page_x) * scale,
+            top + (f64::from(BOX.1) + page_y) * scale,
         )
     };
     let (x, y) = on_page(300.0, 60.0);
@@ -365,8 +368,8 @@ fn a_change_that_arrives_mid_drag_shows_when_the_hand_lets_go() {
     let (scale, left, top) = fitted();
     let on_page = |page_x: f64, page_y: f64| {
         (
-            left + (BOX.0 as f64 + page_x) * scale,
-            top + (BOX.1 as f64 + page_y) * scale,
+            left + (f64::from(BOX.0) + page_x) * scale,
+            top + (f64::from(BOX.1) + page_y) * scale,
         )
     };
     let (x, y) = on_page(300.0, 60.0);
@@ -379,15 +382,15 @@ fn a_change_that_arrives_mid_drag_shows_when_the_hand_lets_go() {
     // box stands somewhere else before the drop.
     let moved_elsewhere = |markdown: &str| StageProps {
         name: Some("Slide".into()),
-        canvas: vec![PAGE.0, PAGE.1],
+        canvas: vec![i64::from(PAGE.0), i64::from(PAGE.1)],
         pins: vec![StagePinProps {
             key: "box-0".into(),
             name: Some("Title".into()),
             item: Some("box-0".into()),
             x: Some(700),
             y: Some(400),
-            width: Some(BOX.2),
-            height: Some(BOX.3),
+            width: Some(i64::from(BOX.2)),
+            height: Some(i64::from(BOX.3)),
             moves: true,
             menu: Vec::new(),
             body: vec![Box::new(BlockEditor::from_markdown(markdown))],
@@ -404,7 +407,6 @@ fn a_change_that_arrives_mid_drag_shows_when_the_hand_lets_go() {
     // The words changed too: the window hands the place's body its new document where it
     // stands, by its key, so the drag the hand holds keeps its hold and the words show after it.
     {
-        use tilo_ui::component::PartViews;
         let stage = host
             .root_widget_mut()
             .as_any_mut()

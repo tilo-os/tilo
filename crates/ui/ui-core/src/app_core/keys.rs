@@ -321,15 +321,14 @@ impl crate::app::App {
     }
 
     /// Keys the host answers itself, after Enter and Space and before the shell's tab chords.
+    #[cfg(feature = "native")]
     pub(crate) fn handle_unconsumed_host_key(&mut self, event: &WindowEvent) -> bool {
-        #[cfg(feature = "native")]
-        {
-            self.handle_unconsumed_search_key(event) || self.handle_unconsumed_typed_key(event)
-        }
-        #[cfg(not(feature = "native"))]
-        {
-            let _ = event;
-            false
-        }
+        self.handle_unconsumed_search_key(event) || self.handle_unconsumed_typed_key(event)
+    }
+
+    /// Without the native host there is no search or typed-key answer of its own: the key goes on.
+    #[cfg(not(feature = "native"))]
+    pub(crate) fn handle_unconsumed_host_key(&self, _event: &WindowEvent) -> bool {
+        false
     }
 }
