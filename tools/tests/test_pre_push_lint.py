@@ -767,7 +767,7 @@ class PrePushLintTests(unittest.TestCase):
                            t_excerpt="apps/tl/fixture/fleet.json is stale")
         self.assertEqual(result.returncode, 1)
         self.assertIn("app-surfaces: fail", result.stderr)
-        self.assertIn("new: crates/desktop/app-fleet/src/generated.rs", result.stderr)
+        self.assertIn("new: apps/tl/fixture/fleet.json", result.stderr)
         self.assertIn("write the generated files back with: t fix app-surfaces", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
