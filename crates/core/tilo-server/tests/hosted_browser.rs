@@ -33,7 +33,6 @@ use tilo_user_identity::{
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT};
-use collab_types::CommitNamed as _;
 
 use crate::common::{Linked, TestDevice, TestServer, TestUser, spawn_server};
 use tilo_server::hosted_browser::APP;
@@ -1827,42 +1826,6 @@ fn publish_record(linked: &Linked, device: &TestDevice, app: &str, record: &str,
         .unwrap();
 }
 
-/// `device`'s change setting `marker` in `record` of `app`, signed in `peer`, a copy of the
-/// workspace, as a window's engine writes one: changes over the record as the copy has it, or the
-/// record itself where the copy has none, naming the person, as every change does.
-fn written(
-    peer: &mut tilo_peer_state::StatePeer,
-    device: &TestDevice,
-    app: &str,
-    record: &str,
-    marker: &str,
-) -> Result<neighbour_wire::NeighbourMsg, String> {
-    let kept = peer.document(app, record);
-    let mut document = match &kept {
-        Some(bytes) => AutoCommit::load(bytes).map_err(|error| error.to_string())?,
-        None => AutoCommit::new(),
-    };
-    let heads = document.get_heads();
-    document
-        .put(ROOT, "marker", marker)
-        .map_err(|error| error.to_string())?;
-    document.commit_edit("window", "marker", &device.cert.user_public_key);
-    let now = tilo_clock::wall();
-    match kept {
-        Some(_) => peer.publication_mut().publish_incremental(
-            app,
-            record,
-            document.save_after(&heads),
-            &device.sk,
-            now,
-        ),
-        None => {
-            peer.publication_mut()
-                .publish_document(app, record, document.save(), &device.sk, now)
-        }
-    }
-}
-
 /// What the host made of `linked`'s next own write.
 async fn next_answer(
     answers: &mut tokio::sync::broadcast::Receiver<tilo_peer_state::direct::Answered>,
@@ -1922,8 +1885,16 @@ fn forged_in(
     marker: &str,
 ) -> neighbour_wire::NeighbourMsg {
     let mut author = linked.read(Clone::clone);
-    written(&mut author, device, app, record, marker)
-        .expect("the forger's own copy takes what it forged")
+    tilo_peer_state::sealed_records::sealed_write(
+        &mut author,
+        &crate::common::KEYS,
+        &device.sk,
+        (app, record),
+        |document| {
+            document.put(ROOT, "marker", marker).unwrap();
+        },
+    )
+    .expect("the forger's own copy takes what it forged")
 }
 
 /// The hello a device opens each link with: its certificate.
@@ -1937,17 +1908,15 @@ fn hello_of(device: &TestDevice) -> neighbour_wire::NeighbourMsg {
 
 /// The marker `record` of `app` has in `linked`'s copy, if that copy has the record.
 fn marker_in(linked: &Linked, app: &str, record: &str) -> Option<String> {
-    linked.read(|peer| {
-        let bytes = peer.document(app, record)?;
-        let document = AutoCommit::load(&bytes).ok()?;
-        match automerge::ReadDoc::get(&document, ROOT, "marker").ok()?? {
-            (automerge::Value::Scalar(scalar), _) => match scalar.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
+    let bytes = linked.opened((app, record))?;
+    let document = AutoCommit::load(&bytes).ok()?;
+    match automerge::ReadDoc::get(&document, ROOT, "marker").ok()?? {
+        (automerge::Value::Scalar(scalar), _) => match scalar.as_ref() {
+            automerge::ScalarValue::Str(text) => Some(text.to_string()),
             _ => None,
-        }
-    })
+        },
+        _ => None,
+    }
 }
 
 impl Fixture {
@@ -2201,19 +2170,10 @@ async fn an_environment_writes_its_record_and_no_other() {
     // record alone, there as on every device.
     assert!(
         environment
-            .publish(|peer| {
-                let mut document = AutoCommit::new();
+            .write(&environment_device.sk, (NOTES, NOTES_RECORD), |document| {
                 document
                     .put(ROOT, "marker", "overwritten by a page")
                     .unwrap();
-                document.commit_edit("window", "marker", &environment_device.cert.user_public_key);
-                peer.publication_mut().publish_document(
-                    NOTES,
-                    NOTES_RECORD,
-                    document.save(),
-                    &environment_device.sk,
-                    std::time::SystemTime::now(),
-                )
             })
             .is_err(),
         "the environment's own copy refuses to write another record"
