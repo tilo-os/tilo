@@ -141,6 +141,7 @@ pub struct Slider {
     /// finely.
     fine_from: Option<(f64, f64)>,
     action: Option<ActionEmitter<f64>>,
+    refused_press: crate::widget::action_emitter::RefusedPress,
     presence_path: Vec<PathSegment>,
     #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
@@ -226,6 +227,7 @@ impl Slider {
             drag_from: None,
             fine_from: None,
             action: None,
+            refused_press: crate::widget::action_emitter::RefusedPress::default(),
             presence_path: Vec::new(),
             #[cfg(feature = "model")]
             permission_scope: None,
@@ -1308,6 +1310,17 @@ impl Widget for Slider {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.effectively_enabled() {
             self.touch.cancel();
+            if self.enabled
+                && let Some(at) = self.refused_press.pressed(event, ctx, self.hit_band())
+            {
+                let tried = self.value_from_cursor_x(at.x);
+                if tried.total_cmp(&self.value).is_ne()
+                    && let Some(action) = &mut self.action
+                    && let Err(error) = action.press(tried)
+                {
+                    tracing::warn!(%error, "a refused slider press could not be sent");
+                }
+            }
             return;
         }
         match event {

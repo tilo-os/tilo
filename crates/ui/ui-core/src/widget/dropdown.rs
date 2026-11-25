@@ -921,8 +921,17 @@ impl Dropdown {
             return;
         }
         if let Some(action) = &mut self.action {
-            if let Err(error) = action.emit(value.to_string()) {
+            // A choice the person may not make is sent all the same, to be refused with why, and
+            // the chooser keeps what it holds; choosing what it holds changes nothing to refuse.
+            let refused = !action.is_available();
+            if refused && value == self.selected {
+                return;
+            }
+            if let Err(error) = action.press(value.to_string()) {
                 tracing::warn!(%error, "the chooser's action refused its value");
+            }
+            if refused {
+                return;
             }
         } else if let Some(binding) = &mut self.binding {
             binding.publish(&value.to_string());
@@ -1003,7 +1012,11 @@ impl Dropdown {
             }
             *handled = true;
         } else if self.rect.contains(pos) {
-            *focus_target = Some(node_id);
+            // One whose action the person may not run opens for their choice without taking focus,
+            // which it could not hold.
+            if self.effectively_enabled() {
+                *focus_target = Some(node_id);
+            }
             self.do_open();
             *handled = true;
         }
@@ -1366,7 +1379,9 @@ impl Widget for Dropdown {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if !self.effectively_enabled() {
+        // One whose action the person may not run still opens: what they choose is sent to be
+        // refused with why, and the chooser keeps what it holds ([`Self::commit_value`]).
+        if !self.enabled {
             return;
         }
         if self.open {
@@ -1661,10 +1676,13 @@ impl crate::widget::controls::ActionControls for Dropdown {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
+        let was = self.effectively_enabled();
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
         }
-        if self.interactive_open && !self.effectively_enabled() {
+        // A list opened before its action went away closes; one a person opens on an action they
+        // may not run stays open for their choice, which is refused with why.
+        if was && self.interactive_open && !self.effectively_enabled() {
             self.close();
         }
     }

@@ -70,6 +70,10 @@ pub enum MenuItem {
         destructive: bool,
         /// Disabled rows remain visible and announced but cannot be invoked.
         enabled: bool,
+        /// Disabled only because the person may not run its action here
+        /// ([`MenuItem::refused_unless`]): the keyboard passes over it, and a click still sends
+        /// the press, which the dispatch refuses and says why.
+        refused: bool,
         /// The keyboard shortcut that runs the same command, shown at the
         /// row's trailing edge in the platform's spelling.
         shortcut: Option<Shortcut>,
@@ -134,6 +138,7 @@ impl MenuItem {
             checked: None,
             destructive: false,
             enabled: true,
+            refused: false,
             shortcut: None,
             detail: None,
             description: None,
@@ -376,6 +381,26 @@ impl MenuItem {
             } => Some(detail.clone()),
             _ => None,
         }
+    }
+
+    /// Show the row disabled unless the person may run its action here: a click on it then still
+    /// sends the press, to be refused out loud rather than dropped unseen.
+    #[must_use]
+    pub fn refused_unless(mut self, available: bool) -> Self {
+        if let MenuItem::Action {
+            enabled, refused, ..
+        } = &mut self
+        {
+            *enabled = available;
+            *refused = !available;
+        }
+        self
+    }
+
+    /// Whether a click on the row is taken: an enabled row, or one only its action's refusal
+    /// keeps from running ([`Self::refused_unless`]).
+    fn takes_click(&self) -> bool {
+        self.is_enabled() || matches!(self, MenuItem::Action { refused: true, .. })
     }
 
     /// Set whether this command can currently be invoked.
@@ -1309,12 +1334,16 @@ impl ContextMenu {
                 enabled: true,
                 ..
             } if self.ask_row() == Some(idx) => self.ask_typed(),
+            // A row the person may not run is chosen all the same: its press is sent, to be
+            // refused with why ([`MenuItem::refused_unless`]).
             MenuItem::Action {
                 action,
                 press,
-                enabled: true,
+                enabled,
+                refused,
+                submenu: None,
                 ..
-            } => {
+            } if *enabled || *refused => {
                 // A bound row presses its action; a row built around a callback runs it.
                 if press.is_none() {
                     let cb = action.clone();
@@ -1541,10 +1570,10 @@ impl ContextMenu {
         }
     }
 
-    /// The enabled row under `point`.
+    /// The row under `point` a click is taken by ([`MenuItem::takes_click`]).
     fn enabled_item_at(&self, point: Point) -> Option<usize> {
         self.item_at([point.x, point.y])
-            .filter(|index| self.items[*index].is_enabled())
+            .filter(|index| self.items[*index].takes_click())
     }
 }
 

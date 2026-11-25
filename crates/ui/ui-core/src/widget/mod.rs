@@ -2910,6 +2910,8 @@ pub(crate) mod control_result_probe;
 
 #[cfg(test)]
 pub(crate) mod effect_fixture;
+#[cfg(test)]
+mod refused_press_tests;
 
 pub mod keyboard_map;
 pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};

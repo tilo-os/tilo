@@ -883,6 +883,11 @@ impl Widget for Toggle {
             if self.hold.take().is_some_and(|hold| hold.dragged) {
                 self.switch.snap(self.control.is_checked);
             }
+            // A press on a switch whose action the person may not run is sent, to be refused
+            // with why; the knob stays where it is.
+            if self.control.refuses_press() {
+                self.control.handle_event(event, ctx);
+            }
             return;
         }
         let pointer_held = self.hold.is_some();

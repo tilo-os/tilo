@@ -1094,7 +1094,7 @@ impl TextInput {
         replacement: &str,
     ) -> Option<usize> {
         if self.read_only
-            || self.effectively_disabled()
+            || self.disabled
             || self.core.has_preedit()
             || self.text.get(range.clone()) != Some(expected)
         {
@@ -4545,7 +4545,7 @@ impl TextInput {
         let Some(pending) = self.pending_paste.as_ref() else {
             return false;
         };
-        if self.effectively_disabled()
+        if self.disabled
             || self.text != *pending.text
             || self.core.caret_position() != pending.caret
             || self.core.anchor() != pending.anchor
@@ -5297,7 +5297,9 @@ impl Widget for TextInput {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if self.effectively_disabled() {
+        // One whose action the person may not run still takes their typing: what they type is
+        // sent to be refused with why, and the field keeps what it held ([`Self::report_change`]).
+        if self.disabled {
             return;
         }
         self.repaint = true;
@@ -5407,7 +5409,7 @@ impl Widget for TextInput {
             WindowEvent::MouseWheel { delta, phase, .. }
                 if self.multiline
                     && self.is_hovered
-                    && !self.effectively_disabled()
+                    && !self.disabled
                     && !crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
             {
                 self.handle_mouse_wheel(delta, *phase, ctx.scale_factor, ctx.handled);
@@ -5423,7 +5425,7 @@ impl Widget for TextInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.is_hovered && !self.effectively_disabled() => {
+            } if self.is_hovered && !self.disabled => {
                 self.handle_right_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::MouseInput {
@@ -5443,7 +5445,7 @@ impl Widget for TextInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Middle,
                 ..
-            } if self.is_hovered && !self.effectively_disabled() && !self.read_only => {
+            } if self.is_hovered && !self.disabled && !self.read_only => {
                 self.handle_middle_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::Touch(touch) => {
@@ -5577,7 +5579,7 @@ impl Widget for TextInput {
             && self.link_at(self.resolve_position(point).byte).is_some()
         {
             Some(winit::window::CursorIcon::Pointer)
-        } else if !self.effectively_disabled() && self.rect.contains(point) {
+        } else if !self.disabled && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
@@ -5642,7 +5644,7 @@ impl Widget for TextInput {
     }
 
     fn is_focusable(&self) -> bool {
-        !self.effectively_disabled()
+        !self.disabled
     }
     fn set_invalid(&mut self, invalid: bool) {
         self.invalid = invalid;

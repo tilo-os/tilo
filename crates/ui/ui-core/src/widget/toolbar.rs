@@ -929,7 +929,11 @@ impl Toolbar {
                             if let Some(why) = &command.description {
                                 row = row.with_description(why.clone());
                             }
-                            row.with_enabled(command.is_enabled())
+                            if command.enabled && command.action.is_some() {
+                                row.refused_unless(command.is_enabled())
+                            } else {
+                                row.with_enabled(command.is_enabled())
+                            }
                         }
                         None => MenuItem::separator(),
                     });
@@ -988,12 +992,14 @@ impl Toolbar {
 
     fn invoke(&mut self, index: usize) {
         let opens_menu = match self.items.get_mut(index) {
-            Some(ToolbarItem::Button(command)) if command.is_enabled() => {
+            Some(ToolbarItem::Button(command)) if command.enabled => {
                 if command.menu.is_some() {
-                    true
+                    command.is_enabled()
                 } else {
+                    // Only a pointer press reaches a command the person may not run: it is sent,
+                    // to be refused with why.
                     if let Some(action) = &mut command.action {
-                        if let Err(error) = action.emit(()) {
+                        if let Err(error) = action.press(()) {
                             tracing::warn!(%error, "toolbar command refused its arguments");
                         }
                     } else {
@@ -1077,6 +1083,14 @@ impl Toolbar {
     fn target_enabled(&self, target: Target) -> bool {
         match target {
             Target::Item(index) => self.command(index).is_some_and(|c| c.is_enabled()),
+            Target::Overflow => true,
+        }
+    }
+    /// Whether a pointer press on `target` is taken: a command the person may not run still takes
+    /// it, and the press is sent to be refused with why, never dropped unseen.
+    fn takes_press(&self, target: Target) -> bool {
+        match target {
+            Target::Item(index) => self.command(index).is_some_and(|c| c.enabled),
             Target::Overflow => true,
         }
     }
@@ -1734,10 +1748,12 @@ impl Widget for Toolbar {
                 ..
             } => {
                 self.refresh_hover();
-                self.pressed = self.hovered.filter(|t| self.target_enabled(*t));
+                self.pressed = self.hovered.filter(|t| self.takes_press(*t));
                 if let Some(target) = self.pressed {
-                    self.focus_target(target);
-                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.target_enabled(target) {
+                        self.focus_target(target);
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                     *ctx.handled = true;
                 } else if self.hovered.is_some() {
                     *ctx.handled = true;

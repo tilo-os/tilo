@@ -624,10 +624,19 @@ impl ColorSwatchPicker {
     }
 
     fn choose(&mut self, index: usize) {
-        self.selected = Some(index);
-        self.choice = Some(index);
+        // A choice the person may not make keeps the one shown; it is sent to be refused with why.
+        if self
+            .action
+            .as_ref()
+            .is_none_or(crate::widget::ActionEmitter::is_available)
+        {
+            self.selected = Some(index);
+            self.choice = Some(index);
+        }
+        // The person's own choice: one they may not make is sent all the same, to be refused with
+        // why.
         if let Some(action) = self.action.as_mut()
-            && let Err(error) = action.emit(index)
+            && let Err(error) = action.press(index)
         {
             tracing::warn!(%error, "swatch action refused its index");
         }

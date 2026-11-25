@@ -20,6 +20,17 @@ const SEND_OPERATION: &str = "fixture.send";
 
 /// The fixture, its button named `go`: `sent` runs only when the action is admitted.
 pub(crate) fn sends(sent: impl FnMut() + 'static) -> crate::widget::Element {
+    sends_through(sent, |binding| {
+        Box::new(Button::new("go", "Send").on_action(binding))
+    })
+}
+
+/// The fixture with the control `control` makes over the send action in its button's place: any
+/// control a person presses to send, whatever input it takes (the action has no parameters).
+pub(crate) fn sends_through<I: 'static>(
+    sent: impl FnMut() + 'static,
+    control: impl FnOnce(tilo_actions::ActionBinding<I>) -> crate::widget::Element,
+) -> crate::widget::Element {
     use tilo_actions::{ActionBinding, ActionSpec, EncodedAction, OperationKind, ResourceSpec};
     let spec = ActionSpec::typed_operation(
         "send",
@@ -31,14 +42,16 @@ pub(crate) fn sends(sent: impl FnMut() + 'static) -> crate::widget::Element {
         |_| EncodedAction::encode_operation(SEND_OPERATION, &()).unwrap(),
     );
     let resource = ResourceSpec::new("fixture:outbox", "fixture", "Outbox").with_action(spec);
-    let binding =
-        ActionBinding::new(&resource, &resource.actions[0], |()| serde_json::Map::new()).unwrap();
+    let binding = ActionBinding::new(&resource, &resource.actions[0], |_: I| {
+        serde_json::Map::new()
+    })
+    .unwrap();
     Box::new(Sends {
         child: Box::new(
             crate::widget::Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .push(Box::new(Button::new("go", "Send").on_action(binding))),
+                .push(control(binding)),
         ),
         resource,
         sent: Box::new(sent),

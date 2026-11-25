@@ -2456,11 +2456,18 @@ impl ListRow {
     }
 
     fn toggle_checkbox(&mut self) -> bool {
+        // A check the person may not make keeps its mark; the press is sent to be refused with why.
+        let refused = self
+            .check_action
+            .as_ref()
+            .is_some_and(|action| !action.is_available());
         if let Some(Leading::Checkbox {
             checked, on_toggle, ..
         }) = &mut self.leading
         {
-            *checked = !*checked;
+            if !refused {
+                *checked = !*checked;
+            }
             let now = *checked;
             self.dirty = true;
             if let Some(action) = &mut self.check_action {

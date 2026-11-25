@@ -29,6 +29,18 @@ impl BoolAction {
         }
     }
 
+    /// The person's own press of a flip to `flipped` their grants keep from them: sent all the
+    /// same, to be refused with why ([`ActionEmitter::press`]).
+    pub(crate) fn press(&mut self, flipped: bool) {
+        let queued = match self {
+            Self::Value(action) => action.press(flipped),
+            Self::Press(action) => action.press(()),
+        };
+        if let Err(error) = queued {
+            tracing::warn!(%error, "a control's action refused its arguments");
+        }
+    }
+
     pub(crate) fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         match self {
             Self::Value(action) => action.take(),
@@ -188,6 +200,12 @@ impl BoolControl {
         self.enabled && self.action.as_ref().is_none_or(BoolAction::is_available)
     }
 
+    /// Whether the control shows its action unavailable while it would otherwise take a press: a
+    /// person's press is then sent, to be refused with why.
+    pub fn refuses_press(&self) -> bool {
+        self.enabled && !self.effectively_enabled()
+    }
+
     pub fn spoken_name(&self) -> Option<String> {
         let name = self.accessible_name.as_ref()?;
         crate::i18n::spoken_name(name, self.name_resolved)
@@ -256,9 +274,12 @@ impl BoolControl {
     }
 
     pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if !self.effectively_enabled() {
+        if !self.enabled {
             return;
         }
+        // Its action is not the person's to run here: it looks it and keeps its value, and their
+        // press is still sent, to be refused with why, never dropped unseen.
+        let refused = !self.effectively_enabled();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = ctx.logical(position);
@@ -275,6 +296,13 @@ impl BoolControl {
             } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *ctx.handled = true;
                 self.holds_press = true;
+                if refused {
+                    let flipped = !self.is_checked;
+                    if let Some(action) = &mut self.action {
+                        action.press(flipped);
+                    }
+                    return;
+                }
                 self.pressed_into_focus |= !self.is_focused;
                 *ctx.focus_target = Some(ctx.node_id);
                 self.flip();

@@ -286,7 +286,8 @@ tilo_test_env::scenario! {
             )
             .with_id("appearance")
             .on_action(appearance_binding());
-            // The setting's action is withdrawn: nothing the strip offers can choose it.
+            // The setting's action is withdrawn: nothing the strip offers can choose it. The
+            // person's press is sent to be refused with why, and the strip keeps its choice.
             crate::widget::controls::refresh_control_action_availability(
                 &mut group,
                 &std::collections::HashSet::new(),
@@ -295,7 +296,12 @@ tilo_test_env::scenario! {
             assert!(!Widget::is_enabled(&group));
 
             dispatch(&mut group, &cursor_moved(150.0, 22.0));
-            assert!(!dispatch(&mut group, &mouse_press()));
+            assert!(dispatch(&mut group, &mouse_press()));
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut group).is_some(),
+                "the press is sent, to be refused"
+            );
+            assert_eq!(group.selected(), 0);
             assert!(!dispatch(
                 &mut group,
                 &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),

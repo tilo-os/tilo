@@ -30,6 +30,29 @@ impl TextInput {
     /// which asks the dirty mark) or a state the person's own action caused (an entry letting go
     /// of what it sent).
     pub(super) fn report_change(&mut self, physical_text: bool) {
+        // An edit the person may not make is sent all the same, to be refused with why, and the
+        // field goes back to what it held: nothing else hears of it.
+        if self
+            .action
+            .as_ref()
+            .is_some_and(|action| !action.is_available())
+        {
+            let before = self.last_notified_text.clone();
+            let after = self.text.clone();
+            if before == after {
+                return;
+            }
+            if let Some(action) = &mut self.action {
+                let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
+                    action.press(Edited {
+                        before: before.clone(),
+                        after,
+                    })
+                });
+            }
+            self.set_text(&before);
+            return;
+        }
         let before = std::mem::replace(&mut self.last_notified_text, self.text.clone());
         // The first change of an empty field: what makes the item a list's entry names. It
         // carries the text the field holds now, so the item is made with what was typed.

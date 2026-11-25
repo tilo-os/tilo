@@ -70,20 +70,23 @@ impl<I> ActionEmitter<I> {
     /// declared parameter contract.
     pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
-            let invocation = self.binding.invoke(input)?;
-            let _ = self.pending.emit(invocation);
+            self.press(input)?;
         }
         Ok(())
     }
 
-    /// Queues a person's press on a control whose action is not available to them: the dispatch
-    /// refuses it and says why, where a dropped press would leave them guessing.
+    /// Queues the person's own pointer press, whether or not the action is available: the
+    /// dispatch runs it, or refuses one they may not run here and says why, where a dropped press
+    /// would leave them guessing. A control that shows its action unavailable takes the press for
+    /// this without taking focus or changing what it shows. Only a press of the person at the
+    /// window comes here: a call made for someone else, by an agent or by an automation, is
+    /// [`Self::emit`]ted and refused where it is made.
     ///
     /// # Errors
     ///
     /// Returns an error when `input` cannot be encoded against the action's
     /// declared parameter contract.
-    pub fn press_refused(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
+    pub fn press(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         let invocation = self.binding.invoke(input)?;
         let _ = self.pending.emit(invocation);
         Ok(())
@@ -117,6 +120,48 @@ impl<I> ActionEmitter<I> {
         ControlBindingMetadata {
             control_id: control_id.into(),
             kind: ControlBindingKind::Action(self.binding.address().clone()),
+        }
+    }
+}
+
+/// A person's press on a slider whose action they may not run here: the slider takes no focus and
+/// does not move, and the value the press points at is sent, to be refused with why
+/// ([`ActionEmitter::emit`]), never dropped unseen.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RefusedPress {
+    over: Option<vello::kurbo::Point>,
+}
+
+impl RefusedPress {
+    /// Follow `event` over `rect`: where a press of the left button inside it landed, which it
+    /// takes.
+    pub(crate) fn pressed(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+        rect: vello::kurbo::Rect,
+    ) -> Option<vello::kurbo::Point> {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let at = ctx.logical(position);
+                self.over = rect.contains(at).then_some(at);
+                None
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.over = None;
+                None
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let at = self.over?;
+                *ctx.handled = true;
+                Some(at)
+            }
+            _ => None,
         }
     }
 }

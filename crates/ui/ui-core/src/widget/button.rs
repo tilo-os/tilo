@@ -2482,7 +2482,7 @@ impl Widget for Button {
             return;
         }
         // Its action is not the person's to run here: it looks it, and their press is still
-        // answered, with why ([`ActionEmitter::press_refused`]), never dropped unseen.
+        // answered, with why ([`ActionEmitter::press`]), never dropped unseen.
         let refused = !self.effectively_enabled();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -2524,7 +2524,7 @@ impl Widget for Button {
                             Release::Click(()) if refused => {
                                 *ctx.handled = true;
                                 if let Some(action) = &mut self.action
-                                    && let Err(error) = action.press_refused(())
+                                    && let Err(error) = action.press(())
                                 {
                                     tracing::warn!(%error, button = %self.id, "action-bound control refused its arguments");
                                 }

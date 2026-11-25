@@ -400,9 +400,17 @@ impl Widget for Link {
                         self.is_pressed = pressed;
                         *ctx.handled = true;
                         if self.is_pressed {
-                            *ctx.focus_target = Some(ctx.node_id);
-                        } else {
+                            if self.effectively_enabled() {
+                                *ctx.focus_target = Some(ctx.node_id);
+                            }
+                        } else if self.effectively_enabled() {
                             self.activate();
+                        } else if let Some(action) = &mut self.action
+                            && let Err(error) = action.press(())
+                        {
+                            // The person may not run it here: the press is sent, to be refused
+                            // with why.
+                            tracing::warn!(%error, "action-bound link refused its arguments");
                         }
                     }
                 } else if self.is_pressed {

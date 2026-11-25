@@ -702,6 +702,28 @@ impl ToggleGroup {
         self
     }
 
+    /// The person pressed choice `index` of a strip whose action they may not run here: nothing is
+    /// chosen, and the press is sent, to be refused with why
+    /// ([`crate::widget::ActionEmitter::press`]).
+    fn press_refused(&mut self, index: usize) {
+        let pressed = if let Some(action) = &mut self.action {
+            action.press(index)
+        } else if let (Some(action), Some(chosen)) = (&mut self.chosen_action, &self.chosen) {
+            let indices = chosen
+                .iter()
+                .enumerate()
+                .filter(|(at, on)| (*at == index) != **on)
+                .map(|(at, _)| at)
+                .collect();
+            action.press(indices)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = pressed {
+            tracing::warn!(%error, "segmented action refused its choice");
+        }
+    }
+
     fn request_selection(&mut self, index: usize) {
         if self.segments.get(index).is_some_and(|s| s.disabled) {
             return;
@@ -1787,15 +1809,22 @@ impl ToggleGroup {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
     ) {
-        if state != ElementState::Pressed || !self.is_enabled() {
+        if state != ElementState::Pressed || !self.enabled {
             return;
         }
+        // Its action is not the person's to run here: it looks it, takes no focus and keeps its
+        // choice, and their press is still sent, to be refused with why, never dropped unseen.
+        let refused = !self.is_enabled();
         let pos = self.last_cursor.get();
         if !self.rect.contains(pos) {
             return;
         }
         if self.folded {
             *handled = true;
+            if refused {
+                self.press_refused(self.selected);
+                return;
+            }
             self.pressed_into_focus |= !self.is_focused;
             *focus_target = Some(node_id);
             self.open_fold_menu();
@@ -1807,6 +1836,10 @@ impl ToggleGroup {
             .position(|segment| segment.contains(pos))
         {
             *handled = true;
+            if refused {
+                self.press_refused(index);
+                return;
+            }
             self.pressed_into_focus |= !self.is_focused;
             *focus_target = Some(node_id);
             self.request_selection(index);

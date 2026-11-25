@@ -115,12 +115,10 @@ impl RowMenu {
                 if let Some(emitter) = &entry.emitter {
                     item = item.for_action(emitter.binding().address().clone());
                 }
-                item.with_enabled(
-                    entry
-                        .emitter
-                        .as_ref()
-                        .is_some_and(ActionEmitter::is_available),
-                )
+                match &entry.emitter {
+                    Some(emitter) => item.refused_unless(emitter.is_available()),
+                    None => item.with_enabled(false),
+                }
             })
             .collect();
         self.menu.set_items(items);
@@ -132,7 +130,7 @@ impl RowMenu {
                 .entries
                 .get_mut(index)
                 .and_then(|entry| entry.emitter.as_mut())
-            && let Err(error) = emitter.emit(())
+            && let Err(error) = emitter.press(())
         {
             tracing::warn!(%error, control = %self.id, "row menu entry refused its arguments");
         }
@@ -274,6 +272,8 @@ mod tests {
             assert!(menu.take_control_invocation().is_none());
         }
 
+        // A person's pick of an entry the surface does not offer is sent all the same, for the
+        // dispatch to refuse with why.
         phase an_entry_the_surface_does_not_offer_is_disabled;
         {
             let mut menu =
@@ -281,7 +281,7 @@ mod tests {
             menu.refresh_control_action_availability(&HashSet::new());
             assert!(!menu.menu.menu_mut().items()[0].is_enabled());
             menu.chosen.set(Some(0));
-            assert!(menu.take_control_invocation().is_none());
+            assert!(menu.take_control_invocation().is_some());
         }
     }
 }

@@ -1041,7 +1041,9 @@ impl Widget for PropertyList {
                         Release::Cancelled => *ctx.handled = true,
                         Release::Click((row, action)) => {
                             *ctx.handled = true;
-                            self.run_action(row, action);
+                            if !self.run_action(row, action) {
+                                self.press_refused(row, action);
+                            }
                         }
                     },
                 }
@@ -1150,6 +1152,21 @@ impl Widget for PropertyList {
 }
 
 impl PropertyList {
+    /// The person clicked row `row`'s action `action`, which they may not run here: the press is
+    /// sent, to be refused with why ([`crate::widget::ActionEmitter::press`]).
+    fn press_refused(&mut self, row: usize, action: usize) {
+        if let Some(PropertyAction::Bound { action, .. }) = self
+            .groups
+            .iter_mut()
+            .flat_map(|(_, rows)| rows.iter_mut())
+            .nth(row)
+            .and_then(|property| property.actions.get_mut(action))
+            && let Err(error) = action.press(())
+        {
+            tracing::warn!(%error, "property action refused");
+        }
+    }
+
     fn run_action(&mut self, row: usize, action: usize) -> bool {
         let Some(property) = self
             .groups

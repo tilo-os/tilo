@@ -1330,9 +1330,11 @@ impl Widget for Chip {
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }
-                    ElementState::Pressed if self.activation.is_enabled() && over_body => {
+                    ElementState::Pressed if self.activation.takes_press() && over_body => {
                         self.activation.press(self.hit_rect());
-                        *ctx.focus_target = Some(ctx.node_id);
+                        if self.activation.is_enabled() {
+                            *ctx.focus_target = Some(ctx.node_id);
+                        }
                         *ctx.handled = true;
                     }
                     ElementState::Released => {
@@ -1341,7 +1343,7 @@ impl Widget for Chip {
                             .release(self.hit_rect(), over_body && !over_x);
                         *ctx.handled |= release.ended();
                         if release == crate::pointer_replay::Release::Click(()) {
-                            self.activation.activate();
+                            self.activation.click();
                         }
                     }
                     ElementState::Pressed => {}

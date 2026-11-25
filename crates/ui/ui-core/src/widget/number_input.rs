@@ -704,8 +704,8 @@ impl NumberInput {
         if let Some(parsed) = self.parse_text(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
             if !clamped.is_nan() && clamped.total_cmp(&self.value).is_ne() {
-                self.value = clamped;
-                self.record_user_value(clamped);
+                let held = std::mem::replace(&mut self.value, clamped);
+                self.record_user_value(clamped, held);
             }
         }
         // Whether or not the value moved, re-render the canonical text so a
@@ -719,8 +719,8 @@ impl NumberInput {
         let next = crate::num::snap_decimal(self.value + delta, &[self.value, delta])
             .clamp(self.min, self.max);
         if !next.is_nan() && next.total_cmp(&self.value).is_ne() {
-            self.value = next;
-            self.record_user_value(next);
+            let held = std::mem::replace(&mut self.value, next);
+            self.record_user_value(next, held);
         }
         self.sync_field();
     }
@@ -756,9 +756,16 @@ impl NumberInput {
         }
     }
 
-    fn record_user_value(&mut self, value: f64) {
+    /// Tell the value the person set; one their grants keep from them is sent all the same, to be
+    /// refused with why, and the control goes back to `held`.
+    fn record_user_value(&mut self, value: f64, held: f64) {
         if let Some(action) = &mut self.action {
-            let _ = action.emit(value);
+            let refused = !action.is_available();
+            let _ = action.press(value);
+            if refused {
+                self.value = held;
+                return;
+            }
         } else {
             self.changed = Some(value);
             self.publish_local_state();
@@ -912,7 +919,9 @@ impl Widget for NumberInput {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;
-        if !self.effectively_enabled() {
+        // One whose action the person may not run still takes their steps and typing: what they
+        // set is sent to be refused with why ([`Self::record_user_value`]).
+        if !self.enabled {
             return;
         }
 
@@ -1052,7 +1061,7 @@ impl Widget for NumberInput {
     }
 
     fn is_focusable(&self) -> bool {
-        self.effectively_enabled()
+        self.enabled
     }
     fn is_enabled(&self) -> bool {
         self.effectively_enabled()
@@ -1142,8 +1151,8 @@ impl Widget for NumberInput {
                 };
                 let clamped = parsed.clamp(self.min, self.max);
                 if !clamped.is_nan() && clamped.total_cmp(&self.value).is_ne() {
-                    self.value = clamped;
-                    self.record_user_value(clamped);
+                    let held = std::mem::replace(&mut self.value, clamped);
+                    self.record_user_value(clamped, held);
                 }
                 self.sync_field();
                 true

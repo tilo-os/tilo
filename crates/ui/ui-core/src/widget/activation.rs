@@ -146,6 +146,29 @@ impl Activation {
         self.cursor
     }
 
+    /// Whether a pointer press on it is taken: an action the person may not run still takes it,
+    /// and the dispatch says why it does not run ([`Self::click`]).
+    pub(crate) fn takes_press(&self) -> bool {
+        self.is_bound() && !self.state.disabled
+    }
+
+    /// The person's own click: it activates, or sends the press of an action they may not run
+    /// here, to be refused with why ([`ActionEmitter::press`]).
+    pub(crate) fn click(&mut self) -> bool {
+        if self.is_enabled() {
+            return self.activate();
+        }
+        if !self.takes_press() {
+            return false;
+        }
+        if let Some(action) = &mut self.action
+            && let Err(error) = action.press(())
+        {
+            tracing::warn!(%error, control = %self.id, "action-bound surface refused its arguments");
+        }
+        true
+    }
+
     pub(crate) fn activate(&mut self) -> bool {
         if !self.is_enabled() {
             return false;
@@ -184,13 +207,15 @@ impl Activation {
                 state,
                 button: MouseButton::Left,
                 ..
-            } if self.is_enabled() => {
+            } if self.takes_press() => {
                 let inside = rect.contains(self.cursor)
                     && !exclude.iter().any(|inner| inner.contains(self.cursor));
                 match state {
                     ElementState::Pressed if inside => {
                         self.press(rect);
-                        *ctx.focus_target = Some(ctx.node_id);
+                        if self.is_enabled() {
+                            *ctx.focus_target = Some(ctx.node_id);
+                        }
                         *ctx.handled = true;
                     }
                     ElementState::Released => {
@@ -199,7 +224,7 @@ impl Activation {
                         if release == Release::Click(())
                             && !self.repeats_last_click(ctx.state.doc().get_actor())
                         {
-                            self.activate();
+                            self.click();
                         }
                     }
                     ElementState::Pressed => {}
