@@ -2418,6 +2418,8 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() 
         stdout.contains("test result: ok. 1 passed"),
         "the isolated child ran no test: {stdout}"
     );
+}
+
 const SECRET_RECORD_TEST: &str =
     "device::services::tests::a_secret_answer_is_kept_out_of_every_invocation_record";
 
