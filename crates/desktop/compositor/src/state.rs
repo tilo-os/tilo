@@ -1673,40 +1673,29 @@ impl State {
         }
     }
 
-    /// A press over the windows or the shell beneath them: a surface beneath the windows that
-    /// carries a window with it (a floating window by its bar, or any window with Super held) takes
-    /// the pointer from the window's client and the shell until the press ends.
+    /// A press with Super held over a window: the surface beneath the windows that carries that
+    /// window with the press, as a press on its bar would, takes the pointer from the window's
+    /// client until the press ends.
     fn carry_window_under_pointer(&mut self, serial: Serial, time: u32) {
-        if self.locked() || self.layer_surface_under(self.pointer, true).is_some() {
-            return;
-        }
-        // A surface over the windows (a panel, a menu) keeps its own press.
-        if let PointerTarget::Surface(index) = self.pointer_target
-            && self
-                .surfaces
-                .get(index)
-                .is_some_and(|surface| !surface.below_windows())
+        let logo = self
+            .seat
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.modifier_state().logo);
+        if !logo
+            || self.locked()
+            || self.pointer_target != PointerTarget::Clients
+            || self.window_at(self.pointer).is_none()
         {
             return;
         }
         let (x, y) = (self.pointer.x, self.pointer.y);
-        let held = self.held_modifiers();
         let Some(index) = (0..self.surfaces.len()).rev().find(|index| {
-            self.surfaces.get_mut(*index).is_some_and(|surface| {
-                surface.below_windows() && {
-                    surface.pointer_modifiers(held);
-                    surface.carries_window_at(x, y)
-                }
-            })
+            self.surfaces
+                .get_mut(*index)
+                .is_some_and(|surface| surface.below_windows() && surface.carries_window_at(x, y))
         }) else {
             return;
         };
-        if let PointerTarget::Surface(old) = self.pointer_target
-            && old != index
-            && let Some(surface) = self.surfaces.get_mut(old)
-        {
-            surface.pointer_leave();
-        }
         if let Some(surface) = self.surfaces.get_mut(index) {
             surface.pointer_motion(x, y);
         }

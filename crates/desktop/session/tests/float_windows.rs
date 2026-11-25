@@ -645,3 +645,126 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     });
     capture(&mut session, "snapped-light");
 }
+
+/// The app window the compositor shows topmost at `(x, y)` , by its window id, and the newest press
+/// or key it delivered to it.
+fn window_at(session: &mut Session, (x, y): (f64, f64)) -> (u64, Option<u32>) {
+    let compositor = session.compositor();
+    let id = compositor
+        .windows()
+        .into_iter()
+        .rev()
+        .find(|(_, (wx, wy, w, h))| {
+            x >= f64::from(*wx)
+                && x < f64::from(wx + w)
+                && y >= f64::from(*wy)
+                && y < f64::from(wy + h)
+        })
+        .map(|(info, _)| info.id)
+        .unwrap_or_else(|| panic!("an app window stands at {x}, {y}"));
+    (id, compositor.last_input_serial(id))
+}
+
+/// A point along the bar of a window standing at `over` with an app window under it, once one
+/// stands there: what a person who clicks there means to reach.
+fn bar_over_a_window(session: &mut Session, over: ui::kurbo::Rect) -> (f64, f64) {
+    let along = |windows: &[(tilo_compositor::WindowInfo, (i32, i32, i32, i32))]| {
+        let under = |x: f64, y: f64| {
+            windows.iter().any(|(_, (wx, wy, w, h))| {
+                x >= f64::from(*wx)
+                    && x < f64::from(wx + w)
+                    && y >= f64::from(*wy)
+                    && y < f64::from(wy + h)
+            })
+        };
+        let mut x = over.x0 + 24.0;
+        while x < over.x1 - 24.0 {
+            for y in [over.y0 + 12.0, over.y0 + 22.0] {
+                if under(x, y) {
+                    return Some((x, y));
+                }
+            }
+            x += 16.0;
+        }
+        None
+    };
+    let mut found = None;
+    let stands = crate::common::reached(session, |session| {
+        found = along(&session.compositor().windows());
+        found.is_some()
+    });
+    assert!(
+        stands,
+        "an app window stands under the bar at {over:?}; the compositor shows {:?}",
+        session
+            .compositor()
+            .windows()
+            .iter()
+            .map(|(info, at)| (info.id, *at))
+            .collect::<Vec<_>>()
+    );
+    found.expect("the point it stands under")
+}
+
+/// Click at `at` and answer whether the app window standing there got the press.
+fn click_reaches_window(session: &mut Session, at: (f64, f64)) -> bool {
+    pointer_at(session, at);
+    let (window, before) = window_at(session, at);
+    button(session, true);
+    button(session, false);
+    session.compositor().last_input_serial(window) != before
+}
+
+/// A click on a window, where a floating window's bar stands or stood, is that window's: the
+/// floating window is carried by nothing but its own bar, so a press on whatever stands under the
+/// pointer reaches it, while the window floats and after it snapped back.
+#[test]
+fn a_click_where_a_float_bar_stands_or_stood_reaches_the_window_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = shell();
+    let chat = tab_of(&session, CHAT).expect("the conversation is open");
+
+    press(&mut session, ShortcutAction::ToggleFloat);
+    until(&mut session, "the window floats", |session| {
+        held(session, chat).floating
+    });
+    until(&mut session, "the window is drawn floating", |session| {
+        let over = rect(session, chat);
+        (over.width(), over.height()) == (640.0, 480.0)
+    });
+    let over = rect(&session, chat);
+    let bar = bar_over_a_window(&mut session, over);
+
+    assert!(
+        click_reaches_window(&mut session, bar),
+        "a click where the floating window's bar stands reaches the window there"
+    );
+    assert!(
+        held(&session, chat).floating,
+        "the click carried nothing: the window still floats"
+    );
+    assert_eq!(rect(&session, chat), over, "and stands where it stood");
+
+    open_menu(&mut session, chat);
+    choose(&mut session, "window-snap-back");
+    until(&mut session, "the window snaps back", |session| {
+        !held(session, chat).floating
+    });
+    let laid = order(&session, chat);
+    let bar = bar_over_a_window(&mut session, over);
+    assert!(
+        click_reaches_window(&mut session, bar),
+        "after it snapped back, a click where its bar stood reaches the window there"
+    );
+    assert!(
+        session
+            .layout()
+            .borrow()
+            .reading()
+            .strips
+            .iter()
+            .all(|reading| !reading.floating),
+        "the click floated nothing"
+    );
+    assert_eq!(order(&session, chat), laid, "and moved no window");
+}

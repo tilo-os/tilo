@@ -325,26 +325,17 @@ pub struct Carried {
 }
 
 impl super::DesktopHandle {
-    /// A press at `point` (the surface's coordinates) takes the floating window there by its bar,
-    /// or, when `anywhere` (the press was made with Super held), by any point of it: the window
-    /// follows the press ([`Self::carry_to`]) until it is let go ([`Self::put_down`]). Whether a
-    /// floating window stands there to carry.
-    pub fn carry_float_at(&self, point: Point, anywhere: bool) -> bool {
+    /// A press at `point` (the surface's coordinates) takes the floating window there, by any point
+    /// of it: the window follows the press ([`Self::carry_to`]) until it is let go
+    /// ([`Self::put_down`]). Whether a floating window stands there to carry.
+    pub fn carry_float_at(&self, point: Point) -> bool {
         let mut shared = self.shared.borrow_mut();
-        let taken = shared.shown_tabs.0.iter().rev().find(|shown| {
-            let bar = Rect::new(
-                shown.window.x0,
-                shown.window.y0,
-                shown.window.x1,
-                shown.content.map_or(shown.window.y1, |content| content.y0),
-            );
-            shown.floated
-                && if anywhere {
-                    shown.window.contains(point)
-                } else {
-                    bar.contains(point)
-                }
-        });
+        let taken = shared
+            .shown_tabs
+            .0
+            .iter()
+            .rev()
+            .find(|shown| shown.floated && shown.window.contains(point));
         let Some(&super::shown::ShownTab {
             tab, group, window, ..
         }) = taken

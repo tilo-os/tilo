@@ -3,8 +3,8 @@
 //! [`desktop`] makes the [`ShellDesktop`] a session runs the desktop on: the policy that keeps its
 //! windows as tabs of the desktop's workspaces ([`tilo_desktop_policy`]), the desktop's pass, and
 //! the shell's published side. The tilolang shell draws the desktop and its wells place the windows
-//! ([`super::WellPolicy`]), reading the same desktop; nothing of it is drawn here. A press that
-//! carries a floating window is the desktop's: it moves the window and puts it down.
+//! ([`super::WellPolicy`]), reading the same desktop; nothing of it is drawn here. A press made
+//! with Super held on a floating window carries it: the desktop moves the window and puts it down.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_compositor::LayoutRect;
 use tilo_compositor::gestures::GestureConfig;
-use tilo_session_core::surface::{KeyModifiers, ShellSurface, SurfaceLayer};
+use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use tilo_desktop_policy::DesktopPolicy;
 use tilo_desktop_policy::displays::Output;
@@ -42,9 +42,6 @@ struct Desktop {
     primary: Option<String>,
     /// The shell's published side ([`ShellDesktop::run_desktop`]).
     verbs: Option<tilo_session_core::desktop::shell_verbs::ShellVerbs>,
-    /// Whether Super is held with the pointer: a press then carries a floating window by any
-    /// point of it, not only its bar.
-    super_held: bool,
 }
 
 impl Desktop {
@@ -169,7 +166,6 @@ pub fn desktop(salt: u16) -> ShellDesktop {
             monitors: Vec::new(),
             primary: None,
             verbs: None,
-            super_held: false,
         })),
     }
 }
@@ -545,9 +541,9 @@ impl tilo_session_core::surfaces::Published for ShellDesktop {
 
 /// The desktop as the compositor holds it: the tilolang shell draws the strips, their frames and the
 /// places in them, around the wells the windows stand in, so the desktop draws nothing and takes
-/// no key, and no pointer but a press that carries a floating window. Each frame it takes up its
-/// own pass when something asked for one, so a workspace switched or a window closed is the
-/// shell's to draw.
+/// no key, and no pointer but a press made with Super held that carries a floating window. Each
+/// frame it takes up its own pass when something asked for one, so a workspace switched or a
+/// window closed is the shell's to draw.
 impl ShellSurface for ShellDesktop {
     fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
@@ -561,19 +557,10 @@ impl ShellSurface for ShellDesktop {
         false
     }
 
-    fn pointer_modifiers(&mut self, held: KeyModifiers) {
-        self.desktop.borrow_mut().super_held = held.logo;
-    }
-
-    /// A press on a floating window's bar, or anywhere on it with Super held, carries it: the
-    /// desktop's own carry, which every shell drawn over this desktop shares.
+    /// A press made with Super held anywhere on a floating window carries it.
     fn carries_window_at(&mut self, x: f64, y: f64) -> bool {
         let desktop = self.desktop.borrow();
-        let point = desktop.point(x, y);
-        desktop
-            .policy
-            .handle()
-            .carry_float_at(point, desktop.super_held)
+        desktop.policy.handle().carry_float_at(desktop.point(x, y))
     }
 
     /// The carried window follows the hand.
