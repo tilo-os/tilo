@@ -975,16 +975,13 @@ async fn issuing() -> Issuing {
 async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_act() {
     // The person is the one this account founded here: their root is kept for this account
     // alone, where a ticket issued as their own act is signed with it. The root is sealed with
-    // the computer's device key, so this process takes it as the device's daemon does.
+    // the computer's device key, which this process takes as the device's daemon does.
     let mut home = tilo_test_env::TestHome::new().unwrap();
     home.env()
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     let account = rustix::process::geteuid().as_raw();
-    let keys = tilo_identity::provisioning::collaboration_identity_paths();
-    tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
-    let _taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
     let workspace = tilo_desktop_model::WorkspaceId::new();
-    let (issuer, state, issuer_key, issuer_cert, _paths) =
+    let (issuer, state, issuer_key, issuer_cert, _daemon) =
         super::workspaces::ServiceWorkspaces::test_of_account_person(account).await;
     issuer.found(workspace, "Home").await.unwrap();
     let root = super::services::account_identity_dir(account).unwrap();
