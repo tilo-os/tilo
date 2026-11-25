@@ -32,8 +32,10 @@
 # - `code.tilo.so:443`, pinned: the checks that fetch test fixtures, fonts and the NTFS source
 #   from tilo's package store, each named by the SHA-256 its sources pin (tools/test-assets.py,
 #   tools/font-catalog.py, crates/os/tilo-ntfs-helper): `font-seed`, `test-assets` and
-#   `ntfs-source`. Every cargo build is given their outputs (`[cargo_builds]`, below) and fetches
-#   none itself. Every `[[cargo]]` family still declares it for its test binaries' runs.
+#   `ntfs-source`. A cargo build that compiles one of the packages whose build reads them is given
+#   their outputs (`[cargo_builds]` below) and fetches none itself; a build of a crate that
+#   reaches none of them is given nothing and queues no job. Every `[[cargo]]` family still
+#   declares it for its test binaries' runs.
 # - `registry.tilo.so:443`, pinned: an OS image step that pulls only images named by digest.
 # - `0.0.0.0/0` and `::/0`: the open network, for a check whose destinations are no fixed list
 #   (Fedora's mirrors, package registries, AWS, t's token endpoint, live services). A name on a
@@ -82,14 +84,16 @@ CARGO_PROFILE_TEST_STRIP = "symbols"
 WGPU_BACKEND = "vulkan"
 WGPU_ADAPTER_NAME = "llvmpipe"
 
-# Every cargo build t runs, each family's checks and a `t cargo`, `t build`, `t run` or `t exec`
-# alike, is given the seeds the build scripts would otherwise fetch from tilo's package store:
-# the pinned fonts (font-catalog), the test fixtures (tilo-pdf, tilo-doc-codecs) and the NTFS
-# source (tilo-ntfs-helper), each the output of its check below, at /target. The offline flags
-# make a pin no seed holds fail the build, naming what is missing, instead of fetching it. The
-# tests these builds run read the same seeds (the typography baselines among the fixtures).
+# A cargo build t runs is given the seeds whose build script it compiles, and no others: the
+# pinned fonts (tilo-font-catalog), the test fixtures (tilo-pdf, tilo-doc-codecs) and the NTFS
+# source (tilo-ntfs-helper), each the output of its check below, at /target. t gives them to a
+# build of a package named here, or of a package that depends on one, so a build of a crate that
+# reads none of them (a page crate, say) queues no seed job. The offline flags make a pin no seed
+# holds fail the build, naming what is missing, instead of fetching it. A family whose tests read
+# a seed themselves names it in the family's own `needs` (the visual goldens' baselines, an
+# example's fonts).
 [cargo_builds]
-needs = ["font-seed", "test-assets", "ntfs-source"]
+package_needs = { "tilo-font-catalog" = ["font-seed"], "tilo-doc-codecs" = ["test-assets"], "tilo-pdf" = ["test-assets"], "tilo-ntfs-helper" = ["ntfs-source"] }
 env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_TEST_ASSETS_OFFLINE = "1", TILO_NTFS_SOURCE_CACHE = "/target/ntfs-source", TILO_NTFS_SOURCE_OFFLINE = "1" }
 
 # The workspace packages whose own sources differ between x86_64 and aarch64. Their tests and
@@ -240,6 +244,9 @@ requires = ["arch=x86_64"]
 wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\" TILO_NTFS_SOURCE_CACHE=\"$CARGO_TARGET_DIR/ntfs-source\"; exec bash tools/test-env.sh \"$@\"", "examples"]
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
+# tools/test-env.sh prepares the pinned font catalog for every command it runs, not only a package
+# whose own build reads fonts, so each of the family's jobs is given the seed it prepares from.
+needs = ["font-seed"]
 packages = [
     "tilo-accounts", "app-cli", "tilo-key-group",
     "discord-worker", "imager", "launcher", "local-model-service",
@@ -460,6 +467,9 @@ unify = "workspace-unify"
 packages = ["tilo-ui"]
 wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\"$CARGO_TARGET_DIR/font-artifacts\"; exec bash tools/test-env.sh \"$@\"", "goldens"]
 args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::))"]
+# The tests resolve their pixel baselines through tools/test-assets.py, and tools/test-env.sh
+# prepares the fonts they are set in: the family's jobs are given both seeds.
+needs = ["font-seed", "test-assets"]
 on = ["schedule:0 3 * * *", "idle"]
 
 # The app-open budget: the session opens every installed app and holds each open to the splash
