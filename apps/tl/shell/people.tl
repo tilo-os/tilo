@@ -38,7 +38,9 @@ view people_button() {
             } else {
                 "{one.name} and {others} others are here"
             }
-            let rest = people.len() - shown.len()
+            // How many here the faces cannot show, counted on the list they are taken from: a
+            // count read off another list would claim people the bar was never given.
+            let rest = device.people.rows.filter(p -> not p.agent).len() - shown.len()
             if rest > 0 {
                 ui.Button(label, icon: .users, count: rest, icon_only: true, role: .bar) {
                     on press: device.show(device.people)

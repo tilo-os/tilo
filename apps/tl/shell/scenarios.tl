@@ -2539,6 +2539,8 @@ scenario "the traditional desktop" {
     d.person = "Ada Lovelace"
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
+    // One mention waits on the bell: what the top bar counts as news.
+    stage(device.notifications, device.Notifications(notices: [mia_mention()]))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     stage(
