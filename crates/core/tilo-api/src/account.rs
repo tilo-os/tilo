@@ -2223,7 +2223,7 @@ async fn revoke_in(connection: &Connection, workspace: &str, grant: &str) -> Res
 )]
 async fn forwarded_webhooks(connection: &Connection, op: Op, args: &Value) -> Outcome {
     let cert = connection.key.cert();
-    let caller = crate::session::key_caller(cert);
+    let caller = tilo_peer_state::key_caller::caller_of_certificate(cert);
     let named = field(args, "workspace").map(str::to_owned);
     let workspaces = match named.clone() {
         Some(workspace) => vec![workspace],

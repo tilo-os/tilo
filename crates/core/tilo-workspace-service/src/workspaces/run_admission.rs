@@ -274,10 +274,11 @@ impl Workspaces {
             .await
             .map_err(|_| "this device does not keep that workspace")?;
         // A server key is the person at the key, as its certificate says
-        // ([`tilo_user_identity::DeviceCapabilities::own_key_in`]). Any other grant is an
-        // agent's: it acts as its own member, never as the person who delegated it, and every
-        // call of its run is decided by the grant its person signed for it — the workspace's
-        // grants naming that agent ([`tilo_peer_state::key_caller::caller_of_key`]).
+        // ([`tilo_user_identity::DeviceCapabilities::own_key_in`]), carrying the key beside them
+        // so a listing names it. Any other grant is an agent's: it acts as its own member, never
+        // as the person who delegated it, and every call of its run is decided by the grant its
+        // person signed for it — the workspace's grants naming that agent
+        // ([`tilo_peer_state::key_caller::caller_of_key`]).
         let caller = tilo_peer_state::key_caller::caller_of_key(key, async {
             let governed = held.lock().await;
             Ok(governed

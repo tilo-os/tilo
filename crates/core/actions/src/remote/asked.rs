@@ -171,7 +171,8 @@ pub struct Named {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AskedBy {
-    /// An agent, working in a turn or on its own.
+    /// An agent, working in a turn or on its own, or a key a person's calls came in on: the
+    /// member the workspace names each of them by.
     Agent(Named),
     /// An app's code, by the app and its title, and who wrote it.
     App {

@@ -4776,7 +4776,7 @@ async fn workspace_verb(
 ) -> Result<Value, ServerError> {
     let id = WorkspaceId::parse(workspace).ok_or(ServerError::NotFound)?;
     enter_the_key(workspaces, workspace, key).await;
-    let caller = Caller::authenticated(key.cert().user_public_key, key.cert().device_public_key);
+    let caller = tilo_peer_state::key_caller::caller_of_certificate(key.cert());
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, action),

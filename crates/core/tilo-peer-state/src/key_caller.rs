@@ -5,6 +5,23 @@ use tilo_action_policy::Grant;
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
 
+/// The caller a key's `certificate` is on a host that needs no workspace's grants to build it: a
+/// server key is the person at the key, carrying it beside them ([`Caller::own_key`]); any other
+/// grant is the person here, and where its calls land they are the agent its certificate names
+/// ([`caller_of_key`]).
+#[must_use]
+pub fn caller_of_certificate(certificate: &DeviceCert) -> Caller {
+    if certificate.capabilities.server_key {
+        Caller::own_key(
+            certificate.user_public_key,
+            certificate.device_public_key,
+            &certificate.device_label,
+        )
+    } else {
+        Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
+    }
+}
+
 /// The caller the key `certificate` certifies acts as: a server key is the person at the key, as
 /// its certificate says ([`tilo_user_identity::DeviceCapabilities::own_key_in`]), carrying the
 /// key beside them ([`Caller::own_key`]); any other agent's grant is the agent its key names
@@ -20,13 +37,7 @@ pub async fn caller_of_key(
     certificate: &DeviceCert,
     granted: impl Future<Output = Result<Vec<Grant>, String>> + Send,
 ) -> Result<Caller, String> {
-    if certificate.capabilities.server_key {
-        Ok(Caller::own_key(
-            certificate.user_public_key,
-            certificate.device_public_key,
-            &certificate.device_label,
-        ))
-    } else if certificate.capabilities.agent.is_some() {
+    if certificate.capabilities.agent.is_some() && !certificate.capabilities.server_key {
         Ok(Caller::delegated_agent(
             tilo_action_policy::key_agent_id(&certificate.device_public_key),
             certificate.user_public_key,
@@ -34,10 +45,6 @@ pub async fn caller_of_key(
         )
         .granting(granted.await?))
     } else {
-        // A machine of the person's, on a link: the person, with no key beside them.
-        Ok(Caller::authenticated(
-            certificate.user_public_key,
-            certificate.device_public_key,
-        ))
+        Ok(caller_of_certificate(certificate))
     }
 }
