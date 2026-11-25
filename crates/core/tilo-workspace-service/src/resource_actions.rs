@@ -4,12 +4,14 @@
 //! A resource is named as every caller names one: `record:<app>:<id>` in the caller's workspace.
 //! Its type is the one its owner declares for it ([`Declared`]): the list of a workspace's
 //! agents (the workspace's), its emoji (Chat's), its contact directory (Contacts'), the person's
-//! settings and their list of workspaces in the workspace whose only member is them (the
-//! settings' and the identity's). Any app's record also moves to another workspace by the
-//! system's `move` ([`Workspaces::move_record`]). The workspace's grants on the owner's node decide the call,
-//! as a window of the app decides a click. What the action changed is written into the
-//! workspace as this device's write, signed and sealed as the device, so every app of the
-//! workspace and the person's other devices take it as any other.
+//! settings, their list of workspaces and the record of their devices in the workspace whose only
+//! member is them (the settings', the identity's and the devices'). Any app's record also moves
+//! to another workspace by the system's `move` ([`Workspaces::move_record`]). The workspace's
+//! grants on the owner's node decide the call, as a window of the app decides a click. What the
+//! action changed is written into the workspace as this device's write, signed and sealed as the
+//! device, so every app of the workspace and the person's other devices take it as any other; in
+//! the person's own workspace, as each of its records is written
+//! ([`person_workspace::edit_on`]).
 //!
 //! It is registered once on every device's providers ([`register`]) under the resource provider
 //! itself: a call made on this device reaches it ([`crate::workspaces::providers::Providers::invoke`]),
@@ -30,6 +32,10 @@ use tilo_server_protocol::WorkspaceId;
 
 use crate::device_documents::ServiceWrites;
 use crate::workspaces::Workspaces;
+use crate::workspaces::person_workspace::{
+    self,
+    devices::{DEVICES, Devices},
+};
 use crate::workspaces::providers::Reach;
 
 /// Apply the typed actions of the resources [`Declared`] names on this device from now on, for
@@ -103,6 +109,14 @@ impl Declared {
                 app: Some(tilo_user_identity::workspace_list::APP),
                 id: tilo_user_identity::workspace_list::RESOURCE.to_owned(),
                 kind: tilo_user_identity::workspace_list::kind(),
+                founding: Founding::Typed,
+            },
+            // The record of the person's devices: what each of their devices says of itself (its
+            // screens, its session, how it wakes), kept by that device's shell.
+            Self {
+                app: Some(DEVICES.0),
+                id: DEVICES.1.to_owned(),
+                kind: tilo_resource::ResourceKind::of::<Devices>().hosted_by(DEVICES.0, "Devices"),
                 founding: Founding::Typed,
             },
         ]
@@ -219,32 +233,6 @@ impl ResourceActions {
             .person_id()
             .ok_or_else(|| rejected(ActionCallError::NotPermitted))?
             .to_owned();
-        let kept = self
-            .workspaces
-            .resource_document(&workspace, app, id)
-            .await
-            .map_err(|error| failed("not_read", error.to_string()))?;
-        let (mut doc, founding) = match kept {
-            Some(bytes) => (
-                automerge::AutoCommit::load(&bytes)
-                    .map_err(|error| failed("unreadable", error.to_string()))?,
-                false,
-            ),
-            None => (
-                declared
-                    .found(&workspace)
-                    .map_err(|error| failed("not_founded", error))?,
-                true,
-            ),
-        };
-        let heads = doc.get_heads();
-        let tree = declared
-            .kind
-            .publish(declared.kind.kind(), &doc)
-            .map_err(|error| failed("unreadable", error.to_string()))?;
-        let address = &request.target.address;
-        let (resource, action) = api::locate(std::slice::from_ref(&tree), address)
-            .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
         let member = tilo_actions::MemberId::person(person.clone());
         let permissions = collaboration::permissions::PermissionContext::new(
             collaboration::permissions::Acting::person(person),
@@ -252,21 +240,6 @@ impl ResourceActions {
             policy.access.clone(),
         )
         .at_unix_time(policy.unix_time);
-        match permissions.invocation_answer(
-            declared.kind.declaring_app(),
-            resource,
-            action,
-            Some(&arguments),
-            None,
-        ) {
-            collaboration::permissions::Answer::Deny => {
-                return Err(rejected(ActionCallError::NotPermitted));
-            }
-            collaboration::permissions::Answer::Ask if request.confirmation.is_none() => {
-                return Err(rejected(ActionCallError::confirmation_required()));
-            }
-            _ => {}
-        }
         // Who asked: the person, or whoever the shell says acts for them (an agent it admitted),
         // which the change's history names.
         let mut ambient = request.context.clone().unwrap_or_default();
@@ -280,16 +253,88 @@ impl ResourceActions {
         let actor = member.actor_bytes();
         let mut registry = tilo_actions::ActionRegistry::new();
         declared.kind.register(&mut registry);
-        api::invoke_json_confirmed(
-            &mut doc,
-            std::slice::from_ref(&tree),
-            address,
-            &arguments,
-            InvocationProvenance::caller(&actor).within(&ambient),
-            &registry,
-            &mut LocalTransport::new(),
-        )
-        .map_err(|error| tilo_agent_session::record_actions::api_status(&error))?;
+        // The action on the record as it stands, once the workspace's grants on its node allow it.
+        let change = |doc: &mut automerge::AutoCommit| -> Result<(), ReceiptStatus> {
+            let tree = declared
+                .kind
+                .publish(declared.kind.kind(), doc)
+                .map_err(|error| failed("unreadable", error.to_string()))?;
+            let address = &request.target.address;
+            let (resource, action) = api::locate(std::slice::from_ref(&tree), address)
+                .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
+            match permissions.invocation_answer(
+                declared.kind.declaring_app(),
+                resource,
+                action,
+                Some(&arguments),
+                None,
+            ) {
+                collaboration::permissions::Answer::Deny => {
+                    return Err(rejected(ActionCallError::NotPermitted));
+                }
+                collaboration::permissions::Answer::Ask if request.confirmation.is_none() => {
+                    return Err(rejected(ActionCallError::confirmation_required()));
+                }
+                _ => {}
+            }
+            api::invoke_json_confirmed(
+                doc,
+                std::slice::from_ref(&tree),
+                address,
+                &arguments,
+                InvocationProvenance::caller(&actor).within(&ambient),
+                &registry,
+                &mut LocalTransport::new(),
+            )
+            .map(drop)
+            .map_err(|error| tilo_agent_session::record_actions::api_status(&error))
+        };
+        let genesis = declared
+            .found(&workspace)
+            .map_err(|error| failed("not_founded", error))?;
+        // The person's own workspace is written as its every record is: on the copy this device
+        // keeps of it, or carried to the device of theirs that keeps it.
+        if workspace == person_workspace::workspace_id(&self.workspaces) {
+            let device = self.workspaces.device_cert().device_public_key;
+            let mut refused = None;
+            let written = person_workspace::edit_on(
+                &self.workspaces,
+                &workspace,
+                (app, id),
+                Box::new(genesis),
+                |doc| {
+                    // This device's own actor: the genesis is one actor's change already, and two
+                    // devices continuing it under that actor would make one sequence of two
+                    // different changes.
+                    doc.set_actor(automerge::ActorId::from(device.to_vec()));
+                    change(doc).map_err(|status| {
+                        refused = Some(status);
+                        "the record's action was refused".to_owned()
+                    })
+                },
+            )
+            .await;
+            return match (written, refused) {
+                (Ok(()), _) => Ok(ActionOutput::default()),
+                (Err(_), Some(status)) => Err(status),
+                (Err(error), None) => Err(failed("not_written", error)),
+            };
+        }
+        let kept = self
+            .workspaces
+            .resource_document(&workspace, app, id)
+            .await
+            .map_err(|error| failed("not_read", error.to_string()))?;
+        let (mut doc, founding) = match kept {
+            Some(bytes) => (
+                automerge::AutoCommit::load(&bytes)
+                    .map_err(|error| failed("unreadable", error.to_string()))?,
+                false,
+            ),
+            None => (genesis, true),
+        };
+        let heads = doc.get_heads();
+        change(&mut doc)?;
         let changes = if founding {
             doc.save()
         } else {

@@ -141,19 +141,44 @@ pub async fn apply<R: Resource>(
 pub async fn apply_on<R: Resource>(
     workspaces: &Workspaces,
     workspace: &str,
-    (app, name): (&str, &str),
+    resource: (&str, &str),
     action: Invoke<R>,
 ) -> Result<(), String> {
-    if workspaces.is_member(workspace).await? {
-        return apply_as_member(workspaces, workspace, (app, name), action).await;
-    }
     let cert = workspaces.device_cert().clone();
     let start = Box::new(genesis::<R>(workspace)?);
+    edit_on(workspaces, workspace, resource, start, |doc| {
+        invoke(doc, &cert, resource.0, action)
+    })
+    .await
+}
+
+/// [`apply_on`] for any edit a resource of the person's own workspace `workspace` takes, typed or
+/// not: `edit` changes `doc`, the record `(app, name)` as the workspace holds it, from `genesis`
+/// where it holds none yet. On the device keeping the workspace it is written on that copy, under
+/// the workspace's lock; on another of the person's devices it is this device's own write,
+/// carried to the device keeping the workspace and decided there as any member's write is.
+///
+/// # Errors
+/// As [`apply`], or what `edit` refused.
+pub async fn edit_on<F>(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, name): (&str, &str),
+    genesis: Box<automerge::AutoCommit>,
+    edit: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
+{
+    if workspaces.is_member(workspace).await? {
+        return edit_as_member(workspaces, workspace, (app, name), Some(genesis), edit).await;
+    }
+    let cert = workspaces.device_cert().clone();
     let applied = Box::pin(workspaces.author_workspace_document_from(
         (workspace, &cert),
         (app, name),
-        Some(start),
-        |doc| invoke(doc, &cert, app, action),
+        Some(genesis),
+        edit,
     ))
     .await
     .map_err(|error| error.to_string());
@@ -163,30 +188,10 @@ pub async fn apply_on<R: Resource>(
     applied
 }
 
-/// [`apply_on`] where this device holds `workspace` as a member copy another of the person's
-/// devices keeps: the change is this device's own write, carried to the device keeping the
-/// workspace and decided there as any member's write is.
-///
-/// # Errors
-/// As [`apply`].
-async fn apply_as_member<R: Resource>(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, name): (&str, &str),
-    action: Invoke<R>,
-) -> Result<(), String> {
-    let cert = workspaces.device_cert().clone();
-    let start = Box::new(genesis::<R>(workspace)?);
-    edit_as_member(workspaces, workspace, (app, name), Some(start), |doc| {
-        invoke(doc, &cert, app, action)
-    })
-    .await
-}
-
-/// [`apply_as_member`] for any edit a resource of the person's own workspace takes, typed or
-/// not: `edit` changes `doc`, the record `(app, name)` as this device holds it, from `genesis`
-/// where the workspace holds none yet, and the change is this device's own write, carried to
-/// the device keeping the workspace.
+/// [`edit_on`] where this device holds `workspace` as a member copy another of the person's
+/// devices keeps: `edit` changes `doc`, the record `(app, name)` as this device holds it, from
+/// `genesis` where the workspace holds none yet, and the change is this device's own write,
+/// carried to the device keeping the workspace.
 ///
 /// # Errors
 /// This device holds no copy of the workspace, the edit or the founding was refused, or the
