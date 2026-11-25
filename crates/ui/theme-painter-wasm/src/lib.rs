@@ -99,7 +99,7 @@ impl Guest {
 /// A painter set's guest: the interpreter, or the machine code the device's daemon compiled for
 /// the same module, which runs from the set's first call.
 enum Exec {
-    Interpreted(Guest),
+    Interpreted(Box<Guest>),
     #[cfg(not(target_arch = "wasm32"))]
     Compiled(compiled::Guest),
 }
@@ -192,12 +192,12 @@ pub fn load_with(bytes: &[u8], compiled: Option<&[u8]>) -> Result<WasmPainter, R
     let call = instance
         .get_typed_func::<u32, u64>(&store, CALL)
         .map_err(|_| refusal(Failure::NoExport(format!("{CALL}(i32) -> i64"))))?;
-    painter(Exec::Interpreted(Guest {
+    painter(Exec::Interpreted(Box::new(Guest {
         store,
         memory,
         buffer,
         call,
-    }))
+    })))
 }
 
 /// The set `guest` runs, with the parameters it declares: refused when they are not the SDK's
