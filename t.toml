@@ -29,11 +29,11 @@
 # refused, and its check told, instead of making every run of the check the network's.
 #
 # What a declaration says:
-# - `code.tilo.so:443`, pinned: a cargo build whose build scripts fetch test fixtures, fonts and
-#   the NTFS source from tilo's package store, each named by the SHA-256 its sources pin
-#   (tools/test-assets.py, tools/font-catalog.py, crates/os/tilo-ntfs-helper). Every
-#   `[[cargo]]` family declares it for its drivers and its test binaries' runs. A check with no
-#   network is given the tree's pins by the `font-seed` check instead (`needs`, below).
+# - `code.tilo.so:443`, pinned: the checks that fetch test fixtures, fonts and the NTFS source
+#   from tilo's package store, each named by the SHA-256 its sources pin (tools/test-assets.py,
+#   tools/font-catalog.py, crates/os/tilo-ntfs-helper): `font-seed`, `test-assets` and
+#   `ntfs-source`. Every cargo build is given their outputs (`[cargo_builds]`, below) and fetches
+#   none itself. Every `[[cargo]]` family still declares it for its test binaries' runs.
 # - `registry.tilo.so:443`, pinned: an OS image step that pulls only images named by digest.
 # - `0.0.0.0/0` and `::/0`: the open network, for a check whose destinations are no fixed list
 #   (Fedora's mirrors, package registries, AWS, t's token endpoint, live services). A name on a
@@ -82,6 +82,16 @@ CARGO_PROFILE_TEST_STRIP = "symbols"
 # on all of them.
 WGPU_BACKEND = "vulkan"
 WGPU_ADAPTER_NAME = "llvmpipe"
+
+# Every cargo build t runs, each family's checks and a `t cargo`, `t build`, `t run` or `t exec`
+# alike, is given the seeds the build scripts would otherwise fetch from tilo's package store:
+# the pinned fonts (font-catalog), the test fixtures (tilo-pdf, tilo-doc-codecs) and the NTFS
+# source (tilo-ntfs-helper), each the output of its check below, at /target. The offline flags
+# make a pin no seed holds fail the build, naming what is missing, instead of fetching it. The
+# tests these builds run read the same seeds (the typography baselines among the fixtures).
+[cargo_builds]
+needs = ["font-seed", "test-assets", "ntfs-source"]
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_TEST_ASSETS_OFFLINE = "1", TILO_NTFS_SOURCE_CACHE = "/target/ntfs-source", TILO_NTFS_SOURCE_OFFLINE = "1" }
 
 # The workspace packages whose own sources differ between x86_64 and aarch64. Their tests and
 # lints run once per architecture (`test-x86_64`, `test-aarch64`, `clippy-x86_64`,
@@ -6527,8 +6537,17 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json crates/ui/ui-core/tests/fixtures/typography/artifacts.json"
 outputs = ["/target/test-assets/**"]
+default = false
+
+# The NTFS helper's pinned ntfs-3g source, laid out by its digest, for every cargo build
+# (`[cargo_builds]`) to take instead of fetching it (crates/os/tilo-ntfs-helper/source_artifact.py).
+[[check]]
+name = "ntfs-source"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "TILO_NTFS_SOURCE_CACHE=/target/ntfs-source python3 -I crates/os/tilo-ntfs-helper/source_artifact.py"
+outputs = ["/target/ntfs-source/**"]
 default = false
 
 [[check]]
