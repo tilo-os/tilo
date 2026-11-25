@@ -1884,7 +1884,7 @@ impl AppBrokerState {
     ///
     /// A call that waits for its person's yes is refused with what they are shown
     /// ([`AppBrokerState::with_asked_facts`]).
-    pub(crate) fn action_invoke_with_origin(
+    pub(super) fn action_invoke_with_origin(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
