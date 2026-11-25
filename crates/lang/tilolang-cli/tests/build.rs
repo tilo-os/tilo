@@ -34,7 +34,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     for used in [
         "so.tilo.notes",
         "so.tilo.tasks",
-        "so.tilo.lang.chat",
+        "so.tilo.chat",
         "so.tilo.lang.discussion",
     ] {
         assert!(ids.contains(&used), "{used} is an app of its own: {ids:?}");
@@ -132,12 +132,17 @@ fn a_package_offers_the_files_its_actions_open() {
         Manifest::from_toml_str(&std::fs::read_to_string(&notes.manifest).unwrap()).unwrap();
     assert_eq!(
         manifest.providers.mime,
-        ["text/markdown", "text/plain", "application/zip"],
+        [
+            "text/markdown",
+            "text/plain",
+            "application/zip",
+            "application/json"
+        ],
         "the media types its importing actions declare"
     );
     assert_eq!(
         manifest.providers.ext,
-        ["md", "markdown", "txt", "zip"],
+        ["md", "markdown", "txt", "zip", "json"],
         "the extensions they declare"
     );
     // A package whose actions open nothing offers nothing.
@@ -383,7 +388,7 @@ fn the_splash_budget_a_header_declares_is_the_manifests_entrypoint_budget() {
     std::fs::create_dir_all(&declared).unwrap();
     std::fs::write(
         declared.join("app.tl"),
-        "app t.budget \"Budget\" (category: .utility, splash_budget: 250)\n\ntype Note {\n    title: Text\n}\n\nroot note: Note\n",
+        "app t.budget \"Budget\" (category: .utility, splash_budget: 250)\n\ntype Note {\n    title: Text\n}\n\nroot note: Note\n\nview note_view(n: Note) {\n    std.page(n) {\n        ui.Text(\"{n.title}\", role: .title)\n    }\n}\n\ndefault view note_view for Note\n",
     )
     .unwrap();
     let manifest = build(&declared);
@@ -399,7 +404,7 @@ fn the_splash_budget_a_header_declares_is_the_manifests_entrypoint_budget() {
     std::fs::create_dir_all(&plain).unwrap();
     std::fs::write(
         plain.join("app.tl"),
-        "app t.plain \"Plain\" (category: .utility)\n\ntype Note {\n    title: Text\n}\n\nroot note: Note\n",
+        "app t.plain \"Plain\" (category: .utility)\n\ntype Note {\n    title: Text\n}\n\nroot note: Note\n\nview note_view(n: Note) {\n    std.page(n) {\n        ui.Text(\"{n.title}\", role: .title)\n    }\n}\n\ndefault view note_view for Note\n",
     )
     .unwrap();
     let manifest = build(&plain);
