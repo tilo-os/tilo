@@ -1786,7 +1786,7 @@ impl AppWindow {
         // asks, in its own time, and answers the page with what they picked.
         for chooser in crate::page_runner::choosers(&self.page) {
             took = true;
-            self.ask_page_picker(chooser);
+            self.ask_page_picker(&chooser);
         }
         // A page the app asked does its work in its own time: what it answered since the last
         // frame goes back to whoever asked.
@@ -1869,11 +1869,12 @@ impl AppWindow {
     /// and the answer goes to the engine, which wakes the window when it lands. A window the
     /// host gave no picker answers the page with nothing, so no page waits on a chooser no one
     /// can answer.
-    fn ask_page_picker(&self, chooser: tilo_webview::FileChooser) {
+    fn ask_page_picker(&self, chooser: &tilo_webview::FileChooser) {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = chooser;
-            return;
+            // A page's file input is the browser's own, in its own chrome: the host has no
+            // picker to ask, so the chooser is answered with nothing.
+            crate::page_runner::answer_chooser(&self.page, chooser.id, Vec::new());
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1882,23 +1883,21 @@ impl AppWindow {
                 return;
             };
             let engine = crate::page_runner::engine_of(&self.page);
+            let files = PageFiles {
+                title: chooser.title.clone(),
+                several: chooser.mode == tilo_webview::FileChooserMode::Several,
+                folder: chooser.mode == tilo_webview::FileChooserMode::Folder,
+                accept: chooser.accept.clone(),
+            };
+            let id = chooser.id;
             let asked = std::thread::Builder::new()
                 .name("tilo-page-file-chooser".to_owned())
                 .spawn(move || {
-                    let files = PageFiles {
-                        title: chooser.title.clone(),
-                        several: chooser.mode == tilo_webview::FileChooserMode::Several,
-                        folder: chooser.mode == tilo_webview::FileChooserMode::Folder,
-                        accept: chooser.accept.clone(),
-                    };
                     let paths = picker.pick(&files);
-                    engine.send(tilo_webview::WebViewCommand::AnswerFileChooser {
-                        id: chooser.id,
-                        paths,
-                    });
+                    engine.send(tilo_webview::WebViewCommand::AnswerFileChooser { id, paths });
                 });
             if asked.is_err() {
-                crate::page_runner::answer_chooser(&self.page, chooser.id, Vec::new());
+                crate::page_runner::answer_chooser(&self.page, id, Vec::new());
             }
         }
     }

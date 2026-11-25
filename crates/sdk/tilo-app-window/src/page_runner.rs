@@ -209,7 +209,8 @@ fn package_bytes(file: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The bytes the content address `file` names, as `read` answers the content at a reference: a
-/// host path names no content a sandboxed app may hold.
+/// host path names no content a sandboxed app may hold. A page's host keeps no store to read.
+#[cfg(not(target_arch = "wasm32"))]
 fn read_package(read: impl Fn(&str) -> Option<Vec<u8>>, file: &str) -> Result<Vec<u8>, String> {
     let hash = file
         .strip_prefix("tilo-blob://")
