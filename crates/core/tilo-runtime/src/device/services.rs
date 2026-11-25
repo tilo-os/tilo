@@ -5992,7 +5992,16 @@ impl ActionProvider for RuntimeActionProvider {
                     );
                     return registered.answers.invoke(caller, request);
                 }
-                Err(ActionCallError::ConfirmationRequired(_)) => {}
+                Err(ActionCallError::ConfirmationRequired(_)) => {
+                    // The person is asked: their answer is the asked record the admission keeps
+                    // for it, and a confirmation this call wrote itself is none.
+                    if !matches!(
+                        request.confirmation.as_ref(),
+                        Some(tilo_actions::remote::Confirmation::Asked(_))
+                    ) {
+                        request.confirmation = None;
+                    }
+                }
                 Err(refused) => return Pending::ready(Err(refused)),
             }
         }
