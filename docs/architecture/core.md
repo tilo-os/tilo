@@ -160,7 +160,7 @@ An app is a package installed in a workspace, written in tilolang or Rust
 against the one app SDK. It declares resource
 types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
-controls name fields and actions). A bridge to an outside service, such as Discord, is such an app: its protocol is the app's own code over the system's general network, secret and call capabilities, and the system carries no code named for that service. The same holds for keeping an outside calendar: it reaches the vault, asks and sign-ins through their published actions, and core keeps no calendar code. Installing it publishes all three into the
+controls name fields and actions). A bridge to an outside service, such as Discord, is such an app: its protocol is the app's own code over the system's general network, secret and call capabilities, and the system carries no code named for that service. The same holds for keeping an outside calendar: it reaches the vault, asks and sign-ins through their published actions, and core keeps no calendar code. A connector gets an account's sign-in the same way: it calls the published `sign_ins` action as its app, under the grants that name it, and no socket hands it sign-ins beside the dispatch. A device helper that needs a privilege a sandbox denies, such as the local model manager or a cloud mount's file system, holds no credentials: the provider that keeps the login (the workspace's models for the model hub, its accounts for a cloud mount) passes the token with each request it sends the helper, and nothing else hands one out. `sign_ins` lists every login the vault keeps, with its places, and never carries the secret. Installing it publishes all three into the
 workspace's tree. That tree is the only registry. Installing, updating,
 pinning and removing an app are actions on its resource there, admitted by
 the ordinary grants. A device keeps the packages its workspaces name in one
@@ -1198,7 +1198,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   session is still present: its daemon states the device's presence, and an app
   that joins a call there is admitted on its first carry and given the call's
   media keys under its own grants. An app acting by itself is decided as that
-  app, under the grants that name it; it is never read as an empty person. A project
+  app, under the grants that name it; it is never read as an empty person. An undo is
+  a write like any other: it carries the invocation it serves, and a call may declare
+  it as an effect naming the records it takes changes back from, so an agent under
+  its own key undoes what its grants let it, as a person would. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds

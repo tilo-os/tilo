@@ -31,7 +31,7 @@ use super::account_logins::{
     ASKS_FIRST, AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
 };
 use super::fixtures::{TestHost, device_cert, governor, signed_pre_admission, test_host_keyed};
-use super::mail_watch::testing::Watched;
+
 use super::{MemberDevice, PreAdmitRequest, Workspaces};
 use crate::own_device::KeyService;
 
@@ -620,126 +620,6 @@ fn asking(action: &str, argument: &serde_json::Value) -> InvokeRequest {
         appearance: None,
         signed: None,
     }
-}
-
-/// An owner sets the workspace's Passwords to ask an editor first. No password reaches the
-/// editor's device: its own copy of the vault releases none, and nothing the owner's device is
-/// asked hands one out. The editor's Mail still reads the account's inbox, through the owner's
-/// device, which signs in with the vault where it is.
-#[tokio::test]
-async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_no_password() {
-    let server = tokio::task::spawn_blocking(MailServer::start)
-        .await
-        .unwrap();
-    let members = Members::new().await;
-    let workspace = members.workspace.clone();
-    let item = members.owner_keeps_the_password(&server).await;
-    members
-        .rule_passwords_for_the_member(tilo_action_policy::Answer::Ask)
-        .await;
-    assert!(
-        !members.member_holds_the_vaults_keys().await,
-        "a device whose person is asked first is handed no vault key"
-    );
-
-    // Once the editor's device reads the rule, what it kept of the vault releases nothing.
-    let member = members.member.clone();
-    let by = members.member_caller();
-    let named = named_entry(&member, &workspace).await;
-    assert_eq!(named, item);
-    tilo_test_env::within("the editor's device reads the rule", async {
-        loop {
-            match member.account_secret(&workspace, &by, MAIL, &named).await {
-                Err(error) if error == ASKS_FIRST => return,
-                Ok(_) => panic!("the editor's device released the password"),
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
-            }
-        }
-    })
-    .await;
-
-    // The editor reads the inbox where the vault is.
-    let host = &members.owner;
-    let servers = Arc::new(Watched::answering());
-    host.carry_mail_through(servers.clone());
-    let in_workspace = Some(workspace.parse::<collab_types::WorkspaceId>().unwrap());
-    let certified = Some(&members.member_cert);
-    let inbox = json!({"account": ADDRESS, "folder": "inbox"});
-    let fetch = members.signed(asking(person_accounts::FETCH, &inbox));
-    let fetched = host
-        .person_accounts_invoke(in_workspace, &by, certified, &fetch)
-        .await
-        .expect("the editor reads the account's inbox");
-    let fetched: person_accounts::FetchedMail = serde_json::from_value(fetched).unwrap();
-    assert_eq!(
-        fetched
-            .messages
-            .iter()
-            .map(|message| message.subject.as_str())
-            .collect::<Vec<_>>(),
-        ["Lunch"]
-    );
-    assert_eq!(servers.asked(), [format!("fetch {ADDRESS} inbox")]);
-
-    // The fetch declares one step of the vault, the use it makes, and the owner's device takes
-    // no other for it: an edit of the entry carrying the editor's same call is refused, and the
-    // entry is as the owner kept it.
-    let opened = host.open_vault(&workspace).await.unwrap();
-    let mut edited = opened.entry(named.id()).unwrap().clone();
-    edited.password = "planted".to_owned();
-    let editor = by.acting().clone();
-    let planted = host
-        .write_vault(
-            &opened,
-            vec![accounts::vault_items::VaultChange::Keep(edited)],
-            Some(&editor),
-            Some(&fetch),
-        )
-        .await;
-    assert!(planted.is_err(), "a fetch keeps no entry: {planted:?}");
-    let opened = host.open_vault(&workspace).await.unwrap();
-    assert_eq!(opened.entry(named.id()).unwrap().password, PASSWORD);
-
-    // Passwords' own actions still ask the editor first, on the owner's device too: neither a
-    // read of the vault nor a login kept there is answered unasked, and nothing is kept.
-    let vault_asking = |action: &str, argument: &serde_json::Value| InvokeRequest {
-        target: tilo_actions::remote::person_vault::target(action),
-        ..asking(action, argument)
-    };
-    let kept_before = opened.entries().len();
-    for (action, argument) in [
-        (tilo_actions::remote::person_vault::LIST, json!({})),
-        (
-            tilo_actions::remote::person_vault::ADD,
-            json!({"kind": "login", "belongsTo": ["https://example.com"], "username": "ed", "secret": "planted"}),
-        ),
-    ] {
-        let unasked = host
-            .person_vault_invoke(
-                in_workspace,
-                &by,
-                certified,
-                &members.signed(vault_asking(action, &argument)),
-            )
-            .await;
-        assert!(
-            matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-            "the editor's {action} of Passwords asks first: {unasked:?}"
-        );
-    }
-    let opened = host.open_vault(&workspace).await.unwrap();
-    assert_eq!(
-        opened.entries().len(),
-        kept_before,
-        "nothing is kept unasked"
-    );
-
-    // Asked for the password itself, the owner's device answers nothing.
-    let password = json!({"item": named.to_string(), "app": MAIL});
-    let refused = host
-        .person_accounts_invoke(in_workspace, &by, certified, &asking("sign-in", &password))
-        .await;
-    assert_eq!(refused, Err(ActionCallError::UnknownAction));
 }
 
 /// A device of somebody else's, which may read the workspace's content, is handed no account's

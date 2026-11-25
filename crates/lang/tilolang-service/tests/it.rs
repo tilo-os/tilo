@@ -16,6 +16,7 @@ mod fixtures;
 
 mod block_edit;
 mod direct_readers;
+mod kept_in_workspace;
 mod notices;
 mod resource_service;
 mod share;

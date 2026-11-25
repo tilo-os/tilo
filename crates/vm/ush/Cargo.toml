@@ -26,8 +26,8 @@ quic = ["dep:iroh", "dep:tokio"]
 # system store it ships (`TILO_APPS_SYSTEM_DIR`) rather than the machine's, as
 # the session and the launcher already do. Never ship it.
 dev-overrides = ["package-store/dev-overrides"]
-# `records::testing`: Terminal's documents served as the session serves them, for tests that
-# run with no session.
+# `records::testing`: Terminal's documents served as the device's daemon serves them, for tests
+# that run with no daemon.
 test-workspace = []
 
 [dependencies]

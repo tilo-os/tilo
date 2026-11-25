@@ -170,7 +170,7 @@ fn author_of(handle: &DesktopHandle, tab: u64) -> Option<Author> {
             run: String::new(),
             title: String::new(),
         }),
-        (person, Some(run)) => Some(Author {
+        (_, Some(run)) => Some(Author {
             identity: run.agent.clone(),
             kind: "agent".to_owned(),
             name: run.label.clone(),

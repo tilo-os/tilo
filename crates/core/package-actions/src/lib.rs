@@ -261,6 +261,11 @@ fn default_cap() -> u64 {
 pub struct Report {
     pub lines: Vec<String>,
     pub warnings: Vec<String>,
+    /// The app id a change installed its package under, when that is not the id the caller named:
+    /// a development build runs as the id its marking derives, which only the device that signed
+    /// it can name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<String>,
 }
 
 /// An image's package id, written `tapp:<hex>` or as the bare hex.
@@ -379,6 +384,7 @@ fn apply_here(target: &Target<'_>, change: Change, entry: &Entry<'_>) -> Result<
         let Said(Report {
             mut lines,
             warnings,
+            ..
         }) = said;
         lines.extend(warnings);
         lines.push(error.to_string());
@@ -785,6 +791,7 @@ fn dev_build(
         .as_ref()
         .map_or_else(String::new, |selected| selected.id.clone());
     said.line(format!("installed development build: {id}"));
+    said.0.installed = Some(id);
     Ok(())
 }
 

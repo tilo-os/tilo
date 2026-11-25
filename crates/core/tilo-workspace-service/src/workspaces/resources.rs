@@ -2242,6 +2242,23 @@ impl Workspaces {
         command: tilo_resource_store::wire::Command,
         serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
+        self.own_kind_command(workspace, (app, None), command, serving)
+            .await
+    }
+
+    /// [`Self::own_resource_command`] on `app`'s records of `kind`, as a route naming the kind
+    /// asks: a record the command writes first is founded as one of them.
+    ///
+    /// # Errors
+    /// As [`Self::own_resource_command`].
+    #[cfg(feature = "apps")]
+    pub async fn own_kind_command(
+        &self,
+        workspace: &str,
+        (app, kind): (&str, Option<&str>),
+        command: tilo_resource_store::wire::Command,
+        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
         let device = self.member_identity()?;
         let caller = tilo_actions::remote::Caller::authenticated(
             device.cert.user_public_key,
@@ -2250,7 +2267,8 @@ impl Workspaces {
         .in_workspace(workspace);
         let mut context =
             crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller)
-                .serving(serving);
+                .serving(serving)
+                .of_kind(kind.map(str::to_owned));
         // The device's own reads and writes of an app's record name the record they are of.
         if let tilo_resource_store::wire::Command::RecordChanges {
             record: Some(record),

@@ -656,10 +656,6 @@ impl Session {
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
         let shell_surfaces = surfaces.clone();
-        // What the keys ask the panel's own app, which the surface loop hands
-        // the running app each pass. A device whose shell draws the panel has
-        // one; the shell's own view of the quick settings answers its own keys.
-        let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let lists_surface: tilo_session_core::surfaces::Shared =
             crate::shell::lists_surface(desktop.clone(), surfaces.clone());
         published.add(Rc::clone(&lists_surface));
@@ -1435,22 +1431,11 @@ impl Session {
             );
         }
         let mcp_server = server.map(|server| {
-            let mut server = server.serve(
+            server.serve(
                 app_wire
                     .as_ref()
                     .and_then(|app_wire| app_wire.dispatch.clone()),
-            );
-            server.open_terminals_on(
-                app_wire
-                    .as_ref()
-                    .and_then(|app_wire| app_wire.terminals.clone()),
-            );
-            // Terminal's environments, which the device's shell runtime keeps in their
-            // workspace at the device's daemon.
-            server.keep_environment_records(crate::environment_records::EnvironmentRecords::new(
-                daemon.clone(),
-            ));
-            server
+            )
         });
         let automation = crate::automation::Automation::new(
             handle.clone(),

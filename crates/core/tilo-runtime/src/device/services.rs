@@ -3348,6 +3348,7 @@ impl PersonDispatch {
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
             kept: Arc::clone(&self.kept),
+            handed: None,
             asked: Some(Arc::clone(&self.asked)),
         })
     }
@@ -3443,6 +3444,7 @@ impl Daemon {
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
             kept: Arc::default(),
+            handed: None,
             asked: Some(Arc::clone(&self.asked)),
         })
     }
@@ -4201,6 +4203,9 @@ pub struct RuntimeActionProvider {
     /// Where an agent's call refused for want of its person's yes waits for them, and where
     /// their answer is admitted: `None` for a host that keeps none, whose such calls are refused.
     asked: Option<Arc<super::asked::DeviceAsked>>,
+    /// Where a descriptor an answer to the connection this run serves carries waits to be written
+    /// with it ([`crate::seats::Handing`]): `None` for a run no native connection serves.
+    handed: Option<crate::seats::Hand>,
 }
 
 struct AdmittedRuntimeSession {
@@ -4648,10 +4653,12 @@ impl RuntimeActionProvider {
             // the person's, and every call the client makes is signed by the agent's key. Each
             // connection is a run of its own, admitted for it: its end retires that run alone,
             // never the one the daemon's other connections go on as.
-            let (session_host, caller) =
+            let (mut session_host, caller) =
                 provider.agent_session(&workspace, &actor, &policy_time, |person| {
                     (device_agent_id(person, MCP_CLIENT), MCP_CLIENT.to_owned())
                 })?;
+            // A descriptor an answer of this run carries goes with it on the connection it serves.
+            session_host.handed = crate::seats::connection_hand();
             let run = tilo_mcp::agent_id(&caller);
             // The connection is here from the moment it opens, before it asks anything, and
             // says what it is when its client does. The device its admission certified is what
@@ -4769,6 +4776,7 @@ impl RuntimeActionProvider {
             invocations: Arc::clone(&self.invocations),
             kept: Arc::clone(&self.kept),
             asked: self.asked.clone(),
+            handed: self.handed.clone(),
         };
         Ok((run, caller))
     }
@@ -4816,6 +4824,7 @@ impl RuntimeActionProvider {
             invocations: Arc::clone(&self.invocations),
             kept: Arc::default(),
             asked: None,
+            handed: None,
         };
         Ok((run, caller))
     }
@@ -5194,6 +5203,29 @@ impl ActionProvider for RuntimeActionProvider {
             && (self.is_the_person(caller) || self.is_own_client(caller))
         {
             return tilo_actions::remote::ActionProvider::invoke(tickets.as_ref(), caller, request);
+        }
+        // The person's shell runtime on this computer, for the Terminal windows it serves: never
+        // an agent that runs elsewhere, nor an app.
+        if super::shell_runtime::asks(&request) {
+            if !self.is_own_client(caller) {
+                return Pending::ready(Err(ActionCallError::Refused {
+                    reason: "only the person's own shell runtime on this computer asks for \
+                             Terminal's environments and shells"
+                        .into(),
+                }));
+            }
+            let Some(person) = self.admission_caller() else {
+                return Pending::ready(Err(ActionCallError::NotPermitted));
+            };
+            return super::shell_runtime::answer(
+                super::shell_runtime::Asked {
+                    workspaces: &self.workspaces,
+                    dispatch: self.clone(),
+                    person,
+                    handed: self.handed.as_deref(),
+                },
+                &request,
+            );
         }
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
@@ -6057,6 +6089,7 @@ pub(super) fn action_provider(
         tickets: None,
         invocations: Arc::clone(invocations),
         kept: Arc::default(),
+        handed: None,
         asked: None,
     })
 }

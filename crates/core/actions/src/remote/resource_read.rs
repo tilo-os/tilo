@@ -390,13 +390,16 @@ pub fn readings_of(
     asks: &[ResourceAsk],
     mut read: impl FnMut(&ResourceAddress) -> Result<ResourceCopy, ActionCallError>,
 ) -> Result<ResourceReadings, ActionCallError> {
-    let walk = std::pin::pin!(readings_from(asks, |address| std::future::ready(read(
-        &address
-    ))));
-    match walk.poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
-        std::task::Poll::Ready(readings) => readings,
-        std::task::Poll::Pending => unreachable!("records in hand answer at once"),
+    let mut walk = Walk::default();
+    for ask in asks {
+        let mut asking = Asking::of(ask);
+        while let Some(address) = asking.next() {
+            let copy = held(read(&address))?;
+            asking.took(&mut walk.revision, address, copy);
+        }
+        walk.records.extend(asking.answered());
     }
+    Ok(walk.readings())
 }
 
 /// [`readings_of`], over records `read` answers once it has them.
@@ -412,87 +415,153 @@ where
     Read: FnMut(ResourceAddress) -> Answer,
     Answer: std::future::Future<Output = Result<ResourceCopy, ActionCallError>>,
 {
-    let mut revision = blake3::Hasher::new();
-    let mut records = Vec::new();
+    let mut walk = Walk::default();
     for ask in asks {
-        let newest_only = match crate::document_sync::document_sync(&ask.address.record) {
+        let mut asking = Asking::of(ask);
+        while let Some(address) = asking.next() {
+            let copy = held(read(address.clone()).await)?;
+            asking.took(&mut walk.revision, address, copy);
+        }
+        walk.records.extend(asking.answered());
+    }
+    Ok(walk.readings())
+}
+
+/// A record's copy as a reading holds it: `None` while it is still arriving, whose write wakes
+/// the reader.
+fn held(
+    read: Result<ResourceCopy, ActionCallError>,
+) -> Result<Option<ResourceCopy>, ActionCallError> {
+    match read {
+        Ok(copy) => Ok(Some(copy)),
+        Err(ActionCallError::Unavailable { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The records a walk over several asks read so far, and the revision of them all.
+#[derive(Default)]
+struct Walk {
+    revision: blake3::Hasher,
+    records: Vec<(String, Option<ResourceCopy>)>,
+}
+
+impl Walk {
+    fn readings(self) -> ResourceReadings {
+        ResourceReadings {
+            revision: self.revision.finalize().to_hex().to_string(),
+            records: self.records,
+        }
+    }
+}
+
+/// One ask's records as they are read: the record alone, or the parts of its chain one after
+/// another up to the first that holds no document.
+struct Asking<'a> {
+    ask: &'a ResourceAsk,
+    /// The chain's base, for an ask that reads one.
+    base: Option<&'a str>,
+    /// Whether the ask is a chain's head read alone: it answers the newest part.
+    newest_only: bool,
+    part: u64,
+    done: bool,
+    held: Vec<(String, Option<ResourceCopy>)>,
+}
+
+impl<'a> Asking<'a> {
+    fn of(ask: &'a ResourceAsk) -> Self {
+        let newest = match crate::document_sync::document_sync(&ask.address.record) {
             crate::document_sync::DocumentSync::ChainHead { base } if !ask.joined => Some(base),
             _ => None,
         };
-        let chained = ask.joined || newest_only.is_some();
-        let base = newest_only.unwrap_or(&ask.address.record);
-        let mut held = Vec::new();
-        let mut part = 0;
-        loop {
-            let record = if chained {
-                crate::document_sync::document_part(base, part)
-            } else {
-                ask.address.record.clone()
-            };
-            let address = ResourceAddress {
-                workspace: ask.address.workspace.clone(),
-                app: ask.address.app.clone(),
-                record,
-            };
-            let copy = match read(address.clone()).await {
-                Ok(copy) => Some(copy),
-                // A record still arriving is not held yet: its write wakes the reader.
-                Err(ActionCallError::Unavailable { .. }) => None,
-                Err(error) => return Err(error),
-            };
-            // A reading's revision is the one its provider names; one naming none, and a record
-            // its app reads for itself, are hashed by their JSON, which is all a reader can tell
-            // about them.
-            let hashed;
-            let bytes: &[u8] = match &copy {
-                Some(ResourceCopy::Document(bytes)) => bytes,
-                Some(ResourceCopy::Reading {
-                    revision: Some(revision),
-                    ..
-                }) => revision.as_bytes(),
-                Some(
-                    ResourceCopy::Read(value)
-                    | ResourceCopy::Reading {
-                        value,
-                        revision: None,
-                    },
-                ) => {
-                    hashed = value.to_string();
-                    hashed.as_bytes()
-                }
-                Some(ResourceCopy::Absent) => b"",
-                None => b"unavailable",
-            };
-            for bytes in [address.record.as_bytes(), bytes] {
-                revision.update(&(bytes.len() as u64).to_le_bytes());
-                revision.update(bytes);
-            }
-            let last = !chained || !matches!(copy, Some(ResourceCopy::Document(_)));
-            // The part after a chain's last is watched, not answered: its first write wakes.
-            if !(chained && part > 0 && matches!(copy, Some(ResourceCopy::Absent))) {
-                held.push((address.record, copy));
-            }
-            if last {
-                break;
-            }
-            part = part.saturating_add(1);
+        let base = newest.or_else(|| ask.joined.then_some(ask.address.record.as_str()));
+        Self {
+            ask,
+            base,
+            newest_only: newest.is_some(),
+            part: 0,
+            done: false,
+            held: Vec::new(),
         }
-        // A head answers the newest part alone; every part read stays in the revision, so
-        // a write to any of them, or a new part, wakes its reader.
-        if newest_only.is_some()
-            && let Some(newest) = held
+    }
+
+    /// The record to read next, `None` once the ask is read.
+    fn next(&self) -> Option<ResourceAddress> {
+        if self.done {
+            return None;
+        }
+        let record = match self.base {
+            Some(base) => crate::document_sync::document_part(base, self.part),
+            None => self.ask.address.record.clone(),
+        };
+        Some(ResourceAddress {
+            workspace: self.ask.address.workspace.clone(),
+            app: self.ask.address.app.clone(),
+            record,
+        })
+    }
+
+    /// `address`, the record [`Self::next`] named, read as `copy`.
+    fn took(
+        &mut self,
+        revision: &mut blake3::Hasher,
+        address: ResourceAddress,
+        copy: Option<ResourceCopy>,
+    ) {
+        let chained = self.base.is_some();
+        // A reading's revision is the one its provider names; one naming none, and a record its
+        // app reads for itself, are hashed by their JSON, which is all a reader can tell about
+        // them.
+        let hashed;
+        let bytes: &[u8] = match &copy {
+            Some(ResourceCopy::Document(bytes)) => bytes,
+            Some(ResourceCopy::Reading {
+                revision: Some(revision),
+                ..
+            }) => revision.as_bytes(),
+            Some(
+                ResourceCopy::Read(value)
+                | ResourceCopy::Reading {
+                    value,
+                    revision: None,
+                },
+            ) => {
+                hashed = value.to_string();
+                hashed.as_bytes()
+            }
+            Some(ResourceCopy::Absent) => b"",
+            None => b"unavailable",
+        };
+        for bytes in [address.record.as_bytes(), bytes] {
+            revision.update(&(bytes.len() as u64).to_le_bytes());
+            revision.update(bytes);
+        }
+        let last = !chained || !matches!(copy, Some(ResourceCopy::Document(_)));
+        // The part after a chain's last is watched, not answered: its first write wakes.
+        if !(chained && self.part > 0 && matches!(copy, Some(ResourceCopy::Absent))) {
+            self.held.push((address.record, copy));
+        }
+        if last {
+            self.done = true;
+        } else {
+            self.part = self.part.saturating_add(1);
+        }
+    }
+
+    /// What the ask answers: a head the newest part alone, every part read staying in the
+    /// revision, so a write to any of them, or a new part, wakes its reader.
+    fn answered(mut self) -> Vec<(String, Option<ResourceCopy>)> {
+        if self.newest_only
+            && let Some(newest) = self
+                .held
                 .iter()
                 .rposition(|(_, copy)| matches!(copy, Some(ResourceCopy::Document(_))))
-                .or_else(|| held.len().checked_sub(1))
+                .or_else(|| self.held.len().checked_sub(1))
         {
-            held = vec![held.swap_remove(newest)];
+            self.held = vec![self.held.swap_remove(newest)];
         }
-        records.extend(held);
+        self.held
     }
-    Ok(ResourceReadings {
-        revision: revision.finalize().to_hex().to_string(),
-        records,
-    })
 }
 
 /// Read `asks` for `caller` once they differ from the revision `after` or `deadline` passed:
@@ -1040,12 +1109,12 @@ mod tests {
                     _: &'a Caller,
                     _: &'a ResourceAddress,
                 ) -> ReadsAnswer<'a, ResourceCopy> {
-                    Box::pin(std::future::ready((|| {
+                    Box::pin(async move {
                     Ok(ResourceCopy::reading(
                         self.value.lock().unwrap().clone(),
                         Some(self.revision.lock().unwrap().clone()),
                     ))
-                    })()))
+                    })
                 }
 
                 fn watch<'a>(
@@ -1054,10 +1123,10 @@ mod tests {
                     _: &'a ResourceAddress,
                     wake: &'a ResourceWake,
                 ) -> ReadsAnswer<'a, ()> {
-                    Box::pin(std::future::ready((|| {
+                    Box::pin(async move {
                     self.wakers.lock().unwrap().push(wake.clone());
                     Ok(())
-                    })()))
+                    })
                 }
             }
 
@@ -1137,12 +1206,12 @@ mod tests {
                     _: &'a Caller,
                     _: &'a ResourceAddress,
                 ) -> ReadsAnswer<'a, ResourceCopy> {
-                    Box::pin(std::future::ready((|| {
+                    Box::pin(async move {
                     Ok(ResourceCopy::reading(
                         self.0.lock().unwrap().clone(),
                         None,
                     ))
-                    })()))
+                    })
                 }
 
                 fn watch<'a>(
@@ -1151,9 +1220,9 @@ mod tests {
                     _: &'a ResourceAddress,
                     _: &'a ResourceWake,
                 ) -> ReadsAnswer<'a, ()> {
-                    Box::pin(std::future::ready((|| {
+                    Box::pin(async move {
                     Ok(())
-                    })()))
+                    })
                 }
             }
 

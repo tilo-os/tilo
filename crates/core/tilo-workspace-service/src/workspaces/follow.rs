@@ -53,6 +53,39 @@ pub(super) enum BehindRefusal {
 }
 
 impl Workspaces {
+    /// [`GovernedWorkspace::follow_kept`], keeping this host's check of a compaction the copy
+    /// took behind: it was checked as it was taken, against every write here it covers, and no
+    /// later read can check it against the writes only it holds.
+    pub(super) async fn follow_kept_checked(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Followed {
+        let followed = workspace.follow_kept(author, message.clone()).await;
+        #[cfg(feature = "device-keys")]
+        if let (
+            Some(compaction),
+            neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                ..
+            },
+        ) = (&followed.taken_behind, &message)
+            && let Err(error) = self
+                .keep_checkpoint_check(workspace, (app_id, document_id), compaction)
+                .await
+        {
+            tracing::warn!(workspace = %workspace.workspace(), %app_id, %document_id, %error,
+                "this host's check of a compaction it took was not kept");
+        }
+        #[cfg(not(feature = "device-keys"))]
+        let _ = &followed.taken_behind;
+        followed
+    }
+}
+
+impl Workspaces {
     /// Hand `message`, `author`'s write the workspace took in, to the apps of
     /// this device that follow it: the write that starts a document as every
     /// write after it. Sent while the workspace is still locked, so whoever it
@@ -532,7 +565,9 @@ impl Workspaces {
         if envelope.kind != collab_types::OpKind::Compaction {
             return Some(refusal);
         }
-        let followed = governed.follow_kept(author, message.clone()).await;
+        let followed = self
+            .follow_kept_checked(&mut governed, author, message.clone())
+            .await;
         // A compaction this copy cannot open yet is kept, not refused: the
         // link keeps it like any sealed frame it cannot read, and a replay
         // takes it once the keys are here.
@@ -1205,8 +1240,8 @@ impl Workspaces {
             if own && !written_as_a_record(&message) {
                 continue;
             }
-            let followed = workspace
-                .follow_kept(retained.author, message.clone())
+            let followed = self
+                .follow_kept_checked(workspace, retained.author, message.clone())
                 .await;
             self.replay_resource_write(workspace, retained.author, &message)
                 .await;
@@ -1230,30 +1265,10 @@ impl Workspaces {
                 replay_wanted,
                 refused,
                 behind,
-                taken_behind,
+                ..
             } = followed;
             changed |= took;
             again |= replay_wanted;
-            // A compaction this copy took behind was checked as it was taken: its check is kept
-            // now, as no later read can check it against writes only it holds.
-            #[cfg(feature = "device-keys")]
-            if let (
-                Some(compaction),
-                neighbour_wire::NeighbourMsg::AppDocument {
-                    app_id,
-                    document_id,
-                    ..
-                },
-            ) = (&taken_behind, &message)
-                && let Err(error) = self
-                    .keep_checkpoint_check(workspace, (app_id, document_id), compaction)
-                    .await
-            {
-                tracing::warn!(workspace = %workspace.workspace(), %app_id, %document_id, %error,
-                    "this host's check of a compaction it took was not kept");
-            }
-            #[cfg(not(feature = "device-keys"))]
-            let _ = taken_behind;
             if took
                 && let neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,

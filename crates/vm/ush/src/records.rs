@@ -1,13 +1,14 @@
 //! Environment records, kept where Terminal keeps its own: as Terminal's documents in their
 //! workspace's one store, which this device's workspace service holds and syncs.
 //!
-//! The runtime holds no connection to the workspace of its own. It asks the session, which
-//! holds this device's workspace service, to read and write Terminal's documents for it
-//! ([`runtime_portal::workspace_documents`]), proving that it holds the device identity. Each
-//! read takes the record whole, and each change is written as the changes after what was read,
-//! so two processes changing one record merge, and every change carries history and an author.
-//! Without the session there is no record to read: the person is told so
-//! ([`RecordError::Unreachable`]), and nothing is kept on the side.
+//! The runtime holds no connection to the workspace of its own. It asks the device's daemon,
+//! which holds this device's workspaces, to read and write Terminal's documents for it (its
+//! `terminalRecords` device action), naming the workspace the Terminal window runs for: a
+//! workspace it cannot name is no workspace's, and the daemon refuses it. Each read takes the
+//! record whole, and each change is written as the changes after what was read, so two processes
+//! changing one record merge, and every change carries history and an author. Without the daemon
+//! there is no record to read: the person is told so ([`RecordError::Unreachable`]), and nothing
+//! is kept on the side.
 //!
 //! Each workspace has its own environments ([`crate::workspace`]). An app names a record by key
 //! only ([`tilo_environment::is_record_key`]); the workspace and the owning app are fixed here,
@@ -17,10 +18,11 @@ use std::path::{Path, PathBuf};
 
 use automerge::ChangeHash;
 use collab_types::caps::CapOverride;
-use runtime_portal::workspace_documents;
+use tilo_device_identity::login::TERMINAL_RECORDS;
+use tilo_device_identity::login::daemon::DeviceActions;
 use tilo_environment::{DEFAULT_NAME, DEFAULT_RECORD, Environment, is_record_key};
 use tilo_resource::{Doc, Invoke, Replica, Resource};
-use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
+use tilo_resource_store::wire::{Bytes, Command, Reply};
 
 use crate::images::Images;
 use crate::workspace::Confinement;
@@ -33,6 +35,10 @@ pub const AUTHOR: &str = tilo_environment::RUNTIME_APP_ID;
 /// beside them.
 const DOCUMENT_PREFIX: &str = "environment:";
 
+/// How many bytes of changes one write carries: what fits a request line to the daemon once
+/// written as base64.
+const RUN_BYTES: usize = 512 * 1024;
+
 /// Why a record could not be read or changed.
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
@@ -43,8 +49,8 @@ pub enum RecordError {
     #[error("the environment record could not be stored: {0}")]
     Store(String),
     #[error(
-        "environments are kept in your workspace, and the Tilo session that reaches it is not \
-         running on this device"
+        "environments are kept in your workspace, and Tilo's device service that keeps it is not \
+         running on this computer"
     )]
     Unreachable,
     #[error("the environment record is unreadable: {0}")]
@@ -64,14 +70,14 @@ struct Held {
 
 #[derive(Debug, Clone)]
 pub struct Records {
-    /// Where the session serves Terminal's documents.
+    /// The device daemon's native endpoint, which keeps Terminal's documents.
     documents: PathBuf,
     workspace: String,
     confinement: Option<Confinement>,
 }
 
 impl Records {
-    /// The primary workspace's records, served at `documents`.
+    /// The primary workspace's records, kept by the daemon at `documents`.
     pub fn at(documents: impl Into<PathBuf>) -> Self {
         Self {
             documents: documents.into(),
@@ -92,7 +98,7 @@ impl Records {
         }
     }
 
-    /// Where the session serves Terminal's documents.
+    /// The device daemon's native endpoint, which keeps Terminal's documents.
     pub fn documents(&self) -> &Path {
         &self.documents
     }
@@ -127,17 +133,6 @@ impl Records {
         }
     }
 
-    /// What this workspace's records' document ids start with. The primary workspace, which
-    /// the session knows by no id, keeps its records in the workspace in front of the person,
-    /// beside that workspace's own.
-    fn prefix(&self) -> String {
-        if self.is_primary() {
-            format!("{DOCUMENT_PREFIX}{PRIMARY_WORKSPACE}:")
-        } else {
-            DOCUMENT_PREFIX.to_owned()
-        }
-    }
-
     /// The id of the document holding the record `key`, among Terminal's documents in the
     /// workspace.
     ///
@@ -145,30 +140,35 @@ impl Records {
     /// Returns [`RecordError::BadKey`] for a key that is not a record key.
     pub fn document_id(&self, key: &str) -> Result<String, RecordError> {
         check_key(key)?;
-        Ok(format!("{}{key}", self.prefix()))
+        Ok(format!("{DOCUMENT_PREFIX}{key}"))
     }
 
-    /// Carry out `command` on Terminal's documents in this workspace, through the session.
+    /// Carry out `command` on Terminal's documents in this workspace, through the device's
+    /// daemon. The primary workspace is no workspace the daemon knows, and it says so.
     fn command(&self, command: &Command) -> Result<Reply, RecordError> {
-        // Outside a login there is no session to ask.
+        // Without a device of the person's there is no daemon to ask.
         if self.documents.as_os_str().is_empty() {
             return Err(RecordError::Unreachable);
         }
-        let request = workspace_documents::Request::new(
-            (!self.is_primary()).then_some(self.workspace.as_str()),
-        );
-        let command = serde_json::to_vec(command).map_err(|e| RecordError::Store(e.to_string()))?;
-        let reply = workspace_documents::ask(&self.documents, &request, &command).map_err(
-            |error| match error.kind() {
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
-                    tracing::info!(%error, session = %self.documents.display(), "ush: no session serves Terminal's documents");
+        let workspace = (!self.is_primary()).then_some(self.workspace.as_str());
+        let answer = DeviceActions::at(&self.documents)
+            .ask(
+                TERMINAL_RECORDS,
+                serde_json::json!({ "workspace": workspace, "command": command }),
+            )
+            .map_err(|refused| {
+                if refused.not_running() {
+                    tracing::info!(%refused, "ush: no daemon keeps Terminal's documents");
                     RecordError::Unreachable
+                } else {
+                    RecordError::Refused(refused.message)
                 }
-                std::io::ErrorKind::PermissionDenied => RecordError::Refused(error.to_string()),
-                _ => RecordError::Store(error.to_string()),
-            },
-        )?;
-        serde_json::from_slice(&reply).map_err(|e| RecordError::Store(e.to_string()))
+            })?;
+        let reply = answer
+            .get("reply")
+            .cloned()
+            .ok_or_else(|| RecordError::Store(format!("the daemon answered {answer}")))?;
+        serde_json::from_value(reply).map_err(|e| RecordError::Store(e.to_string()))
     }
 
     /// The record `key`'s changes past `after` as the workspace holds them, joined from every
@@ -264,7 +264,7 @@ impl Records {
             return Ok(());
         }
         let record = self.document_id(key)?;
-        let runs: Vec<&[u8]> = changes.chunks(RECORD_PAGE_BYTES).collect();
+        let runs: Vec<&[u8]> = changes.chunks(RUN_BYTES).collect();
         for (index, run) in runs.iter().enumerate() {
             match self.command(&Command::RecordChange {
                 record: Some(record.clone()),
@@ -414,10 +414,10 @@ impl Records {
                 "the workspace answered a listing with {reply:?}"
             )));
         };
-        let prefix = self.prefix();
+        let prefix = DOCUMENT_PREFIX;
         let mut keys: Vec<String> = ids
             .into_iter()
-            .filter_map(|id| Some(id.strip_prefix(&prefix)?.to_owned()))
+            .filter_map(|id| Some(id.strip_prefix(prefix)?.to_owned()))
             .filter(|key| is_record_key(key))
             .filter(|key| self.load(key).ok().flatten().is_some())
             .collect();
@@ -480,7 +480,9 @@ impl Records {
         let held = self
             .load_current(key)?
             .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
-        let mut replica = Replica::<Environment>::from_doc(held.doc).as_author(AUTHOR);
+        let mut replica = Replica::<Environment>::from_doc(held.doc)
+            .as_author(AUTHOR)
+            .in_app(tilo_environment::OWNER_APP_ID, "Terminal");
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
         let before = replica
             .state()
@@ -534,7 +536,8 @@ impl Records {
         let held = self
             .load_current(key)?
             .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
-        let replica = Replica::<Environment>::from_doc(held.doc);
+        let replica = Replica::<Environment>::from_doc(held.doc)
+            .in_app(tilo_environment::OWNER_APP_ID, "Terminal");
         let replica = match invoker {
             Invoker::Person(person) => replica.as_author(person),
             Invoker::Agent { agent, person } => replica.as_agent_for(agent, person),
@@ -575,8 +578,9 @@ fn check_key(key: &str) -> Result<(), RecordError> {
     }
 }
 
-/// A workspace's one store, served where the session serves Terminal's documents and answering
-/// the commands it answers: for tests, which run with no session.
+/// The device's daemon as it keeps Terminal's documents: its native endpoint answering the
+/// `terminalRecords` device action as the daemon does, a command naming no workspace refused. For
+/// tests, which run with no daemon.
 #[cfg(any(test, feature = "test-workspace"))]
 #[allow(
     clippy::expect_used,
@@ -584,19 +588,20 @@ fn check_key(key: &str) -> Result<(), RecordError> {
 )]
 pub mod testing {
     use std::collections::BTreeMap;
-    use tilo_files::native::socket;
+    use std::io::{BufRead as _, Write as _};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
+    use tilo_files::native::socket;
 
     use automerge::AutoCommit;
-    use runtime_portal::workspace_documents;
+    use serde_json::{Value, json};
     use tilo_automerge::ApplyIncoming as _;
     use tilo_resource_store::wire::{Bytes, Command, Reply};
 
-    /// The workspace a command naming none is carried out in, as the session carries it out in
-    /// the one in front of the person.
-    pub const FRONT: &str = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
+    /// What the daemon says of a command naming no workspace.
+    pub const NO_WORKSPACE: &str = "Terminal's environments and shells are a workspace's, and \
+                                    this names none: open Terminal in a workspace";
 
     type Documents = Arc<Mutex<BTreeMap<(String, String), AutoCommit>>>;
 
@@ -608,13 +613,20 @@ pub mod testing {
     }
 
     impl Workspace {
-        /// Serve Terminal's documents at `socket` until dropped.
+        /// Answer the daemon's Terminal documents at `socket`, its native endpoint, until
+        /// dropped.
         #[must_use]
         pub fn serve(socket: &Path) -> Self {
+            Self::serving(socket, None)
+        }
+
+        /// [`Self::serve`], carrying a command that names no workspace out in `unnamed`, when
+        /// one is named here, rather than refusing it as the daemon does.
+        fn serving(socket: &Path, unnamed: Option<&'static str>) -> Self {
             if let Some(parent) = socket.parent() {
-                std::fs::create_dir_all(parent).expect("the workspace socket's directory");
+                std::fs::create_dir_all(parent).expect("the daemon socket's directory");
             }
-            let listener = socket::bind(socket).expect("the workspace's socket");
+            let listener = socket::bind(socket).expect("the daemon's socket");
             let documents = Documents::default();
             let stopping = Arc::new(AtomicBool::new(false));
             let served = {
@@ -627,13 +639,15 @@ pub mod testing {
                         let Ok(stream) = stream else { continue };
                         // One asker that says nothing holds up no other for long.
                         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                        let Ok(Some(request)) = workspace_documents::read_request(&stream) else {
+                        let mut line = String::new();
+                        let Ok(read) = std::io::BufReader::new(&stream).read_line(&mut line) else {
                             continue;
                         };
-                        let workspace = request.workspace.unwrap_or_else(|| FRONT.to_owned());
-                        let _ = workspace_documents::serve(stream, |command| {
-                            answer(&documents, &workspace, command)
-                        });
+                        if read == 0 {
+                            continue;
+                        }
+                        let answer = called(&documents, unnamed, &line);
+                        let _ = writeln!(&stream, "{answer}");
                     }
                 })
             };
@@ -674,13 +688,15 @@ pub mod testing {
 
     /// Serve Terminal's documents at `socket` for as long as this process runs, unless they
     /// are served there already: for a test whose sessions and supervisors come and go around one
-    /// workspace.
+    /// workspace. Such a test is of what ush does with a record, not of where it is kept, so a
+    /// store of no workspace (`Store::at`) keeps its records here as the primary workspace's,
+    /// which the daemon itself refuses ([`Workspace::serve`] holds that).
     pub fn keep_serving(socket: &Path) {
         SERVED
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry(socket.to_owned())
-            .or_insert_with(|| Workspace::serve(socket));
+            .or_insert_with(|| Workspace::serving(socket, Some(crate::workspace::PRIMARY)));
     }
 
     /// Whether the workspace [`keep_serving`] serves at `socket` holds Terminal's document `id`
@@ -708,15 +724,53 @@ pub mod testing {
         }
     }
 
-    fn answer(documents: &Documents, workspace: &str, command: &[u8]) -> Result<Vec<u8>, String> {
+    /// The daemon's answer line to the tool call `line`.
+    fn called(documents: &Documents, unnamed: Option<&str>, line: &str) -> Value {
+        let call: Value = serde_json::from_str(line).unwrap_or_default();
+        let args = call
+            .pointer("/params/arguments/args")
+            .cloned()
+            .unwrap_or_default();
+        let path = call
+            .pointer("/params/arguments/path")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let answer = if path.ends_with(&format!(
+            "#{}",
+            tilo_device_identity::login::TERMINAL_RECORDS
+        )) {
+            answer(documents, unnamed, &args)
+        } else {
+            Err(format!("this daemon answers no {path}"))
+        };
+        let structured = match answer {
+            Ok(reply) => json!({"status": "ok", "result": {"reply": reply}}),
+            Err(message) => {
+                json!({"status": "failed", "error": {"code": "shell-runtime", "message": message}})
+            }
+        };
+        json!({"jsonrpc": "2.0", "id": call.get("id"), "result": {
+            "content": [{"type": "text", "text": ""}],
+            "structuredContent": structured,
+        }})
+    }
+
+    fn answer(documents: &Documents, unnamed: Option<&str>, args: &Value) -> Result<Value, String> {
+        let workspace = args
+            .get("workspace")
+            .and_then(Value::as_str)
+            .filter(|workspace| !workspace.is_empty())
+            .or(unnamed)
+            .ok_or(NO_WORKSPACE)?;
         let command: Command =
-            serde_json::from_slice(command).map_err(|error| error.to_string())?;
+            serde_json::from_value(args.get("command").cloned().unwrap_or_default())
+                .map_err(|error| error.to_string())?;
         let reply = carry_out(
             &mut documents.lock().unwrap_or_else(PoisonError::into_inner),
             workspace,
             command,
         )?;
-        serde_json::to_vec(&reply).map_err(|error| error.to_string())
+        serde_json::to_value(&reply).map_err(|error| error.to_string())
     }
 
     fn carry_out(
@@ -777,7 +831,7 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{FRONT, Workspace};
+    use super::testing::Workspace;
     use super::*;
     use tilo_environment::PackageId;
 
@@ -807,8 +861,7 @@ mod tests {
         phase the_default_environment_is_created_on_first_use_and_only_it;
         {
             let dir = tempfile::tempdir().unwrap();
-            let workspace = Workspace::serve(&dir.path().join("session.sock"));
-            let records = Records::at(workspace.socket());
+            let (workspace, records) = in_a_workspace(dir.path());
 
             let err = records.resolve(None, &OneRuntime(None)).unwrap_err();
             assert!(matches!(err, RecordError::NoRuntime(_)), "{err}");
@@ -822,8 +875,8 @@ mod tests {
             assert_eq!(env.runtime.release, "2026.10");
             assert_eq!(env.name, DEFAULT_NAME);
             assert!(
-                workspace.holds(FRONT, &records.document_id(DEFAULT_RECORD).unwrap()),
-                "the record is a Terminal document of the workspace in front"
+                workspace.holds(W1, &records.document_id(DEFAULT_RECORD).unwrap()),
+                "the record is a Terminal document of its workspace"
             );
 
             // A second resolve reads the record, not the current runtime.
@@ -846,8 +899,7 @@ mod tests {
         phase whether_an_environment_resolves_is_answered_without_creating_it;
         {
             let dir = tempfile::tempdir().unwrap();
-            let workspace = Workspace::serve(&dir.path().join("session.sock"));
-            let records = Records::at(workspace.socket());
+            let (_workspace, records) = in_a_workspace(dir.path());
 
             assert!(matches!(
                 records.resolvable(None, &OneRuntime(None)),
@@ -876,8 +928,7 @@ mod tests {
         phase actions_change_the_stored_record_and_refusals_change_nothing;
         {
             let dir = tempfile::tempdir().unwrap();
-            let workspace = Workspace::serve(&dir.path().join("session.sock"));
-            let records = Records::at(workspace.socket());
+            let (_workspace, records) = in_a_workspace(dir.path());
             records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
 
             let env = records
@@ -898,6 +949,30 @@ mod tests {
                 )
                 .unwrap();
 
+            // Every change of an environment record names Terminal, whose documents the records
+            // are: a host decides each of them against Terminal's surface.
+            let apps: Vec<String> = records
+                .history(DEFAULT_RECORD)
+                .unwrap()
+                .iter()
+                .filter_map(|version| {
+                    version
+                        .context
+                        .as_ref()?
+                        .app
+                        .as_ref()
+                        .map(|app| app.id.clone())
+                })
+                .collect();
+            assert!(
+                !apps.is_empty(),
+                "the changes reach the record's history"
+            );
+            assert!(
+                apps.iter().all(|app| app == tilo_environment::OWNER_APP_ID),
+                "{apps:?}"
+            );
+
             let err = records
                 .apply(
                     DEFAULT_RECORD,
@@ -915,22 +990,40 @@ mod tests {
             ));
         }
 
-        phase without_the_session_the_person_is_told_where_environments_are;
+        phase without_the_daemon_the_person_is_told_where_environments_are;
         {
             let dir = tempfile::tempdir().unwrap();
-            let records = Records::at(dir.path().join("session.sock"));
+            let records = Records::of(&workspace_store(&dir.path().join("ush"), &dir.path().join("files"), W1));
             let err = records.resolve(None, &OneRuntime(Some(image(1)))).unwrap_err();
             assert!(matches!(err, RecordError::Unreachable), "{err}");
             assert_eq!(
                 err.to_string(),
-                "environments are kept in your workspace, and the Tilo session that reaches it \
-                 is not running on this device"
+                "environments are kept in your workspace, and Tilo's device service that keeps \
+                 it is not running on this computer"
+            );
+        }
+
+        phase an_environment_of_no_workspace_is_refused_in_words;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = Workspace::serve(&dir.path().join("native.sock"));
+            let primary = Records::at(workspace.socket());
+            let err = primary.resolve(None, &OneRuntime(Some(image(1)))).unwrap_err();
+            assert!(
+                matches!(&err, RecordError::Refused(said) if said == super::testing::NO_WORKSPACE),
+                "{err}"
             );
         }
     }
 
     const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
     const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+    /// The daemon's documents and the records of workspace [`W1`], under `dir`.
+    fn in_a_workspace(dir: &Path) -> (Workspace, Records) {
+        let records = Records::of(&workspace_store(&dir.join("ush"), &dir.join("files"), W1));
+        (Workspace::serve(records.documents()), records)
+    }
 
     fn workspace_store(root: &Path, files: &Path, id: &str) -> crate::store::Store {
         crate::store::Store::at(root)
@@ -964,10 +1057,6 @@ mod tests {
                 "another workspace lists none of them"
             );
             assert!(w2.load("env-only-w1").unwrap().is_none());
-            assert!(
-                Records::at(w1.documents()).keys().unwrap().is_empty(),
-                "nor does the primary workspace's"
-            );
 
             // A record moved into another workspace is not its to open.
             workspace.move_document(W1, W2, &w1.document_id("env-only-w1").unwrap());
@@ -979,45 +1068,6 @@ mod tests {
                 w2.apply("env-only-w1", Environment::RENAME.with("mine")),
                 Err(RecordError::Refused(_))
             ));
-        }
-
-        phase an_environment_from_before_workspaces_is_the_primary_workspaces;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let files = dir.path().join("files");
-            let store = crate::store::Store::at(dir.path().join("ush")).with_workspace(&files);
-            let _workspace = Workspace::serve(store.records_root());
-            let legacy = Records::at(store.records_root());
-            let mut old = Environment::new("Old", "2026.10", tilo_environment::host_arch(), &image(1));
-            old.grants
-                .push(tilo_environment::dir_grant(Path::new("/var/home/you/src"), true).unwrap());
-            let mut doc = Doc::new();
-            old.write_resource(&mut doc).unwrap();
-            doc.commit();
-            legacy.write(DEFAULT_RECORD, &mut doc, None).unwrap();
-
-            let primary = Records::of(&store);
-            let (key, env) = primary.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
-            assert_eq!((key.as_str(), env.name.as_str()), (DEFAULT_RECORD, "Old"));
-            assert_eq!(env.workspace, "", "unchanged");
-            assert_eq!(env.grants, old.grants, "everything it held");
-            assert!(
-                crate::workspace::WorkspaceId::of_record(&env)
-                    .unwrap()
-                    .is_primary()
-            );
-            primary
-                .apply(DEFAULT_RECORD, Environment::RENAME.with("Still mine"))
-                .unwrap();
-
-            let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
-            assert!(w1.keys().unwrap().is_empty());
-            let (_, fresh) = w1.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
-            assert_eq!(fresh.name, DEFAULT_NAME, "a workspace's default is its own");
-            assert_eq!(
-                primary.load(DEFAULT_RECORD).unwrap().unwrap().name,
-                "Still mine"
-            );
         }
 
         phase a_workspace_environment_is_refused_another_workspaces_files;

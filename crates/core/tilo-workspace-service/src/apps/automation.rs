@@ -1558,17 +1558,14 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
             every_secs,
             ..
         } => {
-            use tilo_automation::source_change::{self, PERSON_MAIL, WEB_FEED, WEB_PAGE};
+            use tilo_automation::source_change::{self, WEB_FEED, WEB_PAGE};
             match source_change::refusal(kind, at)
                 .or_else(|| source_change::look_refusal(kind, at, *every_secs))
             {
                 Some(why) => Err(why),
-                // Mail is heard as it arrives in the saver's own accounts.
-                None if kind == PERSON_MAIL => Ok(()),
                 // A feed or a page on the web is looked at on a clock; no other source is read.
                 None if !source_change::looked_at(kind) => Err(format!(
-                    "something new is found in your mail (`when something new is in \
-                     \"{PERSON_MAIL}\"`), in a feed on the web (`when something new is in \
+                    "something new is found in a feed on the web (`when something new is in \
                      \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`) or on a page there \
                      (`when something new is in \"{WEB_PAGE}\" at \"https://example.org/prices\"`)"
                 )),

@@ -41,7 +41,7 @@ tilo_test_env::scenario! {
     // Run in a package, `build`, `run` and `dev` are the package's.
     {
         let package = package_dir();
-        let rows: [(&[&str], &str); 12] = [
+        let rows: [(&[&str], &str); 11] = [
             (
                 &["build", "--no-such-flag"],
                 "unknown option --no-such-flag",
@@ -54,12 +54,8 @@ tilo_test_env::scenario! {
             (&["run", "--no-such-flag"], "unknown option --no-such-flag"),
             (&["dev", "--no-such-flag"], "unknown option --no-such-flag"),
             (
-                &["dev", "--runtime-identity", "identity.json"],
-                "--runtime-identity signs a session's runtime bundle: give --session too",
-            ),
-            (
-                &["dev", "--runtime", "tilolang-process", "--build-runtime"],
-                "--runtime names a binary built by hand, --build-runtime builds one: give one",
+                &["dev", "--runtime", "tilolang-process"],
+                "unknown option --runtime",
             ),
             (&["repl", "--no-such-flag"], "unknown option --no-such-flag"),
             (

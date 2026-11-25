@@ -10,13 +10,13 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-use tilo_actions::remote::person_accounts::{FetchMail, MarkMail, ReadMail, SearchMail, SendMail};
 use tilo_mail_session::{Attachment, Leaving, LiveMailSession, MailSession};
+use tilo_mail_session::{FetchMail, MarkMail, ReadMail, SearchMail, SendMail};
 
 use tilo_account_probe::stand_in::{Layout, Serving, Started, started};
 
 use std::sync::{Arc, Mutex, PoisonError};
-use tilo_actions::remote::person_accounts::FetchedMessage;
+use tilo_mail_session::FetchedMessage;
 use tilo_mail_session::{InboxHeard, InboxSeen, WatchPace};
 
 /// What a watch told, as a test reads it.
@@ -450,7 +450,7 @@ fn a_host_pages_reads_searches_and_drafts_over_one_session() {
     });
     assert_eq!(found.folders.len(), 1);
     assert_eq!(found.folders[0].folder, "inbox");
-    let uids = |folder: usize, found: &tilo_actions::remote::person_accounts::FoundMail| {
+    let uids = |folder: usize, found: &tilo_mail_session::FoundMail| {
         found.folders[folder]
             .messages
             .iter()

@@ -91,16 +91,6 @@ use super::{WorkspaceId, Workspaces};
 mod sign;
 mod web_call;
 
-/// The workspace's mail as such a turn reaches it: after [`Workspaces::asked_turn`], the
-/// workspace's word on which agent may use which account ([`Workspaces::mail_for_turn`]).
-pub use super::person_settings::turn_mail::AskedSend;
-
-/// A person's mail account as such a turn signs it in from its address alone
-/// ([`Workspaces::connect_mail_for_turn`]): the action, what is kept while its person is
-/// asked for the password, what comes of their answer, and where an address's mail lives
-/// as whatever works that out answers it.
-#[cfg(feature = "agents")]
-pub use super::person_settings::mail_connect::{CONNECT as MAIL_CONNECT, MailSignedIn};
 #[cfg(feature = "agents")]
 pub use tilo_account_probe::mail_servers::{Found as MailFound, MailServers, Server as MailServer};
 /// A mail server with real sockets and made-up mail, for a test to sign in to and read from.
@@ -225,11 +215,6 @@ enum TurnCall {
     Use,
     /// An ask for a secret their vault does not hold yet, which they type into it.
     AskForSecret,
-    /// Their mail.
-    Mail,
-    /// A mail account signed in from the address they told it.
-    #[cfg(feature = "agents")]
-    MailConnect,
     /// A call of a service they connected.
     Connections,
 }
@@ -252,20 +237,7 @@ impl TurnCall {
         if target.provider == person_connections::PROVIDER {
             return Some(Self::Connections);
         }
-        if target.provider != person_accounts::PROVIDER {
-            return None;
-        }
-        let (resource, action) = (&target.address.resource, &target.address.action);
-        if resource != person_accounts::RESOURCE {
-            return None;
-        }
-        #[cfg(feature = "agents")]
-        if action == MAIL_CONNECT {
-            return Some(Self::MailConnect);
-        }
-        #[cfg(not(feature = "agents"))]
-        let _ = action;
-        Some(Self::Mail)
+        None
     }
 }
 
@@ -364,9 +336,6 @@ impl Workspaces {
         let value = match call {
             TurnCall::Use => self.use_for_turn(&turn, request).await?,
             TurnCall::AskForSecret => self.secret_for_turn(&turn, request).await?,
-            TurnCall::Mail => self.mail_for_turn(&turn, request).await?,
-            #[cfg(feature = "agents")]
-            TurnCall::MailConnect => answered(self.connect_mail_for_turn(&turn, request).await?)?,
             TurnCall::Connections => self.connections_for_turn(&turn, request).await?,
         };
         Ok(tilo_actions::remote::InvocationReceipt {
@@ -394,11 +363,6 @@ impl Workspaces {
         rows.extend(self.calls_offered(&turn).await);
         if self.secret_ask_for_turn(&turn).await.is_ok() {
             rows.push(person_vault::ask_row());
-        }
-        rows.extend(self.mail_offered(&turn).await);
-        #[cfg(feature = "agents")]
-        {
-            rows.extend(self.mail_connect_offered(&turn).await);
         }
         rows.extend(self.connection_rows_for_turn(&turn).await);
         rows.retain(|row| row.provider == provider);
@@ -435,12 +399,6 @@ impl Workspaces {
         let kept = self.kept_turn(caller).await.ok_or(UnknownAction)?;
         self.release_for_turn(&kept.of(caller), fill, request).await
     }
-}
-
-/// `value`, what a turn's call came to, as the dispatch answers it.
-#[cfg(feature = "agents")]
-fn answered(value: impl serde::Serialize) -> Result<Value, ActionCallError> {
-    serde_json::to_value(value).map_err(|error| ActionCallError::refused(error.to_string()))
 }
 
 /// What uses of a vault item by reference keep on this server: what proves a

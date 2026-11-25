@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
+pub use crate::shapes::{FetchedMessage, MailFlag, MarkMail};
 use futures_util::TryStreamExt as _;
-pub use tilo_actions::remote::person_accounts::{FetchedMessage, MailFlag, MarkMail};
 
 /// A signed-in connection to an account's IMAP server.
 pub type ImapSession = async_imap::Session<tilo_account_probe::imap::SecureStream>;

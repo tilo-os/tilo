@@ -24,8 +24,6 @@
 mod connections;
 pub mod folders;
 #[cfg(feature = "agents")]
-mod mail;
-#[cfg(feature = "agents")]
 mod outside;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -625,9 +623,6 @@ pub struct Runner {
     /// The client the looks at sources outside go through.
     #[cfg(feature = "agents")]
     outside: outside::Outside,
-    /// What is heard of the mail arriving in the accounts of the shortcuts' savers (`mail`).
-    #[cfg(feature = "agents")]
-    heard: mail::Heard,
     /// The device's record of the invocations it was asked for, when this runner fires a
     /// webhook on one: what it lists to find the ones this device has not posted yet.
     invocations: Option<Arc<tilo_actions::remote::invocation_record::Invocations>>,
@@ -662,8 +657,6 @@ impl Runner {
             looks: BTreeMap::new(),
             #[cfg(feature = "agents")]
             outside: outside::Outside::default(),
-            #[cfg(feature = "agents")]
-            heard: mail::Heard::default(),
             invocations: None,
             seen_invocations: BTreeMap::new(),
             presence: BTreeMap::new(),
@@ -814,8 +807,6 @@ impl Runner {
         self.presence_events(now_ms);
         #[cfg(feature = "agents")]
         self.outside_changes(now_ms).await;
-        #[cfg(feature = "agents")]
-        self.mail(now_ms).await;
         self.files(now_ms);
         self.connector_events(now_ms);
         self.take_turns().await;

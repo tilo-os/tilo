@@ -1497,7 +1497,9 @@ function ticketCodes({origin, identity}) {
   };
   // The answer as the host wrote it: a certificate in it has times more than a number holds.
   const callText = async (action, body, deviceKey = undefined) => {
-    const runtime = await loadRuntime();
+    // A ticket is issued and followed over the host's action link, whose code
+    // is the tickets module's (`../src/split.rs`).
+    const runtime = await loadRuntime('tickets');
     const text = typeof body === 'string' ? body : JSON.stringify(body);
     const reply = await runtime.ticketAction(post, action, text, deviceKey).catch(error => {
       throw hostNamed(Object.assign(new Error(String(error?.message ?? error)), {code: 'unreachable'}), origin);
@@ -1580,13 +1582,13 @@ function ticketCodes({origin, identity}) {
     resume(saved) {
       return answerer(saved);
     },
-    /** Dial the link a press's ticket action will ask over, so the press waits
-     * only for the answer: one pre-dial, once the runtime is in and the page is
-     * idle, never beside the runtime module's own download. Quiet when the host
-     * is not reached; the press dials again (`../src/peer.rs`). */
+    /** Fetch and compile the tickets module and dial the link a press will ask
+     * over, so the press waits only for the answer: once the runtime is in and
+     * the page is idle, never beside the start module's own download. Quiet
+     * when the host is not reached; the press dials again (`../src/peer.rs`). */
     warm() {
       const idle = () => {
-        void loadRuntime().then(runtime => runtime.warmTicketAction?.(post)).catch(() => {});
+        void loadRuntime('tickets').then(runtime => runtime.warmTicketAction?.(post)).catch(() => {});
       };
       if (typeof requestIdleCallback === 'function') requestIdleCallback(idle, {timeout: 5000});
       else setTimeout(idle, 5000);

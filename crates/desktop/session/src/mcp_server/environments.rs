@@ -263,25 +263,6 @@ pub(super) fn answer_socket_requests(
         open(stream, request, pid, serving.clone());
         return None;
     }
-    if let Some(request) = runtime_portal::workspace_terminal::Request::of(first) {
-        // Only the device's shell runtime, outside every environment, carries a hosted
-        // workspace's shell to a Terminal window.
-        if *entrance != Origin::Host {
-            tracing::info!(
-                pid,
-                "MCP server: a program inside an environment asked for a workspace's terminal"
-            );
-            super::refuse(stream, &PeerRefusal::OutsideEnvironment);
-            return None;
-        }
-        crate::workspace_terminals::open(stream, request, serving.hosting.clone());
-        return None;
-    }
-    if let Some(request) = runtime_portal::workspace_documents::Request::of(first) {
-        // The shell runtime's, which proves it holds the device identity wherever it runs.
-        serving.environment_records(stream, request, pid);
-        return None;
-    }
     Some(stream)
 }
 

@@ -8,6 +8,9 @@
 //!   screen.
 //! - `accounts`: the accounts a profile keeps, projected for the page from
 //!   the Settings record, which only a profile that holds any reads.
+//! - `tickets`: the link the first screen's ticket actions travel over, with
+//!   its QUIC and TLS: fetched once the first screen is idle, so the press that
+//!   asks for a code does not wait for it beside the first screen's own code.
 //!
 //! The linked module's `tilo_split_exports` section names `<module> <export>`
 //! per line, an export ending in `*` standing for every export with that
@@ -35,6 +38,8 @@ peer openInvitation
 peer signInAnswer
 peer signInCertificate
 accounts project_browser_accounts
+tickets ticketAction
+tickets warmTicketAction
 ";
 
 const _: () = {

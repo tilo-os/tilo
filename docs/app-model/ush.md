@@ -54,13 +54,14 @@ is no other package manifest and no other permission file.
 
 The supervisor keeps the records where Terminal keeps its own: each is one of
 Terminal's documents (`environment:<record>`) in the workspace's one store. It
-has no connection to the workspace itself, so it asks the session on the MCP
-socket to read and write them (`runtime_portal::workspace_documents`), proving
-it holds the device identity; the session carries each command out through
-this device's workspace service as Terminal's, offline included. Each action
+has no connection to the workspace itself, so it asks the device's daemon at
+its native endpoint to read and write them (the `terminalRecords` device
+action), as the person's own program on this computer; the daemon carries each
+command out in the workspace the Terminal window runs for, as Terminal's,
+offline included, and refuses a command naming no workspace. Each action
 reads the record whole, applies through the record layer (attributed to
 `so.tilo.ush`), and writes the changes after what it read, so two processes'
-changes merge. With no session running, Terminal is told so in words and
+changes merge. With no daemon running, Terminal is told so in words and
 nothing is kept on the side. A session that names
 no record gets its workspace's **default environment**, created on first use
 with the system store's current `env-runtime`; every workspace has its own.

@@ -188,7 +188,6 @@ fn row_of(workspace: &Workspace, member: &Member, here: &Present) -> RosterRow {
             .as_ref()
             .map(|call| call.name.clone())
             .filter(|name| !name.is_empty()),
-        join: None,
     }
 }
 

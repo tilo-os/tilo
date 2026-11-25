@@ -27,9 +27,9 @@ export async function openProfileStorage(profile,device){await loadRuntime('peer
  * loader and every export in the start module already. */
 const splitCode=retryableMemo(async()=>{await ready();return import('./pkg/__wasm_split.js').catch(()=>null);});
 /** The wasm runtime module's start code: the link grammar, the workspaces this
- * browser entered, and its device's tickets. With `part`, its module `name`
- * (`peer`, `accounts`) is loaded first: a bundle carries that code as a module
- * of its own (`../src/split.rs`), and the start module answers its exports
- * from it. A whole bundle (a development build) has no loader and every
- * export in the start module already. */
-export async function loadRuntime(part){await ready();if(part) await (await splitCode())?.load(part);return runtime;}
+ * browser entered, and its device's identity. With `parts`, each module `name`
+ * (`peer`, `accounts`, `tickets`) is loaded first: a bundle carries that code
+ * as a module of its own (`../src/split.rs`), and the start module answers its
+ * exports from it. A whole bundle (a development build) has no loader and
+ * every export in the start module already. */
+export async function loadRuntime(...parts){await ready();const split=parts.length?await splitCode():null;for(const part of parts)await split?.load(part);return runtime;}

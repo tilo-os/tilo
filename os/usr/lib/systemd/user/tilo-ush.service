@@ -26,12 +26,13 @@ Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=10s
 
-# The supervisor reads the machine's device key, root-owned and shared through
-# the tilo-identity group, and proves it to the session. A user manager gives a
-# unit a user namespace of its own (PrivateUsers) for any mount, IPC, clock,
-# hostname or control-group protection, and in it root is unmapped: the key's
-# owner reads as 65534, the key reader refuses it, and the Terminal gets no
-# shell. So the unit sets no namespace directive: the supervisor runs as the
+# The supervisor asks the device's daemon, at its socket in the person's
+# runtime directory, for Terminal's environment records and hosted shells, and
+# reads the machine's device certificate, root-owned and shared through the
+# tilo-identity group. A user manager gives a unit a user namespace of its own
+# (PrivateUsers) for any mount, IPC, clock, hostname or control-group
+# protection, and in it root is unmapped: the certificate's owner reads as
+# 65534. So the unit sets no namespace directive: the supervisor runs as the
 # person with no capabilities and reaches nothing more without them. The guest
 # is confined by Bubblewrap, then ush's seccomp and Landlock, before its shell.
 RestrictRealtime=yes

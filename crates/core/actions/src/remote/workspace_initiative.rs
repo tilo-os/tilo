@@ -121,8 +121,6 @@ pub struct Settings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Found {
-    /// What came in for the person since the last look.
-    pub came_in: u64,
     /// The documents of the workspace somebody other than the assistant
     /// changed since the last look.
     pub changed: u64,
@@ -133,11 +131,11 @@ pub struct Found {
 }
 
 impl Found {
-    /// Whether anything is new: something came in, changed or became due.
+    /// Whether anything is new: something changed or became due.
     /// What is merely still open is not.
     #[must_use]
     pub const fn anything_new(&self) -> bool {
-        self.came_in > 0 || self.changed > 0 || self.due > 0
+        self.changed > 0 || self.due > 0
     }
 }
 
@@ -333,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn only_what_came_in_changed_or_became_due_is_new() {
+    fn only_what_changed_or_became_due_is_new() {
         assert!(!Found::default().anything_new());
         assert!(
             !Found {
@@ -344,10 +342,6 @@ mod tests {
             "what is still open is not new"
         );
         for found in [
-            Found {
-                came_in: 1,
-                ..Found::default()
-            },
             Found {
                 changed: 1,
                 ..Found::default()
@@ -371,7 +365,7 @@ mod tests {
             id: "l1".into(),
             at_ms: 5,
             found: Found {
-                came_in: 2,
+                changed: 2,
                 ..Found::default()
             },
             ended: LookEnded::OverLimit,
@@ -383,7 +377,7 @@ mod tests {
             serde_json::json!({
                 "id": "l1",
                 "atMs": 5,
-                "found": {"cameIn": 2, "changed": 0, "due": 0, "open": 0},
+                "found": {"changed": 2, "due": 0, "open": 0},
                 "ended": "over-limit",
                 "costMicros": 0,
             })

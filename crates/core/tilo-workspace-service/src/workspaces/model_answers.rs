@@ -494,12 +494,6 @@ impl Models {
         tilo_account_probe::imap::Reach::public_unless(move || models.private_addresses())
     }
 
-    /// The sessions this server holds with its people's mail servers: every
-    /// connection of theirs is made within [`Self::mail_reach`].
-    pub(super) fn mail_session(self: &Arc<Self>) -> tilo_mail_session::LiveMailSession {
-        tilo_mail_session::LiveMailSession::default().reaching(self.mail_reach())
-    }
-
     /// Models answered on the runtime this is called on.
     pub(super) fn new() -> Self {
         Self {

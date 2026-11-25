@@ -1,12 +1,10 @@
 //! How a process that holds the device identity is recognised by
-//! `tilo-secret-service`, and by the person's session, although neither can look at it.
+//! `tilo-secret-service`, although it cannot look at it.
 //!
 //! The store names each caller by its executable, read from `/proc/<pid>/exe`, and a
 //! process that loads the device key makes itself non-dumpable, so the kernel refuses
 //! that link to every other process of the user, the store included. Such a process
-//! proves the identity instead. The session, which reads the device key too, asks the
-//! same of a process of the login whose namespaces the kernel hides from it
-//! ([`session_key`]).
+//! proves the identity instead.
 
 use std::os::unix::ffi::OsStringExt;
 use std::sync::Mutex;
@@ -17,26 +15,16 @@ const SERVICE: &str = "org.freedesktop.secrets";
 const MANAGEMENT_PATH: &str = "/so/tilo/Secrets1";
 const MANAGEMENT: &str = "so.tilo.Secrets1";
 
-/// The keys derived for proofs: to the store, and to the session.
-#[derive(Clone)]
-struct Armed {
-    store: CallerKey,
-    session: CallerKey,
-}
+static ARMED: Mutex<Option<CallerKey>> = Mutex::new(None);
 
-static ARMED: Mutex<Option<Armed>> = Mutex::new(None);
-
-/// Arm this process with the device secret it just read; only the keys derived for
-/// proofs are kept.
+/// Arm this process with the device secret it just read; only the key derived for
+/// proofs is kept.
 pub fn arm(device_secret: &[u8]) {
-    let (Ok(store), Ok(session)) = (
-        CallerKey::derive(device_secret),
-        CallerKey::for_session(device_secret),
-    ) else {
+    let Ok(store) = CallerKey::derive(device_secret) else {
         return;
     };
     if let Ok(mut armed) = ARMED.lock() {
-        *armed = Some(Armed { store, session });
+        *armed = Some(store);
     }
 }
 
@@ -45,23 +33,11 @@ fn dumpable() -> bool {
     unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) == 1 }
 }
 
-fn armed() -> Option<Armed> {
+fn key() -> Option<CallerKey> {
     if dumpable() {
         return None;
     }
     ARMED.lock().ok()?.clone()
-}
-
-fn key() -> Option<CallerKey> {
-    armed().map(|armed| armed.store)
-}
-
-/// The key this process proves to the person's session with that it holds the device identity,
-/// and the session checks such a proof with: `None` unless it read the device key, which made it
-/// non-dumpable (`tilo_seal::secret_service::CallerKey::for_session`).
-#[must_use]
-pub fn session_key() -> Option<CallerKey> {
-    armed().map(|armed| armed.session)
 }
 
 /// Whether this process identifies itself to the store by proof. A refusal is then

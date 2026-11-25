@@ -444,6 +444,17 @@ impl ImapOrigin {
         self
     }
 
+    /// Whether the origin still waits on a server: a request in flight, a message on its way,
+    /// or mail due to be asked for. What a test settles by, and a frame may poll on.
+    #[must_use]
+    pub fn waiting(&self) -> bool {
+        !self.pending.is_empty()
+            || !self.sends.is_empty()
+            || !self.due.is_empty()
+            || self.woken.load(Ordering::Acquire)
+            || self.reconnected.load(Ordering::Acquire)
+    }
+
     /// Why what the connector said is not all in the workspace: the workspace not read, or not
     /// read whole, no account made, or a step of an account's mail waiting for the next poll.
     /// `None` once all of it is written.

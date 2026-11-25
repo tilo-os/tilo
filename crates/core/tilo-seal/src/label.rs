@@ -31,9 +31,6 @@ pub enum Label {
     /// The key a process proves to that store that it holds the device
     /// identity with, when the store cannot read its executable.
     StoreCallerProof,
-    /// The key a process proves to the person's session that it holds the
-    /// device identity with, when the session cannot look at the process.
-    SessionCallerProof,
     /// A probe asking which of the person's own devices are on the local
     /// network: the key sealed to each device asked, and the asking
     /// device's certificate under that key.
@@ -63,7 +60,7 @@ pub enum Label {
 }
 
 impl Label {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 29] = [
         Self::ServerEnrollOffer,
         Self::ServerEnrollRequest,
         Self::ServerEnrollResponse,
@@ -84,7 +81,6 @@ impl Label {
         Self::UnlockRelease,
         Self::SecretService,
         Self::StoreCallerProof,
-        Self::SessionCallerProof,
         Self::LanDiscoveryProbe,
         Self::LanDiscoveryReply,
         Self::SignInPassphrase,
@@ -120,7 +116,6 @@ impl Label {
             Self::UnlockRelease => "tilo-seal/v1/unlock-release",
             Self::SecretService => "tilo-seal/v1/secret-service",
             Self::StoreCallerProof => "tilo-seal/v1/store-caller-proof",
-            Self::SessionCallerProof => "tilo-seal/v1/session-caller-proof",
             Self::LanDiscoveryProbe => "tilo-seal/v1/lan-discovery-probe",
             Self::LanDiscoveryReply => "tilo-seal/v1/lan-discovery-reply",
             Self::SignInPassphrase => "tilo-seal/v1/sign-in-passphrase",

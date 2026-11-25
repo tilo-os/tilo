@@ -94,6 +94,17 @@ pub const ENDORSE_IMAGE: &str = "endorseImage";
 /// the device's one endpoint, to enrol the boot `request` (an enrolment request's frame, hex)
 /// names. Answers the first device's `reply` (its frame's body, hex).
 pub const ENROL_BOOT: &str = "enrolBoot";
+/// The action the device's shell runtime asks its daemon: carry out `command` (a resource store
+/// command, as JSON) on Terminal's documents in `workspace`, where it keeps its environment
+/// records. Only a record's changes, a record's write and the record list are carried out.
+/// Answers the store's `reply`.
+pub const TERMINAL_RECORDS: &str = "terminalRecords";
+/// The action the device's shell runtime asks its daemon: the shell of the Terminal session
+/// `record` in `workspace`, at `cols` by `rows`, coming back to the host's session `attach`. Answers
+/// `hosted`: false for a workspace no other device runs, whose shells run here; true with a
+/// descriptor handed beside the answer, on which the host's answer and then its terminal stream
+/// follow.
+pub const OPEN_TERMINAL: &str = "openTerminal";
 /// The actions a daemon answers the person about the identities it keeps: listing them without
 /// secrets, and using (new apps sign in as it), removing and protecting (its key moves into
 /// protected storage) identity `id`, each change with `confirm`.

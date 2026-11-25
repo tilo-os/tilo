@@ -18,35 +18,21 @@ pub(in crate::workspaces) mod cloud_control;
 /// The sign-ins of the accounts and providers, as entries of the workspace's vault.
 pub(in crate::workspaces) mod kept_sign_ins;
 pub(in crate::workspaces) mod oauth_grant;
-mod sending;
 /// Signing in on a provider's own page: a Nextcloud server's login flow.
 mod sign_in;
-pub mod turn_mail;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_account_probe::AccountTester;
-use tilo_actions::remote::person_accounts::{
-    AddMailAccount, BeginSend, MAX_SEND_FILE_BYTES, MAX_SEND_FILES, MAX_SEND_PIECE_BYTES,
-    MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendFile, SendId, SendPiece,
-    SentMail, StartedSend,
-};
-use tilo_actions::remote::person_accounts::{
-    ArrivedAfter, FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail, SearchMail,
-};
-// A message as text is read for sending in one place, `Leaving::read`; only
-// this file's tests still name one.
 use tilo_actions::remote::model_providers::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
-#[cfg(test)]
-use tilo_actions::remote::person_accounts::SendMail;
+use tilo_actions::remote::person_accounts::{AddMailAccount, MailAccount, MailAccounts};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, model_providers, person_accounts,
 };
-use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
 
@@ -60,10 +46,6 @@ mod person_mail;
 #[cfg(feature = "agents")]
 use person_mail::answers_in_public;
 use person_mail::{kept_mail, mail_accounts};
-
-/// A mail account signed in by a turn's telling: asked for, and carried out.
-#[cfg(feature = "agents")]
-pub(in crate::workspaces) mod mail_connect;
 
 impl Workspaces {
     /// Where this host keeps what may interrupt `person`. Theirs in every
@@ -92,9 +74,6 @@ impl Workspaces {
         self.inner
             .person_settings_moved
             .send_modify(|count| *count = count.wrapping_add(1));
-        // An inbox somebody listens for is watched with the accounts as its
-        // workspace keeps them now.
-        self.watch_listened_inboxes();
     }
 
     /// Fires whenever a workspace's accounts or providers kept here change.
@@ -103,33 +82,8 @@ impl Workspaces {
         self.inner.person_settings_moved.subscribe()
     }
 
-    /// The sessions this host holds with the mail servers of the accounts
-    /// its people keep: one for the whole host, so an account's signed-in
-    /// session serves its next request too.
-    pub(super) fn mail_session(&self) -> Session {
-        Arc::clone(
-            &self
-                .inner
-                .mail_session
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-    }
-
-    /// Carry the accounts' mail through `session` from now on: a test stands
-    /// in for the mail servers.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn carry_mail_through(&self, session: Session) {
-        *self
-            .inner
-            .mail_session
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = session;
-    }
-
     /// Keep the mail account `address` in `workspace` with a sign-in, as
-    /// adding it from a window keeps one: a test stands in for the account's
-    /// servers ([`Self::carry_mail_through`]).
+    /// adding it from a window keeps one.
     ///
     /// # Errors
     /// The account or its sign-in could not be kept.
@@ -209,9 +163,9 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(Proving(prove));
     }
 
-    /// Sign in to mail servers and carry their mail trusting `extra` beside the system's own
-    /// authorities from now on: a test's mail server, whose certificate no authority signed,
-    /// answers over real sockets. Its connections go where they did before.
+    /// Sign in to mail servers trusting `extra` beside the system's own authorities from now
+    /// on: a test's mail server, whose certificate no authority signed, answers over real
+    /// sockets. Its connections go where they did before.
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
     pub fn trust_mail_servers(&self, extra: Vec<rustls::pki_types::CertificateDer<'static>>) {
         let reach = self.inner.models.mail_reach();
@@ -225,9 +179,6 @@ impl Workspaces {
                 reach: reach.clone(),
                 extra: extra.clone(),
             });
-        self.carry_mail_through(Arc::new(
-            tilo_mail_session::LiveMailSession::also_trusting(extra).reaching(reach),
-        ));
     }
 
     /// Work out where an address's mail lives through `find` from now on, which is told the
@@ -364,9 +315,9 @@ impl Workspaces {
         Ok(certificate.user_public_key)
     }
 
-    /// Answer a [`person_accounts::PROVIDER`] request: the workspace's mail
-    /// accounts and their mail, as the workspace's policy lets the caller
-    /// reach them at Mail ([`Store::MAIL`]).
+    /// Answer a [`person_accounts::PROVIDER`] request: the workspace's
+    /// accounts, as the workspace's policy lets the caller reach them at Mail
+    /// ([`Store::MAIL`]).
     pub(super) async fn person_accounts_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -377,13 +328,9 @@ impl Workspaces {
         let action = request.target.address.action.as_str();
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);
-        // A send asks its person with the message itself, below.
-        let reach = if action == person_accounts::SEND {
-            self.reaching(asked, Store::MAIL, action, effect).await?
-        } else {
-            self.reaching_allowed(asked, Store::MAIL, action, effect, request)
-                .await?
-        };
+        let reach = self
+            .reaching_allowed(asked, Store::MAIL, action, effect, request)
+            .await?;
         let here = reach.workspace.to_string();
         let root = self.workspace_root(&here);
         let by = reach.by();
@@ -392,7 +339,6 @@ impl Workspaces {
             root: &root,
             by: &by,
         };
-        let agent = reach.agent.is_some();
         // Signing in on a provider's own page: begun, stopped, and the
         // accounts as they are.
         if matches!(
@@ -418,150 +364,34 @@ impl Workspaces {
         {
             return Ok(answered);
         }
-        match action {
-            person_accounts::SEND => {
-                let sending: SendId = argument(request, "a message to send")?;
-                let (dir, beginning) = begun_for(&root, &sending.send)?;
-                // The message is read once, here. Where its person is asked,
-                // they are shown that reading, and that reading is what
-                // leaves on their yes: nothing is read again from what was
-                // begun.
-                let staged = Staged::read(dir, beginning).map_err(ActionCallError::refused)?;
-                if reach.answer != tilo_action_policy::Answer::Allow {
-                    let shown = staged.shown().map_err(ActionCallError::refused)?;
-                    // A message that left already is answered as the send
-                    // it was: its person is asked nothing more.
-                    if let Some(sent) = self.recorded_mail_send(Some(&here), &staged).await {
-                        return answer(&Ok::<_, String>(sent));
-                    }
-                    // Only a person, or an agent acting for one, has someone to ask.
-                    let acting = caller.acting();
-                    if acting.agent_id().is_none() && acting.person_id().is_none() {
-                        return Err(ActionCallError::NotPermitted);
-                    }
-                    // What leaves on their yes is what they were shown: the rows are kept
-                    // apart from the message, which its agent may still change.
-                    let kept = root.join(SHOWN_DIR).join(&sending.send);
-                    if request.approval().is_some() {
-                        let as_shown = std::fs::read(&kept)
-                            .ok()
-                            .and_then(|kept| {
-                                serde_json::from_slice::<Vec<(String, String)>>(&kept).ok()
-                            })
-                            .is_some_and(|rows| rows == shown.rows());
-                        let _ = std::fs::remove_file(&kept);
-                        if !as_shown {
-                            return Err(ActionCallError::refused(
-                                "What waited is not what you were shown, so nothing was sent.",
-                            ));
-                        }
-                    } else {
-                        let rows = serde_json::to_vec(shown.rows())
-                            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                        std::fs::create_dir_all(root.join(SHOWN_DIR))
-                            .and_then(|()| std::fs::write(&kept, rows))
-                            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                        return Err(ActionCallError::asks(shown.facts(caller)));
-                    }
-                }
-                answer(
-                    &self
-                        .send_in_workspace(Some(&here), self.mail_session(), signing, staged)
-                        .await,
-                )
+        // The workspace's mail accounts, without their secrets.
+        if action == person_accounts::LIST {
+            let held = signing
+                .vault
+                .accounts()
+                .await
+                .map_err(ActionCallError::refused)?;
+            let mut listed = mail_accounts(&held, &root);
+            if reach.agent.is_some() {
+                // Whose sign-in is running is no agent's business.
+                listed.signing_in.clear();
             }
-            person_accounts::MARK => {
-                let marking: MarkMail = argument(request, "what changed about a message")?;
-                answer(&mark_with(self.mail_session(), signing, marking).await)
-            }
-            _ => {
-                self.mail_read_or_draft(signing, &here, request, agent)
-                    .await
-            }
+            return answer(&Ok::<_, String>(listed));
         }
-    }
-
-    /// Answer what reads the workspace's mail kept where `signing` says or drafts
-    /// in it, for an agent (`agent`) or a person: listing the accounts,
-    /// reading a folder or a message, searching, reading what arrived, and
-    /// beginning a message and keeping it as a draft.
-    pub(super) async fn mail_read_or_draft(
-        &self,
-        signing: Signing<'_>,
-        workspace: &str,
-        request: &InvokeRequest,
-        agent: bool,
-    ) -> Result<Value, ActionCallError> {
-        let root = signing.root;
-        match request.target.address.action.as_str() {
-            person_accounts::LIST => {
-                let held = signing
-                    .vault
-                    .accounts()
-                    .await
-                    .map_err(ActionCallError::refused)?;
-                let mut listed = mail_accounts(&held, root);
-                if agent {
-                    // Whose sign-in is running is no agent's business.
-                    listed.signing_in.clear();
-                }
-                answer(&Ok::<_, String>(listed))
-            }
-            person_accounts::FETCH => {
-                let asking: FetchMail = argument(request, "a folder to read")?;
-                answer(&fetch_with(self.mail_session(), signing, asking).await)
-            }
-            person_accounts::READ => {
-                let reading: ReadMail = argument(request, "a message to read")?;
-                answer(&read_with(self.mail_session(), signing, reading).await)
-            }
-            person_accounts::SEARCH => {
-                let searching: SearchMail = argument(request, "what to search for")?;
-                answer(&search_with(self.mail_session(), signing, searching).await)
-            }
-            person_accounts::ARRIVED => {
-                let asking = arrived_argument(request)?;
-                answer(&Ok::<_, String>(
-                    self.arrived_after(workspace, asking.after),
-                ))
-            }
-            person_accounts::BEGIN_SEND => {
-                let beginning: BeginSend = argument(request, "a message to begin")?;
-                answer(&begin_send(root, &beginning))
-            }
-            person_accounts::SEND_PIECE => {
-                let piece: SendPiece = argument(request, "a piece of a message's file")?;
-                begun_for(root, &piece.send)?;
-                answer(&send_piece(root, &piece))
-            }
-            person_accounts::SAVE_DRAFT => {
-                let keeping: SendId = argument(request, "a draft to keep")?;
-                answer(&save_staged_draft_with(self.mail_session(), signing, keeping).await)
-            }
-            _ => Err(ActionCallError::UnknownAction),
-        }
+        Err(ActionCallError::UnknownAction)
     }
 }
 
-/// What `action` of the workspace's mail does, as the workspace's policy
-/// decides it: reading, a change kept here, or something that leaves. A
-/// message begun and written piece by piece is only staged on this host:
-/// nothing in the mail changes and nothing leaves until it is kept as a
-/// draft or sent, which the policy weighs then.
+/// What `action` of the workspace's mail accounts does, as the workspace's policy decides it:
+/// a reading, or a change kept in the accounts record and the vault. What leaves — a message
+/// sent — is Mail's action, decided where the app's own actions are.
 pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
     use tilo_action_policy::ActionKind;
     match action {
         person_accounts::LIST
         | person_accounts::WATCH
-        | person_accounts::FETCH
-        | person_accounts::READ
-        | person_accounts::SEARCH
-        | person_accounts::ARRIVED
         | person_accounts::FIND_SERVERS
-        | person_accounts::SIGN_INS
-        | person_accounts::BEGIN_SEND
-        | person_accounts::SEND_PIECE => ActionKind::Read,
-        person_accounts::SEND => ActionKind::Outside,
+        | person_accounts::SIGN_INS => ActionKind::Read,
         _ => ActionKind::Undoable,
     }
 }
@@ -609,21 +439,6 @@ fn without_values(error: &serde_json::Error) -> String {
         Some((before, _)) => before.trim_end().to_owned(),
         None => said,
     }
-}
-
-/// The place in the arrival log a [`person_accounts::ARRIVED`] reads on
-/// from: its start, when the request names none.
-fn arrived_argument(request: &InvokeRequest) -> Result<ArrivedAfter, ActionCallError> {
-    match &request.argument {
-        InvokeArgument::Json(_) => argument(request, "a place in the arrival log"),
-        _ => Ok(ArrivedAfter::default()),
-    }
-}
-
-/// The message begun under `send` and where its files wait, for a request
-/// that goes on with it.
-fn begun_for(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), ActionCallError> {
-    begun_send(root, send).map_err(|reason| ActionCallError::Refused { reason })
 }
 
 /// The sign-in a mail account of `workspace` reads with, as the session would be given it.
@@ -885,468 +700,6 @@ async fn account_with_secret(
     Ok((account, secret))
 }
 
-/// Where a begun message waits between its pieces and its send: one
-/// directory per message, holding what it says, whom it goes to and the
-/// files' bytes as they arrive. It is gone once the message is sent.
-fn sends_root(root: &Path) -> PathBuf {
-    root.join("sends")
-}
-
-/// Where what a person is shown of a message their agent's send waits on is kept, by the
-/// message's id, until their approve lets it leave.
-const SHOWN_DIR: &str = "shown-sends";
-
-/// How long a begun message waits for its pieces before it is forgotten: a
-/// send is a page's errand of a minute, and a page that went away leaves
-/// nothing behind.
-const SEND_WAIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-
-/// Forget every begun message older than [`SEND_WAIT`], under `root`.
-fn forget_old_sends(root: &Path) {
-    let Ok(entries) = std::fs::read_dir(sends_root(root)) else {
-        return;
-    };
-    let now = tilo_clock::wall();
-    for entry in entries.flatten() {
-        let old = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|written| now.duration_since(written).ok())
-            .is_some_and(|age| age > SEND_WAIT);
-        if old {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-}
-
-/// Why `beginning` is no message a host begins, if it is not.
-fn check_beginning(beginning: &BeginSend) -> Result<(), String> {
-    if beginning.files.len() > MAX_SEND_FILES {
-        return Err(format!(
-            "a message carries at most {MAX_SEND_FILES} files; this one names {}",
-            beginning.files.len()
-        ));
-    }
-    let mut total = 0u64;
-    for file in &beginning.files {
-        let usable = |text: &str, allow: &[char]| {
-            !text.is_empty() && !text.chars().any(char::is_control) && !text.contains(allow)
-        };
-        if !usable(&file.filename, &['/', '\\']) {
-            return Err(format!("{:?} is no name to attach", file.filename));
-        }
-        if !file.mime.contains('/') || !usable(&file.mime, &['"', '\\']) {
-            return Err(format!("{:?} is no type to attach", file.mime));
-        }
-        if file.size > MAX_SEND_FILE_BYTES {
-            return Err(format!(
-                "{} is larger than the {MAX_SEND_FILE_BYTES} bytes one file may be",
-                file.filename
-            ));
-        }
-        total = total
-            .checked_add(file.size)
-            .ok_or_else(|| "the message's files are too large".to_string())?;
-    }
-    if total > MAX_SEND_TOTAL_BYTES {
-        return Err(format!(
-            "the message's files are larger than the {MAX_SEND_TOTAL_BYTES} bytes one message may carry"
-        ));
-    }
-    if beginning
-        .calendar_ics
-        .as_ref()
-        .is_some_and(|ics| u64::try_from(ics.len()).map_or(true, |size| size > MAX_SEND_FILE_BYTES))
-    {
-        return Err("the calendar invitation is too large".into());
-    }
-    Ok(())
-}
-
-/// The begun message called `send` under `root`, as it was begun.
-fn begun_send(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), String> {
-    if send.is_empty() || !send.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("That message is no longer being sent".into());
-    }
-    let dir = sends_root(root).join(send);
-    let meta = std::fs::read(dir.join("meta.json"))
-        .map_err(|_| "That message is no longer being sent".to_owned())?;
-    let beginning: BeginSend = serde_json::from_slice(&meta)
-        .map_err(|_| "That message is no longer being sent".to_owned())?;
-    Ok((dir, beginning))
-}
-
-/// Begin `beginning` under `root`, answering the id its pieces and its send
-/// name it by.
-fn begin_send(root: &Path, beginning: &BeginSend) -> Result<StartedSend, String> {
-    check_beginning(beginning)?;
-    forget_old_sends(root);
-    let send = uuid::Uuid::new_v4().simple().to_string();
-    let dir = sends_root(root).join(&send);
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("could not begin the message: {error}"))?;
-    let meta = serde_json::to_vec(beginning)
-        .map_err(|error| format!("could not begin the message: {error}"))?;
-    std::fs::write(dir.join("meta.json"), meta)
-        .map_err(|error| format!("could not begin the message: {error}"))?;
-    for index in 0..beginning.files.len() {
-        std::fs::write(dir.join(format!("file-{index}")), b"")
-            .map_err(|error| format!("could not begin the message: {error}"))?;
-    }
-    Ok(StartedSend { send })
-}
-
-/// Take `piece` of a begun message's file, answering the bytes the host then
-/// holds of it.
-fn send_piece(root: &Path, piece: &SendPiece) -> Result<PieceKept, String> {
-    let (dir, beginning) = begun_send(root, &piece.send)?;
-    let file = beginning
-        .files
-        .get(piece.file as usize)
-        .ok_or_else(|| "That message carries no such file".to_string())?;
-    let bytes = hex::decode(&piece.bytes).map_err(|_| "A piece is not readable".to_string())?;
-    if bytes.len() > MAX_SEND_PIECE_BYTES {
-        return Err(format!(
-            "a piece carries at most {MAX_SEND_PIECE_BYTES} bytes"
-        ));
-    }
-    let path = dir.join(format!("file-{}", piece.file));
-    let held = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
-    if piece.offset != held {
-        return Err(format!(
-            "the host holds {held} bytes of that file: append at offset {held}"
-        ));
-    }
-    let end = held
-        .checked_add(bytes.len() as u64)
-        .filter(|end| *end <= file.size)
-        .ok_or_else(|| format!("{} holds only {} bytes", file.filename, file.size))?;
-    let mut open = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .map_err(|error| format!("could not take the piece: {error}"))?;
-    std::io::Write::write_all(&mut open, &bytes)
-        .map_err(|error| format!("could not take the piece: {error}"))?;
-    Ok(PieceKept { written: end })
-}
-
-/// A begun message read for its send: where its files wait, what leaves
-/// and whom it goes to, read once ([`Leaving::read`]), and what it carries.
-struct Staged {
-    dir: PathBuf,
-    leaving: Leaving,
-    files: Vec<SendFile>,
-    invitation: Option<String>,
-}
-
-impl Staged {
-    /// Read the message begun as `beginning`, whose files wait in `dir`.
-    fn read(dir: PathBuf, beginning: BeginSend) -> Result<Self, String> {
-        Ok(Self {
-            dir,
-            leaving: Leaving::read(beginning.message)?,
-            files: beginning.files,
-            invitation: beginning.calendar_ics,
-        })
-    }
-
-    /// What its person is shown of it before it leaves. Every file it
-    /// carries is whole by then: a file's bytes only ever grow to the size
-    /// it was begun with, so what is whole when its person is asked is what
-    /// leaves on their answer.
-    fn shown(&self) -> Result<sending::Shown, String> {
-        for (index, file) in self.files.iter().enumerate() {
-            let held = std::fs::metadata(self.dir.join(format!("file-{index}")))
-                .map_err(|_| format!("{} did not arrive", file.filename))?
-                .len();
-            if held != file.size {
-                return Err(format!(
-                    "{} arrived incomplete: {held} of {} bytes",
-                    file.filename, file.size
-                ));
-            }
-        }
-        sending::Shown::of(&self.leaving, &self.files, self.invitation.as_deref())
-    }
-}
-
-/// How long a message is taken for before another key holder may take it
-/// over: long enough for a large message's files to reach its server, short
-/// enough that a sender that stopped is taken over in the same minute.
-const MAIL_SEND_LEASE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
-impl Workspaces {
-    /// Send `staged` through `session` in `workspace`, where the workspace's
-    /// key holders agree on which one sends a message: it is taken under a
-    /// lease of its own ([`tilo_peer_state::mail_send_lease`]) and the workspace
-    /// keeps what left. A message another key holder already sent is
-    /// answered from what the workspace kept instead of sent again, so a
-    /// takeover loses nothing and sends nothing twice; a send that failed
-    /// keeps nothing and is tried again.
-    async fn send_in_workspace(
-        &self,
-        workspace: Option<&str>,
-        session: Session,
-        signing: Signing<'_>,
-        staged: Staged,
-    ) -> Result<SentMail, String> {
-        let message = staged
-            .leaving
-            .message()
-            .message_id
-            .clone()
-            .filter(|message| !message.is_empty());
-        let Some((workspace, message)) = workspace.zip(message) else {
-            return send_staged(session, signing, staged).await;
-        };
-        if let Some(sent) = self.recorded_mail_send(Some(workspace), &staged).await {
-            return Ok(sent);
-        }
-        let lease = tilo_peer_state::mail_send_lease(&message);
-        let device = self.device_cert().clone();
-        let now = system_time(tilo_clock::unix_now_ns());
-        let claimed = self
-            .author_own_workspace_state(workspace, &device, |peer| {
-                peer.workspace_mut().take_lease(
-                    &device,
-                    &lease,
-                    MAIL_SEND_LEASE,
-                    tilo_peer_state::unranked(),
-                    now,
-                )
-            })
-            .await
-            .map_err(|error| error.to_string())?
-            .is_some();
-        if !claimed {
-            // Another key holder is sending it. The caller keeps the message
-            // pending and asks again, and hears what left once it did.
-            return Err("another device is sending that message".into());
-        }
-        // The merged state may hold a send made before this device took the
-        // message: what left is answered, never sent a second time.
-        if let Some(sent) = self.recorded_mail_send(Some(workspace), &staged).await {
-            self.release_mail_send(workspace, &device, &lease, now)
-                .await;
-            return Ok(sent);
-        }
-        let outcome = send_staged(session, signing, staged).await;
-        if let Ok(sent) = &outcome {
-            let answer = serde_json::to_value(sent).map_err(|error| error.to_string())?;
-            if let Err(error) = self
-                .author_own_workspace_state(workspace, &device, |peer| {
-                    peer.workspace_mut().keep_done(&device, &lease, answer, now)
-                })
-                .await
-            {
-                tracing::warn!(%message, %error, "a sent message was not kept as sent");
-            }
-        }
-        self.release_mail_send(workspace, &device, &lease, now)
-            .await;
-        outcome
-    }
-
-    /// What the workspace recorded of `staged` having left, if a key holder
-    /// sent it.
-    async fn recorded_mail_send(
-        &self,
-        workspace: Option<&str>,
-        staged: &Staged,
-    ) -> Option<SentMail> {
-        let message = staged
-            .leaving
-            .message()
-            .message_id
-            .as_deref()
-            .filter(|message| !message.is_empty())?;
-        let sent = self
-            .state(workspace?)
-            .await?
-            .workspace()
-            .done(&tilo_peer_state::mail_send_lease(message))?;
-        match serde_json::from_value(sent.answer) {
-            Ok(sent) => Some(sent),
-            Err(error) => {
-                tilo_failure::ignored!(
-                    "what a send answered is not an answer this build reads",
-                    error
-                );
-                None
-            }
-        }
-    }
-
-    /// Stop taking the message `message` for `lease`, so the next message is
-    /// free to take at once rather than wait out the deadline.
-    async fn release_mail_send(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        lease: &str,
-        now: std::time::SystemTime,
-    ) {
-        let _ = self
-            .author_own_workspace_state(workspace, device, |peer| {
-                peer.workspace_mut().release_lease(device, lease, now)
-            })
-            .await;
-    }
-}
-
-/// Send the message begun under `sending`'s id through `session`: the files
-/// its pieces made, its invitation, and what it says. Answers what became of
-/// its copy in the account's Sent folder.
-#[cfg(test)]
-async fn send_staged_with(
-    session: Session,
-    signing: Signing<'_>,
-    sending: SendId,
-) -> Result<SentMail, String> {
-    let (dir, beginning) = begun_send(signing.root, &sending.send)?;
-    send_staged(session, signing, Staged::read(dir, beginning)?).await
-}
-
-/// Send `staged` through `session`, as it was read.
-async fn send_staged(
-    session: Session,
-    signing: Signing<'_>,
-    staged: Staged,
-) -> Result<SentMail, String> {
-    let files = staged_files(&staged.dir, &staged.files)?;
-    let outcome = send_leaving(session, signing, staged.leaving, files, staged.invitation).await;
-    if outcome.is_ok() {
-        let _ = std::fs::remove_dir_all(&staged.dir);
-    }
-    outcome
-}
-
-/// Keep the message begun under `keeping`'s id in its account's Drafts
-/// folder instead of sending it, and forget what was staged of it.
-async fn save_staged_draft_with(
-    session: Session,
-    signing: Signing<'_>,
-    keeping: SendId,
-) -> Result<(), String> {
-    let (dir, beginning) = begun_send(signing.root, &keeping.send)?;
-    let files = staged_files(&dir, &beginning.files)?;
-    let (account, secret) = account_with_secret(signing, &beginning.message.account).await?;
-    let (draft, invitation) = (beginning.message, beginning.calendar_ics);
-    let outcome = tokio::task::spawn_blocking(move || {
-        session.save_draft(&account, &secret, &draft, &files, invitation.as_deref())
-    })
-    .await
-    .map_err(|_| "the mail session did not finish".to_string())?;
-    if outcome.is_ok() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    outcome
-}
-
-/// The files a begun message carries, each whole as its pieces made it.
-fn staged_files(dir: &Path, staged: &[SendFile]) -> Result<Vec<Attachment>, String> {
-    let mut files = Vec::with_capacity(staged.len());
-    for (index, file) in staged.iter().enumerate() {
-        let bytes = std::fs::read(dir.join(format!("file-{index}")))
-            .map_err(|_| format!("{} did not arrive", file.filename))?;
-        if bytes.len() as u64 != file.size {
-            return Err(format!(
-                "{} arrived incomplete: {} of {} bytes",
-                file.filename,
-                bytes.len(),
-                file.size
-            ));
-        }
-        files.push(Attachment {
-            filename: file.filename.clone(),
-            mime: file.mime.clone(),
-            bytes,
-        });
-    }
-    Ok(files)
-}
-
-/// The sessions a host holds with its people's mail servers
-/// ([`Workspaces::mail_session`]).
-pub type Session = Arc<dyn tilo_mail_session::MailSession + Send + Sync>;
-
-/// Read one folder of one account as its server holds it, through `session`.
-async fn fetch_with(
-    session: Session,
-    signing: Signing<'_>,
-    asking: FetchMail,
-) -> Result<FetchedMail, String> {
-    let (account, secret) = account_with_secret(signing, &asking.account).await?;
-    tokio::task::spawn_blocking(move || session.fetch(&account, &secret, &asking))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
-}
-
-/// Read one message of one account as its server holds it.
-async fn read_with(
-    session: Session,
-    signing: Signing<'_>,
-    reading: ReadMail,
-) -> Result<FetchedMessage, String> {
-    let (account, secret) = account_with_secret(signing, &reading.account).await?;
-    tokio::task::spawn_blocking(move || session.read(&account, &secret, &reading))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
-}
-
-/// Ask one account's server which messages it holds that match.
-async fn search_with(
-    session: Session,
-    signing: Signing<'_>,
-    searching: SearchMail,
-) -> Result<FoundMail, String> {
-    let (account, secret) = account_with_secret(signing, &searching.account).await?;
-    tokio::task::spawn_blocking(move || session.search(&account, &secret, &searching))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
-}
-
-#[cfg(test)]
-async fn send_with(
-    session: Session,
-    signing: Signing<'_>,
-    sending: SendMail,
-    files: Vec<Attachment>,
-    invitation: Option<String>,
-) -> Result<SentMail, String> {
-    send_leaving(session, signing, Leaving::read(sending)?, files, invitation).await
-}
-
-/// Hand `leaving` to its account's server through `session`: to the
-/// recipients it was read with, and to nobody else.
-async fn send_leaving(
-    session: Session,
-    signing: Signing<'_>,
-    leaving: Leaving,
-    files: Vec<Attachment>,
-    invitation: Option<String>,
-) -> Result<SentMail, String> {
-    let (account, secret) = account_with_secret(signing, &leaving.message().account).await?;
-    tokio::task::spawn_blocking(move || {
-        session.send(&account, &secret, &leaving, &files, invitation.as_deref())
-    })
-    .await
-    .map_err(|_| "the mail session did not finish".to_string())?
-}
-
-async fn mark_with(
-    session: Session,
-    signing: Signing<'_>,
-    marking: MarkMail,
-) -> Result<(), String> {
-    let (account, secret) = account_with_secret(signing, &marking.account).await?;
-    tokio::task::spawn_blocking(move || session.mark(&account, &secret, &marking))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
-}
-
-/// The providers the person keeps, their models and what runs where.
 pub(super) fn providers(root: &Path) -> ModelProviders {
     providers_of(&provider_config(root))
 }
@@ -2110,336 +1463,32 @@ mod tests {
 }
 
 #[cfg(test)]
-mod mail_session_tests {
+mod accounts_sign_in_tests {
     #![allow(
         clippy::unwrap_used,
         clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )]
 
-    use std::sync::Mutex;
-
     use super::*;
 
-    /// A mail server that answers with the same folder and keeps what it was
-    /// told, so a test sees the host asked with the account's own sign-in.
+    /// A tester that accepts every sign-in, and counts what it was asked.
     #[derive(Default)]
-    struct Fixture {
-        asked: Mutex<Vec<String>>,
-        carried: Mutex<Vec<(String, Vec<u8>)>>,
-        invitation: Mutex<Option<String>>,
-        /// Why the server's Sent folder holds no copy of what is sent next.
-        unfiled: Mutex<Option<String>>,
+    struct Accepting {
+        asked: std::sync::Mutex<Vec<String>>,
     }
-
-    impl tilo_mail_session::MailSession for Fixture {
-        fn fetch(
+    impl AccountTester for Accepting {
+        fn test(
             &self,
             account: &accounts::Account,
             secret: &accounts::Secret,
-            asking: &FetchMail,
-        ) -> Result<FetchedMail, String> {
-            self.asked.lock().unwrap().push(format!(
-                "fetch {} {} with {}",
-                account.id, asking.folder, secret.password
-            ));
-            Ok(FetchedMail {
-                account: asking.account.clone(),
-                folder: asking.folder.clone(),
-                uid_validity: 7,
-                has_older: true,
-                newest_uid: 42,
-                messages: vec![person_accounts_message()],
-                ..FetchedMail::default()
-            })
+        ) -> Result<String, String> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push(format!("{} with {}", account.id, secret.password));
+            Ok("signed in".into())
         }
-
-        fn read(
-            &self,
-            account: &accounts::Account,
-            secret: &accounts::Secret,
-            reading: &ReadMail,
-        ) -> Result<FetchedMessage, String> {
-            self.asked.lock().unwrap().push(format!(
-                "read {} {} {} with {}",
-                account.id, reading.folder, reading.uid, secret.password
-            ));
-            Ok(person_accounts_message())
-        }
-
-        fn search(
-            &self,
-            account: &accounts::Account,
-            secret: &accounts::Secret,
-            searching: &SearchMail,
-        ) -> Result<FoundMail, String> {
-            self.asked.lock().unwrap().push(format!(
-                "search {} for {:?} with {}",
-                account.id, searching.text, secret.password
-            ));
-            Ok(FoundMail {
-                folders: vec![tilo_actions::remote::person_accounts::FoundFolder {
-                    folder: "inbox".into(),
-                    uid_validity: 7,
-                    messages: vec![person_accounts_message()],
-                }],
-            })
-        }
-
-        fn save_draft(
-            &self,
-            account: &accounts::Account,
-            secret: &accounts::Secret,
-            draft: &SendMail,
-            files: &[Attachment],
-            _invitation: Option<&str>,
-        ) -> Result<(), String> {
-            self.asked.lock().unwrap().push(format!(
-                "draft {} to {} with {} carrying {} files",
-                account.id,
-                draft.to,
-                secret.password,
-                files.len()
-            ));
-            Ok(())
-        }
-
-        fn send(
-            &self,
-            account: &accounts::Account,
-            secret: &accounts::Secret,
-            sending: &Leaving,
-            files: &[Attachment],
-            invitation: Option<&str>,
-        ) -> Result<SentMail, String> {
-            self.asked.lock().unwrap().push(format!(
-                "send {} to {} with {} carrying {} files and invitation {:?}",
-                account.id,
-                sending.message().to,
-                secret.password,
-                files.len(),
-                invitation.is_some()
-            ));
-            for file in files {
-                self.carried
-                    .lock()
-                    .unwrap()
-                    .push((file.filename.clone(), file.bytes.clone()));
-            }
-            *self.invitation.lock().unwrap() = invitation.map(str::to_owned);
-            Ok(SentMail {
-                unfiled: self.unfiled.lock().unwrap().clone(),
-            })
-        }
-
-        fn watch(
-            &self,
-            _: &accounts::Account,
-            _: &accounts::Secret,
-            _: Option<tilo_mail_session::InboxSeen>,
-            _: Arc<dyn tilo_mail_session::InboxHeard>,
-        ) -> Result<tilo_mail_session::Watching, String> {
-            Err("no inbox is watched in this test".into())
-        }
-
-        fn mark(
-            &self,
-            account: &accounts::Account,
-            secret: &accounts::Secret,
-            marking: &MarkMail,
-        ) -> Result<(), String> {
-            self.asked.lock().unwrap().push(format!(
-                "mark {} {} with {}",
-                account.id, marking.uid, secret.password
-            ));
-            Ok(())
-        }
-    }
-
-    fn person_accounts_message() -> tilo_actions::remote::person_accounts::FetchedMessage {
-        tilo_actions::remote::person_accounts::FetchedMessage {
-            uid: 42,
-            message_id: Some("42@example.test".into()),
-            from: tilo_actions::remote::person_accounts::MailAddress {
-                name: Some("Ada".into()),
-                email: "ada@example.test".into(),
-            },
-            subject: "Hello".into(),
-            body: "Hi".into(),
-            ..tilo_actions::remote::person_accounts::FetchedMessage::default()
-        }
-    }
-
-    /// A workspace that keeps an account and its sign-in answers a page's
-    /// reads, sends and changes with it, and refuses an account it does not
-    /// keep.
-    #[test]
-    fn a_page_reads_and_sends_through_the_accounts_the_person_keeps() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let vault = super::tests::held();
-        let signing = Signing {
-            vault: VaultAt::Held(vault),
-            root,
-            by: "",
-        };
-        let fixture = Arc::new(Fixture::default());
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(account_with_sign_in(signing));
-        let listing = mail_accounts(&vault.accounts_now(), root);
-        assert_eq!(listing.accounts.len(), 1);
-        assert!(listing.accounts[0].has_secret);
-
-        let fetched = runtime
-            .block_on(fetch_with(
-                fixture.clone(),
-                signing,
-                FetchMail {
-                    account: "ada@example.test".into(),
-                    folder: "inbox".into(),
-                    ..FetchMail::default()
-                },
-            ))
-            .unwrap();
-        assert_eq!(fetched.messages[0].subject, "Hello");
-        assert_eq!(fetched.newest_uid, 42);
-
-        runtime
-            .block_on(send_with(
-                fixture.clone(),
-                signing,
-                SendMail {
-                    account: "ada@example.test".into(),
-                    from_address: "ada@example.test".into(),
-                    to: "bob@example.test".into(),
-                    ..SendMail::default()
-                },
-                Vec::new(),
-                None,
-            ))
-            .unwrap();
-        runtime
-            .block_on(mark_with(
-                fixture.clone(),
-                signing,
-                MarkMail {
-                    account: "ada@example.test".into(),
-                    folder: "inbox".into(),
-                    uid: 42,
-                    uid_validity: 7,
-                    read: Some(true),
-                    ..MarkMail::default()
-                },
-            ))
-            .unwrap();
-
-        let asked = fixture.asked.lock().unwrap().clone();
-        assert_eq!(
-            asked,
-            vec![
-                "fetch ada@example.test inbox with fixture-password",
-                "send ada@example.test to bob@example.test with fixture-password carrying 0 files and invitation false",
-                "mark ada@example.test 42 with fixture-password",
-            ]
-        );
-
-        let unknown = runtime
-            .block_on(fetch_with(
-                fixture,
-                signing,
-                FetchMail {
-                    account: "eve@example.test".into(),
-                    folder: "inbox".into(),
-                    ..FetchMail::default()
-                },
-            ))
-            .unwrap_err();
-        assert!(unknown.contains("not kept here"), "{unknown}");
-    }
-
-    /// One message, what a search finds and a draft kept on its server are
-    /// asked of the account's server with its person's own sign-in as well.
-    #[test]
-    fn a_page_reads_one_message_searches_and_keeps_a_draft_through_the_host() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let signing = Signing {
-            vault: VaultAt::Held(super::tests::held()),
-            root,
-            by: "",
-        };
-        let fixture = Arc::new(Fixture::default());
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(account_with_sign_in(signing));
-
-        let read = runtime
-            .block_on(read_with(
-                fixture.clone(),
-                signing,
-                ReadMail {
-                    account: "ada@example.test".into(),
-                    folder: "inbox".into(),
-                    uid: 42,
-                    uid_validity: 7,
-                },
-            ))
-            .unwrap();
-        assert_eq!(read.subject, "Hello");
-        let found = runtime
-            .block_on(search_with(
-                fixture.clone(),
-                signing,
-                SearchMail {
-                    account: "ada@example.test".into(),
-                    text: Some("hello".into()),
-                    ..SearchMail::default()
-                },
-            ))
-            .unwrap();
-        assert_eq!(found.folders[0].messages[0].uid, 42);
-        // A draft is begun as a message is, and kept instead of sent.
-        let began = begin_send(
-            root,
-            &BeginSend {
-                message: SendMail {
-                    account: "ada@example.test".into(),
-                    to: "bob@example.test".into(),
-                    subject: "Not yet".into(),
-                    ..SendMail::default()
-                },
-                ..BeginSend::default()
-            },
-        )
-        .unwrap();
-        let session: Session = fixture.clone();
-        runtime
-            .block_on(save_staged_draft_with(
-                session,
-                signing,
-                SendId {
-                    send: began.send.clone(),
-                },
-            ))
-            .unwrap();
-        assert!(
-            !sends_root(root).join(&began.send).exists(),
-            "a kept draft leaves nothing staged"
-        );
-
-        assert_eq!(
-            fixture.asked.lock().unwrap().clone(),
-            vec![
-                "read ada@example.test inbox 42 with fixture-password",
-                "search ada@example.test for Some(\"hello\") with fixture-password",
-                "draft ada@example.test to bob@example.test with fixture-password carrying 0 files",
-            ]
-        );
     }
 
     /// An account and its sign-in, as a test keeps them: the account in the
@@ -2473,130 +1522,6 @@ mod mail_session_tests {
             .unwrap();
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
         signing.vault.keep_account(&account).await.unwrap();
-    }
-
-    /// A page begins the message, hands its file over in pieces, and sends
-    /// it: the host builds the message the pieces made, with the invitation,
-    /// and forgets what it staged.
-    #[test]
-    fn a_page_hands_a_messages_files_over_in_pieces() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let signing = Signing {
-            vault: VaultAt::Held(super::tests::held()),
-            root,
-            by: "",
-        };
-        let fixture = Arc::new(Fixture::default());
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(account_with_sign_in(signing));
-
-        let began = begin_send(
-            root,
-            &BeginSend {
-                message: SendMail {
-                    account: "ada@example.test".into(),
-                    from_address: "ada@example.test".into(),
-                    to: "bob@example.test".into(),
-                    subject: "Contract".into(),
-                    body: "Attached.".into(),
-                    ..SendMail::default()
-                },
-                calendar_ics: Some("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n".into()),
-                files: vec![tilo_actions::remote::person_accounts::SendFile {
-                    filename: "contract.pdf".into(),
-                    mime: "application/pdf".into(),
-                    size: 5,
-                }],
-            },
-        )
-        .unwrap();
-        let kept = send_piece(
-            root,
-            &SendPiece {
-                send: began.send.clone(),
-                file: 0,
-                offset: 0,
-                bytes: hex::encode(b"%PDF-"),
-            },
-        )
-        .unwrap();
-        assert_eq!(kept.written, 5);
-
-        // A piece out of order is refused, naming the offset to resume at.
-        let refused = send_piece(
-            root,
-            &SendPiece {
-                send: began.send.clone(),
-                file: 0,
-                offset: 3,
-                bytes: hex::encode(b"x"),
-            },
-        )
-        .unwrap_err();
-        assert!(refused.contains("offset 5"), "{refused}");
-
-        // The message leaves though its copy could not be filed, and the
-        // page is told why its Sent folder holds none.
-        *fixture.unfiled.lock().unwrap() = Some("Sent would not take the copy".into());
-        let session: Session = fixture.clone();
-        let sent = runtime
-            .block_on(send_staged_with(
-                session,
-                signing,
-                SendId {
-                    send: began.send.clone(),
-                },
-            ))
-            .unwrap();
-        assert_eq!(
-            sent.unfiled.as_deref(),
-            Some("Sent would not take the copy")
-        );
-        assert_eq!(
-            serde_json::to_value(&sent).unwrap(),
-            serde_json::json!({"unfiled": "Sent would not take the copy"})
-        );
-        assert_eq!(
-            fixture.carried.lock().unwrap().clone(),
-            vec![("contract.pdf".to_owned(), b"%PDF-".to_vec())]
-        );
-        assert!(fixture.invitation.lock().unwrap().is_some());
-        assert!(
-            !sends_root(root).join(&began.send).exists(),
-            "a sent message leaves nothing staged"
-        );
-
-        // A message no longer staged is refused, never sent twice.
-        let session: Session = fixture;
-        let again = runtime.block_on(send_staged_with(
-            session,
-            signing,
-            SendId { send: began.send },
-        ));
-        assert!(again.is_err(), "a sent message is gone");
-    }
-
-    /// A tester that accepts every sign-in, and counts what it was asked.
-    #[derive(Default)]
-    struct Accepting {
-        asked: Mutex<Vec<String>>,
-    }
-    impl AccountTester for Accepting {
-        fn test(
-            &self,
-            account: &accounts::Account,
-            secret: &accounts::Secret,
-        ) -> Result<String, String> {
-            self.asked
-                .lock()
-                .unwrap()
-                .push(format!("{} with {}", account.id, secret.password));
-            Ok("signed in".into())
-        }
     }
 
     /// An account another mail program moved in lands in the person's
@@ -2776,46 +1701,5 @@ mod mail_session_tests {
             }
         }
         files
-    }
-
-    /// An account kept without its sign-in reads nothing and sends nothing:
-    /// the host says so instead of opening a session with no password.
-    #[test]
-    fn an_account_without_its_sign_in_reaches_no_server() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let stores = super::tests::held();
-        let signing = Signing {
-            vault: VaultAt::Held(stores),
-            root,
-            by: "",
-        };
-        let mut account = accounts::Account::new(
-            accounts::AccountId::from("ada@example.test"),
-            accounts::email::TYPE_ID,
-        );
-        account.config = serde_json::json!({
-            "email": "ada@example.test",
-            "username": "ada@example.test",
-            "imap_host": "imap.example.test"
-        });
-        stores.keep_account(&account);
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let refused = runtime
-            .block_on(fetch_with(
-                Arc::new(Fixture::default()),
-                signing,
-                FetchMail {
-                    account: "ada@example.test".into(),
-                    folder: "inbox".into(),
-                    ..FetchMail::default()
-                },
-            ))
-            .unwrap_err();
-        assert!(refused.contains("no sign-in"), "{refused}");
     }
 }

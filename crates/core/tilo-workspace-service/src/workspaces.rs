@@ -132,14 +132,6 @@ pub use model_providers::OpenAiSignIn;
 mod person_settings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod this_computer;
-// The inboxes such a host watches for its people, with no window open.
-#[cfg(not(target_arch = "wasm32"))]
-mod mail_watch;
-#[cfg(not(target_arch = "wasm32"))]
-pub use mail_watch::MailListening;
-/// The mail servers a test stands in for, for the tests of what hears the mail.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) use mail_watch::testing as mail_testing;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod model_answers;
@@ -1258,17 +1250,9 @@ struct WorkspacesInner {
     /// provider, model and key ([`model_answers`]).
     #[cfg(not(target_arch = "wasm32"))]
     models: Arc<model_answers::Models>,
-    /// The sessions this host holds with the mail servers of the accounts
-    /// its people keep ([`Workspaces::mail_session`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    mail_session: std::sync::RwLock<person_settings::Session>,
     /// What uses of a vault item by reference keep here ([`hosted_use`]).
     #[cfg(not(target_arch = "wasm32"))]
     vault_uses: hosted_use::Uses,
-    /// The inboxes this host watches, and who listens for them
-    /// ([`mail_watch`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    mail_watches: mail_watch::MailWatches,
     /// What its people call important, one writer at a time
     /// ([`person_telling`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1662,11 +1646,7 @@ impl Workspaces {
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),
                 #[cfg(not(target_arch = "wasm32"))]
-                mail_session: std::sync::RwLock::new(Arc::new(models.mail_session())),
-                #[cfg(not(target_arch = "wasm32"))]
                 vault_uses: hosted_use::Uses::proving_within(models.mail_reach()),
-                #[cfg(not(target_arch = "wasm32"))]
-                mail_watches: mail_watch::MailWatches::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 telling: person_telling::Telling::default(),
                 content: content::ContentSlot::default(),
@@ -3145,23 +3125,18 @@ impl Workspaces {
         let following = crate::timing::start();
         // A sealed compaction this copy is behind in is taken as the record's base rather than
         // refused ([`GovernedWorkspace::follow_kept`]).
-        let followed = workspace.follow_kept(author, message.clone()).await;
+        let followed = self
+            .follow_kept_checked(workspace, author, message.clone())
+            .await;
         // A device with the record's keys checks the checkpoint leading it against the writes it
         // stands in for, and keeps that it did: the writes stay in every store until every such
         // device has.
-        // A compaction taken behind was checked as it was taken, against every write here that
-        // it covers; the writes it alone holds cannot be read again to check it.
         #[cfg(feature = "device-keys")]
         if followed.changed {
-            let route = (app.as_str(), record.as_str());
-            let checked = match &followed.taken_behind {
-                Some(compaction) => {
-                    self.keep_checkpoint_check(workspace, route, compaction)
-                        .await
-                }
-                None => self.check_leading_checkpoint(workspace, route).await,
-            };
-            if let Err(error) = checked {
+            if let Err(error) = self
+                .check_leading_checkpoint(workspace, (app.as_str(), record.as_str()))
+                .await
+            {
                 tracing::warn!(workspace = %workspace.workspace(), %app, %record, %error,
                     "this host's check of a record's checkpoint was not kept");
             }

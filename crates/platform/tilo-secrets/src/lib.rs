@@ -68,9 +68,7 @@ mod windows;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 #[cfg(target_os = "linux")]
-pub use device_proof::{
-    arm as arm_device_proof, prove as prove_device_caller, session_key as device_session_key,
-};
+pub use device_proof::{arm as arm_device_proof, prove as prove_device_caller};
 
 /// Secret bytes: wiped from memory on drop and never printed by `Debug`.
 #[derive(Clone, PartialEq, Eq)]

@@ -41,75 +41,6 @@ fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
     );
 }
 
-/// The login's shell runtime, hidden from the session, is told from a sandboxed program by its
-/// proof that it holds the device identity: made with the device's key, over the statement of the
-/// very process that connected, for the request it makes. A proof made with another device's key,
-/// for another request, by another process or by one that has ended, or none at all, is not it;
-/// nor is any proof when the session itself holds no device identity to check it with.
-#[test]
-fn the_shell_runtime_proves_it_holds_the_device_identity() {
-    use runtime_portal::holder_proof::statement;
-    let device = CallerKey::for_session(&[7; 32]).unwrap();
-    let other_device = CallerKey::for_session(&[8; 32]).unwrap();
-    let store = CallerKey::derive(&[7; 32]).unwrap();
-    let mut runtime = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn_locked()
-        .unwrap();
-    let mut other = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn_locked()
-        .unwrap();
-    let pid = runtime.id();
-    let op = runtime_portal::workspace_terminal::OP;
-    let proof = |key: &CallerKey, of: u32, op: &str| {
-        hex::encode(key.prove(&statement(of).unwrap(), op, b"").unwrap())
-    };
-    let made = proof(&device, pid, op);
-    assert!(holds_device_identity(Some(&device), pid, op, Some(&made)));
-    assert!(
-        !holds_device_identity(Some(&device), pid, op, None),
-        "no proof"
-    );
-    assert!(
-        !holds_device_identity(None, pid, op, Some(&made)),
-        "a session holding no device identity"
-    );
-    assert!(
-        !holds_device_identity(Some(&device), pid, op, Some(&proof(&other_device, pid, op))),
-        "another device's key"
-    );
-    assert!(
-        !holds_device_identity(Some(&device), pid, op, Some(&proof(&store, pid, op))),
-        "a proof made for the Secret Service"
-    );
-    assert!(
-        !holds_device_identity(
-            Some(&device),
-            pid,
-            runtime_portal::environment_socket::OP,
-            Some(&made)
-        ),
-        "a proof made for another request"
-    );
-    assert!(
-        !holds_device_identity(Some(&device), other.id(), op, Some(&made)),
-        "the proof of another process"
-    );
-    assert!(
-        !holds_device_identity(Some(&device), pid, op, Some("not hex")),
-        "a garbled proof"
-    );
-    let _ = runtime.kill();
-    let _ = runtime.wait();
-    assert!(
-        !holds_device_identity(Some(&device), pid, op, Some(&made)),
-        "a process that has ended"
-    );
-    let _ = other.kill();
-    let _ = other.wait();
-}
-
 /// A process that loads the device key makes itself non-dumpable, and the kernel then hides its
 /// namespaces from the session: such a peer is hidden, which is not a peer sharing the session's
 /// namespaces, and a process the session can look at is not hidden.
@@ -214,13 +145,12 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     assert!(records.session.asks.lock_recover().is_empty());
 }
 
-/// The login's shell runtime comes in by the entrance that asks only for its environments'
-/// sockets and its workspaces' terminals, and proves there that it holds the device identity: a
-/// hidden process of this account is let in, a process the session can look at in another mount
+/// A process of this account the kernel hides from the session comes in by the entrance that
+/// asks only for an environment's socket; a process the session can look at in another mount
 /// namespace is a sandboxed program and is refused as one, and another account's process is
 /// refused before anything of it is considered.
 #[test]
-fn a_hidden_process_of_this_account_comes_in_to_prove_its_device_identity() {
+fn a_hidden_process_of_this_account_comes_in_for_an_environments_socket_alone() {
     let own = rustix::process::geteuid().as_raw();
     let peer = |uid, shares_namespaces, hidden| Peer {
         uid,
@@ -228,11 +158,8 @@ fn a_hidden_process_of_this_account_comes_in_to_prove_its_device_identity() {
         hidden,
     };
     assert!(
-        matches!(
-            entrance(7, &peer(own, false, true)),
-            Ok(From::ShellRuntime(7))
-        ),
-        "hidden, and in the login's account: let in to prove it"
+        matches!(entrance(7, &peer(own, false, true)), Ok(From::Hidden(7))),
+        "hidden, and in the login's account: let in for an environment's socket"
     );
     assert!(
         matches!(

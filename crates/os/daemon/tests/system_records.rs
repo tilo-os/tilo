@@ -96,7 +96,13 @@ async fn a_second_agent_is_made_in_the_record_the_first_founded() {
     tilo_workspace_service::surfaces::decide_receipt(&content.path().join("surfaces"));
     let state = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let host = test_host_holding(state.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
+    let host = test_host_holding(
+        state.path(),
+        &key,
+        &cert,
+        Arc::new(TestGroupKeys::default()),
+    )
+    .await;
     let workspaces = host.workspaces().clone();
     mount(&workspaces);
     workspaces.set_member_device(Arc::new(MemberDevice {

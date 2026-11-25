@@ -2156,8 +2156,8 @@ impl Workspaces {
                 continue;
             }
             let taken = governed.take_served(frame.author, &message)
-                || governed
-                    .follow_kept(frame.author, message.clone())
+                || self
+                    .follow_kept_checked(&mut governed, frame.author, message.clone())
                     .await
                     .changed;
             if taken {
@@ -2350,7 +2350,10 @@ impl Workspaces {
         // A write the copy's own receive refuses may still be a compaction the
         // copy is behind; that is taken as the serving device kept it.
         let taken = governed.take_served(author, message)
-            || governed.follow_kept(author, message.clone()).await.changed;
+            || self
+                .follow_kept_checked(&mut governed, author, message.clone())
+                .await
+                .changed;
         // The link admits a frame into the copy's replica before its reader
         // hears it, so a write it landed changed the copy without `taken`
         // seeing it. Whoever follows the copy's records is told either way:

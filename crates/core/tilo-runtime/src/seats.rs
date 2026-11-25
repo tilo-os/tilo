@@ -855,13 +855,39 @@ fn uid_in(request: &Value) -> Result<u32, String> {
         .ok_or_else(|| "a seats request names the account by its uid".to_owned())
 }
 
+/// Where a descriptor an answer on one connection carries waits until it is written with it
+/// ([`Handing`]).
+pub(crate) type Hand = Arc<Mutex<Option<Descriptor>>>;
+
+std::thread_local! {
+    /// The hand of the connection whose session is being made on this thread ([`making_for`]).
+    static MAKING_FOR: std::cell::RefCell<Option<Hand>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `make` a session for the connection whose answers' descriptors wait in `hand`: an action that
+/// answers a descriptor (a seat's link, a hosted terminal's stream) finds it there
+/// ([`connection_hand`]). A session is made on its connection's own thread, before any of its
+/// requests is answered.
+pub(crate) fn making_for<T>(hand: Option<Hand>, make: impl FnOnce() -> T) -> T {
+    let before = MAKING_FOR.with(|making| making.replace(hand));
+    let made = make();
+    MAKING_FOR.with(|making| *making.borrow_mut() = before);
+    made
+}
+
+/// The hand of the connection whose session is being made now ([`making_for`]): `None` for a
+/// session no native connection serves.
+pub(crate) fn connection_hand() -> Option<Hand> {
+    MAKING_FOR.with(|making| making.borrow().clone())
+}
+
 /// A connection's seat and the daemon's seats, as a native connection is served with them.
 #[derive(Clone)]
 pub(crate) struct Seated {
     pub(crate) seat: Seat,
     pub(crate) seats: Arc<Seats>,
     /// A descriptor an answer on this connection carries, until it is written with it.
-    pub(crate) handed: Arc<Mutex<Option<Descriptor>>>,
+    pub(crate) handed: Hand,
     /// The descriptors the client sent with its first line: a nested session's window
     /// connection, which a shell started on this connection is handed
     /// ([`Shells::start`]).
@@ -897,7 +923,8 @@ impl Seated {
 }
 
 /// A connection's writer that sends the descriptor an answer carries ([`Seated::handed`]) with
-/// the first bytes written after it.
+/// the first bytes written after it: a seat action's, or any action's of the session the
+/// connection is served ([`making_for`]).
 pub(crate) struct Handing<'a> {
     pub(crate) stream: &'a Stream,
     pub(crate) handed: Option<&'a Mutex<Option<Descriptor>>>,
@@ -915,8 +942,7 @@ impl io::Write for Handing<'_> {
                 runtime_portal::fd_transport::send_with_fd(self.stream, bytes, &fd)?;
                 Ok(bytes.len())
             }
-            // Only root's sign-in hands a descriptor on a native connection, and Windows has no
-            // root to sign anyone in.
+            // Only Unix sockets carry a descriptor: no action hands one on Windows.
             #[cfg(windows)]
             Some(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,

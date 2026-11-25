@@ -1,16 +1,16 @@
-//! What this holder offers an agent of a workspace's mail: the actions of
-//! `tilo.accounts` it may call, as rows of the catalogue it reads. A page
-//! asks the holder directly and is offered no row; an agent is offered these
-//! where the workspace's policy lets it read the mail.
+//! What this holder offers an agent of a workspace's mail accounts: the
+//! actions of `tilo.accounts` it may call, as rows of the catalogue it reads.
+//! A page asks the holder directly and is offered no row; an agent is offered
+//! these where the workspace's policy lets it read the accounts.
 //!
-//! It reads, searches and drafts. Sending is offered too, and the policy
-//! decides whether its person is asked before anything leaves. Adding and
-//! removing accounts and marking mail are no row of the assistant's own
-//! catalogue: an agent adds an account only through the workspace's
-//! governance (`workspace/mail-accounts#add`), and there the policy asks its
-//! person first, as any change an agent makes is. Never silently allowed and
-//! never silently denied: the account is kept only once they answer yes, and
-//! a no leaves it unconnected.
+//! Reading, searching, sending and marking mail are the Mail app's, reached
+//! as any other app's actions are, over the connector that keeps them. Adding
+//! and removing accounts are no row of the assistant's own catalogue: an
+//! agent adds an account only through the workspace's governance
+//! (`workspace/mail-accounts#add`), and there the policy asks its person
+//! first, as any change an agent makes is. Never silently allowed and never
+//! silently denied: the account is kept only once they answer yes, and a no
+//! leaves it unconnected.
 
 use tilo_actions::remote::{
     CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_accounts, person_vault,
@@ -30,72 +30,15 @@ pub(super) const MAIL: Publisher = Publisher {
 };
 
 /// What an agent its person named for an account may ask, in catalogue
-/// order.
-const VERBS: [Verb; 9] = [
-    Verb {
-        id: person_accounts::LIST,
-        label: "List mail accounts",
-        check: "",
-        kind: ActionKind::Read,
-        params: Vec::new,
-    },
-    Verb {
-        id: person_accounts::ARRIVED,
-        label: "List arrived mail",
-        check: "",
-        kind: ActionKind::Read,
-        params: arrived_params,
-    },
-    Verb {
-        id: person_accounts::FETCH,
-        label: "Read mail folder",
-        check: "",
-        kind: ActionKind::Read,
-        params: fetch_params,
-    },
-    Verb {
-        id: person_accounts::READ,
-        label: "Read message",
-        check: "",
-        kind: ActionKind::Read,
-        params: read_params,
-    },
-    Verb {
-        id: person_accounts::SEARCH,
-        label: "Search mail",
-        check: "",
-        kind: ActionKind::Read,
-        params: search_params,
-    },
-    Verb {
-        id: person_accounts::BEGIN_SEND,
-        label: "Begin message",
-        check: "",
-        kind: ActionKind::Undoable,
-        params: begin_params,
-    },
-    Verb {
-        id: person_accounts::SEND_PIECE,
-        label: "Add file to message",
-        check: "",
-        kind: ActionKind::Undoable,
-        params: piece_params,
-    },
-    Verb {
-        id: person_accounts::SAVE_DRAFT,
-        label: "Keep message as draft",
-        check: "",
-        kind: ActionKind::Undoable,
-        params: begun_params,
-    },
-    Verb {
-        id: person_accounts::SEND,
-        label: "Send message",
-        check: "",
-        kind: ActionKind::Outside,
-        params: begun_params,
-    },
-];
+/// order: the accounts it may read and send from. Mail's own reading and
+/// sending are the app's, reached as any other app's actions are.
+const VERBS: [Verb; 1] = [Verb {
+    id: person_accounts::LIST,
+    label: "List mail accounts",
+    check: "",
+    kind: ActionKind::Read,
+    params: Vec::new,
+}];
 
 /// The rows an agent the workspace's policy lets read its mail is offered.
 pub(super) fn assistant_rows() -> Vec<CatalogueRow> {
@@ -105,227 +48,9 @@ pub(super) fn assistant_rows() -> Vec<CatalogueRow> {
         .collect()
 }
 
-fn account_param() -> ActionParam {
-    ActionParam::required(
-        "account",
-        ParamType::Text,
-        "The account, by its id as the list of accounts names it.",
-    )
-}
-
-fn folder_param() -> ActionParam {
-    ActionParam::required(
-        "folder",
-        ParamType::Text,
-        "The folder: inbox, sent, drafts, archive, trash or junk.",
-    )
-}
-
-fn arrived_params() -> Vec<ActionParam> {
-    vec![ActionParam::optional(
-        "after",
-        ParamType::Integer,
-        "The place in the arrival log to read on from; everything the log still keeps when omitted.",
-    )]
-}
-
-fn fetch_params() -> Vec<ActionParam> {
-    vec![
-        account_param(),
-        folder_param(),
-        ActionParam::optional(
-            "knownUid",
-            ParamType::Integer,
-            "The newest message number already held of the folder, to be answered only what arrived since.",
-        ),
-        ActionParam::optional(
-            "knownUidValidity",
-            ParamType::Integer,
-            "The numbering the held numbers were read under.",
-        ),
-        ActionParam::optional(
-            "beforeUid",
-            ParamType::Integer,
-            "The oldest message number already held, to be answered the page before it.",
-        ),
-    ]
-}
-
-fn read_params() -> Vec<ActionParam> {
-    vec![
-        account_param(),
-        folder_param(),
-        ActionParam::required(
-            "uid",
-            ParamType::Integer,
-            "The message's number in its folder.",
-        ),
-        ActionParam::required(
-            "uidValidity",
-            ParamType::Integer,
-            "The numbering that number was read under.",
-        ),
-    ]
-}
-
-fn search_params() -> Vec<ActionParam> {
-    fn part(name: &'static str, about: &'static str) -> ActionParam {
-        ActionParam::optional(name, ParamType::Text, about)
-    }
-    vec![
-        account_param(),
-        ActionParam::optional(
-            "folders",
-            ParamType::Array,
-            "The folders to look in; the inbox and the archive when none is named.",
-        ),
-        part("text", "Words the message holds anywhere."),
-        part("from", "A name or address it came from."),
-        part("to", "A name or address it went to."),
-        part("subject", "Words of its subject."),
-        ActionParam::optional(
-            "limit",
-            ParamType::Integer,
-            "The most messages answered of each folder, newest first; 25 at most.",
-        ),
-    ]
-}
-
-fn begin_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "message",
-            ParamType::Object,
-            "The message: account, fromAddress, to, subject and body, with cc, bcc, htmlBody, \
-             messageId, inReplyTo and references where it has them.",
-        ),
-        ActionParam::optional(
-            "files",
-            ParamType::Array,
-            "The files it carries, each with filename, mime and size; their bytes follow in pieces.",
-        ),
-        ActionParam::optional(
-            "calendarIcs",
-            ParamType::Text,
-            "A calendar invitation it brings.",
-        ),
-    ]
-}
-
-fn piece_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required("send", ParamType::Text, "The begun message's id."),
-        ActionParam::required(
-            "file",
-            ParamType::Integer,
-            "The file's place among the message's files.",
-        ),
-        ActionParam::required(
-            "offset",
-            ParamType::Integer,
-            "Where in the file this piece starts.",
-        ),
-        ActionParam::required(
-            "bytes",
-            ParamType::Text,
-            "The piece, hex-encoded; 256 KiB of the file at most.",
-        ),
-    ]
-}
-
-fn begun_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "send",
-        ParamType::Text,
-        "The begun message's id.",
-    )]
-}
-
-/// What signing a mail account in says of itself to whoever lists it.
-#[cfg(feature = "agents")]
-const CONNECT_ABOUT: &str = "Sign your person in to a mail account of theirs from its address \
-     alone: the way to add a mail account. Pass the address, and nothing they did not tell \
-     you. This server works out the account's servers itself and asks your person for the \
-     password in a protected field of your conversation with them, which you cannot read: \
-     never ask for a password and never take one. The call ends at once, told that they \
-     are asked and which servers were found: tell them in one line to type the password \
-     there, and do not make the call again. Once they typed it the account is signed in \
-     for the workspace and you are told. A password that is not accepted is asked for \
-     again by this server itself.";
-
-#[cfg(feature = "agents")]
-fn connect_params() -> Vec<ActionParam> {
-    let said = |name: &'static str, about: &'static str| {
-        ActionParam::optional(name, ParamType::Text, about)
-    };
-    vec![
-        ActionParam::required(
-            "address",
-            ParamType::Text,
-            "The account's mail address, as your person said it.",
-        ),
-        said(
-            "username",
-            "The name it signs in with, only where your person said one that is not the address.",
-        ),
-        said(
-            "name",
-            "The name mail from it carries, where they said one.",
-        ),
-        said(
-            "incomingServer",
-            "The name of the server its mail is read from (IMAP), with its port after a colon \
-             where that is not 993, as imap.example.org:1993: only after this call answered \
-             that none was found and your person told you.",
-        ),
-        said(
-            "outgoingServer",
-            "The name of the server its mail is handed to (SMTP), with its port after a colon \
-             where that is not 465: only together with incomingServer.",
-        ),
-    ]
-}
-
 impl super::super::Workspaces {
-    /// The row a turn this holder carries out for the person who asked its agent is offered for signing
-    /// a mail account in from its address alone
-    /// ([`crate::workspaces::person_settings::mail_connect`]). It is for agents alone: a
-    /// person signs in by saying so, and types nothing but the password, where no agent
-    /// reads it. What it says of itself is all a model needs to use it.
-    #[cfg(feature = "agents")]
-    pub(in crate::workspaces) fn mail_connect_row() -> CatalogueRow {
-        let mut row = Verb {
-            id: crate::workspaces::person_settings::mail_connect::CONNECT,
-            label: "Sign in to mail account",
-            check: "",
-            kind: ActionKind::Outside,
-            params: connect_params,
-        }
-        .row(MAIL, person_accounts::RESOURCE, "Mail");
-        if let Some(action) = &mut row.action {
-            // It signs in somewhere outside the workspace, once its person typed the password.
-            let mut contract = ActionContract {
-                kind: ActionKind::Outside,
-                ..ActionContract::default()
-            };
-            contract.set_audience(Audience::Agents);
-            action.contract = contract;
-            action.description = Some(CONNECT_ABOUT.to_owned());
-        }
-        row
-    }
-
-    #[cfg(feature = "agents")]
-    /// The rows an agent the workspace's policy lets read its mail is
-    /// offered, for the entry a turn this holder carries out reaches the
-    /// workspace's mail through: such a turn has no device behind it for the
-    /// catalogue to offer them by.
-    pub(in crate::workspaces) fn assistant_mail_rows() -> Vec<CatalogueRow> {
-        assistant_rows()
-    }
-
-    /// The rows `asked`, an agent, is offered of the workspace's mail and its
-    /// calendars: those the workspace's policy lets it read.
+    /// The rows `asked`, an agent, is offered of the workspace's mail
+    /// accounts: those the workspace's policy lets it read.
     pub(super) async fn mail_rows(&self, asked: super::Asked<'_>) -> Vec<CatalogueRow> {
         let mut rows = Vec::new();
         if self
@@ -340,19 +65,11 @@ impl super::super::Workspaces {
 }
 
 /// A workspace's mail accounts in its governance tree
-/// (`workspace/mail-accounts`): every `tilo.accounts` action an agent may ask (listing them,
-/// reading and sending their mail), adding one, and adding one whose sign-in the vault keeps
-/// by reference. Each is decided by the workspace's policy on its mail as any call of it is.
-const ACCOUNT_VERBS: [(&Verb, &str); 11] = [
+/// (`workspace/mail-accounts`): listing them, adding one, and adding one whose sign-in the
+/// vault keeps by reference. Each is decided by the workspace's policy on its mail as any call
+/// of it is.
+const ACCOUNT_VERBS: [(&Verb, &str); 3] = [
     (&VERBS[0], person_accounts::LIST),
-    (&VERBS[1], person_accounts::ARRIVED),
-    (&VERBS[2], person_accounts::FETCH),
-    (&VERBS[3], person_accounts::READ),
-    (&VERBS[4], person_accounts::SEARCH),
-    (&VERBS[5], person_accounts::BEGIN_SEND),
-    (&VERBS[6], person_accounts::SEND_PIECE),
-    (&VERBS[7], person_accounts::SAVE_DRAFT),
-    (&VERBS[8], person_accounts::SEND),
     (
         &Verb {
             id: "add",

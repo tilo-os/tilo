@@ -38,6 +38,8 @@ pub struct Button {
     /// Accessible name for an icon-only button (empty visible label);
     /// left unset when the label itself serves as the accessible name.
     accessible_name: Option<String>,
+    /// What it says is news: a screen reader announces it without the person moving focus.
+    live: Option<crate::a11y::Politeness>,
     /// Fluent key or plain string, shown by the host's central
     /// [`TooltipHost`](crate::widget::TooltipHost); on an icon-only button it is also the
     /// accessible name unless one was set.
@@ -159,6 +161,7 @@ impl Button {
             label: label.to_string(),
             detail: None,
             accessible_name: None,
+            live: None,
             tooltip: None,
             description: None,
             compact_presentation: None,
@@ -545,6 +548,14 @@ impl Button {
             self.description = why;
             self.dirty = true;
         }
+    }
+
+    /// Announce what it says without the person moving focus, when it changes: a polite wait for a
+    /// pause, or assertive speech ([`AccessNode::live`]).
+    #[must_use]
+    pub fn with_live(mut self, politeness: crate::a11y::Politeness) -> Self {
+        self.live = Some(politeness);
+        self
     }
 
     /// Change what an icon-only button is announced as, for a control whose meaning flips with
@@ -2661,8 +2672,12 @@ impl Widget for Button {
                     .clone()
                     .filter(|detail| !detail.trim().is_empty())
             });
-        Some(match description {
+        let node = match description {
             Some(why) => node.with_description(why),
+            None => node,
+        };
+        Some(match self.live {
+            Some(politeness) => node.with_live(politeness),
             None => node,
         })
     }

@@ -556,25 +556,25 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     }
 
     press_faces(&mut session);
-    let labels = session.accessible_labels();
+    let said = said_by_the_shell(&session);
     assert!(
-        labels.iter().any(|label| label == "Ada"),
-        "both are here: {labels:?}"
+        said.iter().any(|word| word == "Ada"),
+        "both are here: {said:?}"
     );
     assert!(
-        labels.iter().any(|label| label == "Grace"),
-        "both are here: {labels:?}"
+        said.iter().any(|word| word == "Grace"),
+        "both are here: {said:?}"
     );
     assert!(
-        !labels.iter().any(|label| label == "Framework 16"),
-        "a person is named, never their machine: {labels:?}"
+        !said.iter().any(|word| word == "Framework 16"),
+        "a person is named, never their machine: {said:?}"
     );
     // How available a person is is said of them, and only of them: the one who is at their machine
     // is not told apart from the one who is away by their name alone.
     assert_eq!(
-        labels.iter().filter(|label| *label == "Away").count(),
+        said.iter().filter(|word| *word == "Away").count(),
         1,
-        "one of the two is away: {labels:?}"
+        "one of the two is away: {said:?}"
     );
 
     // They are back at their machine, and say so: their face lightens.
@@ -591,10 +591,10 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
-    let labels = session.accessible_labels();
+    let said = said_by_the_shell(&session);
     assert!(
-        !labels.iter().any(|label| label == "Away"),
-        "nobody is away now: {labels:?}"
+        !said.iter().any(|word| word == "Away"),
+        "nobody is away now: {said:?}"
     );
 
     // They join a voice channel: the roster says which one, and that is what people read of them
@@ -619,11 +619,11 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
-    let labels = session.accessible_labels();
+    let said = said_by_the_shell(&session);
     drop(session);
     assert!(
-        labels.iter().any(|label| label.contains("Standup")),
-        "the call they are in: {labels:?}"
+        said.iter().any(|word| word.contains("Standup")),
+        "the call they are in: {said:?}"
     );
 }
 
@@ -1488,6 +1488,31 @@ fn the_follow_banner_opens_the_followed_persons_card() {
         "the chip opens their card, not another: {:?}",
         session.read("session:people")
     );
+    // Their card stands in the roster's place at once: the head, and the way out of the view this
+    // person follows. Nothing the press does may take the view back: it is a press about the
+    // following itself.
+    let mut trace: Vec<(String, String, bool)> = Vec::new();
+    let opened = crate::common::steps_within(&mut session, Duration::from_secs(3), |session| {
+        let reading = session.read("session:people");
+        let said = |field: &str| {
+            reading
+                .as_ref()
+                .and_then(|board| board[field].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let card = session.shell_says("Stop following");
+        if trace.len() < 24 || card {
+            trace.push((said("following"), said("stopped"), card));
+        }
+        card.then_some(())
+    });
+    assert!(
+        opened.is_some(),
+        "the followed person's card opens as the chip is pressed: the trace is {trace:?}, \
+         the session says {:?}",
+        session.accessible_labels()
+    );
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -1501,6 +1526,47 @@ fn the_follow_banner_opens_the_followed_persons_card() {
         "the chip stands while their card is open: {:?}",
         session.accessible_labels()
     );
+    assert_eq!(
+        live_of(&session, "Following Ada"),
+        Some(ui::accesskit::Live::Polite),
+        "whose view this is is news a screen reader hears: {:?}",
+        session.accessible_labels()
+    );
+}
+
+/// The window the shell draws its screen in, as the screen-reader export names it.
+const SHELL_WINDOW: &str = "Desktop shell";
+
+/// Every word the shell publishes to assistive technology in its own window: each node's name, its
+/// description and its value, as a screen reader reads a row.
+fn said_by_the_shell(session: &Session) -> Vec<String> {
+    session
+        .a11y_windows()
+        .into_iter()
+        .filter(|(_, name, _)| name == SHELL_WINDOW)
+        .flat_map(|(_, _, tree)| tree.nodes.into_iter())
+        .flat_map(|(_, node)| {
+            [node.label(), node.description(), node.value()]
+                .into_iter()
+                .flatten()
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// How a screen reader is told of the news `words` name when the shell shows it: the live
+/// politeness of the first node whose name holds them, in the shell's own window.
+fn live_of(session: &Session, words: &str) -> Option<ui::accesskit::Live> {
+    session
+        .a11y_windows()
+        .into_iter()
+        .filter(|(_, name, _)| name == SHELL_WINDOW)
+        .find_map(|(_, _, tree)| {
+            tree.nodes
+                .into_iter()
+                .find(|(_, node)| node.label().is_some_and(|label| label.contains(words)))
+                .and_then(|(_, node)| node.live())
+        })
 }
 
 /// Follow the person `who` through the session's own action, as the shell's card asks it: no
@@ -1588,10 +1654,17 @@ fn stopping_the_follow_from_the_chip_ends_it_and_the_bar_says_so() {
         "the bar no longer says whose view this was: {:?}",
         session.accessible_labels()
     );
-    // Their own input ended it, so the bar says so a moment.
+    // Their own input ended it, so the bar says so a moment, as news a screen reader hears
+    // without the person moving focus.
     wait_for(&mut session, "the bar says the follow stopped", |session| {
         session.shell_says("Stopped following").then_some(())
     });
+    assert_eq!(
+        live_of(&session, "Stopped following"),
+        Some(ui::accesskit::Live::Polite),
+        "the notice is a polite live region: {:?}",
+        session.accessible_labels()
+    );
     // ...and the moment passes: the bar says nothing of their view again, the clock back.
     wait_for(&mut session, "the notice to go", |session| {
         (!session.shell_says("Stopped following")).then_some(())
@@ -1617,9 +1690,11 @@ fn the_follow_chip_folds_into_their_face_on_a_narrow_bar() {
     sync.hear(hello(0xaa, "Framework 16"));
     arrived_as(&sync, 0xaa, "Ada");
     let clock = clock_of(&session);
-    wait_for(&mut session, "the bar shows the time", |session| {
-        session.shell_text_bounds(&clock)
-    });
+    let (clock_x0, clock_x1, clock_y, clock_height) =
+        wait_for(&mut session, "the bar shows the time", |session| {
+            let (x, y, width, height) = session.shell_text_bounds(&clock)?;
+            Some((x, x + width, y, height))
+        });
     let mut own = sync.own();
     own.following = Some(person(0xaa));
     sync.set_own(own);
@@ -1658,8 +1733,21 @@ fn the_follow_chip_folds_into_their_face_on_a_narrow_bar() {
         "Stop is the square mark beside their face: {stop_width} by {stop_height}"
     );
     assert!(
-        stop_x > face_x + face_width - 1.0 && stop_x + stop_width < 400.0,
-        "Stop stands beside their face, inside the bar: {stop_x} beside {face_x}+{face_width}"
+        stop_x + stop_width / 2.0 > face_x + face_width / 2.0 && stop_x + stop_width < 400.0,
+        "Stop is the mark after their face, inside the bar: {stop_x}+{stop_width} after \
+         {face_x}+{face_width}"
+    );
+    // The folded chip stands where the clock stood: their face and Stop together cover the clock's
+    // place in the bar, so the bar's glance value reads theirs where it read the time.
+    assert!(
+        face_x <= clock_x1 && stop_x + stop_width >= clock_x0,
+        "the folded chip covers the clock's place ({clock_x0}..{clock_x1}): their face {face_x}..{} and Stop {stop_x}..{}",
+        face_x + face_width,
+        stop_x + stop_width,
+    );
+    assert!(
+        stop_y + stop_height < 80.0 && clock_y + clock_height < 80.0,
+        "Stop and the place the clock stood are in the bar: {stop_y} + {stop_height}, {clock_y} + {clock_height}"
     );
     assert!(
         stop_y + stop_height < 80.0,

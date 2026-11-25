@@ -41,8 +41,6 @@ pub struct RosterRow {
     pub joined_line: Option<String>,
     /// The voice channel they are in, if any.
     pub call: Option<String>,
-    /// The voice channel of theirs this device may join from their row: one they are in and this person is not.
-    pub join: Option<VoiceChannel>,
 }
 
 impl RosterRow {
@@ -51,14 +49,6 @@ impl RosterRow {
     pub fn is_agent(&self) -> bool {
         !self.member.is_person()
     }
-}
-
-/// One voice channel's call, by the app, record and channel that hold it: what joining it asks of the app that owns it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VoiceChannel {
-    pub app: String,
-    pub record: String,
-    pub channel: String,
 }
 
 /// One recent change of someone's, as History records it.

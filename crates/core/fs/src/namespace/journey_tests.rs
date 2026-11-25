@@ -674,8 +674,10 @@ fn a_write_names_its_file_actions_and_the_invoker_that_made_it() {
         .all(|change| {
             change.message().is_some_and(|message| {
                 tilo_actions::ActionContext::from_change_message(message).is_some()
-                    || tilo_actions::FrameworkChange::from_change_message(message)
-                        == Some(tilo_actions::FrameworkChange::Structure)
+                    || tilo_actions::stamp::Label::of(message)
+                        == Some(tilo_actions::stamp::Label::Framework(
+                            tilo_actions::FrameworkChange::Structure,
+                        ))
             })
         });
     assert!(

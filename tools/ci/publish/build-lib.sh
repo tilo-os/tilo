@@ -5,6 +5,10 @@
 # change to how publishing works keys no build.
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+# The product font catalog this build pins, relative to the checkout. Every
+# image and bundle stages its fonts from here, and the checks compare what
+# they installed with this source, so a move changes one name.
+font_catalog_source=crates/ui/ui-core/assets/fonts
 scratch=${TMPDIR:-/tmp}
 # Build scripts that prepare test fixtures (tilo-fs) write them to this cache; the source tree
 # is read-only in t's sandbox, so it lives in the build directory.

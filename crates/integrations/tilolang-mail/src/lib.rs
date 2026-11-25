@@ -21,6 +21,8 @@ pub mod sample;
 pub mod serve;
 #[cfg(feature = "engine")]
 pub mod sign_ins;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub mod wire;
 
 use std::cell::RefCell;

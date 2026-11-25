@@ -586,8 +586,11 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
     drop(created);
     // The same state as the version before kept it: what an earlier build wrote.
     let (mut stored, peer) = kept_peer_state(&path);
-    let peer = kept_at_13(&peer);
-    assert_eq!(postcard::take_from_bytes::<u32>(&peer).unwrap().0, 13);
+    let peer = kept_before(&peer);
+    assert_eq!(
+        postcard::take_from_bytes::<u32>(&peer).unwrap().0,
+        tilo_peer_state::DURABLE_VERSION - 1
+    );
     stored.peer = vec![peer_parts::PeerPart::Inline(peer)];
     std::fs::write(&path, postcard::to_stdvec(&stored).unwrap()).unwrap();
 
@@ -605,9 +608,8 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
     assert_eq!(reopened.summary().name, "Team");
 }
 
-/// `bytes`, a durable state, as version 13 kept it: its layout is the same, its version one
-/// before this build's.
-fn kept_at_13(bytes: &[u8]) -> Vec<u8> {
+/// `bytes`, a durable state, as the version before this build's kept it: its layout is the same.
+fn kept_before(bytes: &[u8]) -> Vec<u8> {
     let mut bytes = bytes.to_vec();
     let today = u8::try_from(tilo_peer_state::DURABLE_VERSION).unwrap();
     assert_eq!(

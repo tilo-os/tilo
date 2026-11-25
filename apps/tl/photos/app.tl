@@ -126,13 +126,27 @@ type Library {
     /// What the last thing the library did has to say to the person: an album saved, a change
     /// another member made first. Empty where there is nothing to say.
     notice: Text = ""
-    /// Whether an album draft is open, and if so its name and the photos chosen for it: the
-    /// album itself changes only when the person saves the draft.
-    album_draft_open: Bool = false
+    /// The album a person is choosing photos for, each their own until they save it.
+    album_drafts: Collection<AlbumDraft>
+}
+
+/// An album a person is choosing photos for: its name and the photos chosen so far. The album
+/// itself changes only when they save the draft, and until then the draft is theirs alone, so
+/// nobody else watches a half-typed name or a half-made choice.
+type AlbumDraft (readers: author) {
     /// The album the draft is of, and empty for one it will start.
-    album_draft_id: Text = ""
-    album_draft_name: Text = ""
-    album_draft_photos: List<Text>
+    album: Text = ""
+    name: Text = ""
+    photos: List<Text>
+}
+
+/// Whether the person has a draft open that the place `place` shows: the library, or the album
+/// the draft is of.
+fn drafting(lib: Library, place: Text) -> Bool {
+    match lib.album_drafts.first() {
+        .some(d) => place == "library" or place == d.album,
+        .none => false,
+    }
 }
 
 /// A picture an import could not read: what it is called, where its bytes are, where it stood in
@@ -891,30 +905,26 @@ action album_contains_toggle(a: Album, p: Photo) (icon: .folder, label: "Album")
 /// person chooses its photos in the library and nothing about the album changes until they save
 /// the draft, so a change another member makes meanwhile is reviewed, not overwritten unseen.
 action start_album_draft(lib: Library, id: Text) (icon: .pencil, label: "Edit album") {
+    if let open = lib.album_drafts.first() { lib.album_drafts.remove(open) }
+    let draft = lib.album_drafts.insert(AlbumDraft())
     if let held = lib.albums.find(a -> a.id == id) {
-        lib.album_draft_id = held.id
-        lib.album_draft_name = held.name
-        lib.album_draft_photos = held.photos.map(photo -> photo)
-    } else {
-        lib.album_draft_id = ""
-        lib.album_draft_name = ""
-        lib.album_draft_photos = []
+        draft.album = held.id
+        draft.name = held.name
+        draft.photos = held.photos.map(photo -> photo)
     }
-    lib.album_draft_open = true
     lib.notice = ""
 }
 
 /// Chooses a photo for the album draft, or takes it out of the draft when it is already in it.
 action album_draft_toggle(lib: Library, p: Photo) (icon: .folder, group: "Album draft") {
-    lib.album_draft_photos = toggled(lib.album_draft_photos, p.id)
+    if let draft = lib.album_drafts.first() {
+        draft.photos = toggled(draft.photos, p.id)
+    }
 }
 
 /// Closes the album draft, saving nothing.
 action cancel_album_draft(lib: Library) (label: "Cancel") {
-    lib.album_draft_open = false
-    lib.album_draft_id = ""
-    lib.album_draft_name = ""
-    lib.album_draft_photos = []
+    if let draft = lib.album_drafts.first() { lib.album_drafts.remove(draft) }
     lib.notice = "Album changes discarded"
 }
 
@@ -923,28 +933,33 @@ action cancel_album_draft(lib: Library) (label: "Cancel") {
 /// stays as it is and says so, so they review it and save again. What the save does add and take
 /// away merges with a change another member made meanwhile.
 action save_album(lib: Library) (icon: .check, label: "Save album") {
+    let draft = match lib.album_drafts.first() {
+        .some(d) => d,
+        .none => {
+            return
+        }
+    }
     let known = lib.photos.map(p -> p.id)
-    let chosen = lib.album_draft_photos.filter(id -> known.contains(id))
-    if chosen.len() != lib.album_draft_photos.len() {
+    let chosen = draft.photos.filter(id -> known.contains(id))
+    if chosen.len() != draft.photos.len() {
         lib.notice = "Someone else changed this album. Review it and save again."
         return
     }
-    let name = lib.album_draft_name.trim()
+    let name = draft.name.trim()
     if name == "" {
         lib.notice = "Name the album first."
         return
     }
-    if lib.album_draft_id == "" {
+    if draft.album == "" {
         let made = lib.albums.insert(Album(name: name))
         for id in chosen {
             made.photos.add(id)
         }
-        lib.album_draft_id = made.id
-        lib.album_draft_open = false
+        lib.album_drafts.remove(draft)
         lib.notice = "Album saved"
         return
     }
-    if let album = lib.albums.find(a -> a.id == lib.album_draft_id) {
+    if let album = lib.albums.find(a -> a.id == draft.album) {
         album.name = name
         // Only the photos that differ are added and taken away, so two people's choices merge.
         for p in lib.photos {
@@ -954,7 +969,7 @@ action save_album(lib: Library) (icon: .check, label: "Save album") {
                 album.photos.add(p.id)
             } else if listed and not wanted { album.photos.remove(p.id) }
         }
-        lib.album_draft_open = false
+        lib.album_drafts.remove(draft)
         lib.notice = "Album saved"
     } else {
         lib.notice = "Someone else changed this album. Review it and save again."
@@ -963,16 +978,15 @@ action save_album(lib: Library) (icon: .check, label: "Save album") {
 
 /// Deletes the album the draft is of. Its photos stay in the library.
 destructive action delete_album_draft(lib: Library) (icon: .trash, label: "Delete album") {
-    lib.album_draft_open = false
-    if let album = lib.albums.find(a -> a.id == lib.album_draft_id) {
-        lib.albums.remove(album)
-        lib.notice = "Album deleted"
-    } else {
-        lib.notice = "Someone else changed this album. Review it and save again."
+    if let draft = lib.album_drafts.first() {
+        if let album = lib.albums.find(a -> a.id == draft.album) {
+            lib.albums.remove(album)
+            lib.notice = "Album deleted"
+        } else {
+            lib.notice = "Someone else changed this album. Review it and save again."
+        }
+        lib.album_drafts.remove(draft)
     }
-    lib.album_draft_id = ""
-    lib.album_draft_name = ""
-    lib.album_draft_photos = []
 }
 
 /// Takes down what the library last had to say.
@@ -1531,8 +1545,7 @@ view library(lib: Library) {
                         details_latitude,
                         details_longitude,
                     )
-                } else if lib.album_draft_open
-                    and (place == "library" or place == lib.album_draft_id) {
+                } else if drafting(lib, place) {
                     album_editor(lib, album_delete_confirm)
                 } else if let album = lib.albums.find(a -> a.id == place) {
                     album_place(
@@ -2421,50 +2434,52 @@ view album_place(
 /// The album the person is choosing photos for: its name, the photos they picked, and the
 /// library under them to pick from. The album changes when they save the draft, and not before.
 view album_editor(lib: Library, deleting: State<Bool>) {
-    stack(gap: .related, fill) {
-        row(gap: .related, align: .center, wrap: true) {
-            ui.TextInput(bind: lib.album_draft_name, title: true, placeholder: "Album name")
-            ui.Text("{lib.album_draft_photos.len()} chosen", role: .caption, secondary: true)
-            ui.Button("Save album", icon: .check, role: .primary) {
-                on press: save_album(lib)
-            }
-            ui.Button("Cancel") {
-                on press: cancel_album_draft(lib)
-            }
-            if lib.album_draft_id != "" {
-                ui.Button("Delete album", icon: .trash) {
-                    on press: set(deleting, true)
-                }
-            }
-        }
-        if deleting {
+    if let draft = lib.album_drafts.first() {
+        stack(gap: .related, fill) {
             row(gap: .related, align: .center, wrap: true) {
-                ui.Text("Delete this album? Its photos stay in the library.", role: .caption)
-                ui.Button("Delete", icon: .trash, role: .destructive) {
-                    on press: delete_album_draft(lib).then(set(deleting, false))
+                ui.TextInput(bind: draft.name, title: true, placeholder: "Album name")
+                ui.Text("{draft.photos.len()} chosen", role: .caption, secondary: true)
+                ui.Button("Save album", icon: .check, role: .primary) {
+                    on press: save_album(lib)
                 }
-                ui.Button("Keep") {
-                    on press: set(deleting, false)
+                ui.Button("Cancel") {
+                    on press: cancel_album_draft(lib)
+                }
+                if draft.album != "" {
+                    ui.Button("Delete album", icon: .trash) {
+                        on press: set(deleting, true)
+                    }
                 }
             }
-        }
-        ui.Text("Choose the photos for this album.", role: .caption, secondary: true)
-        if lib.photos.is_empty() {
-            ui.EmptyState(
-                "Your library is empty",
-                message: "Open a photo, or drop pictures on the window, to start your library.",
-                icon: .image,
-            )
-        } else {
-            ui.MediaGrid(size: .small, fill) {
-                for p in lib.photos {
-                    ui.MediaCard(
-                        p,
-                        title: p.name,
-                        picture: card_picture(p),
-                        selected: lib.album_draft_photos.contains(p.id),
-                    ) {
-                        on activate: album_draft_toggle(lib, p)
+            if deleting {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Text("Delete this album? Its photos stay in the library.", role: .caption)
+                    ui.Button("Delete", icon: .trash, role: .destructive) {
+                        on press: delete_album_draft(lib).then(set(deleting, false))
+                    }
+                    ui.Button("Keep") {
+                        on press: set(deleting, false)
+                    }
+                }
+            }
+            ui.Text("Choose the photos for this album.", role: .caption, secondary: true)
+            if lib.photos.is_empty() {
+                ui.EmptyState(
+                    "Your library is empty",
+                    message: "Open a photo, or drop pictures on the window, to start your library.",
+                    icon: .image,
+                )
+            } else {
+                ui.MediaGrid(size: .small, fill) {
+                    for p in lib.photos {
+                        ui.MediaCard(
+                            p,
+                            title: p.name,
+                            picture: card_picture(p),
+                            selected: draft.photos.contains(p.id),
+                        ) {
+                            on activate: album_draft_toggle(lib, p)
+                        }
                     }
                 }
             }

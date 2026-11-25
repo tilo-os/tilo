@@ -4,6 +4,7 @@
 
 mod calendar_bridge_tests;
 mod hosted_own_agent_tests;
+mod mail_bridge_tests;
 mod moderation_history_tests;
 mod own_agent_tests;
 mod record_roots_tests;

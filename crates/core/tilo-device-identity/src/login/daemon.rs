@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::RESOURCE;
 #[cfg(doc)]
 use super::PROVIDER;
+use super::RESOURCE;
 
 /// The refusal's code when the device's daemon is not running.
 pub const NOT_RUNNING: &str = "not-running";
@@ -246,6 +246,12 @@ impl DeviceActions {
         Ok(Self::at(native_in(&sockets)))
     }
 
+    /// The daemon's native endpoint these actions are asked at.
+    #[must_use]
+    pub fn native(&self) -> &Path {
+        &self.native
+    }
+
     /// The device action `action` called with `args`: its result.
     ///
     /// # Errors
@@ -317,6 +323,38 @@ impl DeviceActions {
         self.tool("tilo_do", &arguments)
     }
 
+    /// [`Self::ask`] for an action whose answer may come with a descriptor handed beside it: the
+    /// answer's first message is taken by `receive`, which answers its bytes and what it carried.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or refused.
+    #[cfg(unix)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller builds the answer's arguments for this one call"
+    )]
+    pub fn ask_receiving<T>(
+        &self,
+        action: &str,
+        args: Value,
+        receive: impl FnOnce(&std::os::unix::net::UnixStream) -> std::io::Result<(Vec<u8>, T)>,
+    ) -> Result<(Value, T), DeviceRefusal> {
+        let arguments = serde_json::json!({
+            "path": format!("{RESOURCE}#{action}"),
+            "args": args,
+        });
+        let native = self.asked("tilo_do", &arguments)?;
+        let (first, carried) = receive(&native).map_err(|error| read_failed(&error))?;
+        let mut answer = String::from_utf8_lossy(&first).into_owned();
+        if !answer.ends_with('\n') {
+            std::io::BufReader::new(native)
+                .read_line(&mut answer)
+                .map_err(|error| read_failed(&error))?;
+        }
+        let (typed, text, failed) = parse_answer(&answer)?;
+        Ok((answered(&typed, &text, failed)?, carried))
+    }
+
     /// The daemon's answer to the tool `tool` with `arguments`: its typed answer, its words, and
     /// whether it says it failed.
     pub fn tool(
@@ -324,6 +362,21 @@ impl DeviceActions {
         tool: &str,
         arguments: &Value,
     ) -> Result<(Value, String, bool), DeviceRefusal> {
+        let native = self.asked(tool, arguments)?;
+        let mut answer = String::new();
+        std::io::BufReader::new(native)
+            .read_line(&mut answer)
+            .map_err(|error| read_failed(&error))?;
+        parse_answer(&answer)
+    }
+
+    /// A connection to the daemon that asked the tool `tool` with `arguments`, its answer to
+    /// come.
+    fn asked(
+        &self,
+        tool: &str,
+        arguments: &Value,
+    ) -> Result<tilo_files::native::socket::Stream, DeviceRefusal> {
         let mut native =
             tilo_files::native::socket::connect(&self.native).map_err(|error| DeviceRefusal {
                 code: NOT_RUNNING.to_owned(),
@@ -345,45 +398,52 @@ impl DeviceActions {
                 "_meta": {"so.tilo.mcp": {"structured": true}}},
         });
         writeln!(native, "{line}").map_err(|error| DeviceRefusal::said(error.to_string()))?;
-        let mut answer = String::new();
-        std::io::BufReader::new(native)
-            .read_line(&mut answer)
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                    DeviceRefusal::said(format!(
-                        "Tilo's daemon took this request and did not answer it within {} seconds: \
-                         run `tilo status` to see how it stands, then try again",
-                        ANSWERING_WITHIN.as_secs()
-                    ))
-                }
-                _ => DeviceRefusal::said(error.to_string()),
-            })?;
-        let answer: Value = serde_json::from_str(answer.trim()).map_err(|_| {
-            DeviceRefusal::said(format!(
-                "Tilo answered something unreadable: {}",
-                answer.trim()
-            ))
-        })?;
-        if let Some(error) = answer.get("error") {
-            return Err(DeviceRefusal::said(
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map_or_else(|| error.to_string(), str::to_owned),
-            ));
-        }
-        let text = answer
-            .pointer("/result/content/0/text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let typed = answer
-            .pointer("/result/structuredContent")
-            .cloned()
-            .unwrap_or_default();
-        let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true));
-        Ok((typed, text, failed))
+        Ok(native)
     }
+}
+
+/// Why the daemon's answer could not be read: a daemon that took the request and never answered
+/// is told as one.
+fn read_failed(error: &std::io::Error) -> DeviceRefusal {
+    match error.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+            DeviceRefusal::said(format!(
+                "Tilo's daemon took this request and did not answer it within {} seconds: run \
+                 `tilo status` to see how it stands, then try again",
+                ANSWERING_WITHIN.as_secs()
+            ))
+        }
+        _ => DeviceRefusal::said(error.to_string()),
+    }
+}
+
+/// The daemon's answer line `answer`: its typed answer, its words, and whether it says it failed.
+fn parse_answer(answer: &str) -> Result<(Value, String, bool), DeviceRefusal> {
+    let answer: Value = serde_json::from_str(answer.trim()).map_err(|_| {
+        DeviceRefusal::said(format!(
+            "Tilo answered something unreadable: {}",
+            answer.trim()
+        ))
+    })?;
+    if let Some(error) = answer.get("error") {
+        return Err(DeviceRefusal::said(
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .map_or_else(|| error.to_string(), str::to_owned),
+        ));
+    }
+    let text = answer
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let typed = answer
+        .pointer("/result/structuredContent")
+        .cloned()
+        .unwrap_or_default();
+    let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true));
+    Ok((typed, text, failed))
 }
 
 /// What the daemon's answer `typed`, in words `text`, gives: its result, or its refusal.

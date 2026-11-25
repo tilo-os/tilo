@@ -23,11 +23,10 @@ use tilo_session_core::desktop::profile::{ProfileChoice, ProfileGroup, ProfileMo
 use tilo_session_core::desktop::state::{DesktopHandle, HostAction};
 use tilo_session_core::surfaces::{Look, Published};
 use ui::host_operation::ResourceOperationStart;
-use ui::kurbo::{Affine, Point, Rect, Size, Vec2};
+use ui::kurbo::{Point, Rect, Size, Vec2};
 use ui::motion::{Appear, Direction, MotionValue, Presence, Snap};
 use ui::peniko::{BlendMode, Color, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Duration;
 use ui::widget::Widget;
@@ -39,7 +38,6 @@ use self::profile_card::ProfileCard;
 use self::roster::{PeopleHit, PeopleModel, PeopleOverlay};
 
 mod edges;
-mod follow_banner;
 mod profile_card;
 mod roster;
 
@@ -610,7 +608,6 @@ pub fn mount(
     let asks: Rc<RefCell<Vec<PeopleAsk>>> = Rc::default();
     let open = Rc::new(Cell::new(false));
     let dismissed: Rc<Cell<Option<ui::time::Instant>>> = Rc::default();
-    let banner_rect: Rc<Cell<Rect>> = Rc::new(Cell::new(Rect::ZERO));
     let invite_withheld: Rc<Cell<bool>> = Rc::default();
     let panel = Panel {
         shown: Rc::clone(&shown),
@@ -631,9 +628,6 @@ pub fn mount(
         live_card: Cell::new(false),
         chats: RefCell::default(),
         motion_until: Cell::new(0.0),
-        followed: RefCell::default(),
-        banner: follow_banner::FollowBanner::default(),
-        banner_rect: Rc::clone(&banner_rect),
     };
     let people = Rc::new(RefCell::new(People {
         layer: RefCell::new(None),
@@ -649,8 +643,7 @@ pub fn mount(
     let heard = crate::platform::surfaces::Heard {
         wants_keyboard: Rc::new(move || open.get()),
         pressed_elsewhere: Rc::new(move || roster.borrow().dismiss()),
-        // The banner stands in the bar while following: its face and Stop are pressed there.
-        takes_bar_point: Rc::new(move |point| banner_rect.get().contains(point)),
+        takes_bar_point: Rc::new(|_| false),
     };
     let placement = crate::platform::surfaces::Placement {
         origin: (0, 0),
@@ -711,28 +704,12 @@ struct Panel {
     chats: RefCell<ui::presence::CursorChats>,
     /// Keep drawing until then: the newest pointer heard plus the window it eases to rest in.
     motion_until: Cell<f64>,
-    /// Whose view this device follows, as the last frame told the banner.
-    followed: RefCell<Option<String>>,
-    /// The "Following Ada" banner, as the page draws it, round the shell this panel floats over.
-    banner: follow_banner::FollowBanner,
-    /// Where the banner stands to be pressed while following, `Rect::ZERO` otherwise: what the
-    /// layer tells a host whose bar takes presses over its band ([`Heard::takes_bar_point`]).
-    ///
-    /// [`Heard::takes_bar_point`]: crate::platform::surfaces::Heard::takes_bar_point
-    banner_rect: Rc<Cell<Rect>>,
 }
 
 impl Panel {
-    /// Stop following, and the workspace hears it once.
-    fn stop_following(&self) {
-        if let Some(sync) = &self.sync {
-            sync.set_following(None);
-        }
-    }
-
-    /// Follow the person with this roster id, or stop following them: one path for a card, a row
-    /// and the banner, and the verb is the control's own — a press that stops following is not a
-    /// gesture that begins it again.
+    /// Follow the person with this roster id, or stop following them: one path for a card and a
+    /// row, and the verb is the control's own — a press that stops following is not a gesture that
+    /// begins it again.
     fn follow_person(&self, id: &str, following: bool) {
         if let Some(sync) = &self.sync {
             sync.set_following(following.then(|| id.to_owned()));
@@ -1269,7 +1246,7 @@ impl Panel {
             }
             // No call to join from here (a call is Chat's, in an app window),
             // and nothing else to do: the roster kept the press.
-            PeopleHit::JoinCall(_) | PeopleHit::Absorb => {}
+            PeopleHit::Absorb => {}
         }
     }
 
@@ -1352,10 +1329,9 @@ impl Panel {
         if let Some(until) = pointers.motion_until {
             self.motion_until.set(self.motion_until.get().max(until));
         }
-        // Who is here is read once, for the rows and the card opened on one of them, for the pinned
-        // roster's cards, and for the banner that names whose view this is.
-        let following = self.sync.as_ref().and_then(|sync| sync.own().following);
-        if open || shown.pinned.is_some() || !pointers.drawn.is_empty() || following.is_some() {
+        // Who is here is read once, for the rows and the card opened on one of them, and for the
+        // pinned roster's cards.
+        if open || shown.pinned.is_some() || !pointers.drawn.is_empty() {
             self.read_roster(shown);
         }
         shown.pointers = pointers
@@ -1377,75 +1353,6 @@ impl Panel {
             let area = shown.area;
             ui::presence::draw_peer_cursors(scene, transform, area, text, theme, &pointers.drawn);
         }
-    }
-
-    /// While this person follows someone, the banner names whose view this is and offers Stop: the
-    /// same banner the page draws, from the same widget.
-    fn draw_follow(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        shown: &Shown,
-    ) {
-        let following = self.sync.as_ref().and_then(|sync| sync.own().following);
-        // The roster's own row for them: the same face, name and colour the roster lists.
-        let row = following
-            .as_deref()
-            .and_then(|id| shown.rows.iter().find(|row| row.id == id).cloned());
-        let was = self.followed.replace(following.clone());
-        if was != following {
-            let now = ui::time::now();
-            if let Some(row) = row.clone() {
-                self.banner.started(
-                    Some(row),
-                    theme.motion(),
-                    ui::tokens::MotionSource::Pointer,
-                    now,
-                );
-            } else {
-                // They left: following them ends with them. Still here, the person's own input
-                // took their view back, and the banner says so a moment.
-                let left = was
-                    .as_deref()
-                    .is_some_and(|id| !shown.rows.iter().any(|row| row.id == id));
-                self.banner.ended(
-                    !left,
-                    theme.motion(),
-                    ui::tokens::MotionSource::Pointer,
-                    now,
-                );
-            }
-        }
-        let area = shown.area;
-        let bar_h = f64::from(tilo_session_core::desktop::overlays::topbar_height(theme));
-        let below_bar = Rect::new(area.x0, area.y0 + bar_h, area.x1, area.y1);
-        // The banner docks in the top bar, above every window's content: it stands on nothing the
-        // person reads, at any width.
-        let bar = Rect::new(area.x0, area.y0, area.x1, area.y0 + bar_h);
-        let kept = self.banner.draw(
-            scene,
-            transform,
-            text,
-            theme,
-            follow_banner::BannerFrame {
-                work_area: below_bar,
-                bar,
-                cursor: shown.cursor,
-                motion: theme.motion(),
-            },
-            following.map(|_| row),
-        );
-        if !kept {
-            self.stop_following();
-        }
-        let pressable = !self.banner.stop_rect().is_zero_area();
-        self.banner_rect.set(if pressable {
-            self.banner.chip_rect()
-        } else {
-            Rect::ZERO
-        });
     }
 
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
@@ -1864,22 +1771,10 @@ impl Widget for Panel {
         let roster = ((self.open.get() || shown.is_kept()) && !self.profile.is_open())
             .then(|| shown.overlay.accessibility_with_targets());
         drop(shown);
-        // The banner stands beside the windows, so it is read whether the roster is up or not: a
-        // reader following someone with who is here open still hears whose view this is, and can
-        // stop following from the bar as the person does.
-        let banner = self.banner.accessibility();
-        match (banner, roster) {
-            (Some(banner), Some(roster)) => Some(
-                ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                    .with_hashed_key("people-layer")
-                    .with_children(vec![banner, roster]),
-            ),
-            (banner, roster) => banner.or(roster),
-        }
+        roster
     }
 
-    /// Following's Stop is the banner's own verb, and the pinned roster's controls are its own,
-    /// pressed there by a reader as by the person.
+    /// The pinned roster's controls are its own, pressed there by a reader as by the person.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1887,20 +1782,6 @@ impl Widget for Panel {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
-        if target == follow_banner::STOP_TARGET && matches!(action, ui::a11y::Action::Activate) {
-            self.stop_following();
-            return true;
-        }
-        if target == follow_banner::CARD_TARGET
-            && matches!(action, ui::a11y::Action::Activate)
-            && let Some(followed) = self.followed.borrow().clone()
-        {
-            if let Some(sync) = &self.sync {
-                sync.keep_following_through_gesture();
-            }
-            show_person_in(&self.shown, &self.open, &followed);
-            return true;
-        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -1953,50 +1834,17 @@ impl Widget for Panel {
             &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
             &mut shown,
         );
-        self.draw_follow(scene, transform, text, theme, &shown);
         self.drawn.set(revision);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Where the pointer is, as the panel draws by it: under the pointer of the bar's faces, the
-        // banner's Stop and every other person's name.
+        // Where the pointer is, as the panel draws by it: under the pointer of the bar's faces and
+        // every other person's name.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.shown.borrow_mut().cursor = Some(logical(*position, ctx.scale_factor));
         }
         if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.shown.borrow_mut().cursor = None;
-        }
-        // The banner's Stop takes its press whether the roster is open or not: following is the
-        // person's view, not the roster's.
-        if let WindowEvent::MouseInput {
-            state: ui::winit::event::ElementState::Pressed,
-            ..
-        } = event
-            && let Some(point) = self.shown.borrow().cursor
-            && self.banner.stop_rect().contains(point)
-        {
-            self.stop_following();
-            *ctx.handled = true;
-            return;
-        }
-        // The rest of the banner is the face of the person followed: it opens their card, as their
-        // face in the bar does. On a phone the banner folds into that face, the only one the bar
-        // shows of them while following.
-        if let WindowEvent::MouseInput {
-            state: ui::winit::event::ElementState::Pressed,
-            ..
-        } = event
-            && let Some(point) = { self.shown.borrow().cursor }
-            && !self.banner.stop_rect().is_zero_area()
-            && self.banner.chip_rect().contains(point)
-            && let Some(followed) = self.followed.borrow().clone()
-        {
-            if let Some(sync) = &self.sync {
-                sync.keep_following_through_gesture();
-            }
-            show_person_in(&self.shown, &self.open, &followed);
-            *ctx.handled = true;
-            return;
         }
         // Kept on screen, the roster is pressed by the person's own pointer: it draws and answers
         // where it stands, and never takes the keyboard.
@@ -2071,8 +1919,8 @@ impl Widget for Panel {
 
     /// Whether the panel owes a frame: while it is open, because its rows move with the people on
     /// the shell; closed, only once somebody else's pointer has moved or left since the last frame,
-    /// a bubble or a reaction is playing, or the banner is still on its way in or out. A shell where
-    /// a remote pointer rests where it was drawn asks for no frame.
+    /// or a bubble or a reaction is playing. A shell where a remote pointer rests where it was
+    /// drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
         let now = ui::motion::frame_now();
         if self.shown.borrow().pinned.is_some() {
@@ -2086,13 +1934,11 @@ impl Widget for Panel {
                 .is_some_and(|pin| pin.is_moving(now))
                 || self.presence_revision() != self.drawn.get()
                 || self.chats.borrow().animating(now)
-                || self.banner.is_moving(now)
                 || Self::presence_ms() < self.motion_until.get();
         }
         self.open.get()
             || self.presence_revision() != self.drawn.get()
             || self.chats.borrow().animating(now)
-            || self.banner.is_moving(now)
             || Self::presence_ms() < self.motion_until.get()
     }
 

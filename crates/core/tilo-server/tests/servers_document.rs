@@ -9,7 +9,7 @@
 )]
 
 use tilo_resource::Id;
-use tilo_server::servers::{self, Servers, applied, person_workspace_id};
+use tilo_server::servers::{self, SERVERS, Servers, applied, person_workspace_id};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 use tilo_workspace_service::work::offers_compute;
@@ -106,6 +106,28 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     )
     .await
     .unwrap();
+    // Every change of the person's record of their servers names the app whose record it is:
+    // a host decides each against that app's surface.
+    let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
+    let bytes = workspaces
+        .resource_document(&admin, SERVERS.0, SERVERS.1)
+        .await
+        .unwrap()
+        .expect("the person's record of their servers is here");
+    let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+    let apps: Vec<String> = tilo_resource::history::versions(&mut doc)
+        .iter()
+        .filter_map(|version| {
+            version
+                .context
+                .as_ref()?
+                .app
+                .as_ref()
+                .map(|app| app.id.clone())
+        })
+        .collect();
+    assert!(!apps.is_empty(), "the changes reach the record's history");
+    assert!(apps.iter().all(|app| app == SERVERS.0), "{apps:?}");
     let attached = applied::reconcile(workspaces).await.unwrap();
     assert!(
         attached.held.contains(&workspace.workspace),

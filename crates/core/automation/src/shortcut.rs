@@ -688,7 +688,7 @@ pub enum TriggerSpec {
     /// Something new in a source: what it holds differs from what it held
     /// when whoever keeps the automation last looked
     /// ([`crate::source_change`]). `kind` says what sort of source it is
-    /// ([`crate::source_change::PERSON_MAIL`]) and `at` which one of that
+    /// ([`crate::source_change::WEB_FEED`]) and `at` which one of that
     /// sort, empty for every one of them. `filter` is equality on the fields
     /// of what is new ([`crate::resource_time::matches`]). The trigger fires
     /// once for each new thing, never for what the source held before the

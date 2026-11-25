@@ -282,6 +282,14 @@ fn identity_paths() -> tilo_device_identity::IdentityPaths {
     )
 }
 
+/// The device actions of this computer's daemon: what keeps Terminal's documents and carries a
+/// hosted workspace's shells here.
+pub(crate) fn device_actions() -> Option<tilo_device_identity::login::daemon::DeviceActions> {
+    tilo_device_identity::login::daemon::DeviceActions::here(identity_paths())
+        .inspect_err(|error| tracing::debug!(%error, "ush: this computer's daemon is not reached"))
+        .ok()
+}
+
 /// This device's public key, as the certificate its person's root signed names it: the device
 /// key itself stays with the device's daemon.
 fn device_publisher() -> Option<[u8; 32]> {

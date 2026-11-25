@@ -122,10 +122,6 @@ pub const CALLER_PROOF_LEN: usize = 32;
 /// secret, together with the person's salt in their own data directory, is
 /// exactly what derives [`store_key`], so whoever can prove can already open
 /// the store's file.
-///
-/// The person's session asks the same of a process of the login it cannot look
-/// at ([`Self::for_session`]), under a key of its own: a proof made for the one
-/// never answers the other.
 #[derive(Clone)]
 pub struct CallerKey(Zeroizing<[u8; 32]>);
 
@@ -137,20 +133,7 @@ impl CallerKey {
     /// [`Error::InvalidKey`] for a device secret shorter than 16 bytes, which
     /// cannot be a key.
     pub fn derive(device_secret: &[u8]) -> Result<Self> {
-        Self::derive_as(device_secret, crate::Label::StoreCallerProof)
-    }
-
-    /// The caller key of `device_secret`, for the person's session: `key = HKDF-SHA256(ikm =
-    /// device secret, salt = none, info =` [`crate::Label::SessionCallerProof`]`)`.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::derive`].
-    pub fn for_session(device_secret: &[u8]) -> Result<Self> {
-        Self::derive_as(device_secret, crate::Label::SessionCallerProof)
-    }
-
-    fn derive_as(device_secret: &[u8], label: crate::Label) -> Result<Self> {
+        let label = crate::Label::StoreCallerProof;
         if device_secret.len() < 16 {
             return Err(Error::InvalidKey);
         }
@@ -397,12 +380,6 @@ mod tests {
         assert!(!key.verify(&[9; 32], ":1.42/", b"usr/bin/shell", &proof));
         assert!(!key.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &proof[..31]));
         assert!(CallerKey::derive(&[7; 15]).is_err());
-        // A proof made for the store answers nothing the session asks, and the other way round.
-        let session = CallerKey::for_session(&[7; 32]).unwrap();
-        assert!(!session.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &proof));
-        let to_session = session.prove(&[9; 32], ":1.42", b"/usr/bin/shell").unwrap();
-        assert!(session.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &to_session));
-        assert!(!key.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &to_session));
         let salt = [0_u8; 32];
         let store = store_key(&[7; 32], &salt, b"").unwrap();
         assert_ne!(store.expose_secret(), &*key.0);

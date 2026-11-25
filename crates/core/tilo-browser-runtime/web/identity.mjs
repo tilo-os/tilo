@@ -305,7 +305,7 @@ export async function approvalHost(origin, {fetch: fetcher} = {}) {
   const made = (async () => {
     // What signs a tab in is the peer module's (`../src/split.rs`): the
     // page that answers a sign-in is already entering.
-    const runtime = await (await import('./host.mjs')).loadRuntime('peer');
+    const runtime = await (await import('./host.mjs')).loadRuntime('peer', 'tickets');
     const post = async (path, body) => {
       const response = await (fetcher ?? ((...args) => globalThis.fetch(...args)))(new URL(path, origin).href, {
         method: 'POST', body, credentials: 'omit', cache: 'no-store', redirect: 'error',

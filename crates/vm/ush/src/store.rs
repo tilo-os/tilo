@@ -10,7 +10,7 @@
 //! ```
 //!
 //! The environment records themselves are Terminal's, kept in their workspace
-//! ([`crate::records`]); [`Store::records_root`] says where the session serves them. **The store is never bound into a guest**:
+//! ([`crate::records`]); [`Store::records_root`] says where the device's daemon keeps them. **The store is never bound into a guest**:
 //! a guest sees its own home and `/var` at their guest paths, never the store around them,
 //! so it cannot reach another environment's home or edit the record of what it asked for.
 
@@ -20,8 +20,8 @@ use crate::workspace::{Confinement, WorkspaceId};
 
 pub const STORE_ENV: &str = "TILO_USH_HOME";
 
-/// Where the session serves Terminal's documents, the environment records among them, when not
-/// on the login's MCP socket where [`Store::discover`] would look. The supervisor hands both
+/// Where the device's daemon keeps Terminal's documents, the environment records among them (its
+/// native endpoint), when not where [`Store::discover`] would look. The supervisor hands both
 /// locations to the sessions it starts, so a session always uses its supervisor's.
 pub const RECORDS_ENV: &str = "TILO_USH_RECORDS";
 
@@ -59,9 +59,11 @@ impl Store {
                 tilo_paths::data_dir().unwrap_or_else(tilo_paths::xdg::runtime_dir_or_default);
             Self {
                 root: data.join("ush"),
-                // With no login there is no session, and no record is read: the person is
-                // told so as they ask for one.
-                records: crate::mcp_server::session_api().unwrap_or_default(),
+                // With no device of the person's there is no daemon, and no record is read: the
+                // person is told so as they ask for one.
+                records: crate::images::device_actions()
+                    .map(|actions| actions.native().to_owned())
+                    .unwrap_or_default(),
                 grant_root: None,
                 workspace: None,
                 files: None,
