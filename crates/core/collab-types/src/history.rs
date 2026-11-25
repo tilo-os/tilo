@@ -17,36 +17,7 @@
 use crate::artifact::ArtifactId;
 use crate::op::SignedOp;
 
-/// One entry of a history as people read it. Opaque: only ever compared
-/// for equality (revert/restore callbacks pass it back to the caller). The
-/// caller picks the byte layout — UUID-v4 today, a content hash later.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct HistoryEntryId(pub [u8; 16]);
-
-impl HistoryEntryId {
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-
-    /// The id as the wire and a document key spell it: lower-case hex
-    /// ([`tilo_actions::remote::workspace_activity::entry_hex`]).
-    #[must_use]
-    pub fn hex(&self) -> String {
-        tilo_actions::remote::workspace_activity::entry_hex(&self.0)
-    }
-
-    /// The id [`Self::hex`] spells, in either case. `None` on anything that
-    /// is not exactly 32 hex characters, so a corrupted document key is
-    /// skipped rather than resolving to a wrong change.
-    #[must_use]
-    pub fn from_hex(hex: &str) -> Option<Self> {
-        tilo_actions::remote::workspace_activity::entry_id(hex).map(Self)
-    }
-}
+pub use tilo_resource_plain::HistoryEntryId;
 
 /// A delegated agent on a workspace's roster, as the session verified it: its
 /// own device key, the person whose root signed its delegation for exactly

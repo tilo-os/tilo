@@ -121,8 +121,7 @@ pub fn presence_payload(
     capability::<dyn PublishesPresence>(widget)?.presence_payload()
 }
 
-/// Nodes [`subtree_presence`] visits at most.
-#[cfg(feature = "model")]
+/// Nodes [`subtree_presence`] and [`range_locus`] visit at most.
 const SUBTREE_NODES: usize = 4096;
 /// Payloads [`subtree_presence`] returns at most.
 #[cfg(feature = "model")]

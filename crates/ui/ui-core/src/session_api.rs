@@ -28,6 +28,7 @@ pub trait SessionApi {
 
 /// The launch `payload` encodes, checked. A payload that is not a launch, or names an app
 /// or content out of bounds.
+#[cfg(feature = "model")]
 pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLaunch, ApiError> {
     let launch: ApplicationLaunch = serde_json::from_slice(payload)
         .map_err(|_| ApiError::Failed("invalid application launch payload".into()))?;
@@ -45,6 +46,7 @@ pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLau
 /// decides it as that invocation's caller; without one, only the person's own press in
 /// this app is behind it. An invalid launch, no API or workspace to open it in, or the
 /// API's refusal.
+#[cfg(feature = "model")]
 pub(crate) fn start_application_launch(
     api: Option<&mut dyn SessionApi>,
     route: Option<&crate::collaboration::RouteSpec>,

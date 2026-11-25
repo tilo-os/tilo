@@ -199,6 +199,18 @@ pub struct HistoryHost {
     painting: Option<Scene>,
     painted: Option<Scene>,
 }
+impl crate::focus_navigation::FocusSurface for HistoryHost {
+    fn owned_nodes(&self, taffy: &TaffyTree<()>) -> HashSet<NodeId> {
+        Self::owned_nodes(self, taffy)
+    }
+    fn captures_input(&self) -> bool {
+        Self::captures_input(self)
+    }
+    fn review_is_open(&self) -> bool {
+        Self::review_is_open(self)
+    }
+}
+
 impl HistoryHost {
     /// Request the same read-only presentation as the History button.
     pub(crate) fn request_open(&self) -> bool {

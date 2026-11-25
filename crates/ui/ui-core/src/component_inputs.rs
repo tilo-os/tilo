@@ -41,6 +41,7 @@ struct Probe {
 enum Key {
     Detached,
     Scope(usize),
+    #[cfg(feature = "model")]
     Record(usize, u64),
     Versioned(u64),
     Shared(usize),
@@ -60,6 +61,7 @@ thread_local! {
 /// component.
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
     // The store tells this pass which resources it read.
+    #[cfg(feature = "model")]
     crate::resource::observe_reads(read_resource);
     let _feeding = crate::wake::FeedsComponent::begin();
     let pass_reading = PassReading::begin(owner);
@@ -195,6 +197,7 @@ pub(crate) fn read_owned_by(owner: &WakeHandle) {
 
 /// A pass read `document`, record `id` of `store`: the pass reads it again once its frontier moved,
 /// whoever wrote it.
+#[cfg(feature = "model")]
 #[inline(never)]
 fn read_resource(
     store: &crate::resource::ResourceStore,
@@ -214,6 +217,7 @@ fn read_resource(
     );
 }
 
+#[cfg(feature = "model")]
 fn frontier(document: &automerge::AutoCommit) -> u64 {
     let (heads, pending) = crate::doc::settle_mark(document);
     heads

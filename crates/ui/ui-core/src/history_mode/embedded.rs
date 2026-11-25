@@ -10,11 +10,7 @@ use std::collections::{HashMap, HashSet};
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, WindowEvent};
 
-/// Focus eligibility for one recomputation of the current layout. This owns only node ids and never
-/// survives a layout or input-capture change.
-pub(crate) struct FocusRestrictions {
-    denied: HashSet<NodeId>,
-}
+pub(crate) use crate::focus_navigation::FocusRestrictions;
 impl FocusRestrictions {
     pub(crate) fn collect(root: &dyn Widget, tree: &TaffyTree<()>) -> Self {
         let mut restrictions = Self {
@@ -24,9 +20,6 @@ impl FocusRestrictions {
             history.extend_focus_denials(tree, &mut restrictions.denied);
         });
         restrictions
-    }
-    pub(crate) fn allows(&self, node: NodeId) -> bool {
-        !self.denied.contains(&node)
     }
 }
 

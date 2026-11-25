@@ -10,10 +10,10 @@ use collab_types::ArtifactKind;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionContext, ActionFacet};
 
-pub use collab_types::history::HistoryEntryId;
 pub use collaboration::history::authors::{
     AuthorRelation, HistoryAttribution, HistoryAuthor, hue_to_rgb,
 };
+pub use tilo_resource_plain::HistoryEntryId;
 
 /// Optional on [`HistoryEntry`] — when present, the widget renders the
 /// row with the struck-through summary, suppresses the `[Revert]` chip,

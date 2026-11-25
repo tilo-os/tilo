@@ -60,6 +60,7 @@ tracing.workspace = true
 uuid.workspace = true
 # The action a change claims, named as the executor names it.
 tilo-actions = { version = "0.1.0", path = "../actions" }
+tilo-resource-plain = { version = "0.1.0", path = "../resource-plain" }
 # A capability is a stored value of the records that keep grants.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # A name shown in a reader's language: the one rule for which language a tag is.

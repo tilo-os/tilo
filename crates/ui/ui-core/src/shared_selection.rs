@@ -41,6 +41,7 @@ pub struct SharedSelection {
     pub icon: Option<crate::icons::Icon>,
     /// A file the box carries as it is, already kept where it goes (the recording and picture a
     /// report carries): it is sent as the file, never resolved against what the window shows.
+    #[cfg(feature = "model")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<tilo_reference::Attached>,
 }
@@ -73,6 +74,7 @@ impl SharedSelection {
     /// The file `file` (an image, a video or any other file), as a subject of its own: its chip
     /// reads its name after the glyph of what it is, and it is sent as the file. Anything else
     /// carries no file and is no subject.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn carrying(file: tilo_reference::Attached) -> Option<Self> {
         use tilo_reference::Attached;
