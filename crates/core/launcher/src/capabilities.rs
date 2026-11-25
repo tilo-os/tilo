@@ -700,6 +700,9 @@ pub fn write_capability_file(
 ///
 /// # Errors
 /// The directory or the file could not be written.
+///
+/// `--grants` is the Linux launcher's, so this is Linux's too.
+#[cfg(target_os = "linux")]
 pub fn write_granted_file(
     directory: &Path,
     workspace: &str,
