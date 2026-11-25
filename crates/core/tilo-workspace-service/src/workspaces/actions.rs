@@ -5385,7 +5385,12 @@ mod surface_tests {
                 "readonly": true,
             },
         ]);
-        resource["types"] = json!([
+        resource["types"] = access_types();
+    }
+
+    /// The types the access reading's grants and outside capabilities are listed in.
+    fn access_types() -> Value {
+        json!([
             {
                 "name": "WorkspaceAccess",
                 "doc": "The grants one workspace gives.",
@@ -5455,7 +5460,7 @@ mod surface_tests {
                     { "name": "can_change", "type": "bool", "title": "Whether the viewer may turn it." },
                 ],
             },
-        ]);
+        ])
     }
 
     /// The content reading's fields and the refusal it lists.
