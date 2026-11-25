@@ -4,7 +4,8 @@
 // when the page's face did not load, since a measurement in a fallback face says nothing about
 // the product, or when the menu draws less than the app does: its rules between sections, a
 // toggle's check, a nested menu's chevron, a destructive row's danger ink, one column its labels
-// start at, the panel's own edge, and its button held while it is open.
+// start at, its labels set as wide as the app sets them, the panel's own edge and size, and its
+// button held while it is open.
 //
 // usage: node tools/web/page-menus.mjs DIR
 //
@@ -58,6 +59,7 @@ const DRAWN = `(() => {
       danger: el.hasAttribute('data-danger'),
       color: getComputedStyle(el).color,
       textX: el.querySelector('.tilo-title').getBoundingClientRect().left,
+      width: (range => (range.selectNodeContents(el.querySelector('.tilo-title')), range.getBoundingClientRect().width))(document.createRange()),
     };
   });
   const trigger = document.querySelector('button[aria-expanded=true]:not([role^=menuitem])');
@@ -65,7 +67,8 @@ const DRAWN = `(() => {
     rows,
     danger: resolved('color', token('--tilo-danger')),
     edge: resolved('color', token('--tilo-floating-edge')),
-    press: resolved('backgroundColor', token('--tilo-press')),
+    held: resolved('backgroundColor', token('--tilo-held')),
+    panel: (({width, height}) => [width, height])(menu.getBoundingClientRect()),
     trigger: trigger && getComputedStyle(trigger).backgroundColor,
     triggerChevron: !!trigger?.lastElementChild?.matches('svg.tilo-glyph'),
     shadow: getComputedStyle(menu).boxShadow,
@@ -77,7 +80,7 @@ const browser = await launch();
 const failures = [];
 try {
   for (const scheme of ['light', 'dark']) {
-    for (const {menu, rows: items, patches} of menus) {
+    for (const {menu, rows: items, panel, patches} of menus) {
       const tab = await browser.tab({});
       await tab.send('Emulation.setDeviceMetricsOverride', {width: 720, height: 480, deviceScaleFactor: 1, mobile: false});
       await tab.navigate(`${server.url}/${scheme}.html`);
@@ -117,6 +120,10 @@ try {
         if (item.checked !== null && row.checked !== item.checked) fail(`"${row.label}" is not shown ${item.checked ? 'on' : 'off'}`);
         if (item.checked === true && row.lead !== 'glyph') fail(`"${row.label}" is on but draws no check`);
         if (item.checked === false && row.lead === 'glyph') fail(`"${row.label}" is off but draws a mark`);
+        // The page sets a label as the app does: same face, size, weight and spacing, unhinted.
+        if (item.width !== null && Math.abs(row.width - item.width) > 1) {
+          fail(`"${row.label}" is set ${row.width.toFixed(1)} px wide where the app sets it ${item.width.toFixed(1)} px`);
+        }
         if (item.submenu !== row.chevron) fail(`"${row.label}" ${item.submenu ? 'opens a menu but draws no chevron' : 'draws a chevron it does not open'}`);
         if (item.danger !== (row.color === drawn.danger)) fail(`"${row.label}" is ${item.danger ? 'not drawn' : 'drawn'} in danger ink (${row.color})`);
       });
@@ -128,7 +135,10 @@ try {
       if (columns.size > 1) fail(`labels start at ${[...columns].join(', ')} px, not one column`);
       if (!drawn.shadow.includes(drawn.edge)) fail(`the panel's edge is not the theme's floating edge ${drawn.edge}: ${drawn.shadow}`);
       if (!drawn.triggerChevron) fail('its button draws no down chevron, where the app draws one');
-      if (drawn.trigger !== drawn.press) fail(`its button is not held while it is open (${drawn.trigger}, not ${drawn.press})`);
+      if (drawn.trigger !== drawn.held) fail(`its button is not held while it is open (${drawn.trigger}, not ${drawn.held})`);
+      if (drawn.panel.some((length, axis) => Math.abs(length - panel[axis]) > 0.5)) {
+        fail(`the panel is ${drawn.panel.join('×')} px where the app's is ${panel.join('×')} px`);
+      }
       await tab.close();
     }
   }

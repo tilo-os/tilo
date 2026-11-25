@@ -99,6 +99,8 @@ fn main() {
     let out = PathBuf::from(std::env::args().nth(1).expect("usage: page-menus OUT"));
     std::fs::create_dir_all(&out).unwrap();
     let mut opened = Vec::new();
+    let mut text = tilo_ui::text_render::TextRenderer::new();
+    let label_style = tilo_ui::Theme::light().text(tilo_ui::TextRole::Body);
     let mut body = None;
     for (name, items) in menus() {
         // A window of its own for each menu, so each opens from the page as first shown.
@@ -113,19 +115,30 @@ fn main() {
         let open = driver.composition();
         assert!(!open.layers.is_empty(), "the {name} menu opens");
         // What each row is, in order, for the check to find drawn: a rule, a toggle's state, a
-        // nested menu's chevron and a danger.
+        // nested menu's chevron, a danger, and how wide the app sets its label.
         let rows: Vec<_> = items
             .iter()
             .map(|item| {
+                let width = item
+                    .shown_label()
+                    .map(|label| text.measure_style(&label, None, &label_style).0);
                 serde_json::json!({
                     "separator": item.is_separator(),
                     "checked": item.checked(),
                     "submenu": item.submenu_items().is_some(),
                     "danger": item.is_destructive(),
+                    "width": width,
                 })
             })
             .collect();
-        opened.push(serde_json::json!({"menu": name, "rows": rows, "patches": page.patch(&open)}));
+        // The panel as the app lays it out, for the page's to match.
+        let [_, _, panel_width, panel_height] = open.layers.first().expect("the menu's layer").rect;
+        opened.push(serde_json::json!({
+            "menu": name,
+            "rows": rows,
+            "panel": [panel_width, panel_height],
+            "patches": page.patch(&open),
+        }));
         body.get_or_insert(shown);
     }
     let body = body.expect("a menu");

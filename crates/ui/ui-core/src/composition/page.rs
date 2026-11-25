@@ -1630,8 +1630,24 @@ pub fn theme_css(theme: &crate::Theme) -> String {
         colors.semantic.danger,
         crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
     );
+    // A button's face is the app's own: its edge (high contrast's hairline, else none) and the
+    // fill it is held at while the menu it opens stands open.
+    let face = |pressed| {
+        crate::widget::face_colors(
+            theme,
+            crate::widget::ButtonRole::Secondary,
+            crate::widget::Interaction {
+                pressed,
+                ..Default::default()
+            },
+        )
+    };
+    let (_, face_edge, _) = face(false);
+    let (held, _, _) = face(true);
     let menu_props = format!(
-        "--tilo-menu-row:{}px;--tilo-menu-inset:{inset}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;--tilo-floating-edge:{};--tilo-danger:{};",
+        "--tilo-face-edge:{};--tilo-held:{};--tilo-menu-row:{}px;--tilo-menu-inset:{inset}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;--tilo-floating-edge:{};--tilo-danger:{};",
+        face_edge.map_or_else(|| "transparent".to_owned(), rgba),
+        rgba(held),
         (line + f64::from(tokens.spacing.s2)).max(f64::from(tokens.metrics.menu_row_height)),
         crate::widget::context_menu::label_inset(theme) - inset,
         tokens.metrics.icon_sm,
