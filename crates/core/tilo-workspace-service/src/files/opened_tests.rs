@@ -258,15 +258,60 @@ impl Put {
         })
     }
 
+    /// Files' `verb` on the folder with `arguments`, as the workspace's owner signed it on their
+    /// device and the dispatch carries it out: on a thread of its own, as a put is.
+    fn change(&self, verb: &str, arguments: &Value) -> Result<Value, String> {
+        let request = self.signed_call(verb, arguments);
+        let context = tilo_actions::ActionContext {
+            source_invocation: Some(request.invocation),
+            ..tilo_actions::ActionContext::default()
+        }
+        .with_invoker(tilo_actions::ActionInvoker::person(hex::encode(
+            hosting_device().1.user_public_key,
+        )));
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    self.puts.change_folder(
+                        self.workspace,
+                        verb,
+                        arguments.as_object().unwrap(),
+                        Some(crate::apps::services::FilesPutCall {
+                            context,
+                            request: &request,
+                        }),
+                        &|| true,
+                    )
+                })
+                .join()
+                .expect("the change's thread ends")
+        })
+    }
+
     /// The `files#open` of `arguments`, signed by the workspace's owner on their device.
     fn signed_open(&self, arguments: &Value) -> tilo_actions::remote::InvokeRequest {
-        let (key, cert) = hosting_device();
-        self.open_signed_by(arguments, (&key, &cert))
+        self.signed_call(tilo_actions::remote::APPLICATION_OPEN_ACTION, arguments)
     }
 
     /// The `files#open` of `arguments`, signed by the key `cert` certifies.
     fn open_signed_by(
         &self,
+        arguments: &Value,
+        keys: (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
+    ) -> tilo_actions::remote::InvokeRequest {
+        self.call_signed_by(tilo_actions::remote::APPLICATION_OPEN_ACTION, arguments, keys)
+    }
+
+    /// Files' `action` of `arguments`, signed by the workspace's owner on their device.
+    fn signed_call(&self, action: &str, arguments: &Value) -> tilo_actions::remote::InvokeRequest {
+        let (key, cert) = hosting_device();
+        self.call_signed_by(action, arguments, (&key, &cert))
+    }
+
+    /// Files' `action` of `arguments`, signed by the key `cert` certifies.
+    fn call_signed_by(
+        &self,
+        action: &str,
         arguments: &Value,
         (key, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     ) -> tilo_actions::remote::InvokeRequest {
@@ -279,7 +324,7 @@ impl Put {
                         "{}{FILES_APP}",
                         tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
                     ),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                    action,
                 ),
             },
             argument: tilo_actions::remote::InvokeArgument::Json(
@@ -751,4 +796,143 @@ async fn files_put_are_listed_and_read_back_as_text() {
     assert!(error.contains("trip/missing.md"), "{error}");
     let error = read(&put, tree::READ_TEXT, &json!({"file": "trip"})).unwrap_err();
     assert!(error.contains("folder"), "{error}");
+}
+
+/// The names `listed` answers, in order.
+fn names(listed: &Value) -> Vec<String> {
+    listed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// With no folder mounted, a caller keeps a folder for a task by paths in the workspace: a folder
+/// made with the one on the way, a file written from text that writes over nothing unless asked,
+/// a folder renamed, moved and copied, the trash taking one, and each call taken back by the
+/// invocation it answered. A device or a path out of the workspace changes nothing.
+#[tokio::test]
+async fn a_folder_is_kept_by_paths_and_each_call_taken_back() {
+    let put = fixture().await;
+    let made = put
+        .change("new-folder", &json!({"parent": "Tasks", "name": "12 Plan"}))
+        .unwrap();
+    assert_eq!(made["entries"][0]["to"], "Tasks/12 Plan", "{made}");
+    assert_eq!(made["made"], json!(["Tasks"]), "{made}");
+    assert!(made["invocation"].is_string(), "{made}");
+
+    let notes = "Launch on Friday.\n";
+    let written = put
+        .change(
+            "write-file",
+            &json!({"folder": "Tasks/12 Plan", "name": "report.md", "text": notes}),
+        )
+        .unwrap();
+    assert_eq!(written["path"], "Tasks/12 Plan/report.md", "{written}");
+    assert_eq!(written["size"], notes.len(), "{written}");
+    assert_eq!(written["replaced"], false, "{written}");
+    let text = |put: &Put| {
+        read(
+            put,
+            tree::READ_TEXT,
+            &json!({"file": "Tasks/12 Plan/report.md"}),
+        )
+        .unwrap()["text"]
+            .clone()
+    };
+    assert_eq!(text(&put), notes);
+    let said = put
+        .change(
+            "write-file",
+            &json!({"folder": "Tasks/12 Plan", "name": "report.md", "text": "moved"}),
+        )
+        .unwrap_err();
+    assert!(said.contains("is there already"), "{said}");
+    let over = put
+        .change(
+            "write-file",
+            &json!({"folder": "Tasks/12 Plan", "name": "report.md", "text": "Monday.\n", "replace": true}),
+        )
+        .unwrap();
+    assert_eq!(over["replaced"], true, "{over}");
+    assert_eq!(text(&put), "Monday.\n");
+    let back = put
+        .change("undo", &json!({"invocation": over["invocation"]}))
+        .unwrap();
+    assert_eq!(back["taken"], 1, "{back}");
+    assert_eq!(text(&put), notes, "the undo put back what the file said");
+
+    for name in ["drafts", "sources"] {
+        put.change("new-folder", &json!({"parent": "Inbox", "name": name}))
+            .unwrap();
+    }
+    put.change(
+        "move",
+        &json!({"from": "Inbox", "entries": ["drafts", "sources"], "to": "Tasks/12 Plan"}),
+    )
+    .unwrap();
+    let renamed = put
+        .change(
+            "rename",
+            &json!({"folder": "Tasks/12 Plan", "entry": "drafts", "name": "Drafts"}),
+        )
+        .unwrap();
+    assert_eq!(
+        renamed["entries"][0]["to"], "Tasks/12 Plan/Drafts",
+        "{renamed}"
+    );
+    put.change(
+        "copy-into",
+        &json!({"from": "Tasks", "entries": ["12 Plan"], "to": "Archive"}),
+    )
+    .unwrap();
+    let listed = |folder: &str| names(&read(&put, tree::LIST, &json!({"folder": folder})).unwrap());
+    assert_eq!(
+        listed("Archive/12 Plan"),
+        ["Drafts", "report.md", "sources"]
+    );
+    assert!(listed("Inbox").is_empty());
+
+    let gone = put
+        .change(
+            "trash",
+            &json!({"folder": "Tasks/12 Plan", "entries": ["sources"]}),
+        )
+        .unwrap();
+    assert_eq!(listed("Tasks/12 Plan"), ["Drafts", "report.md"]);
+    put.change("undo", &json!({"invocation": gone["invocation"]}))
+        .unwrap();
+    assert_eq!(listed("Tasks/12 Plan"), ["Drafts", "report.md", "sources"]);
+
+    for (verb, arguments, why) in [
+        (
+            "new-folder",
+            json!({"device": "laptop", "parent": "/home/ada", "name": "x"}),
+            "names no device",
+        ),
+        (
+            "move",
+            json!({"from": "Tasks", "entries": ["12 Plan"], "to": "../outside"}),
+            "no name in the workspace",
+        ),
+        (
+            "write-file",
+            json!({"folder": "Tasks", "name": "x.md"}),
+            "one of the two",
+        ),
+        (
+            "undo",
+            json!({"invocation": tilo_actions::InvocationId::new().0.to_string()}),
+            "no change of that call",
+        ),
+    ] {
+        let said = put.change(verb, &arguments).unwrap_err();
+        assert!(said.contains(why), "{verb} {arguments}: {said}");
+    }
+    assert_eq!(
+        listed(""),
+        ["Archive", "Inbox", "Tasks"],
+        "a refused call changed nothing"
+    );
 }

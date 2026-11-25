@@ -15,23 +15,52 @@ pub const FILES_TREE_KIND: &str = "files.tree";
 /// made on the way, a file made, a file of the same name given the new content.
 pub const FILES_OPEN_VERBS: [&str; 3] = ["new-folder", "new-file", "write"];
 
+/// The verbs of a workspace's Files tree Files' `action` on the workspace's own folder is carried
+/// out as: its `open` given content and its `write-file` put files ([`FILES_OPEN_VERBS`]); a
+/// folder is made, a rename or move makes the folders on the way and moves, a copy makes folders
+/// and files, and the trash and its restore are their own verbs. Any other action changes no file.
+#[must_use]
+pub fn files_call_verbs(action: &str) -> &'static [&'static str] {
+    match action {
+        tilo_actions::remote::APPLICATION_OPEN_ACTION | "write-file" => &FILES_OPEN_VERBS,
+        "new-folder" => &["new-folder"],
+        "rename" | "move" => &["new-folder", "move"],
+        "copy-into" => &["new-folder", "new-file"],
+        "trash" => &["trash"],
+        "restore" => &["restore"],
+        _ => &[],
+    }
+}
+
+/// Whether `target` names Files' action on a workspace's own folder in the records of `app`.
+fn names_files_folder(target: &tilo_actions::ActionAddress, app: &str) -> bool {
+    app == tilo_app_id::apps::FILE_EXPLORER
+        && target
+            .resource
+            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+            == Some(tilo_app_id::apps::FILE_EXPLORER)
+}
+
 /// Whether the call `target` asks, as its own, for the step `verb` on a record of `kind` in the
-/// records of `app`: Files' `open` given content puts files into the workspace's folder, which is
-/// the tree's new-folder, new-file and write. The call is carried out as those verbs, so a change
-/// that names them is inside the call, and the caller's own grants on them decide it.
+/// records of `app`: Files' action on the workspace's own folder, carried out as the tree's verbs
+/// [`files_call_verbs`] names, so a change that names them is inside the call, and the caller's
+/// own grants on them decide it.
 #[must_use]
 pub fn files_open_step(
     target: &tilo_actions::ActionAddress,
     (app, kind, verb): (&str, &str, &str),
 ) -> bool {
-    app == tilo_app_id::apps::FILE_EXPLORER
-        && kind == FILES_TREE_KIND
-        && FILES_OPEN_VERBS.contains(&verb)
-        && target.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-        && target
-            .resource
-            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-            == Some(tilo_app_id::apps::FILE_EXPLORER)
+    kind == FILES_TREE_KIND
+        && names_files_folder(target, app)
+        && files_call_verbs(&target.action).contains(&verb)
+}
+
+/// Whether the call `target` asks, as its own, for a step through the history of the records of
+/// `app`: Files' `undo` on the workspace's own folder takes a call back as History takes back a
+/// step, and the caller's own grants on the tree decide it.
+#[must_use]
+pub fn files_history_step(target: &tilo_actions::ActionAddress, app: &str) -> bool {
+    target.action == "undo" && names_files_folder(target, app)
 }
 
 /// Whether `argument`, an `open`'s, names content to put: one file's `content`, or many as

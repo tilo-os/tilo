@@ -104,14 +104,13 @@ impl ContentGets for ShelfGets {
         })?;
         let hash = tilo_actions::content_hash(content)
             .ok_or_else(|| invalid(format!("{content} is not a tilo.content:<hash> reference")))?;
+        // The length asked is the most the caller takes: a piece carries at most what a frame
+        // does, and a caller that asked for more reads on from where the piece ends, as it does
+        // with any piece shorter than the content.
+        let most = MAX_CONTENT_FRAME_BYTES as u64;
         let length = match length {
-            0 => MAX_CONTENT_FRAME_BYTES as u64,
-            length if length <= MAX_CONTENT_FRAME_BYTES as u64 => length,
-            _ => {
-                return Err(invalid(format!(
-                    "a piece carries at most {MAX_CONTENT_FRAME_BYTES} bytes"
-                )));
-            }
+            0 => most,
+            length => length.min(most),
         };
         let bytes = self
             .0

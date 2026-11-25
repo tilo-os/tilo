@@ -1,4 +1,5 @@
-//! Files a `files#open` names, put into the workspace's own folder.
+//! Files a `files#open` names, put into the workspace's own folder; and Files' reads and verbs of
+//! that folder by paths in the workspace (`reads`, `changes`).
 //!
 //! A workspace has one folder — its Files app record, the tree its members mount — and a put
 //! writes a node into it: a folder `dir` that is not there yet is made on the way, a file of the
@@ -580,6 +581,8 @@ impl OpenedFiles {
     }
 }
 
+#[path = "changes.rs"]
+mod changes;
 #[path = "reads.rs"]
 mod reads;
 

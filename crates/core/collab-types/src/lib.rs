@@ -96,8 +96,8 @@ pub const DOCUMENT_URI_SCHEME: &str = "tilo-document";
 // `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
 pub use artifact::{
-    ArtifactId, FILES_OPEN_VERBS, FILES_TREE_KIND, file_content_artifact, files_open_puts,
-    files_open_step,
+    ArtifactId, FILES_OPEN_VERBS, FILES_TREE_KIND, file_content_artifact, files_call_verbs,
+    files_history_step, files_open_puts, files_open_step,
 };
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{

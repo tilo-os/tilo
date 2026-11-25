@@ -385,7 +385,7 @@ fn outside_call(
     app: &str,
     published_name: Option<PublishedName<'_>>,
 ) -> bool {
-    if puts_files(context, target, app) {
+    if puts_files(context, target, app) || undoes_files(context, target, app) {
         return false;
     }
     let named = &target.address.resource;
@@ -403,10 +403,11 @@ fn outside_call(
     !(in_resource && names_verb)
 }
 
-/// Whether the change `context` records, in a record of `app`, is the put of files the call
-/// `target` asked for: Files' `open` given content, carried out as the tree's verbs that put
-/// files ([`collab_types::files_open_step`]), each verb of the change one of them. An open the
-/// change keeps the argument of must name content: a plain open of the app changes no file.
+/// Whether the change `context` records, in a record of `app`, is the change of files the call
+/// `target` asked for: Files' action on the workspace's folder (its `open` given content, a
+/// folder made, a move), carried out as the tree's verbs [`collab_types::files_open_step`] names,
+/// each verb of the change one of them. An open the change keeps the argument of must name
+/// content: a plain open of the app changes no file.
 fn puts_files(
     context: &tilo_actions::ActionContext,
     target: &tilo_actions::remote::RemoteActionTarget,
@@ -432,11 +433,24 @@ fn puts_files(
         did => step(did),
     };
     steps
-        && context
-            .signed
-            .as_deref()
-            .and_then(|call| call.argument.as_ref())
-            .is_none_or(collab_types::files_open_puts)
+        && (target.address.action != tilo_actions::remote::APPLICATION_OPEN_ACTION
+            || context
+                .signed
+                .as_deref()
+                .and_then(|call| call.argument.as_ref())
+                .is_none_or(collab_types::files_open_puts))
+}
+
+/// Whether the change `context` records, in a record of `app`, is the step through the tree's
+/// history the call `target` asked for: Files' `undo` of a call on the workspace's folder
+/// ([`collab_types::files_history_step`]).
+fn undoes_files(
+    context: &tilo_actions::ActionContext,
+    target: &tilo_actions::remote::RemoteActionTarget,
+    app: &str,
+) -> bool {
+    matches!(&context.what, Some(tilo_actions::Did::History(_)))
+        && collab_types::files_history_step(&target.address, app)
 }
 
 /// Whether the verb `claimed`, as a change names it, is the action `signed` the caller asked
@@ -646,11 +660,21 @@ pub fn carried_effect(
     if puts_files_claimed(target, record.app, &verbs) {
         return false;
     }
+    // Files' `undo` on the workspace's folder is carried out through the tree's history.
+    let members = claim.action.record_members();
+    if !members.is_empty()
+        && members
+            .iter()
+            .all(|member| matches!(member, collab_types::claim::ClaimedAction::History(_)))
+        && collab_types::files_history_step(&target.address, record.app)
+    {
+        return false;
+    }
     !(in_record && names_verb)
 }
 
-/// Whether the verbs a sealed change claims, in a record of `app`, are the put of files the call
-/// `target` asked for ([`collab_types::files_open_step`]): every device that opens the change
+/// Whether the verbs a sealed change claims, in a record of `app`, are the change of files the
+/// call `target` asked for ([`collab_types::files_open_step`]): every device that opens the change
 /// checks the rest ([`verify_recorded`]).
 fn puts_files_claimed(
     target: &tilo_actions::remote::RemoteActionTarget,

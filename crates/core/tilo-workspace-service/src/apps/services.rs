@@ -735,6 +735,23 @@ pub trait FilesTreePuts: Send + Sync {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String>;
+
+    /// Carry out Files' `verb` on `workspace`'s folder with `arguments` (`new-folder`, `rename`,
+    /// `move`, `copy-into`, `trash`, `restore`, `write-file`, or `undo` of one of them), as one
+    /// change of the tree made in `call`'s context, answering what changed and the call it was.
+    ///
+    /// `confirm` is asked before the tree is touched, as for [`Self::put`].
+    ///
+    /// # Errors
+    /// Why the tree did not take the change, in words a person reads.
+    fn change(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        verb: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        call: Option<FilesPutCall<'_>>,
+        confirm: &dyn Fn() -> bool,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// One entry of a workspace's folder ([`FilesTreePuts::entries`]).
@@ -792,6 +809,17 @@ impl FilesTreePuts for crate::files::OpenedFiles {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         crate::files::OpenedFiles::read_folder(self, workspace, action, arguments)
+    }
+
+    fn change(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        verb: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        call: Option<FilesPutCall<'_>>,
+        confirm: &dyn Fn() -> bool,
+    ) -> Result<serde_json::Value, String> {
+        crate::files::OpenedFiles::change_folder(self, workspace, verb, arguments, call, confirm)
     }
 }
 

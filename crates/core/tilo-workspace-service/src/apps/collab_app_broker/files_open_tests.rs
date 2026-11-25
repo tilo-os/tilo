@@ -66,11 +66,13 @@ type Reached = (
     Option<tilo_actions::ActionContext>,
 );
 
-/// What reached the workspace's folder: the puts, and the reads, each its action and arguments.
+/// What reached the workspace's folder: the puts, the reads, each its action and arguments, and
+/// the changes, each its verb and what a put records.
 #[derive(Default)]
 struct Recorder(
     Mutex<Vec<Reached>>,
     Mutex<Vec<(String, Map<String, Value>)>>,
+    Mutex<Vec<(String, Reached)>>,
 );
 
 /// What the recorder's workspace folder holds: a folder `Inbox` with one file in it.
@@ -131,6 +133,29 @@ impl FilesTreePuts for Recorder {
             .push((action.to_owned(), arguments.clone()));
         Ok(json!({"read": action}))
     }
+
+    fn change(
+        &self,
+        workspace: WorkspaceId,
+        verb: &str,
+        arguments: &Map<String, Value>,
+        call: Option<crate::apps::services::FilesPutCall<'_>>,
+        confirm: &dyn Fn() -> bool,
+    ) -> Result<Value, String> {
+        if !confirm() {
+            return Err("the caller may no longer change the workspace's files".to_owned());
+        }
+        let context = call.map(|call| call.context);
+        let invocation = context
+            .as_ref()
+            .and_then(|context| context.source_invocation)
+            .map(|invocation| invocation.0.to_string());
+        self.2.lock().unwrap().push((
+            verb.to_owned(),
+            (workspace.to_string(), arguments.clone(), context),
+        ));
+        Ok(json!({"action": verb, "entries": [], "made": [], "invocation": invocation}))
+    }
 }
 
 struct Fixture {
@@ -176,6 +201,13 @@ fn fixture() -> Fixture {
             KindSet::READ_UNDOABLE,
         );
     }
+    // A member who edits the workspace, whom it keeps from its folder's trash.
+    workspace.policy.add_member("bea", Role::Editor);
+    workspace.deny(
+        Grantee::person("bea"),
+        &fs_protocol::file_action::verb_node(None, fs_protocol::file_action::verbs::TRASH),
+        KindSet::UNDOABLE,
+    );
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     tree.persist_path = Some(home.path().join("state.json"));
@@ -212,6 +244,11 @@ fn agent(id: &str, workspace: &str) -> Caller {
 
 /// The workspace's `open` of Files, given `arguments`.
 fn open(workspace: &str, arguments: &Value) -> InvokeRequest {
+    files_call(workspace, APPLICATION_OPEN_ACTION, arguments)
+}
+
+/// Files' `action` on the workspace's own folder, given `arguments`.
+fn files_call(workspace: &str, action: &str, arguments: &Value) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
@@ -221,7 +258,7 @@ fn open(workspace: &str, arguments: &Value) -> InvokeRequest {
                     "{APPLICATION_RESOURCE_PREFIX}{}",
                     fs_protocol::tree::FILES_APP
                 ),
-                APPLICATION_OPEN_ACTION,
+                action,
             ),
         },
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
@@ -517,5 +554,120 @@ async fn what_the_listing_offers_on_the_folder_is_answered_as_offered() {
         fixture.recorder.1.lock().unwrap().len(),
         calls.len(),
         "nothing was read for a refused caller"
+    );
+}
+
+/// Files' verbs on the folder by paths in it reach the tree in the caller's context, each decided
+/// by the tree's verbs it is carried out as: an agent the workspace lets make folders makes one,
+/// an editor it keeps from the trash makes one and is refused the trash, the person takes a call
+/// back, and a member who may only comment changes nothing, nor does a call naming another
+/// workspace.
+#[tokio::test]
+async fn a_verb_by_path_is_decided_by_the_tree_verbs_it_is_carried_out_as() {
+    let fixture = fixture();
+    let invoke = |caller: Caller, request: InvokeRequest| {
+        let state = Arc::clone(&fixture.state);
+        async move {
+            let admitted = settled(state.action_invoke(&caller, None, None, &request)).await;
+            match admitted {
+                Ok(_) => Ok(tilo_test_env::within(
+                    "the change of the workspace's folder completes",
+                    finished(&state, &caller, &request),
+                )
+                .await),
+                Err(error) => Err(error),
+            }
+        }
+    };
+
+    let porter = agent("porter", &fixture.workspace);
+    let made = files_call(
+        &fixture.workspace,
+        "new-folder",
+        &json!({"parent": "Tasks", "name": "12 Plan"}),
+    );
+    let answer = invoke(porter.clone(), made.clone())
+        .await
+        .expect("the workspace lets the agent make folders");
+    assert_eq!(
+        answer["invocation"],
+        made.invocation.0.to_string(),
+        "the answer names the call that undo takes back: {answer}"
+    );
+    {
+        let reached = fixture.recorder.2.lock().unwrap();
+        assert_eq!(reached.len(), 1);
+        let (verb, (workspace, arguments, acting)) = &reached[0];
+        assert_eq!(verb, "new-folder");
+        assert_eq!(workspace, &fixture.workspace);
+        assert_eq!(arguments.get("parent"), Some(&json!("Tasks")));
+        let acting = acting.as_ref().expect("the change names who made it");
+        assert_eq!(acting.source_invocation, Some(made.invocation));
+        assert_eq!(
+            acting.invoker.as_ref().map(|invoker| &invoker.acting),
+            Some(porter.acting()),
+            "the agent's change names the agent"
+        );
+    }
+
+    let bea = Caller::local_person("bea")
+        .in_workspace(&fixture.workspace)
+        .in_new_execution();
+    let folder = files_call(
+        &fixture.workspace,
+        "new-folder",
+        &json!({"parent": "Tasks", "name": "Notes"}),
+    );
+    invoke(bea.clone(), folder)
+        .await
+        .expect("the workspace lets the editor make folders");
+    let trash = files_call(
+        &fixture.workspace,
+        "trash",
+        &json!({"folder": "Tasks", "entries": ["12 Plan"]}),
+    );
+    assert!(matches!(
+        invoke(bea, trash).await,
+        Err(ActionCallError::NotPermitted)
+    ));
+
+    let undo = files_call(
+        &fixture.workspace,
+        "undo",
+        &json!({"invocation": made.invocation.0.to_string()}),
+    );
+    invoke(owner(&fixture.workspace), undo)
+        .await
+        .expect("the person takes the agent's call back");
+
+    let commenter = Caller::local_person("ada")
+        .in_workspace(&fixture.workspace)
+        .in_new_execution();
+    let rename = files_call(
+        &fixture.workspace,
+        "rename",
+        &json!({"folder": "Tasks", "entry": "12 Plan", "name": "13 Plan"}),
+    );
+    assert!(matches!(
+        invoke(commenter, rename).await,
+        Err(ActionCallError::NotPermitted)
+    ));
+
+    let elsewhere = Caller::local_person(owner_id())
+        .in_workspace(WorkspaceId::from_u128(72).to_string())
+        .in_new_execution();
+    let write = files_call(
+        &fixture.workspace,
+        "write-file",
+        &json!({"folder": "Tasks", "name": "a.md", "text": "a"}),
+    );
+    assert!(invoke(elsewhere, write).await.is_err());
+
+    let reached = fixture.recorder.2.lock().unwrap();
+    let verbs: Vec<&str> = reached.iter().map(|(verb, _)| verb.as_str()).collect();
+    assert_eq!(
+        verbs,
+        ["new-folder", "new-folder", "undo"],
+        "a refused call changed nothing"
     );
 }

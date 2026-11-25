@@ -9,6 +9,10 @@
 //! The call is the person's own (§ [`Caller`]), or a device agent's where the workspace's grants
 //! let it write the tree. An open naming no content is Files' own open, which starts the app:
 //! this answers nothing of it.
+//!
+//! Files' other verbs on the folder by paths in it (`new-folder`, `rename`, `move`, `copy-into`,
+//! `trash`, `restore`, `write-file`, and `undo` of a call) go through the same writer, each
+//! decided by the tree's verbs it is carried out as.
 
 use std::sync::Arc;
 
@@ -136,10 +140,15 @@ fn caller_context(caller: &Caller, request: &InvokeRequest) -> tilo_actions::Act
     }
 }
 
-/// Whether `actor` may change the files of `workspace` now: the tree's own records read and
-/// undone, and the verbs a put uses allowed. An agent gets no more than what the workspace
-/// grants it on its turn, as for every other action.
-fn may_put_into_tree(workspace: &Workspace, actor: &BrokerActor, now: u64) -> bool {
+/// Whether `actor` may change the files of `workspace` now as the tree's `file_verbs`: the
+/// tree's own records read and undone, and each of those verbs allowed. An agent gets no more
+/// than what the workspace grants it on its turn, as for every other action.
+fn may_change_tree(
+    workspace: &Workspace,
+    actor: &BrokerActor,
+    now: u64,
+    file_verbs: &[&str],
+) -> bool {
     let id = workspace.id().to_string();
     let allows =
         |node: &TreePath, kind| actor.answer_in(workspace, node, kind, now) == Answer::Allow;
@@ -147,13 +156,25 @@ fn may_put_into_tree(workspace: &Workspace, actor: &BrokerActor, now: u64) -> bo
     if !allows(&records, ActionKind::Read) || !allows(&records, ActionKind::Undoable) {
         return false;
     }
-    [verbs::NEW_FOLDER, verbs::NEW_FILE, verbs::WRITE]
-        .into_iter()
-        .all(|verb| {
-            let node =
-                TreePath::workspace(&id).joined(&fs_protocol::file_action::verb_node(None, verb));
-            allows(&node, ActionKind::Undoable)
-        })
+    file_verbs.iter().all(|verb| {
+        let node =
+            TreePath::workspace(&id).joined(&fs_protocol::file_action::verb_node(None, verb));
+        allows(&node, ActionKind::Undoable)
+    })
+}
+
+/// Whether `actor` may put files into `workspace`'s tree now.
+fn may_put_into_tree(workspace: &Workspace, actor: &BrokerActor, now: u64) -> bool {
+    may_change_tree(workspace, actor, now, &collab_types::FILES_OPEN_VERBS)
+}
+
+/// The tree's verbs Files' `verb` on a path is carried out as: what its caller is decided by.
+fn file_verbs_of(verb: &str) -> &'static [&'static str] {
+    match collab_types::files_call_verbs(verb) {
+        // Taking a call back may undo any of what the tree takes.
+        [] => &verbs::ALL,
+        carried_out => carried_out,
+    }
 }
 
 impl AppBrokerState {
@@ -279,6 +300,107 @@ impl AppBrokerState {
         };
         self.complete_host_action(&admitted, update)?;
         Ok(Some(id))
+    }
+}
+
+/// The descriptor Files' `verb` on the workspace's own folder is admitted under.
+fn change_descriptor(verb: &str) -> ActionDescriptor {
+    let mut descriptor = open_descriptor();
+    descriptor.address.action = verb.to_owned();
+    descriptor.action_label = verb.to_owned();
+    descriptor.description =
+        Some("Change the workspace's own folder by paths in it; `undo` takes a call back".into());
+    descriptor.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    descriptor
+}
+
+impl AppBrokerState {
+    /// Files' verb on the workspace's own folder by paths in it (`new-folder`, `rename`, `move`,
+    /// `copy-into`, `trash`, `restore`, `write-file`, and `undo` of one of them): carried out where
+    /// this device holds the tree and answered with what changed and the call it was. `None`
+    /// when the target is another action or no folder of the workspace.
+    ///
+    /// # Errors
+    /// A caller naming no workspace, one the workspace does not let change its files as the
+    /// verb does, an admission that fails, or a host that serves no folder.
+    pub(super) fn start_files_change(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&InvocationCaller>,
+        request: &InvokeRequest,
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+    ) -> Result<Option<u64>, ActionCallError> {
+        let address = &request.target.address;
+        let verb = address.action.as_str();
+        if !(tree::is_tree_verb(verb) || verb == tree::WRITE_FILE)
+            || address.resource != format!("{APPLICATION_RESOURCE_PREFIX}{FILES_APP}")
+        {
+            return Ok(None);
+        }
+        let workspace_id = workspace.id().to_string();
+        if caller.workspace() != Some(workspace_id.as_str()) {
+            tracing::warn!(
+                "changing a workspace's files was refused: the caller names no such workspace"
+            );
+            return Err(ActionCallError::UnknownAction);
+        }
+        let file_verbs = file_verbs_of(verb);
+        if !may_change_tree(workspace, policy, now, file_verbs) {
+            return Err(ActionCallError::NotPermitted);
+        }
+        let puts =
+            self.services.files_open.clone().ok_or_else(|| {
+                refusal("the workspace's folder is not served on this host".into())
+            })?;
+        let Some(id) = WorkspaceId::parse(&workspace_id) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let descriptor = change_descriptor(verb);
+        let admitted = self.admit_host_action(
+            caller,
+            origin,
+            HostActionAdmission {
+                workspace: &workspace_id,
+                app_id: FILES_APP,
+                descriptor: &descriptor,
+                request,
+            },
+        )?;
+        let call = admitted.id;
+        let invoker = tilo_actions::ActionInvoker::admitted(caller.acting())
+            .named(caller.agent_name().map(str::to_owned));
+        let acting = caller_context(caller, request).with_invoker(invoker);
+        // A grant taken back meanwhile refuses the change, decided as the call was.
+        let confirm = {
+            let state = Arc::clone(self);
+            let caller = caller.clone();
+            move || {
+                state
+                    .decide_for(&caller, &workspace_id, |workspace, actor, now| {
+                        may_change_tree(workspace, actor, now, file_verbs)
+                    })
+                    .unwrap_or(false)
+            }
+        };
+        let arguments = invoke_arguments(&request.argument);
+        let put_call = crate::apps::services::FilesPutCall {
+            context: acting,
+            request,
+        };
+        let update = match puts.change(id, verb, &arguments, Some(put_call), &confirm) {
+            Ok(value) => InvocationUpdate::Succeeded {
+                invocation: admitted.invocation,
+                output: ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
+            },
+            Err(reason) => failed(admitted.invocation, reason),
+        };
+        self.complete_host_action(&admitted, update)?;
+        Ok(Some(call))
     }
 }
 

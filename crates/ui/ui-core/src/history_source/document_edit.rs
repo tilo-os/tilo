@@ -6,16 +6,31 @@
 use super::ThreadWords;
 use super::verbs::{EDIT_TYPE, HistoryEdit, edit_from_payload};
 
+/// A registry for a document no app's types read: it decodes none of their actions.
+const fn decodes_no_app_action(_: &mut tilo_actions::ActionRegistry) {}
+
 /// One history verb, as the executor runs it on a document without app types.
 #[derive(Debug)]
 pub struct DocumentHistoryEdit {
     edit: HistoryEdit,
+    /// What fills the registry the document's recorded actions are decoded with.
+    register: fn(&mut tilo_actions::ActionRegistry),
 }
 
 impl DocumentHistoryEdit {
     #[must_use]
     pub const fn new(edit: HistoryEdit) -> Self {
-        Self { edit }
+        Self::decoded_with(edit, decodes_no_app_action)
+    }
+
+    /// `edit`, taking back what the document recorded as the actions `register` teaches a
+    /// registry to decode: a resource's own, for a document of that resource.
+    #[must_use]
+    pub const fn decoded_with(
+        edit: HistoryEdit,
+        register: fn(&mut tilo_actions::ActionRegistry),
+    ) -> Self {
+        Self { edit, register }
     }
 
     /// Teach `registry` to decode the history verbs a document records.
@@ -57,7 +72,7 @@ impl tilo_actions::Action for DocumentHistoryEdit {
     }
 
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-        self.edit.apply_registered(doc, |_| {}, &ThreadWords)
+        self.edit.apply_registered(doc, self.register, &ThreadWords)
     }
 
     fn steps(&self, doc: &tilo_actions::Doc) -> Option<Vec<tilo_actions::ActionStep>> {
@@ -66,7 +81,8 @@ impl tilo_actions::Action for DocumentHistoryEdit {
             .into_iter()
             .map(|edit| {
                 let payload = serde_json::to_vec(&edit).ok()?;
-                let action: Box<dyn tilo_actions::Action> = Box::new(Self::new(edit));
+                let action: Box<dyn tilo_actions::Action> =
+                    Box::new(Self::decoded_with(edit, self.register));
                 Some((action, payload))
             })
             .collect()
