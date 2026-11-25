@@ -44,6 +44,7 @@ __all__ = [
     "DetachArgs",
     "SendFromArgs",
     "SendAsArgs",
+    "LeaveArgs",
     "TrustSenderArgs",
     "DistrustSenderArgs",
     "SetHoldArgs",
@@ -113,6 +114,10 @@ SendAsArgs = TypedDict("SendAsArgs", {
 })
 """The arguments of `send_as`."""
 
+LeaveArgs = TypedDict("LeaveArgs", {
+})
+"""The arguments of `leave`."""
+
 TrustSenderArgs = TypedDict("TrustSenderArgs", {
     "address": "str",
 })
@@ -146,7 +151,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -207,7 +212,7 @@ class Notice(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -269,7 +274,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -288,7 +293,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -456,13 +461,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -557,7 +562,7 @@ class Message(Resource):
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.mail.Picture`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     gb5hqtag: str  # source
     @property
     def _7hhcy4ay(self) -> Any:
@@ -571,7 +576,7 @@ class Picture(Resource):
 
 class TrustedSender(Resource):
     """TrustedSender — `tl.so.tilo.mail.TrustedSender`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     @property
     def _5eoon66w(self) -> str:
         """address (`5eoon66w` on the wire)."""
@@ -584,7 +589,7 @@ class TrustedSender(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -597,6 +602,7 @@ class Draft(Resource):
     ualhak62: str  # conversation
     yfyt2cfh: bool  # sent
     lgrwf5yf: str  # send_at
+    wgp3brx4: str | None  # leaves_at
     h2nvr2op: bool  # recalled
     em6rrmae: str  # invitation
     @property
@@ -665,14 +671,22 @@ class Draft(Resource):
         """Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was. Once it went it cannot be taken back."""
         return self.action("undo_send")
 
+    def leave(self) -> None:
+        """Lets a message that waited in the outbox leave: its hold or the moment it was sent for came, so it can no longer be taken back, and every member reads it from now on. One taken back before its moment stays a draft."""
+        return self.action("leave")
+
+    def leave_many(self, items: list[LeaveArgs]) -> list[dict[str, Any]]:
+        """Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("leave", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"attach", "attach_many", "detach", "detach_many", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send_as", "send_as_many", "retry", "send", "undo_send"})
+    __actions__ = frozenset({"attach", "attach_many", "detach", "detach_many", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send_as", "send_as_many", "retry", "send", "undo_send", "leave", "leave_many"})
 
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -710,6 +724,10 @@ class Mail(Resource):
     def set_hold_many(self, items: list[SetHoldArgs]) -> list[dict[str, Any]]:
         """Runs `set_hold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_hold", items)
+
+    def read_more(self, *, query: str) -> None:
+        """Reads the page before the rows of the place `query`: what a list does as the person reaches its end, whichever accounts the window reads. The account whose server holds more answers; a place that is no mailbox, or whose mail is all here, has no page before it and asks nothing."""
+        return self.action("read_more", query=query)
 
     def new_draft(self) -> Draft:
         """Starts a message. A message is written before the workspace has an account to send it from: it waits in Drafts, and goes once the person adds one."""
@@ -836,10 +854,10 @@ class Mail(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"trust_sender", "trust_sender_many", "distrust_sender", "distrust_sender_many", "set_hold", "set_hold_many", "new_draft", "open_link", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many", "save_to_drafts"})
+    __actions__ = frozenset({"trust_sender", "trust_sender_many", "distrust_sender", "distrust_sender_many", "set_hold", "set_hold_many", "read_more", "new_draft", "open_link", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many", "save_to_drafts"})
 
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
+    __surface__ = "so.tilo.mail@9197202b484b789e"
 

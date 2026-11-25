@@ -176,9 +176,15 @@ type Draft (title: subject, untitled: "New message", readers: author until sent)
     /// The conversation it answers, by its key: empty for a message that answers none. The
     /// draft shows it beside what is written, so the person reads what they answer.
     conversation: Text = ""
+    /// It left: its hold or its moment came, and the outbox carries it out. Every member of the
+    /// workspace reads it from then on, so nothing makes it a draft again.
     sent: Bool = false
     /// When it goes: 1970 for a draft not sent yet.
     send_at: Time = Time("1970-01-01T00:00:00Z")
+    /// The moment it leaves, while it waits in the outbox for the person's hold or the moment it
+    /// was sent for: none for a draft, one taken back, and one that left. Until then it is its
+    /// author's alone, and taking it back stops it.
+    leaves_at: Option<Time> = .none
     /// It was taken back before it went: it never leaves, and it is a draft again.
     recalled: Bool = false
     /// The calendar invitation it carries (iCalendar), which goes beside what it says so the
@@ -191,12 +197,13 @@ type Draft (title: subject, untitled: "New message", readers: author until sent)
     set_aside: Text
 
     search {
-        filter "Drafts" = not sent (icon: .pencil)
-        filter "Outbox" = sent and not recalled (icon: .send)
+        filter "Drafts" = not sent and leaves_at == .none (icon: .pencil)
+        filter "Outbox" = sent or leaves_at != .none (icon: .send)
         hide in_reply_to
         hide references
         hide conversation
         hide send_at
+        hide leaves_at
         hide invitation
     }
 }
@@ -1373,7 +1380,7 @@ action open_attachment(m: Message, name: Text) uses files (
 /// Takes a file along with the message: one the person picks, or one an agent hands over. A
 /// message takes up to sixteen files of up to 32 MB each, as mail servers take them.
 action attach(d: Draft, file: File) (icon: .paperclip, label: "Attach a file") {
-    require not d.sent or d.recalled "This message went already"
+    require open_to_change(d) "This message went already"
     require d.attachments.len() < 16 "A message takes up to 16 files"
     require file.size <= 33554432 "{file.name} is larger than 32 MB"
     d.attachments = [d.attachments, [file]].flat_map(x -> x)
@@ -1381,7 +1388,7 @@ action attach(d: Draft, file: File) (icon: .paperclip, label: "Attach a file") {
 
 /// Leaves a file the message was to take along behind.
 action detach(d: Draft, name: Text) (icon: .x, label: "Remove attachment") {
-    require not d.sent or d.recalled "This message went already"
+    require open_to_change(d) "This message went already"
     require d.attachments.any(f -> f.name == name) "It takes no {name}"
     d.attachments = d.attachments.filter(f -> f.name != name)
 }
@@ -1584,10 +1591,10 @@ destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
 /// Brings a message back to the outbox: it was sent to go at a moment still to come, and it is
 /// a draft again, whatever the moment.
 action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
-    require d.sent and not d.recalled "It is not waiting to go"
-    require delivery(d)?.state != "sent" "It went already"
+    require not d.sent "It went already"
+    require d.leaves_at != .none "It is not waiting to go"
     withdraw(d, std.say("Scheduled send cancelled"))
-    d.sent = false
+    d.leaves_at = .none
     d.recalled = true
 }
 
@@ -1595,7 +1602,7 @@ action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
 /// person's hold makes a message wait, and goes with no window open. Until it goes it can be
 /// taken back, and bringing it back leaves it a draft.
 action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send later") {
-    require not d.sent or d.recalled "This message went already"
+    require open_to_change(d) "This message went already"
     require d.to != "" or d.bcc != "" "It goes to nobody yet"
     require has_account(root Mail, d.from) "Add a mail account in Settings first"
     require at > now "Pick a moment still to come"
@@ -1617,7 +1624,7 @@ action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send late
         at: at,
     )
     d.send_at = at
-    d.sent = true
+    d.leaves_at = at
     d.recalled = false
 }
 
@@ -1675,7 +1682,7 @@ opened action read_on_open(t: Thread) {
 
 /// Sends the message from another workspace account.
 action send_from(d: Draft, a: Account) (icon: .user) {
-    require not d.sent or d.recalled "This message went already"
+    require open_to_change(d) "This message went already"
     d.from = a.key
     d.from_address = ""
 }
@@ -1683,7 +1690,7 @@ action send_from(d: Draft, a: Account) (icon: .user) {
 /// Sends the message as another of its account's names or addresses, `Name <address>`: what a
 /// person writing as a role rather than as themselves chooses. Empty sends as the account's own.
 action send_as(d: Draft, identity: Text) (icon: .user, label: "Send as") {
-    require not d.sent or d.recalled "This message went already"
+    require open_to_change(d) "This message went already"
     d.from_address = identity
 }
 
@@ -1704,7 +1711,7 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 /// mail client of the account sees it there too. What the server says comes back with the
 /// account's next mail, and the server's Drafts are read like its other folders.
 action save_to_drafts(m: Mail, d: Draft) (icon: .cloud, label: "Save in Drafts") {
-    require not d.sent or d.recalled "This message is on its way"
+    require open_to_change(d) "This message is on its way"
     require within_bounds(d) "Its addresses, subject or words are longer than one message carries"
     require has_account(m, d.from) "Add a mail account in Settings first"
     outside(
@@ -1728,10 +1735,27 @@ action save_to_drafts(m: Mail, d: Draft) (icon: .cloud, label: "Save in Drafts")
 /// failed did not leave, so it goes once. A message whose outcome nobody knows is not tried
 /// again, since it may have gone.
 action retry(d: Draft) uses time (icon: .refresh, label: "Try again") {
-    require d.sent and not d.recalled "It is not waiting to go"
+    require d.sent "It is not waiting to go"
     require delivery(d)?.state == "rejected" "It did not fail, or nobody knows whether it went"
-    d.sent = false
-    send(d)
+    require within_bounds(d) "Its addresses, subject or words are longer than one message carries"
+    require has_account(root Mail, d.from) "Add a mail account in Settings first"
+    outside(
+        "smtp.send",
+        (
+            d.from,
+            d.from_address,
+            d.to,
+            d.cc,
+            d.bcc,
+            d.subject,
+            d.body,
+            d.in_reply_to,
+            d.references,
+            d.invitation,
+            d.attachments,
+        ),
+    )
+    d.send_at = now
 }
 
 /// Tells everyone who reads the conversation that mail came to it: who wrote, what it is
@@ -1793,7 +1817,7 @@ primary action send(d: Draft) uses time proposal compose(d) (
     key: "Ctrl+Enter",
     shows: [(d.to, .addresses), (d.cc, .addresses), (d.bcc, .addresses), d.subject, (d.body, .long)],
 ) {
-    require not d.sent or d.recalled "This message went already"
+    require open_to_change(d) "This message went already"
     require within_bounds(d) "Its addresses, subject or words are longer than one message carries"
     require d.to != "" or d.bcc != "" "It goes to nobody yet"
     require d.from != "" "Pick the account it goes from"
@@ -1819,18 +1843,38 @@ primary action send(d: Draft) uses time proposal compose(d) (
         at: at,
     )
     d.send_at = at
-    d.sent = true
+    d.leaves_at = at
     d.recalled = false
 }
 
 /// Takes back a message that was sent and has not gone yet: it never leaves, and the message is
 /// a draft again, as it was. Once it went it cannot be taken back.
 action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
-    require d.sent and not d.recalled "It has not been sent"
-    require delivery(d)?.state != "sent" "It went already"
+    require not d.sent "It went already"
+    require d.leaves_at != .none "It has not been sent"
     withdraw(d, std.say("Taken back before it went"))
-    d.sent = false
+    d.leaves_at = .none
     d.recalled = true
+}
+
+/// Lets a message that waited in the outbox leave: its hold or the moment it was sent for came,
+/// so it can no longer be taken back, and every member reads it from now on. One taken back
+/// before its moment stays a draft.
+action leave(d: Draft) uses time (icon: .send, label: "Let it leave") {
+    if let at = d.leaves_at {
+        if at <= now {
+            d.leaves_at = .none
+            d.sent = true
+        }
+    }
+}
+
+/// A message waiting in the outbox leaves at its moment, whether or not a window is open.
+trigger leaving(d: Draft) at d.leaves_at: leave(d)
+
+/// Whether a message can still be changed: it is a draft, neither waiting in the outbox nor gone.
+fn open_to_change(d: Draft) -> Bool {
+    not d.sent and d.leaves_at == .none
 }
 
 /// Answers the conversation with what was typed: the message goes to whoever wrote its newest,
@@ -2610,8 +2654,8 @@ view draft_list(shown: List<Draft>) {
 view draft_row(d: Draft) {
     row(
         meta(d).title,
-        secondary: if d.sent or d.recalled { delivery_says(d) } else { d.to },
-        mark: if d.sent and not d.recalled { .send },
+        secondary: if open_to_change(d) and not d.recalled { d.to } else { delivery_says(d) },
+        mark: if not open_to_change(d) { .send },
     )
 }
 
@@ -2644,15 +2688,15 @@ fn delivery_says(d: Draft) -> Text {
     } else { "" }
 }
 
-/// Whether a message was sent and can still be taken back: nothing carried it out yet.
+/// Whether a message was sent and can still be taken back: it waits in the outbox.
 fn can_undo(d: Draft) -> Bool {
-    d.sent and not d.recalled and delivery(d)?.state != "sent"
+    not d.sent and d.leaves_at != .none
 }
 
 /// Why a message that went has no copy in its account's Sent folder, in the server's words: empty
 /// while it has one, and while it did not go.
 fn unfiled(d: Draft) -> Text {
-    if not d.sent or d.recalled {
+    if not d.sent {
         return ""
     }
     if let s = delivery(d) {
@@ -3057,7 +3101,7 @@ view editor(d: Draft) {
     // once, and a message to a few people grows them at the press that asks.
     state headers_open: Bool = false
     std.document(d) {
-        if d.sent or d.recalled {
+        if not open_to_change(d) or d.recalled {
             field("Status") {
                 text(delivery_says(d))
             }

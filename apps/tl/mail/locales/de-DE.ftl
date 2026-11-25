@@ -216,9 +216,13 @@ d-w6twdkob = Antwort auf
 d-w26tzvt4 = Verweise
 
 d-yfyt2cfh = Gesendet
+    .doc = Sie ist rausgegangen: ihre Wartezeit oder ihr Zeitpunkt kam, und der Postausgang trägt sie hinaus. Jedes Mitglied des Arbeitsbereichs liest sie von da an, also macht nichts sie wieder zu einem Entwurf.
 
 d-lgrwf5yf = Senden um
     .doc = Wann sie rausgeht: 1970 für einen Entwurf, der noch nicht gesendet ist.
+
+d-wgp3brx4 = Geht raus um
+    .doc = Der Zeitpunkt, zu dem sie rausgeht, während sie im Postausgang auf die Wartezeit der Person oder den Zeitpunkt wartet, für den sie gesendet wurde: keiner für einen Entwurf, für einen zurückgeholten und für einen, der rausging. Bis dahin gehört sie allein der Person, die sie schrieb, und Zurückholen hält sie auf.
 
 d-h2nvr2op = Zurückgeholt
     .doc = Sie wurde zurückgeholt, bevor sie rausging: sie geht nie raus und ist wieder ein Entwurf.
@@ -828,6 +832,11 @@ d-hlefh2br = Erneut versuchen
     .doc = Sendet eine Nachricht, die der Server des Kontos abgelehnt hat, erneut, von wo sie steht: die Fassung, die scheiterte, ist nicht fortgegangen, also geht sie einmal.
     .w-it-is-not-waiting-to-go = Sie wartet nicht darauf, rauszugehen
     .w-it-did-not-fail-or-nobody = Sie ist nicht gescheitert, oder niemand weiß, ob sie ging
+    .w-its-addresses-subject-or-words-are = Ihre Adressen, ihr Betreff oder ihre Worte sind länger, als eine Nachricht trägt
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
+
+d-bkangges = Rausgehen lassen
+    .doc = Lässt eine Nachricht rausgehen, die im Postausgang wartete: ihre Wartezeit oder der Zeitpunkt, für den sie gesendet wurde, kam, also kann sie nicht mehr zurückgeholt werden, und jedes Mitglied liest sie von nun an. Eine, die vor ihrem Zeitpunkt zurückgeholt wurde, bleibt ein Entwurf.
 
 d-ehxfqozw = Die angekommene Mail ankündigen
     .doc = Sagt allen, die die Unterhaltung lesen, dass Mail ankam: wer schrieb, wie sie heißt und an welches Konto sie kam, während der Arbeitsbereich mehrere liest, und öffnet die Unterhaltung.

@@ -325,6 +325,19 @@ impl Session {
         }
     }
 
+    /// The moment an optional time field holds: none while it holds none.
+    fn moment(&self, at: &ResourceRef, field: &str) -> Option<String> {
+        match self.value_of(at, field) {
+            RtValue::Opt(None) => None,
+            RtValue::Opt(Some(held)) => match *held {
+                RtValue::Text(text) => Some(text),
+                other => panic!("{field} holds no moment: {other:?}"),
+            },
+            RtValue::Text(text) => Some(text),
+            other => panic!("{field} is not a moment: {other:?}"),
+        }
+    }
+
     fn flag(&self, at: &ResourceRef, field: &str) -> bool {
         matches!(
             self.value_of(at, field),
@@ -1507,8 +1520,15 @@ fn a_sent_message_waits_for_the_persons_hold_before_it_goes() {
     session.hold_for(600);
     let draft = session.sent_reply("Launch plan");
     session.settle();
-    // It is held: nothing went, and it says how it stands.
-    assert!(session.flag(&draft, "sent"));
+    // It is held: nothing went, it waits in the outbox, and it says how it stands.
+    assert!(
+        !session.flag(&draft, "sent"),
+        "a held message has not left, so it is its author's alone"
+    );
+    assert!(
+        session.moment(&draft, "leaves_at").is_some(),
+        "it waits for its moment"
+    );
     assert!(
         servers.smtp.sent().is_empty(),
         "a held message does not go yet"
@@ -1994,8 +2014,13 @@ fn a_message_sent_later_waits_for_its_moment_and_is_cancelled_before_it() {
             &json!({ "at": "2026-06-30T18:00:00Z" }),
         );
         assert!(
-            session.flag(&draft, "sent"),
-            "it is on its way, at a moment"
+            !session.flag(&draft, "sent"),
+            "it has not left before its moment"
+        );
+        assert_eq!(
+            session.moment(&draft, "leaves_at").as_deref(),
+            Some("2026-06-30T18:00:00Z"),
+            "it waits in the outbox for its moment"
         );
         assert_eq!(
             session.text(&draft, "send_at"),
