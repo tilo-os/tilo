@@ -147,6 +147,9 @@ export class Voice {
     this.dave = this.#makeDave();
     /// The chain that keeps what this call hears in the order it arrived.
     this.hearing = Promise.resolve();
+    /// The packets going out, one after the other: each is sealed before the next, so they
+    /// leave in the order the ticks took them, under the sequence numbers that order gives.
+    this.sending = Promise.resolve();
   }
 
   /// The end-to-end encryption session of this call. A session that is resumed keeps the one
@@ -549,8 +552,7 @@ export class Voice {
       }
       // What was dropped before this frame still spent its place, so the receiver hears the
       // gap and conceals it rather than decoding this frame as though it followed the last.
-      for (let n = 0; n < frame.skipped; n += 1) this.sender?.skip();
-      return this.#packetOut(frame.opus);
+      return this.#packetOut(frame.opus, frame.skipped);
     }
     if (!this.speaking) return;
     if (this.silenceLeft > 0) {
@@ -561,12 +563,25 @@ export class Voice {
     this.#send({ op: 5, d: { speaking: 0, delay: 0, ssrc: this.ssrc } });
   }
 
-  async #packetOut(frame) {
+  /// Queue a frame to go out after every frame before it, `skipped` places after the last.
+  #packetOut(frame, skipped = 0) {
+    this.sending = this.sending
+      .then(() => this.#sealAndSend(frame, skipped))
+      .catch((error) => this.log(`a voice packet was not sent: ${error?.message ?? error}`));
+    return this.sending;
+  }
+
+  /// Seal one frame and send it. Sealing waits on the call's keys, and the call can close or
+  /// move to a new socket meanwhile: what the packet goes out on is read once it is sealed.
+  async #sealAndSend(frame, skipped) {
     if (!this.cipher || !this.sender || !this.udp) return;
     const sealed = await this.dave.encrypt(frame);
-    const packet = this.sender.packet(this.cipher, sealed);
+    const { cipher, sender, udp } = this;
+    if (!sealed || !cipher || !sender || !udp) return;
+    for (let n = 0; n < skipped; n += 1) sender.skip();
+    const packet = sender.packet(cipher, sealed);
     if (!packet) return;
-    this.udp.send(packet, (error) => {
+    udp.send(packet, (error) => {
       if (error) this.log(`a voice packet did not reach the server: ${error.message}`);
     });
   }
