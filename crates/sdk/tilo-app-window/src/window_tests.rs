@@ -284,6 +284,40 @@ fn a_call_packed_by_its_content_is_told_the_room_it_is_offered_not_what_it_drew(
     assert!(!compact, "a {root} rem bar unfolds the part: {people} rem");
 }
 
+/// A view that moves a call it reads the room of into a new container, beside another, changes its
+/// tree in place: the call's old node leaves the tree and a new one stands in it, under the same
+/// body. The room the call is told is read from the node it stands at now, never the one it left.
+#[test]
+fn a_call_moved_in_place_is_told_the_room_of_where_it_stands_now() {
+    let (mut app, mut window) = window();
+    send(&mut app, &people_bar(false));
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1200, 600));
+    let mut compact = false;
+    follow_people(&mut harness, &mut app, &mut compact);
+    let mut moved = people_bar(false);
+    let ToUi::Open { tree: bar, .. } = &mut moved[0] else {
+        unreachable!("people_bar opens the bar first");
+    };
+    let mut wrap = UiNode::empty("stack", "wrap");
+    wrap.props.insert("fill".to_owned(), Value::Int(1));
+    wrap.children = std::mem::take(&mut bar.children);
+    bar.children = vec![wrap, view_call("beside", 1)];
+    send(&mut app, &moved);
+    window_of(&mut harness).receive();
+    harness.relayout();
+    window_of(&mut harness).flush();
+    harness.relayout();
+    window_of(&mut harness).flush();
+    let rem = ui::widget::arrange::rem_of(harness.theme());
+    let told = spaces(&mut app);
+    assert!(
+        told.iter().any(|(_, key, width, _)| key == "people"
+            && (f64::from(*width * rem) - 600.0).abs() < 4.0 * f64::from(rem)),
+        "the moved call reads the half of the bar its new container offers it: {told:?}"
+    );
+}
+
 #[test]
 fn a_view_call_that_reads_its_space_is_told_the_size_layout_gave_it() {
     let (mut app, mut window) = window();

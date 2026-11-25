@@ -369,8 +369,8 @@ pub struct AppWindow {
     /// `""`; the view calls that read their space are the keys the app declared (`ToUi::Spaces`).
     root_space: HashMap<String, (f32, f32, f32)>,
     detail_space: HashMap<String, (f32, f32, f32)>,
-    /// The layout node of each keyed widget of the body, as its last build made them, and the
-    /// body's own node: what the room each view call is offered is read from
+    /// The layout node of each keyed widget of the body, as its last build or remount made them,
+    /// and the body's own node: what the room each view call is offered is read from
     /// ([`ui::widget::offered_room`]).
     laid_nodes: Option<(ui::taffy::NodeId, HashMap<String, ui::taffy::NodeId>)>,
     /// The view calls of each level that read the space layout gives them, by key in that level's
@@ -3860,6 +3860,18 @@ impl ui::widget::Decorator for AppWindow {
         let node = self.body.build_layout(taffy, theme, node_map);
         self.laid_nodes = Some((node, keyed_nodes(self.body.as_ref(), taffy, node, node_map)));
         node
+    }
+
+    // A remount changes the body's tree in place under the node it keeps: a keyed widget it moved
+    // or replaced stands at a new node, and the one it left is gone from the tree.
+    fn remount_children(&mut self, remount: &mut ui::widget::Remount<'_>) -> bool {
+        let applied = self.body.remount_children(remount);
+        if let Some((body, _)) = &self.laid_nodes {
+            let body = *body;
+            let (taffy, node_map) = remount.laid_out();
+            self.laid_nodes = Some((body, keyed_nodes(self.body.as_ref(), taffy, body, node_map)));
+        }
+        applied
     }
 
     fn apply_layout(
