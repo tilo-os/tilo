@@ -49,6 +49,10 @@ const REPORTING: Duration = Duration::from_secs(2);
 /// What a call that needs the person's part is told when it does not run yet.
 const STILL_STARTING: &str =
     "this device's person's services are still starting: ask again in a moment";
+/// What a device no person's certificate names says to a call that needs one.
+const NO_PERSON: &str = "this device has no person yet: set it up with `tilo login \
+                         --new-identity`, or log it in with a ticket from one of your devices \
+                         (`tilo login <ticket>`) first";
 /// What a founding call reports as it makes the person and starts their part.
 pub(crate) const FOUNDING_STARTING: &str = "starting the person part";
 /// What it reports while it waits for them to found their own workspace here.
@@ -535,21 +539,11 @@ impl DeviceOnly {
         let reason = if self.claimed() {
             STILL_STARTING
         } else {
-            self.why_no_person()
+            NO_PERSON
         };
         ActionCallError::Refused {
             reason: reason.into(),
         }
-    }
-
-    /// What a device no person's certificate names says to what needs one.
-    #[expect(
-        clippy::unused_self,
-        reason = "said of this device, beside the other answers it gives"
-    )]
-    const fn why_no_person(&self) -> &'static str {
-        "this device has no person yet: set it up with `tilo login --new-identity`, or log it \
-         in with a ticket from one of your devices (`tilo login <ticket>`) first"
     }
 
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
@@ -860,7 +854,7 @@ impl DeviceOnly {
         // A boot is set up through the person's own dispatch, which their services run: a device
         // no person's certificate names has none to start, and is told so at once.
         if !self.claimed() {
-            let update = failed(invocation, self.why_no_person());
+            let update = failed(invocation, NO_PERSON);
             return Pending::ready(Ok(self.keep(invocation, update)));
         }
         let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
