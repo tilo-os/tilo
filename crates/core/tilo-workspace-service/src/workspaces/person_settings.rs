@@ -417,29 +417,7 @@ impl Workspaces {
                 | person_accounts::CLOUD_CREDENTIAL
                 | person_accounts::REPORT_SYNC_VERB
         ) {
-            if !caller.is_own_connection() {
-                return Err(ActionCallError::Refused {
-                    reason: "A cloud mount's sign-in is answered only to a connection of your \
-                             own on this computer"
-                        .to_owned(),
-                });
-            }
-            let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
-            let here = workspace.to_string();
-            let root = self.workspace_root(&here);
-            let signing = Signing {
-                vault: self.vault_for(&here, caller.acting()).serving(request),
-                root: &root,
-                by: "",
-            };
-            return Box::pin(cloud_mounts::invoke(
-                self,
-                signing,
-                &here,
-                caller.acting(),
-                request,
-            ))
-            .await;
+            return self.cloud_mount_invoke(workspace_id, caller, request).await;
         }
         // A person's own accounts at issuers their apps describe: never the workspace's.
         if let Some(answered) = self
@@ -521,6 +499,41 @@ impl Workspaces {
             return answer(&Ok::<_, String>(listed));
         }
         Err(ActionCallError::UnknownAction)
+    }
+
+    /// Answer what a device's cloud mount reads and signs in with, from
+    /// [`Self::person_accounts_invoke`]: the accounts it mounts and the sign-in of one, answered
+    /// to the person's own connection alone, which runs as them on this computer, outside any app
+    /// or page.
+    async fn cloud_mount_invoke(
+        &self,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        if !caller.is_own_connection() {
+            return Err(ActionCallError::Refused {
+                reason: "A cloud mount's sign-in is answered only to a connection of your \
+                         own on this computer"
+                    .to_owned(),
+            });
+        }
+        let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+        let here = workspace.to_string();
+        let root = self.workspace_root(&here);
+        let signing = Signing {
+            vault: self.vault_for(&here, caller.acting()).serving(request),
+            root: &root,
+            by: "",
+        };
+        Box::pin(cloud_mounts::invoke(
+            self,
+            signing,
+            &here,
+            caller.acting(),
+            request,
+        ))
+        .await
     }
 }
 

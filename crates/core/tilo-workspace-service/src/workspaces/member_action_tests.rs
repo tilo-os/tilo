@@ -675,8 +675,8 @@ async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let reader = person(owner.user_public_key);
-    let first = made_workspace(&workspaces, "First").await;
-    let second = made_workspace(&workspaces, "Second").await;
+    let first = made_workspace(workspaces, "First").await;
+    let second = made_workspace(workspaces, "Second").await;
     let target = [9u8; 32];
     workspaces
         .add_member(
@@ -694,10 +694,10 @@ async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
 
     let mut both = vec![reader.clone(), person(target)];
     both.sort();
-    assert_eq!(members_read(&workspaces, &first, &reader).await, both);
+    assert_eq!(members_read(workspaces, &first, &reader).await, both);
     assert_eq!(
-        members_read(&workspaces, &second, &reader).await,
-        [reader.clone()],
+        members_read(workspaces, &second, &reader).await,
+        std::slice::from_ref(&reader),
         "the second workspace's members are its own: the first's new member is not in it"
     );
 
@@ -713,8 +713,8 @@ async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
         .await
         .unwrap();
     assert_eq!(
-        members_read(&workspaces, &first, &reader).await,
-        [reader.clone()],
+        members_read(workspaces, &first, &reader).await,
+        std::slice::from_ref(&reader),
         "a removal is read at once"
     );
 }

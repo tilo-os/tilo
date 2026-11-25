@@ -12,6 +12,7 @@ use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 
 use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
+use crate::workspaces::Workspaces;
 use crate::workspaces::tests::{governor, test_host};
 
 const BRIDGE: &str = "so.tilo.bridge";
@@ -90,6 +91,28 @@ fn refused_with(error: &ActionCallError, words: &str) -> bool {
     matches!(error, ActionCallError::Refused { reason } if reason.contains(words))
 }
 
+/// The account's grant is in the person's vault, and only there: the one `ada` grant, and no
+/// token kept beside the workspace for the bridge's fake issuer.
+async fn only_in_the_vault(workspaces: &Workspaces, here: &str, person: &str) {
+    assert_eq!(
+        grants(&workspaces.open_vault(here).await.unwrap(), "ada"),
+        1
+    );
+    let kept = std::fs::read_to_string(
+        workspaces
+            .workspace_root(here)
+            .join("connected-accounts")
+            .join(person)
+            .join(BRIDGE)
+            .join("fake.json"),
+    )
+    .unwrap();
+    assert!(
+        !kept.contains("access-"),
+        "no token is kept beside the workspace: {kept}"
+    );
+}
+
 #[tokio::test]
 async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     let server = FakeAuthorizationServer::start();
@@ -163,23 +186,7 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     assert_eq!(workspaces.connected_accounts(&here, &person), vec![account]);
 
     // The grant is in the person's vault, and only there.
-    assert_eq!(
-        grants(&workspaces.open_vault(&here).await.unwrap(), "ada"),
-        1
-    );
-    let kept = std::fs::read_to_string(
-        workspaces
-            .workspace_root(&here)
-            .join("connected-accounts")
-            .join(&person)
-            .join(BRIDGE)
-            .join("fake.json"),
-    )
-    .unwrap();
-    assert!(
-        !kept.contains("access-"),
-        "no token is kept beside the workspace: {kept}"
-    );
+    only_in_the_vault(workspaces, &here, &person).await;
 
     // Connecting the same account again keeps one grant, the new one.
     connected(&page, &in_bridge, connect(&server, port))
