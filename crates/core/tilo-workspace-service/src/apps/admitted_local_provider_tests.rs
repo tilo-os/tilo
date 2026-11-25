@@ -172,6 +172,70 @@ async fn certified_local_host_preserves_eager_and_directory_original_ownership()
         .await;
 }
 
+/// One failed policy clock reading refuses only the calls made on it: the host admits the next
+/// call again, at a policy time no earlier than the one it admitted before the failure.
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_admits_again_after_a_failed_clock_reading() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_provider(&caller, &evidence, false)
+                .unwrap();
+            let time = env.origin.capture().unwrap();
+            let call = |request: tilo_actions::remote::InvokeRequest| {
+                let pending = host.invoke(&caller, request);
+                rig.state.take_turn(&rig.directories);
+                local_host_answer(pending)
+            };
+            env.control.advance_monotonic(Duration::from_secs(1));
+            let request = local_host_request(false);
+            assert_eq!(
+                call(request.clone()).await.unwrap().invocation,
+                request.invocation
+            );
+            local_host_original(&rig, &caller, request.invocation).await;
+            let before = time.now_ns().unwrap();
+            // The monotonic clock reads behind its last reading, once.
+            env.control.rewind_monotonic(Duration::from_millis(500));
+            assert!(
+                call(local_host_request(false)).await.is_err(),
+                "a call on the failed reading is refused"
+            );
+            no_delivery(&rig).await;
+            env.control.set_wall_ns(1);
+            let request = local_host_request(false);
+            assert_eq!(
+                call(request.clone()).await.unwrap().invocation,
+                request.invocation,
+                "the next call is admitted again"
+            );
+            local_host_original(&rig, &caller, request.invocation).await;
+            assert!(
+                time.now_ns().unwrap() >= before,
+                "policy time never runs back across the failure"
+            );
+            env.origin.invalidate();
+            assert!(
+                call(local_host_request(false)).await.is_err(),
+                "a retired origin still refuses"
+            );
+            no_delivery(&rig).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn certified_local_host_refuses_forged_or_rebound_admission() {
     tokio::task::LocalSet::new()

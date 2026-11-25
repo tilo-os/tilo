@@ -19,30 +19,44 @@ impl std::error::Error for PolicyClockError {}
 struct State {
     observed: Instant,
     unix_ns: u64,
-    failed: bool,
+    /// A reading failed since `observed`: the next good one is taken as the new anchor, with
+    /// the time already handed out as its floor.
+    reanchor: bool,
 }
 impl State {
-    fn advance(&mut self, monotonic: Instant, wall_ns: u64) -> Result<u64, PolicyClockError> {
-        if self.failed {
-            return Err(PolicyClockError);
-        }
-        // Any arithmetic/monotonic failure permanently closes this clock.
-        self.failed = true;
-        let elapsed = u64::try_from(
-            monotonic
-                .checked_duration_since(self.observed)
+    /// Policy time at `monotonic`, never earlier than a time already handed out: the time
+    /// elapsed since the last reading is added to the last answer, and the wall clock
+    /// (`None` when it cannot be read) only ever moves it forward.
+    ///
+    /// A reading behind the last one fails, and so does an answer past `u64` nanoseconds;
+    /// neither closes the clock. After a failed reading the next good one answers the last
+    /// time handed out (or the wall clock, when later) and measures from there.
+    fn advance(
+        &mut self,
+        monotonic: Instant,
+        wall_ns: Option<u64>,
+    ) -> Result<u64, PolicyClockError> {
+        let floor = if self.reanchor {
+            self.unix_ns
+        } else {
+            let Some(elapsed) = monotonic.checked_duration_since(self.observed) else {
+                tracing::warn!(
+                    behind_ns = self.observed.duration_since(monotonic).as_nanos(),
+                    "the monotonic clock read earlier than its last reading: \
+                     owner policy time measures from its next reading"
+                );
+                self.reanchor = true;
+                return Err(PolicyClockError);
+            };
+            u64::try_from(elapsed.as_nanos())
+                .ok()
+                .and_then(|elapsed| self.unix_ns.checked_add(elapsed))
                 .ok_or(PolicyClockError)?
-                .as_nanos(),
-        )
-        .map_err(|_| PolicyClockError)?;
-        let now = self
-            .unix_ns
-            .checked_add(elapsed)
-            .ok_or(PolicyClockError)?
-            .max(wall_ns);
+        };
+        let now = wall_ns.map_or(floor, |wall| floor.max(wall));
         self.unix_ns = now;
         self.observed = monotonic;
-        self.failed = false;
+        self.reanchor = false;
         Ok(now)
     }
 }
@@ -82,6 +96,23 @@ impl PolicyClockTestControl {
             .checked_add(elapsed)
             .expect("test monotonic overflow");
     }
+    /// Moves the controlled monotonic reading back by `elapsed`: the next reading fails, as a
+    /// monotonic clock read behind its last reading does.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the controlled monotonic reading would underflow.
+    #[expect(
+        clippy::expect_used,
+        reason = "test control: an underflowing test clock is a broken test, not a runtime state"
+    )]
+    pub fn rewind_monotonic(&self, elapsed: std::time::Duration) {
+        let mut sample = self.sample();
+        sample.monotonic = sample
+            .monotonic
+            .checked_sub(elapsed)
+            .expect("test monotonic underflow");
+    }
     /// The controlled sample, still usable after a panicking test poisoned it.
     fn sample(&self) -> std::sync::MutexGuard<'_, TestSample> {
         self.0.lock_recover()
@@ -94,27 +125,40 @@ impl OwnerPolicyClock {
             state: Mutex::new(State {
                 observed: tilo_clock::now(),
                 unix_ns: tilo_clock::try_unix_now_ns().ok_or(PolicyClockError)?,
-                failed: false,
+                reanchor: false,
             }),
             #[cfg(any(test, feature = "test-support"))]
             test_sample: None,
         })))
     }
     /// Current policy time in Unix nanoseconds, never running backwards.
+    ///
+    /// # Errors
+    ///
+    /// This reading failed: the monotonic clock read behind its last reading, or the time
+    /// would pass `u64` nanoseconds. A later reading answers again.
     pub fn now_ns(&self) -> Result<u64, PolicyClockError> {
-        let mut state = self.0.state.lock().map_err(|_| PolicyClockError)?;
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(sample) = &self.0.test_sample {
-            let sample = sample.lock().map_err(|_| PolicyClockError)?;
-            return state.advance(sample.monotonic, sample.wall_ns);
-        }
-        let wall = match tilo_clock::try_unix_now_ns().ok_or(PolicyClockError) {
-            Ok(wall) => wall,
-            Err(error) => {
-                state.failed = true;
-                return Err(error);
+        let mut state = match self.0.state.lock() {
+            Ok(state) => state,
+            // A reader panicked while it held the clock. A reading changes the state only in
+            // its last, infallible stores, so what it holds is a time already handed out:
+            // measure from the next reading, with that time as the floor.
+            Err(poisoned) => {
+                tracing::warn!("owner policy time recovers from a reader that panicked");
+                let mut state = poisoned.into_inner();
+                state.reanchor = true;
+                self.0.state.clear_poison();
+                state
             }
         };
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(sample) = &self.0.test_sample {
+            let sample = sample.lock_recover();
+            return state.advance(sample.monotonic, Some(sample.wall_ns));
+        }
+        // The wall clock only moves policy time forward: without it, the monotonic clock still
+        // answers from the last time handed out.
+        let wall = tilo_clock::try_unix_now_ns();
         state.advance(tilo_clock::now(), wall)
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -129,7 +173,7 @@ impl OwnerPolicyClock {
                 state: Mutex::new(State {
                     observed,
                     unix_ns: initial_ns,
-                    failed: false,
+                    reanchor: false,
                 }),
                 test_sample: Some(sample.clone()),
             })),
@@ -231,38 +275,71 @@ mod tests {
             let mut state = State {
                 observed: start,
                 unix_ns: 200,
-                failed: false,
+                reanchor: false,
             };
-            assert_eq!(state.advance(start + Duration::from_nanos(5), 50), Ok(205));
-            assert_eq!(state.advance(start + Duration::from_nanos(9), 300), Ok(300));
-            assert_eq!(state.advance(start + Duration::from_nanos(12), 10), Ok(303));
+            let at = |ns| start + Duration::from_nanos(ns);
+            assert_eq!(state.advance(at(5), Some(50)), Ok(205));
+            assert_eq!(state.advance(at(9), Some(300)), Ok(300));
+            assert_eq!(state.advance(at(12), Some(10)), Ok(303));
+            assert_eq!(state.advance(at(12), Some(301)), Ok(303));
             assert_eq!(
-                state.advance(start + Duration::from_nanos(12), 301),
-                Ok(303)
+                state.advance(at(20), None),
+                Ok(311),
+                "an unreadable wall clock leaves the monotonic clock to answer"
             );
         }
 
-        phase owner_policy_clock_arithmetic_failure_is_terminal;
+        phase owner_policy_clock_answers_again_after_a_failed_reading;
         {
             let start = tilo_clock::now();
+            let at = |ns| start + Duration::from_nanos(ns);
+            let mut state = State {
+                observed: at(10),
+                unix_ns: 500,
+                reanchor: false,
+            };
+            assert!(state.advance(at(4), Some(900)).is_err(), "a reading behind the last fails");
+            assert_eq!(
+                state.advance(at(6), Some(100)),
+                Ok(500),
+                "the next good reading answers no earlier than the last time handed out"
+            );
+            assert_eq!(state.advance(at(9), Some(100)), Ok(503), "and measures from itself");
+            assert!(state.advance(at(1), None).is_err());
+            assert_eq!(state.advance(at(2), Some(700)), Ok(700), "a later wall clock still wins");
             let mut state = State {
                 observed: start,
                 unix_ns: u64::MAX,
-                failed: false,
+                reanchor: false,
             };
-            assert!(state.advance(start + Duration::from_nanos(1), 0).is_err());
-            assert!(state.advance(start, 0).is_err());
-            let mut state = State {
-                observed: start,
-                unix_ns: 1,
-                failed: false,
-            };
-            assert!(
-                state
-                    .advance(start.checked_sub(Duration::from_nanos(1)).unwrap(), 0)
-                    .is_err()
+            assert!(state.advance(at(1), Some(0)).is_err(), "time past u64 fails");
+            assert_eq!(state.advance(start, Some(0)), Ok(u64::MAX));
+        }
+
+        phase owner_policy_clock_retained_time_recovers_but_its_retired_origin_does_not;
+        {
+            let (clock, control) = OwnerPolicyClock::for_test(1_000);
+            let origin = clock.new_origin();
+            let time = origin.capture().unwrap();
+            control.advance_monotonic(Duration::from_nanos(50));
+            assert_eq!(time.now_ns(), Ok(1_050));
+            control.rewind_monotonic(Duration::from_nanos(30));
+            control.set_wall_ns(1);
+            assert!(time.now_ns().is_err(), "the failed reading refuses");
+            assert_eq!(
+                time.now_ns(),
+                Ok(1_050),
+                "the next reading answers again, never earlier than before the failure"
             );
-            assert!(state.advance(start + Duration::from_nanos(1), 2).is_err());
+            control.advance_monotonic(Duration::from_nanos(7));
+            assert_eq!(time.now_ns(), Ok(1_057));
+            let other = clock.new_origin();
+            let survivor = other.capture().unwrap();
+            origin.invalidate();
+            control.advance_monotonic(Duration::from_nanos(1));
+            assert!(time.now_ns().is_err(), "a retired origin still refuses");
+            assert!(origin.capture().is_err());
+            assert_eq!(survivor.now_ns(), Ok(1_058));
         }
 
         phase owner_policy_clock_origin_drop_invalidation_and_identity;
@@ -313,11 +390,13 @@ mod tests {
             );
         }
 
-        phase owner_policy_clock_poison_never_falls_back_to_wall;
+        phase owner_policy_clock_recovers_from_a_reader_that_panicked;
         {
-            let clock = OwnerPolicyClock::new().unwrap();
+            let (clock, control) = OwnerPolicyClock::for_test(400);
             let origin = clock.new_origin();
             let time = origin.capture().unwrap();
+            control.advance_monotonic(Duration::from_nanos(20));
+            assert_eq!(time.now_ns(), Ok(420));
             let held = clock.clone();
             assert!(
                 tilo_rt::panic_boundary::isolate(move || {
@@ -326,9 +405,15 @@ mod tests {
                 })
                 .is_err()
             );
-            assert!(clock.now_ns().is_err());
-            assert!(time.now_ns().is_err());
-            assert!(origin.capture().is_err());
+            control.set_wall_ns(5);
+            assert_eq!(
+                time.now_ns(),
+                Ok(420),
+                "a poisoned clock answers again from the last time handed out, not the wall"
+            );
+            control.advance_monotonic(Duration::from_nanos(3));
+            assert_eq!(time.now_ns(), Ok(423));
+            assert!(origin.capture().is_ok());
         }
     }
 }
