@@ -73,8 +73,10 @@ use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};
 use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::device::services::Daemon;
+use tilo_server_protocol::WorkspaceId;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, StatementSigner as _};
+use tilo_workspace_service::agents::{EngineActions, WorkspaceActionProvider, agent_keys};
 use tilo_workspace_service::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
 use tilo_workspace_service::workspaces::model_answers::{
     ModelDescriptor, ProviderProfile, ProviderProtocol,
@@ -573,13 +575,8 @@ impl Host {
             label,
             DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
         );
-        let direct = tilo_api::direct::Direct::here(
-            self.daemon().api_here(),
-            key,
-            cert,
-            label,
-        )
-        .unwrap();
+        let direct =
+            tilo_api::direct::Direct::here(self.daemon().api_here(), key, cert, label).unwrap();
         Key { direct }
     }
 
@@ -591,13 +588,8 @@ impl Host {
             label,
             DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
         );
-        let direct = tilo_api::direct::Direct::here(
-            self.daemon().api_here(),
-            key,
-            cert,
-            label,
-        )
-        .unwrap();
+        let direct =
+            tilo_api::direct::Direct::here(self.daemon().api_here(), key, cert, label).unwrap();
         Key { direct }
     }
 
@@ -616,13 +608,8 @@ impl Host {
             label,
             DeviceCapabilities::own_key_grant(AgentScope::Workspace(id)),
         );
-        let direct = tilo_api::direct::Direct::here(
-            self.daemon().api_here(),
-            key,
-            cert,
-            label,
-        )
-        .unwrap();
+        let direct =
+            tilo_api::direct::Direct::here(self.daemon().api_here(), key, cert, label).unwrap();
         Key { direct }
     }
 
@@ -634,13 +621,8 @@ impl Host {
             label,
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
         );
-        let direct = tilo_api::direct::Direct::here(
-            self.daemon().api_here(),
-            key,
-            cert,
-            label,
-        )
-        .unwrap();
+        let direct =
+            tilo_api::direct::Direct::here(self.daemon().api_here(), key, cert, label).unwrap();
         Key { direct }
     }
 
@@ -650,13 +632,8 @@ impl Host {
     #[must_use]
     pub fn page_key(&self, label: &str) -> Key {
         let (key, cert) = self.certify(label, DeviceCapabilities::member());
-        let direct = tilo_api::direct::Direct::here(
-            self.daemon().api_here(),
-            key,
-            cert,
-            label,
-        )
-        .unwrap();
+        let direct =
+            tilo_api::direct::Direct::here(self.daemon().api_here(), key, cert, label).unwrap();
         Key { direct }
     }
 
@@ -674,6 +651,45 @@ impl Host {
         let session = self.daemon().mcp_session_factory(workspace).unwrap()().unwrap();
         Agent {
             session,
+            calls: std::sync::atomic::AtomicU64::new(1),
+            opened: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The MCP session the workspace service hands a turn of `agent`, named `name`, in the
+    /// founded workspace: the per-turn provider over this daemon's one dispatch, its agent's own
+    /// key, and the caller an agent acts as on a turn answering the person's message.
+    ///
+    /// # Panics
+    ///
+    /// This device certifies no agent's key, or the session cannot be bound to a turn.
+    #[must_use]
+    pub fn turn_agent(&self, agent: &str, name: &str) -> Agent<WorkspaceActionProvider> {
+        let daemon = self.daemon();
+        let workspace = self.workspace().to_owned();
+        let id = WorkspaceId::parse(&workspace).expect("the founded workspace is named by its id");
+        let person: [u8; 32] = hex::decode(self.person())
+            .expect("the person is named by their root")
+            .try_into()
+            .expect("a root is 32 bytes");
+        let keys = agent_keys::this_device().expect("this device certifies its agents' keys");
+        let key = keys
+            .grant(id, agent, name, person)
+            .expect("this device makes the agent's key");
+        let caller = Caller::delegated_agent(agent, person, key)
+            .in_workspace(workspace)
+            .named(name)
+            .in_agent_session("agent-session:test")
+            .on_roster(0, person)
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                "chat/conversation",
+                "asked",
+            ));
+        let actions = EngineActions::new(Arc::new(daemon.action_provider().unwrap()), keys);
+        let provider = WorkspaceActionProvider::new(actions, id);
+        Agent {
+            session: tilo_mcp::McpServer::for_turn(provider, caller)
+                .expect("a turn of a delegated agent"),
             calls: std::sync::atomic::AtomicU64::new(1),
             opened: std::sync::atomic::AtomicBool::new(false),
         }
@@ -790,46 +806,13 @@ impl Host {
             .unwrap();
         let service = ActionService::new(key.clone(), Arc::new(NoActions));
         let held = tilo_peer_state::direct::Replica::new(held);
-        service.hold(held.clone());
+        service.hold(held);
         service.add_provider(provider);
         let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
         Member {
             remote,
             service,
             endpoint,
-            held: Some(held),
-        }
-    }
-
-    /// Another device of the person's, `label`, entered in `workspace` and holding its state, as
-    /// their computer's mounted folder does: what it writes to the workspace's documents reaches
-    /// the host over the device link, beside the calls it makes.
-    pub async fn member_holding(&self, label: &str, workspace: &str) -> Member {
-        let (key, cert) = self.certify(label, DeviceCapabilities::member());
-        let daemon = self.daemon();
-        let workspaces = daemon.workspaces();
-        workspaces.enter(workspace, (&cert, &key)).await.unwrap();
-        let held = workspaces
-            .state(workspace)
-            .await
-            .expect("the daemon holds the workspace the device entered");
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-            .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap();
-        let service = ActionService::new(key.clone(), Arc::new(NoActions));
-        let held = tilo_peer_state::direct::Replica::new(held);
-        service.hold(held.clone());
-        let remote = Arc::new(service.remote(&endpoint, &daemon.endpoint_addr(), workspace));
-        Member {
-            remote,
-            service,
-            endpoint,
-            held: Some(held),
         }
     }
 
@@ -849,7 +832,6 @@ impl Host {
             remote,
             service,
             endpoint,
-            held: None,
         }
     }
 }
@@ -957,15 +939,16 @@ impl Key {
     }
 }
 
-/// An agent run on the daemon: the MCP session `tilo mcp` serves its client.
-pub struct Agent {
-    session: tilo_mcp::McpServer<tilo_runtime::device::services::RuntimeActionProvider>,
+/// An agent run on the daemon: the MCP session `tilo mcp` serves its client, or the workspace
+/// service's session for one turn of it ([`Host::turn_agent`]).
+pub struct Agent<H = tilo_runtime::device::services::RuntimeActionProvider> {
+    session: tilo_mcp::McpServer<H>,
     calls: std::sync::atomic::AtomicU64,
     /// Whether the connection opened with its client's name, as `tilo mcp` opens it.
     opened: std::sync::atomic::AtomicBool,
 }
 
-impl Agent {
+impl<H: ActionProvider + Send + Sync + 'static> Agent<H> {
     /// The MCP tool `name` with `arguments`: its `tools/call` result.
     pub async fn tool(&self, name: &str, arguments: &Value) -> Value {
         self.tool_calling(name, arguments, Value::Null).await
@@ -1027,9 +1010,6 @@ pub struct Member {
     remote: Arc<RemoteDevice>,
     service: ActionService,
     endpoint: iroh::Endpoint,
-    /// The workspace's state as this device holds it, when it holds one: what a device's folder
-    /// mount writes its documents through.
-    held: Option<tilo_peer_state::direct::Replica>,
 }
 
 impl Member {
@@ -1038,13 +1018,6 @@ impl Member {
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
         self.service.device()
-    }
-
-    /// The workspace's state as this device holds it: what its folder mount writes the tree's
-    /// documents through, `None` for a device that only asks.
-    #[must_use]
-    pub fn replica(&self) -> Option<&tilo_peer_state::direct::Replica> {
-        self.held.as_ref()
     }
 
     /// This device's endpoint, as it dials a host's terminal streams.

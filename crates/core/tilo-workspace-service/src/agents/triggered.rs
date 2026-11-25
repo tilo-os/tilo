@@ -558,6 +558,9 @@ fn collect_carried(value: &Value, into: &mut Vec<String>) {
     match value {
         Value::Object(fields) => {
             if let Some(blob) = fields.get("blob").and_then(Value::as_str) {
+                // A file's address is `tilo-blob://<reference>`; the read tool takes the
+                // reference under `tilo.content:`.
+                let blob = blob.strip_prefix(tilo_content::BLOB_SCHEME).unwrap_or(blob);
                 let name = fields
                     .get("name")
                     .and_then(Value::as_str)

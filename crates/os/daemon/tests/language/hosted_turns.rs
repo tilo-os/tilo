@@ -35,11 +35,11 @@ const CHAT_PROVIDER: &str = "record:so.tilo.chat:";
 /// Chat's one root: the workspace's conversations and skills.
 const CONVERSATIONS: &str = "tl:so.tilo.chat:root-lmdoxbnn";
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.
-const CHAT_PACKAGE: &str = "chat";
+pub(crate) const CHAT_PACKAGE: &str = "chat";
 
 /// Chat started in `workspace` with no window, as the daemon runs its workspace's apps: its
 /// instance opens the record there, so what Chat publishes is what the workspace's record holds.
-async fn start_chat(host: &Host, workspace: &str) {
+pub(crate) async fn start_chat(host: &Host, workspace: &str) {
     use tilo_actions::remote::{APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION};
     let target = tilo_actions::remote::RemoteActionTarget {
         provider: tilo_actions::remote::workspace_provider(workspace),
@@ -312,7 +312,21 @@ async fn chat_provider(host: &Host) -> String {
 /// takes the channel as its record delivers it, so a write that comes before it holds the
 /// channel is asked again.
 pub(crate) async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (String, bool) {
-    let arguments = json!({"body": mentioning(host.person(), words)});
+    write_to_scout_with(host, channel, words, json!({})).await
+}
+
+/// [`write_to_scout`], the message also carrying what `extra` names of Chat's `send`: the files
+/// a composer attaches (`attachments`), and whatever else a program sends beside the body.
+pub(crate) async fn write_to_scout_with(
+    host: &Host,
+    channel: &str,
+    words: &str,
+    extra: Value,
+) -> (String, bool) {
+    let mut arguments = json!({"body": mentioning(host.person(), words)});
+    if let (Some(sent), Value::Object(extra)) = (arguments.as_object_mut(), extra) {
+        sent.extend(extra);
+    }
     let deadline = tilo_test_env::hang_deadline();
     loop {
         // The published action names the channel as the app's record does, `tl:<app>:<path>`;
