@@ -754,7 +754,6 @@ impl Workspaces {
             policy: &host.trust_policy,
             blocked: &host.blocked,
             own_user: &host.cert.user_public_key,
-            agents: &host.agents,
             environments: &host.environments,
         };
         let at = tilo_clock::wall();

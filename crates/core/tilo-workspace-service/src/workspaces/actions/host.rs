@@ -941,7 +941,7 @@ impl Workspaces {
                     .capabilities
                     .agent
                     .as_ref()
-                    .is_none_or(|scope| scope.makes_workspaces());
+                    .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
                 let moving = args.text("workspace")?;
                 let named = args.text("name")?.is_some();
                 makes
@@ -1244,7 +1244,7 @@ impl Workspaces {
             .capabilities
             .agent
             .as_ref()
-            .is_none_or(|scope| scope.makes_workspaces());
+            .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
         if !makes && Self::a_grant_asks_for_more(device, (name, moving), labels.as_ref()) {
             return Err(ActionCallError::refused(
                 AdminRefusal::NotYourOwn.to_reason(),

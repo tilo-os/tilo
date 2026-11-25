@@ -5,7 +5,7 @@
 //! tests stand the real server up with two such workspaces and drive every entry a
 //! member, an agent or a compute client has, asserting that one tenant
 //! cannot read, write, enumerate, administer or invoke anything in the
-//! other's workspace, that an agent holds only what its delegation names and
+//! other's workspace, that an agent holds only what its grant names and
 //! never administers, and that a removed member loses access at once. Each
 //! refusal is checked against the other workspace's state afterwards, so an entry
 //! that answered "no" but acted anyway still fails.
@@ -35,8 +35,7 @@ use tilo_server::workspaces::{
     WorkspaceSummary, Workspaces,
 };
 use tilo_server::{Server, ServerConfig};
-use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
-use tilo_user_identity::{DeviceCapabilities, RevocationList};
+use tilo_user_identity::{AgentScope, DeviceCapabilities, RevocationList};
 
 use crate::common::{KEYS, Linked, TestDevice, TestUser, invitation, opened, redeem};
 use tilo_server::WorkspaceId;
@@ -623,53 +622,20 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_never_administers_and_reaches_no_workspace_outside_its_delegation() {
+async fn an_agent_never_administers_and_reaches_no_workspace_outside_its_grant() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
     // tenants' people, their devices and two hosted workspaces.
     let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
-    // The host's own agent: a device of the server's person with no
-    // capabilities, delegated Acme alone.
-    let agent = t
-        .provider
-        .enrol("acme-agent", DeviceCapabilities::nothing());
-    let issued = tilo_clock::unix_now_ns();
-    let delegation = Delegation::sign(
-        &t.provider.user_sk,
-        agent.device_pubkey(),
-        Delegate::Agent {
-            agent_id: "acme-helper".into(),
-        },
-        "Acme helper",
-        [0x7c, 0x3a, 0xed],
-        DelegateScope {
-            workspaces: vec![t.acme.workspace_id],
-            apps: Vec::new(),
-        },
-        issued,
-        issued.checked_add(600_000_000_000).unwrap(),
-    )
-    .unwrap();
-    t.server
-        .register_agent((&agent.cert, &agent.sk), delegation)
-        .await
-        .unwrap();
-    // Registering the agent puts it on the roster of the workspace its delegation
-    // names, which is the roster's business and no one else's: the workspace the
-    // delegation does not name never hears of it.
+    // The host's person's agent, under a key their root certified for Acme alone.
+    let agent = t.provider.enrol(
+        "acme-agent",
+        DeviceCapabilities::agent_grant(AgentScope::agent_in(
+            *t.acme.workspace_id.as_uuid().as_bytes(),
+            "acme-helper",
+        )),
+    );
     let acme_joined = governance(&t.workspaces(), &t.host, &t.acme.workspace).await;
-    if cfg!(feature = "agents") {
-        let roster = t.workspaces().agents(&t.acme.workspace).await.unwrap();
-        assert_eq!(roster.len(), 1, "the agent's place on Acme's roster");
-        assert_eq!(roster[0].device_public_key, agent.device_pubkey());
-        assert!(
-            t.workspaces()
-                .agents(&t.globex.workspace)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
 
     // An agent administers nothing, not even the workspace it is delegated, and
     // it is no host person: the one decision every entry asks refuses it
@@ -729,11 +695,11 @@ async fn an_agent_never_administers_and_reaches_no_workspace_outside_its_delegat
         "the agent created a workspace"
     );
 
-    // Outside its delegation it is not admitted to a workspace at all.
+    // Outside its grant it is not admitted to a workspace at all.
     let probe = Linked::open(&t.server, &agent, t.globex.workspace_id).await;
     assert!(
         probe.is_err(),
-        "the agent reads a workspace its delegation does not name"
+        "the agent reads a workspace its grant does not name"
     );
     t.server.shutdown().await;
 }

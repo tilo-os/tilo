@@ -2088,7 +2088,6 @@ async fn subscribe(
         .unwrap();
     let revocations = std::sync::RwLock::new(RevocationList::new());
     let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
-    let agents = crate::registry::AgentRegistry::default();
     let environments = crate::environment::EnvironmentRegistry::default();
     let blocked = std::sync::RwLock::new(crate::workspaces::blocked::BlockedKeys::default());
     let own_user = workspaces.device_cert().user_public_key;
@@ -2097,7 +2096,6 @@ async fn subscribe(
         policy: &policy,
         blocked: &blocked,
         own_user: &own_user,
-        agents: &agents,
         environments: &environments,
     };
     let peer = crate::auth::AuthenticatedPeer {

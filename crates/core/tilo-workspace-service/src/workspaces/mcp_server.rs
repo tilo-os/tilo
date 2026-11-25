@@ -153,7 +153,7 @@ impl McpServer {
                     .capabilities
                     .agent
                     .as_ref()
-                    .and_then(|scope| scope.workspace_name())
+                    .and_then(tilo_user_identity::AgentScope::workspace_name)
                 {
                     Some(id) => Reach::Workspace {
                         name: id.clone(),

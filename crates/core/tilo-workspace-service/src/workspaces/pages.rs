@@ -1310,7 +1310,7 @@ impl Workspaces {
                 &caller,
                 vec![Admitting::Entry {
                     invitation: presented.invitation,
-                    certificate: presented.cert,
+                    certificate: Box::new(presented.cert),
                     request_id: presented.request_id,
                     name: name.to_owned(),
                     token: None,
@@ -1419,7 +1419,7 @@ impl Workspaces {
             .iter()
             .map(|join| Admitting::Entry {
                 invitation: join.presented.invitation.clone(),
-                certificate: join.presented.cert.clone(),
+                certificate: Box::new(join.presented.cert.clone()),
                 request_id: join.presented.request_id,
                 name: join.name.clone(),
                 token: Some(join.token.clone()),

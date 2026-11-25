@@ -20,7 +20,7 @@ use crate::metrics::Metrics;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
 use tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN;
-use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::transport::{ACTIONS_ALPN, DIRECT_ALPN};
 use tilo_workspace_service::Reaching;
@@ -307,37 +307,6 @@ pub struct ServerHandle {
     pub metrics: Arc<Metrics>,
     /// Effective device-mesh policy for routing and replication consumers.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-}
-
-/// Verify `cert`'s device's delegation against the person the agent acts for,
-/// the root its certificate names, and put it in the server's agent register,
-/// replacing an earlier one: what confines an agent to its delegated workspaces
-/// from its next envelope on. [`Server::register_agent`] comes here, so nothing
-/// registers an agent the confinement does not see.
-///
-/// # Errors
-///
-/// The delegation is not the agent's person's, or names another device.
-pub(crate) fn register_agent_in(
-    agents: &crate::registry::AgentRegistry,
-    cert: &tilo_user_identity::DeviceCert,
-    delegation: &tilo_server_protocol::delegation::Delegation,
-) -> Result<(), String> {
-    delegation
-        .verify(&cert.user_public_key, tilo_clock::unix_now_ns())
-        .map_err(|error| error.to_string())?;
-    if cert.device_public_key != delegation.device_public_key {
-        return Err("the delegation names another device".into());
-    }
-    let mut agents = agents.write_recover();
-    if matches!(agents.get(&delegation.device_public_key), Some(None)) {
-        return Err("the agent device was withdrawn".into());
-    }
-    agents.insert(delegation.device_public_key, Some(delegation.clone()));
-    drop(agents);
-    // A replacement may narrow an earlier delegation's workspaces.
-    crate::authority_epoch::bump();
-    Ok(())
 }
 
 impl Server {
@@ -929,48 +898,6 @@ impl Server {
             metrics: self.sessions.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
         }
-    }
-
-    /// Tell the host that the device `cert` certifies is an agent: verify
-    /// its root-signed delegation against the person it acts for and confine the
-    /// device to the delegated workspaces from its next envelope on, then have
-    /// the agent, signing with `signer`, write its own row on the member list of each
-    /// workspace this server serves that the delegation names, as an approved
-    /// grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
-    /// Once this returns, those workspaces admit it. Replaces an earlier
-    /// delegation of the same device.
-    ///
-    /// # Errors
-    ///
-    /// The delegation is not the agent's person's, names another device, or
-    /// does not verify.
-    #[cfg_attr(
-        not(feature = "agents"),
-        allow(
-            clippy::unused_async,
-            reason = "only a build with agents lists them in workspaces, which it awaits"
-        )
-    )]
-    pub async fn register_agent(
-        &self,
-        (cert, signer): (
-            &tilo_user_identity::DeviceCert,
-            &dyn collab_types::signer::DeviceSigner,
-        ),
-        delegation: tilo_server_protocol::delegation::Delegation,
-    ) -> Result<(), String> {
-        register_agent_in(&self.web.server.agents, cert, &delegation)?;
-        // Only a build with agents lists them in workspaces, where the agent signs its own row.
-        #[cfg(not(feature = "agents"))]
-        let _ = signer;
-        // The workspaces it names put it on their member lists.
-        #[cfg(feature = "agents")]
-        if let Some(workspaces) = self.workspaces() {
-            workspaces
-                .reconcile_agent(cert.device_public_key, Some((cert, signer)))
-                .await;
-        }
-        Ok(())
     }
 
     /// This device's key service: the one place the device holds in each key group of the

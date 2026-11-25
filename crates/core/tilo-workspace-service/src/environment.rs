@@ -11,8 +11,8 @@
 //! the only record channel it reaches, and whose window's page is the only
 //! track it publishes.
 //!
-//! This register is the environment's half of the rule that confines an agent
-//! to its delegation ([`crate::registry::AgentRegistry`]): the workspaces' VM
+//! This register is the environment's half of the rule that confines a key to
+//! what its certificate grants: the workspaces' VM
 //! devices, by device key, with the one record each reaches, placed by the host
 //! that placed the VM, from the certificate that reaches one workspace alone
 //! ([`EnvironmentRegistry::confine`]). Nothing here is asked of the daemon in the VM:

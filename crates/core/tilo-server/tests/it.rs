@@ -26,9 +26,6 @@ mod linux_turn;
 #[path = "machines.rs"]
 mod machines;
 
-#[cfg(feature = "agents")]
-#[path = "agents_list.rs"]
-mod agents_list;
 #[path = "auth_reject.rs"]
 mod auth_reject;
 #[cfg(feature = "agents")]

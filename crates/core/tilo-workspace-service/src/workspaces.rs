@@ -25,8 +25,6 @@ pub use actions::{CANCEL_INVITATION, INVITATIONS};
 pub use tilo_peer_state::document_frame::DocumentRoute;
 mod admissions;
 mod admitting;
-#[cfg(feature = "agents")]
-mod agent_members;
 #[cfg(feature = "apps")]
 mod agents_list;
 pub mod app_files;
@@ -997,9 +995,6 @@ pub(crate) struct WorkspaceServices {
     /// The devices and people this host's operator blocks, as the record of
     /// their own workspace says ([`blocked`]): refused on every protocol here.
     pub(crate) blocked: Arc<std::sync::RwLock<blocked::BlockedKeys>>,
-    /// Agent delegations, for [`crate::workspace_access::decide`] and for
-    /// refusing an agent the administration only a person holds.
-    pub(crate) agents: crate::registry::AgentRegistry,
     /// The devices this server certified and placed itself, for the windows in its workspaces'
     /// machines ([`crate::environment`]): none of them is a device of a person's own.
     pub(crate) environments: crate::environment::EnvironmentRegistry,

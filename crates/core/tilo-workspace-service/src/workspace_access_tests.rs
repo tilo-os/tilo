@@ -1,7 +1,6 @@
 use std::sync::{Arc, RwLock};
 
 use ed25519_dalek::SigningKey;
-use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
 };
@@ -13,7 +12,7 @@ const WORKSPACE: &str = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
 const OTHER_WORKSPACE: &str = "0b9e8f6c-2a1d-4e3b-8c7f-5d4a3b2c1e0f";
 const NOW: u64 = 1_000_000_000_000;
 
-const OPS: [WorkspaceOperation; 11] = [
+const OPS: [WorkspaceOperation; 10] = [
     WorkspaceOperation::Subscribe,
     WorkspaceOperation::State,
     WorkspaceOperation::Replay,
@@ -22,7 +21,6 @@ const OPS: [WorkspaceOperation; 11] = [
     WorkspaceOperation::Compute,
     WorkspaceOperation::Environment,
     WorkspaceOperation::RemoteAction,
-    WorkspaceOperation::DelegateMembership,
     WorkspaceOperation::Publish,
     WorkspaceOperation::KeyAccess,
 ];
@@ -37,12 +35,8 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::Revoked) => 'r',
         Decision::Deny(DenyReason::Blocked) => 'k',
         Decision::Deny(DenyReason::NotTrusted) => 't',
-        Decision::Deny(DenyReason::AgentWithdrawn) => 'w',
-        Decision::Deny(DenyReason::AgentExpired) => 'e',
-        Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
         Decision::Deny(DenyReason::OutOfEnvironmentScope) => 'b',
         Decision::Deny(DenyReason::EnvironmentStopped) => 's',
-        Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
     }
 }
 
@@ -53,7 +47,6 @@ struct Server {
     revocations: RwLock<RevocationList>,
     policy: RwLock<TrustPolicy>,
     blocked: RwLock<crate::workspaces::blocked::BlockedKeys>,
-    agents: AgentRegistry,
     environments: crate::environment::EnvironmentRegistry,
 }
 
@@ -74,7 +67,6 @@ impl Server {
             revocations: RwLock::new(RevocationList::new()),
             policy: RwLock::new(policy),
             blocked: RwLock::new(crate::workspaces::blocked::BlockedKeys::default()),
-            agents: Arc::default(),
             environments: crate::environment::EnvironmentRegistry::default(),
         }
     }
@@ -85,7 +77,6 @@ impl Server {
             policy: &self.policy,
             blocked: &self.blocked,
             own_user: &self.owner,
-            agents: &self.agents,
             environments: &self.environments,
         }
     }
@@ -116,26 +107,6 @@ impl Server {
         };
         tilo_user_identity::sign_revocation_entry(&mut entry, &self.owner_root).unwrap();
         self.revocations.write().unwrap().insert(entry).unwrap();
-    }
-
-    fn delegate(&self, user: [u8; 32], device: [u8; 32], delegation: Option<(u64, &str)>) {
-        let delegation = delegation.map(|(expires_at_ns, workspace)| Delegation {
-            user_public_key: user,
-            device_public_key: device,
-            delegate: Delegate::Agent {
-                agent_id: "agent".into(),
-            },
-            label: "Agent".into(),
-            color: [0; 3],
-            scope: DelegateScope {
-                workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
-                apps: Vec::new(),
-            },
-            issued_at_ns: 1,
-            expires_at_ns,
-            signature: [0; 64],
-        });
-        self.agents.write().unwrap().insert(device, delegation);
     }
 }
 
@@ -246,19 +217,19 @@ fn decide_matrix() {
         |device: [u8; 32]| -> Setup { Box::new(move |runtime, _| list_device(runtime, device)) };
     let none = || -> Setup { Box::new(|_, _| {}) };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // DelegateMembership, Publish, KeyAccess
+    // Publish, KeyAccess
     let cases = vec![
         Case {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: "AAAAAAAAdAA",
+            expected: "AAAAAAAAAA",
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: "NNNNNNNNdNN",
+            expected: "NNNNNNNNNN",
         },
         // An agent's grant: its person's agent where its scope reaches, it
         // redeemed its person's invitation and its person is a member, on an
@@ -267,25 +238,25 @@ fn decide_matrix() {
             name: "a grant for all its person's workspaces, a member device of a member",
             peer: grant(owner, [13; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
             setup: member_grant([13; 32], owner),
-            expected: "AAAAANNANAA",
+            expected: "AAAAANNAAA",
         },
         Case {
             name: "a grant listed in a workspace its person is no member of",
             peer: grant(owner, [14; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
             setup: listed([14; 32]),
-            expected: "NNNNNNNNNNN",
+            expected: "NNNNNNNNNN",
         },
         Case {
             name: "a grant for exactly this workspace",
             peer: grant(owner, [15; 32], one(WORKSPACE), Some(NOW + 1)),
             setup: member_grant([15; 32], owner),
-            expected: "AAAAANNANAA",
+            expected: "AAAAANNAAA",
         },
         Case {
             name: "a grant for another workspace, even listed here",
             peer: grant(owner, [16; 32], one(OTHER_WORKSPACE), Some(NOW + 1)),
             setup: member_grant([16; 32], owner),
-            expected: "NNNNNNNNNNN",
+            expected: "NNNNNNNNNN",
         },
         Case {
             name: "a grant that never redeemed an invitation here, on its person's own host",
@@ -293,13 +264,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 list_person(runtime, owner);
             }),
-            expected: "NNNNNNNNNNN",
+            expected: "NNNNNNNNNN",
         },
         Case {
             name: "a grant past its certificate's expiry",
             peer: grant(owner, [18; 32], AgentScope::AllWorkspaces, Some(NOW)),
             setup: member_grant([18; 32], owner),
-            expected: "xxxxxxxxxxx",
+            expected: "xxxxxxxxxx",
         },
         Case {
             name: "a grant its person revoked",
@@ -308,7 +279,7 @@ fn decide_matrix() {
                 member_grant([19; 32], owner)(runtime, server);
                 server.revoke([19; 32]);
             }),
-            expected: "rrrrrrrrrrr",
+            expected: "rrrrrrrrrr",
         },
         Case {
             name: "a grant minted for this workspace by a grant its person revoked",
@@ -322,7 +293,7 @@ fn decide_matrix() {
                 member_grant([63; 32], owner)(runtime, server);
                 server.revoke([62; 32]);
             }),
-            expected: "rrrrrrrrrrr",
+            expected: "rrrrrrrrrr",
         },
         Case {
             // The operator's handshake policy does not gate a workspace's own membership: the
@@ -331,7 +302,7 @@ fn decide_matrix() {
             name: "cross-user device whose root only another workspace hosts",
             peer: peer(bob, [21; 32], false, None),
             setup: none(),
-            expected: "NNNNNNNNdNN",
+            expected: "NNNNNNNNNN",
         },
         Case {
             // A further device of a person the list has lists itself on its first link, and
@@ -341,69 +312,33 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 list_person(runtime, bob);
             }),
-            expected: "ENNNNNNNdNN",
+            expected: "ENNNNNNNNN",
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: "AAAAAAAAdAA",
+            expected: "AAAAAAAAAA",
         },
         Case {
             // Holding the workspace, or being the server it lives on, makes nobody a member.
             name: "same-user host the member list does not have",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: "NNNNNNNNdNN",
+            expected: "NNNNNNNNNN",
         },
         Case {
             name: "cross-user host certificate, listed as a member",
             peer: peer(bob, [32; 32], true, None),
             setup: listed([32; 32]),
-            expected: "AAAAAAAAdAA",
-        },
-        Case {
-            name: "agent delegated this workspace",
-            peer: peer(owner, [40; 32], false, None),
-            setup: Box::new(|runtime, server| {
-                list_device(runtime, [40; 32]);
-                server.delegate(server.owner, [40; 32], Some((NOW + 1, WORKSPACE)));
-            }),
-            expected: "AAAAAAAAdAA",
-        },
-        Case {
-            name: "agent whose delegation expired",
-            peer: peer(owner, [41; 32], false, None),
-            setup: Box::new(|runtime, server| {
-                list_device(runtime, [41; 32]);
-                server.delegate(server.owner, [41; 32], Some((NOW, WORKSPACE)));
-            }),
-            expected: "eeeeeeeeeee",
-        },
-        Case {
-            name: "withdrawn agent",
-            peer: peer(owner, [42; 32], false, None),
-            setup: Box::new(|runtime, server| {
-                list_device(runtime, [42; 32]);
-                server.delegate(server.owner, [42; 32], None);
-            }),
-            expected: "wwwwwwwwwww",
-        },
-        Case {
-            name: "agent delegated another workspace",
-            peer: peer(owner, [43; 32], false, None),
-            setup: Box::new(|runtime, server| {
-                list_device(runtime, [43; 32]);
-                server.delegate(server.owner, [43; 32], Some((NOW + 1, OTHER_WORKSPACE)));
-            }),
-            expected: "ooooooooooo",
+            expected: "AAAAAAAAAA",
         },
         Case {
             // Its person is a member: an unlisted device of theirs links once it lists itself.
             name: "an unlisted device of this server's person, a member",
             peer: peer(owner, [70; 32], true, None),
             setup: Box::new(move |runtime, _| list_person(runtime, owner)),
-            expected: "ENNNNNNNdNN",
+            expected: "ENNNNNNNNN",
         },
         Case {
             name: "another listed device of the owner, a member",
@@ -412,38 +347,7 @@ fn decide_matrix() {
                 list_device(runtime, [71; 32]);
                 list_person(runtime, owner);
             }),
-            expected: "AAAAAAAAdAA",
-        },
-        Case {
-            name: "agent of this server's person, a member, delegated this workspace",
-            peer: peer(owner, [44; 32], false, None),
-            setup: Box::new(move |runtime, server| {
-                list_person(runtime, owner);
-                server.delegate(server.owner, [44; 32], Some((NOW + 1, WORKSPACE)));
-            }),
-            expected: "ENNNNNNNANN",
-        },
-        Case {
-            // The agent's approver is a device of the person it acts for, Bob
-            // here, and the host's own person is no special case: it needs no
-            // place in the workspace to carry Bob's agent in.
-            name: "a member's agent, where this server's person has no place",
-            peer: peer(bob, [45; 32], false, None),
-            setup: Box::new(move |runtime, server| {
-                list_person(runtime, bob);
-                server.delegate(server.bob, [45; 32], Some((NOW + 1, WORKSPACE)));
-            }),
-            expected: "ENNNNNNNANN",
-        },
-        Case {
-            // An agent of a person the list does not have joins nowhere, whoever the host is.
-            name: "agent delegated this workspace by a person the list does not have",
-            peer: peer(bob, [47; 32], false, None),
-            setup: Box::new(move |runtime, server| {
-                list_person(runtime, owner);
-                server.delegate(server.bob, [47; 32], Some((NOW + 1, WORKSPACE)));
-            }),
-            expected: "NNNNNNNNdNN",
+            expected: "AAAAAAAAAA",
         },
         Case {
             name: "a further device of a member",
@@ -452,7 +356,7 @@ fn decide_matrix() {
                 list_person(runtime, bob);
                 list_person(runtime, owner);
             }),
-            expected: "ENNNNNNNdNN",
+            expected: "ENNNNNNNNN",
         },
         Case {
             // A member's further device is theirs by the certificate their root signed: a server
@@ -460,7 +364,7 @@ fn decide_matrix() {
             name: "a further device of a member, where this server's person has no place",
             peer: peer(bob, [48; 32], false, None),
             setup: Box::new(move |runtime, _| list_person(runtime, bob)),
-            expected: "ENNNNNNNdNN",
+            expected: "ENNNNNNNNN",
         },
         Case {
             // A person the list removed is no member: none of their devices is admitted,
@@ -468,13 +372,13 @@ fn decide_matrix() {
             name: "a device of a person the list removed",
             peer: peer(bob, [49; 32], false, None),
             setup: Box::new(move |runtime, _| list_person(runtime, owner)),
-            expected: "NNNNNNNNdNN",
+            expected: "NNNNNNNNNN",
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: "xxxxxxxxxxx",
+            expected: "xxxxxxxxxx",
         },
         Case {
             name: "revoked member device",
@@ -483,7 +387,7 @@ fn decide_matrix() {
                 list_device(runtime, [51; 32]);
                 server.revoke([51; 32]);
             }),
-            expected: "rrrrrrrrrrr",
+            expected: "rrrrrrrrrr",
         },
         Case {
             // A device the workspace's own list holds reaches it on that rule: the operator's
@@ -491,7 +395,7 @@ fn decide_matrix() {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: "AAAAAAAAdAA",
+            expected: "AAAAAAAAAA",
         },
     ];
     let tmp = tempfile::tempdir().unwrap();
@@ -554,7 +458,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     server.environments.confine(&vm).unwrap();
     assert_eq!(
         letters(&runtime),
-        "AAAAbbbAbAb",
+        "AAAAbbbAAb",
         "subscribe, state, replay and live; discovery, compute, environment and \
          governance are another device's; its record's actions and publishing; no \
          channel's keys, which the host answers for it"
@@ -562,7 +466,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     server.environments.stop(device, until).unwrap();
     assert_eq!(
         letters(&runtime),
-        "sssssssssss",
+        "ssssssssss",
         "a stopped environment's device is refused on every protocol, listed or not"
     );
     // Past its certificate's expiry the certificate refuses it, and the
@@ -577,52 +481,6 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
         ),
         Decision::Deny(DenyReason::CertExpired)
     );
-}
-
-#[test]
-fn an_agent_joins_the_member_list_only_inside_its_live_delegation() {
-    let server = Server::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    list_person(&mut runtime, server.owner);
-    let agent = peer(server.owner, [90; 32], false, None);
-    let decide = |runtime: &WorkspaceRuntime, now: u64| {
-        decide_in(
-            runtime,
-            &server.trust(),
-            &agent,
-            WorkspaceOperation::DelegateMembership,
-            now,
-        )
-    };
-    // Without a grant the device is no agent: refused.
-    assert_eq!(
-        decide(&runtime, NOW),
-        Decision::Deny(DenyReason::NotADelegatedAgent)
-    );
-    server.delegate(server.owner, [90; 32], Some((NOW + 1, WORKSPACE)));
-    assert_eq!(decide(&runtime, NOW), Decision::Admit);
-    // At its expiry, and once withdrawn, it is refused.
-    assert_eq!(
-        decide(&runtime, NOW + 1),
-        Decision::Deny(DenyReason::AgentExpired)
-    );
-    server.delegate(server.owner, [90; 32], None);
-    assert_eq!(
-        decide(&runtime, NOW),
-        Decision::Deny(DenyReason::AgentWithdrawn)
-    );
-    // A workspace whose list does not have the agent's person takes no agent in.
-    server.delegate(server.owner, [90; 32], Some((NOW + 1, WORKSPACE)));
-    let members = std::mem::take(&mut runtime.members);
-    assert_eq!(
-        decide(&runtime, NOW),
-        Decision::Deny(DenyReason::NotADelegatedAgent)
-    );
-    // Its certificate must still be current.
-    runtime.members = members;
-    server.revoke([90; 32]);
-    assert_eq!(decide(&runtime, NOW), Decision::Deny(DenyReason::Revoked));
 }
 
 #[test]

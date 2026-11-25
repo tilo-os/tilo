@@ -45,8 +45,8 @@ fn signed_by_agent(id: &str, workspace: &str, mut request: InvokeRequest) -> Inv
         capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
             tilo_user_identity::AgentScope::agent_in(workspace_id, id),
         ),
-        issued_at_ns: now - 1,
-        expires_at_ns: Some(now + 3_600_000_000_000),
+        issued_at_ns: now.saturating_sub(1),
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
         signature: [0; 64],
         issuer: None,
     };

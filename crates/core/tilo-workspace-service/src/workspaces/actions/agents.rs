@@ -83,7 +83,7 @@ fn certificate_grants(
         .capabilities
         .agent
         .as_ref()
-        .is_some_and(|scope| scope.makes_workspaces());
+        .is_some_and(tilo_user_identity::AgentScope::makes_workspaces);
     workspace.is_none() && its_own && makes
 }
 

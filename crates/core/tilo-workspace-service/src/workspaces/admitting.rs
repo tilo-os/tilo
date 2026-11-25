@@ -55,7 +55,7 @@ pub(super) enum Admitting {
     /// itself in ([`tilo_peer_state::own_admission::sign_entry`]).
     Entry {
         invitation: Vec<u8>,
-        certificate: DeviceCert,
+        certificate: Box<DeviceCert>,
         request_id: [u8; 32],
         name: String,
         token: Option<Vec<u8>>,
@@ -390,7 +390,7 @@ impl Workspaces {
             } => {
                 let presented = Presented {
                     invitation,
-                    cert: certificate,
+                    cert: *certificate,
                     request_id,
                 };
                 let device = presented.device();

@@ -8,17 +8,16 @@
 //! 1. The certificate is current server-wide ([`ServerTrust::cert`]): not
 //!    expired, not revoked, not blocked by the operator, admitted by the live
 //!    trust policy.
-//! 2. An agent device acts only inside its live delegation.
-//! 3. A host this workspace is attached to is admitted on the protocols that carry
+//! 2. A host this workspace is attached to is admitted on the protocols that carry
 //!    its changes (subscribe, state, publish, replay), listed or not.
-//! 4. A device the workspace's signed member list has now is admitted.
-//! 5. A device of a person the list has as a member ([`person_device`]: a
+//! 3. A device the workspace's signed member list has now is admitted.
+//! 4. A device of a person the list has as a member ([`person_device`]: a
 //!    browser tab, a new computer of theirs) is enrolled when it subscribes:
 //!    its certificate chains to its person's root, which every member's device
 //!    checks against the list, so the server holding the workspace carries the
 //!    row and needs no place of its own there. It holds the part its person
 //!    holds: membership follows the person, not one device key.
-//! 6. Anything else is not a member. Holding the workspace, or being the
+//! 5. Anything else is not a member. Holding the workspace, or being the
 //!    server it lives on, makes nobody a member.
 //!
 //! A server signs nothing of its own here: what it signs for a member, it may
@@ -27,7 +26,7 @@
 //!
 //! An agent's grant (a key the person certified for a service that acts for
 //! an agent they approved, [`tilo_user_identity::AgentScope`]) is its
-//! person's agent, and its rule replaces steps 3 to 6: after step 1, it is
+//! person's agent, and its rule replaces steps 2 to 5: after step 1, it is
 //! admitted iff
 //!
 //! - its scope reaches this workspace (all of the person's, or exactly this
@@ -53,7 +52,7 @@
 //! A device a host placed (a hosted Browser environment's) is certified,
 //! by the host that placed it, with its own key, for records of one workspace
 //! ([`tilo_user_identity::DeviceCapabilities::records`]), and is no member: a
-//! page that escapes Chromium has its key, so its rule replaces steps 4 to 6
+//! page that escapes Chromium has its key, so its rule replaces steps 3 to 5
 //! as an agent's does. After step 1, it is admitted iff its certificate names
 //! this workspace and its person is a member here, on the protocols a window's
 //! session works on — and
@@ -68,24 +67,6 @@
 //! member of it with the role its owner gave them, and every device certified
 //! by that member's root is that member's device, admitted to the channels its
 //! records take part in like any other.
-//!
-//! And one protocol admits a device to a workspace's member list itself:
-//! [`WorkspaceOperation::DelegateMembership`], a delegated agent joining a
-//! workspace as a member. Agents are members: each has its own device key, a
-//! certificate and a delegation its person's root signed, and the member list
-//! records it bound to that delegation, so every member admits its changes as
-//! its own, at its person's role and never above Editor, only within the
-//! delegation, and only until it is withdrawn. The rule, after steps 1 to 3:
-//! admit iff the device is a registered agent whose live delegation (step 2),
-//! signed by its person's root, names this workspace and that person, and the
-//! list has that person as a member. The agent's approver is any device of that
-//! person, the host's own person included and never singled out; the server
-//! carrying it needs no place in the workspace. A device that is no agent, and
-//! an agent of a person the list does not have, are refused; nothing is
-//! admitted by attachment. Being a member is what admits the agent to the workspace on the
-//! other protocols and lets the workspace's key holders admit it to the
-//! channels of its records.
-//!
 
 use std::sync::RwLock;
 
@@ -93,9 +74,7 @@ use tilo_user_identity::RevocationList;
 
 use crate::auth::AuthenticatedPeer;
 use crate::policy::TrustPolicy;
-use crate::registry::AgentRegistry;
 use crate::workspace::WorkspaceRuntime;
-use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 /// The protocol asking. Protocols differ only in the three properties below.
@@ -124,10 +103,6 @@ pub enum WorkspaceOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
-    /// A delegated agent of a member becoming a member itself (see the
-    /// module documentation).
-    #[cfg(any(test, feature = "agents"))]
-    DelegateMembership,
 }
 
 impl WorkspaceOperation {
@@ -187,12 +162,6 @@ pub enum DenyReason {
     Blocked,
     /// The live trust policy no longer admits the certificate's user.
     NotTrusted,
-    /// The agent was withdrawn.
-    AgentWithdrawn,
-    /// The agent's delegation expired.
-    AgentExpired,
-    /// The agent is not delegated this workspace.
-    AgentOutOfScope,
     /// Not a member of the workspace.
     NotAMember,
     /// A device of someone the workspace has in it, which its member list
@@ -205,10 +174,6 @@ pub enum DenyReason {
     /// A hosted browser environment's device whose environment stopped: it
     /// reaches nothing, and no protocol admits it, until its certificate expires.
     EnvironmentStopped,
-    /// Membership as an agent asked for by a device that is no delegated
-    /// agent of its person, or for a person the workspace's list does not have.
-    #[cfg(any(test, feature = "agents"))]
-    NotADelegatedAgent,
 }
 
 impl DenyReason {
@@ -259,9 +224,6 @@ impl DenyReason {
             Self::Revoked => "authenticated device was revoked",
             Self::Blocked => "this host refuses this device",
             Self::NotTrusted => "the member was removed from the workspace's signed authority",
-            Self::AgentWithdrawn => "the agent was withdrawn",
-            Self::AgentExpired => "the agent's delegation expired",
-            Self::AgentOutOfScope => "the agent is not delegated this workspace",
             Self::NotAMember => "device not in workspace membership",
             Self::Unlisted => {
                 "the workspace does not list this device yet: it signs its own row before it links"
@@ -272,13 +234,11 @@ impl DenyReason {
             Self::EnvironmentStopped => {
                 "the browser environment this device belongs to has stopped"
             }
-            #[cfg(any(test, feature = "agents"))]
-            Self::NotADelegatedAgent => "only a delegated agent of a member joins as an agent",
         }
     }
 }
 
-/// Server-wide certificate validity and agent delegation: one copy.
+/// Server-wide certificate validity: one copy.
 #[derive(Clone, Copy)]
 pub struct ServerTrust<'a> {
     pub revocations: &'a RwLock<RevocationList>,
@@ -290,26 +250,12 @@ pub struct ServerTrust<'a> {
     pub blocked: &'a RwLock<crate::workspaces::blocked::BlockedKeys>,
     /// The user this server chains to.
     pub own_user: &'a [u8; 32],
-    /// Agent delegations this server was told about.
-    pub agents: &'a AgentRegistry,
     /// Hosted browser environments' devices, and the one record each reaches
     /// ([`crate::environment`]).
     pub environments: &'a crate::environment::EnvironmentRegistry,
 }
 
 impl ServerTrust<'_> {
-    /// Whether `device` is an agent this server was told about, delegated or
-    /// withdrawn. An agent is no person of its own: what a person alone may
-    /// do (their compute, a workspace's administration) is never its to do. A
-    /// poisoned registry counts every device as an agent, so it refuses rather
-    /// than admits.
-    pub fn is_agent(&self, device: &[u8; 32]) -> bool {
-        !self
-            .agents
-            .read()
-            .is_ok_and(|agents| !agents.contains_key(device))
-    }
-
     /// Whether `peer`'s certificate is current server-wide at `now_ns`. A
     /// poisoned list or policy refuses.
     pub fn cert(&self, peer: &AuthenticatedPeer, now_ns: u64) -> Result<(), DenyReason> {
@@ -361,66 +307,6 @@ impl ServerTrust<'_> {
             return Err(DenyReason::NotTrusted);
         }
         Ok(())
-    }
-
-    /// Whether `device` may be in `workspace_id` as far as agent delegation
-    /// is concerned. A device that is no agent passes.
-    ///
-    /// # Errors
-    ///
-    /// Why the agent may not act there.
-    pub(crate) fn agent(
-        &self,
-        device: &[u8; 32],
-        workspace_id: WorkspaceId,
-        now_ns: u64,
-    ) -> Result<(), DenyReason> {
-        let agents = self.agents.read_recover();
-        match agents.get(device) {
-            None => Ok(()),
-            Some(None) => Err(DenyReason::AgentWithdrawn),
-            Some(Some(delegation)) if delegation.expires_at_ns <= now_ns => {
-                Err(DenyReason::AgentExpired)
-            }
-            Some(Some(delegation)) if delegation.permits_workspace(workspace_id) => Ok(()),
-            Some(Some(_)) => Err(DenyReason::AgentOutOfScope),
-        }
-    }
-
-    /// The live delegation of agent `device` for `workspace_id` at `now_ns`:
-    /// `None` for a device that is no agent, or whose delegation was
-    /// withdrawn, expired or does not name the workspace.
-    #[cfg(any(test, feature = "agents"))]
-    pub(crate) fn delegation(
-        &self,
-        device: &[u8; 32],
-        workspace_id: WorkspaceId,
-        now_ns: u64,
-    ) -> Option<tilo_server_protocol::delegation::Delegation> {
-        self.agents
-            .read_recover()
-            .get(device)
-            .cloned()
-            .flatten()
-            .filter(|delegation| {
-                delegation.expires_at_ns > now_ns && delegation.permits_workspace(workspace_id)
-            })
-    }
-
-    /// Certificate and agent delegation together: everything about `peer`
-    /// that does not depend on the workspace's membership.
-    ///
-    /// # Errors
-    ///
-    /// The first reason `peer` may not act in `workspace_id`.
-    pub(crate) fn actor(
-        &self,
-        peer: &AuthenticatedPeer,
-        workspace_id: WorkspaceId,
-        now_ns: u64,
-    ) -> Result<(), DenyReason> {
-        self.cert(peer, now_ns)?;
-        self.agent(&peer.device_public_key, workspace_id, now_ns)
     }
 }
 
@@ -522,7 +408,7 @@ impl<'a> WorkspaceFacts<'a> {
         }
     }
 
-    /// Whether a subscribe enrols `peer`'s device here (step 5): a device of its
+    /// Whether a subscribe enrols `peer`'s device here (step 4): a device of its
     /// person's own, whom the member list has.
     fn enrols_member_device(&self, peer: &AuthenticatedPeer) -> bool {
         person_device(&peer.cert) && self.person_member(&peer.user_public_key)
@@ -548,7 +434,7 @@ impl<'a> WorkspaceFacts<'a> {
     }
 }
 
-/// Whether the workspace lists `peer` for `op`: steps 4 to 6 of the rule, with
+/// Whether the workspace lists `peer` for `op`: steps 3 to 5 of the rule, with
 /// no certificate, agent, cross-user or local-person question. Only for
 /// a recipient check that has no server trust at hand; everything else asks
 /// [`decide`].
@@ -585,7 +471,7 @@ pub(crate) fn decide_in(
     op: WorkspaceOperation,
     now_ns: u64,
 ) -> Decision {
-    if let Err(reason) = trust.actor(peer, workspace.workspace_id(), now_ns) {
+    if let Err(reason) = trust.cert(peer, now_ns) {
         // The operator's handshake policy gates who connects to this host. A workspace's own
         // signed member list admits its members and names its holders, as its entry does: a
         // device of a person it holds, or a holder of another person's it names, reaches the
@@ -628,20 +514,6 @@ pub(crate) fn decide_in(
     }
     if let Some(scope) = &peer.cert.capabilities.agent {
         return grant_decision(workspace, peer, scope, op);
-    }
-    #[cfg(any(test, feature = "agents"))]
-    if op == WorkspaceOperation::DelegateMembership {
-        // Never by membership, enrolment or attachment: only an agent inside
-        // its live delegation, acting for its own person's root, in a
-        // workspace hosted here.
-        let delegated = trust
-            .delegation(&peer.device_public_key, workspace.workspace_id(), now_ns)
-            .is_some_and(|delegation| delegation.user_public_key == peer.user_public_key);
-        return if delegated && workspace.person_member(&peer.user_public_key) {
-            Decision::Admit
-        } else {
-            Decision::Deny(DenyReason::NotADelegatedAgent)
-        };
     }
     if listed(workspace, peer, op) {
         return Decision::Admit;

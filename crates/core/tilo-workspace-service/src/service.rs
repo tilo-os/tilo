@@ -261,7 +261,6 @@ impl ServiceSessions {
             metrics: metrics.clone(),
             app_serving: wrap(&workspaces, own_server.clone()),
             admin: Arc::default(),
-            agents: Arc::default(),
             environments: crate::environment::EnvironmentRegistry::at(
                 cfg.state_root.join("environments.json"),
             ),
@@ -443,7 +442,6 @@ impl ServiceSessions {
                 .unwrap_or(crate::workspaces::DEFAULT_MAX_PRE_ADMISSIONS),
             trust_policy: self.handler.trust_policy.clone(),
             blocked: self.handler.blocked.clone(),
-            agents: self.handler.agents.clone(),
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
             reachability: cfg.reachability.clone(),
@@ -1335,7 +1333,6 @@ pub struct ServerProtocol {
     /// Set once when the service hosts workspaces: what its links answer a
     /// device's workspace administration with.
     pub admin: Arc<std::sync::OnceLock<Arc<crate::workspaces::Workspaces>>>,
-    pub agents: crate::registry::AgentRegistry,
     /// The devices this service certified for its browser environments, see
     /// [`crate::environment`].
     pub environments: crate::environment::EnvironmentRegistry,
@@ -1352,7 +1349,6 @@ impl ServerProtocol {
             policy: &self.trust_policy,
             blocked: &self.blocked,
             own_user: &self.identity.user_public_key,
-            agents: &self.agents,
             environments: &self.environments,
         }
     }
