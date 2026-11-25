@@ -337,8 +337,9 @@ fn tasks_in(
 mod tests {
     use std::sync::Arc;
 
-    use tilo_resource_store::wire::Command;
-    use tilo_resource_store::{Cell, Resource, Stamp, Value as Stored};
+    use collab_types::store::wire::Command;
+    use collab_types::store::{Cell, Resource, Value as Stored};
+    use tilo_resource_store::Stamp;
 
     use super::*;
     use crate::workspaces::MemberDevice;
