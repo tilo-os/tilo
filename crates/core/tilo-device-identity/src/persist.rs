@@ -2066,6 +2066,9 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        // This process signs as the device, as its daemon does: the certificate names the key it
+        // holds, and the check below still probes the key file for the machine's enrollment.
+        let _taken = take_device_key(&paths).expect("this process signs as the device");
         install_device_cert(&paths, &cert, 2_000).unwrap();
         let key_dir = paths.device_privkey.parent().unwrap().to_path_buf();
         fs::set_permissions(&key_dir, fs::Permissions::from_mode(0o000)).unwrap();

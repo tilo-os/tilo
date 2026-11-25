@@ -27,12 +27,19 @@ pub struct Host {
 impl Host {
     fn start(profile: &Path) -> Self {
         tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities());
+        // Founding signs as the device, which only the process that took its key does: this one
+        // takes the computer's key for the founding, made here when the computer has none yet,
+        // and lets go of it for the daemon it starts next.
+        let keys = tilo_identity::provisioning::collaboration_identity_paths();
+        tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+        let taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
         tilo_runtime::device::services::found_account_person(
-            &tilo_identity::provisioning::collaboration_identity_paths(),
+            &keys,
             "",
             tilo_runtime::device::services::this_account_uid(),
         )
         .unwrap();
+        drop(taken);
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
         Self {
             // The person's workspace is founded the first time it is asked for, as their own
