@@ -1,4 +1,4 @@
-use tilo_resource::{NonBlank, Replica};
+use tilo_resource::{AppNamed, NonBlank, Replica};
 
 use super::*;
 
@@ -6,7 +6,11 @@ const ADA: &str = "ada";
 const MALLORY: &str = "mallory";
 const MOD: &str = "mod";
 
-fn report(replica: &mut Replica<Moderation>, person: &str, reason: &str) -> Result<(), String> {
+fn report(
+    replica: &mut Replica<Moderation, AppNamed>,
+    person: &str,
+    reason: &str,
+) -> Result<(), String> {
     replica
         .apply(Moderation::REPORT_MESSAGE.with(moderation::ReportMessage {
             author: MemberId::person(person),
@@ -38,7 +42,9 @@ fn decide(
 
 #[test]
 fn a_person_reports_someone_and_it_stays_open_until_decided() {
-    let mut ada = Replica::<Moderation>::new().as_author(ADA);
+    let mut ada = Replica::<Moderation>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(ADA);
     report(&mut ada, MALLORY, "spam").unwrap();
     let state = ada.state().unwrap();
     let mallory = MemberId::person(MALLORY);
@@ -61,7 +67,9 @@ fn a_person_reports_someone_and_it_stays_open_until_decided() {
 
 #[test]
 fn reports_are_bounded() {
-    let mut ada = Replica::<Moderation>::new().as_author(ADA);
+    let mut ada = Replica::<Moderation>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(ADA);
     assert!(
         report(&mut ada, ADA, "me").is_err(),
         "nobody reports themselves"
@@ -90,7 +98,9 @@ fn reports_are_bounded() {
 
 #[test]
 fn a_decision_is_validated() {
-    let mut moderator = Replica::<Moderation>::new().as_author(MOD);
+    let mut moderator = Replica::<Moderation>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(MOD);
     moderator.set_now_ms(1_000);
     assert!(
         moderator
@@ -133,7 +143,9 @@ fn a_decision_is_validated() {
 
 #[test]
 fn a_moderator_overturns_once() {
-    let mut moderator = Replica::<Moderation>::new().as_author(MOD);
+    let mut moderator = Replica::<Moderation>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(MOD);
     moderator
         .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::Ban, None, Vec::new())))
         .unwrap();
@@ -220,7 +232,9 @@ fn a_decision_kept_as_json_strings_migrates_to_lists() {
 
 #[test]
 fn a_moderator_can_reconsider_a_report_after_the_bot_looked_at_it() {
-    let mut ada = Replica::<Moderation>::new().as_author(ADA);
+    let mut ada = Replica::<Moderation>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(ADA);
     report(&mut ada, MALLORY, "spam").unwrap();
     let id = ada
         .state()
