@@ -595,7 +595,7 @@ impl Staged {
              {:?}, the schedule {:?} owed for {:?} with {} images on their way",
             ui::headless::capture_frames(SETTLE_BOUND),
             self.window.harness.frame_requesters(),
-            tilo_ui_base::motion::frames_wanted_by(now),
+            self.window.harness.wanting_motions(),
             self.window.harness.pending_visual_work(),
             (self.window.harness.presence())
                 .interaction_animation_demand(now, self.window.harness.theme()),

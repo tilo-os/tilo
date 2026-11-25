@@ -561,7 +561,7 @@ impl ShellSurface for AppProcess {
         if self.wants || self.app.wake_pending() {
             return Some(std::time::Instant::now());
         }
-        self.app.surface_next_frame()
+        self.app.surface_next_frame(ui::time::now())
     }
 
     fn prepare_frame(&mut self) -> bool {
@@ -569,7 +569,7 @@ impl ShellSurface for AppProcess {
             self.serve_api();
         }
         let now = ui::time::now();
-        let due = self.app.surface_next_frame().is_some_and(|at| at <= now);
+        let due = self.app.surface_next_frame(now).is_some_and(|at| at <= now);
         if !(self.wants || self.surface.redraw.replace(false) || self.app.wake_pending() || due) {
             return false;
         }

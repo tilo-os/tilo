@@ -694,7 +694,7 @@ impl Driver {
     /// does; a driver that read only the tree would never wake to clear them.
     fn next_frame_deadline(&self, now: crate::time::Instant) -> Option<crate::time::Instant> {
         [
-            self.app.surface_next_frame(),
+            self.app.surface_next_frame(now),
             self.app.presence_ctx.interaction_next_wake_deadline(now),
             self.app.presence_ctx.widgets_change_at(now),
         ]
@@ -887,7 +887,7 @@ impl Driver {
     /// When the app next wants a frame with no input to bring one.
     #[must_use]
     pub fn next_frame(&self) -> Option<crate::time::Instant> {
-        self.app.surface_next_frame()
+        self.app.surface_next_frame(crate::time::now())
     }
 
     /// Run frames until `condition` holds or `timeout` passes on the current

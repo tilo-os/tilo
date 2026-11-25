@@ -382,14 +382,17 @@ impl Host {
 /// for what it shows changing.
 #[must_use]
 pub fn next_deadline(app: &App) -> Option<Instant> {
-    [app.surface_next_frame(), app.screen_reader_deadline()]
-        .into_iter()
-        .flatten()
-        .min()
+    [
+        app.surface_next_frame(ui::time::now()),
+        app.screen_reader_deadline(),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 /// Whether a frame of `app` is due at `now` by time alone.
 #[must_use]
 pub fn due(app: &App, now: Instant) -> bool {
-    app.surface_next_frame().is_some_and(|at| at <= now)
+    app.surface_next_frame(now).is_some_and(|at| at <= now)
 }

@@ -138,7 +138,7 @@ fn a_window_shows_the_workspaces_record_once_its_first_sync_lands() {
         while VIEWS.with(Cell::get) == 0 {
             let now = tilo_app::time::now();
             assert!(now < limit, "the first sync settles what the window shows");
-            std::thread::sleep(app.surface_next_frame().map_or_else(
+            std::thread::sleep(app.surface_next_frame(now).map_or_else(
                 || tilo_app::time::Duration::from_millis(16),
                 |next| next.saturating_duration_since(now),
             ));

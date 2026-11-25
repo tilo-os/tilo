@@ -209,10 +209,8 @@ impl Driver {
     /// What makes a frame owed ([`Self::frame_owed`]), by name: what an idle window would wake for.
     #[must_use]
     pub fn queued_work_sources(&self) -> Vec<&'static str> {
-        let due = self
-            .app
-            .surface_next_frame()
-            .is_some_and(|at| at <= crate::time::now());
+        let now = crate::time::now();
+        let due = self.app.surface_next_frame(now).is_some_and(|at| at <= now);
         [
             ("redraw requested", self.surface.redraw.get()),
             (
@@ -231,6 +229,16 @@ impl Driver {
         .into_iter()
         .filter_map(|(name, owed)| owed.then_some(name))
         .collect()
+    }
+
+    /// Where each motion that still wants this app's frames was started (`file:line`), read as the
+    /// app owns its motions: what keeps a window moving that no widget names.
+    #[must_use]
+    pub fn wanting_motions(&self) -> Vec<String> {
+        let now = crate::time::now();
+        tilo_ui_base::motion::own(self.app.motion_owner(), || {
+            tilo_ui_base::motion::frames_wanted_by(now)
+        })
     }
 
     /// The path of names to every widget that asks to be drawn again or for an animation frame,

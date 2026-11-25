@@ -1089,11 +1089,11 @@ impl App {
     }
 
     /// When the app next wants a frame with no input to bring one, for a
-    /// host that schedules its own frames: now while something moves, else
-    /// the earliest deadline its widgets set (a caret's blink, the clock's
-    /// next minute) or a tooltip's dwell runs out.
-    pub fn surface_next_frame(&self) -> Option<crate::time::Instant> {
-        tilo_ui_base::motion::own(self.motion_owner(), || self.surface_next_frame_own())
+    /// host that schedules its own frames and asks at `now`: `now` itself
+    /// while something moves, else the earliest deadline its widgets set (a
+    /// caret's blink, the clock's next minute) or a tooltip's dwell runs out.
+    pub fn surface_next_frame(&self, now: crate::time::Instant) -> Option<crate::time::Instant> {
+        tilo_ui_base::motion::own(self.motion_owner(), || self.surface_next_frame_own(now))
     }
 
     /// Whether something in the app moves at `now`: a widget's motion, a
@@ -1113,16 +1113,12 @@ impl App {
     }
 
     /// [`Self::surface_next_frame`], asked as this app.
-    fn surface_next_frame_own(&self) -> Option<crate::time::Instant> {
-        let now = crate::time::now();
+    fn surface_next_frame_own(&self, now: crate::time::Instant) -> Option<crate::time::Instant> {
+        // Due at the very instant the host asks at: read from its own clock instead, the answer
+        // could fall after the host's `now` on a slow frame, and a motion's last frame would
+        // never come due.
         if self.surface_moving_own(now) {
-            // Due this very frame: a host takes its own `now` before asking
-            // and draws when the answer is at or behind it, so the deadline
-            // sits just behind the clock instead of on it.
-            return Some(
-                now.checked_sub(crate::time::Duration::from_millis(1))
-                    .unwrap_or(now),
-            );
+            return Some(now);
         }
         [
             self.root_widget.next_wake_deadline(),
