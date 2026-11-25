@@ -56,10 +56,8 @@ async fn status(
         .status
 }
 
-fn agent(id: &str, person: &str) -> Option<tilo_actions::ActionInvoker> {
-    Some(tilo_actions::ActionInvoker::member(
-        tilo_actions::MemberId::agent(id, person),
-    ))
+fn agent(id: &str, person: &str) -> tilo_actions::ActionInvoker {
+    tilo_actions::ActionInvoker::member(tilo_actions::MemberId::agent(id, person))
 }
 
 fn refused(status: &ReceiptStatus) -> bool {
@@ -109,7 +107,7 @@ async fn an_agent_the_shell_names_is_decided_as_itself_not_as_its_person() {
     let denied = status(
         workspaces,
         &shell,
-        add_contact("Ada", agent("scribe", &person)),
+        add_contact("Ada", Some(agent("scribe", &person))),
     )
     .await;
     assert!(
@@ -134,7 +132,7 @@ async fn an_agent_the_shell_names_is_decided_as_itself_not_as_its_person() {
     let narrowed = status(
         workspaces,
         &shell,
-        add_contact("Ada", agent("ranger", &person)),
+        add_contact("Ada", Some(agent("ranger", &person))),
     )
     .await;
     assert!(

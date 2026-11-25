@@ -111,7 +111,7 @@ impl Declared {
 /// answers, software by its own grants), or, where the person's own shell names an agent of
 /// theirs as the one asking ([`tilo_actions::ActionContext::invoker`], what the change is
 /// attributed to), that agent, handed the person's session as the shell hands it. An invoker that
-/// is neither the person nor an agent of theirs asks for nothing here.
+/// is neither the person nor an agent of theirs is no one here, and asks for nothing.
 /// An agent its person narrowed with their answers here takes only what those answers name
 /// ([`tilo_action_policy::WorkspacePolicy::answers_narrow`]): the delegation it was handed adds
 /// nothing.
@@ -119,7 +119,7 @@ fn deciding_actor(
     caller: &Caller,
     context: Option<&tilo_actions::ActionContext>,
     (person, policy, now): (&str, &tilo_action_policy::WorkspacePolicy, u64),
-) -> Result<tilo_broker_core::BrokerActor, ReceiptStatus> {
+) -> Option<tilo_broker_core::BrokerActor> {
     let someone_else = context
         .and_then(|context| context.invoker.as_ref())
         .map(|invoker| &invoker.acting)
@@ -138,11 +138,7 @@ fn deciding_actor(
             Some((agent, of)) if of.as_str() == person && caller.acting().is_person() => {
                 caller.clone().delegated_to(agent)
             }
-            _ => {
-                return Err(ReceiptStatus::Rejected {
-                    error: ActionCallError::NotPermitted,
-                });
-            }
+            _ => return None,
         },
     };
     let narrowed = asking
@@ -156,7 +152,7 @@ fn deciding_actor(
                 &tilo_action_policy::Context::at_secs(now),
             )
         });
-    Ok(match narrowed {
+    Some(match narrowed {
         Some((agent, of)) => {
             tilo_broker_core::BrokerActor::agent(agent, of.as_str()).for_person(of.as_str())
         }
@@ -180,6 +176,11 @@ fn governed(
         .grants
         .retain(|grant| grant.lifetime != tilo_action_policy::Lifetime::Once);
     Some(governed)
+}
+
+/// A call refused for `error`.
+fn rejected(error: ActionCallError) -> ReceiptStatus {
+    ReceiptStatus::Rejected { error }
 }
 
 /// A failure that ran nothing to its end, with why.
@@ -209,16 +210,73 @@ fn named_arguments(
     }
 }
 
+/// A resource's action, decided by the workspace's grants on the record's app and this device's,
+/// applied to the record as it stands.
+struct Asked<'a> {
+    declared: &'a Declared,
+    request: &'a InvokeRequest,
+    arguments: &'a Map<String, serde_json::Value>,
+    governed: &'a tilo_desktop_model::Workspace,
+    decider: &'a tilo_broker_core::BrokerActor,
+    permissions: &'a collaboration::permissions::PermissionContext,
+    unix_time: u64,
+    ambient: &'a tilo_actions::ActionContext,
+    actor: &'a [u8],
+    registry: &'a tilo_actions::ActionRegistry,
+}
+
+impl Asked<'_> {
+    /// The action on `doc` as it stands, or the refusal decided against it.
+    fn on(&self, doc: &mut automerge::AutoCommit) -> Result<(), Box<ReceiptStatus>> {
+        let declared = self.declared;
+        let tree = declared
+            .kind
+            .publish(declared.kind.kind(), doc)
+            .map_err(|error| failed("unreadable", error.to_string()))
+            .map_err(Box::new)?;
+        let address = &self.request.target.address;
+        let (resource, action) = api::locate(std::slice::from_ref(&tree), address)
+            .ok_or_else(|| rejected(ActionCallError::UnknownAction))
+            .map_err(Box::new)?;
+        let app = declared.kind.declaring_app();
+        let (verdict, _) = self.decider.action_verdict_in(
+            self.governed,
+            app,
+            (&resource.kind, resource.id.as_str(), &action.id),
+            &action.need_for(Some(self.arguments), None),
+            self.unix_time,
+        );
+        let device =
+            self.permissions
+                .invocation_answer(app, resource, action, Some(self.arguments), None);
+        match verdict.min(device) {
+            collaboration::permissions::Answer::Deny => {
+                return Err(Box::new(rejected(ActionCallError::NotPermitted)));
+            }
+            collaboration::permissions::Answer::Ask if self.request.confirmation.is_none() => {
+                return Err(Box::new(rejected(ActionCallError::confirmation_required())));
+            }
+            _ => {}
+        }
+        api::invoke_json_confirmed(
+            doc,
+            std::slice::from_ref(&tree),
+            address,
+            self.arguments,
+            InvocationProvenance::caller(self.actor).within(self.ambient),
+            self.registry,
+            &mut LocalTransport::new(),
+        )
+        .map(drop)
+        .map_err(|error| tilo_agent_session::record_actions::api_status(&error))
+        .map_err(Box::new)
+    }
+}
+
 impl ResourceActions {
     /// The workspaces this answers for, while the device still keeps them.
-    #[expect(
-        clippy::result_large_err,
-        reason = "a call's refusal is the same status every action here answers with"
-    )]
-    fn here(&self) -> Result<Workspaces, ReceiptStatus> {
-        self.workspaces.upgrade().ok_or(ReceiptStatus::Rejected {
-            error: ActionCallError::UnknownAction,
-        })
+    fn here(&self) -> Option<Workspaces> {
+        self.workspaces.upgrade()
     }
 
     async fn applied(
@@ -226,7 +284,6 @@ impl ResourceActions {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<ActionOutput, ReceiptStatus> {
-        let rejected = |error| ReceiptStatus::Rejected { error };
         let invalid = |reason: &str| {
             rejected(ActionCallError::InvalidRequest {
                 reason: reason.to_owned(),
@@ -252,7 +309,9 @@ impl ResourceActions {
             WorkspaceId::parse(&workspace).ok_or_else(|| invalid("that is not a workspace"))?;
         let arguments = named_arguments(&request.argument).map_err(|status| *status)?;
         // Whoever the workspace does not admit is refused before anything of it is read.
-        let workspaces = self.here()?;
+        let workspaces = self
+            .here()
+            .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
         let policy = workspaces
             .workspace_policy(workspace_id, caller)
             .await
@@ -268,7 +327,8 @@ impl ResourceActions {
             caller,
             request.context.as_ref(),
             (&person, &policy.access.policy, policy.unix_time),
-        )?;
+        )
+        .ok_or_else(|| rejected(ActionCallError::NotPermitted))?;
         let governed = governed(&workspace, &policy.access.policy)
             .ok_or_else(|| invalid("that is not a workspace"))?;
         // What this device itself may do here bounds every call it carries.
@@ -291,55 +351,23 @@ impl ResourceActions {
         let actor = member.actor_bytes();
         let mut registry = tilo_actions::ActionRegistry::new();
         declared.kind.register(&mut registry);
-        // The action on the record as it stands, once the workspace's grants on its node allow it.
-        let change = |doc: &mut automerge::AutoCommit| -> Result<(), Box<ReceiptStatus>> {
-            let tree = declared
-                .kind
-                .publish(declared.kind.kind(), doc)
-                .map_err(|error| failed("unreadable", error.to_string()))
-                .map_err(Box::new)?;
-            let address = &request.target.address;
-            let (resource, action) = api::locate(std::slice::from_ref(&tree), address)
-                .ok_or_else(|| rejected(ActionCallError::UnknownAction))
-                .map_err(Box::new)?;
-            let app = declared.kind.declaring_app();
-            let (decided, _) = decider.action_verdict_in(
-                &governed,
-                app,
-                (&resource.kind, resource.id.as_str(), &action.id),
-                &action.need_for(Some(&arguments), None),
-                policy.unix_time,
-            );
-            let device =
-                permissions.invocation_answer(app, resource, action, Some(&arguments), None);
-            match decided.min(device) {
-                collaboration::permissions::Answer::Deny => {
-                    return Err(Box::new(rejected(ActionCallError::NotPermitted)));
-                }
-                collaboration::permissions::Answer::Ask if request.confirmation.is_none() => {
-                    return Err(Box::new(rejected(ActionCallError::confirmation_required())));
-                }
-                _ => {}
-            }
-            api::invoke_json_confirmed(
-                doc,
-                std::slice::from_ref(&tree),
-                address,
-                &arguments,
-                InvocationProvenance::caller(&actor).within(&ambient),
-                &registry,
-                &mut LocalTransport::new(),
-            )
-            .map(drop)
-            .map_err(|error| tilo_agent_session::record_actions::api_status(&error))
-            .map_err(Box::new)
+        let asked = Asked {
+            declared,
+            request,
+            arguments: &arguments,
+            governed: &governed,
+            decider: &decider,
+            permissions: &permissions,
+            unix_time: policy.unix_time,
+            ambient: &ambient,
+            actor: &actor,
+            registry: &registry,
         };
         // The action is this device's write of the record in the workspace's store, founding it
         // as its kind does where the store holds none yet.
-        let workspaces = self.here()?;
         workspaces
             .author_record(&workspace, (app, declared.kind.kind(), id), |doc| {
-                Ok(change(doc))
+                Ok(asked.on(doc))
             })
             .await
             .map_err(|error| failed("not_written", error))?
@@ -372,7 +400,9 @@ impl ResourceActions {
                 },
             });
         };
-        let workspaces = self.here()?;
+        let workspaces = self
+            .here()
+            .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
         workspaces
             .move_record((workspace, &to), (app, id, &target), caller)
             .await
