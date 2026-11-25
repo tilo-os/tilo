@@ -5788,13 +5788,25 @@ impl RuntimeActionProvider {
             .workspaces
             .hosts()
             .unwrap_or_else(|| super::hosts::Hosts::of(&self.workspaces));
-        let Some(host) = hosts.host_actions(workspace) else {
-            return Pending::ready(Err(ActionCallError::Unavailable {
-                reason: "this device keeps this workspace itself, and what its host keeps for                          the person is asked there"
-                    .into(),
-            }));
-        };
-        host.invoke(caller, request)
+        if let Some(host) = hosts.host_actions(workspace) {
+            return host.invoke(caller, request);
+        }
+        // This device keeps the workspace itself: what its host keeps for the person is
+        // answered here, by the provider its workspace service registered for it.
+        if let Some(id) = WorkspaceId::parse(workspace)
+            && self.workspaces.holds(id)
+            && let Some(registered) = self
+                .workspaces
+                .copies()
+                .providers()
+                .get(&request.target.provider)
+        {
+            return registered.answers.invoke(caller, request);
+        }
+        Pending::ready(Err(ActionCallError::Unavailable {
+            reason: "this device keeps this workspace itself, and what its host keeps for                          the person is asked there"
+                .into(),
+        }))
     }
 }
 

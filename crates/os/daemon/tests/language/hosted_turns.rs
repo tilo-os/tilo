@@ -16,10 +16,6 @@ use tilo_actions::ActionAddress;
 use tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, ReceiptStatus};
 use tilo_peer_state::join::Role;
 use tilo_workspace_service::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
-use tilo_workspace_service::workspaces::model_answers::{
-    ModelDescriptor, ProviderProfile, ProviderProtocol,
-};
-use tilo_workspace_service::workspaces::this_computer::Linking;
 use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
 use tilolang_workspace as tl;
 
@@ -351,33 +347,10 @@ async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (String, boo
 
 /// Link a model on this computer and answer the workspace's calls through `replies`, one per
 /// call: the model its agents answer a turn on.
+/// Link a model on this computer and answer the workspace's calls through `replies`, one per
+/// call: the model its agents answer a turn on.
 fn scripted(host: &Host, replies: impl IntoIterator<Item = Reply>) -> Arc<ScriptedProvider> {
-    let daemon = host.daemon();
-    let workspaces = daemon.workspaces();
-    let profile = ProviderProfile {
-        id: "scripted".to_owned(),
-        label: "Scripted".to_owned(),
-        protocol: ProviderProtocol::OpenAiCompatible,
-        endpoint: "http://127.0.0.1:9/v1".to_owned(),
-        models: vec![ModelDescriptor {
-            tool_calling: true,
-            ..ModelDescriptor::new("scripted")
-        }],
-        default_model: Some("scripted".to_owned()),
-        ..ProviderProfile::local_vllm()
-    };
-    let mut config = workspaces.workspace_models(host.workspace());
-    config.default_profile = Some(profile.id.clone());
-    config.profiles = vec![profile];
-    assert!(
-        workspaces
-            .link_this_computer(host.workspace(), &config, Linking::Chosen)
-            .expect("the computer's model choice is linked"),
-        "the workspace runs on the model this computer chose"
-    );
-    let scripted = ScriptedProvider::answering(replies);
-    workspaces.answer_models_with(scripted.clone());
-    scripted
+    host.scripted_models(replies)
 }
 
 /// Wait until a turn asked its model `count` times.

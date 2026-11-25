@@ -58,7 +58,6 @@ mod messages_for_agents;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -76,6 +75,11 @@ use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::device::services::Daemon;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, StatementSigner as _};
+use tilo_workspace_service::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
+use tilo_workspace_service::workspaces::model_answers::{
+    ModelDescriptor, ProviderProfile, ProviderProtocol,
+};
+use tilo_workspace_service::workspaces::this_computer::Linking;
 
 /// Names the test the process [`run`] starts runs, and where its profile is.
 const OWN: &str = "TILO_HOST_TEST";
@@ -196,12 +200,10 @@ where
     }
     say_what_went_wrong();
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
-    // The language runtime this in-process daemon mounts, as the program mounts it: the built-in
-    // apps' records are read and changed here as they are on a computer running the program.
-    tilo_runtime::device::capabilities::mount(tilo_runtime::device::capabilities::Capabilities {
-        tilolang: Some(Box::new(tilolang_workspace::host)),
-        ..Default::default()
-    });
+    // What the daemon's program mounts, the language runtime among them, as a computer mounts it:
+    // the built-in apps' records and the account the device serves are here as they are on a
+    // computer running the program.
+    tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities());
     let host = Arc::new(Host::start(&profile));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -305,8 +307,7 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
         }
         installed
     };
-    let log = root.path().join("out");
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
         .envs(installed)
         // The test is named exactly: run it even where `#[ignore]` keeps it out of an
         // ordinary run, as the check that names it runs it here.
@@ -334,14 +335,15 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
         .env_remove("TILO_SVC_IDENTITY_FD")
         // A daemon here is a person's computer, not a machine configured as a server.
         .env_remove("TILO_SERVER_CONFIG")
-        .stdout(std::fs::File::create(&log).unwrap())
-        .stderr(Stdio::inherit())
-        .status_locked()
+        .output_locked()
         .unwrap();
-    let out = std::fs::read_to_string(&log).unwrap_or_default();
+    // Both streams, as the test's own daemon said them: a failure here is the whole reason.
+    let out = String::from_utf8_lossy(&output.stdout);
+    let said = String::from_utf8_lossy(&output.stderr);
     assert!(
-        status.success() && out.contains("1 passed"),
-        "{test} on its own daemon: {status}\n{out}"
+        output.status.success() && out.contains("1 passed"),
+        "{test} on its own daemon: {}\n{out}\n{said}",
+        output.status
     );
 }
 
@@ -427,6 +429,46 @@ impl Host {
             "the same workspace"
         );
         *self.daemon.lock().unwrap() = Some(Arc::new(started));
+    }
+
+    /// Link a model on this computer and answer the workspace's calls through `replies`, one
+    /// per call: the model its agents answer a turn on. The profile is the computer's own
+    /// choice, as the Agent models pane links one, and the provider is what the workspace asks
+    /// for the replies, as a person's provider answers.
+    ///
+    /// # Panics
+    ///
+    /// When the computer's model choice cannot be linked.
+    pub fn scripted_models(
+        &self,
+        replies: impl IntoIterator<Item = Reply>,
+    ) -> Arc<ScriptedProvider> {
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
+        let profile = ProviderProfile {
+            id: "scripted".to_owned(),
+            label: "Scripted".to_owned(),
+            protocol: ProviderProtocol::OpenAiCompatible,
+            endpoint: "http://127.0.0.1:9/v1".to_owned(),
+            models: vec![ModelDescriptor {
+                tool_calling: true,
+                ..ModelDescriptor::new("scripted")
+            }],
+            default_model: Some("scripted".to_owned()),
+            ..ProviderProfile::local_vllm()
+        };
+        let mut config = workspaces.workspace_models(self.workspace());
+        config.default_profile = Some(profile.id.clone());
+        config.profiles = vec![profile];
+        assert!(
+            workspaces
+                .link_this_computer(self.workspace(), &config, Linking::Chosen)
+                .expect("the computer's model choice is linked"),
+            "the workspace runs on the model this computer chose"
+        );
+        let scripted = ScriptedProvider::answering(replies);
+        workspaces.answer_models_with(scripted.clone());
+        scripted
     }
 
     /// The workspace the daemon founded for its person.
@@ -672,13 +714,47 @@ impl Host {
             .await
             .unwrap();
         let service = ActionService::new(key.clone(), Arc::new(NoActions));
-        service.hold(tilo_peer_state::direct::Replica::new(held));
+        let held = tilo_peer_state::direct::Replica::new(held);
+        service.hold(held.clone());
         service.add_provider(provider);
         let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
         Member {
             remote,
             service,
             endpoint,
+            held: Some(held),
+        }
+    }
+
+    /// Another device of the person's, `label`, entered in `workspace` and holding its state, as
+    /// their computer's mounted folder does: what it writes to the workspace's documents reaches
+    /// the host over the device link, beside the calls it makes.
+    pub async fn member_holding(&self, label: &str, workspace: &str) -> Member {
+        let (key, cert) = self.certify(label, DeviceCapabilities::member());
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
+        workspaces.enter(workspace, (&cert, &key)).await.unwrap();
+        let held = workspaces
+            .state(workspace)
+            .await
+            .expect("the daemon holds the workspace the device entered");
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let service = ActionService::new(key.clone(), Arc::new(NoActions));
+        let held = tilo_peer_state::direct::Replica::new(held);
+        service.hold(held.clone());
+        let remote = Arc::new(service.remote(&endpoint, &daemon.endpoint_addr(), workspace));
+        Member {
+            remote,
+            service,
+            endpoint,
+            held: Some(held),
         }
     }
 
@@ -698,6 +774,7 @@ impl Host {
             remote,
             service,
             endpoint,
+            held: None,
         }
     }
 }
@@ -875,6 +952,9 @@ pub struct Member {
     remote: Arc<RemoteDevice>,
     service: ActionService,
     endpoint: iroh::Endpoint,
+    /// The workspace's state as this device holds it, when it holds one: what a device's folder
+    /// mount writes its documents through.
+    held: Option<tilo_peer_state::direct::Replica>,
 }
 
 impl Member {
@@ -883,6 +963,13 @@ impl Member {
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
         self.service.device()
+    }
+
+    /// The workspace's state as this device holds it: what its folder mount writes the tree's
+    /// documents through, `None` for a device that only asks.
+    #[must_use]
+    pub fn replica(&self) -> Option<&tilo_peer_state::direct::Replica> {
+        self.held.as_ref()
     }
 
     /// This device's endpoint, as it dials a host's terminal streams.

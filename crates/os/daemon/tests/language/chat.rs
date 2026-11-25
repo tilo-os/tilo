@@ -367,5 +367,22 @@ fn the_chats_api_posts_are_held_in_the_workspaces_records() {
                 "the workspace holds {text:?}, which the API answered for"
             );
         }
+
+        // They are the workspace's records, not the daemon's memory: a computer that starts
+        // again on them still holds every post, and its Chat runs again on them.
+        drop(key);
+        drop(agent);
+        host.restart().await;
+        opens(host.as_ref())
+            .await
+            .unwrap_or_else(|status| panic!("the person's workspace starts Chat: {status}"));
+        for text in &posted {
+            assert!(
+                crate::language::chat::chat_holds(host.as_ref(), text)
+                    .await
+                    .unwrap_or(false),
+                "the workspace holds {text:?} after the daemon started again"
+            );
+        }
     });
 }

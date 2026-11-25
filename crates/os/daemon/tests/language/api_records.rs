@@ -467,21 +467,31 @@ fn a_handed_workspace_runs_its_keys_commands_after_a_restart() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Ada's agent");
-        let (status, ran) = in_run(
-            &agent,
-            &workspace,
-            ("terminal", "run"),
-            &json!({"command": "echo before-restart"}),
-            "Run a command",
-        )
-        .await;
-        assert_eq!(status, 200, "{ran}");
-        assert_eq!(ran["status"], "ok", "{ran}");
-        assert!(
-            ran.to_string().contains("before-restart"),
-            "the command printed: {ran}"
-        );
+        terminal_runs(&agent, &workspace, "before-restart").await;
+        // The key keeps the daemon it asks alive, so it goes before the computer stops it.
+        drop(agent);
+        host.restart().await;
+        // A key made on the computer that started again reaches the workspace it kept, and
+        // its Terminal runs there.
+        let agent = host.key("Ada's agent, again");
+        terminal_runs(&agent, &workspace, "after-restart").await;
     });
+}
+
+/// `agent` runs `echo <word>` in `workspace`'s Terminal, through its API, and the command's
+/// output comes back.
+async fn terminal_runs(agent: &host::Key, workspace: &str, word: &str) {
+    let (status, ran) = in_run(
+        agent,
+        workspace,
+        ("terminal", "run"),
+        &json!({"command": format!("echo {word}")}),
+        "Run a command",
+    )
+    .await;
+    assert_eq!(status, 200, "{ran}");
+    assert_eq!(ran["status"], "ok", "{ran}");
+    assert!(ran.to_string().contains(word), "the command printed: {ran}");
 }
 
 /// One more task, as an agent makes it through MCP in the workspace its session acts in.

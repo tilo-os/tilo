@@ -373,20 +373,47 @@ fn a_key_works_at_every_api_server() {
     });
 }
 
-/// The server a call used goes away; another server of the person's serves the same key,
-/// because the key is the grant and every server admits it.
+/// The server a call used goes away and comes back on the same home: the workspace it served
+/// is served again, and a key's grant reaches it, because the grant is the workspace's record
+/// and not the daemon's memory.
 #[test]
 fn a_call_is_served_after_the_host_it_used_goes_away() {
     host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
         let key = host.key("Visa backend");
         let (status, listed) = key
             .post("/v1/resources/account/workspaces/actions/list", &json!({}))
             .await;
         assert_eq!(status, 200, "{listed}");
-        panic!(
-            "the daemon-host fixture starts one device per test and has no restart, and a \
-             device's API keeps no list of servers to fail over to"
+        let (status, read) = key
+            .get(&format!("/v1/workspaces/{workspace}/resources"))
+            .await;
+        assert_eq!(status, 200, "{read}");
+
+        // The key keeps the daemon it asks alive, so it goes before the computer stops it.
+        drop(key);
+        host.restart().await;
+
+        // The computer that started again serves the workspace it kept, for a key made here.
+        let key = host.key("Visa backend, again");
+        let (status, listed) = key
+            .post("/v1/resources/account/workspaces/actions/list", &json!({}))
+            .await;
+        assert_eq!(status, 200, "{listed}");
+        let ids: Vec<&str> = listed["result"]["workspaces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|workspace| workspace["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&workspace.as_str()),
+            "it lists the workspace: {listed}"
         );
+        let (status, read) = key
+            .get(&format!("/v1/workspaces/{workspace}/resources"))
+            .await;
+        assert_eq!(status, 200, "{read}");
     });
 }
 
