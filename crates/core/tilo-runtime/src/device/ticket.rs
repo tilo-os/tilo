@@ -71,17 +71,18 @@ pub(crate) const SERVER: &str = "server";
 const NOT_YOURS: &str = "Only the person this server belongs to, and the administrators of the \
                          workspaces it serves, control it.";
 
-/// The daemon's `tilo.device` provider, as the catalogue lists it beside the workspace's apps: a
-/// running service whose resource is `devices`.
+/// The daemon's `tilo.device` provider, as the catalogue lists it beside the workspace's apps: one
+/// running service under each app its rows name (`devices`, `server`, `updates`), so a call that
+/// names any of them by its app (`server#status`, `updates#prepare`) is resolved to it.
 #[must_use]
-pub(crate) fn provider(workspace: &str) -> CatalogueProvider {
-    CatalogueProvider {
+pub(crate) fn providers(workspace: &str) -> [CatalogueProvider; 3] {
+    [RESOURCE, SERVER, UPDATES].map(|app| CatalogueProvider {
         provider: PROVIDER.to_owned(),
-        app_id: RESOURCE.to_owned(),
+        app_id: app.to_owned(),
         workspace: workspace.to_owned(),
         browsable: true,
         ..CatalogueProvider::default()
-    }
+    })
 }
 
 /// The `tilo.device` page `query` asks for: the `devices` resource and its actions, resolved and
@@ -648,7 +649,7 @@ pub(crate) fn with_device_actions(
         return catalogue(query);
     }
     if query.provider.is_none() {
-        page.providers.push(provider(workspace));
+        page.providers.extend(providers(workspace));
     }
     page
 }
