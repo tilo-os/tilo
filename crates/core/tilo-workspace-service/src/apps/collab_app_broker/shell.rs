@@ -444,9 +444,21 @@ async fn readable_reply(
     ))
 }
 
+/// A build that runs no agents makes no agent's key, so it refuses what the shell asks of one.
+#[cfg(not(all(feature = "agents", not(target_arch = "wasm32"))))]
+fn agent_key_reply(
+    _shell: crate::apps::shell::ShellCaller,
+    _call: runtime_collab::wire::shell::AgentKeyCall,
+) -> std::future::Ready<Result<ShellReply, String>> {
+    std::future::ready(Err(
+        "this device's workspace service runs no agents, so it holds no agent's key".to_owned(),
+    ))
+}
+
 /// What the shell asks of the key of an agent its person admitted, answered with the keys this
 /// device makes and its person's root certifies ([`crate::agents::agent_keys::this_device`]): a
 /// key of the shell's own person's agents alone, which never leaves the device.
+#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 async fn agent_key_reply(
     shell: crate::apps::shell::ShellCaller,
     call: runtime_collab::wire::shell::AgentKeyCall,
