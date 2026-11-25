@@ -1468,9 +1468,10 @@ thread_local! {
 }
 
 /// Tell the host that what a widget presents to the resource surface (the
-/// resources, actions or semantic controls it declares) changed on input it
-/// did not mark handled and without a document edit: hovering a menu row
-/// that opens a nested menu. The host keeps the published resource tree
+/// resources, actions or semantic controls it declares) changed without the
+/// host seeing it: on input the widget did not mark handled (hovering a menu
+/// row that opens a nested menu), or as it paints (the bounds a control
+/// measured from what it drew). The host keeps the published resource tree
 /// across bare pointer motion, so such a widget must call this or the tree
 /// agents and assistive technology read would go stale. Clicks, keys and
 /// handled events outside the explicit view-only scroll contract republish.

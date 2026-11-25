@@ -554,11 +554,19 @@ impl Widget for Stepper {
             return;
         }
         let rect = self.rect;
-        self.stations = self.with_face(|face| {
+        let stations = self.with_face(|face| {
             let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
             face.paint(&mut ctx, rect);
             face.station_rects(ctx.text, theme, rect)
         });
+        // A station's bounds are what paint measured, and the nodes assistive technology reads
+        // carry them. A stepper drawn for the first time — scrolled into view, or drawn as a
+        // page's picture after the frame's tree was built — gains stations where a walk found
+        // none, so the tree must be walked again rather than kept.
+        if stations != self.stations {
+            crate::widget::note_resource_presentation_changed();
+        }
+        self.stations = stations;
     }
 
     fn handle_event(
