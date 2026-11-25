@@ -1,6 +1,6 @@
 //! `tilolang surfaces`: every committed surface against its code.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -98,12 +98,19 @@ pub(crate) fn build_apps(
     packages: &[(PathBuf, String, String)],
 ) -> Result<std::collections::HashMap<String, PathBuf>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    // The build runs at the workspace root, whose manifest names every app's
+    // package: the workspace may be above the collection of apps.
+    let manifest = workspace_manifest(path)?;
     let mut build = ProcessCommand::new(cargo);
     build
-        .current_dir(path)
+        .current_dir(manifest.parent().unwrap_or(path))
         .arg("build")
         .arg("--manifest-path")
-        .arg(path.join("Cargo.toml"))
+        .arg(
+            manifest
+                .file_name()
+                .unwrap_or_else(|| OsStr::new("Cargo.toml")),
+        )
         .arg("--message-format=json-render-diagnostics");
     for (_, package, _) in packages {
         build.arg("--package").arg(package);
@@ -142,6 +149,33 @@ pub(crate) fn build_apps(
         executables.insert(name.to_owned(), PathBuf::from(executable));
     }
     Ok(executables)
+}
+
+/// The Cargo workspace manifest whose members are `path`'s apps: the
+/// repository holding `apps/`, or a collection of apps kept beside the tree's
+/// own (`examples/apps`), whose workspace is above it.
+fn workspace_manifest(path: &Path) -> Result<PathBuf> {
+    // Absolute, so the manifest the build reads is the one found here and not
+    // one relative to the directory the build runs in.
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolving {}", path.display()))?;
+    for dir in path.ancestors() {
+        let manifest = dir.join("Cargo.toml");
+        let Ok(source) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(table) = toml::from_str::<toml::Table>(&source) else {
+            continue;
+        };
+        if table.contains_key("workspace") {
+            return Ok(manifest);
+        }
+    }
+    anyhow::bail!(
+        "no Cargo workspace at or above {}; its applications are built in the workspace holding them",
+        path.display()
+    )
 }
 
 /// `tilolang surfaces`: every app's committed surface against its code, one

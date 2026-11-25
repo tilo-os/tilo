@@ -887,7 +887,9 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 # types, the OS's view of an app that is not running and another device's
 # reading of its records are built from, so a surface behind its code is a
 # wrong answer everywhere. One build of the whole application set, then each
-# binary prints what it publishes. The catalogue generator then reads each
+# binary prints what it publishes; the example apps beside the tree are
+# compared the same way, so a surface kept beside generated code cannot drift.
+# The catalogue generator then reads each
 # tilolang package of `apps/tl` through `tilolang describe --fleet`, so the
 # fleet knows a tilolang app as fully as a native one, and fails when the
 # generated catalogue is stale or two apps claim one id. Each binary is run in a
@@ -901,8 +903,8 @@ name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 isolation = "nested"
 gate = true
-run = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/apps/generate_default_apps.py --check\n"
-fix = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\npython3 -I tools/apps/generate_default_apps.py\n"
+run = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces examples\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/apps/generate_default_apps.py --check\n"
+fix = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces --write\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces examples --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\npython3 -I tools/apps/generate_default_apps.py\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 # The device's published surface, crates/desktop/device-surfaces/device-surface.json, against
