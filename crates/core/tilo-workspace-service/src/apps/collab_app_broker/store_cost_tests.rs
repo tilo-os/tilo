@@ -9,6 +9,24 @@ use crate::workspaces::fixtures;
 /// How many commands the trip is measured over.
 const ASKS: u32 = 100;
 
+/// The median, 95th percentile and longest of `samples`, by nearest rank.
+fn percentiles(
+    mut samples: Vec<std::time::Duration>,
+) -> (
+    std::time::Duration,
+    std::time::Duration,
+    std::time::Duration,
+) {
+    samples.sort_unstable();
+    let at = |percent: usize| {
+        samples
+            .get(samples.len().saturating_sub(1).saturating_mul(percent) / 100)
+            .copied()
+            .unwrap_or_default()
+    };
+    (at(50), at(95), samples.last().copied().unwrap_or_default())
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "the connection tasks and its wire run on the test LocalSet"
@@ -32,8 +50,10 @@ async fn a_store_command_round_trip_to_the_workspace_store_is_a_local_trip() {
             let channels = Arc::new(Mutex::new(BrokerChannels::default()));
             let (owner, _mailbox) = crate::apps::test_owner::writes::OwnerCommitMailbox::bounded(8);
             let publisher = PeerPublisher::with_commits(Arc::new(owner));
-            let mut services = crate::apps::services::ProcessServices::default();
-            services.resources = Some(Arc::new(ServiceResources::of(server.host())));
+            let services = crate::apps::services::ProcessServices {
+                resources: Some(Arc::new(ServiceResources::of(server.host()))),
+                ..Default::default()
+            };
             let (state, bridge_rx) = AppBrokerState::new_configured(
                 &fanout,
                 channels,
@@ -64,23 +84,31 @@ async fn a_store_command_round_trip_to_the_workspace_store_is_a_local_trip() {
             .unwrap();
             // The first command opens the record on the connection; the trip is measured over
             // the ones after it, which is what an action's loop makes.
+            let opening = std::time::Instant::now();
             channel
                 .resource_command(&command)
                 .await
                 .unwrap_or_else(|error| panic!("the store answered no command: {error}"));
-            let started = std::time::Instant::now();
+            let first = opening.elapsed();
+            let mut samples = Vec::new();
             for ask in 0..ASKS {
+                let started = std::time::Instant::now();
                 channel
                     .resource_command(&command)
                     .await
                     .unwrap_or_else(|error| panic!("ask {ask} was not answered: {error}"));
+                samples.push(started.elapsed());
             }
-            let trip = started.elapsed() / ASKS;
-            eprintln!("one store command over the connection: {trip:?}");
+            let (median, p95, longest) = percentiles(samples);
+            eprintln!(
+                "a store command through the daemon: first {first:?}, then median {median:?}, \
+                 p95 {p95:?}, max {longest:?} over {ASKS} commands"
+            );
             assert!(
-                trip < std::time::Duration::from_millis(2),
-                "one store command over the connection is {trip:?}: a local wire answers in well \
-                 under a millisecond, and an app makes one trip per resource its action touches"
+                p95 < std::time::Duration::from_millis(2),
+                "one store command over the connection has a p95 of {p95:?} (median {median:?}, \
+                 max {longest:?}): a local wire answers in well under a millisecond, and an app \
+                 makes one trip per resource its action touches"
             );
         }))
         .await;

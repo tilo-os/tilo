@@ -3362,6 +3362,25 @@ pub(super) fn connected_manager_for(app: &str, workspace: Uuid) -> Collaboration
     CollaborationManager::from_sdk_fd_for_test(fd, app, workspace)
 }
 
+/// The median, 95th percentile and longest of `samples`, by nearest rank.
+#[cfg(unix)]
+fn percentiles(
+    mut samples: Vec<crate::time::Duration>,
+) -> (
+    crate::time::Duration,
+    crate::time::Duration,
+    crate::time::Duration,
+) {
+    samples.sort_unstable();
+    let at = |percent: usize| {
+        samples
+            .get(samples.len().saturating_sub(1).saturating_mul(percent) / 100)
+            .copied()
+            .unwrap_or_default()
+    };
+    (at(50), at(95), samples.last().copied().unwrap_or_default())
+}
+
 /// What one store command costs an app's own process: the command the app sends on its
 /// workspace connection, carried by its broker transport to the store and answered back on the
 /// connection the app's frame waits on. An action names many resources, so it pays this per ask.
@@ -3396,23 +3415,25 @@ fn an_apps_store_command_is_a_local_trip() {
             // which is what an action's loop makes.
             let joining = std::time::Instant::now();
             ask().expect("the store answers the first command");
-            eprintln!(
-                "the first store command from an app process, joining its route: {:?}",
-                joining.elapsed()
-            );
-            let started = std::time::Instant::now();
+            let first = joining.elapsed();
+            let mut samples = Vec::new();
             for ask_number in 0..ASKS {
+                let started = std::time::Instant::now();
                 ask().unwrap_or_else(|refusal| {
                     panic!("ask {ask_number} was not answered: {refusal}")
                 });
+                samples.push(started.elapsed());
             }
-            let trip = started.elapsed() / ASKS;
-            eprintln!("one store command from the app process: {trip:?}");
+            let (median, p95, longest) = percentiles(samples);
+            eprintln!(
+                "a store command from an app process: first {first:?}, then median {median:?}, \
+                 p95 {p95:?}, max {longest:?} over {ASKS} commands"
+            );
             assert!(
-                trip < crate::time::Duration::from_millis(2),
-                "one store command from the app process is {trip:?}: the store is on this device, \
-                 so a trip through the connection is a wake and a frame, not a wait for something \
-                 to happen"
+                p95 < crate::time::Duration::from_millis(2),
+                "one store command from the app process has a p95 of {p95:?} (median {median:?}, \
+                 max {longest:?}): the store is on this device, so a trip through the connection \
+                 is a wake and a frame, not a wait for something to happen"
             );
             drop(manager);
             thread.join().unwrap();

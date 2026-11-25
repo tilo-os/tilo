@@ -208,6 +208,18 @@ mod cost_tests {
     /// How many commands the trip is measured over.
     const ASKS: u32 = 100;
 
+    /// The median, 95th percentile and longest of `samples`, by nearest rank.
+    fn percentiles(mut samples: Vec<Duration>) -> (Duration, Duration, Duration) {
+        samples.sort_unstable();
+        let at = |percent: usize| {
+            samples
+                .get(samples.len().saturating_sub(1).saturating_mul(percent) / 100)
+                .copied()
+                .unwrap_or_default()
+        };
+        (at(50), at(95), samples.last().copied().unwrap_or_default())
+    }
+
     #[test]
     fn a_store_command_on_the_call_port_is_a_local_trip() {
         let app = "so.tilo.cost";
@@ -234,19 +246,27 @@ mod cost_tests {
         };
         // The first command joins the route; the trip is measured over the ones after it, which
         // is what an action's loop makes.
+        let joining = Instant::now();
         port.command(command.clone())
             .expect("the store answers the first command");
-        let started = Instant::now();
+        let first = joining.elapsed();
+        let mut samples = Vec::new();
         for ask in 0..ASKS {
+            let started = Instant::now();
             port.command(command.clone())
                 .unwrap_or_else(|error| panic!("ask {ask} was not answered: {error}"));
+            samples.push(started.elapsed());
         }
-        let trip = started.elapsed() / ASKS;
-        eprintln!("one store command on the call port: {trip:?}");
+        let (median, p95, longest) = percentiles(samples);
+        eprintln!(
+            "a store command on the call port: first {first:?}, then median {median:?}, \
+             p95 {p95:?}, max {longest:?} over {ASKS} commands"
+        );
         assert!(
-            trip < Duration::from_millis(2),
-            "one store command on the call port is {trip:?}: the store is on this device, so its \
-             answer is a wake, not a wait for something to happen"
+            p95 < Duration::from_millis(2),
+            "one store command on the call port has a p95 of {p95:?} (median {median:?}, max \
+             {longest:?}): the store is on this device, so its answer is a wake, not a wait for \
+             something to happen"
         );
     }
 }
