@@ -249,8 +249,8 @@ impl Driver {
         }
         let mut sources = Vec::new();
         visit(self.app.root_widget.as_ref(), "", &mut sources);
-        if let Some(history) = self.app.history.as_deref() {
-            visit(history as &dyn Widget, "", &mut sources);
+        if let Some(history) = self.app.history_widget() {
+            visit(history, "", &mut sources);
         }
         sources
     }

@@ -285,7 +285,7 @@ impl App {
     /// ([`crate::surface_peer`]): it is told what the window offers by name,
     /// and the presses it asked of those controls are acted on here, as a
     /// desktop window acts on the shell's. Whether a press changed anything.
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "model"))]
     pub(super) fn serve_surface_window(&mut self) -> bool {
         if !crate::surface_peer::hosted() {
             return false;

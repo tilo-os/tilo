@@ -140,9 +140,9 @@ mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 pub(crate) use native_runner::startup::prepare_native_renderer;
 pub use surface::{AppSurface, SurfaceDamage};
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 mod embedded;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 pub use embedded::EmbeddedApp;
 
 #[cfg(feature = "model")]
@@ -506,6 +506,7 @@ pub use crate::action_locus::{ActionUiRoute, PaintedActionMarker};
     )
 )]
 pub struct App {
+    #[cfg(feature = "model")]
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     startup_renderer: Option<native_runner::startup::RendererPreparation>,
@@ -605,6 +606,7 @@ pub struct App {
         crate::collaboration::RouteSpec,
         crate::collaboration::CommittedDocument,
     )>,
+    #[cfg(feature = "model")]
     autosave_generation: u64,
     #[cfg(feature = "model")]
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
@@ -815,7 +817,11 @@ impl AppConstructionInputs {
                     None
                 }
             },
+            // The colour a person is known by is their workspace identity's: Tilo's model's.
+            #[cfg(feature = "model")]
             your_colour: crate::local_identity::own_colour,
+            #[cfg(not(feature = "model"))]
+            your_colour: || None,
             high_contrast: || crate::process::environment().accessibility.high_contrast,
             reduce_motion: || crate::process::environment().accessibility.reduce_motion,
             text_scale: || {
@@ -1084,7 +1090,10 @@ impl App {
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
         self.mark_semantic_tree_stale();
-        self.retire_semantic_root();
+        #[cfg(feature = "model")]
+        {
+            self.retire_semantic_root();
+        }
         self.control_domain.close();
         #[cfg(feature = "model")]
         {
@@ -1544,6 +1553,7 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     fn retire_semantic_root(&self) {
         if let Some(retirement) = &self.retirement {
             retirement.retire();
@@ -1555,7 +1565,10 @@ impl App {
         {
             self.send_held_answers(true);
         }
-        self.retire_semantic_root();
+        #[cfg(feature = "model")]
+        {
+            self.retire_semantic_root();
+        }
         if let Some(scope) = self.wake_scope.as_mut() {
             scope.close();
         }
@@ -1585,6 +1598,7 @@ impl App {
         inputs: AppConstructionInputs,
     ) -> Box<Self> {
         retirement_assembly::assemble(retirement_assembly::AppAssemblyOwnership {
+            #[cfg(feature = "model")]
             retirement: None,
             root: Some(root_widget),
             wake: wake_scope,
@@ -2774,7 +2788,10 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        self.retire_semantic_root();
+        #[cfg(feature = "model")]
+        {
+            self.retire_semantic_root();
+        }
         self.control_domain.close();
         self.bindings.clear();
         self.layout.node_map.clear();

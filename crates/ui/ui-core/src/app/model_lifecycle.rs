@@ -20,6 +20,7 @@ fn hosted_pump_timing() -> bool {
     *ENABLED.get_or_init(|| crate::process::environment().diagnostics.hosted_pump_timing)
 }
 
+#[cfg(feature = "model")]
 /// Policy meaning observed by the previous hosted pump: the App's own context
 /// and the root component owner's host-supplied context (the `Rc` replaced by
 /// `HostWorker::pump`). Directory observations include per-capability liveness at
@@ -31,6 +32,7 @@ struct HostedAuthorityObservation {
     owner: Option<crate::permissions::DirectoryPermissionObservation>,
 }
 
+#[cfg(feature = "model")]
 /// Every input of `publish_action_surface` that can change without a
 /// rebuild of the widget tree. Equal stamps mean that publication would
 /// recompute the same resources, descriptors and directory snapshot.
@@ -43,6 +45,7 @@ pub(super) struct PublicationStamp {
     revision: String,
 }
 
+#[cfg(feature = "model")]
 impl PublicationStamp {
     /// The action directory's revision the surface was published at.
     pub(super) fn revision(&self) -> &str {
@@ -54,6 +57,7 @@ impl PublicationStamp {
 pub(super) struct HostedPumpState {
     #[cfg(test)]
     pub(super) calls: usize,
+    #[cfg(feature = "model")]
     authority: Option<HostedAuthorityObservation>,
 }
 
@@ -146,7 +150,7 @@ impl super::App {
         let wakes = self.take_hosted_wakes();
         let authority_changed = self.refresh_hosted_authority();
         let in_flight = !self.actions.directed_invocations.is_empty()
-            || !self.actions.bound_invocations.is_empty()
+            || self.actions.bound_calls_running()
             || !self.actions.local_invocations.is_empty()
             || !self.actions.pending_application_launches.is_empty();
         let next_deadline = self.root_widget.next_wake_deadline();
@@ -352,7 +356,10 @@ impl super::App {
         #[cfg(feature = "model")]
         let updated = presence.with_permissions(self.permission_ctx.clone(), update);
         #[cfg(not(feature = "model"))]
-        let updated = update();
+        let updated = {
+            let mut update = update;
+            update()
+        };
         // An animation moved what its widget lays out: the window is laid
         // out again. Any other animation frame is only drawn.
         self.layout.layout_dirty |= crate::widget::take_layout_moved();
@@ -557,7 +564,7 @@ impl super::App {
         };
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still checks terminal success.
-        #[cfg(feature = "native")]
+        #[cfg(all(feature = "native", feature = "model"))]
         if let Err(error) = self.autosave_tick() {
             crate::diag!("[app] component autosave tick refused: {error:?}");
         }

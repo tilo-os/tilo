@@ -243,14 +243,22 @@ impl App {
         )
     }
 
+    /// A counter that moves whenever the document's history does: Tilo's model keeps that
+    /// history, and without it a field's own undo stands in the key alone.
+    #[cfg(all(feature = "native", not(target_os = "android")))]
+    fn document_history_revision(&self) -> u64 {
+        #[cfg(feature = "model")]
+        let revision = self.state.history_revision();
+        #[cfg(not(feature = "model"))]
+        let revision = 0;
+        revision
+    }
+
     #[cfg(all(feature = "native", not(target_os = "android")))]
     pub(crate) fn host_commands_key(&self) -> HostCommandsKey {
         HostCommandsKey {
-            undo: self.state.history_revision(),
-            framework_history_open: self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.is_open()),
+            undo: self.document_history_revision(),
+            framework_history_open: self.history_open(),
             palette: self.palette_presented(),
             focus: self.focused_node,
             local_history: crate::undo::local_undo_status(self.root_widget.as_ref())

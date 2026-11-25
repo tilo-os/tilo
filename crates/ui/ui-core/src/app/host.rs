@@ -423,6 +423,7 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
     }
     #[cfg(not(feature = "model"))]
     {
+        let mut draw = draw;
         draw();
     }
     app.presence_ctx.pop_viewport(prev_vp);

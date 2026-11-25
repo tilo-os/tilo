@@ -833,6 +833,8 @@ impl App {
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
+        // The close question asks about what a component has not saved: Tilo's model's.
+        #[cfg(feature = "model")]
         if encoded.type_id == crate::close_admission::OPERATION {
             return self.invoke_close_encoded(encoded);
         }
@@ -840,6 +842,7 @@ impl App {
         if encoded.type_id == super::local_input_capture::UNSAVED_OPERATION {
             return self.retry_unsaved_changes();
         }
+        #[cfg(feature = "model")]
         if encoded.type_id == SEARCH_OPERATION {
             if !self.search_presented {
                 return Err("Search host is unavailable".into());
@@ -1060,23 +1063,41 @@ impl App {
         }
     }
 
-    #[cfg(feature = "model")]
     /// The History control the window shows for this app, if it has a
     /// History to open: the one its root widget offers
     /// ([`crate::widget::WindowHistory`]: a window showing the system's
-    /// history of what it shows), else its History API's.
+    /// history of what it shows), else its History API's. History is Tilo's
+    /// model's: without it the window offers none.
     pub(crate) fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
-        crate::history_mode::host::offered_control(
+        #[cfg(feature = "model")]
+        let control = crate::history_mode::host::offered_control(
             self.root_widget.as_ref(),
             self.history.as_deref(),
-        )
+        );
+        #[cfg(not(feature = "model"))]
+        let control = None;
+        control
     }
 
-    #[cfg(feature = "model")]
     /// The window's History control was pressed: run it on the History the
     /// root widget offers, else on this app's History API, as the History
     /// shortcut does.
+    ///
+    /// # Errors
+    /// The History refused the control; without Tilo's model there is no History to run it.
     pub(crate) fn invoke_window_history_control(
+        &mut self,
+        control: crate::widget::HistoryControl,
+    ) -> Result<(), String> {
+        #[cfg(feature = "model")]
+        let pressed = self.press_offered_history(control);
+        #[cfg(not(feature = "model"))]
+        let pressed = Err(format!("{control:?}: this window keeps no History"));
+        pressed
+    }
+
+    #[cfg(feature = "model")]
+    fn press_offered_history(
         &mut self,
         control: crate::widget::HistoryControl,
     ) -> Result<(), String> {

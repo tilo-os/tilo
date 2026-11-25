@@ -2661,7 +2661,7 @@ impl AppHandler {
         // drawn only where its damage needs it (`crate::draw_cull`).
         let culls = !full_redraw_required
             && !self.top_layer_drawn
-            && app.history.is_none()
+            && app.history_widget().is_none()
             && !crate::render_thread::remote::requested();
         // While a view pans, the frame is drawn as layers instead of culled:
         // its worker copies what the pan keeps of the view and rasterises
@@ -2858,7 +2858,7 @@ impl AppHandler {
             if full_redraw_required {
                 offers.clear();
             }
-            let history = app.history.as_deref().map(|history| history as &dyn Widget);
+            let history = app.history_widget();
             let planned = crate::scroll_copy::plan(
                 &offers,
                 &std::iter::once(root).chain(history).collect::<Vec<_>>(),
@@ -5332,6 +5332,7 @@ impl App {
             let _entry = self.enter_wake_scope();
             // A change of an outside authority the app's controls follow moves its permissions on
             // and wakes the loop, exactly as it does for a window.
+            #[cfg(feature = "model")]
             crate::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
             self.init_layout();
         }
@@ -5465,6 +5466,7 @@ impl App {
                 .flatten()
         };
         tilo_startup_metrics::mark("run-settings-watched");
+        #[cfg(feature = "model")]
         {
             // A change of an outside authority the window's permissions
             // follow (the host's view of the app's action authority) moves

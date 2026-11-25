@@ -459,6 +459,7 @@ impl App {
         errors
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn invoke_close_encoded(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
@@ -780,6 +781,7 @@ impl App {
                 self.set_focused_node(Some(focus));
             }
         }
+        #[cfg(feature = "model")]
         self.service_close_admission();
         true
     }

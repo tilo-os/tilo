@@ -502,6 +502,7 @@ impl App {
 
         // A window asked for the thing a report is about takes the pointer and
         // the keys until the person points at it or leaves.
+        #[cfg(feature = "model")]
         if !handled && let Some(pointing) = app.report_pointing.as_mut() {
             let focused = crate::shared_selection::subtree_selection(app.root_widget.as_ref());
             match pointing.event(
@@ -836,6 +837,7 @@ impl App {
         // Input framework chrome took (a press on the window's own History) runs no control a
         // widget queued, and neither does a window still opening: the entry it asks for seals it,
         // and the frame that follows runs nothing either.
+        #[cfg(feature = "model")]
         if !app.input.opening && !app.input.passive_input && app.dispatch_control_invocations() != 0
         {
             handled = true;
@@ -884,14 +886,18 @@ impl App {
             app.broadcast_composing_presence();
             app.broadcast_view_presence();
         }
-        // A publication an earlier input owes is the frame's already.
-        if sync_follows || app.actions.action_surface_owed {
-            app.actions.action_surface_owed = true;
-        } else {
-            app.publish_action_surface();
+        // A publication an earlier input owes is the frame's already. What a window publishes
+        // (its actions, continuations and search index) is published into Tilo's model.
+        #[cfg(feature = "model")]
+        {
+            if sync_follows || app.actions.action_surface_owed {
+                app.actions.action_surface_owed = true;
+            } else {
+                app.publish_action_surface();
+            }
+            app.publish_continuation_metadata();
+            app.publish_search_index();
         }
-        app.publish_continuation_metadata();
-        app.publish_search_index();
         phases.finish(InputPhase::Publication, publication);
 
         if let Some(id) = focus_target {

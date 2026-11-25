@@ -9,6 +9,7 @@ use super::Driver;
 use crate::permissions::MemberId;
 use crate::widget::Widget;
 
+#[cfg(feature = "model")]
 /// Where a view that follows someone has gone for their newest action: each action is gone to
 /// once, so the follower can look around until the next one. Held by whoever follows, and handed
 /// to [`Driver::follow_view`] each frame.
@@ -68,6 +69,7 @@ impl Driver {
         self.app.focus_presence()
     }
 
+    #[cfg(feature = "model")]
     /// Where the app shows `interaction` now: the words an agent's caret or selection is on in
     /// text, else the one control its action is bound to. `None` when no single place shows it, or
     /// when something stands over the app (its search, a History review, the close dialog).
@@ -83,6 +85,7 @@ impl Driver {
         crate::action_locus::interaction_bounds(self.app.semantic_tree(), &bindings, interaction)
     }
 
+    #[cfg(feature = "model")]
     /// Bring the view to where `actor` acts, while it follows them: the text their caret or
     /// selection is in scrolls into view; else the control their newest action is bound to; where
     /// no view here shows it (another sheet, tab or page), the nearest view its resource publishes
@@ -133,6 +136,7 @@ impl Driver {
         self.open_view_of(interaction.resource.id.as_str())
     }
 
+    #[cfg(feature = "model")]
     /// Where the app's frame shows `actor`'s caret or selection in text: the widget that draws it
     /// and its box.
     fn text_locus(&self, actor: &MemberId) -> Option<(*const dyn Widget, Rect)> {
@@ -146,6 +150,7 @@ impl Driver {
         )
     }
 
+    #[cfg(feature = "model")]
     /// The action bindings of the app's controls as they are laid out now; `None` while something
     /// stands over the app, whose controls then show nothing.
     fn action_bindings(&self) -> Option<Vec<crate::widget::ControlBindingMetadata>> {
@@ -165,6 +170,7 @@ impl Driver {
         .ok()
     }
 
+    #[cfg(feature = "model")]
     /// Scroll `rect` of `target` into every viewport that shows it, and run the frame that shows
     /// it there when something moved.
     fn reveal(&mut self, target: *const dyn Widget, rect: Rect) -> bool {
@@ -178,6 +184,7 @@ impl Driver {
         moved
     }
 
+    #[cfg(feature = "model")]
     /// Open the view nearest `resource` that the published resources offer (its own, else its
     /// closest parent's), as a person choosing it would.
     fn open_view_of(&mut self, resource: &str) -> bool {

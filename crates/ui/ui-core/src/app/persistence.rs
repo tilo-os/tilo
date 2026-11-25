@@ -3,17 +3,27 @@ impl App {
     /// document are recognised as stale. A `u64` counter never wraps in
     /// practice; wrapping keeps this total instead of panicking.
     #[cfg(test)]
+    #[cfg(feature = "model")]
     pub(super) fn advance_autosave_generation(&mut self) {
         self.autosave_generation = self.autosave_generation.wrapping_add(1);
     }
 
-    #[cfg(feature = "model")]
     /// Show the record the window's component asked to open in its place
     /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)):
     /// close the component, keeping its recovery, mount the one it built,
     /// and move the window's collaboration to the new record's route.
-    /// Whether the window now shows another record.
+    /// Whether the window now shows another record: never without Tilo's model, which alone hosts
+    /// a component.
     pub fn swap_requested_component(&mut self) -> bool {
+        #[cfg(feature = "model")]
+        let swapped = self.swap_in_replacement();
+        #[cfg(not(feature = "model"))]
+        let swapped = false;
+        swapped
+    }
+
+    #[cfg(feature = "model")]
+    fn swap_in_replacement(&mut self) -> bool {
         let _phase = tilo_resource_plain::profiling::Phase::start("ui.swap_component");
         let _entry = self.enter_wake_scope();
         let Some(replacement) =
@@ -132,6 +142,8 @@ impl App {
     /// the last keystroke still finds it on disk.
     #[cfg(feature = "native")]
     fn autosave_flush(&mut self) {
+        // Only Tilo's model keeps a component's record to save.
+        #[cfg(feature = "model")]
         for error in self.checkpoint_before_close() {
             tracing::error!(%error, "could not save the window's state");
         }

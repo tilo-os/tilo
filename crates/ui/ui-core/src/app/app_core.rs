@@ -5,6 +5,7 @@ impl App {
         crate::app_core::AppTree {
             state: &self.state,
             root: self.root_widget.as_ref(),
+            #[cfg(feature = "model")]
             history: self.history.as_deref(),
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
@@ -23,6 +24,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn history_commands_arrived(&mut self) {
         if self.history_focus.is_none() {
             self.history_focus = self.capture_focus_identity();
@@ -32,6 +34,31 @@ impl App {
         self.focused_node = None;
         self.layout.request_rebuild();
         self.layout.layout_dirty = true;
+    }
+
+    /// The window's History, to change. Tilo's model keeps what changed and who changed it:
+    /// without it a window has no History.
+    pub(crate) fn history_widget_mut(&mut self) -> Option<&mut dyn Widget> {
+        #[cfg(feature = "model")]
+        let history = self
+            .history
+            .as_deref_mut()
+            .map(|history| history as &mut dyn Widget);
+        #[cfg(not(feature = "model"))]
+        let history = None;
+        history
+    }
+
+    /// Whether the window's History is open.
+    pub(crate) fn history_open(&self) -> bool {
+        #[cfg(feature = "model")]
+        let open = self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.is_open());
+        #[cfg(not(feature = "model"))]
+        let open = false;
+        open
     }
 
     /// The action palette, open or arriving. Tilo's model is the action layer it searches and
@@ -100,7 +127,7 @@ impl App {
 
     pub(crate) fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
         visit(self.root_widget.as_ref());
-        if let Some(history) = self.history.as_deref() {
+        if let Some(history) = self.history_widget() {
             visit(history);
         }
         if let Some(dialog) = self.close_admission.dialog.as_deref() {
@@ -118,18 +145,14 @@ impl App {
     /// widgets are then reachable by nothing, and a frame owes them nothing.
     pub(crate) fn presentation_roots(&self) -> Vec<&dyn Widget> {
         let mut roots: Vec<&dyn Widget> = Vec::new();
-        if let Some(history) = self.history.as_deref() {
+        if let Some(history) = self.history_widget() {
             roots.push(history);
         }
         if let Some(palette) = self.presented_palette() {
             roots.push(palette);
             return roots;
         }
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
-        {
+        if self.app_live() {
             roots.push(self.root_widget.as_ref());
         }
         if let Some(dialog) = self.close_admission.dialog.as_deref() {
@@ -178,6 +201,7 @@ impl App {
             taffy: &mut self.layout.taffy,
             node_map: &mut self.layout.node_map,
             bindings: &mut self.bindings,
+            #[cfg(feature = "model")]
             close_reports: &mut self.component_close_reports,
             interaction: self.input.interaction,
         }
@@ -220,6 +244,7 @@ impl App {
     pub(crate) fn focus_parts(&mut self) -> crate::app_core::HostFocus<'_> {
         crate::app_core::HostFocus {
             root: self.root_widget.as_mut(),
+            #[cfg(feature = "model")]
             history: self.history.as_mut(),
             node_map: &self.layout.node_map,
             bindings: &self.bindings,
@@ -228,6 +253,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn history_focus_resumed(&mut self) {
         self.history_focus = None;
     }

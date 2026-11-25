@@ -17,6 +17,7 @@
 
 use winit::event::WindowEvent;
 
+#[cfg(feature = "model")]
 use crate::bound_dispatch::BoundOwnerMark;
 use crate::widget::FloatingSurfaceWidgetExt;
 
@@ -26,13 +27,42 @@ pub(super) struct ResourceInputMark {
     document: (Vec<automerge::ChangeHash>, usize),
     presentation: u64,
     focused: Option<taffy::NodeId>,
+    /// Where each hosted component's record stood: only Tilo's model hosts one.
+    #[cfg(feature = "model")]
     owners: Vec<BoundOwnerMark>,
     view_only_scroll: bool,
     /// The wheel may still prove view-only by a container's pan.
     may_pan: bool,
 }
 
+impl ResourceInputMark {
+    /// Whether every hosted component's record was committed.
+    fn owners_committed(&self) -> bool {
+        #[cfg(feature = "model")]
+        let committed = self.owners.iter().all(BoundOwnerMark::is_committed);
+        #[cfg(not(feature = "model"))]
+        let committed = true;
+        committed
+    }
+}
+
 impl super::App {
+    /// Whether the hosted components' records stand where they stood at `before`, so what they
+    /// publish carries across the input.
+    fn owners_unmoved_since(&self, before: &ResourceInputMark) -> bool {
+        #[cfg(feature = "model")]
+        let unmoved = self.actions.bound_resource_cache.carry_across_input(
+            &before.owners,
+            &crate::bound_dispatch::bound_owner_marks(self.root_widget.as_ref(), &self.state.doc),
+        );
+        #[cfg(not(feature = "model"))]
+        let unmoved = {
+            let _ = before;
+            true
+        };
+        unmoved
+    }
+
     /// Bring every control's action availability up to date before `event`
     /// reaches the widgets, so a press or key activates only what the
     /// current tree allows. Hover and declared view-only scrolling activate
@@ -59,6 +89,7 @@ impl super::App {
             focused: self.focused_node,
             view_only_scroll,
             may_pan,
+            #[cfg(feature = "model")]
             owners: if self.input.pointer.is_inert(event) || may_pan {
                 crate::bound_dispatch::bound_owner_marks(self.root_widget.as_ref(), &self.state.doc)
             } else {
@@ -116,18 +147,12 @@ impl super::App {
             && before.may_pan
             && (declared || panned)
             && before.document.1 == 0
-            && before.owners.iter().all(BoundOwnerMark::is_committed);
+            && before.owners_committed();
         let unchanged = ((!consumed && self.input.pointer.is_inert(event)) || view_only)
             && crate::widget::resource_presentation_epoch() == before.presentation
             && self.focused_node == before.focused
             && crate::doc::settle_mark(&self.state.doc) == before.document
-            && self.actions.bound_resource_cache.carry_across_input(
-                &before.owners,
-                &crate::bound_dispatch::bound_owner_marks(
-                    self.root_widget.as_ref(),
-                    &self.state.doc,
-                ),
-            );
+            && self.owners_unmoved_since(before);
         trace.finish(if unchanged {
             CacheResult::Hit
         } else {

@@ -208,7 +208,8 @@ impl Driver {
         let app = &*self.app;
         let exported = app.bindings.exported_nodes(&app.layout.node_map);
         let palette = app.palette_presented();
-        let (_, titles) = if app.history.is_none() && !palette && app.window_box.is_drawn() {
+        let (_, titles) = if app.history_widget().is_none() && !palette && app.window_box.is_drawn()
+        {
             let roots: [&dyn Widget; 2] = [app.root_widget.as_ref(), &app.window_box];
             crate::accesskit_bridge::build_presentation_tree_with_titles_bound(
                 &roots,
@@ -216,7 +217,7 @@ impl Driver {
                 exported.focus(app.focused_node),
                 1.0,
             )
-        } else if app.history.is_none() && !palette {
+        } else if app.history_widget().is_none() && !palette {
             crate::accesskit_bridge::build_tree_update_with_titles_bound(
                 app.root_widget.as_ref(),
                 &exported.nodes,

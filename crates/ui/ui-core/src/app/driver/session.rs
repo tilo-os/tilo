@@ -144,7 +144,7 @@ impl Driver {
         if let Some(palette) = self.app.palette_widget_mut() {
             palette.release_scene_cache();
         }
-        if let Some(history) = self.app.history.as_mut() {
+        if let Some(history) = self.app.history_widget_mut() {
             history.release_scene_cache();
         }
         true

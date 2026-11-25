@@ -587,7 +587,12 @@ impl App {
             .into_iter()
             .collect::<HashSet<_>>();
         let Some(mut client) = self.floating.client.take() else {
+            // Only Tilo's model runs a surface app's window, which the session reaches over the
+            // surface's own socket.
+            #[cfg(feature = "model")]
             let pressed = self.serve_surface_window();
+            #[cfg(not(feature = "model"))]
+            let pressed = false;
             let drained = self.drain_unhosted_floating_requests();
             return pressed || drained;
         };
@@ -980,6 +985,7 @@ impl App {
         // What this window's send-to boxes hold: each goes to the session's one send action, which
         // acts on it as the person, making an agent, opening the conversation and posting the
         // message.
+        #[cfg(feature = "model")]
         for request in crate::shared_selection::take_send_to() {
             let attached = self.send_attached(&request);
             let workspace = crate::process::environment().identity.workspace_id.clone();
@@ -988,6 +994,7 @@ impl App {
         }
         // While a box is open, what the window has selected now is what its
         // "+" adds.
+        #[cfg(feature = "model")]
         if crate::shared_selection::box_open() {
             crate::shared_selection::set_focused_selection(
                 crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
@@ -1396,35 +1403,42 @@ impl App {
                     pointing,
                     carried,
                 } => {
-                    // The shell asks this window to send from its keyboard,
-                    // with no menu to carry a box: it opens alone, about what
-                    // the window has picked, to whom the shell named — the
-                    // people here, the one place a report goes — or else to a
-                    // new agent. Pointing
-                    // first: the window lights what is under the pointer and
-                    // the box opens about what they click.
-                    if *pointing {
-                        let window = self
-                            .window
-                            .shown_title
-                            .clone()
-                            .or_else(|| self.window.title.clone())
-                            .unwrap_or_default();
-                        self.report_pointing = Some(crate::app::report_point::Pointing::new(
-                            to.clone(),
-                            carried.clone(),
-                            window,
-                        ));
-                        self.layout.layout_dirty = true;
-                        continue;
+                    // Sending from the window goes through the workspace, Tilo's model's: without it
+                    // the shell's ask opens nothing.
+                    #[cfg(not(feature = "model"))]
+                    let _ = (to, pointing, carried);
+                    #[cfg(feature = "model")]
+                    {
+                        // The shell asks this window to send from its keyboard,
+                        // with no menu to carry a box: it opens alone, about what
+                        // the window has picked, to whom the shell named — the
+                        // people here, the one place a report goes — or else to a
+                        // new agent. Pointing
+                        // first: the window lights what is under the pointer and
+                        // the box opens about what they click.
+                        if *pointing {
+                            let window = self
+                                .window
+                                .shown_title
+                                .clone()
+                                .or_else(|| self.window.title.clone())
+                                .unwrap_or_default();
+                            self.report_pointing = Some(crate::app::report_point::Pointing::new(
+                                to.clone(),
+                                carried.clone(),
+                                window,
+                            ));
+                            self.layout.layout_dirty = true;
+                            continue;
+                        }
+                        self.report_pointing = None;
+                        let about =
+                            crate::shared_selection::subtree_selection(self.root_widget.as_ref());
+                        let bounds = about
+                            .as_ref()
+                            .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
+                        self.open_send_box(about, bounds, None, to, carried);
                     }
-                    self.report_pointing = None;
-                    let about =
-                        crate::shared_selection::subtree_selection(self.root_widget.as_ref());
-                    let bounds = about
-                        .as_ref()
-                        .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
-                    self.open_send_box(about, bounds, None, to, carried);
                 }
                 // What the shell says of windows shared live reaches the
                 // app's next sync, where it reads them
@@ -1628,6 +1642,7 @@ fn publishing_app<'a>(
 }
 
 impl App {
+    #[cfg(feature = "model")]
     /// What a box holds carries, as the session reads it: each subject as
     /// the record and part it names.
     #[cfg(feature = "native")]

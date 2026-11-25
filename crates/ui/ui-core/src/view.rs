@@ -87,12 +87,14 @@ impl View {
     }
 }
 
-#[cfg(feature = "model")]
+/// What `root` shows, as a [`View`]: its scroll and view mode, and the record it has open. Only
+/// Tilo's model opens a record, so without it a view names none.
 pub(crate) fn capture_widget_view_bound(
     root: &dyn crate::widget::Widget,
     focus: Option<FocusView>,
     viewport: ViewRect,
 ) -> View {
+    #[cfg(feature = "model")]
     let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
         return View {
             focus,
@@ -100,8 +102,11 @@ pub(crate) fn capture_widget_view_bound(
             ..View::default()
         };
     };
+    #[cfg(feature = "model")]
     let open_resource =
         crate::resource::capability::record_intent(root).map(|c| c.id.as_str().to_string());
+    #[cfg(not(feature = "model"))]
+    let open_resource = None;
     let contribution = crate::view::capability::view_state(root).unwrap_or_default();
     View {
         scroll: contribution.scroll,
@@ -122,8 +127,9 @@ pub(crate) fn capture_focus(
     })
 }
 
-#[cfg(feature = "model")]
+/// Restore `view`'s scroll and view mode onto `root`.
 pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, view: &View) {
+    #[cfg(feature = "model")]
     let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
         return;
     };

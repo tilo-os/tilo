@@ -1685,7 +1685,17 @@ impl App {
             && !self.layout.layout_dirty
             && !self.layout.structure_dirty
             && !self.semantic_tree_untracked()
-            && !self.actions.bound_resource_cache.outside_reads_moved()
+            && !self.bound_outside_reads_moved()
+    }
+
+    /// Whether a hosted component's resources read something outside its record that moved
+    /// since. Only Tilo's model hosts one.
+    fn bound_outside_reads_moved(&self) -> bool {
+        #[cfg(feature = "model")]
+        let moved = self.actions.bound_resource_cache.outside_reads_moved();
+        #[cfg(not(feature = "model"))]
+        let moved = false;
+        moved
     }
 
     /// Presentations the tree is read from without the widget, document and

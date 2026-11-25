@@ -59,9 +59,11 @@ impl Driver {
     /// meanwhile is taken by the frame's pump: whoever next lays the view out takes up what it
     /// brought.
     pub fn take_up_acted(&mut self) {
+        #[cfg(feature = "model")]
         let _ = self.app.dispatch_control_invocations();
         let _ = self.app.poll_model_invocations();
         self.tick_writes();
+        #[cfg(feature = "model")]
         if self.has_pending_owner_models()
             && let Err(error) = self.service_pending_owner_models()
         {

@@ -55,6 +55,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 pub use apps_a::{WindowBarNotice, WindowBarNoticeButton};
+#[cfg(feature = "model")]
 pub use palette::FollowedView;
 pub use wake::OwedSettle;
 #[cfg(feature = "model")]
@@ -558,7 +559,7 @@ impl Driver {
             }
             // What the peer answered during the frame (the broker's reply to a call the app
             // made) is taken up at once, as a window's next frame takes up a socket's.
-            if (!again || !self.app.unsettled()) && !self.peer_delivering() {
+            if (!again || !self.app.unsettled()) && !self.peer_holds_delivery() {
                 break;
             }
         }
@@ -723,8 +724,8 @@ impl Driver {
                 .presentation_roots()
                 .iter()
                 .any(|root| root.needs_redraw() || root.needs_animation_frame())
-            || self.peer_delivering()
-            || self.peer_owes_frame()
+            || self.peer_holds_delivery()
+            || self.peer_owes_app_frame()
             || self
                 .next_frame_deadline(now)
                 .is_some_and(|at| at <= now)
@@ -816,7 +817,6 @@ impl Driver {
         }
     }
 
-    #[cfg(feature = "model")]
     /// Offer the hosted component's store what the app changed and run the frame that shows it.
     /// Whether anything was written: false when no component is hosted.
     pub fn persist_tick(&mut self) -> bool {
@@ -840,6 +840,25 @@ impl Driver {
         #[cfg(not(feature = "model"))]
         let hosted = false;
         hosted
+    }
+
+    /// Whether the workspace peer holds something for the app it has not taken yet. Only Tilo's
+    /// model gives the driver a peer.
+    fn peer_holds_delivery(&self) -> bool {
+        #[cfg(feature = "model")]
+        let delivering = self.peer_delivering();
+        #[cfg(not(feature = "model"))]
+        let delivering = false;
+        delivering
+    }
+
+    /// Whether the workspace peer owes the app a frame.
+    fn peer_owes_app_frame(&self) -> bool {
+        #[cfg(feature = "model")]
+        let owes = self.peer_owes_frame();
+        #[cfg(not(feature = "model"))]
+        let owes = false;
+        owes
     }
 
     /// When the app next wants a frame with no input to bring one.
@@ -2496,6 +2515,7 @@ impl Driver {
         crate::widget::find_resource(self.app.root_widget.as_ref(), &self.app.state.doc, id)
     }
 
+    #[cfg(feature = "model")]
     /// Invoke the published action at `address` as the person at the surface, as the call sent
     /// again with their approve when `approval` holds it ([`Self::approval`]), then run the frame
     /// that shows it.
@@ -2597,6 +2617,7 @@ impl Driver {
         )
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::invoke_action`], and the answer of a call the app does not run now: it hands its
     /// peer the call first (an external effect crosses the workspace before it touches anything),
     /// and answers when the peer delivers it back. The frames that take up that answer run here,
@@ -2688,6 +2709,7 @@ impl Driver {
             })
     }
 
+    #[cfg(feature = "model")]
     /// Invoke `action` on the resource `resource` the app publishes, with JSON `arguments`, the
     /// way an agent's call reaches it, then run the frame that shows it.
     ///
@@ -2702,6 +2724,7 @@ impl Driver {
         self.call_resource(resource, action, arguments, false)
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::call_on`] as the call sent again once the person approved the asked record it was
     /// kept as ([`Self::approval`]).
     ///
@@ -2716,6 +2739,7 @@ impl Driver {
         self.call_resource(resource, action, arguments, true)
     }
 
+    #[cfg(feature = "model")]
     fn call_resource(
         &mut self,
         resource: &str,
@@ -2738,6 +2762,7 @@ impl Driver {
         started
     }
 
+    #[cfg(feature = "model")]
     /// Invoke the published action `action` of `resource`, without the person's approve.
     ///
     /// # Errors
@@ -2868,7 +2893,7 @@ impl Driver {
     #[must_use]
     pub fn controls_settled(&self) -> bool {
         !crate::widget::controls::has_pending_control_invocation(self.app.root_widget.as_ref())
-            && self.app.actions.bound_invocations.is_empty()
+            && !self.app.actions.bound_calls_running()
     }
 
     /// Why what was done last did not run, as the window says it at the control used: none when
@@ -2901,7 +2926,7 @@ impl Driver {
         &mut self,
         transport: Box<dyn tilo_actions::ActionTransport>,
     ) -> Result<(), String> {
-        if !self.app.actions.bound_invocations.is_empty() {
+        if self.app.actions.bound_calls_running() {
             return Err("cannot replace transport while actions are pending".into());
         }
         self.app.set_action_transport(transport);
@@ -3019,6 +3044,7 @@ impl Driver {
 
 // A mounted component, called the way an agent calls it.
 impl Driver {
+    #[cfg(feature = "model")]
     /// Invoke `address` with `arguments` as the person at the surface.
     ///
     /// # Errors
@@ -3031,6 +3057,7 @@ impl Driver {
         self.invoke_action(address, &arguments, None)
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::call`] once the person allowed this exact request: it comes back with their
     /// approve, as the device sends it again.
     ///
@@ -3178,8 +3205,25 @@ impl Driver {
         Ok(())
     }
 
+    /// What `invocation` names is a published action, and only Tilo's model dispatches those.
+    #[cfg(not(feature = "model"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "the model's build of this step invokes through the driver"
+    )]
+    fn perform_invocation(
+        &mut self,
+        invocation: &crate::headless::Invocation,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        Err(format!(
+            "{}#{}: invoking a published action needs Tilo's model",
+            invocation.resource, invocation.action
+        ))
+    }
+
     /// Invoke what `invocation` names; what a completed action returned (`None` when it runs on or
     /// was refused as expected).
+    #[cfg(feature = "model")]
     fn perform_invocation(
         &mut self,
         invocation: &crate::headless::Invocation,

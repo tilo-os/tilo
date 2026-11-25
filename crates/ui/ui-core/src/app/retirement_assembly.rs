@@ -11,6 +11,7 @@ use super::{
     CollaborationManager, CollaborationRuntime, ContinuationRuntime, HistoryRuntime,
     PermissionContext, PresenceRuntime,
 };
+#[cfg(feature = "model")]
 use crate::semantic_document_read::retirement::RootRetirementPrelude;
 
 #[cfg(feature = "model")]
@@ -29,6 +30,7 @@ impl Drop for ComponentAssemblyOwnership {
 }
 
 pub(super) struct AppAssemblyOwnership {
+    #[cfg(feature = "model")]
     pub retirement: Option<RootRetirementPrelude>,
     pub root: Option<Box<dyn Widget>>,
     pub wake: Option<crate::wake::WakeScope>,
@@ -44,7 +46,10 @@ pub(super) struct AppAssemblyOwnership {
     pub values: AppAssemblyValues,
 }
 impl AppAssemblyOwnership {
+    /// Retire the semantic root a hosted component brought; a window without Tilo's model hosts
+    /// none.
     pub fn retire(&self) {
+        #[cfg(feature = "model")]
         if let Some(retirement) = &self.retirement {
             retirement.retire();
         }
@@ -133,12 +138,15 @@ pub(super) struct AppAssemblyValues {
     pub floating: Option<Box<FloatingRuntime>>,
 }
 
+#[cfg(feature = "model")]
 pub(super) struct ValidationRetirement<'a>(pub &'a Option<RootRetirementPrelude>, pub bool);
+#[cfg(feature = "model")]
 impl ValidationRetirement<'_> {
     pub fn disarm(mut self) {
         self.1 = false;
     }
 }
+#[cfg(feature = "model")]
 impl Drop for ValidationRetirement<'_> {
     fn drop(&mut self) {
         if self.1 {
@@ -342,10 +350,12 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         unreachable!("App assembly owns all inputs");
     };
     let wake_scope = assembly.wake.take();
+    #[cfg(feature = "model")]
     let retirement = assembly.retirement.take();
     // Boxed where it is built: an app is tens of kilobytes, and each caller that moved it by value
     // held another copy on its stack.
     let mut app = Box::new(App {
+        #[cfg(feature = "model")]
         retirement,
         #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
         startup_renderer,

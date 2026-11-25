@@ -45,6 +45,7 @@ impl App {
         if let Some(next) = self.actions.resource_generation.get().checked_add(1) {
             self.actions.resource_generation.set(next);
         }
+        #[cfg(feature = "model")]
         self.retire_action_directory();
         self.actions.resource_cache.get_mut().take();
         self.actions.local_resource_cache.get_mut().take();
@@ -323,6 +324,7 @@ impl App {
         // Shared chrome invokes APIs served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
         let mut host_resources = vec![crate::widget::search_request::search_resource()];
+        #[cfg(feature = "model")]
         if let Some(history) = &self.history {
             host_resources.push(history.api_resource());
         }
@@ -2756,6 +2758,7 @@ impl App {
         self.actions.action_palette = None;
     }
 
+    #[cfg(feature = "model")]
     /// Run `f` on the root of the app component this window shows, inside
     /// that component's own frame: for a test, or a host, reaching into the
     /// mounted app between frames. `None` without a mounted component.

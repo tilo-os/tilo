@@ -99,7 +99,11 @@ impl PartRowHost for App {
     }
 
     fn open_app_search(&mut self, request: SearchRequest) {
+        // The window's search is Tilo's model's action palette: without it there is none to open.
+        #[cfg(feature = "model")]
         self.open_search(request);
+        #[cfg(not(feature = "model"))]
+        let _ = request;
     }
 
     fn search_drove(&mut self) {

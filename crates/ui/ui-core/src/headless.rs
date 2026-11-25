@@ -34,9 +34,11 @@ pub use crate::app::driver::frame::{
 pub use crate::app::driver::metrics::RelayoutStats;
 pub use crate::app::driver::viewport;
 
+#[cfg(feature = "model")]
+pub use crate::app::driver::FollowedView;
 pub use crate::app::driver::{
-    Driver, DriverInputs, FollowedView, FrameOptions, Framed, OwedSettle, WINDOW_PARTS,
-    WindowBarNotice, WindowBarNoticeButton,
+    Driver, DriverInputs, FrameOptions, Framed, OwedSettle, WINDOW_PARTS, WindowBarNotice,
+    WindowBarNoticeButton,
 };
 
 pub use crate::app::driver::chrome::SidebarShown;

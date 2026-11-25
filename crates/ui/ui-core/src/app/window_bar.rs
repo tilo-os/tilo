@@ -244,7 +244,8 @@ impl App {
             &self.state.root,
         );
         // A part bound to an action runs it as a control invocation, as a frame's sync does.
-        self.dispatch_control_invocations();
+        #[cfg(feature = "model")]
+        let _ = self.dispatch_control_invocations();
     }
 
     /// Hand the app an event about its own parts

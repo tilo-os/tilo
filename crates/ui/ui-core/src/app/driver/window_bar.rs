@@ -90,6 +90,7 @@ impl Driver {
 
     /// The window's title, which names its bar: the app's.
     fn window_title(&self) -> String {
+        #[cfg(feature = "model")]
         if let Some(bound) = self
             .app
             .root_widget

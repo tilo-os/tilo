@@ -79,8 +79,27 @@ impl App {
         })
     }
 
-    /// Push what the bound components' controls may run into them.
+    /// Push what the bound components' controls may run into them. Only Tilo's model hosts a
+    /// component whose controls follow permissions of its own.
     fn refresh_bound_control_availability(
+        &mut self,
+        history_api: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) -> BoundAvailability {
+        #[cfg(feature = "model")]
+        let bound = self.project_bound_control_availability(history_api);
+        #[cfg(not(feature = "model"))]
+        let bound = {
+            let _ = history_api;
+            BoundAvailability {
+                unread: false,
+                changes_at: None,
+            }
+        };
+        bound
+    }
+
+    #[cfg(feature = "model")]
+    fn project_bound_control_availability(
         &mut self,
         history_api: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> BoundAvailability {

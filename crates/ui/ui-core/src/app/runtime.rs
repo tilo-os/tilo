@@ -479,6 +479,7 @@ pub(super) struct ActionRuntime {
     #[cfg(feature = "model")]
     pub(super) local_document_directory_pins:
         Vec<std::rc::Weak<super::action_directory_snapshot::LocalDocumentDirectoryPin>>,
+    #[cfg(feature = "model")]
     pub(super) bound_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
@@ -497,6 +498,7 @@ pub(super) struct ActionRuntime {
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
     pub(super) action_surface_owed: bool,
+    #[cfg(feature = "model")]
     /// What the last publication was derived from
     /// ([`super::model_lifecycle::PublicationStamp`]); `None` when it cannot
     /// be shown current.
@@ -516,8 +518,10 @@ pub(super) struct ActionRuntime {
         tilo_actions::InvocationId,
         crate::invocation_scope::Continuation,
     >,
+    #[cfg(feature = "model")]
     /// The person's presses waiting for what they change to arrive from the workspace.
     pub(super) waiting_controls: Vec<crate::app_core::WaitingControl>,
+    #[cfg(feature = "model")]
     /// Each edit an effect submitted for its invoker that the host is still
     /// admitting, by broker request, to the effect invocation it continues and the control it
     /// came from.
@@ -528,6 +532,7 @@ pub(super) struct ActionRuntime {
     /// Each invocation of another provider's action a control here is bound
     /// to that the provider is still answering, by broker request.
     pub(super) hosted_requests: std::collections::HashSet<u64>,
+    #[cfg(feature = "model")]
     /// Resolutions asked for a resource still being read, answered once its
     /// read lands ([`crate::widget::resources::PublishesResources::resource_pending`]).
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
@@ -581,6 +586,15 @@ pub(super) struct HeldOwnInvocation {
 }
 
 impl ActionRuntime {
+    /// Whether a call of a hosted component's action still runs. Only Tilo's model hosts one.
+    pub(super) fn bound_calls_running(&self) -> bool {
+        #[cfg(feature = "model")]
+        let running = !self.bound_invocations.is_empty();
+        #[cfg(not(feature = "model"))]
+        let running = false;
+        running
+    }
+
     pub(super) fn new() -> Self {
         Self {
             #[cfg(feature = "model")]
@@ -618,6 +632,7 @@ impl ActionRuntime {
             action_directory_borrowed: None,
             #[cfg(feature = "model")]
             local_document_directory_pins: Vec::new(),
+            #[cfg(feature = "model")]
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
             open_resource_search_cache: RefCell::new(None),
@@ -629,6 +644,7 @@ impl ActionRuntime {
             #[cfg(feature = "model")]
             published_surface: None,
             action_surface_owed: false,
+            #[cfg(feature = "model")]
             published_stamp: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
@@ -637,9 +653,12 @@ impl ActionRuntime {
             directed_invocations: std::collections::HashMap::new(),
             #[cfg(feature = "model")]
             acting_for: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
             waiting_controls: Vec::new(),
+            #[cfg(feature = "model")]
             follow_ups: std::collections::HashMap::new(),
             hosted_requests: std::collections::HashSet::new(),
+            #[cfg(feature = "model")]
             awaited_resolutions: Vec::new(),
             held_answers: Vec::new(),
             answers_await_route: false,
