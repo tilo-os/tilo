@@ -109,6 +109,9 @@ mod cases {
         }
     }
 
+    /// The record each job was handed, by its id.
+    type JobRecords = Vec<(String, Arc<dyn Push>)>;
+
     /// The device's location and tiles work, as the maps engine answers it: what was asked, what
     /// the area downloads were given, and the record each job pushes.
     #[derive(Clone, Default)]
@@ -119,7 +122,7 @@ mod cases {
         /// The jobs started, each its id and the ask it was given.
         started: Rc<RefCell<Vec<(String, String)>>>,
         /// The record each job was handed, by its id.
-        pushes: Rc<RefCell<Vec<(String, Arc<dyn Push>)>>>,
+        pushes: Rc<RefCell<JobRecords>>,
         /// The jobs the app stopped.
         cancelled: Rc<RefCell<Vec<String>>>,
     }
@@ -157,6 +160,22 @@ mod cases {
                 .expect("the job was handed its record");
             push.ended(job, &record.to_string());
         }
+
+        /// The job `app` starts for `op`, recorded with the ask it was given and the record it
+        /// was handed: its id.
+        fn start_job(&self, app: &str, op: &str, input: &str, push: Arc<dyn Push>) -> String {
+            assert_eq!(app, "so.tilo.maps");
+            assert_eq!(op, "save-area");
+            let job = format!(
+                "save-area-{}",
+                self.started.borrow().len().saturating_add(1)
+            );
+            self.started
+                .borrow_mut()
+                .push((job.clone(), input.to_owned()));
+            self.pushes.borrow_mut().push((job.clone(), push));
+            job
+        }
     }
 
     impl EngineHost for Engine {
@@ -188,13 +207,7 @@ mod cases {
             input: &str,
             push: Arc<dyn Push>,
         ) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.maps");
-            assert_eq!(op, "save-area");
-            let job = format!("save-area-{}", self.started.borrow().len() + 1);
-            self.started
-                .borrow_mut()
-                .push((job.clone(), input.to_owned()));
-            self.pushes.borrow_mut().push((job.clone(), push));
+            let job = self.start_job(app, op, input, push);
             Ok(serde_json::json!({ "job": job }).to_string())
         }
 
@@ -788,15 +801,22 @@ mod cases {
             "stop_offline_area",
             vec![Value::resource(&m.root), Value::Text("This view".to_owned())],
         );
-        assert_eq!(m.engine.cancelled.borrow().as_slice(), [job.clone()]);
+        assert_eq!(
+            m.engine.cancelled.borrow().as_slice(),
+            std::slice::from_ref(&job)
+        );
         assert!(m.flag(&area, "stopped"));
         m.engine.ends(
             &job,
             &serde_json::json!({"state": "cancelled", "saved": 5, "total": 100}),
         );
         assert_eq!(m.rt.finish_jobs().len(), 1, "the job's `done:` ran");
-        assert_eq!(m.float(&area, "done"), 5.0, "what it got before the stop stays");
-        assert_eq!(m.float(&area, "tiles"), 100.0);
+        assert_eq!(
+            m.float(&area, "done").to_bits(),
+            5.0_f64.to_bits(),
+            "what it got before the stop stays"
+        );
+        assert_eq!(m.float(&area, "tiles").to_bits(), 100.0_f64.to_bits());
         assert!(m.text(&m.root, "status").contains("stay available offline"));
         // A stopped area's row offers the download again, which starts a new job for the rest.
         m.call(
@@ -812,7 +832,7 @@ mod cases {
             &serde_json::json!({"state": "done", "saved": 100, "total": 100}),
         );
         assert_eq!(m.rt.finish_jobs().len(), 1);
-        assert_eq!(m.float(&area, "done"), 100.0);
+        assert_eq!(m.float(&area, "done").to_bits(), 100.0_f64.to_bits());
         assert_eq!(
             m.text(&m.root, "status"),
             "Offline area ready (100 tiles)"

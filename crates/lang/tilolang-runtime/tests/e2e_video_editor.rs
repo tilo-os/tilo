@@ -30,6 +30,10 @@ mod cases {
     /// A stream the device was handed: its job, and where the test says the play has got to.
     type Stream = (String, std::sync::Arc<dyn Push>);
 
+    /// What the device measures a mix at, when a test says it clips: how far over full scale,
+    /// and where.
+    type Over = Option<(f64, Vec<f64>)>;
+
     #[derive(Clone, Default)]
     struct Engine {
         asked: Rc<RefCell<Vec<(String, String)>>>,
@@ -44,7 +48,7 @@ mod cases {
         live: Rc<RefCell<Vec<String>>>,
         /// What this device measures the cut's mix at, when a test says it clips: how far over
         /// full scale, and where.
-        over: Rc<RefCell<Option<(f64, Vec<f64>)>>>,
+        over: Rc<RefCell<Over>>,
     }
 
     impl Engine {
@@ -1455,12 +1459,20 @@ mod cases {
             s.call("set_look", vec![Value::resource(&clip), scale, Value::Float(0.5)]);
             let crop = look_case(&s, "crop_left");
             s.call("set_look", vec![Value::resource(&clip), crop, Value::Float(0.2)]);
-            assert_eq!(s.number(&clip, "scale_x"), 0.5);
-            assert_eq!(s.number(&clip, "crop_left"), 0.2);
+            assert_eq!(s.number(&clip, "scale_x").to_bits(), 0.5_f64.to_bits());
+            assert_eq!(s.number(&clip, "crop_left").to_bits(), 0.2_f64.to_bits());
             s.call("fill_frame", vec![Value::resource(&clip)]);
-            assert_eq!(s.number(&clip, "scale_x"), 1.0, "the picture as it comes");
-            assert_eq!(s.number(&clip, "crop_left"), 0.0, "no crop");
-            assert_eq!(s.number(&clip, "pos_x"), 0.0);
+            assert_eq!(
+                s.number(&clip, "scale_x").to_bits(),
+                1.0_f64.to_bits(),
+                "the picture as it comes"
+            );
+            assert_eq!(
+                s.number(&clip, "crop_left").to_bits(),
+                0.0_f64.to_bits(),
+                "no crop"
+            );
+            assert_eq!(s.number(&clip, "pos_x").to_bits(), 0.0_f64.to_bits());
             // Nothing left to take back, the action refuses rather than pretending it did
             // something.
             let again = s.try_call("fill_frame", vec![Value::resource(&clip)]);
@@ -1506,7 +1518,11 @@ mod cases {
             let (p, _, _) = s.placed();
             *s.engine.over.borrow_mut() = Some((6.0, vec![3.0, 7.5]));
             s.call("check_mix", vec![Value::resource(&p)]);
-            assert_eq!(s.number(&p, "over_db"), 6.0, "how far over full scale");
+            assert_eq!(
+                s.number(&p, "over_db").to_bits(),
+                6.0_f64.to_bits(),
+                "how far over full scale"
+            );
             assert_eq!(s.numbers(&p, "clips_at"), vec![3.0, 7.5], "and where");
         }
 
@@ -1520,7 +1536,11 @@ mod cases {
             );
             s.engine.heard("live-1", 4.0, 4.5, &[3.0]);
             s.call("hear_mix", vec![Value::resource(&p)]);
-            assert_eq!(s.number(&p, "over_db"), 4.5, "what the play has heard so far");
+            assert_eq!(
+                s.number(&p, "over_db").to_bits(),
+                4.5_f64.to_bits(),
+                "what the play has heard so far"
+            );
             assert_eq!(s.numbers(&p, "clips_at"), vec![3.0]);
             let at = s.call("live_at", vec![Value::resource(&p)]);
             assert!(
@@ -1557,7 +1577,11 @@ mod cases {
             assert_eq!(number_state(&window, "playhead"), Some(3.0));
             let ask: serde_json::Value =
                 serde_json::from_str(&s.engine.input_of("still")).expect("the still's ask");
-            assert_eq!(json_number(&ask, "at"), 3.0, "the frame where it clipped");
+            assert_eq!(
+                json_number(&ask, "at").to_bits(),
+                3.0_f64.to_bits(),
+                "the frame where it clipped"
+            );
             // Pressing again goes to the next place, and then round to the first.
             let again = window.fire_with(&key, "press", None);
             assert!(matches!(again, Ok(InvokeOutcome::Done(_))), "{again:?}");
@@ -1584,9 +1608,17 @@ mod cases {
             *s.engine.over.borrow_mut() = None;
             s.call("trim_tracks", vec![Value::resource(&p), Value::Float(over)]);
             for track in &tracks {
-                assert_eq!(gain(track), -6.0, "every track comes down by the same amount");
+                assert_eq!(
+                    gain(track).to_bits(),
+                    (-6.0_f64).to_bits(),
+                    "every track comes down by the same amount"
+                );
             }
-            assert_eq!(s.number(&p, "over_db"), 0.0, "the trim measures the mix it made");
+            assert_eq!(
+                s.number(&p, "over_db").to_bits(),
+                0.0_f64.to_bits(),
+                "the trim measures the mix it made"
+            );
             assert!(s.numbers(&p, "clips_at").is_empty());
             let nothing = s.try_call("trim_tracks", vec![Value::resource(&p), Value::Float(0.0)]);
             assert!(nothing.is_err(), "a trim of nothing is refused: {nothing:?}");
@@ -1627,7 +1659,7 @@ mod cases {
             );
             // Bypassed, mixed out, and back to the straight line.
             s.call("set_curve_mix", vec![Value::resource(&clip), Value::Float(0.0)]);
-            assert_eq!(s.number(&clip, "curve_mix"), 0.0);
+            assert_eq!(s.number(&clip, "curve_mix").to_bits(), 0.0_f64.to_bits());
             s.call("reset_curve", vec![Value::resource(&clip), Value::text("red")]);
             assert!(s.numbers(&clip, "curve_red").is_empty(), "the straight line");
         }

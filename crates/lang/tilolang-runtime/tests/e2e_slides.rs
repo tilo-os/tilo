@@ -412,7 +412,7 @@ mod cases {
             "move_element_to",
             vec![
                 Value::resource(&slide),
-                Value::text(&rect.id_string()),
+                Value::text(rect.id_string()),
                 Value::List(vec![Value::Int(320), Value::Int(64)]),
             ],
         );
@@ -629,7 +629,7 @@ mod cases {
         );
         let pin = pins
             .iter()
-            .find(|pin| pin.props.get("item") == Some(&Value::text(&added.id_string())))
+            .find(|pin| pin.props.get("item") == Some(&Value::text(added.id_string())))
             .expect("the element just added stands on the stage");
         assert_eq!(
             pin.props.get("x"),
@@ -818,6 +818,8 @@ mod cases {
 
     #[test]
     fn a_new_text_box_is_the_one_that_takes_the_keyboard() {
+        use tilolang_runtime::{BindTarget, Binding};
+
         let s = Slides::new();
         let mut view = s.window();
         // The insert tool the deck's window draws: the deck calls its tools row inside the
@@ -834,7 +836,7 @@ mod cases {
         let made = elements.last().expect("the press made a box");
         assert_eq!(
             view.view_state("chosen"),
-            Some(Value::text(&made.id_string())),
+            Some(Value::text(made.id_string())),
             "the box the press made is the chosen one"
         );
         assert_eq!(
@@ -845,7 +847,6 @@ mod cases {
 
         // The box it made is the editor the keyboard lands in: the editor the stage places on
         // the slide, bound to that box's words, asks for the keyboard as it is built.
-        use tilolang_runtime::{BindTarget, Binding};
         let mut editors = Vec::new();
         of_kind(view.tree(), "ui.BlockEditor", &mut editors);
         let editor = editors
@@ -906,7 +907,7 @@ mod cases {
         // The stage's select carries the place's item and the page point it was pressed at,
         // as the parts the event declares.
         let chosen_at = Value::List(vec![
-            Value::text(&empty.id_string()),
+            Value::text(empty.id_string()),
             Value::List(vec![Value::Int(120), Value::Int(420)]),
         ]);
         view.fire_with(&stage, "select", Some(&chosen_at)).unwrap();
@@ -941,7 +942,7 @@ mod cases {
         // A box with words is only chosen by the first click: the person aims at a word with
         // the next one, or with Enter.
         let chosen_at = Value::List(vec![
-            Value::text(&title.id_string()),
+            Value::text(title.id_string()),
             Value::List(vec![Value::Int(96), Value::Int(110)]),
         ]);
         view.fire_with(&stage, "select", Some(&chosen_at)).unwrap();
@@ -1373,7 +1374,7 @@ mod cases {
         write(&second, "the second slide's words");
 
         let mut view = s.window();
-        view.set_view_state("current", Value::text(&second.id_string()));
+        view.set_view_state("current", Value::text(second.id_string()));
         view.poll_patches().unwrap();
         assert_eq!(
             notes_binders(&view, &second),
@@ -1426,7 +1427,7 @@ mod cases {
         assert_eq!(notes_binders(&view, &first), 1);
         assert_eq!(notes_binders(&view, &second), 0);
 
-        view.set_view_state("current", Value::text(&second.id_string()));
+        view.set_view_state("current", Value::text(second.id_string()));
         view.poll_patches().unwrap();
         assert_eq!(
             notes_binders(&view, &second),

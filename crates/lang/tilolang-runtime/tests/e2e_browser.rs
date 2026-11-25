@@ -145,7 +145,7 @@ mod cases {
 
     impl Device {
         /// The job `job` now stands as `state` says.
-        fn job_stands(&self, job: &str, state: Json) {
+        fn job_stands(&self, job: &str, state: &Json) {
             let mut standing = json!({"state": "running", "done": 0, "total": 0, "path": "",
                 "name": "", "error": ""});
             for (field, value) in state.as_object().expect("a job's fields") {
@@ -175,7 +175,7 @@ mod cases {
             ));
             let job = format!("browser-{}", started.len());
             drop(started);
-            self.job_stands(&job, json!({}));
+            self.job_stands(&job, &json!({}));
             Ok(json!({ "job": job }).to_string())
         }
 
@@ -471,7 +471,7 @@ mod cases {
         );
 
         b.device
-            .job_stands("browser-1", json!({"done": 2048, "total": 8192}));
+            .job_stands("browser-1", &json!({"done": 2048, "total": 8192}));
         let view = b.page_view();
         assert_eq!(row_secondary(&view, "report.pdf"), "2.0 KB of 8.1 KB");
         let bar = of_kind(view.tree(), "ui.ProgressBar");
@@ -506,7 +506,7 @@ mod cases {
         );
         b.device.job_stands(
             "browser-1",
-            json!({"state": "failed", "error": "example.org no longer has this file (404)"}),
+            &json!({"state": "failed", "error": "example.org no longer has this file (404)"}),
         );
         let view = b.page_view();
         assert_eq!(
@@ -617,7 +617,7 @@ mod cases {
         );
         b.device.job_stands(
             "browser-1",
-            json!({"state": "done", "done": 8192, "total": 8192,
+            &json!({"state": "done", "done": 8192, "total": 8192,
                 "path": "/home/ada/Downloads/report 2.pdf", "name": "report 2.pdf"}),
         );
         let view = b.page_view();
@@ -651,7 +651,7 @@ mod cases {
             ],
         );
         b.device
-            .job_stands("browser-1", json!({"done": 1_000_000, "total": 0}));
+            .job_stands("browser-1", &json!({"done": 1_000_000, "total": 0}));
         let made = Browser::call(
             &b.app,
             &b.rt,
