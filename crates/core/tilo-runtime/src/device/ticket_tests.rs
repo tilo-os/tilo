@@ -963,9 +963,17 @@ async fn issuing() -> Issuing {
 /// to approve it, which is the one way a fresh installation adds its first computers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_act() {
+    // The person is the one this account founded here: their root is kept for this account
+    // alone, where a ticket issued as their own act is signed with it.
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    home.env()
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let account = rustix::process::geteuid().as_raw();
     let workspace = tilo_desktop_model::WorkspaceId::new();
     let (issuer, state, issuer_key, issuer_cert, _paths) =
-        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+        super::workspaces::ServiceWorkspaces::test_of_account_person(account).await;
+    issuer.found(workspace, "Home").await.unwrap();
+    let root = super::services::account_identity_dir(account).unwrap();
     let place = tilo_device_identity::login::Place::at(
         state.path().join("issuer"),
         tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
@@ -975,7 +983,7 @@ async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_a
         (issuer_key.clone(), issuer_cert.clone()),
         issuer.endpoint(),
         None,
-        root_in(state.path().to_path_buf()),
+        root_in(root),
         Some(FirstWorkspace::founded(Arc::clone(&issuer), workspace)),
         Some(Arc::clone(&issuer)),
         place,
