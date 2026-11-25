@@ -54,6 +54,11 @@ pub(super) struct OriginalInvocationData {
     execution: Option<tilo_actions::remote::ExecutionLease>,
 }
 impl OriginalInvocationData {
+    /// The app the invocation was delivered to, and the resource its action acts on.
+    pub(super) fn acts_on(&self) -> (&str, &str) {
+        (&self.route.app_id, &self.request.address.resource)
+    }
+
     pub(super) fn display_caller(
         self: &Arc<Self>,
         state: &Arc<AppBrokerState>,
