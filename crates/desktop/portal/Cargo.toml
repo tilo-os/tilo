@@ -39,7 +39,7 @@ tilo-content-types = { path = "../../core/content-types" }
 tilo-wallpapers = { path = "../tilo-wallpapers" }
 # App master secrets: the device proof the Secret Service asks of its
 # managers.
-tilo-secrets = { path = "../../platform/tilo-secrets" }
+tilo-secrets = { path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 hex.workspace = true
 # Print jobs go to `lp` as argv, bounded in time and output.
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }

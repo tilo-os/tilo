@@ -457,11 +457,13 @@ impl Workspaces {
             .and_then(|facts| ItemRef::from_id(facts.id.as_str())))
     }
 
-    /// Answer `app`'s held connection the reference of the item tagged for the app and purpose
+    /// Answer `app`'s connection the reference of the item tagged for the app and purpose
     /// `request` names ([`person_vault::FIND`]): the item a secret the app was moved to is kept
-    /// as. It reads the vault and releases nothing, so its person is not asked; a release of the
-    /// item afterwards is, and names the asking app. Every process that is not the app's held
-    /// connection is refused as a release's is.
+    /// as. The app is the connection's, never the one the request names, so a call cannot read
+    /// another app's tags. It reads the vault and releases nothing, so its person is not asked; a
+    /// release of the item afterwards is, and names the asking app. Every process that is not the
+    /// app's held connection is refused as a release's is, but the tilolang process of the app's
+    /// own instances, which is answered only what the app kept itself.
     ///
     /// # Errors
     /// Refused for a process no turn placed here, a connection another device holds, and a device
@@ -472,15 +474,32 @@ impl Workspaces {
         process: &AppProcess,
         request: &InvokeRequest,
     ) -> Result<Found, ActionCallError> {
-        self.held_connection((app, workspace), process).await?;
+        let tilolang = self.keeps_own_secrets((app, workspace), process).await?;
         let looking: person_vault::FindItem = super::person_vault::argument(
             request,
-            "an item to find names the app and the purpose it was tagged for",
+            "an item to find names the purpose it was tagged for",
         )?;
-        let reference = self
-            .item_tagged(workspace, &looking.app, &looking.purpose)
+        let mut reference = self
+            .item_tagged(workspace, app, &looking.purpose)
             .await
             .map_err(ActionCallError::refused)?;
+        if tilolang && let Some(found) = &reference {
+            let id = ItemId::parse(found.id())
+                .ok_or_else(|| ActionCallError::refused(not_kept_by_the_app(app)))?;
+            let own = self
+                .open_vault(workspace)
+                .await
+                .map_err(|why| ActionCallError::refused(device_may_not_read(app, &why)))?
+                .items()
+                .facts()
+                .into_iter()
+                .find(|facts| facts.id == id)
+                .is_some_and(|facts| kept_by_app(&facts, app));
+            if !own {
+                // Its own process is answered only its own; it has kept nothing here.
+                reference = None;
+            }
+        }
         Ok(Found { reference })
     }
 

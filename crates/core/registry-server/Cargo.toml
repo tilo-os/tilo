@@ -21,6 +21,8 @@ path = "src/main.rs"
 # of scope — deployments put the server behind nginx or Caddy.
 
 [dependencies]
+# The host keychain its secrets and device proofs live in: a process with no app connection.
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-paths.workspace = true
@@ -79,3 +81,8 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# `tilo-secrets` is named for its `host-keyring` feature alone: the feature links the process's
+# keychain backend, and no line of this crate calls the store itself.
+ignored = ["tilo-secrets"]

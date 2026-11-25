@@ -19,9 +19,7 @@ const SERVICE_PATH: &str = "/org/freedesktop/secrets";
 const DEFAULT_COLLECTION: &str = "/org/freedesktop/secrets/aliases/default";
 
 mod chromium;
-mod portal;
 pub(crate) use chromium::read_chromium;
-pub(crate) use portal::PortalStore;
 
 type WireSecret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
 

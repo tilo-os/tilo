@@ -12,6 +12,8 @@ description = "NetworkManager secret agent: asks in a sheet its host draws"
 test-support = ["dep:tracing-subscriber", "tokio/net", "zbus/p2p"]
 
 [dependencies]
+# The host keychain its secrets and device proofs live in: a process with no app connection.
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Re-registers with a restarted NetworkManager from its name-owner stream.
 futures-util.workspace = true
@@ -47,3 +49,8 @@ zbus = { workspace = true, features = ["p2p", "tokio"] }
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# `tilo-secrets` is named for its `host-keyring` feature alone: the feature links the process's
+# keychain backend, and no line of this crate calls the store itself.
+ignored = ["tilo-secrets"]

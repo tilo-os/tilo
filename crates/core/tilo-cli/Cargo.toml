@@ -13,6 +13,8 @@ name = "tilo"
 path = "src/main.rs"
 
 [dependencies]
+# The host keychain its secrets and device proofs live in: a process with no app connection.
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 # Everything here drives tools the image already carries — bootc, bootctl,
 # systemctl, and /usr/libexec/tilo-deployment. Nothing links against a system
 # library, so this builds on a host with no development headers, which is the
@@ -125,3 +127,8 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# `tilo-secrets` is named for its `host-keyring` feature alone: the feature links the process's
+# keychain backend, and no line of this crate calls the store itself.
+ignored = ["tilo-secrets"]

@@ -5,6 +5,11 @@
 //! Everything else, and a
 //! passphrase no roaming store took, goes to the network secrets vault: one
 //! `secret-vault` file whose key the Secret Service holds.
+//!
+//! Its key stays in the operating system's keyring rather than a workspace's vault on purpose: this
+//! agent is the machine's network service. NetworkManager asks it for a connection's secrets before
+//! anyone is signed in, with no app's held connection to the daemon that keeping a vault item
+//! needs, so the key has to be one the login that owns the machine can open by itself.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

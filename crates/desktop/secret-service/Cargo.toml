@@ -57,7 +57,7 @@ tilo-identity = { path = "../../core/tilo-identity" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
 tilo-secret-vault = { path = "../../core/secret-vault" }
 # The client half of the device-identity proof a non-dumpable caller makes.
-tilo-secrets = { path = "../../platform/tilo-secrets" }
+tilo-secrets = { path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 

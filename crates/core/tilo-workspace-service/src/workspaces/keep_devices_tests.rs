@@ -151,3 +151,79 @@ async fn a_secret_an_app_keeps_on_one_device_is_its_own_on_the_persons_other_dev
         "nobody was asked"
     );
 }
+
+/// The app's own tilolang process both keeps a secret and finds it again on the same device: the
+/// Rust host keeps a token it obtained and reads it back later, over the same connection.
+#[tokio::test]
+async fn an_apps_own_process_finds_the_item_it_kept_and_reads_it_back() {
+    let one = tempfile::tempdir().unwrap();
+    let laptop = device_cert(
+        &SigningKey::from_bytes(&[2; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    );
+    let (desktop, _laptop, created, _invitation) =
+        shared_with(one.path(), "Kept", 62, laptop).await;
+    let workspace = created.workspace;
+    let keeping = request(
+        person_vault::keep_target(),
+        InvokeArgument::Json(
+            json!({"purpose": "bot-token", "value": TOKEN})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        ),
+    );
+    let kept = desktop
+        .workspaces()
+        .keep_for((BRIDGE, &workspace), &AppProcess::OwnTilolang, &keeping)
+        .await
+        .expect("the bridge keeps its token");
+    let finding = |purpose: &str| {
+        request(
+            person_vault::target(person_vault::FIND),
+            InvokeArgument::Json(
+                json!({"app": BRIDGE, "purpose": purpose})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+    };
+    let found = desktop
+        .workspaces()
+        .find_tagged(
+            (BRIDGE, &workspace),
+            &AppProcess::OwnTilolang,
+            &finding("bot-token"),
+        )
+        .await
+        .expect("its own process finds what it kept");
+    assert_eq!(found.reference, Some(kept.reference.clone()));
+    assert_eq!(
+        desktop
+            .workspaces()
+            .find_tagged(
+                (BRIDGE, &workspace),
+                &AppProcess::OwnTilolang,
+                &finding("nothing-kept")
+            )
+            .await
+            .expect("a purpose it kept nothing for")
+            .reference,
+        None
+    );
+    let released = desktop
+        .workspaces()
+        .release_to(
+            (BRIDGE, &workspace),
+            &AppProcess::OwnTilolang,
+            &request(
+                person_vault::release_target(&kept.reference),
+                InvokeArgument::None,
+            ),
+        )
+        .await
+        .expect("its own process reads back what it kept");
+    assert_eq!(released.secret, TOKEN);
+}

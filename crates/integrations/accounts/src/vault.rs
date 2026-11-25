@@ -18,7 +18,11 @@
 //! [`SecretVault::open`] holds the key in the platform's secret store
 //! (`tilo-secrets`: the Secret Service on Linux, the Keychain on macOS) where
 //! one answers, and otherwise in an owner-only `vault.key` beside the
-//! ciphertext. An owner-only key left by that fallback migrates into the
+//! ciphertext. In an app process, that store is the workspace's vault: the key
+//! is an item the app keeps (`vault#keep`), found and released back to it over
+//! the connection its launcher handed it, so the person's other devices open
+//! the same account vault. A host process keeps it in the operating system's
+//! keychain. An owner-only key left by that fallback migrates into the
 //! secret store once it answers, after a verified round trip.
 //! [`SecretVault::open_in`] opens a store of someone else's root (a capture,
 //! an imported copy, a test's) under its own private key, so such a store

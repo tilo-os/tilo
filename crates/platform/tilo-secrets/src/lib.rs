@@ -55,12 +55,14 @@ mod credential;
 mod device_proof;
 #[cfg(unix)]
 mod files;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "host-keyring"))]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "host-keyring"))]
 pub mod owner_migration;
+#[cfg(target_os = "linux")]
+mod vault;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;
 #[cfg(target_os = "windows")]
@@ -68,7 +70,10 @@ mod windows;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 #[cfg(target_os = "linux")]
-pub use device_proof::{arm as arm_device_proof, prove as prove_device_caller};
+#[cfg(target_os = "linux")]
+pub use device_proof::arm as arm_device_proof;
+#[cfg(all(target_os = "linux", feature = "host-keyring"))]
+pub use device_proof::prove as prove_device_caller;
 
 /// Secret bytes: wiped from memory on drop and never printed by `Debug`.
 #[derive(Clone, PartialEq, Eq)]
@@ -93,6 +98,9 @@ impl fmt::Debug for Secret {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protection {
     OsKeychain,
+    /// Sealed in the workspace's vault, as an item the app keeps: synced to the person's other
+    /// devices and released only to the app's own process.
+    WorkspaceVault,
     /// Encrypted under a key the browser will not export through `WebCrypto`; not a
     /// boundary against a compromised browser or origin.
     BrowserWrapped,
@@ -594,31 +602,49 @@ impl SecretBackend for Refused {
     }
 }
 
-/// An app the launcher sandboxed (it names the app's directory in `TILO_APP_DIR`) reaches the
-/// Secret portal and never the Secret Service: its secrets are sealed in that directory under the
-/// portal's key for it. Everything else asks the Secret Service.
+/// An app process holds a connection its launcher handed it, and keeps its secrets in the
+/// workspace's vault over it; a process with no such connection asks the operating system's
+/// Secret Service, which only a host build links (`host-keyring`). A build with neither answers
+/// that it has no store rather than writing a secret somewhere nobody sealed.
 #[cfg(target_os = "linux")]
 fn system_backend() -> Backend {
-    static SANDBOXED: std::sync::OnceLock<Option<Arc<dyn SecretBackend>>> =
-        std::sync::OnceLock::new();
-    let sandboxed = SANDBOXED.get_or_init(|| {
-        let app_dir = std::env::var_os(APP_DIR_ENV).filter(|dir| !dir.is_empty())?;
-        Some(
-            Arc::new(linux::PortalStore::in_app_dir(std::path::Path::new(
-                &app_dir,
-            ))) as _,
-        )
-    });
-    Backend::Sync(
-        sandboxed
-            .clone()
-            .unwrap_or_else(|| Arc::new(linux::SecretService)),
-    )
+    if let Some(store) = crate::vault::VaultStore::inherited() {
+        return Backend::Sync(Arc::new(store));
+    }
+    #[cfg(feature = "host-keyring")]
+    {
+        Backend::Sync(Arc::new(linux::SecretService))
+    }
+    #[cfg(not(feature = "host-keyring"))]
+    {
+        Backend::Sync(Arc::new(NoStore))
+    }
 }
 
-/// Where the launcher tells a sandboxed app its own directory is.
-#[cfg(target_os = "linux")]
-const APP_DIR_ENV: &str = "TILO_APP_DIR";
+/// The store of a build that links neither the workspace's connection nor a keychain: every call
+/// says so instead of writing a secret where nothing sealed it.
+#[cfg(all(target_os = "linux", not(feature = "host-keyring")))]
+struct NoStore;
+
+#[cfg(all(target_os = "linux", not(feature = "host-keyring")))]
+impl SecretBackend for NoStore {
+    fn protection(&self) -> Protection {
+        Protection::Memory
+    }
+    fn get(&self, _app: &str, _key: &str) -> Result<Option<Secret>, SecretError> {
+        Err(SecretError::Unavailable(NO_STORE.to_owned()))
+    }
+    fn put(&self, _app: &str, _key: &str, _value: &[u8], _label: &str) -> Result<(), SecretError> {
+        Err(SecretError::Unavailable(NO_STORE.to_owned()))
+    }
+    fn delete(&self, _app: &str, _key: &str) -> Result<(), SecretError> {
+        Err(SecretError::Unavailable(NO_STORE.to_owned()))
+    }
+}
+
+#[cfg(all(target_os = "linux", not(feature = "host-keyring")))]
+const NO_STORE: &str =
+    "this process holds no connection to its daemon and this build links no keychain";
 
 /// A debug build inside `tools/with-test-environment.sh` (which cargo runs
 /// every test binary in) never reaches the user's login Keychain, just as the
