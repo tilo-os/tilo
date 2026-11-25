@@ -196,17 +196,24 @@ impl Device for Fake {
     }
 
     fn scan_operators(&self, modem: &str) -> Result<Vec<os_actions::Operator>, String> {
-        let readings = self.readings.lock().expect("readings");
-        assert!(
-            readings.modem.modems.iter().any(|held| held.path == modem),
-            "a modem of this device: {modem}"
-        );
+        let known = self
+            .readings
+            .lock()
+            .expect("readings")
+            .modem
+            .modems
+            .iter()
+            .any(|held| held.path == modem);
+        if !known {
+            return Err(format!("this device has no modem at {modem}"));
+        }
         Ok(self.operators.lock().expect("operators").clone())
     }
 
     fn send_code(&self, _modem: &str, command: &str) -> Result<os_actions::CodeAnswer, String> {
         self.asked.lock().expect("asked").push(command.to_owned());
-        if let Some(refusal) = self.refuse.lock().expect("refuse").clone() {
+        let refusal = self.refuse.lock().expect("refuse").clone();
+        if let Some(refusal) = refusal {
             return Err(refusal);
         }
         Ok(self.answer())
@@ -1449,6 +1456,41 @@ fn an_open_network_waits_for_the_person_while_the_device_asks() {
     assert_eq!(network["saved"][0]["autoconnect"], json!(true));
 }
 
+/// Scan the modem's operators: pending while it answers, then listed with the one it stands on
+/// first.
+fn scan_modem_operators(service: &mut Connectivity) -> Vec<(String, String)> {
+    service
+        .invoke(MODEM, "scan-operators", &Map::new())
+        .expect("taken");
+    assert_eq!(
+        read(service, MODEM)["pending"],
+        json!(["scan-operators"]),
+        "the scan is pending until the modem answers"
+    );
+    service.settle();
+    let operators = read(service, MODEM)["modems"][0]["operators"]
+        .as_array()
+        .expect("operators")
+        .iter()
+        .map(|operator| {
+            (
+                operator["name"].as_str().expect("a name").to_owned(),
+                operator["state"].as_str().expect("a state").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(read(service, MODEM)["pending"], json!([]));
+    operators
+}
+
+/// Send `code` to the network from the modem, and let it answer.
+fn send_modem_code(service: &mut Connectivity, code: &str) {
+    service
+        .invoke(MODEM, "send-code", &arguments(json!({"code": code})))
+        .expect("taken");
+    service.settle();
+}
+
 /// A modem lists the operators it reaches, stands on the one chosen, and the network answers the
 /// codes the person sends, asking on when it wants a reply.
 #[test]
@@ -1469,33 +1511,14 @@ fn a_modem_lists_its_operators_and_the_network_answers_a_code() {
     let mut service = service(&fake);
     assert_eq!(read(&service, MODEM)["modems"][0]["operators"], json!([]));
 
-    service
-        .invoke(MODEM, "scan-operators", &Map::new())
-        .expect("taken");
     assert_eq!(
-        read(&service, MODEM)["pending"],
-        json!(["scan-operators"]),
-        "the scan is pending until the modem answers"
-    );
-    service.settle();
-    let modem = &read(&service, MODEM)["modems"][0];
-    let operators: Vec<(&str, &str)> = modem["operators"]
-        .as_array()
-        .expect("operators")
-        .iter()
-        .map(|operator| {
-            (
-                operator["name"].as_str().expect("a name"),
-                operator["state"].as_str().expect("a state"),
-            )
-        })
-        .collect();
-    assert_eq!(
-        operators,
-        [("Stadtnetz", "current"), ("Feldnetz", "available")],
+        scan_modem_operators(&mut service),
+        [
+            ("Stadtnetz".to_owned(), "current".to_owned()),
+            ("Feldnetz".to_owned(), "available".to_owned()),
+        ],
         "the operator it stands on first"
     );
-    assert_eq!(read(&service, MODEM)["pending"], json!([]));
 
     // Choosing one by hand, and letting the modem choose.
     service
@@ -1530,10 +1553,7 @@ fn a_modem_lists_its_operators_and_the_network_answers_a_code() {
         text: "Balance: 10.00".into(),
         awaiting: false,
     }];
-    service
-        .invoke(MODEM, "send-code", &arguments(json!({"code": "*100#"})))
-        .expect("taken");
-    service.settle();
+    send_modem_code(&mut service, "*100#");
     let modem = &read(&service, MODEM)["modems"][0];
     assert_eq!(modem["code"]["text"], json!("Balance: 10.00"));
     assert_eq!(modem["code"]["awaiting"], json!(false));
@@ -1549,10 +1569,7 @@ fn a_modem_lists_its_operators_and_the_network_answers_a_code() {
             awaiting: false,
         },
     ];
-    service
-        .invoke(MODEM, "send-code", &arguments(json!({"code": "*101#"})))
-        .expect("taken");
-    service.settle();
+    send_modem_code(&mut service, "*101#");
     assert_eq!(
         read(&service, MODEM)["modems"][0]["code"]["awaiting"],
         json!(true)
