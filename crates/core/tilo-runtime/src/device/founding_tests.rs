@@ -1061,6 +1061,63 @@ fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
     drop(environment);
 }
 
+const ROOT_ONLY_AT_ONCE_TEST: &str = "device::founding_tests::a_person_names_their_servers_from_the_computer_they_were_just_founded_on";
+
+/// Which servers keep a workspace changes only on the computer that keeps its person's root, and
+/// the computer a person was just founded on is that one from their first call: naming a server
+/// right after founding gets to the servers themselves, not to a refusal that the computer does
+/// not keep the root.
+#[test]
+fn a_person_names_their_servers_from_the_computer_they_were_just_founded_on() {
+    let Some(profile) = isolated_root(ROOT_ONLY_AT_ONCE_TEST) else {
+        return;
+    };
+    let environment = isolated_environment();
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    let made = ask(
+        &socket,
+        &do_request("devices#found", &json!({"name": "Ada"})),
+    );
+    assert_ne!(
+        made["result"]["isError"], true,
+        "no person was made: {made}"
+    );
+    running
+        .wait_for_person(Duration::from_secs(120))
+        .expect("the person's services run");
+    wait_for_the_person_part(&socket);
+    let person = tilo_identity::store::load_from_path(
+        tilo_identity::store::resolve_active_identity(
+            &tilo_identity::store::account_identity_dir_from_env().unwrap(),
+        )
+        .expect("the founded person's root"),
+    )
+    .unwrap()
+    .group_public_key();
+    let workspace = tilo_server_protocol::servers::person_workspace_id(&person);
+    let answered = workspace_call(
+        &socket,
+        &workspace,
+        "server.remove",
+        json!({"server": "the server Ada never had"}),
+        60_000,
+    )
+    .expect("the call is answered");
+    let tilo_actions::remote::ReceiptStatus::Rejected { error } = &answered else {
+        panic!("a server Ada never had is not taken out: {answered:?}");
+    };
+    let said = format!("{error:?}");
+    assert!(
+        said.contains("no server keeping the workspace goes by"),
+        "the computer Ada was founded on reaches her servers: {said}"
+    );
+    running.stop().unwrap();
+    drop(environment);
+}
+
 const ANSWERED_BEFORE_RESTART_TEST: &str = "device::founding_tests::a_call_naming_the_persons_server_is_answered_before_its_part_starts_again";
 
 /// How long the whole of [`ANSWERED_BEFORE_RESTART_TEST`] may take: past it the test fails and
@@ -1105,9 +1162,6 @@ fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
     wait_for_the_person_part(&socket);
     let first = {
         let services = running.services(Duration::from_secs(120)).unwrap();
-        // Which servers keep a workspace changes only on the device that keeps its person's
-        // root: the computer that founded Ada does, once her root marks it so in her devices.
-        wait_until_it_keeps_the_root(&services);
         Arc::downgrade(&services)
     };
     // A server of the person's keeps their own workspace from now on.
@@ -1151,25 +1205,6 @@ fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
     running.stop().unwrap();
     serving.block_on(server.shutdown());
     drop(environment);
-}
-
-/// Wait until the person's devices record marks this device, the one the person was founded on,
-/// as the one that keeps their root.
-fn wait_until_it_keeps_the_root(services: &crate::device::services::Daemon) {
-    let workspaces = services.workspaces();
-    let started = std::time::Instant::now();
-    while !tilo_rt::app().handle().block_on(
-        tilo_workspace_service::workspaces::person_workspace::devices::keeps_root(
-            workspaces,
-            workspaces.device_cert(),
-        ),
-    ) {
-        assert!(
-            started.elapsed() < Duration::from_secs(120),
-            "the root never marked the device it was founded on as the one that keeps it"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// A server on this machine the person's root certifies, keeping workspaces: its runtime, its
