@@ -604,7 +604,7 @@ fn an_agents_arranging_change_carries_the_delegation_its_device_gives_it() {
         place: 7,
         pinned: true,
     };
-    let agent: tilo_actions::Actor = tilo_actions::MemberId::agent("reading").into();
+    let agent: tilo_actions::Actor = tilo_actions::MemberId::agent("reading", PERSON).into();
     let context = super::step_context(&agent, &action, PERSON);
     let invoker = context
         .invoker
@@ -612,7 +612,7 @@ fn an_agents_arranging_change_carries_the_delegation_its_device_gives_it() {
         .expect("the change names who asked");
     assert_eq!(
         invoker.acting.member_id(),
-        Some(&tilo_actions::MemberId::agent("reading")),
+        Some(&tilo_actions::MemberId::agent("reading", PERSON)),
         "the change is the agent's, never the person's own"
     );
     assert_eq!(

@@ -1482,7 +1482,7 @@ mod tests {
                 source_invocation: Some(asked.invocation),
                 signed: tilo_actions::remote::SignedCall::of(asked).map(Box::new),
                 invoker: Some(tilo_actions::ActionInvoker::admitted(
-                    &Acting::agent("scout").acting_for(Acting::person(person.clone())),
+                    &Acting::agent("scout", person.clone()).acting_for(Acting::person(person.clone())),
                 )),
                 what: Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
                     op: tilo_actions::HistoryOp::Undo,
