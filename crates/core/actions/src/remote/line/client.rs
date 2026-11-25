@@ -15,12 +15,12 @@ use super::frame_line_in;
 use crate::outcome::InvocationId;
 use crate::remote::call::{BridgedCall, CallAudio, CallReport, CallStatus};
 use crate::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
-    ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer, ContentPutStep,
-    ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, MAX_CONTENT_FRAME_BYTES,
-    MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES, MAX_REMOTE_ACTION_FRAME_BYTES,
-    MAX_REMOTE_WAIT, Pending, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
-    ResourceReads, UpdateMark, pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
+    Completer, ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer,
+    ContentPutStep, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest,
+    MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
+    MAX_REMOTE_ACTION_FRAME_BYTES, MAX_REMOTE_WAIT, Pending, RemoteActionFrame,
+    RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark, WatchScope, pending,
 };
 
 /// How long past the longest remote wait an answer is waited for before the ask is given up.
@@ -390,6 +390,8 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
         | RemoteActionMessage::ResourceReading { correlation, .. }
         | RemoteActionMessage::ContentPutResponse { correlation, .. }
         | RemoteActionMessage::ContentGetResponse { correlation, .. }
+        | RemoteActionMessage::ChangesResponse { correlation, .. }
+        | RemoteActionMessage::ChangedResponse { correlation, .. }
         | RemoteActionMessage::Update {
             correlation: Some(correlation),
             ..
@@ -531,6 +533,45 @@ impl ActionProvider for LineClient {
 
     fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
         Some(Arc::new(self.clone()))
+    }
+
+    /// The other end's own feed of the changes to the records of the caller's workspace.
+    fn change_feed(&self) -> Option<Arc<dyn ChangeFeed>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    /// Resolves once the other end says what `scope` follows may have changed.
+    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<Answered<()>>> {
+        let correlation = self.correlation();
+        Some(
+            self.ask_in(
+                Key::Correlation(correlation),
+                RemoteActionMessage::ChangedRequest { correlation, scope },
+                caller.workspace(),
+            )
+            .map(|answer| match answer? {
+                RemoteActionMessage::ChangedResponse { result, .. } => result,
+                other => Err(unexpected(&other)),
+            }),
+        )
+    }
+}
+
+impl ChangeFeed for LineClient {
+    fn since(&self, caller: &Caller, after: Option<&str>) -> Pending<Answered<ChangePage>> {
+        let correlation = self.correlation();
+        self.ask_in(
+            Key::Correlation(correlation),
+            RemoteActionMessage::ChangesRequest {
+                correlation,
+                after: after.map(str::to_owned),
+            },
+            caller.workspace(),
+        )
+        .map(|answer| match answer? {
+            RemoteActionMessage::ChangesResponse { result, .. } => result,
+            other => Err(unexpected(&other)),
+        })
     }
 }
 

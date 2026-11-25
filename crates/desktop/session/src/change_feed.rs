@@ -1,28 +1,21 @@
 //! What changed in the records of a workspace this desktop holds: the feed a watch of the whole
-//! workspace reads through the MCP server ([`tilo_actions::remote::ChangeFeed`]), from the
-//! device's workspace service, as a server's workspace answers it from its own
-//! ([`ui::history_source::feed`]).
-//!
-//! A caller follows the workspace it works in: an agent's run, admitted to one. Each workspace's
-//! log is kept for as long as the session runs, whoever asks, so every connection reads the same
-//! changes in the same order.
+//! workspace reads through the MCP server ([`tilo_actions::remote::ChangeFeed`]), the device's
+//! own feed ([`tilo_workspace_service::change_feed`]) over the documents the session reads, and
+//! what wakes a watch when a write lands.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use tilo_actions::remote::{
     ActionCallError, CHANGE_FEED_UNAVAILABLE, Caller, ChangeFeed, ChangePage, Pending,
 };
-use tilo_lock::MutexRecover as _;
-use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead};
-use ui::history_source::feed::{ChangeLog, DocumentKey};
+use tilo_peer_state::workspace_documents::DeviceDocuments;
+use tilo_workspace_service::change_feed::DocumentsFeed;
 
-/// The documents of the workspaces this device's service holds, and each workspace's log.
+/// The feed of the workspaces this device's service holds, once the session reads them.
 #[derive(Default)]
 pub(crate) struct Feeds {
-    reads: OnceLock<Arc<dyn DeviceDocuments>>,
+    feed: OnceLock<(Arc<dyn DeviceDocuments>, DocumentsFeed)>,
     changes: OnceLock<crate::platform::records::Changes>,
-    logs: Mutex<HashMap<String, ChangeLog>>,
 }
 
 impl Feeds {
@@ -33,7 +26,10 @@ impl Feeds {
         reads: Arc<dyn DeviceDocuments>,
         changes: crate::platform::records::Changes,
     ) {
-        let _ = self.reads.set(reads);
+        let _ = self.feed.set((
+            reads,
+            DocumentsFeed::new(Arc::new(ui::history_source::ThreadWords)),
+        ));
         let _ = self.changes.set(changes);
     }
 
@@ -76,77 +72,11 @@ impl ChangeFeed for Feeds {
         caller: &Caller,
         after: Option<&str>,
     ) -> Pending<Result<ChangePage, ActionCallError>> {
-        Pending::ready(self.page(caller, after))
-    }
-}
-
-impl Feeds {
-    fn page(&self, caller: &Caller, after: Option<&str>) -> Result<ChangePage, ActionCallError> {
-        let Some(workspace) = caller.workspace() else {
-            return Err(ActionCallError::Unavailable {
-                reason: "a watch of a workspace follows the workspace its caller works in, and \
-                         this caller works in none"
-                    .into(),
-            });
-        };
-        let Some(reads) = self.reads.get() else {
-            return Err(ActionCallError::Unavailable {
+        let Some((reads, feed)) = self.feed.get() else {
+            return Pending::ready(Err(ActionCallError::Unavailable {
                 reason: CHANGE_FEED_UNAVAILABLE.into(),
-            });
+            }));
         };
-        let records: Vec<DocumentKey> =
-            reads
-                .listing(workspace)
-                .map_err(|reason| ActionCallError::Unavailable {
-                    reason: format!("the workspace's records are not read: {reason}"),
-                })?;
-        // The workspace's members are a part of its governance, not a document it lists: each
-        // change of them its governance names is a change of their resource.
-        let members =
-            reads
-                .member_changes(workspace)
-                .map_err(|reason| ActionCallError::Unavailable {
-                    reason: format!("the workspace's members are not read: {reason}"),
-                })?;
-        let mut logs = self.logs.lock_recover();
-        let log = logs.entry(workspace.to_owned()).or_default();
-        log.take_in_named(
-            &members_resource(),
-            &members
-                .into_iter()
-                .map(|change| (change.change, change.message, change.time))
-                .collect::<Vec<_>>(),
-        );
-        // One read a record: the revision and the bytes it stands at are one answer.
-        let held = std::cell::RefCell::new(None);
-        log.take_in(
-            &records,
-            |(app, record)| match reads.read(workspace, app, record, None) {
-                Ok(DocumentRead::Whole {
-                    revision, bytes, ..
-                }) => {
-                    *held.borrow_mut() = Some(bytes);
-                    Some(revision)
-                }
-                _ => None,
-            },
-            |_| held.borrow_mut().take(),
-            &ui::history_source::ThreadWords,
-        );
-        let page = log.page(after, caller.acting().member_id());
-        drop(logs);
-        Ok(page)
+        Pending::ready(feed.page_of(reads.as_ref(), caller, after))
     }
 }
-
-/// The resource a workspace's members are: the Workspace package's `members` root, which every
-/// member reads.
-fn members_resource() -> DocumentKey {
-    (
-        tilo_action_policy::agent_answers::WORKSPACE_APP.to_owned(),
-        MEMBERS_RESOURCE.to_owned(),
-    )
-}
-
-/// The id of the resource a workspace's members are, as its package and every view name it.
-pub(crate) const MEMBERS_RESOURCE: &str = "workspace/members";

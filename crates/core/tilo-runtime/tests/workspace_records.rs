@@ -465,3 +465,59 @@ fn a_sealed_record_is_acted_on_for_its_owner_and_no_one_else() {
         }
     });
 }
+
+/// A watch of the whole workspace on the person's dispatch is woken by a task a call made, and
+/// the workspace's feed then tells of it, named by the app it is a record of: what `tilo watch`
+/// and the SDKs' watches read.
+#[test]
+fn a_watch_of_the_workspace_is_woken_and_told_of_a_task_a_call_made() {
+    host::run(|host| async move {
+        let (dispatch, caller) = (host.dispatch(), host.caller());
+        let feed = dispatch
+            .change_feed()
+            .expect("the daemon keeps its workspace's changes");
+        let from = feed
+            .since(&caller, None)
+            .await
+            .expect("the feed answers")
+            .expect("the person reads their workspace's changes");
+        let woken = dispatch
+            .changed(&caller, tilo_actions::remote::WatchScope::Records)
+            .expect("a watch of the workspace's records is woken by its writes");
+        let title = "Told to the watch";
+        let (answer, is_error) = said(
+            &host
+                .agent()
+                .tool(
+                    "tilo_do",
+                    &json!({"path": "so.tilo.tasks#new_task", "args": {"title": title}}),
+                )
+                .await,
+        );
+        assert!(!is_error, "the task is made: {answer}");
+        tilo_test_env::within("the watch is woken by the task", woken)
+            .await
+            .expect("the wake answers")
+            .expect("the watch is woken");
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let page = feed
+                .since(&caller, Some(&from.cursor))
+                .await
+                .expect("the feed answers")
+                .expect("the person reads their workspace's changes");
+            if page
+                .changes
+                .iter()
+                .any(|change| change.app == "so.tilo.tasks")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the feed tells of the task: {page:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+}
