@@ -1831,6 +1831,20 @@ impl Workspaces {
             .then_some((governed, cert))
     }
 
+    /// The certificate the workspace holds for `caller`'s device, when it holds one: the one a
+    /// call the transport named no certificate for is read by, as the run the workspace
+    /// admitted. `None` for a caller with no device of its own here.
+    async fn callers_certificate(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
+    ) -> Option<DeviceCert> {
+        let workspace_id = workspace_id?;
+        self.governed_by(workspace_id, caller)
+            .await
+            .map(|(_, certificate)| certificate)
+    }
+
     /// The workspace `workspace_id` carries and the certificate of `caller`'s
     /// device in it, for the key that reads and revokes its own grants: the
     /// device must be one the workspace admitted, or one whose key it admitted
@@ -4287,6 +4301,10 @@ impl ActionProvider for InWorkspace {
         let (caller, workspace_id, certificate) =
             (caller.clone(), self.workspace_id, self.certificate.clone());
         self.server.spawn(async move {
+            let certificate = match certificate {
+                Some(certificate) => Some(certificate),
+                None => workspaces.callers_certificate(workspace_id, &caller).await,
+            };
             Ok(workspaces
                 .catalogue(workspace_id, &caller, certificate.as_ref(), &query)
                 .await)
@@ -4298,64 +4316,47 @@ impl ActionProvider for InWorkspace {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
-            return Pending::ready(Err(refused));
-        }
-        let Some(workspaces) = self
-            .server
-            .shared
-            .workspaces
-            .get()
-            .and_then(WeakWorkspaces::upgrade)
-        else {
-            return Pending::ready(Err(ActionCallError::UnknownAction));
-        };
-        if request.target == mcp_server::target(mcp_server::SERVER) {
-            return Pending::ready(self.server.follow_mcp(
-                &workspaces,
-                caller,
-                self.certificate.as_ref(),
-                &request,
-            ));
-        }
-        if request.target == person_accounts::target(person_accounts::WATCH) {
-            let (host, caller, workspace_id, certificate) = (
-                self.server.clone(),
-                caller.clone(),
-                self.workspace_id,
-                self.certificate.clone(),
-            );
+        // A transport that named no certificate carries the run itself: the certificate the
+        // workspace holds for the caller's device is the one its stores are read by.
+        if self.certificate.is_none()
+            && let Some(workspaces) = self
+                .server
+                .shared
+                .workspaces
+                .get()
+                .and_then(WeakWorkspaces::upgrade)
+        {
+            let this = self.clone();
+            let caller = caller.clone();
             return self.server.spawn(async move {
-                let reach = workspaces
-                    .reaching_allowed(
-                        (workspace_id, &caller, certificate.as_ref()),
-                        Store::MAIL,
-                        person_accounts::WATCH,
-                        tilo_action_policy::ActionKind::Read,
-                        &request,
-                    )
-                    .await?;
-                host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
-                    .await
+                let certificate = workspaces
+                    .callers_certificate(this.workspace_id, &caller)
+                    .await;
+                let asked = Self { certificate, ..this };
+                asked.run_asked(&caller, request).await.unwrap_or(Err(
+                    ActionCallError::Unavailable {
+                        reason: "the workspace closed".into(),
+                    },
+                ))
             });
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if model_asks::is_model_ask(&request) {
-            return self.ask_model(workspaces, caller, request);
+        self.run_asked(caller, request)
+            return self.server.spawn(async move {
+                let certificate = workspaces
+                    .callers_certificate(this.workspace_id, &caller)
+                    .await;
+                let asked = Self {
+                    certificate,
+                    ..this
+                };
+                asked.run_asked(&caller, request).await.unwrap_or(Err(
+                    ActionCallError::Unavailable {
+                        reason: "the workspace closed".into(),
+                    },
+                ))
+            });
         }
-        // A person's approve is set only where their answer admits the call again
-        // ([`HostAsked::readmit`]): a frame carrying one no resolve handed back is refused whole.
-        if let Err(error) =
-            tilo_actions::remote::asked::admit_frame(workspaces.asked_store().as_deref(), &request)
-        {
-            return Pending::ready(Err(error));
-        }
-        // A person's answer to an asked record.
-        if tilo_actions::remote::asked::is_resolve(&request.target) {
-            return workspaces.resolve_asked(caller, &request);
-        }
-        let reservation = self.server.log().reserve(caller, &request);
-        self.run(workspaces, caller, request, reservation)
+        self.run_asked(caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
@@ -4473,6 +4474,70 @@ impl ActionProvider for InWorkspace {
 }
 
 impl InWorkspace {
+    fn run_asked(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
+            return Pending::ready(Err(refused));
+        }
+        let Some(workspaces) = self
+            .server
+            .shared
+            .workspaces
+            .get()
+            .and_then(WeakWorkspaces::upgrade)
+        else {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        };
+        if request.target == mcp_server::target(mcp_server::SERVER) {
+            return Pending::ready(self.server.follow_mcp(
+                &workspaces,
+                caller,
+                self.certificate.as_ref(),
+                &request,
+            ));
+        }
+        if request.target == person_accounts::target(person_accounts::WATCH) {
+            let (host, caller, workspace_id, certificate) = (
+                self.server.clone(),
+                caller.clone(),
+                self.workspace_id,
+                self.certificate.clone(),
+            );
+            return self.server.spawn(async move {
+                let reach = workspaces
+                    .reaching_allowed(
+                        (workspace_id, &caller, certificate.as_ref()),
+                        Store::MAIL,
+                        person_accounts::WATCH,
+                        tilo_action_policy::ActionKind::Read,
+                        &request,
+                    )
+                    .await?;
+                host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
+                    .await
+            });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if model_asks::is_model_ask(&request) {
+            return self.ask_model(workspaces, caller, request);
+        }
+        // A person's approve is set only where their answer admits the call again
+        // ([`HostAsked::readmit`]): a frame carrying one no resolve handed back is refused whole.
+        if let Err(error) =
+            tilo_actions::remote::asked::admit_frame(workspaces.asked_store().as_deref(), &request)
+        {
+            return Pending::ready(Err(error));
+        }
+        // A person's answer to an asked record.
+        if tilo_actions::remote::asked::is_resolve(&request.target) {
+            return workspaces.resolve_asked(caller, &request);
+        }
+        let reservation = self.server.log().reserve(caller, &request);
+        self.run(workspaces, caller, request, reservation)
+    }
     /// Run `request` for `caller` as `reservation` admitted it, answering its receipt.
     fn run(
         &self,
