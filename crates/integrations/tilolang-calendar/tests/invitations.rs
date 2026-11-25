@@ -76,11 +76,11 @@ fn take_in(rig: &mut Rig, text: &str) -> Result<(), String> {
     match rig.origin.deliver("caldav.import", &payload) {
         Delivery::Pending => {}
         Delivery::Rejected(reason) | Delivery::Offline(reason) => return Err(reason),
-        Delivery::Delivered => return Ok(()),
+        Delivery::Delivered | Delivery::DeliveredWith(_) => return Ok(()),
     }
     rig.settle();
     match rig.origin.deliver("caldav.import", &payload) {
-        Delivery::Delivered => {
+        Delivery::Delivered | Delivery::DeliveredWith(_) => {
             rig.settle();
             Ok(())
         }
