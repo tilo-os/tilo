@@ -202,14 +202,13 @@ pub(crate) fn run_named(options: &RunOptions, command: &str) -> Result<(), Strin
     wait_for_file(&ready, &wakes, &sender)?;
     dev.install_staged(&staged, Instant::now())?;
     dev.open()?;
-    if let Some(bin) = dev.bin() {
-        for peer in dev.peers() {
-            eprintln!(
-                "    drive it: TILO_TEST_CONTROL={} {} windows",
-                peer.control.display(),
-                bin.join("tilo-control").display()
-            );
-        }
+    let bin = dev.bin();
+    for peer in dev.peers() {
+        eprintln!(
+            "    drive it: TILO_TEST_CONTROL={} {} windows",
+            peer.control.display(),
+            bin.join("tilo-control").display()
+        );
     }
     eprintln!(
         "==> {} is open; a saved .tl file reaches it, with its state",

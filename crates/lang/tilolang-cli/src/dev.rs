@@ -124,8 +124,8 @@ impl Dev {
 
     /// The session's tools: `tilo-install` and `tilo-runtime` (a build, and its start), and
     /// `tilo-control` for the shell's windows.
-    pub(crate) fn bin(&self) -> Option<&Path> {
-        Some(&self.bin)
+    pub(crate) fn bin(&self) -> &Path {
+        &self.bin
     }
 
     /// Stage the builds a session installs as it starts, before its daemon runs; the builds.

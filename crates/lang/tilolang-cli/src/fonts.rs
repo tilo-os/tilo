@@ -20,24 +20,23 @@ pub fn ensure() -> Result<PathBuf> {
         return Ok(root.clone());
     }
     let cache = artifact_cache();
-    let root = match ui::font_catalog::catalog_root() {
-        Some(root) => root,
-        None => {
-            let cache = cache.as_deref().ok_or_else(|| {
-                anyhow!(
-                    "Tilo's fonts have no place on this computer: set HOME, XDG_CACHE_HOME or \
-                     TILO_FONT_ASSET_CACHE"
-                )
-            })?;
-            prepare::prepared(cache, Selection::Product, prepare::offline(), |fetching| {
-                eprintln!(
-                    "Fetching Tilo's fonts ({}) once…",
-                    ui::format::size(fetching.bytes)
-                );
-            })
-            .map_err(|error| anyhow!("{}: {}", error.path.display(), error.problem))
-            .context("preparing Tilo's fonts")?
-        }
+    let root = if let Some(root) = ui::font_catalog::catalog_root() {
+        root
+    } else {
+        let cache = cache.as_deref().ok_or_else(|| {
+            anyhow!(
+                "Tilo's fonts have no place on this computer: set HOME, XDG_CACHE_HOME or \
+                 TILO_FONT_ASSET_CACHE"
+            )
+        })?;
+        prepare::prepared(cache, Selection::Product, prepare::offline(), |fetching| {
+            eprintln!(
+                "Fetching Tilo's fonts ({}) once…",
+                ui::format::size(fetching.bytes)
+            );
+        })
+        .map_err(|error| anyhow!("{}: {}", error.path.display(), error.problem))
+        .context("preparing Tilo's fonts")?
     };
     // A catalog in the cache is found through the cache's place, which an app given a cache
     // directory of its own would not see: name it to every app this command starts.
