@@ -208,10 +208,39 @@ impl DaemonProfile {
         self.start()
     }
 
+    /// What the daemon refuses a connection with while its person's services are still starting.
+    const NOT_SERVED_YET: &'static str = "has no person signed in yet";
+
     /// Found the person's workspace here, as the first call of theirs in it does: this device's
     /// own client of the daemon asking in the workspace their key names. A key's run and a
     /// desktop's first call found it the same way.
-    fn found(&mut self) -> Result<()> {
+    ///
+    /// The daemon answers its device's actions from boot and takes connections as its person
+    /// once their services start, which a machine busy with the rest of the suite can outlast
+    /// the bound the daemon gives its own wait: a call refused because their part was still
+    /// starting is asked again, bounded only by the suite's hang bound.
+    fn found(&self) -> Result<()> {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let Some(refused) = self.first_call()? else {
+                return Ok(());
+            };
+            if !refused.contains(Self::NOT_SERVED_YET) {
+                bail!("the person's first call failed: {refused}\n{}", self.log());
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "the daemon never served its person's first call: {refused}\n{}",
+                    self.log()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// The person's first call in their workspace: one client of the daemon, ending once the
+    /// workspace is founded, or the words it failed with when it did not.
+    fn first_call(&self) -> Result<Option<String>> {
         let mut client = host(self.path())
             .arg("--connect")
             .stdin(Stdio::piped())
@@ -233,7 +262,7 @@ impl DaemonProfile {
         // is bounded only by the suite's hang bound: a busy machine must not turn a founding in
         // progress into a failure. One still there at the bound is ended, so nothing keeps
         // serving behind the test.
-        let pid = u32::try_from(client.id()).context("the client's pid")?;
+        let pid = client.id();
         let path = self.path().to_owned();
         let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             tilo_test_env::exited(
@@ -257,11 +286,9 @@ impl DaemonProfile {
         std::io::Read::read_to_string(&mut said, &mut answer)?;
         let mut reason = String::new();
         std::io::Read::read_to_string(&mut why, &mut reason)?;
-        ensure!(
-            ended.success(),
-            "the person's first call failed: {reason}\n{}",
-            self.log()
-        );
+        if !ended.success() {
+            return Ok(Some(reason));
+        }
         let reply: Value = serde_json::from_str(&answer)
             .with_context(|| format!("the first call's answer: {answer:?}\n{}", self.log()))?;
         ensure!(
@@ -276,7 +303,7 @@ impl DaemonProfile {
             "the person's first call founded no workspace\n{}",
             self.log()
         );
-        Ok(())
+        Ok(None)
     }
     /// The profile's daemon log, as it stands.
     fn log(&self) -> String {
@@ -1047,7 +1074,7 @@ fn a_put_for_a_device_action_is_kept_on_the_device() -> Result<()> {
 /// the suite does not turn a stop being taken into a failure; one still running at the bound is
 /// killed, and its log says what kept it.
 fn ended(daemon: &mut Child, profile: &DaemonProfile) -> Result<std::process::ExitStatus> {
-    let pid = u32::try_from(daemon.id()).context("the daemon's pid")?;
+    let pid = daemon.id();
     let path = profile.path().to_owned();
     let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tilo_test_env::exited(
