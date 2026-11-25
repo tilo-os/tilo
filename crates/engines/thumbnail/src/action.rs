@@ -88,6 +88,14 @@ impl Thumbnails {
         tilo_resource::effect::offer::<ThumbnailAction>(spec)
     }
 
+    /// The surface the action is declared on: the photos library and the engine's action, as a
+    /// device that runs it names Photos' surface, so a call of it is judged at the kind it
+    /// declares.
+    #[must_use]
+    pub fn surface() -> tilo_actions::surface::Surface {
+        tilo_resource::surface::row_surface::<Library, ThumbnailAction>()
+    }
+
     /// The pictures `argument` names, by digest, or why it names none.
     fn photos(argument: &InvokeArgument) -> Result<Vec<[u8; 32]>, ActionCallError> {
         let InvokeArgument::Json(arguments) = argument else {

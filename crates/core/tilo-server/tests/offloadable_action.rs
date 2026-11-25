@@ -144,6 +144,11 @@ impl KeepsContent for Media {
 fn serve_jobs(hosted: &Hosted, content: &Media) {
     let workspaces = hosted.host.workspaces();
     workspaces.run_jobs(Arc::new(content.clone()));
+    let surface = collab_types::surface::canonical(&serde_json::json!({
+        "format": 2,
+        "resources": [thumbnail::action::Thumbnails::surface()],
+    }));
+    workspaces.declare_package_surface(thumbnail::action::APP, surface.as_bytes());
     workspaces.providers().provide(
         thumbnail::action::PROVIDER,
         thumbnail::action::APP,

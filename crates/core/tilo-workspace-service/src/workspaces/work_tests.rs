@@ -41,32 +41,41 @@ impl tilo_actions::remote::ActionProvider for Photos {
         false
     }
 
+    /// Its thumbnails, a change of a picture, and `melt`, which Photos' surface declares nothing
+    /// of ([`declare_photos`]).
     fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
-        let params = vec![
-            tilo_actions::ActionParam::required(
-                "photos",
-                tilo_actions::ParamType::Array,
-                "The pictures",
-            )
-            .as_content_list(),
-        ];
-        let mut action = tilo_actions::ActionSpec::typed_operation(
-            "make-thumbnails",
-            "Make thumbnails",
-            "",
-            tilo_actions::OperationKind::Effect,
-            "test/photos",
-            params,
-            |_| tilo_actions::EncodedAction {
-                type_id: "test/photos".into(),
-                payload: Vec::new(),
-            },
-        );
-        action.type_mut().contract.kind = tilo_actions::ActionKind::Read;
+        let action = |id: &str, label: &str, kind: tilo_actions::ActionKind| {
+            let params = vec![
+                tilo_actions::ActionParam::required(
+                    "photos",
+                    tilo_actions::ParamType::Array,
+                    "The pictures",
+                )
+                .as_content_list(),
+            ];
+            let mut action = tilo_actions::ActionSpec::typed_operation(
+                id,
+                label,
+                "",
+                tilo_actions::OperationKind::Effect,
+                "test/photos",
+                params,
+                |_| tilo_actions::EncodedAction {
+                    type_id: "test/photos".into(),
+                    payload: Vec::new(),
+                },
+            );
+            action.type_mut().contract.kind = kind;
+            action
+        };
         let mut spec =
             tilo_actions::ResourceSpec::new("photos.library", "photos.library", "Photos");
-        spec.app_id = Some("so.tilo.photos".into());
-        spec.actions = vec![action];
+        spec.app_id = Some(PHOTOS.into());
+        spec.actions = vec![
+            action(THUMBNAILS, "Make thumbnails", tilo_actions::ActionKind::Read),
+            action(RETOUCH, "Retouch", tilo_actions::ActionKind::Undoable),
+            action(UNDECLARED, "Melt", tilo_actions::ActionKind::Undoable),
+        ];
         vec![spec]
     }
 
@@ -177,6 +186,8 @@ const PHOTOS: &str = "so.tilo.photos";
 const THUMBNAILS: &str = "make-thumbnails";
 /// A change of a picture, which a viewer's role does not reach.
 const RETOUCH: &str = "retouch";
+/// An action Photos' provider answers and its surface declares nothing of.
+const UNDECLARED: &str = "melt";
 
 /// Photos' surface as the host knows it: what a call of each of its actions is judged by.
 fn declare_photos(host: &super::fixtures::TestHost) {
@@ -617,7 +628,7 @@ async fn a_call_is_judged_at_the_kind_its_action_declares() {
     );
 
     // An action Photos declares nothing of is refused, granted kinds or not.
-    let undeclared = ask("melt", 4).await;
+    let undeclared = ask(UNDECLARED, 4).await;
     assert!(
         refused(&undeclared),
         "an action no declaration names is refused: {undeclared:?}"

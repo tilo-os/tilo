@@ -61,6 +61,14 @@ pub const RESERVED_VERBS: [&str; 7] = collab_types::Stamp::RESERVED_VERBS;
 /// it.
 pub const MIGRATE_VERB: &str = tilo_actions::stamp::Stamp::MIGRATE_VERB;
 
+/// What a verb the platform declares for every app's records, and a call may name, is able to
+/// do: the move ([`MOVE_VERB`]) and the migration ([`MIGRATE_VERB`]) each change records, as a
+/// recorded step of them. `None` for every other verb, which an app declares or no call names.
+#[must_use]
+pub fn platform_kind(verb: &str) -> Option<tilo_actions::ActionKind> {
+    (verb == MOVE_VERB || verb == MIGRATE_VERB).then_some(tilo_actions::ActionKind::Undoable)
+}
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
@@ -442,7 +450,8 @@ impl Schema {
     }
 
     /// The kind `app`'s action `action` is declared as, by the name a call offers it by or the
-    /// verb's own: `None` when `app` declares no such action.
+    /// verb's own, or as the platform declares the verbs every app's records take
+    /// ([`platform_kind`]): `None` when neither declares such an action.
     #[must_use]
     pub fn declared_kind(&self, app: &str, action: &str) -> Option<tilo_actions::ActionKind> {
         self.verbs
@@ -452,6 +461,7 @@ impl Schema {
                 (verb.name == action || declared.offered == action).then_some(declared.kind)
             })
             .max()
+            .or_else(|| platform_kind(action))
     }
 
     /// What the verb `name` writes, when it is declared.

@@ -805,6 +805,11 @@ fn a_store_keeps_what_each_app_declares_its_actions_as() {
     assert_eq!(declared("so.tilo.tasks", "peek"), None, "tasks declares no peek");
     assert_eq!(declared("so.tilo.notes", "melt"), None);
     assert_eq!(
+        declared("so.tilo.notes", tilo_resource_store::MIGRATE_VERB),
+        Some(ActionKind::Undoable),
+        "the platform declares the migration every app's records take"
+    );
+    assert_eq!(
         Schema::from_surface(&notes).declared_kind("so.tilo.notes", "peek"),
         None,
         "a surface no app named declares nothing a call is judged by"
