@@ -583,3 +583,110 @@ fn every_receiver_refuses_a_row_one_device_writes_for_another() {
         Role::Editor
     );
 }
+
+/// The batch that marks `device`'s row on `peer`'s member list removed, put there by hand as a
+/// device that skips its own checks would: the mark written under `writer`'s actor, and an
+/// operation naming the member list signed by `signer`'s device under its own.
+fn removal_mark(
+    peer: &StatePeer,
+    device: [u8; 32],
+    (writer, signer): (&SigningKey, &SigningKey),
+    now: SystemTime,
+) -> Vec<Vec<u8>> {
+    let mut doc = peer.core.workspace_doc.clone().unwrap();
+    let before = doc.get_heads();
+    let key = hex::encode(device);
+    let mut row =
+        GovernedIdentity::decode(&crate::workspace::governance_of(Some(&doc)).identities[&key])
+            .unwrap();
+    row.removed = true;
+    doc.set_actor(peer.workspace_actor_of(writer));
+    let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+    doc.put(
+        &identities,
+        key,
+        automerge::ScalarValue::Bytes(row.encode().unwrap()),
+    )
+    .unwrap();
+    super::governance_writes::commit_governance(&mut doc, super::now_secs(now), None);
+    doc.set_actor(peer.workspace_actor_of(signer));
+    peer.record_governance(
+        &mut doc,
+        vec![crate::workspace::GovernanceRow::Identities],
+        signer,
+        now,
+    )
+    .unwrap();
+    super::governance_writes::commit_governance(&mut doc, super::now_secs(now), None);
+    doc.get_changes(&before)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// A removal mark is a change only someone who may remove members makes, and only as the device
+/// that carries it: every receiver refuses a mark an editor writes on another person's device, and
+/// a mark on a device's own row that another device's actor wrote under that device's operation.
+/// The marked device stays one of the workspace's either way.
+#[test]
+fn every_receiver_refuses_a_forged_removal_mark() {
+    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, _) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+    let editor_key = SigningKey::from_bytes(&[6; 32]);
+    assert_eq!(
+        editor.device_public_key,
+        editor_key.verifying_key().to_bytes()
+    );
+    let owner_device = owner_key.verifying_key().to_bytes();
+    let refused = |changes: Vec<Vec<u8>>, from: [u8; 32], named: &str, marked: [u8; 32]| {
+        let mut receiver = peer.clone();
+        let refusal = receiver
+            .receive_from(
+                TransportOrigin::ServerDelta(from),
+                NeighbourMsg::SyncResp {
+                    changes,
+                    workspace: receiver.workspace_id().to_owned(),
+                },
+                now,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &refusal,
+                crate::AdmissionError::Rejected {
+                    reason: neighbour_wire::RefusalReason::Forbidden,
+                    detail,
+                } if detail.contains(named)
+            ),
+            "{refusal:?}"
+        );
+        assert!(
+            receiver.permissions(marked, now).is_ok(),
+            "the device the mark names stays one of the workspace's"
+        );
+    };
+
+    // An editor may not remove members: its mark on the owner's device is refused.
+    refused(
+        removal_mark(&peer, owner_device, (&editor_key, &editor_key), now),
+        editor.device_public_key,
+        "is not the writer's to remove",
+        owner_device,
+    );
+
+    // A mark on the editor's own row, written by another device's actor beside an operation the
+    // editor's device signed: the operation answers for no row it did not write, and the row is
+    // refused as one no device writes in for another.
+    let other_key = SigningKey::from_bytes(&[88; 32]);
+    refused(
+        removal_mark(
+            &peer,
+            editor.device_public_key,
+            (&other_key, &editor_key),
+            now,
+        ),
+        editor.device_public_key,
+        "writes its own row",
+        editor.device_public_key,
+    );
+}
