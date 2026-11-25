@@ -1341,7 +1341,7 @@ impl Session {
         if let (Some(desktop), Some(records)) = (options.desktop.as_ref(), options.records.as_ref())
         {
             desktop.chosen().bind(std::sync::Arc::new(
-                crate::chosen_records::DeviceStore::new(records.clone()),
+                crate::chosen_records::DeviceStore::new(records.clone(), options.wake.handle()),
             ));
         }
         // Every service this session serves, from the one table that says who serves each: the
@@ -1653,7 +1653,13 @@ impl Session {
         // What the workspaces' apps, people and agents were given beyond their own documents, as
         // the workspace settings list them, and the one action that takes a grant back: the view
         // Files and Settings draw reads this, and a revoke written here reaches the workspace's
-        // governance the way a chosen file's grant does.
+        // governance the way a chosen file's grant does. It is read again as the governance and
+        // the device's choices move, and as the mounts' record index does.
+        let mounts = crate::workspace_access::MountMoves::follow(
+            &daemon_writes,
+            &tilo_rt::app().handle().clone(),
+            options.wake.handle(),
+        );
         services
             .borrow_mut()
             .add(Box::new(crate::workspace_access::Served::new(
@@ -1664,6 +1670,7 @@ impl Session {
                     .desktop
                     .as_ref()
                     .map(|desktop| std::sync::Arc::clone(desktop.chosen())),
+                mounts,
             )));
         // The layouts this machine installs and the keys of the one inspected, drawn for a pane.
         services

@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 /// Where a chosen item is named from on every device: the app reaches nothing of it but the
@@ -47,6 +48,12 @@ pub trait Store: Send + Sync {
     fn load(&self) -> Vec<Kept>;
     /// Keep `kept` as the record from now on.
     fn keep(&self, kept: Vec<Kept>);
+    /// Follow the record from now on, handing `changed` what it holds each time the record changes
+    /// elsewhere: what another of the person's tools writes reaches the table as it lands. Whether
+    /// the record can be followed.
+    fn follow(&self, _changed: Arc<dyn Fn(Vec<Kept>) + Send + Sync>) -> bool {
+        false
+    }
 }
 
 /// The key a choice is made under: the workspace the app runs in and its package id, so the same
@@ -200,7 +207,7 @@ impl std::fmt::Display for GrantError {
 impl std::error::Error for GrantError {}
 
 /// What one app in one workspace was given, and the order it was chosen in.
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 struct View {
     documents: BTreeMap<String, Document>,
     recent: Vec<String>,
@@ -242,6 +249,9 @@ type Views = HashMap<AppKey, View>;
 pub struct ChosenTable {
     views: Arc<RwLock<Views>>,
     store: Arc<OnceLock<Arc<dyn Store>>>,
+    /// How often what the table holds changed: what a reader compares to tell whether any choice
+    /// moved since it last read.
+    revision: Arc<AtomicU64>,
 }
 
 impl ChosenTable {
@@ -250,7 +260,20 @@ impl ChosenTable {
         Self::default()
     }
 
-    /// Keep the table as the device's record `store` holds, reading what it held now.
+    /// How often what the table holds changed. A number that moves each time a choice is made,
+    /// taken back, or read from the device's record.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    fn changed(&self) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Keep the table as the device's record `store` holds, reading what it held now and following
+    /// it from then on, so a choice another of the person's tools makes reaches the table as it
+    /// lands.
     ///
     /// The read runs on a thread of its own, so a session starts without waiting on its records;
     /// what was chosen earlier is there before any choice needs to know it.
@@ -261,9 +284,26 @@ impl ChosenTable {
         let table = self.clone();
         let loaded = std::thread::Builder::new()
             .name("tilo-chosen-load".into())
-            .spawn(move || table.load());
+            .spawn(move || {
+                table.load();
+                table.follow();
+            });
         if let Err(error) = loaded {
             tracing::warn!(%error, "the files people chose earlier are not read");
+        }
+    }
+
+    /// Follow the record the table is kept as from now on: each reading of it replaces what the
+    /// table holds.
+    fn follow(&self) {
+        let Some(store) = self.store.get().cloned() else {
+            return;
+        };
+        let table = self.clone();
+        if !store.follow(Arc::new(move |kept| table.replace(kept))) {
+            tracing::warn!(
+                "the files people chose are not followed; a change elsewhere is read next session"
+            );
         }
     }
 
@@ -271,8 +311,14 @@ impl ChosenTable {
         let Some(store) = self.store.get().cloned() else {
             return;
         };
-        let mut loaded = Vec::new();
-        for kept in store.load() {
+        self.replace(store.load());
+    }
+
+    /// Hold `kept` as the table from now on, as the device's record keeps it, and say the table
+    /// changed where it did.
+    fn replace(&self, kept: Vec<Kept>) {
+        let mut views: Views = HashMap::new();
+        for kept in kept {
             let (Some(key), Some(kind)) = (
                 AppKey::new(&kept.workspace, &kept.app),
                 Kind::of_tag(&kept.kind),
@@ -282,13 +328,19 @@ impl ChosenTable {
             let Ok(host) = resolve_choice(&kept.host, kind) else {
                 continue;
             };
-            loaded.push((key, Document { host, kind }));
+            let document = Document { host, kind };
+            let token = token(&key, &document);
+            views.entry(key).or_default().keep_older(token, document);
         }
-        if let Ok(mut views) = self.views.write() {
-            for (key, document) in loaded {
-                let token = token(&key, &document);
-                views.entry(key).or_default().keep_older(token, document);
+        let changed = self.views.write().is_ok_and(|mut held| {
+            if *held == views {
+                return false;
             }
+            *held = views;
+            true
+        });
+        if changed {
+            self.changed();
         }
     }
 
@@ -334,6 +386,7 @@ impl ChosenTable {
         });
         if changed {
             self.keep();
+            self.changed();
         }
         Ok(entry(&token, document))
     }
@@ -411,6 +464,7 @@ impl ChosenTable {
             .is_ok_and(|mut views| views.remove(key).is_some());
         if removed {
             self.keep();
+            self.changed();
         }
     }
 
@@ -452,6 +506,7 @@ impl ChosenTable {
         });
         if removed {
             self.keep();
+            self.changed();
         }
         removed
     }

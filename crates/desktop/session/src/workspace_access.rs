@@ -19,13 +19,15 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_desktop_model::{Layout, Workspace};
+use tilo_desktop_model::Workspace;
 use tilo_dialogs::chosen::{AppKey, ChosenTable, Kind as ChosenKind};
 use tilo_service::{Service, Started};
+use tilo_session_client::daemon_documents::DaemonWritesFeed;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::desktop::workspace_settings::{
     AppDirectory, apply_revoke, listed_permissions, may_revoke,
@@ -45,13 +47,63 @@ pub(crate) const REVOKE: &str = "revoke";
 #[row(kind = "workspace.access", label = "Access")]
 pub struct AccessRoot;
 
-/// How often the workspaces are read again: a grant changed here or on another device reaches the
-/// reading without every pass of the loop looking through each one's grants.
-const REFRESH: Duration = Duration::from_secs(1);
+/// The mount's record index moving: a file or folder renamed, moved or made, so the host path a
+/// grant's node stands at is read again. The device's daemon tells every write it takes
+/// ([`DaemonWritesFeed`]), and a write to a workspace's files tree is the tree moving.
+#[derive(Clone, Default)]
+pub(crate) struct MountMoves(Arc<AtomicU64>);
 
-/// How long a grant's host path is trusted before the mount's record index is read again: a file
-/// that moved shows where it is, and a view drawn between two reads is a second old at worst.
-const PATHS_FOR: Duration = Duration::from_secs(5);
+impl MountMoves {
+    /// Follow `feed` on `runtime` from now on, `wake` called each time a workspace's files tree is
+    /// written, so the reading is read again then.
+    pub(crate) fn follow(
+        feed: &DaemonWritesFeed,
+        runtime: &tokio::runtime::Handle,
+        wake: tilo_service::Wake,
+    ) -> Self {
+        let moves = Self::default();
+        let moved = Arc::clone(&moves.0);
+        let mut written = feed.follow();
+        runtime.spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match written.recv().await {
+                    Ok(write) => {
+                        // A daemon that missed writes says so with an empty one: every path is
+                        // read again, as the mounts may have moved with any of them.
+                        if write.workspace.is_empty() || write.app == fs_protocol::tree::FILES_APP {
+                            moved.fetch_add(1, Ordering::AcqRel);
+                            wake();
+                        }
+                    }
+                    // A write missed is in the tree: every path is read again.
+                    Err(RecvError::Lagged(_)) => {
+                        moved.fetch_add(1, Ordering::AcqRel);
+                        wake();
+                    }
+                    Err(RecvError::Closed) => return,
+                }
+            }
+        });
+        moves
+    }
+
+    /// How often a workspace's files tree moved.
+    fn revision(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// What the reading is made from besides the person's own request: the workspaces' governance as
+/// the daemon published it, the device's record of chosen files, and the mounts' record index.
+/// Each moves only when it changed, so the reading is read again when one of them did and never on
+/// a clock.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Inputs {
+    tree: u64,
+    chosen: u64,
+    mounts: u64,
+}
 
 /// The workspace's grants, published as `workspace/access`.
 pub(crate) struct Served {
@@ -63,30 +115,30 @@ pub(crate) struct Served {
     view: Option<Arc<WorkspaceView>>,
     /// The files people chose for apps outside any workspace: the device's own record.
     chosen: Option<Arc<ChosenTable>>,
-    /// The reading last published, and when it was read.
-    last: RefCell<Option<(Instant, Value)>>,
-    /// The host path each record was last found at, and when.
+    /// The mounts' record index, as the device's daemon tells each write it takes.
+    mounts: MountMoves,
+    /// What the last published reading was read from.
+    read_from: RefCell<Option<Inputs>>,
+    /// The reading last published.
+    last: RefCell<Option<Value>>,
+    /// The host path each record was last found at, and the mounts' revision it was read at.
     paths: RefCell<Paths>,
 }
 
-/// The host paths record ids were read as, and when that reading is trusted until.
+/// The host paths record ids were read as, at the mounts' revision they were read at.
 #[derive(Default)]
 struct Paths {
-    read_at: Option<Instant>,
+    at: Option<u64>,
     resolved: std::collections::HashMap<[u8; 16], Option<PathBuf>>,
 }
 
 impl Paths {
-    /// The host path of `record` now, read from the mounts when the ones held are older than
-    /// [`PATHS_FOR`].
-    fn of(&mut self, record: [u8; 16]) -> Option<&PathBuf> {
-        let now = Instant::now();
-        if self
-            .read_at
-            .is_none_or(|at| now.duration_since(at) >= PATHS_FOR)
-        {
+    /// The host path of `record` as the mounts at `mounts` say: read from the record index when
+    /// the mounts moved since the ones held, or when `record` was not read before.
+    fn of(&mut self, mounts: u64, record: [u8; 16]) -> Option<&PathBuf> {
+        if self.at != Some(mounts) {
             self.resolved.clear();
-            self.read_at = Some(now);
+            self.at = Some(mounts);
         }
         self.resolved
             .entry(record)
@@ -102,14 +154,27 @@ impl Served {
         person: String,
         view: Option<Arc<WorkspaceView>>,
         chosen: Option<Arc<ChosenTable>>,
+        mounts: MountMoves,
     ) -> Self {
         Self {
             handle,
             person,
             view,
             chosen,
+            mounts,
+            read_from: RefCell::new(None),
             last: RefCell::new(None),
             paths: RefCell::new(Paths::default()),
+        }
+    }
+
+    /// What the reading is made from now: the workspaces' governance, the device's chosen files
+    /// and the mounts' record index.
+    fn inputs(&self) -> Inputs {
+        Inputs {
+            tree: self.handle.revision(),
+            chosen: self.chosen.as_ref().map_or(0, |table| table.revision()),
+            mounts: self.mounts.revision(),
         }
     }
 
@@ -121,21 +186,30 @@ impl Served {
             .as_ref()
             .map(|table| table.all())
             .unwrap_or_default();
+        let mounts = self.mounts.revision();
         let mut paths = self.paths.borrow_mut();
         self.handle
-            .read(|tree| reading_of(tree, person, &chosen, &mut paths))
+            .read(|tree| reading_of(tree, person, &chosen, &mut paths, mounts))
     }
 
-    /// The reading, read now when the one held is older than [`REFRESH`].
+    /// The reading, read again when what it is made from moved since it was last read.
     fn current(&self) -> Value {
-        let now = Instant::now();
-        if let Some((at, reading)) = self.last.borrow().as_ref()
-            && now.duration_since(*at) < REFRESH
+        if let (Some(read_from), Some(reading)) = (
+            self.read_from.borrow().as_ref(),
+            self.last.borrow().as_ref(),
+        ) && *read_from == self.inputs()
         {
             return reading.clone();
         }
+        self.reread()
+    }
+
+    /// Read the reading now, hold it, and answer it.
+    fn reread(&self) -> Value {
+        let inputs = self.inputs();
         let reading = self.read_now();
-        *self.last.borrow_mut() = Some((now, reading.clone()));
+        *self.read_from.borrow_mut() = Some(inputs);
+        *self.last.borrow_mut() = Some(reading.clone());
         reading
     }
 
@@ -210,20 +284,47 @@ impl Served {
 
 impl Service for Served {
     fn poll(&mut self) -> bool {
-        let now = Instant::now();
-        if let Some((at, _)) = self.last.borrow().as_ref()
-            && now.duration_since(*at) < REFRESH
-        {
+        let inputs = self.inputs();
+        if self.read_from.borrow().as_ref() == Some(&inputs) {
             return false;
         }
         let reading = self.read_now();
-        let changed = self
-            .last
-            .borrow()
-            .as_ref()
-            .is_none_or(|(_, was)| was != &reading);
-        *self.last.borrow_mut() = Some((now, reading));
+        *self.read_from.borrow_mut() = Some(inputs);
+        let changed = self.last.borrow().as_ref() != Some(&reading);
+        *self.last.borrow_mut() = Some(reading);
         changed
+    }
+
+    /// The instant a grant this reading shows stops standing: a lifetime that ends, or the
+    /// person's own restriction, which says whether they may take one back.
+    fn wakes_in(&self) -> Option<Duration> {
+        let now = tilo_clock::unix_now();
+        let context = tilo_action_policy::Context::at_secs(now);
+        let person = &self.person;
+        self.handle.read(|tree| {
+            let mut soonest: Option<u64> = None;
+            let mut consider = |at: u64| {
+                if at > now.saturating_mul(1000) && soonest.is_none_or(|held| at < held) {
+                    soonest = Some(at);
+                }
+            };
+            for workspace in &tree.workspaces {
+                if let Some(at) = workspace.policy.restricted_until(person, &context) {
+                    consider(at);
+                }
+                for grant in &workspace.policy.grants {
+                    if let tilo_action_policy::Lifetime::Until(at) = grant.lifetime {
+                        consider(at);
+                    }
+                }
+                for capability in &workspace.sandbox {
+                    if let tilo_action_policy::Lifetime::Until(at) = capability.lifetime {
+                        consider(at);
+                    }
+                }
+            }
+            soonest.map(|at| Duration::from_millis(at.saturating_sub(now.saturating_mul(1000))))
+        })
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
@@ -300,6 +401,7 @@ pub(crate) fn reading_of(
     person: &str,
     chosen: &[(AppKey, String, tilo_dialogs::chosen::Chosen)],
     paths: &mut Paths,
+    mounts: u64,
 ) -> Value {
     let apps = crate::workspace_settings::Directory::default();
     let now = tilo_clock::unix_now();
@@ -307,7 +409,7 @@ pub(crate) fn reading_of(
     for workspace in &tree.workspaces {
         let grants: Vec<Value> = listed_permissions(workspace, &apps, person)
             .into_iter()
-            .filter_map(|grant| entry_of(workspace, &apps, person, &grant, now, paths))
+            .filter_map(|grant| entry_of(workspace, &apps, person, &grant, now, paths, mounts))
             .collect();
         groups.push((workspace.id().to_string(), workspace.name.clone(), grants));
     }
@@ -347,6 +449,7 @@ fn entry_of(
     listed: &tilo_session_core::desktop::workspace_settings::ListedPermission,
     now: u64,
     paths: &mut Paths,
+    mounts: u64,
 ) -> Option<Value> {
     let held = workspace
         .policy
@@ -361,7 +464,7 @@ fn entry_of(
         (Some(app), Some(record)) if app == fs_protocol::tree::FILES_APP => {
             let uuid = uuid::Uuid::parse_str(record).ok()?;
             paths
-                .of(*uuid.as_bytes())
+                .of(mounts, *uuid.as_bytes())
                 .map(|path| path.to_string_lossy().into_owned())?
         }
         _ => return None,
@@ -481,7 +584,7 @@ mod tests {
             )
             .through("so.tilo.browser"),
         ]);
-        let read = reading_of(&tree, "ada", &[], &mut paths());
+        let read = reading_of(&tree, "ada", &[], &mut paths(), 0);
         assert_eq!(read["known"], serde_json::json!(true));
         // The capabilities are no file access, so this view holds none of them; the Permissions
         // tab still lists them.
@@ -492,10 +595,16 @@ mod tests {
     /// cannot check rather than that there are none.
     #[test]
     fn nothing_given_and_nothing_read_are_said_apart() {
-        let empty = reading_of(&workspace_with_caps(Vec::new()), "ada", &[], &mut paths());
+        let empty = reading_of(
+            &workspace_with_caps(Vec::new()),
+            "ada",
+            &[],
+            &mut paths(),
+            0,
+        );
         assert_eq!(empty["known"], serde_json::json!(true));
         assert_eq!(empty["workspaces"], serde_json::json!([]));
-        let unread = reading_of(&Layout::default(), "ada", &[], &mut paths());
+        let unread = reading_of(&Layout::default(), "ada", &[], &mut paths(), 0);
         assert_eq!(unread["known"], serde_json::json!(false));
     }
 
@@ -519,6 +628,7 @@ mod tests {
             "ada",
             &[(key, "token".to_owned(), held)],
             &mut paths(),
+            0,
         );
         assert_eq!(read["known"], serde_json::json!(true));
         let grants = read["workspaces"][0]["grants"].as_array().expect("grants");
@@ -532,7 +642,7 @@ mod tests {
     #[test]
     fn the_service_publishes_the_reading_where_a_view_reads_it() {
         let handle = DesktopHandle::new(workspace_with_caps(Vec::new()), 1);
-        let served = Served::new(handle, "ada".into(), None, None);
+        let served = Served::new(handle, "ada".into(), None, None, MountMoves::default());
         let published = served.resources();
         assert_eq!(published.len(), 1);
         assert_eq!(published[0].id.as_str(), RESOURCE);
@@ -554,5 +664,74 @@ mod tests {
         );
         assert_eq!(chosen_id("chosen:app-id"), None);
         assert_eq!(chosen_id("some-grant"), None);
+    }
+
+    /// A workspace that lands on the shell reaches the reading on the session's next pass, with no
+    /// clock between: what the reading is made from is what the shell holds.
+    #[test]
+    fn a_workspace_that_lands_reaches_the_reading_without_a_clock() {
+        let handle = DesktopHandle::new(Layout::default(), 1);
+        let mut served = Served::new(
+            handle.clone(),
+            "ada".into(),
+            None,
+            None,
+            MountMoves::default(),
+        );
+        assert!(served.poll(), "the first reading is published");
+        assert_eq!(
+            served.read(RESOURCE).expect("the reading")["known"],
+            serde_json::json!(false)
+        );
+        assert!(!served.poll(), "nothing moved is no change");
+        // The workspace's governance lands on the shell, as the daemon's reading projects it.
+        handle.replace_tree(workspace_with_caps(Vec::new()));
+        assert!(served.poll(), "a workspace that landed is news");
+        assert_eq!(
+            served.read(RESOURCE).expect("the reading")["known"],
+            serde_json::json!(true)
+        );
+        assert!(!served.poll(), "nothing moved since is no change");
+    }
+
+    /// A file chosen for an app outside any workspace reaches the reading as it is chosen, and
+    /// leaves it as it is taken back: the device's record is what the reading follows.
+    #[test]
+    fn a_choice_made_reaches_the_reading_without_a_clock() {
+        let tree = workspace_with_caps(Vec::new());
+        let workspace = tree.workspaces[0].id().to_string();
+        let table = Arc::new(ChosenTable::new());
+        let mut served = Served::new(
+            DesktopHandle::new(tree, 1),
+            "ada".into(),
+            None,
+            Some(Arc::clone(&table)),
+            MountMoves::default(),
+        );
+        assert!(served.poll(), "the first reading is published");
+        assert_eq!(
+            served.read(RESOURCE).expect("the reading")["workspaces"],
+            serde_json::json!([])
+        );
+        assert!(!served.poll(), "nothing moved is no change");
+
+        let dir = tempfile::tempdir().expect("a folder");
+        let file = dir.path().join("plan.md");
+        std::fs::write(&file, b"plan").expect("a file");
+        let key = AppKey::new(&workspace, "so.tilo.notes").expect("a key");
+        table
+            .grant(&key, &file, ChosenKind::Read)
+            .expect("the person chose it");
+        assert!(served.poll(), "a choice made is news");
+        let read = served.read(RESOURCE).expect("the reading");
+        assert_eq!(read["workspaces"][0]["grants"][0]["app"], "so.tilo.notes");
+
+        let token = table.tokens(&key)[0].clone();
+        assert!(table.forget(&key, &token), "the choice is taken back");
+        assert!(served.poll(), "a choice taken back is news");
+        assert_eq!(
+            served.read(RESOURCE).expect("the reading")["workspaces"],
+            serde_json::json!([])
+        );
     }
 }
