@@ -488,14 +488,21 @@ fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
         .collect()
 }
 
-/// Click the sidebar's item titled `label`, as a person does: a list's heading over a day
-/// shares the label and folds its group, so the item clicked is the one the sidebar holds:
-/// the tree's.
+/// Click the sidebar's item whose name begins with `label`, as a person does: a list's heading
+/// over a day shares the label and folds its group, so the item clicked is the one the sidebar
+/// holds: the tree's. A row is named by its title, which the label may be the start of (a task
+/// quoted by the first words of its title).
 fn click_item(app: &mut TestApp<TlApp>, label: &str) {
     let all = accessible(app);
     let found = all
         .iter()
-        .find(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(label))
+        .find(|node| {
+            node.role == ui::a11y::Role::TreeItem
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with(label))
+        })
         .and_then(|node| node.bounds);
     let Some(b) = found else {
         let named: Vec<(&str, &ui::a11y::Role)> = all
