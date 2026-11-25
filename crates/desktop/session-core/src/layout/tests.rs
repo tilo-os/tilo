@@ -592,3 +592,46 @@ fn recents_are_each_readers_own_over_one_history() {
     };
     assert_eq!(listed(&other, "ada").len(), 3);
 }
+
+// An agent arranging the person's layout writes a change that names it acting for them and
+// carrying the delegation their device gives it: the workspace admits the change by the agent's
+// preset, as it admits every other call the agent makes, and an agent no grant names is refused.
+#[test]
+fn an_agents_arranging_change_carries_the_delegation_its_device_gives_it() {
+    const PERSON: &str = "abababababababababababababababababababababababababababababababab";
+    const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
+    let action = super::LayoutAction::Pin {
+        place: 7,
+        pinned: true,
+    };
+    let agent: tilo_actions::Actor = tilo_actions::MemberId::agent("reading").into();
+    let context = super::step_context(&agent, &action, PERSON);
+    let invoker = context
+        .invoker
+        .as_ref()
+        .expect("the change names who asked");
+    assert_eq!(
+        invoker.acting.member_id(),
+        Some(&tilo_actions::MemberId::agent("reading")),
+        "the change is the agent's, never the person's own"
+    );
+    assert_eq!(
+        invoker.acting.acted_for_person(),
+        Some(PERSON),
+        "it acts for the person whose layout it arranges"
+    );
+    assert!(
+        !invoker.acting.handed_preset(WORKSPACE).is_empty(),
+        "and carries the preset its person's device hands it, so the workspace admits it"
+    );
+
+    // The person's own step names no one but them, and carries no delegation.
+    let person: tilo_actions::Actor = tilo_actions::MemberId::person(PERSON).into();
+    let own = super::step_context(&person, &action, PERSON);
+    let invoker = own.invoker.as_ref().expect("the change names who asked");
+    assert!(invoker.acting.is_person());
+    assert!(
+        invoker.acting.handed_preset(WORKSPACE).is_empty(),
+        "a person's own change delegates nothing"
+    );
+}
