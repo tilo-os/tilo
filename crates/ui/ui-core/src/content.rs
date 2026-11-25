@@ -65,7 +65,9 @@ pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
 
 /// The device content store the launcher handed this process, or `None` when it was handed none
 /// (started outside a Tilo session).
-#[cfg(feature = "native")]
+///
+/// Any process the launcher starts with the capability reaches it, the sandboxed connectors
+/// included: this asks for the store it was handed, and links none of the native runner.
 #[must_use]
 pub fn device() -> Option<ContentStore> {
     tilo_content_device::device()
