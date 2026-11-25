@@ -54,6 +54,7 @@ mod engines;
 #[path = "support/export_probe.rs"]
 mod export_probe;
 mod feedback_picker;
+mod feeds_export;
 mod files;
 mod firewall;
 mod fixtures;

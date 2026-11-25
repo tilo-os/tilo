@@ -624,8 +624,9 @@ action import_opml(lib: Library, file: File) (
     }
 }
 
-/// The library's subscriptions as an OPML 2.0 file.
-action export_opml(lib: Library) -> File (icon: .download, label: "Export OPML…") {
+/// The library's subscriptions as an OPML 2.0 file. The system's one Export… lists it and saves
+/// it where the person says.
+action export_opml(lib: Library) -> File (icon: .download, label: "Export OPML", export: "OPML") {
     let wanted = OpmlWrite(
         feeds: lib.feeds.map(
             f -> OpmlFeed(
@@ -881,9 +882,6 @@ view library_menu(lib: Library) {
                 import_opml(lib),
                 accept: [".opml", ".xml", "text/x-opml", "application/xml", "text/xml"],
             )
-        }
-        ui.MenuItem("Export OPML…", icon: .download) {
-            on choose: file.save(export_opml(lib), name: "feeds.opml")
         }
     }
 }

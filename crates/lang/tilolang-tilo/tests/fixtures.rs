@@ -78,6 +78,12 @@ pub const CALENDAR: (&str, &str) = (
 /// The packages a host loads to run Calendar.
 pub const CALENDAR_SET: &[(&str, &str)] = &[CONTACTS, MAIL, CALENDAR];
 
+/// The Feeds package (`apps/tl/feeds`): the subscriptions a person follows.
+pub const FEEDS: (&str, &str) = (
+    include_str!("../../../../apps/tl/feeds/app.tl"),
+    include_str!("../../../../apps/tl/feeds/app.ids"),
+);
+
 /// The Chat package (`apps/tl/chat`): its own app, with no service's records in it.
 pub const CHAT: (&str, &str) = (
     include_str!("../../../../apps/tl/chat/app.tl"),
