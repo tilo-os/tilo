@@ -68,6 +68,8 @@ mod remote_action_routing;
 mod server_daemon;
 #[path = "server_member_copy.rs"]
 mod server_member_copy;
+#[path = "server_move.rs"]
+mod server_move;
 #[path = "servers_document.rs"]
 mod servers_document;
 #[path = "servers_operations.rs"]

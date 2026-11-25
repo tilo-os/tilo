@@ -306,6 +306,9 @@ tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The device's daemon this host is part of, with the environments it hands the host's
 # Browser.
 tilo-runtime = { path = "../tilo-runtime" }
+# A computer that holds its person's root logs in at a server by its line, as `tilo login
+# --server` does: the move test logs the owner in at the server a workspace moved to.
+tilo-api = { path = "../tilo-api" }
 tilo-app-package = { path = "../tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # The persistent workspace test's page fetches over the workspace's plain listener.
