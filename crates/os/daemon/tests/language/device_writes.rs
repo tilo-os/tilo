@@ -10,6 +10,8 @@ use tilo_actions::remote::ActionCallError;
 use crate::language::guests::guest;
 use crate::language::host;
 
+/// Discussion's package id: the system's comments on any resource of the workspace.
+const DISCUSSION: &str = "so.tilo.lang.discussion";
 /// Chat's package id, as the workspace runs it.
 const CHAT: &str = ui::apps::CHAT;
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.
@@ -62,10 +64,7 @@ fn a_computers_own_tasks_are_made_and_answered_done() {
                     .await,
             );
             assert!(!is_error, "{title} reads where it was made: {task}");
-            assert!(
-                task.contains(title),
-                "the workspace keeps {title}: {task}"
-            );
+            assert!(task.contains(title), "the workspace keeps {title}: {task}");
         }
     });
 }
@@ -154,11 +153,27 @@ fn a_members_device_takes_what_its_role_lets_it() {
             refused(&created),
             "a commenter creates no issue: {created:?}"
         );
+        // A comment on a task is the system's discussion, not Tasks' own: Discussion's `comment`,
+        // made from the task it is about, which puts it in that task's thread.
+        let discussion = format!("{}:{DISCUSSION}:", tilo_actions::remote::RESOURCE_PROVIDER);
+        let says = commenter
+            .listed(&discussion)
+            .await
+            .into_iter()
+            .find(|action| action.address.action == "comment")
+            .expect("Discussion offers the commenter its comment");
+        let about = tilo_actions::params::MadeFrom {
+            resource: issue.clone(),
+            kind: "tl.so.tilo.tasks.Task".to_owned(),
+        };
         let comment = commenter
             .call(
-                &tasks,
-                tilo_actions::ActionAddress::new("tasks.issues", "comment"),
-                &json!({"issue": issue, "text": "Seen by Cyd"}),
+                &discussion,
+                says.address,
+                &json!({
+                    "text": "Seen by Cyd",
+                    (tilo_actions::params::FROM_ARGUMENT): about.to_json(),
+                }),
             )
             .await
             .expect("a commenter's comment answers");
