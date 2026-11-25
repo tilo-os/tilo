@@ -245,7 +245,8 @@ fn a_carried_account_asks_for_the_bot_token_again() {
     let documents = documents();
     let replica = opened(&documents);
     assert_eq!(replica.host.migrate(), 1, "the migration carries it");
-    replica.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &replica.host,
         vec![tilolang_runtime::members::Member::person(
             "ada",
             tilo_actions::policy::Role::Moderator,
@@ -327,7 +328,8 @@ fn only_the_discord_apps_own_process_carries_the_bridge() {
     use tilolang_runtime::ids::AppId;
 
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![tilolang_runtime::members::Member::person(
             "ada",
             tilo_actions::policy::Role::Owner,

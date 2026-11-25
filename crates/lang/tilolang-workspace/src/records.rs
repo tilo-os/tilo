@@ -403,7 +403,7 @@ impl Opened {
             // The owner stands at no window here: whoever the policy names, the host names the
             // same.
             let access = MemberAccess::person(policy, me.clone());
-            host.give_members(&access, &me);
+            host.give_member_policy(&access, &me);
         }
         Ok(Self {
             host,

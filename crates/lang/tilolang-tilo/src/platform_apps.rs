@@ -190,8 +190,8 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
 /// The activity's root, the one resource every change and every verb of it is on.
 const ACTIVITY_ROOTS: &[(&str, &str, &str)] = &[("history", "Activity", "workspace.activity")];
 
-/// Where the workspace's members are read: everyone in it now, which every host serves its
-/// runtime from the member list it decides by ([`crate::host::Host::follow_members`]).
+/// Where the workspace's members are read: everyone in it now, which every host reads through
+/// its store, in the workspace it is in ([`crate::host::Host::follow_members`]).
 pub const WORKSPACE_MEMBERS: &str = "workspace/members";
 /// Where the workspace's content is read: its owners' limits on what members post there, and
 /// the content a limit refused, which every host serves its runtime from what it decides by
@@ -1033,10 +1033,10 @@ impl Roots {
     /// Start `target` reading what it would before its app publishes anything
     /// ([`platform_root_defaults`]), so a view that reads a field of it runs as the app opens,
     /// rather than trapping on a resource with no reading at all. The session's first reading
-    /// replaces it. A root the host serves itself (the workspace's members) already reads as it
-    /// serves it.
+    /// replaces it. A root the host reads in its own workspace (its members) reads as it is
+    /// there.
     fn seed(host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
-        if !host.runtime().serves(target) {
+        if !host.reads_in_workspace(target) {
             let _ = host
                 .runtime()
                 .set_reading(target, platform_root_defaults(&target.id_string()));
@@ -1079,7 +1079,7 @@ impl Roots {
         for (target, reading) in &self.followed {
             while let Some(result) = reading.latest() {
                 match result {
-                    Ok(_) if runtime.serves(target) => {}
+                    Ok(_) if host.reads_in_workspace(target) => {}
                     Ok(reading) => {
                         moved |= runtime.set_reading(target, &reading).unwrap_or_else(|error| {
                             tracing::warn!(%error, resource = %target.id_string(), "a platform reading was refused");

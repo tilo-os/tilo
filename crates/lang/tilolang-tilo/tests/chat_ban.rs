@@ -70,7 +70,8 @@ fn view_id(r: &Replica, name: &str) -> String {
 /// The workspace as Chat's replica `name` reads it: ada owns it, ben and cy edit, mo moderates.
 fn chat(name: &str) -> Replica {
     let (replica, _) = Replica::new(name, Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    replica.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &replica.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),

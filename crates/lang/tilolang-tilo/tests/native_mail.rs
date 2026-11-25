@@ -224,7 +224,8 @@ fn a_native_mailbox_is_carried_over_once_each_draft_its_authors() {
     assert_eq!(ada.commit(), 0);
 
     // Where they were carried, each draft is read by whoever wrote it and no one else.
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             Member::person("u_ada", Role::Owner),
             Member::person("u_leo", Role::Editor),

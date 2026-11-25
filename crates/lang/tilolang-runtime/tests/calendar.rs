@@ -104,7 +104,8 @@ mod cases {
         rt.set_notices(raised.clone());
         let sink = MemorySink::new();
         rt.set_sink(sink.clone());
-        rt.set_members(
+        stage_members(
+            &rt,
             vec![tilolang_runtime::members::Member::person(
                 "me",
                 tilo_actions::policy::Role::Owner,
@@ -901,7 +902,8 @@ mod cases {
         let anchor = s.read(&s.root, "anchor_at");
 
         // Bo is a member too, and looks at the same window.
-        s.rt.set_members(
+        stage_members(
+            &s.rt,
             vec![
                 tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
                 tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),

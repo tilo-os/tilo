@@ -930,7 +930,8 @@ tilo_test_env::scenario! {
         );
         let runtime = ada.host.runtime();
         // The workspace's membership reaches her window, and his mark of the channel with it.
-        runtime.set_members(
+        crate::fixtures::stage_members(
+            &ada.host,
             vec![
                 tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Editor),
                 tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -1160,7 +1161,7 @@ tilo_test_env::scenario! {
         ada.commit();
         let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
         // The workspace's membership, as the host hands it to the runtime.
-        ada.host.runtime().set_members(
+        crate::fixtures::stage_members(&ada.host,
             vec![
                 tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
                 tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -1298,7 +1299,7 @@ tilo_test_env::scenario! {
         );
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
-        ada.host.runtime().set_members(
+        crate::fixtures::stage_members(&ada.host,
             vec![
                 tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
                 tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -1534,7 +1535,8 @@ fn a_channel_lists_its_threads_and_opening_one_opens_it() {
 fn a_place_is_keyed_by_its_conversation_so_a_rename_and_a_twin_name_stay_apart() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     // Ada owns the workspace: a channel's name is its moderators' to change.
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -2083,7 +2085,8 @@ fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
 #[test]
 fn a_report_is_settled_by_a_moderator_and_refused_to_anyone_else() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -2374,7 +2377,8 @@ fn a_draft_is_its_authors_alone_and_the_send_empties_it() {
     // Another member reads no draft of hers: what a person is half-way through writing is
     // theirs until they send it. Opening the channel makes him one of his own, never hers.
     let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
-    ben.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ben.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -2684,7 +2688,8 @@ fn set_aside_then_restored(ada: &Replica, design: &Value) {
 #[test]
 fn a_channels_name_topic_and_place_are_the_moderators_to_change() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -3008,7 +3013,8 @@ fn raised_content() -> tilolang_tilo::content::WorkspaceContent {
 #[test]
 fn a_relayed_message_from_a_linked_account_wears_its_members_face() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -3174,7 +3180,8 @@ fn an_answer_carries_its_reasoning_and_continues_where_it_stopped() {
 #[test]
 fn a_person_is_reported_and_a_decision_is_overturned_on_the_moderators_page() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),

@@ -363,9 +363,9 @@ impl SessionOrigin {
                 };
                 target
             };
-            // A root the part's host serves itself (the workspace's members) is read as it
-            // serves it, never as the session publishes it.
-            if cx.host.runtime().serves(&target) {
+            // A root the part's host reads in its own workspace (its members) is read there,
+            // never as the session publishes it.
+            if cx.host.reads_in_workspace(&target) {
                 seen.insert(id, generation);
                 continue;
             }

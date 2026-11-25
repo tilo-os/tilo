@@ -289,7 +289,8 @@ fn a_record_an_agent_makes_is_the_person_it_acts_for() {
     ada.commit();
     // The runtime answers what the store does: the draft is Ada's, though her agent wrote it,
     // and history still names the agent as who wrote it.
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),

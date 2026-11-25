@@ -141,7 +141,8 @@ fn open(r: &Replica, at: &tilolang_runtime::ResourceRef) -> ViewInstance {
 
 fn workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             Member::person("ada", Role::Owner),
             Member::person("ben", Role::Moderator),

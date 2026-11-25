@@ -154,4 +154,5 @@ mod vision;
 mod weather;
 mod windows_apps;
 mod words;
+mod workspace_members;
 mod written_views;

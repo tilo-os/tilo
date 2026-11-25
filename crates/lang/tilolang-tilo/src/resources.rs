@@ -1136,6 +1136,72 @@ impl ResourceStore {
         }
     }
 
+    /// The workspace's members' resource as the workspace this store reads answers it: who is in
+    /// it (`people`). A store kept by a workspace answers it from the workspace's governance; one
+    /// held in this process keeps it as a record of its own, written by the workspace's
+    /// add-member and remove-member actions ([`Self::change_workspace_members`]). `None` while it
+    /// holds no such record.
+    ///
+    /// # Errors
+    /// The store could not be read.
+    pub fn workspace_members(&self) -> Result<Option<Json>, StoreError> {
+        match self.command(Command::Content {
+            kind: tilo_resource_store::WORKSPACE_MEMBERS_KIND.to_owned(),
+            id: tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned(),
+        })? {
+            Reply::Content(content) => Ok(content),
+            other => Err(backend(format!("a read answered {other:?}"))),
+        }
+    }
+
+    /// Carry out the workspace's member action `verb` (`add-member`, `remove-member`) on the
+    /// members' record of a store held in this process: `people` is who is in it after, and
+    /// `invoker` who invoked it. A store a workspace keeps refuses it: its members change
+    /// through the workspace's governance.
+    ///
+    /// # Errors
+    /// The store refused the write.
+    pub fn change_workspace_members(
+        &self,
+        verb: &str,
+        invoker: &Actor,
+        people: Json,
+    ) -> Result<(), StoreError> {
+        let kind = tilo_resource_store::WORKSPACE_MEMBERS_KIND;
+        let id = tilo_resource_store::WORKSPACE_MEMBERS_ID;
+        let held = self.workspace_members()?.is_some();
+        let stamp = self.history_stamp(verb, Some(invoker));
+        let edit = Command::Edit {
+            kind: kind.to_owned(),
+            id: id.to_owned(),
+            edits: vec![Edit::Set {
+                field: "people".to_owned(),
+                value: people,
+            }],
+            stamp: stamp.clone(),
+        };
+        let command = if held {
+            edit
+        } else {
+            Command::Batch(vec![
+                Command::Put {
+                    kind: kind.to_owned(),
+                    id: id.to_owned(),
+                    resource: Resource {
+                        readers: collab_types::EVERY_MEMBER.to_owned(),
+                        parent: None,
+                        order: None,
+                        fields: BTreeMap::new(),
+                    },
+                    stamp,
+                },
+                edit,
+            ])
+        };
+        self.command(command)?;
+        Ok(())
+    }
+
     /// Hold back what is committed from here on, as a scenario stages a workspace: what it
     /// writes at `sample_at` (its sample data, written without a time of its own) is the
     /// workspace before its story, and [`Self::release_sample`] dates it so.

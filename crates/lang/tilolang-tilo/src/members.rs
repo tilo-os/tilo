@@ -225,22 +225,28 @@ impl tilo_resource_store::RecordReader for MemberRecordReads {
 }
 
 impl Host {
-    /// Give the runtime the workspace's members as the policy the host decides by has them now
-    /// (its authority's access), when it changed: who is in it, their roles, and who reads what.
-    /// A window's instance follows them each frame, and a read follows them before it reads, so
-    /// a host the session keeps decides who reads what as a window's does. Whether it did.
+    /// Hand the runtime the workspace's members as they stand: who is in it, read from the
+    /// workspace's members' resource through this host's store, again whenever a change of the
+    /// members or of its policy may have moved it ([`Self::read_workspace_members`]); and the
+    /// policy the host decides by (its authority's access), when it changed: their roles, and
+    /// who reads what. A window's instance follows them each frame, and a read follows them
+    /// before it reads, so a host the session keeps decides who reads what as a window's does.
+    /// Whether either moved.
     pub fn follow_members(&self) -> bool {
+        let policy = self.follow_member_policy();
+        self.read_workspace_members() || policy
+    }
+
+    /// Give the runtime the policy the host decides by, when it changed. Whether it did.
+    fn follow_member_policy(&self) -> bool {
         let Some(access) = self.authority().access() else {
-            // A host with no workspace policy yet names no member but those a scenario staged:
-            // the members root is served from them, so an app reading it finds a list rather
-            // than waiting on a reading that never comes. It follows the policy once one arrives.
-            self.runtime()
-                .serve_members(&crate::platform_apps::workspace_members());
+            // A host with no workspace policy yet decides by none: the people its members'
+            // resource names are in it, with no role. It follows the policy once one arrives.
             return false;
         };
         let person = access.person_id().unwrap_or_default();
         // Who reads a resource is decided at its app and kind, so a package loaded since the
-        // members were last given is a change too: its resources were decided at the workspace.
+        // policy was last given is a change too: its resources were decided at the workspace.
         let kinds = kind_nodes(self);
         let seen = self
             .inner
@@ -266,27 +272,162 @@ impl Host {
                 .and_then(MemberId::person_id)
                 .unwrap_or(person),
         );
-        self.give_members(&access, &me);
+        self.runtime()
+            .set_member_policy(members_of(&access, &me), Some(reads_of(&access, &me, self)));
         *self.inner.members_from.borrow_mut() = Some((
             person.to_owned(),
             std::sync::Arc::unwrap_or_clone(access.policy),
             kinds,
         ));
+        // A change of the members' policy is a change of the governance that names who is in
+        // the workspace: its members' resource is read again with it.
+        self.inner.members_stale.set(true);
         true
     }
-}
 
-impl Host {
-    /// Give the runtime the workspace's members as `access` has them, `me` the person it is read
-    /// for: the reading of the Workspace package's `members` root (`workspace.members.people`
-    /// of `use tilo.workspace as workspace`), which the host serves from the member list it
-    /// decides by whatever the session publishes, and their roles and who of them reads what
-    /// (`members(r)`, `std.may_read`).
-    pub fn give_members(&self, access: &MemberAccess, me: &PersonId) {
+    /// Read the workspace's members' resource again when anything that may have moved it did:
+    /// the store moving as a whole or that record of it, the policy, or a member action of this
+    /// host's. The reading is handed to the runtime as any other, so the same members read
+    /// again move nothing. Whether the reading moved.
+    pub fn read_workspace_members(&self) -> bool {
+        let moved = self.inner.members_watch.take();
+        let id = tilo_resource_store::WORKSPACE_MEMBERS_ID;
+        if moved.everything
+            || moved.docs.contains(id)
+            || moved
+                .fields
+                .values()
+                .any(|fields| fields.iter().any(|(resource, _)| resource == id))
+        {
+            self.inner.members_stale.set(true);
+        }
+        if !self.inner.members_stale.replace(false) {
+            return false;
+        }
+        let people = match self.workspace_people() {
+            Ok(people) => people,
+            Err(error) => {
+                tracing::warn!(%error, "the workspace's members did not read");
+                return false;
+            }
+        };
+        let me = self.viewer().clone();
+        let mine = self
+            .authority()
+            .access()
+            .and_then(|access| access.person_id().map(PersonId::from));
+        // The software the policy made members (agents its grants admitted, installed bots) is
+        // in the workspace beside its people: the policy names them, not its member list.
+        let software: Vec<Actor> = self
+            .runtime()
+            .member_policy()
+            .into_iter()
+            .filter(|member| !member.id.is_person())
+            .map(|member| member.who())
+            .filter(|who| !people.contains(who))
+            .collect();
+        let people: Vec<serde_json::Value> = people
+            .into_iter()
+            .chain(software)
+            .map(|who| {
+                // The person at the window is the runtime's `me`, as the policy names them.
+                let who = match (&mine, who.member_id().and_then(MemberId::person_id)) {
+                    (Some(mine), Some(person)) if person == mine.as_str() => me.clone(),
+                    _ => who,
+                };
+                tilolang_runtime::value::to_json(&tilolang_runtime::Value::Actor(who))
+                    .unwrap_or_default()
+            })
+            .collect();
+        let reading = serde_json::json!({ "people": people });
         self.runtime()
-            .serve_members(&crate::platform_apps::workspace_members());
-        self.runtime()
-            .set_members(members_of(access, me), Some(reads_of(access, me, self)));
+            .set_reading(
+                &crate::platform_apps::workspace_members(),
+                &reading.to_string(),
+            )
+            .unwrap_or_else(|error| {
+                tracing::error!(%error, "the workspace's members were refused as a reading");
+                false
+            })
+    }
+
+    /// Who the workspace's members' resource names now, as this host's store reads it.
+    fn workspace_people(&self) -> Result<Vec<Actor>, String> {
+        let reading = self
+            .store()
+            .workspace_members()
+            .map_err(|error| error.to_string())?;
+        Ok(reading
+            .as_ref()
+            .and_then(|reading| reading.get("people"))
+            .and_then(serde_json::Value::as_array)
+            .map(|people| {
+                people
+                    .iter()
+                    .filter_map(|person| match tilolang_runtime::value::from_json(person) {
+                        Ok(tilolang_runtime::Value::Actor(who)) => Some(who),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Carry out the workspace's add-member action for `who`, as this host's viewer: they are in
+    /// its members' resource from now on, and the runtime reads them there at once.
+    ///
+    /// # Errors
+    /// The store refused the change: a workspace's members change through its governance.
+    pub fn add_workspace_member(&self, who: &Actor) -> Result<(), String> {
+        self.change_workspace_members(tilo_action_policy::roles::governance::ADD_MEMBER, who)
+    }
+
+    /// Carry out the workspace's remove-member action for `who`, as this host's viewer.
+    ///
+    /// # Errors
+    /// As [`Self::add_workspace_member`].
+    pub fn remove_workspace_member(&self, who: &Actor) -> Result<(), String> {
+        self.change_workspace_members(tilo_action_policy::roles::governance::REMOVE_MEMBER, who)
+    }
+
+    /// Decide by `access`, `me` the person it is read for, rather than by the host's own
+    /// authority: the members' roles and who of them reads what (`members(r)`,
+    /// `std.may_read`). Who is in the workspace is still its members' resource.
+    pub fn give_member_policy(&self, access: &MemberAccess, me: &PersonId) {
+        self.take_member_policy(members_of(access, me), Some(reads_of(access, me, self)));
+    }
+
+    /// Decide by `policy`, the members' roles and the software made members, and by `reads`
+    /// who of them reads what, rather than by the host's own authority; the workspace's
+    /// members' reading names the software with its people from now on.
+    pub fn take_member_policy(&self, policy: Vec<Member>, reads: Option<Rc<Reads>>) {
+        self.runtime().set_member_policy(policy, reads);
+        self.inner.members_stale.set(true);
+        self.read_workspace_members();
+    }
+
+    fn change_workspace_members(&self, verb: &str, who: &Actor) -> Result<(), String> {
+        let mut people = self.workspace_people()?;
+        let held = people.contains(who);
+        let adds = verb == tilo_action_policy::roles::governance::ADD_MEMBER;
+        if held == adds {
+            return Ok(());
+        }
+        if adds {
+            people.push(who.clone());
+        } else {
+            people.retain(|person| person != who);
+        }
+        let people = people
+            .into_iter()
+            .map(|who| tilolang_runtime::value::to_json(&tilolang_runtime::Value::Actor(who)))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.store()
+            .change_workspace_members(verb, self.viewer(), serde_json::Value::Array(people))
+            .map_err(|error| error.to_string())?;
+        self.inner.members_stale.set(true);
+        self.read_workspace_members();
+        Ok(())
     }
 }
 

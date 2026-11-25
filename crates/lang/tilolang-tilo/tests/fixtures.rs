@@ -352,6 +352,7 @@ impl Replica {
     ) -> (Self, Vec<Package>) {
         let store = doc.store();
         let watch = store.watch();
+        let policy = access().map(|access| access.policy);
         let host = Host::open(
             store,
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name)),
@@ -359,6 +360,9 @@ impl Replica {
             access,
         )
         .unwrap();
+        if let Some(policy) = policy {
+            stage_people(&host, &policy);
+        }
         host.runtime().set_foreign_invoker(Dispatch);
         let loaded = packages
             .iter()
@@ -831,4 +835,35 @@ pub fn control_under(tree: &UiNode, title: &str, kind: &str) -> String {
         })
         .key
         .clone()
+}
+
+/// Stage the workspace `host` is in as having `members`: each person among them added through
+/// the workspace's add-member action and anyone no longer among them (a person or an agent a
+/// scenario named) removed through its remove-member action, as the host's viewer, and every
+/// one of them with their role in the policy the host decides by, which decides by `reads` who
+/// reads what (`None`: everyone reads everything).
+pub fn stage_members(
+    host: &Host,
+    members: Vec<tilolang_runtime::members::Member>,
+    reads: Option<Rc<tilolang_runtime::members::Reads>>,
+) {
+    for gone in host.runtime().members() {
+        if !members.iter().any(|member| member.id == gone.id) {
+            host.remove_workspace_member(&gone.who()).unwrap();
+        }
+    }
+    for member in members.iter().filter(|member| member.id.is_person()) {
+        host.add_workspace_member(&member.who()).unwrap();
+    }
+    host.take_member_policy(members, reads);
+}
+
+/// Stage the people `policy` names (its owner and its members) in the workspace `host` is in,
+/// through the workspace's add-member action: the store here keeps no governance of its own, so
+/// its members' resource is a plain record the test writes as the workspace would.
+pub fn stage_people(host: &Host, policy: &tilo_action_policy::WorkspacePolicy) {
+    for person in policy.owner.iter().chain(policy.members.keys()) {
+        host.add_workspace_member(&tilolang_tilo::personal::actor(person))
+            .expect("the workspace adds its people");
+    }
 }

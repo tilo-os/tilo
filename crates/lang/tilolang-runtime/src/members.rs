@@ -1,12 +1,16 @@
 //! Who is in the workspace as code asks it: `members(r)`, `std.may_read`, and what an actor is
 //! (`p.kind()`, `p.role()`, `p.app()`).
 //!
-//! The members are the platform's: the host reads them from the workspace's membership (its
-//! members, their roles and grants) and gives them to the runtime whenever they change
-//! ([`crate::Runtime::set_members`]). The runtime keeps no copy of its own beyond the last
-//! answer, and an app keeps none at all. A view that read them runs again when they change, as
-//! one that read the lenses on a resource does.
+//! Who is in the workspace is its `workspace/members` resource: the host reads it through the
+//! store it reads every record through, keyed by the workspace it runs in, and hands the runtime
+//! its reading ([`crate::Runtime::set_members_root`]). Their roles and who of them reads what are
+//! the workspace's policy, which the host gives whenever it changes
+//! ([`crate::Runtime::set_member_policy`]). A scenario's people join through the workspace's
+//! own add-member action ([`crate::Runtime::set_member_adder`]). The runtime keeps no list of
+//! its own beyond the last reading, and an app keeps none at all. A view that read them runs
+//! again when either changes, as one that read the lenses on a resource does.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_actions::policy::{MemberId, Role};
@@ -68,18 +72,27 @@ fn kind_case(who: &Actor) -> i64 {
 /// Whether a member can read a resource, as the workspace's grants decide.
 pub type Reads = dyn Fn(&Actor, &ResourceRef) -> bool;
 
-/// The members the host gave last, and how it decides who reads what.
+/// Carry out the workspace's add-member action for `who`: what a scenario naming a person
+/// (`person("Mia")`) does, as a seed writes only through declared actions.
+pub type MemberAdder = dyn Fn(&Actor) -> Result<(), String>;
+
+/// The workspace's policy as the host gave it last: the role of each member it names, the
+/// software it made members by its grants, and how it decides who reads what.
 #[derive(Default)]
 pub struct Members {
-    list: Vec<Member>,
+    policy: Vec<Member>,
     reads: Option<Rc<Reads>>,
+    /// The people of the members' reading last parsed, by the reading's generation: a reading
+    /// is parsed once, however many views read it.
+    people: RefCell<Option<(u64, Rc<Vec<Actor>>)>>,
+    adder: Option<Rc<MemberAdder>>,
 }
 
 impl Members {
-    /// The members, in the order the host gave them.
+    /// The members the policy names, with their roles, in the order the host gave them.
     #[must_use]
-    pub fn list(&self) -> &[Member] {
-        &self.list
+    pub fn policy(&self) -> &[Member] {
+        &self.policy
     }
 }
 
@@ -99,53 +112,34 @@ fn members_key() -> StateKey {
 const RECENT: usize = 50;
 
 impl Core {
-    /// Take the workspace's members now, and how its grants decide who reads what (`None`:
-    /// every member reads every resource of the workspace).
-    #[allow(clippy::expect_used, reason = "an actor always writes as JSON")]
-    pub(crate) fn set_members(&self, list: Vec<Member>, reads: Option<Rc<Reads>>) {
+    /// Take the workspace's policy now: each member's role, the software it made members, and
+    /// how its grants decide who reads what (`None`: every member reads every resource of the
+    /// workspace). Who is in it is read from the members' resource ([`Self::read_members`]).
+    pub(crate) fn set_member_policy(&self, policy: Vec<Member>, reads: Option<Rc<Reads>>) {
         let value = Value::List(
-            list.iter()
+            policy
+                .iter()
                 .map(|member| Value::Actor(member.who()))
                 .collect(),
         );
-        let people = self.members_root.borrow().as_ref().map(|root| {
-            let people: Vec<serde_json::Value> = list
-                .iter()
-                .map(|member| {
-                    crate::value::to_json(&Value::Actor(member.who()))
-                        .expect("an actor writes as JSON")
-                })
-                .collect();
-            (root.clone(), serde_json::json!({ "people": people }))
-        });
-        *self.members.borrow_mut() = Members { list, reads };
-        // Grants may have moved even where the list did not: every reader runs again.
-        self.view_states.borrow_mut().set(members_key(), value);
-        // `workspace.members.people` reads the members root: a member a scenario names is in
-        // it as soon as they are in the list.
-        if let Some((root, reading)) = people {
-            self.take_reading(&root, reading);
+        {
+            let mut members = self.members.borrow_mut();
+            members.policy = policy;
+            members.reads = reads;
         }
+        // Grants may have moved even where the roles did not: every reader runs again.
+        self.view_states.borrow_mut().set(members_key(), value);
     }
 
-    /// Serve the members root `root` from these members, now and after every change
-    /// (`Runtime::serve_members`).
-    ///
-    /// Serving a root it already serves changes nothing: [`Self::set_members`] keeps its reading
-    /// current with every change to the list. A host with no workspace policy asks for it every
-    /// frame, and taking the list again would run every view that reads the members again each
-    /// time, so the window would never rest.
-    pub(crate) fn serve_members(&self, root: &ResourceRef) {
-        if self.members_root.borrow().as_ref() == Some(root) {
-            return;
-        }
-        self.foreign.borrow_mut().serve(root);
+    /// Read who is in the workspace from `root`, its members' resource, whose reading the host
+    /// hands in as it hands in any other ([`crate::Runtime::set_reading`]).
+    pub(crate) fn set_members_root(&self, root: &ResourceRef) {
         *self.members_root.borrow_mut() = Some(root.clone());
-        let (list, reads) = {
-            let members = self.members.borrow();
-            (members.list.clone(), members.reads.clone())
-        };
-        self.set_members(list, reads);
+    }
+
+    /// Carry out the workspace's add-member action with `adder` from now on.
+    pub(crate) fn set_member_adder(&self, adder: Rc<MemberAdder>) {
+        self.members.borrow_mut().adder = Some(adder);
     }
 
     /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a
@@ -153,68 +147,132 @@ impl Core {
     /// a person who is not a root key is a sample one, and reads as that name.
     pub(crate) fn named_person(&self, name: &str) -> HResult<Actor> {
         match tilo_actions::policy::PersonId::parse(name) {
-            Ok(id) if !name.is_empty() => Ok(self.named_member(MemberId::Person(id))),
+            Ok(id) if !name.is_empty() => self.named_member(MemberId::Person(id)),
             _ => trap(format!("person: a name without `:`, got {name:?}")),
         }
     }
 
     /// A scenario named software (`agent("Scout")`): it is a member of the workspace it stages,
-    /// as an agent of it is, and views offer it beside the people and mark it as software. It is
-    /// an agent of the person the scenario runs as.
+    /// as an agent of it is, and views offer it beside the people and mark it as software.
     pub(crate) fn named_agent(&self, name: &str) -> HResult<Actor> {
         let Actor::Member(MemberId::Person(person) | MemberId::Agent { person, .. }) =
             self.looking()?
         else {
             return trap("agent: a scenario names an agent of the person it runs as");
         };
-        Ok(self.named_member(MemberId::agent(format!("scenario:{name}"), person)))
+        self.named_member(MemberId::agent(format!("scenario:{name}"), person))
     }
 
-    /// Adds the member `id` to the workspace, unless it is one already, and names them. A
-    /// runtime deciding by a real workspace's access adds no one: its members are the
-    /// workspace's, and a scenario run there only names people.
-    fn named_member(&self, id: MemberId) -> Actor {
+    /// Adds the member `id` to the workspace through its add-member action, unless it is one
+    /// already, and names them. A runtime deciding by a real workspace's access adds no one: its
+    /// members are the workspace's, and a scenario run there only names people.
+    fn named_member(&self, id: MemberId) -> HResult<Actor> {
         let who = Actor::Member(id.clone());
-        if self.members_decided.get()
-            || self
-                .members
-                .borrow()
-                .list
-                .iter()
-                .any(|member| member.id == id)
-        {
-            return who;
+        if self.members_decided.get() || self.member_list().iter().any(|member| member.id == id) {
+            return Ok(who);
         }
-        let (mut list, reads) = {
-            let members = self.members.borrow();
-            (members.list.clone(), members.reads.clone())
+        let adder = self.members.borrow().adder.clone();
+        let Some(adder) = adder else {
+            return trap(format!(
+                "{}: this host adds nobody to its workspace",
+                crate::ids::actor_text(&who)
+            ));
         };
-        list.push(Member { id, role: None });
-        self.set_members(list, reads);
-        who
+        match adder(&who) {
+            Ok(()) => Ok(who),
+            Err(why) => trap(format!(
+                "{} could not be added to the workspace: {why}",
+                crate::ids::actor_text(&who)
+            )),
+        }
     }
 
-    /// The members, noted as read by the running view.
-    pub(crate) fn read_members(&self) -> Vec<Member> {
-        let key = members_key();
-        let (value, generation) = {
-            let states = self.view_states.borrow();
-            (
-                states.get(&key).cloned().unwrap_or(Value::List(Vec::new())),
-                states.generation(&key),
-            )
+    /// The people the members' reading names, parsed once per reading.
+    fn people(&self) -> Rc<Vec<Actor>> {
+        let Some(root) = self.members_root.borrow().clone() else {
+            return Rc::default();
         };
-        self.note_state_read(key, generation, &value);
-        self.members.borrow().list.clone()
+        let foreign = self.foreign.borrow();
+        let generation = foreign.generation(&root);
+        let members = self.members.borrow();
+        if let Some((held, people)) = members.people.borrow().as_ref()
+            && *held == generation
+        {
+            return Rc::clone(people);
+        }
+        let people: Vec<Actor> = foreign
+            .held(&root)
+            .and_then(|reading| reading.get("people"))
+            .and_then(serde_json::Value::as_array)
+            .map(|people| {
+                people
+                    .iter()
+                    .filter_map(|person| match crate::value::from_json(person) {
+                        Ok(Value::Actor(who)) => Some(who),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let people = Rc::new(people);
+        *members.people.borrow_mut() = Some((generation, Rc::clone(&people)));
+        people
+    }
+
+    /// Everyone in the workspace now, not noted as read: the people its members' resource names,
+    /// each with the role the policy gives them, then the software the policy made members.
+    pub(crate) fn member_list(&self) -> Vec<Member> {
+        let people = self.people();
+        let members = self.members.borrow();
+        let mut list: Vec<Member> = people
+            .iter()
+            .filter_map(|who| who.member_id().cloned())
+            .map(|id| {
+                let role = members
+                    .policy
+                    .iter()
+                    .find(|member| member.id == id)
+                    .and_then(|member| member.role);
+                Member { id, role }
+            })
+            .collect();
+        for member in &members.policy {
+            if !member.id.is_person() && !list.iter().any(|held| held.id == member.id) {
+                list.push(member.clone());
+            }
+        }
+        list
+    }
+
+    /// Whether the host gave the workspace's policy.
+    pub(crate) fn knows_policy(&self) -> bool {
+        !self.members.borrow().policy.is_empty()
+    }
+
+    /// The members, noted as read by the running view: it runs again when the members'
+    /// reading or the policy moves.
+    pub(crate) fn read_members(&self) -> Vec<Member> {
+        let mut keys = vec![members_key()];
+        if let Some(root) = self.members_root.borrow().as_ref() {
+            keys.push(crate::foreign::reading_key(root));
+        }
+        for key in keys {
+            let (value, generation) = {
+                let states = self.view_states.borrow();
+                (
+                    states.get(&key).cloned().unwrap_or(Value::List(Vec::new())),
+                    states.generation(&key),
+                )
+            };
+            self.note_state_read(key, generation, &value);
+        }
+        self.member_list()
     }
 
     pub(crate) fn member(&self, who: &Actor) -> Option<Member> {
-        self.members
-            .borrow()
-            .list
-            .iter()
+        self.member_list()
+            .into_iter()
             .find(|member| who.member_id() == Some(&member.id))
-            .cloned()
     }
 
     /// Who spoke in the conversation of `items`: who made them, most recent first, each once,

@@ -635,3 +635,86 @@ async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
     assert!(again.changes.is_empty(), "{again:?}");
     server.shutdown().await;
 }
+
+/// Who is in `workspace` as an app reads its members' resource, by person.
+#[cfg(any(feature = "apps", feature = "agents"))]
+async fn members_read(workspaces: &Workspaces, workspace: &str, reader: &str) -> Vec<String> {
+    let reply = workspaces
+        .resource_read(
+            workspace,
+            reader,
+            &collab_types::store::wire::Command::Content {
+                kind: tilo_resource_store::WORKSPACE_MEMBERS_KIND.to_owned(),
+                id: tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let collab_types::store::wire::Reply::Content(Some(reading)) = reply else {
+        panic!("the members' resource reads as content: {reply:?}");
+    };
+    reading["people"]
+        .as_array()
+        .expect("the members' people")
+        .iter()
+        .map(|who| {
+            let who: Actor = serde_json::from_value(who["actor"].clone()).expect("an actor");
+            who.member_id()
+                .and_then(MemberId::person_id)
+                .expect("a person")
+                .to_owned()
+        })
+        .collect()
+}
+
+#[cfg(any(feature = "apps", feature = "agents"))]
+#[tokio::test]
+async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let reader = person(owner.user_public_key);
+    let first = made_workspace(&workspaces, "First").await;
+    let second = made_workspace(&workspaces, "Second").await;
+    let target = [9u8; 32];
+    workspaces
+        .add_member(
+            &first,
+            &owner,
+            AddMemberRequest {
+                request_id: [1; 32],
+                user_public_key: target,
+                place: MemberPlace::Role(Role::Editor),
+                name: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut both = vec![reader.clone(), person(target)];
+    both.sort();
+    assert_eq!(members_read(&workspaces, &first, &reader).await, both);
+    assert_eq!(
+        members_read(&workspaces, &second, &reader).await,
+        [reader.clone()],
+        "the second workspace's members are its own: the first's new member is not in it"
+    );
+
+    workspaces
+        .remove_member(
+            &first,
+            &owner,
+            RemoveMemberRequest {
+                request_id: [2; 32],
+                user_public_key: target,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        members_read(&workspaces, &first, &reader).await,
+        [reader.clone()],
+        "a removal is read at once"
+    );
+}

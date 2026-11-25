@@ -2015,7 +2015,8 @@ mod cases {
         // Thursday, noon in UTC: "fri 10am" is the Friday after it, at ten.
         w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
         w.rt.set_name_host(Names);
-        w.rt.set_members(
+        stage_members(
+            &w.rt,
             vec![
                 tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
                 tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
@@ -2128,7 +2129,8 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
         w.rt.set_name_host(Names);
-        w.rt.set_members(
+        stage_members(
+            &w.rt,
             vec![
                 tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
                 tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),

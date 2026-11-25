@@ -46,7 +46,7 @@ fn serve(host: &Host, id: &str, ty: &str, reading: &str) {
     let target = tilolang_tilo::runtime::ResourceRef::parse_id(id, ty.to_owned())
         .unwrap_or_else(|| panic!("{id} is a resource id"));
     host.runtime()
-        .serve_reading(&target, reading)
+        .set_reading(&target, reading)
         .expect("the reading is served");
 }
 

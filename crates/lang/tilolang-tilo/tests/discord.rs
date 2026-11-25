@@ -73,7 +73,8 @@ fn run(
 /// A workspace with Ada its owner and Bo an editor, the app's record started, and that account.
 fn workspace() -> (Replica, ResourceRef) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
@@ -561,7 +562,8 @@ fn a_sign_in_offer_is_its_starters(ada: &Replica, account: &ResourceRef) {
 #[test]
 fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -1008,7 +1010,8 @@ fn connected(only: Option<&str>) -> (Replica, ResourceRef) {
 /// The same, with the server mirrored: the bridge makes its channels there.
 fn connected_with(only: Option<&str>, mirror_channels: bool) -> (Replica, ResourceRef) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -1479,7 +1482,8 @@ fn a_linked_discord_account_speaks_as_its_member_and_an_unlinked_one_as_itself()
         Workspace::new(),
         &[(CHAT, CHAT_IDS), (DISCORD, DISCORD_IDS)],
     );
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),

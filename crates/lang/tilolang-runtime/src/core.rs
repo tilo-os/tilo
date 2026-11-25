@@ -244,10 +244,10 @@ pub struct Core {
     /// keeps its own (`device root readings: Readings`) is, at `devices/<device>/…`. `None` for a
     /// host that is a device of its own, which keeps them under `devices/local`.
     pub device: RefCell<Option<String>>,
-    /// The workspace's members, as the host last gave them (`members(r)`).
+    /// The workspace's policy as the host last gave it, and how it adds a member (`members(r)`).
     pub members: RefCell<crate::members::Members>,
-    /// The workspace package's `members` root, when the host serves its reading from these
-    /// members (`Runtime::serve_members`): every change to them is that reading's too.
+    /// The workspace's members' resource, whose reading names who is in it
+    /// (`Runtime::set_members_root`).
     pub members_root: RefCell<Option<crate::value::ResourceRef>>,
     /// The host decides by a real workspace's access (`Runtime::decide_by_workspace`): its
     /// members are the workspace's own, so a scenario stages no one and acts only as whoever

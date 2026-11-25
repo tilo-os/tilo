@@ -218,6 +218,12 @@ pub(crate) struct HostInner {
     carried: Cell<bool>,
     /// The person and policy the runtime's members were last given from ([`Host::follow_members`]).
     pub(crate) members_from: RefCell<Option<crate::members::MembersFrom>>,
+    /// What moved in the store since the workspace's members' resource was last read
+    /// ([`Host::read_workspace_members`]).
+    pub(crate) members_watch: crate::resources::Watch,
+    /// Whether the workspace's members' resource is read again at the next follow: a change of
+    /// the policy or a member action of this host's may have moved it.
+    pub(crate) members_stale: Cell<bool>,
     /// Where the workspace's content is read from, when its embedder has one
     /// ([`Host::follow_content`](crate::content::Host::follow_content)).
     pub(crate) content_source: RefCell<Option<crate::content::ContentSource>>,
@@ -1260,7 +1266,9 @@ impl Host {
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let triggers = crate::triggers::Schedule::new(store.watch());
+        let members_watch = store.watch();
         runtime.set_device(device);
+        runtime.set_members_root(&crate::platform_apps::workspace_members());
         let inner = Rc::new(HostInner {
             handle,
             runtime,
@@ -1276,9 +1284,20 @@ impl Host {
             migrations_wait: Cell::new(false),
             carried: Cell::new(false),
             members_from: RefCell::new(None),
+            members_watch,
+            members_stale: Cell::new(true),
             content_source: RefCell::new(None),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
+        // A scenario naming a person (`person("Mia")`) carries out the workspace's add-member
+        // action, as its viewer: the person is in the workspace's members' resource from then on.
+        let adds = Rc::downgrade(&inner);
+        inner
+            .runtime
+            .set_member_adder(move |who| match adds.upgrade() {
+                Some(inner) => Self { inner }.add_workspace_member(who),
+                None => Err("the host closed".to_owned()),
+            });
         let host = Self { inner };
         // What an app reads of the workspace's members stands from the first frame: the policy
         // the host decides by (or the empty list of a host that has none yet).

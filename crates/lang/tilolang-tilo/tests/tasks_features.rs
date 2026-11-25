@@ -232,7 +232,8 @@ fn a_task_is_given_only_to_a_member_or_the_one_giving_it() {
     use tilolang_runtime::RuntimeError;
     use tilolang_runtime::members::Member;
     let (ada, root) = workspace();
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             Member::person("ada", tilo_actions::policy::Role::Owner),
             Member::person("bo", tilo_actions::policy::Role::Editor),
@@ -304,7 +305,8 @@ fn a_task_is_given_only_to_a_member_or_the_one_giving_it() {
 fn giving_a_task_to_an_agent_keeps_who_gave_it_and_when() {
     use tilolang_runtime::members::Member;
     let (ada, root) = workspace();
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             Member::person("ada", tilo_actions::policy::Role::Owner),
             Member::agent("helper", "ada"),
@@ -577,7 +579,8 @@ fn work_on_the_pieces_resumes_the_task_once_they_are_all_through() {
 fn a_piece_beyond_what_its_task_allows_is_not_given_to_an_agent() {
     use tilolang_runtime::members::Member;
     let (ada, root) = workspace();
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::agent("helper", "ada"),

@@ -263,7 +263,8 @@ view sidebar(b: Board) {
     #[test]
     fn a_filter_naming_the_person_looking_reads_differently_for_each_of_them() {
         let t = Tasks::new();
-        t.rt.set_members(
+        stage_members(
+            &t.rt,
             vec![
                 Member::person("me", tilo_actions::policy::Role::Owner),
                 Member::person("ben", tilo_actions::policy::Role::Editor),

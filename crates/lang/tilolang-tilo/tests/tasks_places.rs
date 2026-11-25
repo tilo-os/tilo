@@ -402,9 +402,11 @@ tilo_test_env::scenario! {
          {all:?}"
         );
         // The workspace narrows to the person looking alone: the place goes.
-        ada.host
-            .runtime()
-            .set_members(vec![Member::person("ada", tilo_actions::policy::Role::Owner)], None);
+        crate::fixtures::stage_members(
+            &ada.host,
+            vec![Member::person("ada", tilo_actions::policy::Role::Owner)],
+            None,
+        );
         view.poll_patches().unwrap();
         assert!(
             !places(&view)

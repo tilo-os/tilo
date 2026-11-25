@@ -85,7 +85,8 @@ fn access(kind: &str, open: &ResourceRef, secret: &ResourceRef, scout_reads: boo
 /// The members and their reads by `access`, as the window's instance gives them to the runtime.
 fn follow(ada: &Replica, access: &MemberAccess) {
     let me = PersonId::from("ada");
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         tilolang_tilo::members::members_of(access, &me),
         Some(tilolang_tilo::members::reads_of(access, &me, &ada.host)),
     );

@@ -650,25 +650,16 @@ impl Runtime {
         self.core.foreign.borrow_mut().absent_app(app);
     }
 
-    /// The reading of `target` as this runtime's host serves it itself, from what it decides by
-    /// (the workspace's members, from its member list): set as [`Self::set_reading`] sets one,
-    /// and from now on a resource [`Self::serves`] answers true for, so a reading published for
-    /// it elsewhere (an empty one, for a resource no service of the device publishes) is never
-    /// handed in over it.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set_reading`].
-    pub fn serve_reading(&self, target: &ResourceRef, reading: &str) -> Result<bool, RuntimeError> {
-        self.core.foreign.borrow_mut().serve(target);
-        self.set_reading(target, reading)
+    /// Read who is in the workspace from `root`, its members' resource: the host hands its
+    /// reading in as any other ([`Self::set_reading`]), read from the workspace it runs in.
+    pub fn set_members_root(&self, root: &ResourceRef) {
+        self.core.set_members_root(root);
     }
 
-    /// Serve the workspace package's `members` root (`root`) from the members this runtime is
-    /// given ([`Self::set_members`], and those a scenario names): its reading is theirs now and
-    /// after every change, and a reading published for it elsewhere never stands over it.
-    pub fn serve_members(&self, root: &ResourceRef) {
-        self.core.serve_members(root);
+    /// Carry out the workspace's add-member action with `adder`: what a scenario naming a person
+    /// or an agent (`person("Mia")`) does, so they are in the workspace's members' resource.
+    pub fn set_member_adder(&self, adder: impl Fn(&Actor) -> Result<(), String> + 'static) {
+        self.core.set_member_adder(Rc::new(adder));
     }
 
     /// Decide by a real workspace's access from now on: the members the host gives are the
@@ -685,13 +676,6 @@ impl Runtime {
     #[must_use]
     pub fn decides_by_workspace(&self) -> bool {
         self.core.members_decided.get()
-    }
-
-    /// Whether this runtime's host serves `target`'s reading itself ([`Self::serve_reading`]):
-    /// a host handing in the readings the session publishes skips it.
-    #[must_use]
-    pub fn serves(&self, target: &ResourceRef) -> bool {
-        self.core.foreign.borrow().serves(target)
     }
 
     /// Evaluate an agent block as `actor`. A view renders and
@@ -1150,10 +1134,18 @@ impl Runtime {
         self.core.default_argument(action, at, before)
     }
 
-    /// The workspace's members as the host last gave them ([`Self::set_members`]).
+    /// The workspace's policy as the host gave it last: each member it names with their role,
+    /// in the order the host gave them ([`Self::set_member_policy`]).
+    #[must_use]
+    pub fn member_policy(&self) -> Vec<crate::members::Member> {
+        self.core.members.borrow().policy().to_vec()
+    }
+
+    /// The workspace's members now: whom its members' resource names, with the roles its
+    /// policy gives them ([`Self::set_member_policy`]).
     #[must_use]
     pub fn members(&self) -> Vec<crate::members::Member> {
-        self.core.members.borrow().list().to_vec()
+        self.core.member_list()
     }
 
     /// When `text` says something is due ("tomorrow 9"), read now in the person's zone.
@@ -2113,30 +2105,33 @@ impl Runtime {
         Ok(())
     }
 
-    /// The workspace's members now, from its membership, and how its grants decide who of
-    /// them reads a resource (`None`: everyone reads everything the workspace holds). What
-    /// `members(r)`, `std.may_read`, `p.kind()` and `p.role()` read; the host gives them
-    /// again whenever membership or grants change, and every view that read them runs again.
-    pub fn set_members(
+    /// The workspace's policy now: the role of each member it names, the software its grants
+    /// made members, and how its grants decide who of them reads a resource (`None`: everyone
+    /// reads everything the workspace holds). What `members(r)`, `std.may_read`, `p.kind()` and
+    /// `p.role()` decide by; who is in the workspace is its members' resource
+    /// ([`Self::set_members_root`]). The host gives it again whenever its roles or grants
+    /// change, and every view that read the members runs again.
+    pub fn set_member_policy(
         &self,
-        members: Vec<crate::members::Member>,
+        policy: Vec<crate::members::Member>,
         reads: Option<Rc<crate::members::Reads>>,
     ) {
-        self.core.set_members(members, reads);
+        self.core.set_member_policy(policy, reads);
     }
 
-    /// Whether `who` may read the resource `at`, by the members and reads the host gave
-    /// ([`Self::set_members`]): what `std.may_read(who, r)` answers.
+    /// Whether `who` may read the resource `at`, by the members and the policy the host gave
+    /// ([`Self::set_member_policy`]): what `std.may_read(who, r)` answers.
     #[must_use]
     pub fn may_read(&self, who: &Actor, at: &ResourceRef) -> bool {
         self.core.may_read(who, at)
     }
 
-    /// Whether the host gave the workspace's members ([`Self::set_members`]): until it does, no
-    /// member is known here, and what a caller reads is what the API admitted it to.
+    /// Whether the host gave the workspace's policy ([`Self::set_member_policy`]): until it
+    /// does, no member's role is known here, and what a caller reads is what the API admitted it
+    /// to.
     #[must_use]
     pub fn knows_members(&self) -> bool {
-        !self.core.members.borrow().list().is_empty()
+        self.core.knows_policy()
     }
 
     /// Whether the records holding `at` let `who` read it: every one from it up to its document

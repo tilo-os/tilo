@@ -400,6 +400,7 @@ fn deny_cy(chain: &Chain) {
             Grantee::person("ada"),
         ));
     }
+    crate::fixtures::stage_people(&chain.ada.host, &policy);
     *chain.access.borrow_mut() = Some(MemberAccess::person(policy, "ada"));
 }
 

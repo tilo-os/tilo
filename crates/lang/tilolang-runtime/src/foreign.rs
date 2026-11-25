@@ -86,10 +86,6 @@ pub struct Foreign {
     /// session's, Settings') within the program they run, not on a next pass. `None` where the
     /// host hands readings in as the session publishes them.
     ask: Option<AskForReading>,
-    /// The resources whose reading this runtime's host serves itself (the workspace's members,
-    /// from the member list it decides by), by key: a reading published elsewhere never stands
-    /// in for one ([`crate::Runtime::serves`]).
-    served: std::collections::BTreeSet<String>,
     /// The apps whose resources no host here publishes at all (the device's, the session's, on a
     /// host that has neither): each resource of one reads as its type starts
     /// ([`crate::Runtime::set_app_absent`]).
@@ -97,14 +93,9 @@ pub struct Foreign {
 }
 
 impl Foreign {
-    /// Note that the host serves `target`'s reading itself.
-    pub(crate) fn serve(&mut self, target: &ResourceRef) {
-        self.served.insert(Self::key(target));
-    }
-
-    /// Whether the host serves `target`'s reading itself.
-    pub(crate) fn serves(&self, target: &ResourceRef) -> bool {
-        self.served.contains(&Self::key(target))
+    /// The reading of `target` held now, asking the host for nothing.
+    pub(crate) fn held(&self, target: &ResourceRef) -> Option<&Json> {
+        self.source(&Self::key(target)).map(|(json, _)| json)
     }
 
     /// Say the host publishes nothing of `target`, and none is coming: reading a field of it

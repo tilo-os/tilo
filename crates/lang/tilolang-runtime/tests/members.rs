@@ -113,7 +113,7 @@ view two(r: Workspace) {
         phase the_workspaces_members_are_its_people_and_agents_with_their_kind_and_role;
         {
             let (rt, app, open, _) = setup();
-            rt.set_members(membership(), None);
+            stage_members(&rt, membership(), None);
             let v = rt
                 .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
                 .unwrap();
@@ -136,7 +136,7 @@ view two(r: Workspace) {
         {
             let (rt, app, open, private) = setup();
             let hidden = private.clone();
-            rt.set_members(
+            stage_members(&rt,
                 membership(),
                 Some(Rc::new(move |who: &Actor, r: &ResourceRef| {
                     *r != hidden || who.id() == "ada"
@@ -158,12 +158,12 @@ view two(r: Workspace) {
         phase a_view_follows_membership_as_it_changes;
         {
             let (rt, app, open, _) = setup();
-            rt.set_members(membership()[..1].to_vec(), None);
+            stage_members(&rt, membership()[..1].to_vec(), None);
             let mut v = rt
                 .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
                 .unwrap();
             assert_eq!(texts(&v, "in "), ["in ada person owner"]);
-            rt.set_members(membership(), None);
+            stage_members(&rt, membership(), None);
             v.poll_patches().unwrap();
             assert_eq!(texts(&v, "in ").len(), 3, "a member admitted shows at once");
             assert_eq!(people(&v, "people"), ["ada", "bo", "planner"]);
@@ -172,7 +172,7 @@ view two(r: Workspace) {
             if let Some(ada) = changed.first_mut() {
                 ada.role = Some(tilo_actions::policy::Role::Editor);
             }
-            rt.set_members(changed, None);
+            stage_members(&rt, changed, None);
             v.poll_patches().unwrap();
             assert_eq!(
                 texts(&v, "in "),
@@ -184,7 +184,7 @@ view two(r: Workspace) {
         phase the_drawer_offers_the_conversations_people_newest_first;
         {
             let (rt, app, open, _) = setup();
-            rt.set_members(membership(), None);
+            stage_members(&rt, membership(), None);
             let write = app.action("write");
             let mut v = rt
                 .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
@@ -222,7 +222,7 @@ view two(r: Workspace) {
         phase the_drawer_offers_as_many_people_as_the_view_asks_for;
         {
             let (rt, app, open, _) = setup();
-            rt.set_members(membership(), None);
+            stage_members(&rt, membership(), None);
             let write = app.action("write");
             for who in [ada(), bo(), planner()] {
                 rt.invoke_action(
@@ -247,7 +247,7 @@ view two(r: Workspace) {
         phase who_spoke_is_read_from_a_bounded_window_of_the_conversations_items;
         {
             let (rt, app, open, _) = setup();
-            rt.set_members(membership(), None);
+            stage_members(&rt, membership(), None);
             let write = app.action("write");
             let mut v = rt
                 .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
@@ -282,26 +282,29 @@ view two(r: Workspace) {
         phase serving_the_members_root_again_runs_no_view_again;
         {
             let (rt, app, open, _) = setup();
-            rt.set_members(membership(), None);
-            let root = ResourceRef {
-                doc: "workspace/members".into(),
-                item: None,
-                ty: "tilo.workspace#Members".into(),
-            };
-            rt.serve_members(&root);
+            stage_members(&rt, membership(), None);
             let mut v = rt
                 .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
                 .unwrap();
             v.poll_patches().unwrap();
             assert!(!v.woken(), "a view just run has nothing to run again for");
-            // A host with no workspace policy asks its runtime to serve the members root on
-            // every frame: a view run again for it would leave the window a frame to draw on
-            // every one, and the host would never rest.
+            // A host reads the workspace's members' resource again whenever anything may have
+            // moved it: a view run again for the same members would leave the window a frame to
+            // draw on every one, and the host would never rest.
+            let root = tilolang_tilo::platform_apps::workspace_members();
+            let people: Vec<serde_json::Value> = membership()
+                .iter()
+                .map(|member| tilolang_runtime::value::to_json(&Value::Actor(member.who())).unwrap())
+                .collect();
+            let people = serde_json::json!({ "people": people });
             for _ in 0..3 {
-                rt.serve_members(&root);
+                assert!(
+                    !rt.set_reading(&root, &people.to_string()).unwrap(),
+                    "the same members read again are no change"
+                );
                 assert!(!v.woken(), "serving the root it already serves changes no member");
             }
-            rt.set_members(membership()[..1].to_vec(), None);
+            stage_members(&rt, membership()[..1].to_vec(), None);
             assert!(v.woken(), "a change to the members runs the view again");
             v.poll_patches().unwrap();
             assert_eq!(texts(&v, "in "), ["in ada person owner"]);

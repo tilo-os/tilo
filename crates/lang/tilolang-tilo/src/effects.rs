@@ -944,8 +944,8 @@ impl Host {
     }
 
     /// Whether the reader `reader` may read a resource: what the workspace's grants give them, as
-    /// the runtime was handed them ([`tilolang_runtime::Runtime::set_members`]). A host given no
-    /// members has none to decide by, and the API decided what the caller reaches.
+    /// the runtime was handed them ([`tilolang_runtime::Runtime::set_member_policy`]). A host
+    /// given no policy has none to decide by, and the API decided what the caller reaches.
     pub fn reads_for<'a>(
         &'a self,
         reader: &'a tilolang_runtime::Actor,

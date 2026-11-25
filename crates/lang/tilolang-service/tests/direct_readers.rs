@@ -73,7 +73,19 @@ fn device_with(
     let access = MemberAccess::person(policy, name);
     let (replica, _) = Replica::access(name, doc, packages, Some(access.clone()));
     let me = PersonId::from(name);
-    replica.host.runtime().set_members(
+    // The workspace's people are in its members' resource, written by its add-member action.
+    for person in access
+        .policy
+        .owner
+        .iter()
+        .chain(access.policy.members.keys())
+    {
+        replica
+            .host
+            .add_workspace_member(&tilolang_tilo::personal::actor(person))
+            .expect("the workspace adds its people");
+    }
+    replica.host.take_member_policy(
         tilolang_tilo::members::members_of(&access, &me),
         Some(tilolang_tilo::members::reads_of(
             &access,

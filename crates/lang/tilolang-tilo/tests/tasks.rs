@@ -319,7 +319,7 @@ tilo_test_env::scenario! {
     phase an_entry_in_today_reads_the_same_words_as_the_inbox;
     {
         let (ada, _) = workspace();
-        ada.host.runtime().set_members(
+        crate::fixtures::stage_members(&ada.host,
             vec![
                 tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
                 tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
@@ -1801,7 +1801,8 @@ pub(crate) fn texts(node: &UiNode) -> Vec<String> {
 /// assignee's chip opens offers the workspace's members, and the key the page binds it to.
 fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, String) {
     let (ada, root) = workspace();
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -1931,7 +1932,8 @@ fn fixture_dump(view: &ViewInstance) -> String {
 #[test]
 fn history_says_who_a_task_went_to_not_the_bookkeeping_kept_for_its_agent() {
     let (ada, root) = workspace();
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
@@ -1983,7 +1985,8 @@ fn history_says_who_a_task_went_to_not_the_bookkeeping_kept_for_its_agent() {
 #[test]
 fn history_says_the_status_a_task_moved_to() {
     let (ada, root) = workspace();
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
             tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),

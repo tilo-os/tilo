@@ -74,6 +74,21 @@ impl WorkspaceContent {
 }
 
 impl Host {
+    /// Whether this host reads `target` in its own workspace, never as the session publishes
+    /// it: the workspace's members, read through its store ([`Host::follow_members`]), and its
+    /// content when the embedder gave a source of it ([`Self::set_content_source`]).
+    #[must_use]
+    pub fn reads_in_workspace(&self, target: &crate::runtime::ResourceRef) -> bool {
+        target.item.is_none()
+            && match target.doc.as_str() {
+                crate::platform_apps::WORKSPACE_MEMBERS => true,
+                crate::platform_apps::WORKSPACE_CONTENT => {
+                    self.inner.content_source.borrow().is_some()
+                }
+                _ => false,
+            }
+    }
+
     /// Read the workspace's content from `source` from now on, when the runtime asks
     /// ([`Self::follow_content`]): what an embedder knows of its workspace and a view does not.
     pub fn set_content_source(&self, source: ContentSource) {
@@ -129,7 +144,7 @@ impl Host {
             "hourly_bytes": content.hourly_bytes,
             "refusals": refusals,
         });
-        match self.runtime().serve_reading(
+        match self.runtime().set_reading(
             &crate::platform_apps::workspace_content(),
             &reading.to_string(),
         ) {

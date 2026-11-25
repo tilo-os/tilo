@@ -1679,6 +1679,17 @@ fn read_from(
     use collab_types::store::wire::{Command, Reply};
     use tilo_lock::MutexRecover as _;
     use tilo_resource_store::wire::read;
+    // Who is in the workspace is its governance's to say: the one member list every port that
+    // reaches the workspace reads, never a record an app keeps beside it. It is read off the
+    // replica alone, with the store not held.
+    if let Command::Content { kind, id } = command
+        && kind == tilo_resource_store::WORKSPACE_MEMBERS_KIND
+        && id == tilo_resource_store::WORKSPACE_MEMBERS_ID
+    {
+        return Ok(Reply::Content(Some(
+            reading.replica.read(workspace_members)?,
+        )));
+    }
     let may_read = may_read(reader.to_owned());
     let mut store = reading.store.lock_recover();
     let answer = match command {
@@ -1729,6 +1740,28 @@ fn read_from(
         _ => read(&store, command, &may_read).unwrap_or(Reply::Written),
     };
     Ok(answer)
+}
+
+/// The workspace's members' resource as its governance has them: its owner and its members,
+/// none who are blocked (they hold nothing), each as the actor a view reads them as.
+#[cfg(any(feature = "apps", feature = "agents"))]
+fn workspace_members(peer: &tilo_peer_state::StatePeer) -> Result<serde_json::Value, String> {
+    let policy = peer.governance().governed_policy()?;
+    let people: std::collections::BTreeSet<&String> =
+        policy.owner.iter().chain(policy.members.keys()).collect();
+    let people = people
+        .into_iter()
+        .filter(|person| !policy.is_blocked(person))
+        .map(|person| {
+            let who = tilo_actions::Actor::Member(tilo_actions::MemberId::Person(
+                tilo_actions::PersonId::from(person.as_str()),
+            ));
+            serde_json::to_value(who)
+                .map(|who| serde_json::json!({ "actor": who }))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(serde_json::json!({ "people": people }))
 }
 
 impl Workspaces {
@@ -1839,6 +1872,11 @@ impl Workspaces {
         // same device `record_command` signs as.
         let device = self.signing_device();
         let writing = command.writes();
+        // Who is in the workspace changes through its governance's own member actions, which the
+        // members' resource is read from: an app's write of it would be a second list.
+        if writing && writes_kind(&command, tilo_resource_store::WORKSPACE_MEMBERS_KIND) {
+            return Err("the workspace's members change through its member actions".into());
+        }
         let (acting, unserved) =
             stamp_resource_write(context, workspace, &mut command, &device, writing)?;
         if let collab_types::store::wire::Command::RecordChange {
@@ -2474,6 +2512,20 @@ fn stamp_resource_write(
         &mut unserved,
     );
     Ok((Some(acting), unserved))
+}
+
+/// Whether `command` writes a resource of `kind`, itself or in its batch.
+#[cfg(feature = "apps")]
+fn writes_kind(command: &collab_types::store::wire::Command, kind: &str) -> bool {
+    use collab_types::store::wire::Command;
+    match command {
+        Command::Put { kind: written, .. }
+        | Command::Remove { kind: written, .. }
+        | Command::Edit { kind: written, .. }
+        | Command::Checkpoint { kind: written, .. } => written == kind,
+        Command::Batch(commands) => commands.iter().any(|command| writes_kind(command, kind)),
+        _ => false,
+    }
 }
 
 /// The command names the verb and invocation, and the workspace service names who made it:

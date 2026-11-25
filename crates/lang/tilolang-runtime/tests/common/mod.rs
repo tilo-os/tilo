@@ -892,16 +892,12 @@ impl App {
     }
 
     /// Load it into `rt` as a host loads a package: its module, then the description of each
-    /// platform package it names, the workspace's members root served from the runtime's
-    /// members.
+    /// platform package it names.
     pub fn load(&self, rt: &Runtime) -> PackageId {
         let id = rt.load_compiled(&self.compiled).unwrap();
         for meta in &self.platform {
             rt.load_foreign(meta.clone())
                 .unwrap_or_else(|e| panic!("{}: {e}", meta.app));
-            if meta.app == tilolang_tilo::platform_apps::WORKSPACE_APP {
-                rt.serve_members(&tilolang_tilo::platform_apps::workspace_members());
-            }
         }
         id
     }
@@ -1180,4 +1176,26 @@ pub fn adopt_compiled(wasm: &[u8]) {
     let cache = tilo_wasm_aot::Cache::at(dir.path()).unwrap();
     let entry = cache.ensure(wasm).unwrap();
     tilolang_runtime::engine::adopt_precompiled(wasm, &entry).unwrap();
+}
+
+/// Stage a workspace of `members` for `rt`, as a host with no workspace behind it holds one: all
+/// of them in the workspace's members' resource, a plain record, and with their roles in its
+/// policy, which decides by `reads` who reads what (`None`: everyone reads everything). Whether
+/// the members' resource moved.
+pub fn stage_members(
+    rt: &Runtime,
+    members: Vec<tilolang_runtime::members::Member>,
+    reads: Option<Rc<tilolang_runtime::members::Reads>>,
+) -> bool {
+    let root = tilolang_tilo::platform_apps::workspace_members();
+    rt.set_members_root(&root);
+    let people: Vec<Json> = members
+        .iter()
+        .map(|member| tilolang_runtime::value::to_json(&Value::Actor(member.who())).unwrap())
+        .collect();
+    let moved = rt
+        .set_reading(&root, &json!({ "people": people }).to_string())
+        .unwrap();
+    rt.set_member_policy(members, reads);
+    moved
 }

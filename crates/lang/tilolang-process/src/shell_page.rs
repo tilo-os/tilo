@@ -543,8 +543,8 @@ fn fill(instance: &Instance, published: &str, reading: &Value) -> Result<(), Str
     let host = instance
         .host()
         .ok_or_else(|| "the shell's host is not open".to_owned())?;
-    // A root the host serves itself (the workspace's members) reads as it serves it.
-    if host.runtime().serves(&target) {
+    // A root the host reads in its own workspace (its members) reads as it is there.
+    if host.reads_in_workspace(&target) {
         return Ok(());
     }
     host.runtime()

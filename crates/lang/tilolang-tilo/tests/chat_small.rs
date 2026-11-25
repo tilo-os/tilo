@@ -159,7 +159,8 @@ fn workspace() -> (
 fn a_category_heading_is_kept_by_the_category_across_a_rename_and_a_move() {
     let (ada, _, all, team, _) = workspace();
     // Ada owns the workspace: she arranges its categories.
-    ada.host.runtime().set_members(
+    crate::fixtures::stage_members(
+        &ada.host,
         vec![tilolang_runtime::members::Member::person(
             "ada",
             tilo_actions::policy::Role::Owner,
