@@ -262,11 +262,22 @@ impl Server {
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
 /// `Server` tears down every outbound attach reconnect task.
-struct AbortOnDrop(JoinHandle<()>);
+struct AbortOnDrop(Option<JoinHandle<()>>);
+
+impl AbortOnDrop {
+    /// Stop the task and answer its handle, so a stop can wait until what it held is let go.
+    fn stop(mut self) -> Option<JoinHandle<()>> {
+        let task = self.0.take()?;
+        task.abort();
+        Some(task)
+    }
+}
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
     }
 }
 
@@ -677,7 +688,7 @@ impl Server {
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_mut() {
             let mut tasks = lock_background_tasks(&background_tasks);
-            tasks.extend(origin.tasks().into_iter().map(AbortOnDrop));
+            tasks.extend(origin.tasks().into_iter().map(|task| AbortOnDrop(Some(task))));
         }
         // A server of the person's own takes part in their Servers
         // workspace, whose record of their servers says what it should be.
@@ -873,16 +884,32 @@ impl Server {
     /// again on documents that lack what was written last, and owe a turn its
     /// agent had already answered.
     pub async fn shutdown(mut self) {
-        // Stop reconnecting first: the dial loop would otherwise open a
+        // What this server started reaches the endpoint: stopped and awaited here, it lets go
+        // of it before the address is reused. The dial loop is stopped first, so it opens no
         // fresh connection while the endpoint is closing.
-        lock_background_tasks(&self.background_tasks).clear();
+        let background: Vec<JoinHandle<()>> =
+            std::mem::take(&mut *lock_background_tasks(&self.background_tasks))
+                .into_iter()
+                .filter_map(AbortOnDrop::stop)
+                .collect();
+        #[cfg(feature = "web")]
+        let serving = self.web_ui.stop_serving();
+        #[cfg(not(feature = "web"))]
+        let serving: Vec<JoinHandle<()>> = Vec::new();
+        for task in background.into_iter().chain(serving) {
+            let _ = task.await;
+        }
         // A server composed on a device's daemon leaves the service, the router and the
         // endpoint to the daemon.
-        if let Some(router) = &self.router {
+        let router = self.router.take();
+        if let Some(router) = router {
             self.service.shutdown().await;
             if let Err(error) = router.shutdown().await {
                 tracing::debug!(%error, "server router shutdown task failed");
             }
+            // Its endpoint is its own, and is closed and awaited here: the address it bound is
+            // free once this returns, for a server that starts again where it was.
+            self.endpoint.clone().close().await;
         }
         if let Some(packet_relay) = std::mem::take(&mut self.iroh_packet_relay)
             && let Err(error) = packet_relay.shutdown().await
@@ -1120,9 +1147,9 @@ async fn install_and_follow(
             Err(error) => tracing::warn!(%error, "this machine did not install from its plan"),
         }
     }
-    if let Err(error) = following.await {
-        tracing::warn!(%error, "the Servers workspace's document is no longer applied here");
-    }
+    // Following ends when this does: it holds the endpoint, so a stop that ends this task ends
+    // the following with it.
+    following.wait().await;
 }
 
 impl ServerHandle {
@@ -1414,7 +1441,7 @@ fn lock_background_tasks(
 /// Register a spawned task on the attach task list (see
 /// [`lock_background_tasks`]).
 fn push_background_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: JoinHandle<()>) {
-    lock_background_tasks(tasks).push(AbortOnDrop(task));
+    lock_background_tasks(tasks).push(AbortOnDrop(Some(task)));
 }
 
 fn validate_server_identity(identity: &ServerIdentity) -> Result<(), ServerError> {

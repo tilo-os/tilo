@@ -75,15 +75,18 @@ impl Control {
 
     /// Stop serving now, and remember that the device serves none.
     fn stop(&self) {
+        self.stop_serving();
+    }
+
+    /// [`Self::stop`], answering what served, so a stop can wait until it let go: the tasks
+    /// that served reach the endpoint, which the address this device is reached at binds.
+    pub(crate) fn stop_serving(&self) -> Vec<tokio::task::JoinHandle<()>> {
         self.wanted.store(false, Ordering::SeqCst);
         let tasks = self
             .tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        if let Some(tasks) = tasks {
-            tasks.stop();
-        }
         // A handle this control started keeps its listener alive: dropping it ends what
         // is left of it.
         let _ = self
@@ -91,6 +94,7 @@ impl Control {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        tasks.map(|tasks| tasks.stop()).unwrap_or_default()
     }
 
     /// Serve it again, binding a listener of its own: `Ok` when this process never served

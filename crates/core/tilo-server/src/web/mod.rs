@@ -165,9 +165,9 @@ pub(crate) struct WebTasks {
 impl WebTasks {
     /// Stop serving: every task is aborted and the browser locators name no origin of
     /// this listener any more. Stopping twice does nothing the second time.
-    fn stop(&self) {
+    fn stop(&self) -> Vec<tokio::task::JoinHandle<()>> {
         if self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return;
+            return Vec::new();
         }
         if let Ok(mut published) = self.locator_origin.write()
             && self.published_origin.as_ref().is_some_and(|ours| {
@@ -184,9 +184,10 @@ impl WebTasks {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        for task in tasks {
+        for task in &tasks {
             task.abort();
         }
+        tasks
     }
 }
 

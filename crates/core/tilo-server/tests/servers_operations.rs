@@ -86,7 +86,7 @@ struct Fixture {
     server: Box<Hosted>,
     state: tempfile::TempDir,
     _policy: tempfile::TempDir,
-    _following: Vec<tokio::task::JoinHandle<()>>,
+    _following: Vec<applied::Following>,
 }
 
 impl Fixture {

@@ -233,7 +233,7 @@ pub fn follow(
     requests: Requests,
     endpoint: Option<iroh::Endpoint>,
     state_root: PathBuf,
-) -> tokio::task::JoinHandle<()> {
+) -> Following {
     let workspaces = workspaces.clone();
     let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     let mut writes = workspaces.document_writes();
@@ -242,7 +242,7 @@ pub fn follow(
     // list every admission reads, which announces the change itself.
     let mut authority = crate::authority_epoch::subscribe();
     authority.mark_unchanged();
-    tokio::spawn(async move {
+    Following(Some(tokio::spawn(async move {
         apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await;
         loop {
             let ours = tokio::select! {
@@ -270,7 +270,36 @@ pub fn follow(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    })
+    })))
+}
+
+/// The task following the Servers workspace's document, which reaches the device over the
+/// endpoint it was given: it runs until whoever asked for it drops this, which aborts it, so
+/// nothing that outlives a stopped server keeps the endpoint it bound.
+pub struct Following(Option<tokio::task::JoinHandle<()>>);
+
+impl Following {
+    /// Wait until the document is no longer followed here.
+    pub async fn wait(mut self) {
+        if let Some(task) = self.0.take() {
+            let _ = task.await;
+        }
+    }
+
+    /// Stop following, as a server that stops does with the record it followed.
+    pub fn abort(&self) {
+        if let Some(task) = self.0.as_ref() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
 }
 
 /// [`reconcile_into`], with what it did in the log rather than in an answer,
