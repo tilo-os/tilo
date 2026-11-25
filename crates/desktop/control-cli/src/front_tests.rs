@@ -480,9 +480,11 @@ impl AskingDesktop {
                                 invocation,
                                 ..
                             } => {
-                                let answered = answers.lock().unwrap().last().map(|answer| {
-                                    args(answer)["resolution"] == Value::from("approve")
-                                });
+                                let answered = answers
+                                    .lock()
+                                    .unwrap()
+                                    .last()
+                                    .map(|answer| args(answer)["resolution"] == "approve");
                                 let update = match answered {
                                     None => InvocationUpdate::Progress {
                                         invocation,
