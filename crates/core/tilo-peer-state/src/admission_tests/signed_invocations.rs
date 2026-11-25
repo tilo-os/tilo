@@ -654,7 +654,7 @@ tilo_test_env::scenario! {
     {
         let (mut receiver, _a, _ac, b, bc, now) = seeded_with(RevocationList::new());
         let owner = hex::encode(bc.user_public_key);
-        let scribe = tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("scribe"));
+        let scribe = tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("scribe", owner.as_str()));
         let stamp = |acting: Option<tilo_action_policy::Acting>| collab_types::Stamp {
             verb: "set".into(),
             invoker: collab_types::Stamp::by(&scribe),
@@ -674,7 +674,7 @@ tilo_test_env::scenario! {
         let refused = take(&mut receiver, unsaid, now).unwrap_err();
         assert!(refused.reason.contains("own certified key"), "{}", refused.reason);
         // One recording an agent with a key of its own, keeping no call it signed: refused.
-        let own_key = tilo_action_policy::Acting::agent("scribe")
+        let own_key = tilo_action_policy::Acting::agent("scribe", owner.as_str())
             .acting_for(tilo_action_policy::Acting::person(owner.as_str()));
         let unsigned = committed(&receiver, &b, &stamp(Some(own_key)).message(), "unsigned", now);
         let refused = take(&mut receiver, unsigned, now).unwrap_err();
