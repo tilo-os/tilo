@@ -503,29 +503,19 @@ fn described(
             }
         }
     }
-    // `shows: [(d.to, .addresses), d.subject]`: what a person asked to allow it reads first,
-    // in the declaration's order.
-    spec.type_mut().contract.shows = action.shows.iter().map(shown_of).collect();
     // What it returns: the shape an invocation of it is held to, so a caller reads the value as
     // the data the declaration says it returns (`-> Note` as the resource it made).
     if let Some(schema) = result_schema(meta, action) {
         spec.type_mut().contract.result = tilo_actions::ResultSpec::Json { schema };
     }
-    // What a person asked to allow it reads: the arguments its `shows:` names, which admission
-    // fills the ask's facts from.
+    // `shows: [(d.to, .addresses), d.subject]`: what a person asked to allow it reads first, in
+    // the declaration's order: the arguments its `shows:` names, which admission fills the ask's
+    // facts from. What a `fn` of the app answers is read by the app's own run where it asks.
     spec.type_mut().contract.shows = action
         .shows
         .iter()
-        .map(|shown| tilo_actions::remote::asked::Shown {
-            param: shown.param.clone(),
-            field: shown.field.clone(),
-            render: match shown.render.as_deref() {
-                Some("addresses") => tilo_actions::remote::asked::ShownAs::Addresses,
-                Some("long") => tilo_actions::remote::asked::ShownAs::Long,
-                Some("secret") => tilo_actions::remote::asked::ShownAs::Secret,
-                _ => tilo_actions::remote::asked::ShownAs::Text,
-            },
-        })
+        .filter(|shown| shown.call.is_none())
+        .map(shown_of)
         .collect();
     // What the person types where they answer its ask, labelled in their language; the action
     // reads it from their approve.

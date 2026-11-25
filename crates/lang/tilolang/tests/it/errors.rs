@@ -1013,6 +1013,62 @@ tilo_test_env::scenario! {
         expect("E090", &sends("[(d.to, .loud)]"));
         expect("E090", &sends("d.to"));
     }
+
+    phase an_ask_shows_what_a_fn_of_the_app_answers_for_parameters;
+    {
+        // The fn may be declared after the action that shows it.
+        let sends = |shows: &str| {
+            format!(
+                "type Draft {{\n    to: Text\n}}\n\naction send(d: Draft, note: Text) (shows: {shows}) {{\n    d.to = note\n}}\n\nfn invites(note: Text) -> List<Text> {{\n    note.split(\",\")\n}}\n\nfn first(d: Draft, note: Text) -> Text {{\n    d.to + note\n}}\n"
+            )
+        };
+        let compiled = compile(&format!(
+            "app t.x \"X\"\n{}",
+            sends("[(invites(note), .addresses), first(d, note)]")
+        ));
+        let fns: std::collections::BTreeMap<&str, &str> = compiled
+            .meta
+            .fns
+            .iter()
+            .map(|f| (f.name.as_str(), f.id.as_str()))
+            .collect();
+        let send = compiled
+            .meta
+            .actions
+            .iter()
+            .find(|action| action.name == "send")
+            .expect("send is declared");
+        let shown: Vec<_> = send
+            .shows
+            .iter()
+            .map(|shown| {
+                let call = shown.call.as_ref().expect("each entry calls a fn");
+                (
+                    shown.param.as_str(),
+                    call.function.as_str(),
+                    call.args.clone(),
+                    shown.render.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("invites", fns["invites"], vec!["note".to_owned()], Some("addresses")),
+                ("first", fns["first"], vec!["d".to_owned(), "note".to_owned()], None),
+            ],
+            "each call names its fn by id and the parameters it is given"
+        );
+        // A call of something that is no fn of the app, of a fn on what is no parameter, on a
+        // field, on too few parameters or on parameters of other types is refused.
+        expect("E090", &sends("[nothing(note)]"));
+        expect("E090", &sends("[send(d, note)]"));
+        expect("E090", &sends("[invites(other)]"));
+        expect("E090", &sends("[invites(d.to)]"));
+        expect("E090", &sends("[first(d)]"));
+        expect("E090", &sends("[invites(d)]"));
+        expect("E090", &sends("[std.trim(note)]"));
+    }
 }
 
 tilo_test_env::scenario! {

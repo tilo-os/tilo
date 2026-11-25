@@ -716,6 +716,9 @@ struct Resolver<'a> {
     own_aliases: HashMap<String, TypeExpr>,
     /// The aliases being resolved, to refuse one that names itself.
     resolving: Vec<String>,
+    /// The `shows:` entries that call a `fn`, checked once every callable is declared: the
+    /// action's callable index, the entry's and where the call is written.
+    shown_calls: Vec<(usize, usize, Span)>,
 }
 
 pub fn resolve(
@@ -735,6 +738,7 @@ pub fn resolve(
         own_enums: HashSet::new(),
         own_aliases: HashMap::new(),
         resolving: Vec::new(),
+        shown_calls: Vec::new(),
     };
     r.env.add_import("host", &crate::host::host_meta());
     r.env.add_toolkit();
@@ -742,6 +746,7 @@ pub fn resolve(
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
+    r.shown_calls();
     r.system_verbs();
     r.triggers(module, lock);
     for item in &module.items {
@@ -2253,6 +2258,9 @@ impl Resolver<'_> {
             _ => (item, None),
         };
         let render = render.filter(|how| how != "text");
+        if let ExprKind::Call { callee, types, args } = &item.kind {
+            return self.shown_call(item, (callee.as_ref(), types.as_slice(), args.as_slice()), params, render);
+        }
         let (param, field) = match &item.kind {
             ExprKind::Ident(param) => (param.as_str(), None),
             ExprKind::Field { base, name } => match &base.kind {
@@ -2265,7 +2273,7 @@ impl Resolver<'_> {
             self.err(
                 "E090",
                 item.span,
-                "`shows:` names a parameter of the action, or a field of one: `shows: [d.to, d.subject]`",
+                "`shows:` names a parameter of the action, a field of one, or a call of a fn of the app on parameters: `shows: [d.to, d.subject, invites(d.body)]`",
             );
             return None;
         };
@@ -2274,6 +2282,7 @@ impl Resolver<'_> {
                 param: info.name.clone(),
                 field: None,
                 render,
+                call: None,
             });
         };
         let found = match &info.ty {
@@ -2299,7 +2308,131 @@ impl Resolver<'_> {
             param: info.name.clone(),
             field: Some(name),
             render,
+            call: None,
         })
+    }
+
+    /// A `shows:` entry that calls a `fn` of the package on parameters of the action,
+    /// `invites(text)`: what the person reads is what the function answers for the call's
+    /// arguments. Its arguments are checked here; the function, which may be declared further
+    /// down, once every callable is ([`Self::shown_calls`]).
+    fn shown_call(
+        &mut self,
+        item: &Expr,
+        (callee, types, args): (&Expr, &[TypeExpr], &[ast::Arg]),
+        params: &[ParamInfo],
+        render: Option<String>,
+    ) -> Option<crate::meta::ShownMeta> {
+        let ExprKind::Ident(function) = &callee.kind else {
+            self.err(
+                "E090",
+                callee.span,
+                "`shows:` calls a fn of the app by its name: `shows: [invites(text)]`",
+            );
+            return None;
+        };
+        if !types.is_empty() {
+            self.err(
+                "E090",
+                item.span,
+                "a fn `shows:` calls takes no type arguments",
+            );
+            return None;
+        }
+        let mut named = Vec::with_capacity(args.len());
+        for arg in args {
+            let param = match (&arg.name, &arg.value.kind) {
+                (None, ExprKind::Ident(param)) => params.iter().find(|p| p.name == *param),
+                _ => None,
+            };
+            let Some(param) = param else {
+                self.err(
+                    "E090",
+                    arg.value.span,
+                    format!(
+                        "what `{function}` is given in `shows:` is a parameter of the action, \
+                         as it is called: `{function}(text)`"
+                    ),
+                );
+                return None;
+            };
+            named.push(param.name.clone());
+        }
+        Some(crate::meta::ShownMeta {
+            param: function.clone(),
+            field: None,
+            render,
+            call: Some(crate::meta::ShownCall {
+                function: String::new(),
+                args: named,
+            }),
+        })
+    }
+
+    /// Each `shows:` entry that calls a `fn`: the function is one of the package's own, taking
+    /// the parameters it is given, in its order, as their types; the entry names it by its id.
+    fn shown_calls(&mut self) {
+        for (at, entry, span) in std::mem::take(&mut self.shown_calls) {
+            let Some(shown) = self
+                .env
+                .callables
+                .get(at)
+                .and_then(|action| action.present.shows.get(entry))
+                .cloned()
+            else {
+                continue;
+            };
+            let Some(call) = &shown.call else { continue };
+            let action = &self.env.callables[at];
+            let given: Vec<Ty> = call
+                .args
+                .iter()
+                .filter_map(|name| action.params.iter().find(|p| p.name == *name))
+                .map(|p| p.ty.clone())
+                .collect();
+            let Some(function) = self
+                .env
+                .own_callable(&shown.param)
+                .filter(|c| c.kind == CKind::Fn)
+            else {
+                self.err(
+                    "E090",
+                    span,
+                    format!(
+                        "`shows:` calls `{}`, which is no fn of this app; a `shows:` call names a \
+                         `fn` the app declares",
+                        shown.param
+                    ),
+                );
+                continue;
+            };
+            let takes: Vec<Ty> = function.params.iter().map(|p| p.ty.clone()).collect();
+            if takes != given {
+                let wanted = takes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.err(
+                    "E090",
+                    span,
+                    format!(
+                        "`{}` takes ({wanted}), and `shows:` gives it other parameters of the action",
+                        shown.param
+                    ),
+                );
+                continue;
+            }
+            let id = function.id.clone();
+            if let Some(call) = self.env.callables[at]
+                .present
+                .shows
+                .get_mut(entry)
+                .and_then(|shown| shown.call.as_mut())
+            {
+                call.function = id;
+            }
+        }
     }
 
     fn presentation(
@@ -2501,15 +2634,23 @@ impl Resolver<'_> {
                 // `shows: [d.to, d.subject, d.body]`: what a call of the action shows the person
                 // asked to allow it, each a parameter or a field of a parameter's record.
                 ("shows", ExprKind::List(items)) if !items.is_empty() => {
-                    out.shows = items
-                        .iter()
-                        .filter_map(|item| self.shown(item, params))
-                        .collect();
+                    for item in items {
+                        let Some(shown) = self.shown(item, params) else {
+                            continue;
+                        };
+                        if shown.call.is_some() {
+                            // The action is the next callable declared: its fn is checked once
+                            // every callable is.
+                            let at = self.env.callables.len();
+                            self.shown_calls.push((at, out.shows.len(), item.span));
+                        }
+                        out.shows.push(shown);
+                    }
                 }
                 ("shows", _) => self.err(
                     "E090",
                     opt.value.span,
-                    "`shows:` lists what a call of the action shows the person asked to allow it, each a parameter or a field of one: `shows: [d.to, d.subject, d.body]`",
+                    "`shows:` lists what a call of the action shows the person asked to allow it, each a parameter, a field of one or a fn of them: `shows: [d.to, d.subject, invites(d.body)]`",
                 ),
                 // `takes: ["User name", ("Password", .secret)]`: what the person types where they
                 // answer the action's ask; the action reads it from their approve.
@@ -3398,6 +3539,7 @@ pub fn resolve_type_expr_in(
         own_enums,
         own_aliases: HashMap::new(),
         resolving: Vec::new(),
+        shown_calls: Vec::new(),
     };
     r.resolve_type(te, false)
 }

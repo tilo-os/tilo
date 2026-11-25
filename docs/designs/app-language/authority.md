@@ -23,6 +23,26 @@ tilolang adds one input: **who wrote the code.**
 6. Asks are shown by the system, never by the code: the prompt shows the action itself, not the
    label the view gave it. History records the whole chain ("you, via Alex's view").
 
+**What an ask shows.** An action says what the person asked to allow a call of it reads, in
+order, with `shows:`: a parameter (`note`), a field of the record one takes (`d.subject`), or a
+call of one of the app's own `fn`s on parameters, `invites(text)`, for what is in an argument but
+not plain to read (who an invitation's text names). Each is shown as text unless it says how:
+`(d.to, .addresses)`, `(d.body, .long)`, `(key, .secret)`. A call's row is labelled with the
+function's name in words and holds what it answers for the call's arguments, a list one item to a
+line, read where the ask is built, through the run that makes the call, as a field is. The
+function only reads; the compiler checks it takes exactly the parameters it is given.
+
+```
+action take_invitation(c: Calendars, text: Text) -> Text (
+    shows: [addresses_named(text), (organised_by(text), .addresses), (invites(text), .addresses)],
+) { ... }
+```
+
+What one question shows is bounded and never hides that it is: its rows of addresses name 20
+together at most, and a call naming more, or an address the person could misread (letters outside
+plain ASCII, a quoted part), is refused with why before anyone is asked; a long value is shown by
+its start, with a row saying how much follows.
+
 **Code can ask who reads what.** `members(r)` lists the workspace's members who may read the
 resource `r` now, and `std.may_read(who: Actor, r: host.Resource) -> Bool` answers it for one
 member, a person or an agent: the answer a read by them would get, from the same grants, reader

@@ -837,15 +837,29 @@ pub fn take_key(n: usize) -> String {
 }
 
 /// One thing a call of an action shows the person asked to allow it: a parameter, or a field of
-/// the record a parameter takes, by name. Its label is the field's, or the parameter's.
+/// the record a parameter takes, by name, or what a `fn` of the package answers for parameters.
+/// Its label is the field's, the parameter's or the function's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShownMeta {
+    /// The parameter shown; for a [`ShownMeta::call`], the function's name.
     pub param: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
     /// How it is shown, one of [`SHOWN_AS`] other than `text`: `None` is text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render: Option<String>,
+    /// `shows: [invites(text)]`: the value is what a `fn` of the action's own package answers
+    /// for these parameters of the call, read where the ask is built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<ShownCall>,
+}
+
+/// A `fn` a `shows:` entry calls: its id and the action's parameters it is given, by name, in
+/// the function's order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShownCall {
+    pub function: String,
+    pub args: Vec<String>,
 }
 
 /// The ways a `shows:` entry is shown: as text, as a list of addresses, as long text, or as a

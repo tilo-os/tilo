@@ -44,9 +44,13 @@ mod web;
 /// otherwise exhaust it.
 const MAX_CALL_DEPTH: usize = 32;
 
-/// Most addresses one entry of a question names. A call to more is refused before its person is
-/// asked, with how many it names, rather than shown cut: what they allow is what they read.
+/// Most addresses one question names, over all its entries shown as addresses. A call that names
+/// more is refused before its person is asked, with how many it names, rather than shown cut:
+/// what they allow is what they read.
 const MOST_SHOWN_ADDRESSES: usize = 20;
+
+/// The longest address a question shows whole.
+const MOST_SHOWN_ADDRESS_CHARS: usize = 100;
 
 /// Most characters of a text entry a question shows before counting the rest.
 const MOST_SHOWN_TEXT_CHARS: usize = 200;
@@ -58,10 +62,33 @@ const MOST_SHOWN_LONG_CHARS: usize = 600;
 /// How many addresses `value`, an entry shown as addresses, names: each part between commas,
 /// semicolons or line breaks that is not blank.
 fn addresses_in(value: &str) -> usize {
+    named_addresses(value).count()
+}
+
+/// Each address `value`, an entry shown as addresses, names: each part between commas,
+/// semicolons or line breaks that is not blank, trimmed.
+fn named_addresses(value: &str) -> impl Iterator<Item = &str> {
     value
         .split([',', ';', '\n'])
-        .filter(|part| !part.trim().is_empty())
-        .count()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+/// Whether a person reads `named` for the address it is: the address itself (what stands between
+/// `<` and `>` where a name goes with it) is plain ASCII with no quoted part and no space, and no
+/// longer than a question shows whole. A letter outside ASCII can stand for another that looks
+/// the same, so what they allowed would not be what they read.
+fn reads_plainly(named: &str) -> bool {
+    let address = match (named.rfind('<'), named.rfind('>')) {
+        (Some(open), Some(close)) if open < close => named.get(open.saturating_add(1)..close),
+        _ => Some(named),
+    }
+    .unwrap_or(named);
+    !address.is_empty()
+        && address.chars().count() <= MOST_SHOWN_ADDRESS_CHARS
+        && address
+            .chars()
+            .all(|c| c.is_ascii_graphic() && c != '"')
 }
 
 /// Who an invocation runs for, and through which code.
@@ -2218,11 +2245,16 @@ impl Core {
     /// wrote before the call (the draft an answer made) is what the person reads. A secret's
     /// value never leaves the run: the person reads that there is one, not what it is.
     ///
-    /// What a question can show is bounded, and it never hides that it is: a list of addresses
-    /// names every one of them up to [`MOST_SHOWN_ADDRESSES`], and a longer one is refused with
-    /// how many it names rather than silently cut; a long value is shown by its start, with a
-    /// line saying how many characters follow it. A cut stops nothing from leaving: the call
-    /// itself is what its person approves, so the person must read it whole or not at all.
+    /// An entry that calls a `fn` (`invites(text)`) shows what the function answers for the
+    /// call's arguments, read through this run as a field is; a list it answers reads one item
+    /// to a line.
+    ///
+    /// What a question can show is bounded, and it never hides that it is: its lists of
+    /// addresses name every one of them up to [`MOST_SHOWN_ADDRESSES`] together, and more is
+    /// refused with how many they name rather than silently cut, as is an address the person
+    /// could misread ([`reads_plainly`]); a long value is shown by its start, with a line saying
+    /// how many characters follow it. A cut stops nothing from leaving: the call itself is what
+    /// its person approves, so the person must read it whole or not at all.
     fn asked_shows(&self, aref: &ActionRef) -> Result<Vec<crate::delegate::Shown>, RuntimeError> {
         let Some((params, listed)) = self
             .registry
@@ -2236,35 +2268,42 @@ impl Core {
             return Ok(Vec::new());
         };
         let mut shown = Vec::with_capacity(listed.len());
+        let mut addresses = 0_usize;
         for entry in listed {
             let given = params
                 .iter()
                 .position(|p| p.name == entry.param)
                 .and_then(|at| aref.args.get(at));
-            let (label, value) = match &entry.field {
-                None => (tilolang::messages::label(&entry.param), given.cloned()),
-                Some(name) => self.asked_field(given, name)?,
+            let (label, value) = match (&entry.call, &entry.field) {
+                (Some(call), _) => self.asked_call(aref, &params, &entry.param, call)?,
+                (None, None) => (tilolang::messages::label(&entry.param), given.cloned()),
+                (None, Some(name)) => self.asked_field(given, name)?,
             };
-            let secret = entry.render.as_deref() == Some("secret");
-            let mut value = match value.map(crate::host_res::unboxed) {
-                _ if secret => String::new(),
+            let mut value = match value {
+                // A secret's value never leaves the run.
+                _ if entry.render.as_deref() == Some("secret") => String::new(),
                 None => String::new(),
-                Some(Value::Text(text)) => text,
-                Some(other) => {
-                    crate::project::project(self, &other, crate::project::ProjectOptions::default())
-                        .to_string()
-                }
+                Some(value) => self.shown_text(value),
             };
             let mut continues = None;
             match entry.render.as_deref() {
                 // A list of addresses is shown whole: its person allows what they read, so one
-                // too long to read is no question to ask at all.
+                // too long to read, or one they could misread, is no question to ask at all.
                 Some("addresses") => {
-                    let named = addresses_in(&value);
-                    if named > MOST_SHOWN_ADDRESSES {
+                    addresses = addresses.saturating_add(addresses_in(&value));
+                    if addresses > MOST_SHOWN_ADDRESSES {
                         return Err(RuntimeError::Trap(format!(
-                            "a message to {named} addresses is more than the \
-                             {MOST_SHOWN_ADDRESSES} one question can show"
+                            "{addresses} addresses are more than the {MOST_SHOWN_ADDRESSES} one \
+                             question can show"
+                        )));
+                    }
+                    if let Some(misread) = named_addresses(&value).find(|a| !reads_plainly(a)) {
+                        let start: String =
+                            misread.chars().take(MOST_SHOWN_ADDRESS_CHARS).collect();
+                        return Err(RuntimeError::Trap(format!(
+                            "the address {start:?} cannot be shown so that it reads for what it \
+                             is: it holds letters outside plain ASCII or a quoted part, or is \
+                             longer than {MOST_SHOWN_ADDRESS_CHARS} characters"
                         )));
                     }
                 }
@@ -2304,6 +2343,71 @@ impl Core {
             }
         }
         Ok(shown)
+    }
+
+    /// `value` as the person asked reads it: text as it is, a list one item to a line, anything
+    /// else as it projects.
+    fn shown_text(&self, value: Value) -> String {
+        match crate::host_res::unboxed(value) {
+            Value::Text(text) => text,
+            Value::List(items) => items
+                .into_iter()
+                .map(|item| self.shown_text(item))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            other => {
+                crate::project::project(self, &other, crate::project::ProjectOptions::default())
+                    .to_string()
+            }
+        }
+    }
+
+    /// What the `fn` `call` names answers for the arguments `aref` gives the parameters it names,
+    /// as this run reads it, labelled as the function `name` is in the person's language.
+    fn asked_call(
+        &self,
+        aref: &ActionRef,
+        params: &[tilolang::meta::ParamMeta],
+        name: &str,
+        call: &tilolang::meta::ShownCall,
+    ) -> Result<(String, Option<Value>), RuntimeError> {
+        let Some(pkg) = self.registry.borrow().fn_package(&call.function) else {
+            return Err(RuntimeError::Trap(format!(
+                "what the ask shows calls `{name}`, which no package loaded here declares"
+            )));
+        };
+        let Some(func) = pkg.fn_(&call.function).cloned() else {
+            return Err(RuntimeError::Trap(format!(
+                "what the ask shows calls `{name}`, which {} does not declare",
+                pkg.meta.app
+            )));
+        };
+        let args: Vec<Value> = call
+            .args
+            .iter()
+            .map(|arg| {
+                params
+                    .iter()
+                    .position(|p| p.name == *arg)
+                    .and_then(|at| aref.args.get(at))
+                    .cloned()
+                    .unwrap_or(Value::Missing)
+            })
+            .collect();
+        let value = self.call_framed(
+            &pkg,
+            FrameKind::Call,
+            &format!("n_{}", call.function),
+            &func.params,
+            &args,
+            Some(&func.result),
+        )?;
+        let fallback = tilolang::messages::label(name);
+        let label =
+            self.words
+                .borrow()
+                .word(&tilolang::messages::key_of(&call.function), &[], &fallback);
+        Ok((label, Some(value)))
     }
 
     /// The field `name` of the record `arg` refers to, as this run reads it, with its label in
