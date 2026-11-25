@@ -77,3 +77,44 @@ fn the_shell_lists_an_opened_apps_actions_in_its_workspace() {
     );
     assert!(!listed.actions.is_empty(), "the app's actions are listed");
 }
+
+/// Settings' sections are served by the session on the device's dispatch, which lists them to the
+/// person in the workspace in front, as it lists any app's action: the appearance's switch is
+/// what a script's `tilo do set-dark-mode` and the app walks find there.
+#[test]
+fn the_persons_listing_offers_the_settings_the_session_serves() {
+    let mut fixture = crate::common::linked::Builder::without_an_app()
+        .service(Box::new(settings_sections::service::SettingsService::new()))
+        .start();
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    loop {
+        let rows = fixture.catalogue("dark", None).unwrap_or_default();
+        if rows.iter().any(|row| {
+            row.action.as_ref().is_some_and(|action| {
+                action.address.resource == "settings/appearance"
+                    && action.address.action == "set-dark-mode"
+            })
+        }) {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            let listed = |rows: Vec<tilo_actions::remote::CatalogueRow>| {
+                rows.into_iter()
+                    .filter_map(|row| {
+                        let action = row.action?;
+                        Some(format!("{} {}#{}", row.provider, action.address.resource, action.address.action))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let everything = fixture.catalogue("", None).map(listed);
+            let settings = fixture
+                .catalogue("", Some(tilo_actions::remote::settings_resources::PROVIDER))
+                .map(listed);
+            panic!(
+                "the person's listing never offered settings/appearance#set-dark-mode; \
+                 everything it lists: {everything:?}; what the settings provider lists: {settings:?}"
+            );
+        }
+        fixture.pass(Duration::from_millis(100));
+    }
+}

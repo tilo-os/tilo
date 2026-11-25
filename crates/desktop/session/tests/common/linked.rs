@@ -413,6 +413,62 @@ impl Fixture {
         })
     }
 
+    /// Every row the device's dispatch lists the person in the workspace that mentions `needle`,
+    /// page by page: what a script's `tilo do` and the session's control socket read.
+    ///
+    /// # Errors
+    /// The daemon refused the listing, or did not answer it.
+    pub fn catalogue(
+        &mut self,
+        needle: &str,
+        provider: Option<&str>,
+    ) -> Result<Vec<tilo_actions::remote::CatalogueRow>, String> {
+        use runtime_collab::wire::shell::{ShellCall, ShellReply};
+        use tilo_actions::remote::{CatalogueQuery, RemoteActionFrame, RemoteActionMessage};
+        let mut rows = Vec::new();
+        let mut query = CatalogueQuery {
+            needle: needle.to_owned(),
+            provider: provider.map(str::to_owned),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        };
+        loop {
+            let frame = RemoteActionFrame::new(RemoteActionMessage::CatalogueRequest {
+                correlation: 0,
+                query: query.clone(),
+            })
+            .encode()
+            .expect("a listing encodes");
+            let call = ShellCall::Action {
+                workspace: Some(self.workspace.clone()),
+                frame,
+                caller: None,
+                pressed: None,
+            };
+            let shell = self.shell.clone();
+            let reply = self
+                .answered(async move { shell.ask(call).await })
+                .map_err(|why| format!("the person's listing: {why}"))?;
+            let ShellReply::Action(frame) = reply else {
+                return Err(format!("the listing answered {reply:?}"));
+            };
+            let RemoteActionMessage::CatalogueResponse { result, .. } =
+                RemoteActionFrame::decode(&frame)
+                    .expect("the listing's answer reads")
+                    .message
+            else {
+                panic!("the listing answered another frame");
+            };
+            let page = result.map_err(|why| format!("the listing is refused: {why}"))?;
+            rows.extend(page.rows);
+            if page.exhausted || page.next_cursor.is_empty() {
+                return Ok(rows);
+            }
+            query.revision = Some(page.revision);
+            query.cursor = page.next_cursor;
+        }
+    }
+
     /// The runs of the shortcut `id` the daemon has finished, as its invocation records say.
     #[track_caller]
     pub fn runs(

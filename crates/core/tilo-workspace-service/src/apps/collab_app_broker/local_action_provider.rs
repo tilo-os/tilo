@@ -552,6 +552,12 @@ impl CertifiedLocalActionProvider {
         ) || self.state.registered(provider).is_some()
     }
 
+    /// `page` with only the rows and providers this dispatch serves ([`Self::serves`]): a
+    /// provider registered on this device lists what it offers here, as its calls are taken.
+    fn certified_page(&self, page: CataloguePage) -> CataloguePage {
+        certified_page(page, |provider| self.state.registered(provider).is_some())
+    }
+
     /// [`Self::check_lease`], then the presentation verified again against
     /// current certificate, fleet, membership and policy.
     fn check(&self, caller: &Caller) -> Result<super::AdmittedJoinIdentity, ActionCallError> {
@@ -596,7 +602,7 @@ impl ActionProvider for CertifiedLocalActionProvider {
         // An answer this call produced is covered by the check above; one
         // that arrives later is checked again when it does.
         if let PendingPoll::Ready(page) = answer.poll_ready() {
-            return Pending::ready(page.map(certified_page));
+            return Pending::ready(page.map(|page| self.certified_page(page)));
         }
         let (complete, pending) = tilo_actions::remote::pending();
         let provider = self.clone();
@@ -610,7 +616,7 @@ impl ActionProvider for CertifiedLocalActionProvider {
                         })
                     })
                 })
-                .map(certified_page);
+                .map(|page| provider.certified_page(page));
             complete.complete(result);
         });
         pending
@@ -725,10 +731,10 @@ impl ActionProvider for CertifiedLocalActionProvider {
 }
 
 /// `page` without rows or providers outside this api.
-fn certified_page(mut page: CataloguePage) -> CataloguePage {
-    page.rows.retain(|row| certified_provider(&row.provider));
-    page.providers
-        .retain(|provider| certified_provider(&provider.provider));
+fn certified_page(mut page: CataloguePage, registered: impl Fn(&str) -> bool) -> CataloguePage {
+    let serves = |provider: &str| certified_provider(provider) || registered(provider);
+    page.rows.retain(|row| serves(&row.provider));
+    page.providers.retain(|provider| serves(&provider.provider));
     page
 }
 
@@ -856,7 +862,8 @@ mod tests {
         rows.push(resource_only);
         rows.push(row("42", ActionAddress::new("note", "edit")));
         rows.push(row("untrusted", ActionAddress::new("note", "edit")));
-        let providers = [provider.as_str(), "42", "untrusted"]
+        rows.push(row("registered", ActionAddress::new("appearance", "set-dark-mode")));
+        let providers = [provider.as_str(), "42", "untrusted", "registered"]
             .into_iter()
             .map(|provider| CatalogueProvider {
                 provider: provider.into(),
@@ -866,14 +873,17 @@ mod tests {
                 browsable: true,
             })
             .collect();
-        let page = certified_page(CataloguePage {
-            revision: "revision".into(),
-            rows,
-            providers,
-            next_cursor: vec![1],
-            ..CataloguePage::default()
-        });
-        assert_eq!(page.rows.len(), allowed.len() + 2);
+        let page = certified_page(
+            CataloguePage {
+                revision: "revision".into(),
+                rows,
+                providers,
+                next_cursor: vec![1],
+                ..CataloguePage::default()
+            },
+            |provider| provider == "registered",
+        );
+        assert_eq!(page.rows.len(), allowed.len() + 3);
         assert!(page.rows[allowed.len()].action.is_none());
         assert_eq!(
             page.rows[..allowed.len()]
@@ -882,13 +892,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             allowed
         );
-        assert_eq!(page.rows.last().unwrap().provider, "42");
+        // A provider this device registered lists what it offers; an unknown one does not.
+        assert_eq!(
+            page.rows[allowed.len() + 1..]
+                .iter()
+                .map(|row| row.provider.as_str())
+                .collect::<Vec<_>>(),
+            ["42", "registered"]
+        );
         assert_eq!(
             page.providers
                 .iter()
                 .map(|p| p.provider.as_str())
                 .collect::<Vec<_>>(),
-            [provider.as_str(), "42"]
+            [provider.as_str(), "42", "registered"]
         );
         assert_eq!(page.revision, "revision");
         assert_eq!(page.next_cursor, [1]);

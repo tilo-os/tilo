@@ -6306,10 +6306,16 @@ impl ActionProvider for RuntimeActionProvider {
                 if !self.admitted(caller) {
                     return Pending::ready(Err(ActionCallError::NotPermitted));
                 }
-                let answer = self
-                    .broker
-                    .state()
-                    .action_query(&on_this_device(caller), &query);
+                // The person's own shell is this device's own process: it is offered what
+                // reaches this device alone, the seat's providers it serves itself among them
+                // (Settings' sections, the activity). Any other run here lists as a caller this
+                // device does not vouch for.
+                let listed = if session.own_shell {
+                    caller.clone()
+                } else {
+                    on_this_device(caller)
+                };
+                let answer = self.broker.state().action_query(&listed, &query);
                 return self.with_devices(caller, answer, &query);
             }
             if let Err(refusal) = session.check(caller, &self.workspaces) {
