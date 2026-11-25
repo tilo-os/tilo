@@ -1198,35 +1198,13 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         .await
         .unwrap_err();
     assert!(
-        refused.contains("missing"),
-        "the batch is refused for the missing issue: {refused}"
+        refused.contains(&format!("there is no {KIND} `missing`")),
+        "the refusal names the step that failed, the remove of the missing issue: {refused}"
     );
     assert_eq!(
         title_through_service(&workspaces, &context, "i-1").await,
-        Some(Value::Text("Second".into())),
-        "the admitted prefix advances the same document twice"
-    );
-    // Where this device keeps the workspace's store.
-    let root = dir
-        .path()
-        .join("workspaces")
-        .join(created.workspace_id.to_string())
-        .join("store");
-    drop(workspaces);
-    server.shutdown().await;
-
-    // Model interruption after retention but before the resource projection reached disk.
-    std::fs::remove_dir_all(root).unwrap();
-    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
-    let workspaces = server.workspaces().clone();
-    workspaces.set_member_device(Arc::new(MemberDevice {
-        cert,
-        signer: Arc::new(key),
-    }));
-    assert_eq!(
-        title_through_service(&workspaces, &context, "i-1").await,
-        Some(Value::Text("Second".into())),
-        "the signed checkpoint and delta rebuild the projection"
+        None,
+        "a refused action keeps none of its steps: {refused}"
     );
     drop(workspaces);
     server.shutdown().await;
