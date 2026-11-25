@@ -75,12 +75,12 @@ pub(crate) fn ush_request_in(
 /// device cannot reach a shell, and the person reads it in the app's words.
 fn app_open_error(error: OpenError) -> OpenError {
     match error {
-        OpenError::ServiceBusy => OpenError::Unavailable(crate::i18n::t(
-            "terminal-service-control-unavailable",
-        )),
-        OpenError::ServiceProtocol => OpenError::Unavailable(crate::i18n::t(
-            "terminal-service-protocol-unavailable",
-        )),
+        OpenError::ServiceBusy => {
+            OpenError::Unavailable(crate::i18n::t("terminal-service-control-unavailable"))
+        }
+        OpenError::ServiceProtocol => {
+            OpenError::Unavailable(crate::i18n::t("terminal-service-protocol-unavailable"))
+        }
         other => other,
     }
 }
@@ -173,7 +173,7 @@ pub(crate) fn open_url(url: &str) {
     if !is_public_web_link(url) {
         return;
     }
-    ui::widget::open_external_url(url);
+    ui::platform::os_open(url);
 }
 
 /// An OSC 8 target safe to publish as a resource: a small URL subset, because a redaction mistake
@@ -577,7 +577,8 @@ impl TerminalWidget {
         self.submit(crate::resource::Terminal::CLAIM_PANE.with((self.pane_id.clone(), device)));
         self.begin_commands();
         self.emulating = true;
-        self.emulator = crate::emulator::Emulator::with_history(self.width, self.height, history_bound());
+        self.emulator =
+            crate::emulator::Emulator::with_history(self.width, self.height, history_bound());
         self.ever_nonblank = false;
         self.title = "Terminal".to_string();
         self.show_screen();
@@ -2375,7 +2376,7 @@ impl TerminalWidget {
                 if !path.is_file() {
                     return Err(format!("{} is not a file on this device", path.display()));
                 }
-                ui::widget::open_external_url(&format!("file://{}", path.display()));
+                ui::platform::os_open(&format!("file://{}", path.display()));
             }
         }
         Ok(())
@@ -3783,7 +3784,7 @@ impl TerminalWidget {
         };
         if self.life.held_action.get().contains(at) {
             if let Some(url) = held.add_card_url() {
-                ui::widget::open_external_url(url);
+                ui::platform::os_open(url);
             }
         } else if self.life.held_secondary.get().contains(at) {
             self.dismiss_held(&held);
@@ -5028,9 +5029,9 @@ fn ush_service_socket() -> Result<Option<tilo_process::local_socket::ServiceSock
         // The launcher opened no control connection: this session takes another route.
         Err(ServiceSocketError::Missing) => Ok(None),
         Err(ServiceSocketError::InUse) => Err(OpenError::ServiceBusy),
-        Err(ServiceSocketError::Poisoned) => {
-            Err(OpenError::Failed("the terminal service connection is poisoned".into()))
-        }
+        Err(ServiceSocketError::Poisoned) => Err(OpenError::Failed(
+            "the terminal service connection is poisoned".into(),
+        )),
     }
 }
 
