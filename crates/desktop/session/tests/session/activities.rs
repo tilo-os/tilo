@@ -434,3 +434,166 @@ fn a_songs_card_takes_it_along_its_length() {
             .then_some(())
     });
 }
+
+/// The width a phone's display has in these tests: the one the card under the bar is measured on.
+const PHONE_WIDTH: i32 = 420;
+
+/// A session on a display `width` wide, drawing with `presentation`.
+fn session_with(
+    width: i32,
+    presentation: fn() -> ui::application::ComponentRunnerInputs,
+) -> Session {
+    Session::headless(
+        Options {
+            presentation,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
+    )
+    .expect("session")
+}
+
+/// The time's width as the bar's own type lays it out, unconstrained: what the whole clock needs.
+fn clock_needs(clock: &str) -> f64 {
+    let style = ui::widget::Text::new(clock)
+        .with_role(ui::tokens::TextRole::Subheading)
+        .numeric()
+        .text_style()
+        .clone();
+    let (needs, _) = ui::font_catalog::fixture_renderer().measure_style(clock, None, &style);
+    f64::from(needs)
+}
+
+/// The person's clocks in `style` on this thread, as their region settings carry them, so a
+/// capture shows a clock of a shape the test names: 12-hour `12:59 PM`, 24-hour `23:59`.
+fn clock_style(style: ui::clock::TimeStyle) {
+    ui::format::region::install_here(
+        Some(ui::format::RegionFormats {
+            time: style,
+            ..ui::format::RegionFormats::default()
+        }),
+        None,
+    );
+}
+
+/// Hold this thread's clock at `hour`:`minute` on the capture's own day, so every picture shows
+/// one time and the widest a clock gets (`12:59 PM`, `23:59`).
+fn clock_at(hour: i8, minute: i8) -> ui::time::testing::SharedWall {
+    let at = ui::format::DateTime::new(2026, 6, 30, hour, minute, 0, 0)
+        .ok()
+        .and_then(ui::clock::instant_of)
+        .expect("the capture's day at a time in the device's zone");
+    let wall = ui::time::testing::SharedWall::default();
+    wall.follow();
+    wall.pin(
+        ui::time::UNIX_EPOCH
+            + ui::time::Duration::from_millis(
+                u64::try_from(at.as_millisecond()).expect("a time after the epoch"),
+            ),
+    );
+    wall
+}
+
+/// Check the bar of the frame just captured shows the whole time, its box as wide as its text
+/// needs and on the screen, naming the frame in what it says of a failure.
+fn whole_clock(session: &Session, name: &str, width: i32, clipped: &mut Vec<String>) {
+    let clock = session
+        .read("session:time")
+        .and_then(|time| time["clock"].as_str().map(str::to_owned))
+        .expect("the session publishes the time");
+    // What the bar shows, by name and place: a failure says which part took the room.
+    let bar: Vec<(String, (f64, f64, f64, f64))> = session
+        .accessible_labels()
+        .into_iter()
+        .filter_map(|label| {
+            let rect = session.shell_text_bounds(&label)?;
+            (rect.1 < 48.0).then_some((label, rect))
+        })
+        .collect();
+    println!("{name}: {bar:?}");
+    let Some((x, y, w, h)) = session.shell_text_bounds(&clock) else {
+        clipped.push(format!("{name}: the bar shows no time {clock:?}: {bar:?}"));
+        return;
+    };
+    let needs = clock_needs(&clock);
+    if w + 0.5 < needs {
+        clipped.push(format!(
+            "{name}: {clock:?} stands {w} wide in the bar where its text needs {needs}: \
+             {x} {y} {h} {bar:?}"
+        ));
+    }
+    if x < 0.0 || x + w > f64::from(width) || y < 0.0 || y + h > f64::from(HEIGHT) {
+        clipped.push(format!(
+            "{name}: the clock stands off screen: {:?}",
+            (x, y, w, h)
+        ));
+    }
+}
+
+/// A phone's bar is the tight one, and a live activity takes a control of it, but the clock is a
+/// glance value: it stands whole on a phone as on a desktop, in either theme, at the widest a
+/// clock gets in either of the person's two clock styles. A part that must give way folds first
+/// (the pill onto one control); the time is never the one squeezed.
+#[test]
+fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
+    let _settled = ui::motion::testing::settled();
+    let dir = shots_dir();
+    let mut clipped = Vec::new();
+    clock_style(ui::clock::TimeStyle::H12);
+    let _twelve = clock_at(12, 59);
+    for (size, width) in [("phone", PHONE_WIDTH), ("desktop", crate::common::WIDTH)] {
+        for (theme, presentation) in [
+            (
+                "dark",
+                ui::headless::fixture_runner_inputs
+                    as fn() -> ui::application::ComponentRunnerInputs,
+            ),
+            (
+                "light",
+                super::shell::light_runner_inputs
+                    as fn() -> ui::application::ComponentRunnerInputs,
+            ),
+        ] {
+            let mut session = session_with(width, presentation);
+            settle(&mut session, 8);
+            // What is live stands in the bar beside the time, as it does while a timer runs:
+            // first as the pill alone, then with its card waiting, as a phone's bar shows both.
+            for (state, overlay) in [("pill", false), ("card", true)] {
+                show(&session, CLOCKS, tea(), overlay);
+                settle(&mut session, 8);
+                let name = format!("clock-{size}-{theme}-{state}");
+                super::shell::capture_to(&mut session, &dir, &name);
+                whole_clock(&session, &name, width, &mut clipped);
+            }
+        }
+    }
+    // The 24-hour clock, at the longest it reads, on the phone where the bar is tightest.
+    clock_style(ui::clock::TimeStyle::H24);
+    let _late = clock_at(23, 59);
+    for (theme, presentation) in [
+        (
+            "dark",
+            ui::headless::fixture_runner_inputs
+                as fn() -> ui::application::ComponentRunnerInputs,
+        ),
+        (
+            "light",
+            super::shell::light_runner_inputs as fn() -> ui::application::ComponentRunnerInputs,
+        ),
+    ] {
+        let mut session = session_with(PHONE_WIDTH, presentation);
+        settle(&mut session, 8);
+        show(&session, CLOCKS, tea(), true);
+        settle(&mut session, 8);
+        let name = format!("clock-phone-{theme}-clock-24");
+        super::shell::capture_to(&mut session, &dir, &name);
+        whole_clock(&session, &name, PHONE_WIDTH, &mut clipped);
+    }
+    ui::format::region::install_here(None, None);
+    assert!(
+        clipped.is_empty(),
+        "the bar's clock is clipped, though it is short fixed content a glance reads:\n{}",
+        clipped.join("\n")
+    );
+}
