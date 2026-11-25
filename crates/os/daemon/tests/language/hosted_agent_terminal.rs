@@ -14,7 +14,9 @@
 use serde_json::{Value, json};
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
-use tilo_actions::remote::{ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy,
+};
 
 use crate::language::chat::{CHANNEL, chat_holds, made_channel, opens, said};
 use crate::language::host;
@@ -60,7 +62,8 @@ async fn write_to_scout(host: &host::Host, channel: &str, words: &str) -> (Strin
 }
 
 /// The person allows what their assistant's turn asks: the newest invocation of the
-/// workspace's that waits for them is answered.
+/// workspace's that waits for them is answered at `tilo`'s own prompt, on a connection the
+/// kernel says is theirs. The same answer from a program on a plain connection is refused.
 async fn allow(host: &host::Host) {
     let dispatch = host.dispatch();
     let caller = host.caller();
@@ -87,16 +90,29 @@ async fn allow(host: &host::Host) {
         .find(|invocation| invocation.status == InvocationStatus::Waiting)
         .and_then(|invocation| invocation.id)
         .expect("an invocation waits for the person's answer");
-    let receipt = host
-        .dispatch()
-        .invoke(
-            &caller,
-            host::call(
-                workspace_invocations::PROVIDER,
-                ActionAddress::new(record, "resolve"),
-                &json!({"resolution": "approve"}),
-            ),
+    let resolve = || {
+        host::call(
+            workspace_invocations::PROVIDER,
+            ActionAddress::new(record.clone(), "resolve"),
+            &json!({"resolution": "approve"}),
         )
+    };
+    let by_a_program = dispatch.invoke(&caller, resolve()).await;
+    assert!(
+        matches!(
+            &by_a_program,
+            Some(Err(ActionCallError::Refused { reason }))
+                if reason == tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM
+        ),
+        "a program does not answer for the person: {by_a_program:?}"
+    );
+    let (own, person) = host
+        .daemon()
+        .own_connection_in(host.workspace())
+        .expect("the person's own connection reaches the workspace");
+    assert!(person.is_own_connection(), "{person:?}");
+    let receipt = own
+        .invoke(&person, resolve())
         .await
         .expect("the dispatch answers")
         .unwrap_or_else(|error| panic!("the person's answer is taken: {error:?}"));
