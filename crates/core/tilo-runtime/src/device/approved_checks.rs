@@ -215,7 +215,11 @@ impl SettingsApprovals {
         {
             return Err("approved project app identity invalid".into());
         }
-        if project.record.is_empty() || project.record.len() > 1024 {
+        // An app's records are kept in its workspace's document of the app, whose route names
+        // no record; the one spelling of it is the alias every surface uses.
+        let record = tilo_broker_core::published::canonical_document(&project.record)
+            .map_err(|why| format!("approved project record is no record id: {why}"))?;
+        if record.len() > 1024 {
             return Err("approved project identity exceeds portable receipt vocabulary".into());
         }
         let workspace = uuid::Uuid::parse_str(&project.workspace)
@@ -225,7 +229,7 @@ impl SettingsApprovals {
         let receipts = blake3::hash(
             format!(
                 "{}/{}/{}/{}",
-                project.workspace, project.record, identity.kind, identity.key
+                project.workspace, record, identity.kind, identity.key
             )
             .as_bytes(),
         )
@@ -257,7 +261,7 @@ impl SettingsApprovals {
         let binding = ProjectBinding {
             workspace,
             host: self.device,
-            record: project.record,
+            record,
             resource: identity.key.clone(),
         };
         let checks = project
