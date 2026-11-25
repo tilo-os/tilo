@@ -6,6 +6,10 @@ allow-indexing-slicing-in-tests = true
 # Clippy rejects a function with more parameters than this.
 too-many-arguments-threshold = 8
 
+# Product names written as their makers write them, which docs name in prose rather than as code.
+# `..` keeps clippy's own list.
+doc-valid-idents = ["YouTube", ".."]
+
 # reqwest is built without a bundled crypto provider; these constructors panic
 # unless one is installed. `tilo_net::http` installs it and returns builders.
 disallowed-methods = [
