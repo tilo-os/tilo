@@ -706,6 +706,47 @@ impl Workspaces {
         Ok(result)
     }
 
+    /// Keep `changes`, this device's own changes of `app`'s record `record` of `kind` in
+    /// `workspace`, concatenated, as its write to the workspace's store: founding the record when
+    /// the store holds none of it. On a copy of a workspace another device serves, the write is
+    /// kept here and carried to that device once it is reached.
+    ///
+    /// # Errors
+    /// [`WriteRefusal::Waiting`] while this device does not hold the workspace yet: the write is
+    /// made again once it does. [`WriteRefusal::Refused`] when the changes do not read or the
+    /// store refuses them.
+    #[cfg(test)]
+    pub(crate) async fn own_record_write(
+        &self,
+        workspace: &str,
+        (app, kind, record): (&str, &str, &str),
+        changes: &[u8],
+    ) -> Result<(), tilo_peer_state::owner::WriteRefusal> {
+        use tilo_peer_state::owner::WriteRefusal;
+        if self.workspace(workspace).await.is_err() {
+            return Err(WriteRefusal::Waiting(
+                tilo_peer_state::MissingPrerequisite::Workspace,
+            ));
+        }
+        let parsed: Vec<AmChange> =
+            tilo_automerge_isolate::parse_changes(changes).map_err(|error| {
+                WriteRefusal::Refused(format!("the record's changes do not read: {error}"))
+            })?;
+        if parsed.is_empty() {
+            return Ok(());
+        }
+        self.keep_record_change(
+            (workspace, self.signing_device()),
+            (app, Some(kind), record),
+            (parsed, None),
+            None,
+        )
+        .await
+        .map_err(WriteRefusal::Refused)?;
+        self.wrote(workspace, app, record);
+        Ok(())
+    }
+
     /// Whether `writes` of a move of `app`'s record of `kind`, drafted against `governed`'s
     /// store, would be kept there as the device `author`'s writes for `caller`, judged without
     /// keeping any of them.

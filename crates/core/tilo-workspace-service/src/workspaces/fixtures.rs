@@ -442,6 +442,7 @@ pub fn declare_record_kind(workspaces: &Workspaces, app: &str) -> String {
         "round",
         "text",
         "title",
+        "value",
     ]
     .iter()
     .map(|field| serde_json::json!({ "path": field, "type": "any" }))

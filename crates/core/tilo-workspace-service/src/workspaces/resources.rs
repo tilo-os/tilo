@@ -2139,9 +2139,9 @@ impl Workspaces {
             );
         }
 
-        if governed.member.is_some() && !requests.is_empty() {
-            self.wait_member_link(governed.workspace_id()).await?;
-        }
+        // A member copy keeps the write here whether or not the device serving it is reached: it
+        // goes to that device now, or the moment the link is back, and `served` answers once it
+        // holds it.
         let (complete, answer) = tokio::sync::oneshot::channel();
         let workspaces = self.clone();
         // Once retention starts, every write is kept even if the caller goes away: the batch is

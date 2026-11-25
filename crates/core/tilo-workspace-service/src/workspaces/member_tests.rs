@@ -578,6 +578,60 @@ async fn change_of(
     opened.save_after(&heads)
 }
 
+/// The device serving `workspace` writes `(app, record)` holding `value` under `key`, in the
+/// workspace's store, its kind declared first.
+async fn serving_writes_record(
+    serving: &TestHost,
+    workspace: &str,
+    (app, record): (&str, &str),
+    (key, value): (&str, &str),
+) {
+    super::super::fixtures::write_record(serving.workspaces(), workspace, (app, record), |doc| {
+        use automerge::transaction::Transactable as _;
+        doc.put(automerge::ROOT, key, value)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .expect("the serving device writes its record");
+}
+
+/// The change setting `key` to `value` in `copies`' copy of `(app, record)` of `workspace`, as
+/// this device makes it: its own write, as every change the device makes in its own name.
+async fn record_change_of(
+    copies: &super::Workspaces,
+    workspace: &str,
+    (app, record): (&str, &str),
+    (key, value): (&str, &str),
+) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+
+    let bytes = copies
+        .stored_record_in(workspace, app, record)
+        .await
+        .expect("the record reads")
+        .expect("the copy holds the record");
+    let mut opened = automerge::AutoCommit::load(&bytes).expect("the record opens");
+    let heads = opened.get_heads();
+    opened
+        .put(automerge::ROOT, key, value)
+        .expect("the record's field");
+    opened.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+    );
+    opened.save_after(&heads)
+}
+
+/// The store's document holding the content of `app`'s record `record`, as `served` names it.
+fn record_document(app: &str, record: &str) -> String {
+    tilo_resource_store::content_id(
+        collab_types::EVERY_MEMBER,
+        &super::super::fixtures::record_kind(app),
+        record,
+    )
+}
+
 /// What the serving device's copy of a record holds under `key`.
 async fn served_value(
     workspaces: &super::Workspaces,
@@ -610,43 +664,39 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
     let member_state = tempfile::tempdir().unwrap();
     let (serving, device, created, invitation) = shared(serving_state.path(), "Answered", 41).await;
     let workspace = created.workspace.clone();
-    serving_writes(
+    serving_writes_record(
         &serving,
         &workspace,
         ("test.app", "record"),
         ("value", "by-the-serving-device"),
     )
     .await;
-    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
+    let kind = super::super::fixtures::declare_record_kind(&copies, "test.app");
+    let document = record_document("test.app", "record");
     let workspace_id = copies
         .join_member(&invitation)
         .await
         .expect("the invitation is redeemed");
     catching_up(&copies, workspace_id).await;
     copies
-        .own_write(
+        .own_record_write(
             &workspace,
-            ("test.app", "record"),
-            None,
-            &change_of(
+            ("test.app", &kind, "record"),
+            &record_change_of(
                 &copies,
                 &workspace,
                 ("test.app", "record"),
                 ("value", "written"),
-                person,
             )
             .await,
-            false,
-            false,
-            None,
         )
         .await
         .expect("the write is taken here");
     tilo_test_env::within("the serving device answers the write", async {
         copies
-            .served(&workspace, &[("test.app", "record")])
+            .served(&workspace, &[("test.app", &document)])
             .expect("a member copy is answered by the device serving it")
             .await
             .expect("the serving device answers the write");
@@ -827,42 +877,34 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
     let member_state = tempfile::tempdir().unwrap();
     let (serving, device, created, invitation) = shared(serving_state.path(), "Away", 47).await;
     let workspace = created.workspace.clone();
-    serving_writes(
+    serving_writes_record(
         &serving,
         &workspace,
         ("test.app", "record"),
         ("value", "by-the-serving-device"),
     )
     .await;
-    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
+    let kind = super::super::fixtures::declare_record_kind(&copies, "test.app");
+    let document = record_document("test.app", "record");
     let workspace_id = copies
         .join_member(&invitation)
         .await
         .expect("the invitation is redeemed");
     catching_up(&copies, workspace_id).await;
-    let change = change_of(
+    let change = record_change_of(
         &copies,
         &workspace,
         ("test.app", "record"),
         ("value", "written-while-away"),
-        person,
     )
     .await;
     copies.set_member_link(workspace_id, false);
 
     let written = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        copies.own_write(
-            &workspace,
-            ("test.app", "record"),
-            None,
-            &change,
-            false,
-            false,
-            None,
-        ),
+        copies.own_record_write(&workspace, ("test.app", &kind, "record"), &change),
     )
     .await
     .expect("a write does not wait for the serving device");
@@ -884,7 +926,7 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
         "the write reaches the serving device once the link is back",
         async {
             copies
-                .served(&workspace, &[("test.app", "record")])
+                .served(&workspace, &[("test.app", &document)])
                 .expect("the copy waits on its serving device")
                 .await
                 .expect("the serving device keeps the write");
@@ -1028,26 +1070,23 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
     let member_state = tempfile::tempdir().unwrap();
     let (serving, device, created, invitation) = shared(serving_state.path(), "Joining", 48).await;
     let workspace = created.workspace.clone();
-    serving_writes(
+    serving_writes_record(
         &serving,
         &workspace,
         ("test.app", "record"),
         ("value", "by-the-serving-device"),
     )
     .await;
-    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
+    let kind = super::super::fixtures::declare_record_kind(&copies, "test.app");
+    let document = record_document("test.app", "record");
 
     let early = copies
-        .own_write(
+        .own_record_write(
             &workspace,
-            ("test.app", "record"),
-            None,
+            ("test.app", &kind, "record"),
             &snapshot("value", "written-while-joining"),
-            false,
-            false,
-            None,
         )
         .await;
     assert_eq!(
@@ -1063,29 +1102,20 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
         .await
         .expect("the invitation is redeemed");
     catching_up(&copies, workspace_id).await;
-    let change = change_of(
+    let change = record_change_of(
         &copies,
         &workspace,
         ("test.app", "record"),
         ("value", "written-while-joining"),
-        person,
     )
     .await;
     copies
-        .own_write(
-            &workspace,
-            ("test.app", "record"),
-            None,
-            &change,
-            false,
-            false,
-            None,
-        )
+        .own_record_write(&workspace, ("test.app", &kind, "record"), &change)
         .await
         .expect("the write is kept once the workspace is held here");
     tilo_test_env::within("the write reaches the serving device", async {
         copies
-            .served(&workspace, &[("test.app", "record")])
+            .served(&workspace, &[("test.app", &document)])
             .expect("the copy waits on its serving device")
             .await
             .expect("the serving device keeps the write");
