@@ -323,10 +323,6 @@ mod cases {
         fn number(&self, r: &ResourceRef, field: &str) -> i64 {
             match self.rt.read(r, field).unwrap() {
                 Value::Int(n) => n,
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "a whole number read as a float"
-                )]
                 Value::Float(n) if n.is_finite() => n as i64,
                 Value::Float(_) => 0,
                 other => panic!("{field} reads {other:?}"),

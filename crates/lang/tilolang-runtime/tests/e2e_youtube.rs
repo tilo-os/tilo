@@ -460,7 +460,9 @@ mod cases {
 
     impl EngineHost for Bridge {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
+            if app != "so.tilo.tube" {
+                return Err(format!("`{app}` is not the app this bridge answers for"));
+            }
             self.engine.call(op, input)
         }
 
@@ -471,9 +473,11 @@ mod cases {
             input: &str,
             handlers: &JobHandlers,
         ) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
+            if app != "so.tilo.tube" {
+                return Err(format!("`{app}` is not the app this bridge answers for"));
+            }
             // The host names each job, as the device does.
-            let job = format!("grayjay-{}", self.handlers.borrow().len() + 1);
+            let job = format!("grayjay-{}", self.handlers.borrow().len().saturating_add(1));
             let (named, ended) = (job.clone(), Arc::clone(&self.ended));
             self.engine.start(
                 &job,

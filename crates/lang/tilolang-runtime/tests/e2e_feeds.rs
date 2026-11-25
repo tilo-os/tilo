@@ -110,8 +110,12 @@ mod cases {
             input: &str,
             handlers: &JobHandlers,
         ) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.feeds");
-            assert_eq!(op, "refresh");
+            if app != "so.tilo.feeds" {
+                return Err(format!("`{app}` is not the app this engine answers for"));
+            }
+            if op != "refresh" {
+                return Err(format!("`{op}` is no work this test's engine starts"));
+            }
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -129,7 +133,9 @@ mod cases {
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
             let said = || -> Result<String, String> {
-                assert_eq!(job, "job-1");
+                if job != "job-1" {
+                    return Err(format!("no work `{job}` runs on this engine"));
+                }
                 let feeds = self.feeds.borrow().len();
                 let ready = self.ready.borrow().clone();
                 let done = feeds.saturating_sub(ready.len());

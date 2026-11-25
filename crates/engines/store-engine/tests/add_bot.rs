@@ -8,11 +8,12 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 
 use serde_json::{Value, json};
+use tilo_test_env::ScopedEnv;
 use tilolang_tilo::engine::Provider as _;
 
 /// A bot program as a registry lists it: a schedule that posts in a chat, in the canonical
 /// spelling a program file has.
-fn program() -> String {
+fn program() -> Result<String, String> {
     let shortcut: tilo_automation::Shortcut = serde_json::from_value(json!({
         "id": "echo",
         "name": "Echo",
@@ -25,24 +26,37 @@ fn program() -> String {
         }],
         "triggers": [{"trigger": "schedule", "schedule": {"every": "interval", "seconds": 60}}]
     }))
-    .expect("the fixture is a shortcut");
-    String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).expect("it encodes"))
-        .expect("a program is UTF-8")
+    .map_err(|error| format!("the fixture is no shortcut: {error}"))?;
+    let bytes = tilo_automation::program::canonical_bytes(&shortcut)
+        .map_err(|error| format!("the shortcut does not encode: {error}"))?;
+    String::from_utf8(bytes).map_err(|error| format!("a program is no UTF-8: {error}"))
 }
+
+/// The daemon's thread: the answers to the requests it was sent, or why it served none.
+type Served = std::thread::JoinHandle<Result<Vec<Value>, String>>;
 
 /// Serve the daemon's native endpoint: answer each MCP call with the next of `answers`, keeping
 /// what was asked.
-fn daemon(socket: &Path, answers: Vec<Value>) -> std::thread::JoinHandle<Vec<Value>> {
-    let listener = UnixListener::bind(socket).expect("the daemon's socket is free");
-    std::thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("the daemon is reached");
-        let mut reader = BufReader::new(stream.try_clone().expect("the connection reads"));
+fn daemon(socket: &Path, answers: Vec<Value>) -> std::io::Result<Served> {
+    let listener = UnixListener::bind(socket)?;
+    Ok(std::thread::spawn(move || {
+        let (stream, _) = listener
+            .accept()
+            .map_err(|error| format!("the daemon is not reached: {error}"))?;
+        let mut reader = BufReader::new(
+            stream
+                .try_clone()
+                .map_err(|error| format!("the connection does not read: {error}"))?,
+        );
         let mut writer = stream;
         let mut asked = Vec::new();
         for answer in answers {
             let mut line = String::new();
-            reader.read_line(&mut line).expect("a request comes");
-            let request: Value = serde_json::from_str(&line).expect("a request is MCP");
+            reader
+                .read_line(&mut line)
+                .map_err(|error| format!("no request comes: {error}"))?;
+            let request: Value = serde_json::from_str(&line)
+                .map_err(|error| format!("a request is no MCP: {error}"))?;
             let id = request.get("id").cloned().unwrap_or(Value::Null);
             asked.push(request.get("params").cloned().unwrap_or(Value::Null));
             writeln!(
@@ -50,28 +64,27 @@ fn daemon(socket: &Path, answers: Vec<Value>) -> std::thread::JoinHandle<Vec<Val
                 "{}",
                 json!({"jsonrpc": "2.0", "id": id, "result": answer})
             )
-            .expect("the answer goes");
+            .map_err(|error| format!("the answer does not go: {error}"))?;
         }
-        asked
-    })
+        Ok(asked)
+    }))
 }
 
 /// Both tests point the daemon's native endpoint at a scratch runtime, so they take turns.
 static RUNTIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Add `program` to the shortcut library the stand-in daemon keeps, answering what was asked.
-fn add(program: String, saved: Value) -> Vec<Value> {
+/// Add `program` to the shortcut library the stand-in daemon keeps, answering what was asked and
+/// what the store said of it.
+fn add(program: &str, saved: &Value) -> Result<(String, Vec<Value>), String> {
     let _runtime = RUNTIME
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let scratch = tempfile::tempdir().expect("a scratch directory");
-    // SAFETY: this test's own process (nextest runs each test in one), before the daemon is
-    // reached.
-    unsafe {
-        std::env::set_var("XDG_RUNTIME_DIR", scratch.path());
-    }
+    let scratch = tempfile::tempdir().map_err(|error| format!("a scratch directory: {error}"))?;
+    let mut env = ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", scratch.path());
     let sockets = scratch.path().join("tilo");
-    std::fs::create_dir_all(&sockets).expect("the daemon's socket directory");
+    std::fs::create_dir_all(&sockets)
+        .map_err(|error| format!("the daemon's socket directory: {error}"))?;
     let text = saved.to_string();
     let served = daemon(
         &sockets.join("native.sock"),
@@ -79,18 +92,21 @@ fn add(program: String, saved: Value) -> Vec<Value> {
             json!({"content": [{"type": "text", "text": text}], "structuredContent": saved}),
             json!({"structuredContent": {"id": "echo"}}),
         ],
-    );
+    )
+    .map_err(|error| format!("the daemon's socket: {error}"))?;
     let store = tilo_store_engine::Store;
-    let answer = store
-        .call("add-bot", &json!({"program": program}).to_string())
-        .expect("the bot is added");
-    assert!(answer.contains("Echo"), "{answer}");
-    served.join().expect("the daemon's thread ends")
+    let answer = store.call("add-bot", &json!({"program": program}).to_string())?;
+    let asked = served
+        .join()
+        .map_err(|_panicked| "the daemon's thread ends".to_owned())??;
+    Ok((answer, asked))
 }
 
 #[test]
 fn a_directory_bots_program_is_saved_as_the_persons_shortcut() {
-    let asked = add(program(), json!([]));
+    let program = program().unwrap();
+    let (answer, asked) = add(&program, &json!([])).unwrap();
+    assert!(answer.contains("Echo"), "{answer}");
     assert_eq!(asked.len(), 2, "the shortcut is looked up, then saved");
     assert_eq!(asked[0]["name"], "tilo_do");
     assert_eq!(asked[0]["arguments"]["path"], "workspace/shortcuts#list");
@@ -109,7 +125,8 @@ fn a_directory_bots_program_is_saved_as_the_persons_shortcut() {
 /// shortcut, so the save is an update and no second copy stands beside it.
 #[test]
 fn a_program_the_person_already_saved_is_updated_in_place() {
-    let asked = add(program(), json!([{"id": "echo", "name": "Echo"}]));
+    let program = program().unwrap();
+    let (_, asked) = add(&program, &json!([{"id": "echo", "name": "Echo"}])).unwrap();
     assert_eq!(asked[1]["arguments"]["path"], "workspace/shortcuts#update");
     assert_eq!(asked[1]["arguments"]["args"]["shortcut"]["id"], "echo");
 }

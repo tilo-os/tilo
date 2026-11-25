@@ -76,14 +76,14 @@ mod cases {
     /// pictures and whether a key reads.
     #[derive(Clone)]
     struct Engine {
-        engine: Rc<totp_engine::TotpEngine>,
+        totp: Rc<totp_engine::TotpEngine>,
         scope: Rc<tilo_wake::WakeScope>,
     }
 
     impl EngineHost for Engine {
         fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
             let _window = self.scope.enter();
-            self.engine.call(op, input)
+            self.totp.call(op, input)
         }
 
         fn start(
@@ -94,7 +94,7 @@ mod cases {
             _handlers: &JobHandlers,
         ) -> Result<String, String> {
             let _window = self.scope.enter();
-            self.engine.start(op, input)
+            self.totp.start(op, input)
         }
 
         /// Authenticator starts no jobs, so the device records none of its.
@@ -104,7 +104,7 @@ mod cases {
 
         fn cancel(&self, job: &str) -> bool {
             let _window = self.scope.enter();
-            self.engine.cancel(job)
+            self.totp.cancel(job)
         }
     }
 
@@ -328,7 +328,7 @@ mod cases {
             rt.set_blobs(device.clone());
             rt.set_clipboard(selection.clone());
             rt.set_engine(Engine {
-                engine: Rc::new(totp_engine::TotpEngine::new()),
+                totp: Rc::new(totp_engine::TotpEngine::new()),
                 scope: device.scope.clone(),
             });
             let vault = Vault::new();

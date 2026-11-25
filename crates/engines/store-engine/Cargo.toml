@@ -30,5 +30,9 @@ getrandom.workspace = true
 tempfile.workspace = true
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+# The stand-in daemon's endpoint, which a test points at its scratch runtime.
+tilo-test-env = { path = "../../../tools/test-env" }
+
 [lints]
 workspace = true

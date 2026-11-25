@@ -153,7 +153,7 @@ action refused(p: Page) {
     );
 
     /// The job's record as the device that holds it says it stands.
-    fn record(state: &str, detail: serde_json::Value) -> serde_json::Value {
+    fn record(state: &str, detail: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({
             "id": JOB,
             "op": "page.paint",
@@ -197,10 +197,8 @@ action refused(p: Page) {
         }
 
         fn job(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
-            Ok(
-                (path == JOB)
-                    .then(|| record("running", serde_json::json!({"done": 2, "total": 5}))),
-            )
+            Ok((path == JOB)
+                .then(|| record("running", &serde_json::json!({"done": 2, "total": 5}))))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -303,7 +301,7 @@ action refused(p: Page) {
 
         bench.moves(
             |h| h.progress.clone(),
-            &record("running", serde_json::json!({"done": 3, "total": 5})),
+            &record("running", &serde_json::json!({"done": 3, "total": 5})),
         );
         assert_eq!(
             bench.rt.read(&bench.page, "steps").unwrap(),
@@ -314,7 +312,7 @@ action refused(p: Page) {
 
         bench.moves(
             |h| h.done.clone(),
-            &record("done", serde_json::json!({"url": "tilo-blob://painted"})),
+            &record("done", &serde_json::json!({"url": "tilo-blob://painted"})),
         );
         assert_eq!(
             bench.text("painted"),
@@ -326,7 +324,7 @@ action refused(p: Page) {
             |h| h.done.clone(),
             &record(
                 "failed",
-                serde_json::json!({"error": "the printer is out of paper"}),
+                &serde_json::json!({"error": "the printer is out of paper"}),
             ),
         );
         assert_eq!(
@@ -406,7 +404,7 @@ action refused(p: Page) {
 
         bench.rt.set_job(
             JOB,
-            &record("running", serde_json::json!({"done": 4, "total": 5})),
+            &record("running", &serde_json::json!({"done": 4, "total": 5})),
         );
         assert!(
             window.woken(),

@@ -1259,13 +1259,9 @@ impl Engine {
         body: String,
         precondition: Precondition<'_>,
     ) -> Result<Written, String> {
+        let entry = Self::entry_of(&body, calendar, url);
         let response = client
-            .put(
-                url,
-                body.clone().into_bytes(),
-                Some(ENTRY_TYPE),
-                precondition,
-            )
+            .put(url, body.into_bytes(), Some(ENTRY_TYPE), precondition)
             .map_err(|error| {
                 if is_unreached(&error) {
                     UNREACHED.to_owned()
@@ -1276,7 +1272,7 @@ impl Engine {
         match response.status().as_u16() {
             412 => Err("This invitation changed in that calendar meanwhile".to_owned()),
             _ if response.status().is_success() => {
-                if let Some(entry) = Self::entry_of(&body, calendar, url) {
+                if let Some(entry) = entry {
                     let etag = response.etag().unwrap_or_default();
                     if let Some(held) = self.held.get_mut(&signed.id) {
                         held.entries.insert(

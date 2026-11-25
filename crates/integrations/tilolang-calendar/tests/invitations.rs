@@ -85,7 +85,7 @@ fn take_in(rig: &mut Rig, text: &str) -> Result<(), String> {
             Ok(())
         }
         Delivery::Rejected(reason) | Delivery::Offline(reason) => Err(reason),
-        Delivery::Pending => panic!("the connector settled nothing of the invitation"),
+        Delivery::Pending => Err("the connector settled nothing of the invitation".to_owned()),
     }
 }
 
@@ -253,7 +253,7 @@ fn an_invitation_to_her_goes_in_and_out_and_no_server_writes_of_it() {
     let stored: Vec<String> = requests
         .iter()
         .filter(|request| request.method == "PUT")
-        .map(|request| request.body_text())
+        .map(test_http::Request::body_text)
         .collect();
     assert_eq!(stored.len(), 2, "the invitation and its later version");
     for text in &stored {

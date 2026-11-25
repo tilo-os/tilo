@@ -374,11 +374,11 @@ action poll(l: Lib) -> Text {
             self.call("", "", "")
         }
 
-        fn job(&self, _job: &str) -> Result<Option<serde_json::Value>, String> {
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
             let said = || -> Result<String, String> { self.call("", "", "") };
             Ok(said()
                 .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(_job, &said)))
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, _job: &str) -> bool {

@@ -170,11 +170,15 @@ mod cases {
             input: &str,
             handlers: &JobHandlers,
         ) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.maps");
-            assert_eq!(op, "save-area");
+            if app != "so.tilo.maps" {
+                return Err(format!("`{app}` is not the app this engine answers for"));
+            }
+            if op != "save-area" {
+                return Err(format!("`{op}` is no work this test's engine starts"));
+            }
             let job = format!(
                 "devices/local/jobs/save-area-{}",
-                self.started.borrow().len() + 1
+                self.started.borrow().len().saturating_add(1)
             );
             self.started
                 .borrow_mut()
@@ -240,7 +244,7 @@ mod cases {
 
         /// The job `job` moves to `state`, saying `detail`, as the device records it: what a view
         /// reads, and at its end the action its `done:` names, run as its starter.
-        fn job_moves(&self, job: &str, state: &str, detail: serde_json::Value) {
+        fn job_moves(&self, job: &str, state: &str, detail: &serde_json::Value) {
             let record = serde_json::json!({
                 "id": job, "app": "so.tilo.maps", "op": "save-area", "state": state, "detail": detail,
             });
@@ -773,7 +777,7 @@ mod cases {
             "the area knows the job keeping it"
         );
         // What the job says of itself is what the row shows.
-        m.job_moves(&job, "running", serde_json::json!({"done": 5, "total": 100}));
+        m.job_moves(&job, "running", &serde_json::json!({"done": 5, "total": 100}));
         let mut running = m
             .rt
             .open_view(
@@ -815,7 +819,7 @@ mod cases {
             std::slice::from_ref(&job)
         );
         assert!(m.flag(&area, "stopped"));
-        m.job_moves(&job, "cancelled", serde_json::json!({"done": 5, "total": 100}));
+        m.job_moves(&job, "cancelled", &serde_json::json!({"done": 5, "total": 100}));
         assert_eq!(
             m.float(&area, "done").to_bits(),
             5.0_f64.to_bits(),
@@ -832,7 +836,7 @@ mod cases {
         assert_ne!(again, job, "continuing starts a job of its own");
         let again_ask: serde_json::Value = serde_json::from_str(&again_ask).unwrap();
         assert_eq!(again_ask["id"], ask["id"], "the same footprint, so its tiles are reused");
-        m.job_moves(&again, "done", serde_json::json!({"done": 100, "total": 100}));
+        m.job_moves(&again, "done", &serde_json::json!({"done": 100, "total": 100}));
         assert_eq!(m.float(&area, "done").to_bits(), 100.0_f64.to_bits());
         assert_eq!(
             m.text(&m.root, "status"),
@@ -869,7 +873,7 @@ mod cases {
             (place_ask["north"].as_f64().unwrap_or_default() - 48.1874).abs() < 1e-6,
             "the place's box is around where it is: {place_ask}"
         );
-        m.job_moves(&place_job, "done", serde_json::json!({"done": 60, "total": 60}));
+        m.job_moves(&place_job, "done", &serde_json::json!({"done": 60, "total": 60}));
         assert_eq!(m.text(&m.root, "status"), "Offline area ready (60 tiles)");
         // Clearing asks the device to give up every saved picture and lists none.
         m.engine.asked.borrow_mut().clear();
@@ -1175,7 +1179,7 @@ mod cases {
             .into_iter()
             .find(|node| props_text(node, "title") == "Directions")
             .and_then(|node| node.props.get("expanded").cloned())
-            .unwrap_or(Value::none());
+            .unwrap_or_else(Value::none);
         assert_eq!(expanded, Value::Bool(true), "`2` opened the directions");
     }
 

@@ -1975,7 +1975,7 @@ mod cases {
             Some("Earlier")
         );
         // The page's menu offers the page behind, and choosing it goes there.
-        let mut view = b.page_view();
+        let view = b.page_view();
         let earlier = of_kind(view.tree(), "ui.MenuItem")
             .into_iter()
             .find(|row| row.props.get("label") == Some(&Value::text("Earlier")))

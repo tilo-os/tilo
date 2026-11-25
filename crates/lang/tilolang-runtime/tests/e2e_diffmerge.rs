@@ -71,14 +71,14 @@ mod cases {
     /// content store as a session answers it.
     #[derive(Clone)]
     struct Engine {
-        engine: Rc<diffmerge_engine::DiffmergeEngine>,
+        merger: Rc<diffmerge_engine::DiffmergeEngine>,
         scope: Rc<tilo_wake::WakeScope>,
     }
 
     impl EngineHost for Engine {
         fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
             let _window = self.scope.enter();
-            self.engine.call(op, input)
+            self.merger.call(op, input)
         }
 
         fn start(
@@ -89,13 +89,13 @@ mod cases {
             _handlers: &tilolang_runtime::host_work::JobHandlers,
         ) -> Result<String, String> {
             let _window = self.scope.enter();
-            self.engine.start(op, input)
+            self.merger.start(op, input)
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
             let said = || -> Result<String, String> {
                 let _window = self.scope.enter();
-                self.engine.status(job)
+                self.merger.status(job)
             };
             Ok(said()
                 .ok()
@@ -104,7 +104,7 @@ mod cases {
 
         fn cancel(&self, job: &str) -> bool {
             let _window = self.scope.enter();
-            self.engine.cancel(job)
+            self.merger.cancel(job)
         }
     }
 
@@ -152,7 +152,7 @@ mod cases {
             let device = Device::new();
             rt.set_blobs(device.clone());
             rt.set_engine(Engine {
-                engine: Rc::new(diffmerge_engine::DiffmergeEngine::new()),
+                merger: Rc::new(diffmerge_engine::DiffmergeEngine::new()),
                 scope: device.scope.clone(),
             });
             let app = App::compile(SOURCE, &[]);

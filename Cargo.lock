@@ -20865,6 +20865,7 @@ dependencies = [
  "tilo-package-store",
  "tilo-registry-types",
  "tilo-resource",
+ "tilo-test-env",
  "tilolang-tilo",
  "tracing",
  "workspace-hack",

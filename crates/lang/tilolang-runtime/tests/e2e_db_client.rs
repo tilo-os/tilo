@@ -30,7 +30,9 @@ mod cases {
 
     impl EngineHost for Engine {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.db-client", "an app asks its own engine");
+            if app != "so.tilo.db-client" {
+                return Err(format!("`{app}` is not the app this engine answers for"));
+            }
             self.database.call(op, input)
         }
 
@@ -41,7 +43,9 @@ mod cases {
             input: &str,
             handlers: &tilolang_runtime::host_work::JobHandlers,
         ) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.db-client");
+            if app != "so.tilo.db-client" {
+                return Err(format!("`{app}` is not the app this engine answers for"));
+            }
             let (job, moved) = self.jobs.begin(app, op);
             self.database.start(
                 &job,

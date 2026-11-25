@@ -225,9 +225,16 @@ mod cases {
             input: &str,
             handlers: &JobHandlers,
         ) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.photos");
-            assert_eq!(op, "import");
-            let job = format!("devices/ab/jobs/photos-{}", self.started.borrow().len() + 1);
+            if app != "so.tilo.photos" {
+                return Err(format!("`{app}` is not the app this engine answers for"));
+            }
+            if op != "import" {
+                return Err(format!("`{op}` is no work this test's engine starts"));
+            }
+            let job = format!(
+                "devices/ab/jobs/photos-{}",
+                self.started.borrow().len().saturating_add(1)
+            );
             self.started
                 .borrow_mut()
                 .push((job.clone(), input.to_owned()));

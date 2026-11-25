@@ -204,7 +204,7 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
             continue;
         }
         let place = offered_by.entry(offer.registry.as_str()).or_insert(0);
-        *place += 1;
+        *place = place.saturating_add(1);
         let place = *place;
         seen.insert(offer.package_id.clone());
         items.push(record(&tilo_item(offer, &installed, place))?);

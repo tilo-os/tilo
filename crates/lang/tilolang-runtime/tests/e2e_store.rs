@@ -443,7 +443,7 @@ action open_app(app_name: Text) {
         /// Reads the sources and takes in what they found, as a window does.
         fn read(&self) {
             self.call_root("refresh");
-            self.ended("done", done_words());
+            self.ended("done", &done_words());
         }
 
         /// The job the device started last moved on, as `record` says it stands: the handler the
@@ -466,7 +466,7 @@ action open_app(app_name: Text) {
         }
 
         /// The job the device started last ended, as the engine says it stands.
-        fn ended(&self, state: &str, detail: serde_json::Value) {
+        fn ended(&self, state: &str, detail: &serde_json::Value) {
             let record = serde_json::json!({
                 "id": "job-1", "op": "change", "state": state, "detail": detail,
             });
@@ -474,7 +474,7 @@ action open_app(app_name: Text) {
         }
 
         /// The job the device started last moved on, as the engine says it stands.
-        fn moved(&self, detail: serde_json::Value) {
+        fn moved(&self, detail: &serde_json::Value) {
             let record = serde_json::json!({
                 "id": "job-1", "op": "change", "state": "running", "detail": detail,
             });
@@ -584,7 +584,7 @@ action open_app(app_name: Text) {
                 "{:?}",
                 m.engine.ops()
             );
-            m.moved(serde_json::json!({
+            m.moved(&serde_json::json!({
                 "state": "running", "done": 0, "total": 1, "error": "", "status": "Working.",
             }));
             assert_eq!(
@@ -592,7 +592,7 @@ action open_app(app_name: Text) {
                 "Working.",
                 "the banner says how far the read is"
             );
-            m.ended("done", done_words());
+            m.ended("done", &done_words());
             assert_eq!(m.text(&m.root, "reading"), "", "the read is over");
             assert_eq!(m.text(&m.root, "status"), "Store refreshed.");
             let apps = m.apps();
@@ -725,7 +725,7 @@ action open_app(app_name: Text) {
             assert_eq!(asked["root"], "aa", "the exact signed root");
             assert_eq!(asked["publisher"], "cc");
             // What the sources were asked is one read, then the change the workspace follows.
-            m.ended("done", done_words());
+            m.ended("done", &done_words());
             assert_eq!(m.text(&notes, "job"), "", "the change ended");
             assert!(
                 m.engine.ops().contains(&"call:one".to_owned()),
@@ -753,10 +753,10 @@ action open_app(app_name: Text) {
             m.call("pin", vec![Value::resource(&notes)]);
             assert!(m.flag(&notes, "pinned"));
             assert!(m.engine.input_of("pin").contains("so.tilo.notes"));
-            m.ended("done", done_words());
+            m.ended("done", &done_words());
             m.call("unpin", vec![Value::resource(&notes)]);
             assert!(!m.flag(&notes, "pinned"));
-            m.ended("done", done_words());
+            m.ended("done", &done_words());
             m.call("remove", vec![Value::resource(&notes)]);
             assert!(m.engine.input_of("uninstall").contains("so.tilo.notes"));
         }
@@ -1063,7 +1063,7 @@ action open_app(app_name: Text) {
             let m = Market::new();
             *m.engine.unreachable.borrow_mut() = true;
             m.call_root("refresh");
-            m.ended("done", done_words());
+            m.ended("done", &done_words());
             assert_eq!(m.text(&m.root, "trouble"), "the sources are unreachable");
             let window = m.window();
             let tree = window.tree();
@@ -1195,7 +1195,7 @@ action open_app(app_name: Text) {
             m.read();
             let notes = m.app("so.tilo.notes");
             m.call("get", vec![Value::resource(&notes)]);
-            m.ended("failed", serde_json::json!({ "error": "The download stopped." }));
+            m.ended("failed", &serde_json::json!({ "error": "The download stopped." }));
             assert_eq!(m.text(&notes, "failed"), "The download stopped.");
             assert_eq!(
                 m.text(&m.root, "trouble"),
