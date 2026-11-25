@@ -276,19 +276,19 @@ mod tests {
     /// touched kind. Run with `--nocapture` to read the numbers.
     #[test]
     fn a_batchs_grant_questions_are_cheap() {
-        const TOUCHED: usize = 1_000;
+        const TOUCHED: u32 = 1_000;
         let grants = grants(policy(Answer::Allow));
         let at = std::time::Instant::now();
-        let mut allowed = 0;
+        let mut allowed: u32 = 0;
         for _ in 0..TOUCHED {
-            allowed += usize::from(grants.may(&DEVICE, VERB, KIND));
+            allowed += u32::from(grants.may(&DEVICE, VERB, KIND));
         }
         let took = at.elapsed();
         assert_eq!(allowed, TOUCHED);
         eprintln!(
             "verb grants: {TOUCHED} questions in {took:?} ({:.3} µs each); the old closure \
              answered the batch in one bool",
-            took.as_secs_f64() * 1e6 / TOUCHED as f64
+            took.as_secs_f64() * 1e6 / f64::from(TOUCHED)
         );
     }
 }

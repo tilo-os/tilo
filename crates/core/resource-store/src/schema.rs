@@ -293,6 +293,14 @@ fn scalar(ty: &FieldType, enums: &dyn Fn(&str) -> bool) -> bool {
     }
 }
 
+/// Whether `surface` declares `name` as an enum whose cases carry nothing: one a field holds as
+/// its case's name.
+fn plain_enum(surface: &Surface, name: &str) -> bool {
+    surface.types.iter().any(|ty| {
+        ty.name == name && ty.is_enum() && ty.cases.iter().all(|case| case.fields.is_empty())
+    })
+}
+
 impl Schema {
     /// The resource types `surface` declares: each resource type it names, with its fields, and
     /// the types nested in it as collections of them. A surface that names no type of its own
@@ -300,13 +308,7 @@ impl Schema {
     /// record too, so its own kind and what its verbs write are known to the store.
     #[must_use]
     pub fn from_surface(surface: &Surface) -> Self {
-        let enums = |name: &str| {
-            surface.types.iter().any(|ty| {
-                ty.name == name
-                    && ty.is_enum()
-                    && ty.cases.iter().all(|case| case.fields.is_empty())
-            })
-        };
+        let enums = |name: &str| plain_enum(surface, name);
         let cases = |name: &str| {
             surface
                 .types

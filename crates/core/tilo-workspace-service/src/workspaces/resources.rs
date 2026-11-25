@@ -1048,7 +1048,8 @@ impl HostedWorkspace {
         devices.extend(stamps.iter().filter_map(device_of));
         let mut writers = std::collections::HashMap::new();
         for device in devices {
-            if let Ok(access) = self.peer().permissions(device, now) {
+            let access = self.peer().permissions(device, now);
+            if let Ok(access) = access {
                 writers.insert(device, access);
             }
         }
@@ -1074,6 +1075,7 @@ impl HostedWorkspace {
                 },
             );
         }
+        drop(store);
         Some(leave)
     }
 
@@ -1997,9 +1999,9 @@ impl Workspaces {
             .then(|| hosted.origin_leave(&doc, device.device(), std::slice::from_ref(stamp), true))
             .flatten();
         let admit = |proposal: &tilo_resource_store::Proposal<'_>| {
-            !proposal
+            proposal
                 .stamp
-                .is_some_and(|stamp| stamp.verb == collab_types::Stamp::ORIGIN_VERB)
+                .is_none_or(|stamp| stamp.verb != collab_types::Stamp::ORIGIN_VERB)
                 || leave.as_ref().is_some_and(|leave| leave.admits(proposal))
         };
         let write = self.store_of(&mut *hosted).draft_field_update(
@@ -3071,7 +3073,7 @@ impl OriginLeave {
             .touched
             .resources
             .iter()
-            .all(|(id, touch)| self.in_place(id, touch, &proposal.touched))
+            .all(|(id, touch)| self.in_place(id, touch, proposal.touched))
     }
 
     /// Whether the record `id` the change `touch` makes stands in an origin account's place: it
@@ -3091,8 +3093,7 @@ impl OriginLeave {
         let mut parent = self
             .records
             .get(id)
-            .map(|place| place.parent.clone())
-            .unwrap_or_else(|| touch.parent.clone());
+            .map_or_else(|| touch.parent.clone(), |place| place.parent.clone());
         for _ in 0..64 {
             if let Some(kind) = &kind
                 && self
@@ -3112,11 +3113,10 @@ impl OriginLeave {
                 .get(&next)
                 .map(|place| place.kind.clone())
                 .or_else(|| made.and_then(|touch| touch.kind.clone()));
-            parent = self
-                .records
-                .get(&next)
-                .map(|place| place.parent.clone())
-                .unwrap_or_else(|| made.and_then(|touch| touch.parent.clone()));
+            parent = self.records.get(&next).map_or_else(
+                || made.and_then(|touch| touch.parent.clone()),
+                |place| place.parent.clone(),
+            );
         }
         false
     }

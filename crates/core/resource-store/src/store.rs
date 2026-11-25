@@ -2469,6 +2469,70 @@ impl Store {
         }
     }
 
+    /// Whether `received`, a founding of the record `id` of `kind`, is the one its kind and id
+    /// derive: the one every holder makes alike, and the only founding admitted.
+    fn judge_founding(
+        &self,
+        schema: Option<&Schema>,
+        (kind, id): (&str, &str),
+        received: &Received,
+    ) -> Result<(), Refusal> {
+        let derived = std::iter::once(&self.schema)
+            .chain(schema)
+            .find_map(|schema| schema.get(kind))
+            .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
+            .transpose()
+            .map_err(|error| {
+                Refusal::Undeclared(format!("the founding `{kind}` derives cannot be made: {error}"))
+            })?;
+        if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
+            Ok(())
+        } else {
+            Err(Refusal::Undeclared(format!(
+                "a founding of `{id}` that is not the one its kind derives"
+            )))
+        }
+    }
+
+    /// Whether `received`, a migration of the record `id` of `kind` that `named` reads, is the
+    /// step its kind and id derive to a version its type stands at, admitted whole: `false` for
+    /// the app's rewrite of its content for a version, decided as any write of the record's.
+    fn judge_migration(
+        &self,
+        schema: Option<&Schema>,
+        (kind, id): (&str, &str),
+        named: Option<(u32, bool)>,
+        received: &Received,
+    ) -> Result<bool, Refusal> {
+        let ty = std::iter::once(&self.schema)
+            .chain(schema)
+            .find_map(|schema| schema.get(kind));
+        let version = ty.map_or(0, |ty| ty.version);
+        let Some((to, rewrite)) = named.filter(|(to, _)| (1..=version).contains(to)) else {
+            return Err(Refusal::Undeclared(format!(
+                "a migration of `{id}` to no storage version its kind stands at"
+            )));
+        };
+        if rewrite {
+            return Ok(false);
+        }
+        let derived = ty
+            .map(|ty| collab_types::document::founding::migrate(kind, id, to, &ty.founding))
+            .transpose()
+            .map_err(|error| {
+                Refusal::Undeclared(format!(
+                    "the step `{kind}` derives to version {to} cannot be made: {error}"
+                ))
+            })?;
+        if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
+            Ok(true)
+        } else {
+            Err(Refusal::Undeclared(format!(
+                "a step of `{id}` to version {to} that is not the one its kind derives"
+            )))
+        }
+    }
+
     /// Whether `received` may take effect in `doc_id` as it stands.
     fn judge(
         &mut self,
@@ -2520,23 +2584,7 @@ impl Store {
                 ))
             )
         {
-            let derived = std::iter::once(&self.schema)
-                .chain(schema)
-                .find_map(|schema| schema.get(kind))
-                .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
-                .transpose()
-                .map_err(|error| {
-                    Refusal::Undeclared(format!(
-                        "the founding `{kind}` derives cannot be made: {error}"
-                    ))
-                })?;
-            return if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
-                Ok(())
-            } else {
-                Err(Refusal::Undeclared(format!(
-                    "a founding of `{id}` that is not the one its kind derives"
-                )))
-            };
+            return self.judge_founding(schema, (kind, id), received);
         }
         let stamp = Stamp::of(&received.change);
         // The migration verb's two forms. A record's step to a storage version is admitted only
@@ -2550,33 +2598,10 @@ impl Store {
                 .filter(|stamp| stamp.verb == MIGRATE_VERB)
                 .map(migration_of),
         );
-        if let Some(((kind, id), named)) = migration {
-            let ty = std::iter::once(&self.schema)
-                .chain(schema)
-                .find_map(|schema| schema.get(kind));
-            let version = ty.map_or(0, |ty| ty.version);
-            let Some((to, rewrite)) = named.filter(|(to, _)| (1..=version).contains(to)) else {
-                return Err(Refusal::Undeclared(format!(
-                    "a migration of `{id}` to no storage version its kind stands at"
-                )));
-            };
-            if !rewrite {
-                let derived = ty
-                    .map(|ty| collab_types::document::founding::migrate(kind, id, to, &ty.founding))
-                    .transpose()
-                    .map_err(|error| {
-                        Refusal::Undeclared(format!(
-                            "the step `{kind}` derives to version {to} cannot be made: {error}"
-                        ))
-                    })?;
-                return if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
-                    Ok(())
-                } else {
-                    Err(Refusal::Undeclared(format!(
-                        "a step of `{id}` to version {to} that is not the one its kind derives"
-                    )))
-                };
-            }
+        if let Some(((kind, id), named)) = &migration
+            && self.judge_migration(schema, (*kind, *id), *named, received)?
+        {
+            return Ok(());
         }
         let index = &self.index;
         for schema in std::iter::once(&self.schema).chain(schema) {

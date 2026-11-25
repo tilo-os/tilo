@@ -2446,7 +2446,7 @@ mod store {
             resources: resources.to_vec(),
             change: version,
             only: None,
-            live: Some(review.live.clone()),
+            live: Some(review.live),
             stamp: stamp_at("restore", "i5", 5),
         };
         tilo_resource_store::wire::draft(&mut store, by_review)
@@ -2481,7 +2481,7 @@ mod store {
             resources: resources.to_vec(),
             change: version,
             only: None,
-            live: Some(review.live.clone()),
+            live: Some(review.live),
             stamp: stamp_at("restore", "i5", 5),
         };
         let refused = tilo_resource_store::wire::draft(&mut store, stale).unwrap_err();
@@ -3199,7 +3199,7 @@ mod store {
         send(&placed, &mut there);
         let made = |doc: &mut automerge::AutoCommit, options| {
             let hash = doc.commit_with(options).unwrap();
-            doc.get_change_by_hash(&hash).unwrap().clone()
+            doc.get_change_by_hash(&hash).unwrap()
         };
         let content = |change: automerge::Change| Written {
             doc: content_id(MEMBERS, "Comment", "c1"),
@@ -3218,8 +3218,8 @@ mod store {
         assert_eq!(deliver(&[content(founding)], &mut there, &anyone), []);
         // The derived step is admitted, whoever sends it.
         assert_eq!(deliver(&[content(step.clone())], &mut there, &nobody), []);
-        let mut held = automerge::AutoCommit::new();
-        held.apply_changes(chain).unwrap();
+        let chained: Vec<u8> = chain.iter().flat_map(|change| change.raw_bytes().to_vec()).collect();
+        let mut held = automerge::AutoCommit::load(&chained).unwrap();
         // A step of another making, though it names the verb and the version, is refused.
         let mut forged = held.fork();
         forged.put(automerge::ROOT, "text", "Forged").unwrap();
