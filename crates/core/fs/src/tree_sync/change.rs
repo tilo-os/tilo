@@ -40,6 +40,7 @@ impl TreeSync {
     ) -> Result<R, String> {
         self.wait_open(CHANGE_OPEN_WITHIN).await?;
         let changed = self.change_now(acting, change)?;
+        self.whole.store(true, std::sync::atomic::Ordering::Relaxed);
         self.wake.notify_waiters();
         self.wait_sent(CHANGE_SENT_WITHIN).await?;
         Ok(changed)

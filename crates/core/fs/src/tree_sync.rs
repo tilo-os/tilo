@@ -23,7 +23,8 @@
 //!
 //! Writes that come in a burst (a checkout writing thousands of files) go out together: the
 //! changes the namespace made within [`BATCH`] of the first one leave as one write per record
-//! they changed.
+//! they changed. A change made whole at once ([`TreeSync::change`]: a put, a file manager's verb)
+//! is its own burst, and goes out without that wait.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -437,6 +438,9 @@ pub struct TreeSync {
     /// Set by a read that needs the tree as the workspace has it now: the next pass reads every
     /// record again.
     refresh: Arc<AtomicBool>,
+    /// Set by [`Self::change`] once its change is made: a change made whole at once goes out at
+    /// the next pass rather than waiting [`BATCH`] for more of a burst.
+    whole: Arc<AtomicBool>,
     /// The task syncing this tree, until a stop waits for it.
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -536,6 +540,7 @@ impl TreeSync {
         let wake = Arc::new(tokio::sync::Notify::new());
         let passes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let refresh = Arc::new(AtomicBool::new(false));
+        let whole = Arc::new(AtomicBool::new(false));
         let sync = Sync {
             workspace,
             read,
@@ -548,6 +553,7 @@ impl TreeSync {
             wake: Arc::clone(&wake),
             passes: Arc::clone(&passes),
             refresh: Arc::clone(&refresh),
+            whole: Arc::clone(&whole),
             namespace: Arc::clone(&namespace),
             // Each record as the workspace held it when this device last merged it: the pass
             // asks only what changed since, and writes out only what the workspace lacks.
@@ -593,6 +599,7 @@ impl TreeSync {
             wake,
             passes,
             refresh,
+            whole,
             task: Some(task),
         })
     }
@@ -885,6 +892,7 @@ struct Sync {
     wake: Arc<tokio::sync::Notify>,
     passes: Arc<std::sync::atomic::AtomicU64>,
     refresh: Arc<AtomicBool>,
+    whole: Arc<AtomicBool>,
     namespace: Arc<Mutex<Namespace>>,
     /// Every record of the tree this device opened, by chunk: the tree's own (0) first.
     documents: BTreeMap<TreeChunk, Held>,
@@ -988,7 +996,11 @@ impl Sync {
                 let held = self.held_until.map_or(Duration::ZERO, |until| {
                     until.saturating_duration_since(Instant::now())
                 });
-                let batch = BATCH.saturating_sub(since.elapsed());
+                let batch = if self.whole.load(Ordering::Relaxed) {
+                    Duration::ZERO
+                } else {
+                    BATCH.saturating_sub(since.elapsed())
+                };
                 let floor = if batch.is_zero() {
                     WAITING_LOOK
                 } else {
@@ -1404,12 +1416,19 @@ impl Sync {
             })
             .map(|(chunk, _)| *chunk)
             .collect();
+        // A change made whole at once ([`TreeSync::change`]) is the whole burst already.
+        let whole = self.whole.swap(false, Ordering::Relaxed);
         if dirty.is_empty() {
             self.dirty_since = None;
             self.unsent = 0;
             return;
         }
-        let since = *self.dirty_since.get_or_insert_with(Instant::now);
+        let mut since = *self.dirty_since.get_or_insert_with(Instant::now);
+        if whole && let Some(due) = Instant::now().checked_sub(BATCH) {
+            // Its batch is due now, and stays due while its records wait for the workspace.
+            since = since.min(due);
+            self.dirty_since = Some(since);
+        }
         if since.elapsed() < BATCH {
             return;
         }
