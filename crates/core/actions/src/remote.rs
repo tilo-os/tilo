@@ -2597,6 +2597,40 @@ impl RemoteActionFrame {
     }
 }
 
+/// A resource read, answered by the provider's own reader through its trait object: what a
+/// reading is made of loads with the code that reads records, not with every provider's API.
+#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
+fn read_answered<H: ActionProvider>(
+    provider: &H,
+    caller: &Caller,
+    correlation: u64,
+    read: ResourceReadRequest,
+) -> Pending<RemoteActionMessage> {
+    provider.resource_reads().map_or_else(
+        || resource_read::unanswered(correlation),
+        |reads| resource_read::on_a_task(reads.answer_read(caller, correlation, read)),
+    )
+}
+
+/// A build with no runtime to answer on (a model module, or one that reads no records) answers
+/// every posted read as a provider that reads no records does.
+#[cfg(not(all(feature = "answer-reads", not(tilo_no_js))))]
+fn read_answered<H: ActionProvider>(
+    _provider: &H,
+    _caller: &Caller,
+    correlation: u64,
+    _read: ResourceReadRequest,
+) -> Pending<RemoteActionMessage> {
+    resource_read::unanswered(correlation)
+}
+
+/// A call lane is its own host's, never a provider's: one asked here says it carries none.
+fn no_call_lane() -> ActionCallError {
+    ActionCallError::Unavailable {
+        reason: "this connection carries no call lane".into(),
+    }
+}
+
 /// Answer one request from `caller` against `provider`.
 ///
 /// Returns `None` for a message that is not a request (a response arriving
@@ -2663,22 +2697,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         // made of loads with the code that reads records, not with every provider's API.
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
-        } => {
-            #[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
-            {
-                provider.resource_reads().map_or_else(
-                    || resource_read::unanswered(correlation),
-                    |reads| resource_read::on_a_task(reads.answer_read(caller, correlation, read)),
-                )
-            }
-            // A build with no runtime to answer on (a model module, or one that reads no records)
-            // answers every posted read as a provider that reads no records does.
-            #[cfg(not(all(feature = "answer-reads", not(tilo_no_js))))]
-            {
-                drop((provider, read));
-                resource_read::unanswered(correlation)
-            }
-        }
+        } => read_answered(provider, caller, correlation, read),
         // A question is the person's to answer, on the device they are at.
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionCallError::confirmation_required()),
@@ -2697,17 +2716,13 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::CallCarryRequest { correlation, .. } => {
             Pending::ready(RemoteActionMessage::CallCarryResponse {
                 correlation,
-                result: Err(ActionCallError::Unavailable {
-                    reason: "this connection carries no call lane".into(),
-                }),
+                result: Err(no_call_lane()),
             })
         }
         RemoteActionMessage::CallReport { correlation, .. } => {
             Pending::ready(RemoteActionMessage::CallReportResponse {
                 correlation,
-                result: Err(ActionCallError::Unavailable {
-                    reason: "this connection carries no call lane".into(),
-                }),
+                result: Err(no_call_lane()),
             })
         }
         RemoteActionMessage::CatalogueResponse { .. }
