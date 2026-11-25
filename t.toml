@@ -1156,11 +1156,16 @@ outputs = ["/target/certify/surfaces/**"]
 on = ["schedule:0 3 * * *", "dispatch"]
 heavy = true
 
+# The SDKs' generated types and the OpenAPI document, each compared with what `tilo sdk gen`
+# writes from the tree. Every comparison runs even when one before it fails, so a failing run names
+# every stale file and reads all three outputs: t keys the check by what its run read, and `t fix
+# sdk-types` writes only files the check or its fix read. A run that stopped at stale Python types
+# never read the TypeScript or OpenAPI files, and the fix left them stale.
 [[check]]
 name = "sdk-types"
 requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api --check\n"
+run = "stale=0\ncargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check || stale=1\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check || stale=1\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api --check || stale=1\nexit $stale\n"
 fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api\n"
 
 # The component catalogue, crates/ui/ui-graph/components.json: the toolkit's widgets described as
