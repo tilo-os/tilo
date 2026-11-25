@@ -17,6 +17,7 @@ use tilo_actions::remote::{
 };
 
 use crate::ShellClient;
+use super::Served;
 use crate::wire::shell::{ShellCall, ShellReply};
 use crate::wire::{Answer, Ask, Handle};
 
@@ -45,7 +46,7 @@ struct Inner {
 impl ShellDispatch {
     pub(crate) fn new(shell: ShellClient) -> Self {
         Self(Arc::new(Inner {
-            runtime: shell.runtime().clone(),
+            runtime: shell.runtime(),
             shell,
             fresh: Mutex::default(),
             next_correlation: AtomicU64::new(1),
@@ -557,40 +558,28 @@ impl ActionProvider for ShellDispatch {
 pub struct Provided {
     shell: ShellClient,
     provider: String,
-    handle: Handle,
 }
 
 impl Provided {
-    /// The handle its calls arrive on.
-    #[must_use]
-    pub const fn handle(&self) -> Handle {
-        self.handle
-    }
-
     /// Offer what `catalogue` lists from now on: what the dispatch lists, and admits calls of.
+    /// The daemon is handed it again on a new link, so a link that ended is no error here.
     ///
     /// # Errors
-    /// The link closed, or the daemon refused the catalogue.
+    /// The daemon refused the catalogue.
     pub async fn publish(&self, catalogue: &CataloguePage) -> Result<(), NotAvailable> {
-        let handle = self.shell.offer(&self.provider, catalogue).await?;
-        if handle == self.handle {
-            Ok(())
-        } else {
-            Err(NotAvailable::Refused(format!(
-                "the daemon serves {} on another handle",
-                self.provider
-            )))
-        }
+        self.shell.publish_provider(&self.provider, catalogue).await
     }
 
     /// Serve it no more: the dispatch finds no such provider from now on.
     pub fn withdraw(self) {
-        self.shell
-            .served
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.provider);
-        self.shell.client.client.close(self.handle);
+        let Ok(mut served) = self.shell.served.try_lock() else {
+            return;
+        };
+        if let Some(entry) = served.remove(&self.provider)
+            && let Some(handle) = entry.handle
+        {
+            self.shell.current().client.close(handle);
+        }
     }
 }
 
@@ -604,7 +593,7 @@ impl ShellClient {
     /// Serve `provider`, a provider of the shell's own ([`crate::wire::shell::serves`]), on the
     /// device's dispatch with `answers`, offering what `catalogue` lists: each call the dispatch
     /// admits reaches `answers` as the caller it admitted it for, until the link closes or the
-    /// shell withdraws it.
+    /// shell withdraws it. It is offered again on each new link.
     ///
     /// # Errors
     /// The daemon refused the provider: not the shell's own, or served by another already.
@@ -616,38 +605,74 @@ impl ShellClient {
     ) -> Result<Provided, NotAvailable> {
         // A provider this shell served already is its own: it is not taken over in its place,
         // and the handle it has offers what it lists from now on.
-        if !self
-            .served
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(provider.to_owned())
-        {
+        if self.served.lock().await.contains_key(provider) {
             return Err(NotAvailable::Refused(format!(
                 "{provider} is served on this shell already"
             )));
         }
         let handle = match self.offer(provider, catalogue).await {
             Ok(handle) => handle,
-            Err(refused) => {
-                self.served
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(provider);
-                return Err(refused);
-            }
+            Err(refused) => return Err(refused),
         };
-        self.client.client.answer(
-            crate::wire::client::Answering::Served(handle),
-            Arc::new(move |ask| {
-                let answers = Arc::clone(&answers);
-                Box::pin(async move { serve(&answers, ask).await })
-            }),
+        answer_provider(&self.current(), handle, Arc::clone(&answers));
+        self.served.lock().await.insert(
+            provider.to_owned(),
+            Served {
+                catalogue: catalogue.clone(),
+                answers,
+                handle: Some(handle),
+            },
         );
         Ok(Provided {
             shell: self.clone(),
             provider: provider.to_owned(),
-            handle,
         })
+    }
+
+    /// Offer what `catalogue` lists for `provider` from now on, on the link that stands now: what
+    /// the daemon lists, and admits calls of. A link that ended keeps it for the next one.
+    async fn publish_provider(
+        &self,
+        provider: &str,
+        catalogue: &CataloguePage,
+    ) -> Result<(), NotAvailable> {
+        let answers = {
+            let mut served = self.served.lock().await;
+            let Some(entry) = served.get_mut(provider) else {
+                return Err(NotAvailable::Refused(format!(
+                    "{provider} is served on this shell no more"
+                )));
+            };
+            entry.catalogue = catalogue.clone();
+            let answers = Arc::clone(&entry.answers);
+            drop(served);
+            answers
+        };
+        // A link that ended offers it again when it comes back, with what this last said.
+        if !matches!(self.link_status(), super::ShellLink::Linked) {
+            return Ok(());
+        }
+        let handle = match offer_on(&self.current(), provider, catalogue).await {
+            Ok(handle) => handle,
+            Err(NotAvailable::ConnectionFailed(_)) => return Ok(()),
+            Err(refused) => return Err(refused),
+        };
+        let renewed = {
+            let mut served = self.served.lock().await;
+            let renewed = match served.get_mut(provider) {
+                Some(entry) if entry.handle != Some(handle) => {
+                    entry.handle = Some(handle);
+                    true
+                }
+                _ => false,
+            };
+            drop(served);
+            renewed
+        };
+        if renewed {
+            answer_provider(&self.current(), handle, answers);
+        }
+        Ok(())
     }
 
     /// Tell the daemon `provider` offers what `catalogue` lists, answered with the handle its
@@ -657,20 +682,47 @@ impl ShellClient {
         provider: &str,
         catalogue: &CataloguePage,
     ) -> Result<Handle, NotAvailable> {
-        let catalogue = serde_json::to_string(catalogue)
-            .map_err(|error| NotAvailable::Refused(error.to_string()))?;
-        match self
-            .call(ShellCall::Provide {
-                provider: provider.to_owned(),
-                catalogue,
-            })
-            .await?
-        {
-            ShellReply::Providing(handle) => Ok(handle),
-            other => Err(NotAvailable::Refused(format!(
-                "the daemon answered a provider with {other:?}"
-            ))),
-        }
+        offer_on(&self.current(), provider, catalogue).await
+    }
+}
+
+/// Hand `client` the answers of `provider`, which the daemon reaches under `handle`: each call
+/// the dispatch admits reaches `answers` as the caller it admitted it for.
+pub(crate) fn answer_provider(
+    client: &crate::CollabClient,
+    handle: Handle,
+    answers: Arc<dyn ActionProvider + Send + Sync>,
+) {
+    client.client.answer(
+        crate::wire::client::Answering::Served(handle),
+        Arc::new(move |ask| {
+            let answers = Arc::clone(&answers);
+            Box::pin(async move { serve(&answers, ask).await })
+        }),
+    );
+}
+
+/// Offer `provider` with `catalogue` on `client`, answered with the handle its calls arrive on.
+pub(crate) async fn offer_on(
+    client: &crate::CollabClient,
+    provider: &str,
+    catalogue: &CataloguePage,
+) -> Result<Handle, NotAvailable> {
+    let catalogue = serde_json::to_string(catalogue)
+        .map_err(|error| NotAvailable::Refused(error.to_string()))?;
+    match client
+        .client
+        .call(crate::wire::Operation::Shell(ShellCall::Provide {
+            provider: provider.to_owned(),
+            catalogue,
+        }))
+        .await
+        .map_err(super::failure)?
+    {
+        crate::wire::Reply::Shell(ShellReply::Providing(handle)) => Ok(handle),
+        other => Err(NotAvailable::Refused(format!(
+            "the daemon answered a provider with {other:?}"
+        ))),
     }
 }
 

@@ -7,6 +7,8 @@
 use std::sync::Arc;
 
 use runtime_portal::NotAvailable;
+#[cfg(unix)]
+use tilo_actions::remote::{ActionProvider, CataloguePage};
 
 use crate::wire::{
     Changes, ContextUpdate, Event, Handle, InvocationCall, LiveActivityCall, Operation,
@@ -1461,17 +1463,113 @@ pub(crate) mod testing {
 #[cfg(unix)]
 #[derive(Clone)]
 pub struct ShellClient {
+    /// The link as it stands: a daemon that restarts makes a new one, and every holder of this
+    /// client reaches the daemon on the new link from then on.
+    shared: Arc<std::sync::RwLock<ShellShared>>,
+    /// The providers this shell served on its link, each the shell's own: a second call cannot
+    /// take one over, and what it offers changes through the handle it has. Each is offered again
+    /// on a new link.
+    pub(crate) served: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Served>>>,
+    /// What the link is doing, and what asks for it back: the socket to redial, and what wakes
+    /// the session when the link moved.
+    link: Arc<LinkWatch>,
+}
+
+/// The connection a shell reaches its daemon on, and what came with it.
+#[cfg(unix)]
+struct ShellShared {
     client: CollabClient,
-    /// The descriptors the daemon hands the shell on its link: the open objects a call of the
+    /// The descriptors the daemon hands the shell on this link: the open objects a call of the
     /// seat names (what Files selected for the clipboard), each by its number on the link.
     handed: runtime_portal::descriptors::ReceivedDescriptors,
     /// The runtime the link's frames are carried on, which its dispatch's waits run on too:
     /// whoever holds the client reaches the daemon from any thread, in a runtime or not.
     runtime: tokio::runtime::Handle,
-    /// The providers this shell served on its link, each the shell's own: a second call cannot
-    /// take one over, and what it offers changes through the handle it has.
-    pub(crate) served: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Which link this is: what a follower watches to read its subscriptions again.
+    generation: u64,
 }
+
+/// A provider the shell serves, kept so it can be offered again on a new link.
+#[cfg(unix)]
+pub(crate) struct Served {
+    catalogue: CataloguePage,
+    answers: Arc<dyn ActionProvider + Send + Sync>,
+    handle: Option<Handle>,
+}
+
+/// Whether the shell's link reaches its daemon now.
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShellLink {
+    /// The daemon answers on the link.
+    Linked,
+    /// The link ended and the daemon is asked for a new one: what a person is told while the
+    /// desktop keeps showing what it has.
+    Reconnecting,
+    /// The daemon did not answer the last ask for a link, and is asked again: the last refusal.
+    Unreachable {
+        /// What the ask was refused with.
+        why: String,
+    },
+}
+
+/// What the shell redials, and what to wake when the link moved.
+#[cfg(unix)]
+struct LinkWatch {
+    status: std::sync::Mutex<ShellLink>,
+    /// Each new link's generation: what follows subscriptions reads them again.
+    generation: tokio::sync::watch::Sender<u64>,
+    socket: std::sync::Mutex<Option<std::path::PathBuf>>,
+    wake: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+#[cfg(unix)]
+impl LinkWatch {
+    fn fresh() -> Self {
+        Self {
+            status: std::sync::Mutex::new(ShellLink::Linked),
+            generation: tokio::sync::watch::channel(0).0,
+            socket: std::sync::Mutex::default(),
+            wake: std::sync::Mutex::default(),
+        }
+    }
+
+    fn set(&self, status: ShellLink) {
+        let moved = {
+            let mut held = self
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *held == status {
+                false
+            } else {
+                *held = status;
+                true
+            }
+        };
+        if moved {
+            self.wake_now();
+        }
+    }
+
+    fn wake_now(&self) {
+        let wake = self
+            .wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+}
+
+/// How long the shell waits before it asks a daemon that did not answer again, and the longest it
+/// waits: it never gives up on its own daemon.
+#[cfg(unix)]
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_millis(100);
+#[cfg(unix)]
+const ASK_AGAIN_MOST: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The most descriptors the daemon hands the shell that no call took yet: one clipboard command's
 /// selection, and as many again for one more on its way.
@@ -1485,39 +1583,95 @@ impl ShellClient {
     /// task spawned on the current runtime.
     #[must_use]
     pub fn open(link: tokio::net::UnixStream) -> (Self, ConnectionEnd) {
-        // The link carries descriptors to the daemon too: the connections of the apps the shell
-        // launched, which it hands over as it vouches for them. And from it: what a call of the
-        // seat names, which the daemon hands over as it forwards the call.
-        let descriptors = runtime_portal::descriptors::DescriptorSender::new();
-        let handed = runtime_portal::descriptors::ReceivedDescriptors::new(MAX_HANDED_TO_SHELL);
-        let (client, end) =
-            CollabClient::connected(runtime_portal::descriptors::DescriptorStream::duplex(
-                link,
-                descriptors.clone(),
-                handed.clone(),
-            ));
+        let (shared, end) = opened(link);
         (
             Self {
-                client: client.with_descriptors(descriptors),
-                handed,
-                runtime: tokio::runtime::Handle::current(),
+                shared: Arc::new(std::sync::RwLock::new(shared)),
                 served: Arc::default(),
+                link: Arc::new(LinkWatch::fresh()),
             },
             end,
         )
     }
 
+    /// Ask `socket`, this device's daemon, for a new link for this seat whenever the link ends,
+    /// until this client is dropped: what keeps a desktop working while its daemon restarts.
+    /// `wake` is called when the link moved, so the session shows the wait and hides it.
+    pub fn following(
+        &self,
+        end: ConnectionEnd,
+        socket: std::path::PathBuf,
+        wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) {
+        *self
+            .link
+            .socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(socket);
+        *self
+            .link
+            .wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+        let shared = Arc::clone(&self.shared);
+        let served = Arc::clone(&self.served);
+        let watch = Arc::clone(&self.link);
+        self.runtime().spawn(relinking(shared, served, watch, end));
+    }
+
     /// The descriptors the daemon handed over on this link, by their numbers on it: a call that
     /// names one takes it.
     #[must_use]
-    pub const fn handed(&self) -> &runtime_portal::descriptors::ReceivedDescriptors {
-        &self.handed
+    pub fn handed(&self) -> runtime_portal::descriptors::ReceivedDescriptors {
+        self.shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .handed
+            .clone()
     }
 
     /// The runtime this link's frames are carried on.
     #[must_use]
-    pub const fn runtime(&self) -> &tokio::runtime::Handle {
-        &self.runtime
+    pub fn runtime(&self) -> tokio::runtime::Handle {
+        self.shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .runtime
+            .clone()
+    }
+
+    /// Which link this is: a follower that sees another reads its subscriptions again.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+    }
+
+    /// Watch for a new link: reading the value says which link stands now.
+    #[must_use]
+    pub fn linking(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.link.generation.subscribe()
+    }
+
+    /// Whether the link reaches the daemon now, or what it is waiting for.
+    #[must_use]
+    pub fn link_status(&self) -> ShellLink {
+        self.link
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The connection as it stands: what a call made now travels on.
+    fn current(&self) -> CollabClient {
+        self.shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .client
+            .clone()
     }
 
     /// Hand the daemon `connection`, made on this shell's app socket, to serve: as the app `app`
@@ -1591,7 +1745,8 @@ impl ShellClient {
             Option<std::os::fd::OwnedFd>,
         )>,
     ) -> Result<(), NotAvailable> {
-        let sender = self.client.descriptors.as_ref().ok_or_else(|| {
+        let connection_client = self.current();
+        let sender = connection_client.descriptors.as_ref().ok_or_else(|| {
             NotAvailable::Refused("this shell link carries no descriptors".to_owned())
         })?;
         let connection = sender.send(connection)?;
@@ -1652,32 +1807,6 @@ impl ShellClient {
         Ok(ours)
     }
 
-    /// The shell link the daemon handed this process when it started it
-    /// ([`crate::wire::shell::SHELL_FD_ENV`]), taken once; `None` in a process the daemon did not
-    /// start as the shell.
-    ///
-    /// # Errors
-    /// The handed descriptor is no socket this process can use.
-    pub fn inherited() -> Option<std::io::Result<std::os::unix::net::UnixStream>> {
-        static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let fd: std::os::fd::RawFd = std::env::var(crate::wire::shell::SHELL_FD_ENV)
-            .ok()?
-            .parse()
-            .ok()?;
-        if TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            return None;
-        }
-        // SAFETY: the daemon handed this descriptor to the process for the shell link alone, and
-        // the flag above lets it be owned exactly once.
-        let link =
-            unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-        // It was handed down for this process's exec alone: no program the shell starts keeps it.
-        let taken = rustix::io::fcntl_setfd(&link, rustix::io::FdFlags::CLOEXEC)
-            .map_err(std::io::Error::from)
-            .and_then(|()| link.set_nonblocking(true));
-        Some(taken.map(|()| link))
-    }
-
     /// Ask the device `call`.
     ///
     /// # Errors
@@ -1687,7 +1816,7 @@ impl ShellClient {
         call: crate::wire::shell::ShellCall,
     ) -> Result<crate::wire::shell::ShellReply, NotAvailable> {
         match self
-            .client
+            .current()
             .client
             .call(Operation::Shell(call))
             .await
@@ -1702,6 +1831,159 @@ impl ShellClient {
     /// `tilo_workspace_service::workspace_view`, read and watched.
     #[must_use]
     pub fn standing(&self) -> ServicesHandle {
-        self.client.services()
+        self.current().services()
+    }
+}
+
+/// The connection over `link`, and what came with it: a shell's link as one link of its life.
+#[cfg(unix)]
+fn opened(link: tokio::net::UnixStream) -> (ShellShared, ConnectionEnd) {
+    // The link carries descriptors to the daemon too: the connections of the apps the shell
+    // launched, which it hands over as it vouches for them. And from it: what a call of the seat
+    // names, which the daemon hands over as it forwards the call.
+    let descriptors = runtime_portal::descriptors::DescriptorSender::new();
+    let handed = runtime_portal::descriptors::ReceivedDescriptors::new(MAX_HANDED_TO_SHELL);
+    let (client, end) =
+        CollabClient::connected(runtime_portal::descriptors::DescriptorStream::duplex(
+            link,
+            descriptors.clone(),
+            handed.clone(),
+        ));
+    (
+        ShellShared {
+            client: client.with_descriptors(descriptors),
+            handed,
+            runtime: tokio::runtime::Handle::current(),
+            generation: 0,
+        },
+        end,
+    )
+}
+
+/// Ask this device's daemon at `socket` for a shell link for the seat this process is, and take
+/// the link it answers with: the one typed request that establishes a shell link, made on the
+/// daemon's own socket. It is what the daemon started this shell with, and what a shell asks for
+/// again when its link ends.
+#[cfg(unix)]
+fn request_link(socket: &std::path::Path) -> Result<std::os::unix::net::UnixStream, String> {
+    use std::io::Write as _;
+    let complain = |what: &str| format!("{what} at {}: ", socket.display());
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+        .map_err(|error| format!("{}{error}", complain("this device's daemon")))?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+    let request = b"{\"native\":\"shells#link\"}\n";
+    stream
+        .write_all(request)
+        .map_err(|error| format!("{}{error}", complain("this device's daemon")))?;
+    let (bytes, descriptors) = runtime_portal::fd_transport::recv_with_fds(&stream)
+        .map_err(|error| format!("{}{error}", complain("this device's daemon")))?;
+    let answer: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{}an answer that does not read: {error}", complain("")))?;
+    if let Some(why) = answer.get("error").and_then(serde_json::Value::as_str) {
+        return Err(format!("{}a shell link was refused: {why}", complain("")));
+    }
+    let Some(descriptor) = descriptors.into_iter().next() else {
+        return Err(format!("{}no shell link: {answer}", complain("")));
+    };
+    let link = std::os::unix::net::UnixStream::from(descriptor);
+    link.set_nonblocking(true)
+        .map_err(|error| format!("{}{error}", complain("the shell link")))?;
+    Ok(link)
+}
+
+/// Keep asking `watch`'s socket for a new link until one answers, then offer every provider this
+/// shell serves on it, and wait for the next link to end. It never gives up: the daemon may come
+/// back, and a desktop that waited is one that works when it does.
+#[cfg(unix)]
+async fn relinking(
+    shared: Arc<std::sync::RwLock<ShellShared>>,
+    served: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Served>>>,
+    watch: Arc<LinkWatch>,
+    mut end: ConnectionEnd,
+) {
+    loop {
+        end.await;
+        watch.set(ShellLink::Reconnecting);
+        let mut wait = ASK_AGAIN;
+        loop {
+            let socket = watch
+                .socket
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let Some(socket) = socket else {
+                return;
+            };
+            let asked = tokio::task::spawn_blocking(move || request_link(&socket)).await;
+            let link = match asked {
+                Ok(Ok(link)) => link,
+                Ok(Err(why)) => {
+                    tracing::warn!(%why, "this device's daemon did not answer for its shell link");
+                    watch.set(ShellLink::Unreachable { why });
+                    tokio::time::sleep(wait).await;
+                    wait = wait.saturating_mul(2).min(ASK_AGAIN_MOST);
+                    continue;
+                }
+                Err(error) => {
+                    let why = format!("the shell link's ask stopped: {error}");
+                    watch.set(ShellLink::Unreachable { why });
+                    tokio::time::sleep(wait).await;
+                    wait = wait.saturating_mul(2).min(ASK_AGAIN_MOST);
+                    continue;
+                }
+            };
+            let Ok(link) = tokio::net::UnixStream::from_std(link) else {
+                watch.set(ShellLink::Unreachable {
+                    why: "the shell link is no socket".to_owned(),
+                });
+                tokio::time::sleep(wait).await;
+                wait = wait.saturating_mul(2).min(ASK_AGAIN_MOST);
+                continue;
+            };
+            let (fresh, next_end) = opened(link);
+            let generation = {
+                let mut held = shared
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let generation = held.generation.wrapping_add(1);
+                *held = ShellShared {
+                    generation,
+                    ..fresh
+                };
+                generation
+            };
+            replay(&shared, &served).await;
+            let _ = watch.generation.send(generation);
+            watch.set(ShellLink::Linked);
+            end = next_end;
+            break;
+        }
+    }
+}
+
+/// Offer every provider this shell serves on the link that stands now, each under a handle of the
+/// new link: what the daemon knew of the old one went with it.
+#[cfg(unix)]
+async fn replay(
+    shared: &Arc<std::sync::RwLock<ShellShared>>,
+    served: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, Served>>>,
+) {
+    let mut held = served.lock().await;
+    for (provider, entry) in held.iter_mut() {
+        let client = shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .client
+            .clone();
+        match shell_dispatch::offer_on(&client, provider, &entry.catalogue).await {
+            Ok(handle) => {
+                shell_dispatch::answer_provider(&client, handle, Arc::clone(&entry.answers));
+                entry.handle = Some(handle);
+            }
+            Err(error) => {
+                tracing::warn!(%error, provider, "the daemon is handed this provider's steps no more");
+            }
+        }
     }
 }

@@ -1329,3 +1329,5 @@ session-window-share-unwatch-workspace = The workspace it is shown from
 programs-resource = Your programs
 programs-run-line = Run this line
 programs-run-line-detail = Runs a tilolang line as you, and answers what it read or changed.
+
+osd-reconnecting = Reconnecting…

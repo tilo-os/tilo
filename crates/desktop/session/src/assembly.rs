@@ -147,6 +147,10 @@ pub(crate) struct Shared {
     /// published as `device.osd` for the shell that draws it.
     #[cfg(target_os = "linux")]
     pub(crate) osd: crate::shell::osd::Shared,
+    /// The shell link to the device's daemon: while the session asks for a new one, the shell
+    /// says so over the desktop it keeps showing.
+    #[cfg(unix)]
+    pub(crate) link: Option<runtime_collab::ShellClient>,
     /// How far the fingers carrying the strip shown have travelled since they landed: what the
     /// shell's row was scrolled by already.
     #[cfg(target_os = "linux")]

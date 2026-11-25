@@ -2,9 +2,9 @@
 //! as the person's shell itself: one a display manager starts (a distribution Tilo was added to),
 //! one a development script starts beside the service it started first, and one started in a
 //! window of another Tilo desktop. It asks that service to start the shell (`shells#start`), which
-//! hands the shell the link it is admitted by and, for a session in a window, the connection it
-//! draws on, and stands in for it until it ends: the signals sent to it go to the shell, and it
-//! exits as the shell did.
+//! gives the shell the one-use secret it redeems for its link and, for a session in a window, the
+//! connection it draws on, and stands in for it until it ends: the signals sent to it go to the
+//! shell, and it exits as the shell did.
 
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::fd::RawFd;
@@ -24,39 +24,35 @@ const FORWARDED: [libc::c_int; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, 
 /// desktop is handed, and hands on when the service starts it.
 const WAYLAND_SOCKET: &str = "WAYLAND_SOCKET";
 
-/// The link this computer's service handed this session when it started it
-/// (`runtime_collab::wire::shell::SHELL_FD_ENV`), taken before anything else of the session runs.
-/// The variable goes with it: it named the descriptor for this process's own exec alone, so no
-/// program the session starts takes it for a link of its own — a session started beside this one
-/// asks the service for a link of its own instead.
+/// The link this session is the shell of this computer's service by: the one-use secret the
+/// service gave it when it started it (`runtime_collab::wire::shell::SHELL_TOKEN_ENV`), redeemed
+/// at once for the link with the one request that establishes one (`shells#link`), taken before
+/// anything else of the session runs. The variable goes with it: it named a secret for this
+/// process's own exec alone, so no program the session starts redeems it — a session started
+/// beside this one asks the service for a shell of its own instead.
 ///
-/// `None` in a process the service did not start as the shell, which is every other one. A
-/// session whose environment names one descriptor as both its link and the window it draws on was
-/// started in a window of a desktop that had not taken its own link: that descriptor is the
-/// window's and no link, so the session asks the service for one.
+/// `None` in a process the service did not start as the shell, which is every other one.
 #[must_use]
 #[allow(
     clippy::disallowed_methods,
-    reason = "the variable names this process's own descriptor for its own exec; no other thread reads it yet and nothing else in the process uses it again"
+    reason = "the variable names this process's own secret for its own exec; no other thread reads it yet and nothing else in the process uses it again"
 )]
 pub fn take_launch_link() -> Option<std::os::fd::OwnedFd> {
-    let named = named_descriptor(runtime_collab::wire::shell::SHELL_FD_ENV)?;
-    if named_descriptor(WAYLAND_SOCKET) == Some(named) {
-        // SAFETY: the session takes its link before it starts any thread of its own; the
-        // variable named a descriptor for this process's own exec, and nothing reads the name
-        // again.
-        unsafe { std::env::remove_var(runtime_collab::wire::shell::SHELL_FD_ENV) };
+    let token = std::env::var(runtime_collab::wire::shell::SHELL_TOKEN_ENV).ok()?;
+    // SAFETY: the session takes its link before it starts any thread of its own; the variable
+    // named a secret for this process's own exec, and nothing reads the name again.
+    unsafe { std::env::remove_var(runtime_collab::wire::shell::SHELL_TOKEN_ENV) };
+    let Some(socket) = tilo_api::daemon::this_computer()
+        .ok()
+        .map(|place| place.native())
+    else {
+        eprintln!("tilo-session: this computer's service is not placed, so its shell has no link");
         return None;
-    }
-    let link = runtime_collab::ShellClient::inherited()?;
-    // SAFETY: as above; `ShellClient::inherited` took the descriptor once.
-    unsafe { std::env::remove_var(runtime_collab::wire::shell::SHELL_FD_ENV) };
-    match link {
-        Ok(link) => Some(link.into()),
+    };
+    match tilo_session_client::daemon_documents::link_from_token(&socket, &token) {
+        Ok(link) => Some(link),
         Err(error) => {
-            eprintln!(
-                "tilo-session: the link this computer's service handed this session: {error}"
-            );
+            eprintln!("tilo-session: the link this computer's service gave this session: {error}");
             None
         }
     }

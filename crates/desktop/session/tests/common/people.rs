@@ -1392,6 +1392,84 @@ impl Device {
         self.shell
     }
 
+    /// Stop this device's daemon alone, as a service restarting does: the session it started goes
+    /// on, and asks it for a new link once it answers again.
+    pub fn stop_daemon(&mut self) {
+        let Some(mut daemon) = self.daemon.take() else {
+            return;
+        };
+        let pid = i32::try_from(daemon.id()).unwrap_or(0);
+        if pid > 0 {
+            // SAFETY: a signal to the one process this test started, not its group: the shell it
+            // started is meant to outlive it.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+        let deadline = Instant::now().checked_add(Duration::from_secs(20));
+        loop {
+            if let Ok(Some(_)) = daemon.try_wait() {
+                return;
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                let _ = daemon.kill();
+                let _ = daemon.wait();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Start this device's daemon again over the state it kept, as a service restarting does. The
+    /// shell it started before is still running and asks it for a new link by itself.
+    pub fn restart_daemon(&mut self) {
+        let root = self.home.path().to_path_buf();
+        let logs = self.logs_dir();
+        std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
+        let program = self
+            .session
+            .clone()
+            .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("session.log"))
+            .expect("a log for the session");
+        let _ = writeln!(log, "\n--- this device's daemon restarts ---");
+        let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
+        self.device_env(&mut daemon, &logs);
+        daemon
+            .env(tilo_runtime::daemon::TEST_SHELL_ENV, &program)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
+        let mut daemon = spawn_group(daemon, "tilo-runtime");
+        let native = root
+            .join("runtime/tilo")
+            .join(tilo_paths::machine::DAEMON_NATIVE);
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if let Ok(Some(ended)) = daemon.try_wait() {
+                panic!(
+                    "{}'s daemon ended as it restarted ({ended}):\n{}",
+                    self.label,
+                    std::fs::read_to_string(logs.join("session.log")).unwrap_or_default()
+                );
+            }
+            if UnixStream::connect(&native).is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{}'s daemon did not answer again at {}",
+                self.label,
+                native.display()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.daemon = Some(daemon);
+    }
+
     /// Stop this device, as the person closing their laptop does: its session, then its daemon.
     pub fn stop(&mut self) {
         // The session stands in for the shell the daemon started, and hands the stop on to it.
@@ -1711,7 +1789,7 @@ impl Device {
             .env(tilo_endpoint_reachability::NETWORKS_ENV, "127.0.0.1")
             // This device's daemon is the person's own service, over their own profile.
             .env_remove("TILO_RUNTIME_PROFILE")
-            .env_remove(runtime_collab::wire::shell::SHELL_FD_ENV)
+            .env_remove(runtime_collab::wire::shell::SHELL_TOKEN_ENV)
             .env_remove("TILO_TEST_CONTROL")
             .env_remove("TILO_ADMIN_CONTROL")
             .env_remove(INVITATION_ENV)

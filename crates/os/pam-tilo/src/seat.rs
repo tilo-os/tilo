@@ -36,7 +36,7 @@ pub fn signed_in(
     socket: &Path,
     user: &str,
     state_home: Option<&str>,
-) -> Result<Option<OwnedFd>, String> {
+) -> Result<Option<String>, String> {
     let (uid, home) = account(user)?;
     // The person the account holds, which the daemon serves it as a key of when it is not the
     // device's own.
@@ -66,7 +66,7 @@ pub fn signed_in(
 ///
 /// # Errors
 /// The account is unknown, or the daemon refused.
-pub fn left(socket: &Path, user: &str, _: Option<&str>) -> Result<Option<OwnedFd>, String> {
+pub fn left(socket: &Path, user: &str, _: Option<&str>) -> Result<Option<String>, String> {
     let (uid, _) = account(user)?;
     act(socket, "seats#left", &format!(r#"{{"uid":{uid}}}"#)).map(|_| None)
 }
@@ -102,8 +102,8 @@ fn account(user: &str) -> Result<(u32, PathBuf), String> {
 }
 
 /// Call the daemon's action `path` with `args` (a JSON object) on its native endpoint at
-/// `socket`: the descriptor its answer carries, if any. A refusal it answers is returned.
-fn act(socket: &Path, path: &str, args: &str) -> Result<Option<OwnedFd>, String> {
+/// `socket`: the token its answer names, if any. A refusal it answers is returned.
+fn act(socket: &Path, path: &str, args: &str) -> Result<Option<String>, String> {
     let line = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"tilo_do","arguments":{{"path":"{path}","args":{args}}}}}}}"#
     );
@@ -118,12 +118,29 @@ fn act(socket: &Path, path: &str, args: &str) -> Result<Option<OwnedFd>, String>
         .and_then(|()| stream.set_write_timeout(Some(ANSWER)))
         .and_then(|()| writeln!(stream, "{line}"))
         .map_err(|error| error.to_string())?;
-    let (answer, handed) = answer(&stream).map_err(|error| error.to_string())?;
+    let (answer, _) = answer(&stream).map_err(|error| error.to_string())?;
     let answer = String::from_utf8_lossy(&answer);
     if answer.is_empty() || answer.contains(r#""error""#) || answer.contains(r#""isError":true"#) {
         return Err(format!("Tilo's daemon refused: {}", answer.trim()));
     }
-    Ok(handed)
+    // The sign-in answers the one-use secret the session redeems for its shell link; a leave
+    // answers none. The answer's line is JSON-RPC, and the answer's own value is the JSON text
+    // inside it, so the token is named behind escaped quotes: this module carries no JSON parser,
+    // as PAM loads it into every process that authenticates.
+    Ok(token_in(&answer))
+}
+
+/// The one-use secret an answer names (`"token":"<64 hex digits>"`), behind the quotes the
+/// answer's line escapes it with.
+fn token_in(answer: &str) -> Option<String> {
+    /// `"token":"` as it stands in the line.
+    const NAMED: &str = "\\\"token\\\":\\\"";
+    let at = answer.find(NAMED)?.checked_add(NAMED.len())?;
+    let rest = answer.get(at..)?;
+    let end = rest.find("\\\"")?;
+    let token = rest.get(..end)?;
+    (token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| token.to_owned())
 }
 
 /// One line of `stream`, and the descriptor that came with it: one, and the first of any more.

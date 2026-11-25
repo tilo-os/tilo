@@ -734,3 +734,6 @@ so-tilo-activity-source = Einen Befehl auf einer gewählten Morgenquelle ausfüh
 session-this-computer = Dieser Computer
 
 session-host-account = Hosting-Konto
+
+daemon-reconnecting = Verbinde…
+daemon-unreachable = Der Dienst dieses Geräts läuft nicht; verbinde…

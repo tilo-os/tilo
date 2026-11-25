@@ -1101,7 +1101,7 @@ static FOUNDING_PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 fn founding_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
     Ok(crate::seats::Peer {
         uid: FOUNDING_PEER.load(std::sync::atomic::Ordering::SeqCst),
-        pid: None,
+        pid: Some(std::process::id()),
     })
 }
 
@@ -1115,7 +1115,7 @@ static PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0)
 fn test_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
     Ok(crate::seats::Peer {
         uid: PEER.load(std::sync::atomic::Ordering::SeqCst),
-        pid: None,
+        pid: Some(std::process::id()),
     })
 }
 
@@ -1143,6 +1143,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
     keys.ensure_directories().unwrap();
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let _key_taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
     let ada = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let person = ada.verifying_key().to_bytes();
     let device = key.verifying_key().to_bytes();
@@ -1308,25 +1309,54 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     // ones their desktop kept, and root is handed the link her shell is admitted by, with its
     // answer, for the session it starts.
     let shells = std::sync::Arc::new(Linked::default());
+    shells.person(person);
     native.seats.serve(std::sync::Arc::clone(&shells) as _);
+    // The session her sign-in started redeems the answer's one-use token for her link, in her
+    // own account.
+    let redeem = |token: String| {
+        PEER.store(ADA, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(
+            &stream,
+            "{}",
+            json!({"native": "shells#link", "token": token})
+        )
+        .unwrap();
+        let (line, fd) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
+        let answer: Value = serde_json::from_slice(&line).unwrap();
+        assert!(answer["error"].is_null(), "{answer}");
+        fd.expect("the link is handed with its answer")
+    };
+    let token_of = |text: &str| {
+        // `tilo_do` says `ok` above the action's own answer.
+        let text = text.strip_prefix("ok\n").unwrap_or(text);
+        let answer: Value = serde_json::from_str(text).unwrap();
+        answer["token"].as_str().expect("a token").to_owned()
+    };
     let mut importing = signing_in.clone();
     importing["importing"] = json!(true);
-    let (signed_in, link) = act_handed(ROOT, "seats#signed-in", importing);
+    let (signed_in, _) = act_handed(ROOT, "seats#signed-in", importing);
     assert!(signed_in.contains(&hex::encode(person)), "{signed_in}");
     assert_eq!(
         shells.arrivals.load(Ordering::SeqCst),
         0,
         "the desktop's workspace is hers"
     );
-    shells.reaches(link.expect("the answer carries her shell's link"));
-    let (signed_in, link) = act_handed(ROOT, "seats#signed-in", signing_in);
+    shells.reaches(redeem(token_of(&signed_in)));
+    let (signed_in, _) = act_handed(ROOT, "seats#signed-in", signing_in);
     assert!(signed_in.contains(&hex::encode(person)), "{signed_in}");
     assert_eq!(
         shells.arrivals.load(Ordering::SeqCst),
         1,
         "she is found a workspace"
     );
-    shells.reaches(link.expect("each sign-in carries a link of its own"));
+    shells.reaches(redeem(token_of(&signed_in)));
+    // A link is only asked for by the seat it was admitted for: another account reaches none.
+    let refused = ask(BOB, json!({"native": "shells#link"}));
+    assert!(refused["error"].is_string(), "{refused}");
     // A daemon of the system's starts no shell itself: root starts each with the link it got.
     let started = ask(
         ADA,
@@ -1737,9 +1767,16 @@ fn a_daemon_in_this_process_stops_and_starts_again_on_its_device() {
 struct Linked {
     arrivals: std::sync::atomic::AtomicUsize,
     ends: std::sync::Mutex<Vec<std::os::unix::net::UnixStream>>,
+    /// The person the tokens are made for, once the test knows them.
+    person: std::sync::Mutex<Option<[u8; 32]>>,
+    tokens: std::sync::Mutex<Vec<[u8; 32]>>,
 }
 
 impl Linked {
+    fn person(&self, person: [u8; 32]) {
+        *self.person.lock().unwrap() = Some(person);
+    }
+
     /// Whether `link` is the other end of the newest link made.
     fn reaches(&self, link: std::os::fd::OwnedFd) {
         use io::{Read as _, Write as _};
@@ -1753,17 +1790,52 @@ impl Linked {
             "the handed descriptor is the link the daemon made"
         );
     }
+
+    fn made(&self) -> std::os::unix::net::UnixStream {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        self.ends.lock().unwrap().push(ours);
+        theirs
+    }
 }
 
 impl crate::seats::Shells for Linked {
-    fn arrived(&self, importing: bool) -> io::Result<std::os::unix::net::UnixStream> {
+    fn token(&self, importing: bool) -> io::Result<[u8; 32]> {
         if !importing {
             self.arrivals
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
-        self.ends.lock().unwrap().push(ours);
-        Ok(theirs)
+        let token = [7; 32];
+        self.tokens.lock().unwrap().push(token);
+        Ok(token)
+    }
+
+    fn token_holder(&self, token: &[u8; 32]) -> Option<[u8; 32]> {
+        self.tokens
+            .lock()
+            .unwrap()
+            .contains(token)
+            .then(|| *self.person.lock().unwrap())
+            .flatten()
+    }
+
+    fn redeem(
+        &self,
+        _secret: [u8; 32],
+        _seat: u64,
+    ) -> io::Result<std::os::unix::net::UnixStream> {
+        Ok(self.made())
+    }
+
+    fn link_for(
+        &self,
+        _person: [u8; 32],
+        _seat: u64,
+    ) -> io::Result<std::os::unix::net::UnixStream> {
+        Ok(self.made())
+    }
+
+    fn live(&self, _seat: u64) -> bool {
+        false
     }
 
     fn start(
@@ -1893,6 +1965,8 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
 /// Names the test below when this executable runs as the shell a session asked the daemon to
 /// start with it.
 const NESTED_SHELL: &str = "TILO_NESTED_SHELL_HELPER";
+/// Where the shell the daemon started asks for its link: the daemon's own socket.
+const NESTED_SHELL_SOCKET: &str = "TILO_NESTED_SHELL_SOCKET";
 /// Where that shell says its link reached the daemon, once it has: the session that started it
 /// reads it, so a test that selected nothing cannot pass as one.
 const NESTED_SHELL_REACHED: &str = "TILO_NESTED_SHELL_REACHED";
@@ -1915,20 +1989,33 @@ fn a_session_started_with_a_link_starts_a_nested_shell_with_its_own_link_and_win
     use tilo_api::daemon::admission::Admission;
 
     if std::env::var_os(NESTED_SHELL).is_some() {
-        // The shell the daemon started: its own link reaches the daemon, and the window
-        // connection the asking session sent came with it.
-        let link = runtime_collab::ShellClient::inherited()
-            .expect("the daemon hands its shell a link")
+        // The shell the daemon started: it redeems the one-use token it was given for a link of
+        // its own, which reaches the daemon, and the window connection the asking session sent
+        // came with its start.
+        let token = std::env::var(runtime_collab::wire::shell::SHELL_TOKEN_ENV)
+            .expect("the daemon gives its shell a token");
+        let socket = std::env::var(NESTED_SHELL_SOCKET).expect("the daemon's own socket");
+        let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        assert_eq!(
-            std::env::var(runtime_collab::wire::shell::SHELL_FD_ENV).as_deref(),
-            Ok("3"),
-            "the link is handed where the daemon says it is"
+        writeln!(
+            &stream,
+            "{}",
+            serde_json::json!({"native": "shells#link", "token": token})
+        )
+        .unwrap();
+        let (line, handed) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert!(answer["error"].is_null(), "{answer}");
+        let link = std::os::unix::net::UnixStream::from(
+            handed.expect("the daemon answers its shell's token with a link"),
         );
+        link.set_nonblocking(true).unwrap();
         assert_eq!(
             std::env::var("WAYLAND_SOCKET").as_deref(),
             Ok("4"),
-            "the window the asking session sent is handed above the link"
+            "the window the asking session sent is handed at its own descriptor"
         );
         let mut window = [0_u8; 6];
         // SAFETY: fd 4 is this process's window connection, handed to it as `WAYLAND_SOCKET`.
@@ -2004,6 +2091,10 @@ fn a_session_started_with_a_link_starts_a_nested_shell_with_its_own_link_and_win
     env.insert(
         NESTED_SHELL_REACHED.to_owned(),
         reached.display().to_string().into(),
+    );
+    env.insert(
+        NESTED_SHELL_SOCKET.to_owned(),
+        socket.display().to_string().into(),
     );
     let start = serde_json::json!({
         "native": "shells#start",
@@ -2082,8 +2173,40 @@ struct NestedShells(std::sync::Weak<Daemon>);
 
 #[cfg(target_os = "linux")]
 impl crate::seats::Shells for NestedShells {
-    fn arrived(&self, _: bool) -> io::Result<std::os::unix::net::UnixStream> {
+    fn token(&self, _: bool) -> io::Result<[u8; 32]> {
         Err(io::Error::other("a test starts no shell at a sign-in"))
+    }
+
+    fn token_holder(&self, token: &[u8; 32]) -> Option<[u8; 32]> {
+        self.0.upgrade()?.shell_token_holder(token)
+    }
+
+    fn redeem(
+        &self,
+        secret: [u8; 32],
+        seat: u64,
+    ) -> io::Result<std::os::unix::net::UnixStream> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?
+            .shell_redeem(secret, seat)
+    }
+
+    fn link_for(
+        &self,
+        person: [u8; 32],
+        seat: u64,
+    ) -> io::Result<std::os::unix::net::UnixStream> {
+        let daemon = self
+            .0
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        let secret = daemon.shell_token_for(person, seat)?;
+        daemon.shell_link_of(secret)
+    }
+
+    fn live(&self, seat: u64) -> bool {
+        self.0.upgrade().is_some_and(|daemon| daemon.shell_live(seat))
     }
 
     fn start(

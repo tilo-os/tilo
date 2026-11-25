@@ -475,6 +475,12 @@ impl DeviceOnly {
         claimed(&self.0.place, &self.0.key, &self.0.profile, self.0.own)
     }
 
+    /// The daemon's profile, where founding records the account that made its person and the
+    /// seats whose shells are admitted here: empty for a device actions' value no daemon keeps.
+    pub(crate) fn profile(&self) -> &std::path::Path {
+        &self.0.profile
+    }
+
     /// This device's key and certificates.
     pub(crate) fn keys(&self) -> &tilo_device_identity::IdentityPaths {
         self.0.place.keys()

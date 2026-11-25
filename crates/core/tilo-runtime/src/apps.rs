@@ -1518,7 +1518,7 @@ impl Launched {
 /// When process `pid` started, in the kernel's units: clock ticks since boot
 /// on Linux (`/proc/<pid>/stat` field 22), microseconds since the epoch on
 /// macOS. `None` for a process that does not exist.
-fn process_start_time(pid: u32) -> Option<u64> {
+pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;

@@ -480,7 +480,8 @@ fn records(device: &Daemon) -> DeviceRecords {
         .expect("the daemon makes a link");
     let link =
         tilo_session_client::daemon_documents::inherited_link(Some(link), tilo_rt::app().handle())
-            .expect("the daemon's link");
+            .expect("the daemon's link")
+            .0;
     let workspace =
         collab_types::person_workspace_of(&device.person).expect("the person's own workspace");
     DeviceRecords::on(

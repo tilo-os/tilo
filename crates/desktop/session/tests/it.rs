@@ -81,6 +81,8 @@ mod collab;
 mod confirm;
 #[path = "controllers.rs"]
 mod controllers;
+#[path = "daemon_relink.rs"]
+mod daemon_relink;
 #[path = "daemon_start.rs"]
 mod daemon_start;
 #[path = "delete_workspace.rs"]
@@ -282,10 +284,6 @@ mod shell_screen;
 mod shell_themes;
 #[path = "shortcut_effects.rs"]
 mod shortcut_effects;
-#[path = "theme_package.rs"]
-mod theme_package;
-#[path = "theme_package_process.rs"]
-mod theme_package_process;
 #[path = "shortcut_guide.rs"]
 mod shortcut_guide;
 #[path = "speaker_groups.rs"]
@@ -304,6 +302,10 @@ mod surface_input_frames;
 mod surface_lifted;
 #[path = "test_control.rs"]
 mod test_control;
+#[path = "theme_package.rs"]
+mod theme_package;
+#[path = "theme_package_process.rs"]
+mod theme_package_process;
 #[path = "tools.rs"]
 mod tools;
 #[path = "traditional_desktop.rs"]

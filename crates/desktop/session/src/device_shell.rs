@@ -95,8 +95,30 @@ pub(crate) fn open(
     };
     let following = Arc::clone(&view);
     runtime.spawn(async move {
-        if let Err(error) = follow(&daemon, &following, &wake).await {
-            tracing::warn!(%error, "the session stopped following its workspaces");
+        // Each link's subscriptions end with it, and the old follower has let go of every
+        // workspace before the next reads them again: a daemon that restarted is followed as the
+        // one before it was.
+        let mut linking = daemon.client.linking();
+        loop {
+            if let Err(error) = follow(&daemon, &following, &wake).await {
+                tracing::warn!(%error, "the session follows its workspaces no more on this link");
+            }
+            if matches!(
+                daemon.client.link_status(),
+                runtime_collab::ShellLink::Linked
+            ) {
+                // A follower that ended before the link did asks again shortly.
+                tokio::select! {
+                    moved = linking.changed() => {
+                        if moved.is_err() {
+                            return;
+                        }
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                }
+            } else if linking.changed().await.is_err() {
+                return;
+            }
         }
     });
     Some(view)
@@ -115,7 +137,16 @@ async fn follow(
         .await
         .map_err(|error| error.to_string())?;
     let followed: Arc<std::sync::Mutex<BTreeSet<String>>> = Arc::default();
+    // Each workspace's follow lives as long as this one: when the link ends, they are let go
+    // before the next link's follower reads anything, so none clears a reading the next applied.
+    let mut following = tokio::task::JoinSet::new();
     loop {
+        // A follow whose workspace left the list is done with; one that failed says why.
+        while let Some(joined) = following.try_join_next() {
+            if let Err(error) = joined {
+                tracing::warn!(%error, "a workspace's follow stopped");
+            }
+        }
         let reading = list.read().await.map_err(|error| error.to_string())?;
         if view.apply(LIST, reading.reading.as_deref())? {
             wake();
@@ -138,7 +169,7 @@ async fn follow(
                 let (standing, view, wake) =
                     (standing.clone(), Arc::clone(&view), Arc::clone(&wake));
                 let named = part_resource(&workspace.id, part);
-                tokio::spawn(async move {
+                following.spawn(async move {
                     if let Err(error) = follow_one(&standing, &named, &view, &wake).await {
                         tracing::warn!(%error, named, "the session stopped following a workspace's part");
                     }
@@ -147,7 +178,7 @@ async fn follow(
                     }
                 });
             }
-            tokio::spawn(async move {
+            following.spawn(async move {
                 let named = resource(&workspace.id);
                 if let Err(error) = follow_one(&standing, &named, &view, &wake).await {
                     tracing::warn!(%error, workspace = workspace.id, "the session stopped following a workspace");

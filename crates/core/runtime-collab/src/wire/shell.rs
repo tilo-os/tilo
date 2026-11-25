@@ -1,10 +1,13 @@
 //! The person's shell on the daemon's dispatch.
 //!
 //! A desktop session never enters its person's workspaces itself: the device's daemon holds
-//! them, and the session is its client. The daemon admits a shell by its launch, as it admits an
-//! app: it makes a link for one shell, a connection it opened itself with a one-use secret, and
-//! hands it to the shell it starts ([`SHELL_FD_ENV`]). A process that holds no link, whatever
-//! account it runs as, is not the shell. A shell connection asks six things of the daemon:
+//! them, and the session is its client. The daemon admits a shell by its seat: it gives the shell
+//! it starts, or answers a sign-in with, a one-use secret ([`SHELL_TOKEN_ENV`]), and the shell
+//! redeems it for its link with the one request that establishes one ([`SHELL_LINK`]) on the
+//! daemon's own socket. A shell whose link ended asks for another for the same seat, proved by
+//! the account and process the kernel names and the link the daemon admitted before, so a daemon
+//! restart leaves no dead desktop. A process the daemon admitted no link for, whatever account it
+//! runs as, is not the shell. A shell connection asks six things of the daemon:
 //!
 //! - the documents of the workspaces the device holds, read for the device itself and written as
 //!   it: [`ShellCall`] carries what `tilo_peer_state::workspace_documents::DeviceDocuments` and
@@ -40,8 +43,15 @@ pub const SHELL_MAGIC: &[u8; 4] = b"QSH1";
 /// How many bytes the one-use secret of a shell link takes.
 pub const SHELL_SECRET_BYTES: usize = 32;
 
-/// Names the descriptor of the shell link the daemon handed the shell it started.
-pub const SHELL_FD_ENV: &str = "TILO_SHELL_FD";
+/// Names the one-use secret the daemon gave the shell it started or answered a sign-in with: the
+/// shell redeems it for its link with the one request that establishes a shell link, `shells#link`,
+/// on the daemon's own socket.
+pub const SHELL_TOKEN_ENV: &str = "TILO_SHELL_TOKEN";
+
+/// The request a shell makes for its link on the daemon's native socket: `{"native":"shells#link"}`,
+/// with the one-use secret a daemon gave it in `token` the first time, and none again for the same
+/// seat.
+pub const SHELL_LINK: &str = "shells#link";
 
 /// What a connection the shell opens to hand the device's tilolang processes an instance begins
 /// with, followed by the one-use secret the daemon answered the shell's [`ShellCall::Processes`]

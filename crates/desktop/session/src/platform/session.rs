@@ -143,13 +143,25 @@ impl Session {
             .map(crate::vpn::Vpn::served)
             .unwrap_or_default();
         let vpn = options.vpn.take().map(crate::vpn::Vpn::start);
-        // The shell link the device's daemon handed this session when it started it: the
+        // The shell link the device's daemon gave this session when it started it: the
         // session's own reads and writes go there, the workspace resources it shows itself are
-        // followed there, and its apps are vouched for on it.
+        // followed there, and its apps are vouched for on it. When the link ends, the session asks
+        // the daemon at its own socket for another for the same seat, and goes on.
         let daemon_link = tilo_session_client::daemon_documents::inherited_link(
             options.shell_link.take(),
             tilo_rt::app().handle(),
         );
+        // A link that ends is asked for again on this computer's own socket, for the same seat:
+        // a daemon that restarts leaves no dead desktop.
+        let daemon_link = match daemon_link {
+            Ok((link, end)) => {
+                if let Ok(place) = tilo_api::daemon::this_computer() {
+                    link.following(end, place.native(), Some(options.wake.handle()));
+                }
+                Ok(link)
+            }
+            Err(why) => Err(why),
+        };
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
@@ -1802,6 +1814,8 @@ impl Session {
             waiting: RefCell::default(),
             readings,
             osd: Rc::default(),
+            #[cfg(unix)]
+            link: daemon_link.clone().ok(),
             carried: std::cell::Cell::new(0.0),
             services,
             sends,

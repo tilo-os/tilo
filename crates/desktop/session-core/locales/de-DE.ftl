@@ -1365,3 +1365,5 @@ session-window-share-unwatch-workspace = Der Arbeitsbereich, aus dem es gezeigt 
 programs-resource = Deine Programme
 programs-run-line = Diese Zeile ausführen
 programs-run-line-detail = Führt eine tilolang-Zeile als dich aus und antwortet, was sie gelesen oder geändert hat.
+
+osd-reconnecting = Verbinde…

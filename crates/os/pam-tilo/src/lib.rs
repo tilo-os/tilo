@@ -262,36 +262,19 @@ pub unsafe extern "C" fn pam_sm_setcred(
     Status::Success.code()
 }
 
-/// Where the session finds the link its shell is admitted by: the variable the daemon's own shells
-/// read (`runtime_collab::wire::shell::SHELL_FD_ENV`).
-const SHELL_FD_ENV: &str = "TILO_SHELL_FD";
-/// The lowest descriptor the link is handed on at: above the few a session's own start uses.
-const SHELL_FD_FROM: c_int = 10;
+/// Where the session finds the one-use secret it redeems for the link its shell is admitted by:
+/// the variable the daemon's own shells read (`runtime_collab::wire::shell::SHELL_TOKEN_ENV`).
+const SHELL_TOKEN_ENV: &str = "TILO_SHELL_TOKEN";
 
-/// Hand `link` on to the session the application starts: a descriptor it inherits, named in its
-/// environment. Only that session's processes hold it.
-fn hand_on(handle: &Handle, link: &std::os::fd::OwnedFd) -> Result<(), String> {
-    use std::os::fd::{AsRawFd as _, FromRawFd as _};
-    // SAFETY: a descriptor this call owns; F_DUPFD makes a copy that an exec keeps.
-    let inherited = unsafe { libc::fcntl(link.as_raw_fd(), libc::F_DUPFD, SHELL_FD_FROM) };
-    if inherited < 0 {
-        return Err(format!(
-            "the shell's link cannot be handed on: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    handle
-        .put_env(SHELL_FD_ENV, &inherited.to_string())
-        .inspect_err(|_| {
-            // SAFETY: the copy made above, which nothing else holds.
-            drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(inherited) });
-        })
+/// Hand `token` on to the session the application starts, named in its environment: only that
+/// session's processes read it, and it admits one link.
+fn hand_on(handle: &Handle, token: &str) -> Result<(), String> {
+    handle.put_env(SHELL_TOKEN_ENV, token)
 }
 
-/// A change of who is signed in, told to the daemon at `socket` for an account: the link it answers
-/// for the person's shell, if any.
-type Change =
-    fn(&std::path::Path, &str, Option<&str>) -> Result<Option<std::os::fd::OwnedFd>, String>;
+/// A change of who is signed in, told to the daemon at `socket` for an account: the secret it
+/// answers for the person's shell, if any.
+type Change = fn(&std::path::Path, &str, Option<&str>) -> Result<Option<String>, String>;
 
 /// Tell this computer's daemon who signed in, or who left, when it runs: never a reason to refuse
 /// the session, whatever it answers. A link it answers for the person's shell is handed on to the
@@ -320,7 +303,7 @@ fn seat_changed(
             &user,
             handle.env(c"XDG_STATE_HOME").as_deref(),
         )
-        .and_then(|link| link.map_or(Ok(()), |link| hand_on(&handle, &link)));
+        .and_then(|token| token.map_or(Ok(()), |token| hand_on(&handle, &token)));
         if let Err(why) = changed {
             handle.log_warning(&why);
         }

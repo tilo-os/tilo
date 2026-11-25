@@ -24,27 +24,61 @@ use tilo_peer_state::workspace_documents::{
 pub const NOT_STARTED_BY_THE_DAEMON: &str =
     "this desktop was not started by the device's daemon, which keeps the person's workspaces";
 
-/// The shell link the daemon handed this process when it started it, or `handed`, the link it made
-/// for a session a test runs in its own process, opened on `runtime`; or why there is none.
+/// The shell link the daemon gave this process when it started it, or `handed`, the link it made
+/// for a session a test runs in its own process, opened on `runtime`, and what resolves when that
+/// link ends; or why there is none.
 ///
 /// # Errors
 /// The daemon did not start this process, or the descriptor it handed is no socket.
 pub fn inherited_link(
     handed: Option<std::os::fd::OwnedFd>,
     runtime: &tokio::runtime::Handle,
-) -> Result<ShellClient, String> {
+) -> Result<(ShellClient, runtime_collab::ConnectionEnd), String> {
     let link = match handed {
         Some(link) => {
             let link = std::os::unix::net::UnixStream::from(link);
             link.set_nonblocking(true).map(|()| link)
         }
-        None => ShellClient::inherited().ok_or(NOT_STARTED_BY_THE_DAEMON)?,
+        None => return Err(NOT_STARTED_BY_THE_DAEMON.to_owned()),
     }
     .map_err(|error| format!("the link the device's daemon handed this desktop: {error}"))?;
     let _entered = runtime.enter();
     let link = tokio::net::UnixStream::from_std(link)
         .map_err(|error| format!("the link the device's daemon handed this desktop: {error}"))?;
-    Ok(ShellClient::open(link).0)
+    Ok(ShellClient::open(link))
+}
+
+/// Ask the daemon at `socket` for a shell link, handing `token` when the daemon started this
+/// session with one: the same typed request a desktop makes when its link ended, made once to
+/// get the first.
+///
+/// # Errors
+/// The daemon did not answer, refused the token, or answered no link.
+pub fn link_from_token(
+    socket: &std::path::Path,
+    token: &str,
+) -> Result<std::os::fd::OwnedFd, String> {
+    use std::io::Write as _;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+        .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let request = serde_json::json!({"native": "shells#link", "token": token}).to_string() + "\n";
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;
+    let (bytes, descriptors) = runtime_portal::fd_transport::recv_with_fds(&stream)
+        .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;
+    let answer: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("this device's daemon answered unreadably: {error}"))?;
+    if let Some(why) = answer.get("error").and_then(serde_json::Value::as_str) {
+        return Err(format!(
+            "this device's daemon refused the shell's link: {why}"
+        ));
+    }
+    descriptors
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("this device's daemon answered no link: {answer}"))
 }
 
 /// How long a blocking ask may wait before it says where it waits from, and again each time it
@@ -183,9 +217,13 @@ impl DaemonShell {
     }
 
     /// The shell link, or why this desktop has none: what its apps' connections are vouched for
-    /// on.
+    /// on. While the daemon is asked for a new link, this says so rather than waiting.
     pub fn link(&self) -> Result<ShellClient, String> {
-        self.inner.link.clone()
+        let link = self.inner.link.clone()?;
+        match link.link_status() {
+            runtime_collab::ShellLink::Linked => Ok(link),
+            status => Err(reconnecting(&status)),
+        }
     }
 
     /// Ask the daemon `call`.
@@ -425,12 +463,36 @@ impl DaemonShell {
 impl Inner {
     async fn ask(&self, call: ShellCall) -> Result<ShellReply, String> {
         let link = self.link.as_ref().map_err(Clone::clone)?;
-        link.call(call).await.map_err(|error| match error {
-            runtime_portal::NotAvailable::Refused(reason) => reason,
-            error => format!("the device's daemon: {error}"),
-        })
+        match link.call(call).await {
+            Ok(reply) => Ok(reply),
+            Err(runtime_portal::NotAvailable::Refused(reason)) => Err(reason),
+            // The link ended under the ask: the session asks its daemon for another, and the ask
+            // fails now saying so rather than waiting on a link that is gone.
+            Err(runtime_portal::NotAvailable::ConnectionFailed(_)) => {
+                Err(reconnecting(&link.link_status()))
+            }
+            Err(error) => Err(format!("the device's daemon: {error}")),
+        }
     }
 }
+
+/// What an ask made while the daemon is asked for a new link is told: legible, and saying the
+/// desktop reaches its daemon again by itself.
+fn reconnecting(status: &runtime_collab::ShellLink) -> String {
+    match status {
+        runtime_collab::ShellLink::Linked => RECONNECTING.to_owned(),
+        runtime_collab::ShellLink::Reconnecting => {
+            "the device's daemon is reconnecting: this desktop reaches it again by itself"
+                .to_owned()
+        }
+        runtime_collab::ShellLink::Unreachable { why } => {
+            format!("the device's daemon is not answering: {why}; this desktop keeps asking")
+        }
+    }
+}
+
+/// What the shell says while it asks its daemon for a new link.
+pub const RECONNECTING: &str = "the device's daemon is reconnecting";
 
 /// `message` as the shell link carries it.
 fn dispatched(workspace: Option<&str>, message: &RemoteActionMessage) -> Result<ShellCall, String> {

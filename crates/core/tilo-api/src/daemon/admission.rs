@@ -95,6 +95,60 @@ pub fn person_record(profile: &std::path::Path, uid: u32) -> PathBuf {
         .join("person.json")
 }
 
+/// Where in its profile the daemon keeps each signed-in account's session.
+pub const SESSIONS: &str = "sessions";
+
+/// The file recording that `uid` is signed in as `person` while its session runs, in `profile`.
+#[must_use]
+pub fn session_record(profile: &std::path::Path, uid: u32) -> PathBuf {
+    profile.join(SESSIONS).join(format!("{uid}.json"))
+}
+
+/// The sessions `profile` says are still running: each account's person, from the records root's
+/// sign-ins wrote. A daemon restarting mid-session reads them, so the session's shell reaches its
+/// person again.
+///
+/// # Errors
+/// A record is there and cannot be read, or is not such a record.
+fn recorded_sessions(profile: &std::path::Path) -> io::Result<HashMap<u32, Seat>> {
+    let mut sessions = HashMap::new();
+    let dir = profile.join(SESSIONS);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(sessions),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let Ok(uid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let path = entry.path();
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let record: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} names no session's person: {error}", path.display()),
+            )
+        })?;
+        let person = record
+            .get("person")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} names no person", path.display()),
+                )
+            })?;
+        sessions.insert(uid, Seat::Person(person_key(&path, person)?));
+    }
+    Ok(sessions)
+}
+
 /// The accounts that made a person, from the records in `profile`: none while there are none.
 /// The record each one written before accounts were kept separately is read too.
 ///
@@ -201,6 +255,7 @@ impl Admission {
     /// A record is there and cannot be read, or is not such a record.
     pub fn keeping_accounts_in(mut self, profile: PathBuf) -> io::Result<Self> {
         self.accounts = Mutex::new(recorded_accounts(&profile)?);
+        self.seats = Mutex::new(recorded_sessions(&profile)?);
         self.kept = Some(profile);
         Ok(self)
     }
@@ -439,6 +494,20 @@ impl Admission {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(uid, Seat::Person(person));
+        // The session outlives this daemon process: one restarted while the person is still
+        // signed in admits them, as root said they are, so its shell reaches them again.
+        if let Some(profile) = &self.kept {
+            let path = session_record(profile, uid);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|error| {
+                    format!("this computer could not keep who is signed in: {error}")
+                })?;
+            }
+            let bytes = serde_json::json!({ "person": hex::encode(person) }).to_string();
+            tilo_files::native::atomic::write_private(&path, bytes.as_bytes()).map_err(
+                |error| format!("this computer could not keep who is signed in: {error}"),
+            )?;
+        }
         Ok(())
     }
 
@@ -507,12 +576,16 @@ impl Admission {
     /// `by` is not root.
     pub fn left(&self, by: u32, uid: u32) -> Result<bool, String> {
         Self::by_root(by)?;
-        Ok(self
+        let was = self
             .seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&uid)
-            .is_some())
+            .is_some();
+        if let Some(profile) = &self.kept {
+            let _ = std::fs::remove_file(session_record(profile, uid));
+        }
+        Ok(was)
     }
 
     fn by_root(by: u32) -> Result<(), String> {

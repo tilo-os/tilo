@@ -252,11 +252,14 @@ pub enum OsdKind {
     PointerReleased,
     /// The keyboard's input source changed: a layout, or a composing input method.
     InputSource,
+    /// The device's daemon is being reached again: the session's link to it ended and another is
+    /// asked for, while the desktop keeps showing what it has.
+    Daemon,
 }
 
 impl OsdKind {
     /// Every kind, as its published name spells it.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Volume,
         Self::Brightness,
         Self::KeyboardBacklight,
@@ -275,6 +278,7 @@ impl OsdKind {
         Self::CapturedKeys,
         Self::PointerReleased,
         Self::InputSource,
+        Self::Daemon,
     ];
 
     /// Whether the readout is a level with a bar, rather than a state said in words.
@@ -507,6 +511,7 @@ impl Hint {
             OsdKind::Magnifier => t("osd-magnifier-off"),
             OsdKind::CapturedKeys => t("osd-keys-captured"),
             OsdKind::InputSource => self.name.clone().unwrap_or_else(|| t("osd-input-source")),
+            OsdKind::Daemon => self.name.clone().unwrap_or_else(|| t("osd-reconnecting")),
             OsdKind::PointerReleased => t("osd-pointer-released"),
             OsdKind::Microphone if self.on => t("osd-microphone-on"),
             OsdKind::Microphone => t("osd-microphone-muted"),
@@ -570,6 +575,7 @@ impl Hint {
             OsdKind::KeyboardBacklight | OsdKind::CapturedKeys | OsdKind::InputSource => {
                 (Icon::Keyboard, GlyphTone::On)
             }
+            OsdKind::Daemon => (Icon::Refresh, GlyphTone::On),
         }
     }
 }

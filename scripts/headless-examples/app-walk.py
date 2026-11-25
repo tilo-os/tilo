@@ -552,10 +552,13 @@ def asked_once(socket_path: Path, path: str, args: dict) -> tuple[dict, int | No
     text = "".join(part.get("text") or "" for part in result.get("content") or [])
     if result.get("isError") is True:
         raise Failed(f"the machine's daemon refused {path}: {text or said}")
-    # The typed answer the tool carries, else the words it answered them as.
+    # The typed answer the tool carries, else the words it answered them as: the words may say
+    # `ok` above the action's own answer.
     typed = result.get("structuredContent")
     said_answer = typed if isinstance(typed, dict) and typed else None
     if said_answer is None:
+        if text.startswith("ok\n"):
+            text = text[3:]
         try:
             said_answer = json.loads(text) if text else {}
         except ValueError:
@@ -580,7 +583,7 @@ class MachineDaemon:
     a daemon of the person's own. The walk plays that login through the daemon's own actions, as
     `pam_tilo` does: root says the session account signed in, the account founds its person with
     its first `tilo` command, and root says it signed in again, taking the link the answer
-    carries and handing it to the session as `TILO_SHELL_FD`, the variable the PAM module names.
+    carries and handing it to the session as `TILO_SHELL_TOKEN`, the variable the PAM module names.
 
     The daemon keeps the person's workspaces and records in root-owned system state, as a device
     does; the session changes them only through the link."""
@@ -597,9 +600,6 @@ class MachineDaemon:
     #: shell's link is handed out.
     START_WITHIN = 120.0
     LINK_WITHIN = 180.0
-    #: The lowest descriptor the link is handed on at, as `pam_tilo` hands it on.
-    LINK_FD = 10
-
     def __init__(self, state: Path, out: Path):
         self.state = state
         self.out = out
@@ -682,9 +682,9 @@ class MachineDaemon:
         return person, fd
 
     def login(self, session_env: dict) -> tuple[dict, dict]:
-        """The login: seat the session's account, found its person, and take the link the second
-        sign-in answers with. Answered as the environment the session gains and the descriptors
-        handed on."""
+        """The login: seat the session's account, found its person, and take the one-use secret
+        the second sign-in answers with. Answered as the environment the session gains and the
+        descriptors handed on."""
         if self.account is None:
             return {}, {}
         uid = self.account.pw_uid
@@ -697,16 +697,13 @@ class MachineDaemon:
                 env={**os.environ, **session_env, **self._account_env()})
         deadline = time.monotonic() + self.LINK_WITHIN
         while True:
-            said, handed = self._signed_in(uid)
-            if handed is not None and said.get("shell") is True:
-                os.dup2(handed, self.LINK_FD)
-                os.close(handed)
-                os.set_inheritable(self.LINK_FD, True)
-                return ({"TILO_SHELL_FD": str(self.LINK_FD)},
-                        {"TILO_SHELL_FD": self.LINK_FD})
+            said, _ = self._signed_in(uid)
+            token = said.get("token")
+            if said.get("shell") is True and token:
+                return {"TILO_SHELL_TOKEN": token}, {}
             if time.monotonic() >= deadline:
                 raise Failed(
-                    "the machine's daemon served no link for the person's shell: "
+                    "the machine's daemon served no secret for the person's shell: "
                     f"{json.dumps(said)}")
             time.sleep(0.5)
 

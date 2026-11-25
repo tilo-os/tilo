@@ -265,6 +265,10 @@ impl Session {
         self.shared.activities.announce(&*self.shared.telling());
         self.follow_readout();
         self.shared.show_answered_readouts();
+        // The daemon is reached again after a restart: the shell says so while it asks, over the
+        // desktop it keeps showing.
+        #[cfg(unix)]
+        self.shared.follow_daemon_link();
         // The surface apps are answered after the services took in what their devices did, so a
         // panel is sent the reading of this pass.
         self.surfaces.poll();
@@ -939,6 +943,8 @@ fn session<'a>(
         shared_input: shared.keyboard_and_pointer.as_deref(),
         layout: &shared.layout,
         notifications: shared.notifications.borrow().desktop(),
+        #[cfg(unix)]
+        link: shared.link.as_ref(),
     }
 }
 

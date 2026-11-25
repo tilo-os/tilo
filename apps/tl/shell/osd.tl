@@ -98,5 +98,8 @@ fn osd_words(o: device.Osd) -> Text {
         if let named = o.name { named } else { "Input source" }
     } else if o.kind == "captured-keys" {
         "Keys captured"
+    } else if o.kind == "daemon" {
+        // The session names the wait; a readout without a name says only that it changed.
+        if let named = o.name { named } else { "Changed" }
     } else if o.kind == "pointer-released" { "Pointer released" } else { "Changed" }
 }

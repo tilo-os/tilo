@@ -389,8 +389,8 @@ fn the_sessions_own_actions_are_answered_through_the_daemons_dispatch() {
     });
 }
 
-/// A test's session is the daemon's shell as a sign-in starts it: the daemon runs, starts the
-/// shell handed its link, and both stop together.
+/// A test's session is the daemon's shell as a sign-in starts it: the daemon runs, gives the
+/// shell the one-use secret it redeems for its link, and both stop together.
 ///
 /// The person's shell is the desktop session's, which only a Linux device runs.
 #[cfg(target_os = "linux")]
@@ -399,12 +399,10 @@ fn a_shell_session_starts_the_persons_shell_on_its_link_and_stops_with_it() {
     use std::io::BufRead as _;
     host::in_own_process(|profile| {
         let mut shell = std::process::Command::new("/bin/sh");
-        // The shell says it holds its link, then waits on it.
+        // The shell says the secret it was given, then waits: the link is the one that secret
+        // redeems.
         shell
-            .args([
-                "-c",
-                "test -S /proc/self/fd/3 && echo \"linked $TILO_SHELL_FD\" && exec cat <&3 >/dev/null",
-            ])
+            .args(["-c", "echo \"$TILO_SHELL_TOKEN\"; sleep 120"])
             .stdout(std::process::Stdio::piped());
         let mut session =
             tilo_runtime::daemon::ShellSession::start(profile, shell, Duration::from_secs(120))
@@ -421,7 +419,26 @@ fn a_shell_session_starts_the_persons_shell_on_its_link_and_stops_with_it() {
         )
         .read_line(&mut said)
         .unwrap();
-        assert_eq!(said.trim(), "linked 3", "the shell holds the daemon's link");
+        let token = said.trim();
+        assert_eq!(token.len(), 64, "the shell is given one one-use secret");
+        let link = tilo_session_client::daemon_documents::link_from_token(&socket, token)
+            .expect("the secret admits the shell's link");
+        let link = std::os::unix::net::UnixStream::from(link);
+        link.set_nonblocking(true).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (shell, _) = ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
+        let answered =
+            runtime.block_on(shell.call(runtime_collab::wire::shell::ShellCall::Workspaces));
+        assert!(
+            matches!(
+                answered,
+                Ok(runtime_collab::wire::shell::ShellReply::Workspaces(ref held)) if !held.is_empty()
+            ),
+            "the link the secret admits reaches the daemon's workspaces: {answered:?}"
+        );
         assert!(
             std::os::unix::net::UnixStream::connect(&socket).is_ok(),
             "the daemon's endpoint answers while the session runs"

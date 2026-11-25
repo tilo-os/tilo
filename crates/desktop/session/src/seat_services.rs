@@ -116,7 +116,7 @@ pub(crate) fn serve_on(shell: runtime_collab::ShellClient, parts: SeatParts) {
     let provider = Arc::new(SeatProvider {
         parts: Arc::new(parts),
         runtime: runtime.handle().clone(),
-        handed: shell.handed().clone(),
+        shell: shell.clone(),
     });
     runtime.spawn(async move {
         if let Err(error) = shell
@@ -132,8 +132,9 @@ pub(crate) fn serve_on(shell: runtime_collab::ShellClient, parts: SeatParts) {
 struct SeatProvider {
     parts: Arc<SeatParts>,
     runtime: tokio::runtime::Handle,
-    /// The files the daemon hands over on the shell link, each taken by the call that names it.
-    handed: runtime_portal::descriptors::ReceivedDescriptors,
+    /// The shell link, whose descriptors the daemon hands over: each file one is taken by the
+    /// call that names it, on the link that stands when the call comes.
+    shell: runtime_collab::ShellClient,
 }
 
 type Answer = Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
@@ -500,7 +501,7 @@ impl SeatProvider {
             (calls::BROWSER_SERVICE_SESSIONS, call) => self.service_sessions(call, arguments),
             (calls::FILE_CLIPBOARD, calls::COMMAND) => {
                 // Every file the call names is taken now, so none outlives it.
-                let selected = seat::handed_files(&self.handed, &arguments);
+                let selected = seat::handed_files(&self.shell.handed(), &arguments);
                 let Some(clipboard) = parts.file_clipboard.clone() else {
                     return unserved("Files clipboard");
                 };

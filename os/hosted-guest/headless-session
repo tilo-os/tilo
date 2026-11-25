@@ -105,17 +105,7 @@ start() {
         --size "$size" ${TILO_SESSION_ARGS:-} &
     group=$!
 }
-if [ -n "${TILO_SHELL_FD:-}" ]; then
-    # The daemon hands its link on descriptor 3 and names it: handed on here by
-    # name, so a link that is not there fails now, not in the session.
-    [ "$TILO_SHELL_FD" = 3 ] || {
-        echo "headless-session: the daemon's link is on descriptor $TILO_SHELL_FD, not 3" >&2
-        exit 1
-    }
-    start 3<&3
-else
-    start 3<&-
-fi
+start
 trap 'kill -TERM -"$group" 2>/dev/null || true' TERM INT
 status=0
 wait "$group" || status=$?

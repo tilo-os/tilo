@@ -200,8 +200,9 @@ pub struct Options {
     /// is none.
     pub admin_control: Option<std::path::PathBuf>,
     /// The shell's end of the link the device's daemon made for this session, when the session
-    /// runs in a test's own process (`tilo_runtime::daemon::Running::link_shell`): what a session
-    /// the daemon started reads from `TILO_SHELL_FD` instead. `None`: that one.
+    /// runs in a test's own process (`tilo_runtime::daemon::Running::link_shell`): a session the
+    /// daemon started redeems the one-use secret it was given (`TILO_SHELL_TOKEN`) for a link of
+    /// its own instead. `None`: that one.
     #[cfg(unix)]
     pub shell_link: Option<std::os::fd::OwnedFd>,
     /// What keeps the daemon that made [`Self::shell_link`] running, ended only after the session

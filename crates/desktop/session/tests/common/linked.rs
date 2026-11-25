@@ -195,7 +195,10 @@ impl Builder {
                 })
             },
         );
-        let shell = DaemonShell::new(inherited_link(Some(fixture_link), &runtime), runtime);
+        let shell = DaemonShell::new(
+            inherited_link(Some(fixture_link), &runtime).map(|(link, _)| link),
+            runtime,
+        );
         let mut fixture = Fixture {
             session,
             apps,

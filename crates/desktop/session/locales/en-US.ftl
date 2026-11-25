@@ -729,3 +729,6 @@ so-tilo-activity-source = Run a command on a chosen morning source
 session-this-computer = This computer
 
 session-host-account = Hosting account
+
+daemon-reconnecting = Reconnecting…
+daemon-unreachable = The device's service is not running; reconnecting…

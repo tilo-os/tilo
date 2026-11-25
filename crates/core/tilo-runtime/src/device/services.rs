@@ -1147,18 +1147,99 @@ impl Daemon {
         }
     }
 
-    pub fn shell_link(&self) -> io::Result<tilo_socket::Stream> {
-        use runtime_collab::wire::shell::SHELL_MAGIC;
-        use std::io::Write as _;
-        let secret = self
-            .shell_links
+    /// The one-use secret a shell redeems for its link: what this daemon gives the shell it starts
+    /// and what root's sign-in answers, and what the shell asks `shells#link` with.
+    pub fn shell_token(&self) -> [u8; 32] {
+        self.shell_links
             .make(tilo_workspace_service::apps::shell::ShellCaller {
                 person: self.workspaces.device_cert().user_public_key,
-            });
+            })
+    }
+
+    /// The secret a new link for `person`'s shell on `seat` is made with, refused while the seat
+    /// has one.
+    ///
+    /// # Errors
+    /// The seat is linked already.
+    pub fn shell_token_for(&self, person: [u8; 32], seat: u64) -> io::Result<[u8; 32]> {
+        if self.shell_links.live(seat) {
+            return Err(io::Error::other("this seat's shell is linked already"));
+        }
+        Ok(self.shell_links.make_for(
+            tilo_workspace_service::apps::shell::ShellCaller { person },
+            Some(seat),
+        ))
+    }
+
+    /// The connection `secret` admits on this daemon's dispatch: the shell's end of a link the
+    /// daemon made, and the secret let go of when the dispatch cannot be reached.
+    ///
+    /// # Errors
+    /// The dispatch's socket does not take the connection.
+    pub(crate) fn shell_link_of(&self, secret: [u8; 32]) -> io::Result<tilo_socket::Stream> {
+        match self.link_with(&secret) {
+            Ok(link) => Ok(link),
+            Err(error) => {
+                self.shell_links.forget(&secret);
+                Err(error)
+            }
+        }
+    }
+
+    /// Who the one-use secret `token` was made for, without taking it.
+    pub(crate) fn shell_token_holder(&self, token: &[u8; 32]) -> Option<[u8; 32]> {
+        self.shell_links.peek(token).map(|caller| caller.person)
+    }
+
+    /// Redeem `secret`, a one-use token this daemon made, as the link of `seat`: the secret
+    /// admits one connection, for that seat, and no other.
+    ///
+    /// # Errors
+    /// No such secret waits, or the dispatch's socket does not take the connection.
+    pub(crate) fn shell_redeem(
+        &self,
+        secret: [u8; 32],
+        seat: u64,
+    ) -> io::Result<tilo_socket::Stream> {
+        if !self.shell_links.assign(&secret, seat) {
+            return Err(io::Error::other("this token waits for no shell link"));
+        }
+        match self.link_with(&secret) {
+            Ok(link) => Ok(link),
+            Err(error) => {
+                self.shell_links.forget(&secret);
+                Err(error)
+            }
+        }
+    }
+
+    /// Whether the seat has a shell link standing now.
+    pub(crate) fn shell_live(&self, seat: u64) -> bool {
+        self.shell_links.live(seat)
+    }
+
+    /// The connection `secret` admits on this daemon's dispatch: the shell's end of a link the
+    /// daemon made.
+    ///
+    /// # Errors
+    /// The dispatch's socket does not take the connection.
+    pub fn link_with(&self, secret: &[u8; 32]) -> io::Result<tilo_socket::Stream> {
+        use runtime_collab::wire::shell::SHELL_MAGIC;
+        use std::io::Write as _;
         let mut link = tilo_socket::connect(self.broker.app_socket())?;
         link.write_all(SHELL_MAGIC)?;
-        link.write_all(&secret)?;
+        link.write_all(secret)?;
         Ok(link)
+    }
+
+    /// A link for this device's person's shell, made and admitted by a fresh secret: what a test
+    /// takes in its own process.
+    ///
+    /// # Errors
+    /// The dispatch's socket does not take the connection.
+    pub fn shell_link(&self) -> io::Result<tilo_socket::Stream> {
+        let secret = self.shell_token();
+        self.link_with(&secret)
     }
 
     /// Each action this daemon's broker runs, as it is admitted and as it ends: `None` while it
@@ -1183,15 +1264,16 @@ impl Daemon {
         &self.shell_links
     }
 
-    /// Start `command` as the person's shell, handed the link this daemon made for it
-    /// ([`runtime_collab::wire::shell::SHELL_FD_ENV`]): the daemon starts the shell itself, so the
-    /// link passes from it to that one process and to no other of the account. A session in a
-    /// window sends the connection it draws on with its start (`window`, which the native endpoint
-    /// received); the shell is handed it at fd 4 as `WAYLAND_SOCKET`, the variable a Wayland client
-    /// takes its connection from.
+    /// Start `command` as the person's shell, given the one-use secret it redeems for its link
+    /// (`runtime_collab::wire::shell::SHELL_TOKEN_ENV`): the daemon starts the shell itself, so the
+    /// secret passes from it to that one process and to no other of the account, and the shell asks
+    /// for its link on the daemon's own socket, as it asks for one again when that link ends. A
+    /// session in a window sends the connection it draws on with its start (`window`, which the
+    /// native endpoint received); the shell is handed it at fd 4 as `WAYLAND_SOCKET`, the variable
+    /// a Wayland client takes its connection from.
     ///
     /// # Errors
-    /// No link could be made, or the shell did not start.
+    /// The shell did not start.
     #[cfg(target_os = "linux")]
     pub fn start_shell(
         &self,
@@ -1199,29 +1281,22 @@ impl Daemon {
         window: Option<runtime_portal::process_link::Descriptor>,
     ) -> io::Result<Child> {
         use std::os::fd::AsRawFd as _;
-        /// Where the shell finds its link.
-        const SHELL_FD: i32 = 3;
-        /// Where a session's window connection is handed to the shell it starts: above the
-        /// link, so the two never share a descriptor.
+        /// Where a session's window connection is handed to the shell it starts.
         const WINDOW_FD: i32 = 4;
-        let link = self.shell_link()?;
-        let mut handed = vec![(link.as_raw_fd(), SHELL_FD)];
+        let token = hex::encode(self.shell_token());
         if let Some(window) = &window {
-            handed.push((window.as_raw_fd(), WINDOW_FD));
-        }
-        launcher::inherit::hand_down(&mut command, handed, false);
-        command.env(
-            runtime_collab::wire::shell::SHELL_FD_ENV,
-            SHELL_FD.to_string(),
-        );
-        match &window {
-            Some(_) => command.env(WAYLAND_SOCKET_ENV, WINDOW_FD.to_string()),
+            launcher::inherit::hand_down(
+                &mut command,
+                vec![(window.as_raw_fd(), WINDOW_FD)],
+                false,
+            );
+            command.env(WAYLAND_SOCKET_ENV, WINDOW_FD.to_string());
+        } else {
             // The request's own environment named nothing this shell holds.
-            None => command.env_remove(WAYLAND_SOCKET_ENV),
-        };
-        let child = command.spawn()?;
-        drop((link, window));
-        Ok(child)
+            command.env_remove(WAYLAND_SOCKET_ENV);
+        }
+        command.env(runtime_collab::wire::shell::SHELL_TOKEN_ENV, token);
+        command.spawn()
     }
 
     /// Where an app's search entries are published on its connection here, once the daemon

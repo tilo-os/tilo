@@ -228,6 +228,9 @@ pub(crate) struct Session<'a> {
     /// What the person was told, as the session's own notifications service keeps it: the banners
     /// up and the centre behind them, whichever shell draws them.
     pub(crate) notifications: tilo_session_core::desktop::state::DesktopNotifications,
+    /// The shell link to the device's daemon, as it stands now.
+    #[cfg(unix)]
+    pub(crate) link: Option<&'a runtime_collab::ShellClient>,
 }
 
 /// One request a connection sent the loop, and where its answer goes.
@@ -343,11 +346,14 @@ enum Op {
     Watch,
     Windows,
     KeepingDevices,
+    /// The shell link to the device's daemon: whether it stands, and what the session is asking
+    /// for while it does not.
+    DaemonLink,
 }
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 30] = [
+    const ALL: [Self; 31] = [
         Self::ClickAt,
         Self::ClickNamed,
         Self::Drag,
@@ -378,6 +384,7 @@ impl Op {
         Self::Watch,
         Self::Windows,
         Self::KeepingDevices,
+        Self::DaemonLink,
     ];
 
     /// The op `request` names, or `None` for one the protocol does not answer at all.
@@ -413,6 +420,7 @@ impl Op {
             "watch" => Self::Watch,
             "windows" => Self::Windows,
             "keeping_devices" => Self::KeepingDevices,
+            "daemon_link" => Self::DaemonLink,
             _ => return None,
         })
     }
@@ -450,6 +458,7 @@ impl Op {
             Self::Watch => "watch",
             Self::Windows => "windows",
             Self::KeepingDevices => "keeping_devices",
+            Self::DaemonLink => "daemon_link",
         }
     }
 
@@ -1190,9 +1199,35 @@ fn asked_of_shell(
         Op::KeepingDevices => session
             .handle
             .read(|tree| state::keeping_devices(tree, session, ctx)),
+        Op::DaemonLink => daemon_link_answer(session),
         Op::Windows => windows_answer(ctx, compositor, session),
         _ => return None,
     })
+}
+
+/// Where the shell's link to its device's daemon stands: whether the person's actions reach it,
+/// and, while they do not, why.
+fn daemon_link_answer(session: &Session<'_>) -> Json {
+    #[cfg(unix)]
+    {
+        let Some(link) = session.link else {
+            return json!({"answer": {"linked": true, "daemon": false}});
+        };
+        match link.link_status() {
+            runtime_collab::ShellLink::Linked => json!({"answer": {"linked": true}}),
+            runtime_collab::ShellLink::Reconnecting => {
+                json!({"answer": {"linked": false, "reconnecting": true}})
+            }
+            runtime_collab::ShellLink::Unreachable { why } => {
+                json!({"answer": {"linked": false, "unreachable": why}})
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = session;
+        json!({"answer": {"linked": true, "daemon": false}})
+    }
 }
 
 /// Start profiling the session for `seconds` (default [`profile::DEFAULT_SECONDS`], at most

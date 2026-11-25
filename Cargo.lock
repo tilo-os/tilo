@@ -19781,6 +19781,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-wire-frame",
  "tokio",
+ "tracing",
  "uuid",
  "workspace-hack",
  "zeroize",

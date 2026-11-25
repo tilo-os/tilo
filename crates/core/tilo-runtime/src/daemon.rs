@@ -1040,14 +1040,32 @@ impl PersonShells {
 }
 
 impl crate::seats::Shells for PersonShells {
-    fn arrived(&self, importing: bool) -> io::Result<Stream> {
+    fn token(&self, importing: bool) -> io::Result<[u8; 32]> {
         let daemon = self.daemon()?;
         if !importing {
             // Founded behind the answer, never in front of it: the sign-in is answered at once,
             // and a person's workspace the daemon is still founding does not hold the caller.
             daemon.found_workspace_behind();
         }
-        daemon.shell_link()
+        Ok(daemon.shell_token())
+    }
+
+    fn token_holder(&self, token: &[u8; 32]) -> Option<[u8; 32]> {
+        self.daemon().ok()?.shell_token_holder(token)
+    }
+
+    fn redeem(&self, secret: [u8; 32], seat: u64) -> io::Result<Stream> {
+        self.daemon()?.shell_redeem(secret, seat)
+    }
+
+    fn link_for(&self, person: [u8; 32], seat: u64) -> io::Result<Stream> {
+        let daemon = self.daemon()?;
+        let secret = daemon.shell_token_for(person, seat)?;
+        daemon.shell_link_of(secret)
+    }
+
+    fn live(&self, seat: u64) -> bool {
+        self.daemon().is_ok_and(|daemon| daemon.shell_live(seat))
     }
 
     #[cfg(target_os = "linux")]
@@ -1139,7 +1157,7 @@ fn shell_reads(name: &std::ffi::OsStr) -> bool {
     name.to_str().is_some_and(|name| {
         NAMED.contains(&name)
             || (PREFIXED.iter().any(|prefix| name.starts_with(prefix))
-                && name != runtime_collab::wire::shell::SHELL_FD_ENV)
+                && name != runtime_collab::wire::shell::SHELL_TOKEN_ENV)
     })
 }
 
@@ -2843,7 +2861,12 @@ fn serve_seat(
             }))
         })
     };
-    let ended = serve_lines(runtime, input, &mut &*stream, answer, None);
+    // Each answer is written whole, so the link `shells#link` answers goes with its line.
+    let mut writer = io::BufWriter::new(crate::seats::Handing {
+        stream,
+        handed: Some(&*seated.handed),
+    });
+    let ended = serve_lines(runtime, input, &mut writer, answer, None);
     let _ = stream.shutdown(std::net::Shutdown::Both);
     ended
 }

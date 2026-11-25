@@ -1,7 +1,8 @@
 //! A test's session as the device's daemon's shell, run in the test's own process: the daemon
 //! starts over a profile and makes the session's link as it makes the link of a shell it starts
 //! itself ([`tilo_runtime::daemon::ShellSession`] starts one as a process of its own), and the
-//! session takes it in place of `TILO_SHELL_FD` ([`crate::Options::shell_link`]).
+//! session takes it in place of the one-use secret a daemon gives its shell
+//! ([`crate::Options::shell_link`]).
 
 use std::path::Path;
 use std::time::Duration;

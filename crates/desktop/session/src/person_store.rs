@@ -203,7 +203,7 @@ mod tests {
             ),
             &runtime,
         );
-        let shell = DaemonShell::new(link, runtime.clone());
+        let shell = DaemonShell::new(link.map(|(link, _)| link), runtime.clone());
         let store = DaemonPersonStore::new(shell.clone(), DaemonWritesFeed::start(&shell), cert);
         let (app, name) = (crate::shell_document::APP, "dock");
         runtime.block_on(async {

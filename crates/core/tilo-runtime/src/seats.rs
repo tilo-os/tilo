@@ -3,12 +3,14 @@
 //! alone to call), and who a connection is (`{"native": "account#who"}`).
 //!
 //! A person's shell reaches the daemon only by a link the daemon made for it
-//! ([`crate::device::services::Daemon::shell_link`]). Under the system unit root starts each
-//! session, so `seats#signed-in` answers the link beside its reply, as a descriptor on the
-//! connection, and root hands it to the session it starts. A daemon that runs as the person's own
-//! account starts the shell itself when that account asks (`{"native": "shells#start"}`), and
-//! answers when it ended (`{"native": "shells#wait"}`): the link passes from the daemon to the
-//! shell and to no other process.
+//! ([`crate::device::services::Daemon::shell_token`], redeemed with `{"native": "shells#link"}`).
+//! Under the system unit root starts each session, so `seats#signed-in` answers the one-use secret
+//! beside its reply, and root hands it to the session it starts. A daemon that runs as the
+//! person's own account starts the shell itself when that account asks
+//! (`{"native": "shells#start"}`), and answers when it ended (`{"native": "shells#wait"}`): the
+//! secret passes from the daemon to the shell and to no other process. A link that ended is asked
+//! for again for the same seat, whose account and process the kernel names and whose link this
+//! daemon admitted before, so a restart leaves no dead desktop; a seat has one link at a time.
 //!
 //! The account a connection comes from is the kernel's word for its peer ([`peer_of`]), and
 //! the daemon's admission ([`tilo_api::daemon::admission`]) says what it acts as. Which person an
@@ -70,6 +72,9 @@ const WHO: &str = "account#who";
 const START: &str = "shells#start";
 /// Wait for a shell the daemon started to end: `{pid}`, answered `{code?, signal?}` once it ended.
 const WAIT: &str = "shells#wait";
+/// The one request that establishes a shell link, on the daemon's own socket: `{token?}`, the
+/// one-use secret the daemon gave the shell the first time, answered the link as a descriptor.
+const LINK: &str = runtime_collab::wire::shell::SHELL_LINK;
 /// How long a shell's start waits for the person's services, which the daemon starts after its
 /// native endpoint answers: a sign-in as the computer boots asks before they run.
 const SERVICES_START: Duration = Duration::from_secs(120);
@@ -291,6 +296,9 @@ pub(crate) struct AppAt {
 #[derive(Clone, Debug)]
 pub(crate) struct Seat {
     pub(crate) uid: u32,
+    /// The process at the connection's other end, as the kernel names it: what a shell link is
+    /// tied to, so only the same session reaches the person's workspaces again.
+    pub(crate) pid: Option<u32>,
     pub(crate) admitted: Admitted,
     /// The app the process was started as, when it is one the daemon started.
     pub(crate) app: Option<AppAt>,
@@ -299,12 +307,31 @@ pub(crate) struct Seat {
 /// What the daemon does for the person its seats admit, once their services run.
 pub(crate) trait Shells: Send + Sync {
     /// The person signed in on a seat: find them their workspace, unless their session hands
-    /// over the ones their desktop kept (`importing`), and make the link their shell is admitted
-    /// by.
+    /// over the ones their desktop kept (`importing`), and make the one-use secret their shell
+    /// redeems for its link (`shells#link`).
     ///
     /// # Errors
-    /// No link could be made.
-    fn arrived(&self, importing: bool) -> io::Result<Stream>;
+    /// No secret could be made.
+    fn token(&self, importing: bool) -> io::Result<[u8; 32]>;
+
+    /// Who the one-use secret `token` was made for, without taking it.
+    fn token_holder(&self, token: &[u8; 32]) -> Option<[u8; 32]>;
+
+    /// The connection `secret`, a secret the daemon made, admits on the broker's socket as the
+    /// link of the seat `seat`.
+    ///
+    /// # Errors
+    /// The dispatch's socket does not take the connection.
+    fn redeem(&self, secret: [u8; 32], seat: u64) -> io::Result<Stream>;
+
+    /// A link for `person`'s shell on `seat`: refused while the seat has one.
+    ///
+    /// # Errors
+    /// The seat is linked already, or the dispatch's socket does not take the connection.
+    fn link_for(&self, person: [u8; 32], seat: u64) -> io::Result<Stream>;
+
+    /// Whether the seat has a shell link standing now.
+    fn live(&self, seat: u64) -> bool;
 
     /// Start the person's shell with `args` and `env`, handed its link and, when the session that
     /// asked sent one (`window`), the connection it draws its window on.
@@ -431,6 +458,7 @@ impl Seats {
                 tracing::debug!(%error, "a native connection's account is not known");
                 return Seat {
                     uid: u32::MAX,
+                    pid: None,
                     admitted: Admitted::Stranger,
                     app: None,
                 };
@@ -461,6 +489,7 @@ impl Seats {
             });
         Seat {
             uid: peer.uid,
+            pid: peer.pid,
             admitted,
             app,
         }
@@ -475,6 +504,7 @@ impl Seats {
         seat: &Seat,
         request: &Value,
         received: &Mutex<Vec<Descriptor>>,
+        handed: &Hand,
     ) -> Option<Answer<'static>> {
         let ready = |answer: Value| Answer::InOrder(Box::pin(async move { Ok(Some(answer)) }));
         let refused = |why: String| ready(json!({"error": why}));
@@ -482,6 +512,7 @@ impl Seats {
             WHO => Some(ready(self.who(seat))),
             START => Some(self.start(seat, request, received)),
             WAIT => Some(self.wait(seat, request).unwrap_or_else(refused)),
+            LINK => Some(self.link(seat, request, handed)),
             _ => None,
         }
     }
@@ -490,7 +521,7 @@ impl Seats {
     pub(crate) fn asks(request: &Value) -> bool {
         matches!(
             request.get("native").and_then(Value::as_str),
-            Some(WHO | START | WAIT)
+            Some(WHO | START | WAIT | LINK)
         )
     }
 
@@ -563,6 +594,142 @@ impl Seats {
                 Err(why) => json!({"error": why}),
             }))
         }))
+    }
+
+    /// The one request that establishes a shell link: `{token?}`, the one-use secret a daemon gave
+    /// this shell the first time; without one, the seat a link was admitted for before. The link is
+    /// answered as a descriptor, and kept for the seat it was made for.
+    fn link(&self, seat: &Seat, request: &Value, handed: &Hand) -> Answer<'static> {
+        let handed = Arc::clone(handed);
+        let token = request
+            .get("token")
+            .and_then(Value::as_str)
+            .and_then(|token| hex::decode(token).ok())
+            .and_then(|token| <[u8; 32]>::try_from(token).ok());
+        let seats = self.clone();
+        let (uid, pid, admitted) = (seat.uid, seat.pid, seat.admitted);
+        Answer::InOrder(Box::pin(async move {
+            let refusal = |why: String| Ok(Some(json!({"error": why})));
+            let Some(pid) = pid else {
+                return refusal(
+                    "this connection's process is not known, so no shell link can be tied to it"
+                        .to_owned(),
+                );
+            };
+            let seat_id = seat_id(uid, pid);
+            // The person's services answer at once when they run, and a shell asks again shortly
+            // while they start: no link request waits on them here.
+            let Some(shells) = seats.shells.borrow().clone() else {
+                return refusal(
+                    "this device's person's services are still starting: ask again in a moment"
+                        .to_owned(),
+                );
+            };
+            // A token is the daemon's own word for whose shell this is; without one, the record of
+            // a link this daemon admitted for the same process before is.
+            let person = match token {
+                Some(token) => {
+                    let Some(holder) = shells.token_holder(&token) else {
+                        return refusal(
+                            "this token is no shell link the daemon made, or it was taken already"
+                                .to_owned(),
+                        );
+                    };
+                    if !seats.acts_as(uid, admitted, holder) {
+                        return refusal(
+                            "this account does not act as the person this token was made for"
+                                .to_owned(),
+                        );
+                    }
+                    holder
+                }
+                None => {
+                    let Some(person) = seats.recorded_seat(uid, pid) else {
+                        return refusal(
+                            "this process is no seat a shell link was admitted for: ask for one with the token the daemon gave it"
+                                .to_owned(),
+                        );
+                    };
+                    if !seats.acts_as(uid, admitted, person) {
+                        return refusal(
+                            "this account does not act as the seat's person now".to_owned(),
+                        );
+                    }
+                    person
+                }
+            };
+            if shells.live(seat_id) {
+                return refusal("this seat's shell is linked already".to_owned());
+            }
+            let made = match token {
+                Some(token) => shells.redeem(token, seat_id),
+                None => shells.link_for(person, seat_id),
+            };
+            let stream = match made {
+                Ok(stream) => stream,
+                Err(error) => return refusal(format!("no shell link: {error}")),
+            };
+            if let Err(error) = seats.remember_seat(uid, pid, person) {
+                tracing::warn!(%error, "a seat's shell link is admitted but not kept");
+            }
+            *handed.lock_recover() = Some(runtime_portal::packet::descriptor_of(stream));
+            Ok(Some(json!({"shell": true, "pid": pid})))
+        }))
+    }
+
+    /// Whether the connection `uid` (admitted as `admitted`) acts as `person` now: the same word
+    /// the daemon makes its links under, so a link for a person is only handed to their account.
+    fn acts_as(&self, _uid: u32, admitted: Admitted, person: [u8; 32]) -> bool {
+        match admitted {
+            Admitted::Person(held) | Admitted::Key { person: held, .. } => held == person,
+            // The account a person's own daemon runs as is that person's.
+            Admitted::Device => !self.admission.system() && self.device.person() == Some(person),
+            Admitted::Stranger => false,
+        }
+    }
+
+    /// Where a seat's link is kept between this daemon and the next: the profile's `seats`.
+    fn seat_record(&self, uid: u32, pid: u32) -> Option<std::path::PathBuf> {
+        let profile = self.device.profile();
+        (!profile.as_os_str().is_empty())
+            .then(|| profile.join("seats").join(format!("{uid}-{pid}.json")))
+    }
+
+    /// Keep that this daemon admitted a shell link for `person` on the seat `(uid, pid)`, so the
+    /// same process reaches them again after a restart.
+    fn remember_seat(&self, uid: u32, pid: u32, person: [u8; 32]) -> Result<(), String> {
+        let Some(path) = self.seat_record(uid, pid) else {
+            return Ok(());
+        };
+        // A pid is reused; the process's launch time is not.
+        let start = crate::apps::process_start_time(pid);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|error| format!("the seat's link cannot be kept: {error}"))?;
+        }
+        let record = json!({"uid": uid, "pid": pid, "start": start, "person": hex::encode(person)});
+        tilo_files::native::atomic::write_private(&path, record.to_string().as_bytes())
+            .map_err(|error| format!("the seat's link cannot be kept: {error}"))
+    }
+
+    /// The person a shell link was admitted for on the seat `(uid, pid)`, when this daemon (or the
+    /// one before it) admitted one and that process is still the same one.
+    fn recorded_seat(&self, uid: u32, pid: u32) -> Option<[u8; 32]> {
+        let path = self.seat_record(uid, pid)?;
+        let bytes = std::fs::read(path).ok()?;
+        let record: Value = serde_json::from_slice(&bytes).ok()?;
+        if record["uid"].as_u64() != Some(u64::from(uid))
+            || record["pid"].as_u64() != Some(u64::from(pid))
+        {
+            return None;
+        }
+        let start = record["start"].as_u64();
+        if crate::apps::process_start_time(pid) != start {
+            return None;
+        }
+        hex::decode(record["person"].as_str()?)
+            .ok()
+            .and_then(|person| <[u8; 32]>::try_from(person).ok())
     }
 
     /// Wait for the shell `request` names (`{pid}`) to end: how it ended.
@@ -688,7 +855,7 @@ impl Seats {
         &self,
         seat: &Seat,
         request: &Value,
-        handed: &Mutex<Option<Descriptor>>,
+        _handed: &Mutex<Option<Descriptor>>,
     ) -> Result<Value, String> {
         let uid = uid_in(request)?;
         let named = request
@@ -742,20 +909,23 @@ impl Seats {
         self.admission.signed_in(seat.uid, uid, held.person)?;
         self.keys.lock_recover().remove(&uid);
         let importing = request.get("importing").and_then(Value::as_bool) == Some(true);
-        // The link the session root starts is admitted by: none while the person's services
-        // still start, and that session then reaches nothing of theirs.
+        // The secret the session root starts redeems for its link: none while the person's
+        // services still start, and that session then reaches nothing of theirs.
         let served = self.shells.borrow().clone();
-        let link = served.and_then(|shells| {
+        let token = served.and_then(|shells| {
             shells
-                .arrived(importing)
+                .token(importing)
                 .inspect_err(|error| {
-                    tracing::warn!(%error, "the person who signed in has no link for their shell");
+                    tracing::warn!(%error, "the person who signed in has no token for their shell");
                 })
                 .ok()
         });
-        let shell = link.is_some();
-        *handed.lock_recover() = link.map(runtime_portal::packet::descriptor_of);
-        Ok(json!({"person": hex::encode(held.person), "shell": shell}))
+        let shell = token.is_some();
+        Ok(json!({
+            "person": hex::encode(held.person),
+            "shell": shell,
+            "token": token.map(hex::encode),
+        }))
     }
 
     /// The account `uid` signed in as `person`, another person than the device's: it acts as a
@@ -846,6 +1016,12 @@ impl Seats {
     }
 }
 
+/// The number a seat is known by, to the daemon and to the socket that serves its link: the
+/// account and the process, kernel-attested at both ends.
+pub(crate) fn seat_id(uid: u32, pid: u32) -> u64 {
+    (u64::from(uid) << 32) | u64::from(pid)
+}
+
 /// The account a seats request names.
 fn uid_in(request: &Value) -> Result<u32, String> {
     request
@@ -918,7 +1094,8 @@ impl Seated {
 
     /// What the seats answer `request` with on this connection, when it is theirs.
     pub(crate) fn answer(&self, request: &Value) -> Option<Answer<'static>> {
-        self.seats.answer(&self.seat, request, &self.received)
+        self.seats
+            .answer(&self.seat, request, &self.received, &self.handed)
     }
 }
 

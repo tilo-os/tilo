@@ -33,23 +33,78 @@ pub struct ShellCaller {
 /// connections it asked to hand the device's tilolang processes an instance on.
 #[derive(Default)]
 pub struct ShellLinks {
-    shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], ShellCaller>>,
+    shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], (ShellCaller, Option<u64>)>>,
     processes: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
+    /// The seats a shell link is admitted for now: a seat has one shell, and a second link for it
+    /// is refused while the first stands.
+    live: std::sync::Mutex<std::collections::HashSet<u64>>,
 }
 
 impl ShellLinks {
-    /// A new link's secret, admitting one connection as `caller`'s shell.
+    /// A new link's secret, admitting one connection as `caller`'s shell, for no seat in
+    /// particular: what a test's link and a shell with no seat by it are made with.
     #[must_use]
     pub fn make(&self, caller: ShellCaller) -> [u8; 32] {
+        self.make_for(caller, None)
+    }
+
+    /// A new link's secret, admitting one connection as `caller`'s shell for `seat`, whose one
+    /// shell it is: while the seat has a live link, its next link is refused.
+    #[must_use]
+    pub fn make_for(&self, caller: ShellCaller, seat: Option<u64>) -> [u8; 32] {
         let secret: [u8; 32] = rand::random();
-        lock(&self.shells).insert(secret, caller);
+        lock(&self.shells).insert(secret, (caller, seat));
         secret
     }
 
-    /// Who the link with `secret` was made for, once: a secret is taken by its first connection.
+    /// Let the link with `secret` be made no more: a link whose dispatch could not be reached
+    /// never admits a connection, and is not kept waiting for one.
+    pub fn forget(&self, secret: &[u8; 32]) {
+        lock(&self.shells).remove(secret);
+    }
+
+    /// Who the link with `secret` was made for, without taking it: what a daemon asks to know
+    /// whose link it is about to make.
     #[must_use]
-    pub fn take(&self, secret: &[u8; 32]) -> Option<ShellCaller> {
+    pub fn peek(&self, secret: &[u8; 32]) -> Option<ShellCaller> {
+        lock(&self.shells).get(secret).map(|(caller, _)| *caller)
+    }
+
+    /// The seat the link with `secret` is made for, once the shell that takes it is known: the
+    /// secret then admits one connection for that seat, which takes no other while it stands.
+    /// `false` when no such secret waits.
+    pub fn assign(&self, secret: &[u8; 32], seat: u64) -> bool {
+        match lock(&self.shells).get_mut(secret) {
+            Some((_, held)) => {
+                *held = Some(seat);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Who the link with `secret` was made for and the seat it is, once: a secret is taken by its
+    /// first connection.
+    #[must_use]
+    pub fn take(&self, secret: &[u8; 32]) -> Option<(ShellCaller, Option<u64>)> {
         lock(&self.shells).remove(secret)
+    }
+
+    /// Whether the seat has a shell link standing now.
+    #[must_use]
+    pub fn live(&self, seat: u64) -> bool {
+        lock(&self.live).contains(&seat)
+    }
+
+    /// The seat's shell link began: `false` when one stands already, which is refused.
+    #[must_use]
+    pub fn began(&self, seat: u64) -> bool {
+        lock(&self.live).insert(seat)
+    }
+
+    /// The seat's shell link ended: its seat takes a new one from now on.
+    pub fn ended(&self, seat: u64) {
+        lock(&self.live).remove(&seat);
     }
 
     /// A secret admitting one connection to the device's tilolang processes: what an admitted
@@ -198,3 +253,38 @@ pub type ShellApi =
 pub type LiveLinks = Arc<
     dyn Fn(tilo_socket::tokio::Stream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
 >;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A seat has one shell: its link is admitted once, and a second link for the same seat is
+    /// refused until the first ends.
+    #[test]
+    fn a_seat_admits_one_shell_link_at_a_time() {
+        let links = ShellLinks::default();
+        let caller = ShellCaller { person: [3; 32] };
+        let secret = links.make_for(caller, Some(7));
+        assert_eq!(
+            links.peek(&secret),
+            Some(caller),
+            "the secret waits for its link"
+        );
+        assert!(!links.live(7), "nothing is linked yet");
+        let (taken, seat) = links
+            .take(&secret)
+            .expect("the secret admits one connection");
+        assert_eq!(taken.person, caller.person);
+        assert_eq!(seat, Some(7));
+        assert!(links.began(7), "the first connection takes the seat");
+        assert!(
+            !links.began(7),
+            "a second connection for the seat is refused"
+        );
+        links.ended(7);
+        assert!(links.began(7), "a seat whose link ended takes another");
+        // A secret that names no seat is admitted and holds none.
+        let secret = links.make(caller);
+        assert_eq!(links.take(&secret).map(|(_, seat)| seat), Some(None));
+    }
+}

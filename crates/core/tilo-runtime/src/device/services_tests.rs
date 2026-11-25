@@ -1150,6 +1150,8 @@ const SHELL_TEST: &str = "device::services::tests::the_shell_the_daemon_starts_r
 /// The role a child of [`SHELL_TEST`] plays: `shell`, started by the daemon as the shell, or
 /// `other:<socket>`, any other process of the account, which dials the dispatch's socket itself.
 const SHELL_HELPER: &str = "TILO_DAEMON_SHELL_HELPER";
+/// Where the shell the daemon starts asks for its link: the daemon's own socket.
+const SHELL_NATIVE: &str = "TILO_TEST_SHELL_NATIVE";
 
 /// The daemon's dispatch as `shell` asks it `call`, failing on any refusal.
 #[cfg(unix)]
@@ -1374,7 +1376,8 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     // Any other process of the account, which dials the dispatch itself, is refused; the shell
     // the daemon starts is admitted by the link it hands it.
     let other = std::process::Command::new(std::env::current_exe().unwrap());
-    let mut other = shell_child(&root, other, &format!("other:{}", socket.display()));
+    let native = root.join(tilo_paths::machine::DAEMON_NATIVE);
+    let mut other = shell_child(&root, &native, other, &format!("other:{}", socket.display()));
     let status = other.0.spawn_locked().unwrap().wait().unwrap();
     assert!(
         status.success()
@@ -1387,7 +1390,7 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     #[cfg(target_os = "linux")]
     {
         let shell = std::process::Command::new(std::env::current_exe().unwrap());
-        let (command, log) = shell_child(&root, shell, "shell");
+        let (command, log) = shell_child(&root, &native, shell, "shell");
         let status = session.start_shell(command, None).unwrap().wait().unwrap();
         let logs = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(
@@ -1652,6 +1655,7 @@ fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
 /// `command` running [`SHELL_TEST`] as the child `role`, and the file its output goes to.
 fn shell_child(
     root: &Path,
+    native: &Path,
     mut command: std::process::Command,
     role: &str,
 ) -> (std::process::Command, PathBuf) {
@@ -1662,6 +1666,7 @@ fn shell_child(
     command
         .args(["--exact", SHELL_TEST, "--nocapture"])
         .env(SHELL_HELPER, role)
+        .env(SHELL_NATIVE, native)
         .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::fs::File::create(&log).unwrap()))
@@ -1673,11 +1678,29 @@ fn shell_child(
 #[cfg(unix)]
 async fn shell_helper(role: &str) {
     use runtime_collab::wire::shell::{SHELL_MAGIC, SHELL_SECRET_BYTES, ShellCall, ShellReply};
+    use std::io::Write as _;
     use tokio::io::AsyncWriteExt as _;
     if role == "shell" {
-        let link = runtime_collab::ShellClient::inherited()
-            .expect("the daemon handed its shell a link")
+        let token = std::env::var(runtime_collab::wire::shell::SHELL_TOKEN_ENV)
+            .expect("the daemon gave its shell a token");
+        let socket = std::env::var(SHELL_NATIVE).expect("the daemon's own socket");
+        let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(20)))
             .unwrap();
+        writeln!(
+            &stream,
+            "{}",
+            serde_json::json!({"native": "shells#link", "token": token})
+        )
+        .unwrap();
+        let (line, handed) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert!(answer["error"].is_null(), "{answer}");
+        let link = std::os::unix::net::UnixStream::from(
+            handed.expect("the daemon hands its shell's token a link"),
+        );
+        link.set_nonblocking(true).unwrap();
         let (shell, _) =
             runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
         let answer = shell.call(ShellCall::Workspaces).await;
@@ -3161,4 +3184,52 @@ fn a_secret_argument_is_kept_out_of_every_invocation_record() {
         assert!(!text.contains(key), "{text}");
         assert!(!text.contains(seed), "{text}");
     }
+}
+
+/// A seat has one shell: its link is made once, and while it stands no other link for the seat is
+/// made; the seat takes a new one only after its link ends.
+#[cfg(unix)]
+#[test]
+fn a_seat_takes_one_shell_link_at_a_time() {
+    const TEST: &str = "device::services::tests::a_seat_takes_one_shell_link_at_a_time";
+    let Some(root) = isolated_root(TEST) else {
+        return;
+    };
+    let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    crate::RuntimeServices::workspace(&session).unwrap();
+    let person = session.workspaces.device_cert().user_public_key;
+    let seat = 7;
+    let token = session
+        .shell_token_for(person, seat)
+        .expect("a free seat takes a link");
+    let link = session.link_with(&token).expect("the link reaches the dispatch");
+    let deadline = tilo_test_env::hang_deadline();
+    while !session.shell_live(seat) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the dispatch admits the seat's link"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let refused = session.shell_token_for(person, seat);
+    assert!(
+        refused.is_err(),
+        "a seat with a live link makes no second one"
+    );
+    // Another seat, and the same seat once its link ended, take a link.
+    session
+        .shell_token_for(person, seat + 1)
+        .expect("another seat makes its own link");
+    drop(link);
+    let deadline = tilo_test_env::hang_deadline();
+    while session.shell_live(seat) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the seat's link ended as its connection did"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    session
+        .shell_token_for(person, seat)
+        .expect("a seat whose link ended takes another");
 }

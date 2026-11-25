@@ -772,7 +772,8 @@ fi
 : > "$logs/session.log"
 if [[ ${TILO_SESSION_MACHINE_DAEMON:-} == 1 ]]; then
     # The machine serves this computer's device daemon, as Tilo OS's system unit does, and the
-    # login starts this session with the link it hands on (`TILO_SHELL_FD`): this starts none.
+    # login gives this session the one-use secret it redeems for its link (`TILO_SHELL_TOKEN`):
+    # this starts none.
     say "the machine serves this session's device daemon"
 else
     # shellcheck source=dist/dev/device-daemon.sh

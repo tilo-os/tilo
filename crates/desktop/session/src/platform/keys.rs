@@ -724,6 +724,31 @@ impl Shared {
         matches!(error, ApiError::Unavailable { code, .. } if code == "no-backlight")
     }
 
+    /// The shell's link to its device's daemon: while the session asks for a new one, the shell
+    /// says so over the desktop it keeps showing, and the readout goes a moment after the link is
+    /// back.
+    #[cfg(unix)]
+    pub(crate) fn follow_daemon_link(&self) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        let said = match link.link_status() {
+            runtime_collab::ShellLink::Linked => return,
+            runtime_collab::ShellLink::Reconnecting => crate::i18n::t("daemon-reconnecting"),
+            runtime_collab::ShellLink::Unreachable { why } => {
+                tracing::debug!(%why, "the device's daemon is not answering for a shell link");
+                crate::i18n::t("daemon-unreachable")
+            }
+        };
+        // It stands while it waits: each pass shows it again, and it goes when no pass does.
+        self.show_readout(&Osd::Hint(Hint {
+            kind: OsdKind::Daemon,
+            on: true,
+            chord: None,
+            name: Some(said),
+        }));
+    }
+
     /// Show `osd` through the readout's published action, on the display the person works on: the
     /// readout answers there, over whatever that display shows, including the lock.
     pub(crate) fn show_readout(&self, osd: &Osd) {

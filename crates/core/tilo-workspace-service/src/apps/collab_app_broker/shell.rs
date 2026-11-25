@@ -76,9 +76,21 @@ pub(super) async fn serve(
     stream.read_exact(&mut marker).await.map_err(unread)?;
     let mut secret = [0_u8; SHELL_SECRET_BYTES];
     stream.read_exact(&mut secret).await.map_err(unread)?;
-    let Some(caller) = services.links.take(&secret) else {
+    let Some((caller, seat)) = services.links.take(&secret) else {
         tracing::warn!("refused a connection that named no shell link the daemon made");
         return Ok(());
+    };
+    // A seat has one shell: a second link for it is refused, so two shells never act as one
+    // person. The link that took the seat lets it go when it ends.
+    if let Some(seat) = seat
+        && !services.links.began(seat)
+    {
+        tracing::warn!("refused a second shell link for a seat that has one");
+        return Ok(());
+    }
+    let _seat = SeatLink {
+        links: Arc::clone(&services.links),
+        seat,
     };
     let followed = Arc::new(tokio::sync::Mutex::new((services.document_writes)()));
     let received = runtime_portal::descriptors::ReceivedDescriptors::new(MAX_HANDED);
@@ -102,6 +114,20 @@ pub(super) async fn serve(
         speaking.gone();
     }
     served.map_err(|error| crate::apps::BrokerError::failed(error.to_string()))
+}
+
+/// A shell link's hold on its seat: the seat takes no new link until this one ends.
+struct SeatLink {
+    links: Arc<crate::apps::shell::ShellLinks>,
+    seat: Option<u64>,
+}
+
+impl Drop for SeatLink {
+    fn drop(&mut self) {
+        if let Some(seat) = self.seat {
+            self.links.ended(seat);
+        }
+    }
 }
 
 /// Hand the device's tilolang processes the packet socket `stream` carries, when it opened with
