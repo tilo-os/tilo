@@ -429,11 +429,13 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
         .enter_workspace(&device.workspace, "elsewhere")
         .await
         .unwrap_err();
-    // The device's host said so itself, and why: a session that never reached
-    // it, or an answer that never came, is no refusal of this key.
-    assert_eq!(
-        tilo_server_protocol::workspaces::AdminRefusal::from_reason(&refused.message),
-        Some(tilo_server_protocol::workspaces::AdminRefusal::NotYourOwn),
+    // The workspace's link refuses the call before the host's own operations see it, and says
+    // why: the key's grant names another workspace, so the request it signs proves no device that
+    // reaches this one. A session that never reached the host, or an answer that never came, is no
+    // refusal of this key.
+    assert_eq!(refused.code, "refused", "{refused:?}");
+    assert!(
+        refused.message.contains("grant does not reach this workspace"),
         "{refused:?}"
     );
     assert!(
