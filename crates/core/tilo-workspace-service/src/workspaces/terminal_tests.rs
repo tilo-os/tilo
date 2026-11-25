@@ -409,3 +409,116 @@ async fn a_declined_call_runs_nothing(
         "the declined call never reached the app to run"
     );
 }
+
+/// A host shell that reads the workspace as it opens, as a device's does: the read is carried on
+/// the reactor that answers the workspace, and the open waits for it on its own thread.
+struct ReadingShell {
+    copies: Workspaces,
+    reactor: tokio::runtime::Handle,
+}
+
+impl WorkspaceShell for ReadingShell {
+    fn run(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &Caller,
+        _: bool,
+        _: Option<&tilo_actions::remote::environment_commands::Person>,
+        _: Watching<'_>,
+    ) -> Result<ShellRan, String> {
+        Err("this host runs no programs in a test".into())
+    }
+
+    fn open(&self, opening: &Opening, _: &Caller, _: Recorder) -> Result<Opened, String> {
+        let (read, reading) = std::sync::mpsc::sync_channel(1);
+        let (copies, workspace) = (self.copies.clone(), opening.workspace.clone());
+        self.reactor.spawn(async move {
+            let read_name = copies.summary(&workspace).await;
+            let _ = read.send(
+                read_name
+                    .map(|summary| summary.name)
+                    .map_err(|error| error.to_string()),
+            );
+        });
+        let name = reading
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .map_err(|_| "the workspace's read never answered the open".to_owned())??;
+        Ok(Opened {
+            stream: format!("stream of {name}"),
+            session: "0".repeat(32),
+        })
+    }
+}
+
+/// A Terminal window on a fresh tab opens its shell right after a write to the workspace: the
+/// shell reads the workspace as it starts, and the reactor that answers that read is the one the
+/// open was asked on, so the open answers with the shell instead of waiting on itself.
+#[tokio::test]
+async fn a_fresh_tab_opens_its_shell_after_a_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
+    let summary = workspaces.create("Home").await.unwrap();
+    let workspace = summary.workspace.clone();
+    let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
+        .in_workspace(&workspace);
+    let terminal = TerminalService::new(
+        workspaces.clone(),
+        Arc::new(ReadingShell {
+            copies: workspaces.clone(),
+            reactor: tokio::runtime::Handle::current(),
+        }),
+        tokio::runtime::Handle::current(),
+    );
+    workspaces.provide(terminal::PROVIDER, Arc::new(terminal));
+
+    // Terminal's session records are declared as its package declares them, and a record of
+    // the workspace is written just before the open.
+    let session = collab_types::surface::canonical(&json!({
+        "format": 2,
+        "resources": [{
+            "kind": "terminal.session",
+            "label": "Session",
+            "version": 1,
+            "fields": [{ "path": "title", "type": "any" }],
+            "verbs": [{ "id": "open-terminal", "kind": "undoable" }],
+        }],
+    }));
+    workspaces.declare_package_surface(terminal::TERMINAL_APP, session.as_bytes());
+    super::fixtures::write_record(&workspaces, &workspace, ("so.tilo.notes", "note"), |doc| {
+        automerge::transaction::Transactable::put(doc, automerge::ROOT, "title", "Groceries")
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .expect("the note is written");
+
+    let fresh = collab_types::document::DocumentId::window_default(8);
+    let mut opening = call(&format!(
+        "record:{}:{}",
+        terminal::TERMINAL_APP,
+        fresh.route()
+    ));
+    opening.target.address = ActionAddress::new("terminal.session", "open-terminal");
+    opening.argument = InvokeArgument::Json(serde_json::Map::new());
+    let opened = answered(
+        workspaces
+            .providers()
+            .invoke(&caller, opening)
+            .expect("Terminal serves its records"),
+    )
+    .await
+    .expect("the fresh tab's shell opens");
+    let ReceiptStatus::Completed { output } = opened.status else {
+        panic!("the open answers at once: {opened:?}");
+    };
+    assert_eq!(
+        output.value.and_then(|value| value.get("stream").cloned()),
+        Some(json!("stream of Home")),
+        "the shell opened on the workspace it read"
+    );
+
+    server.shutdown().await;
+}

@@ -174,9 +174,20 @@ impl TerminalService {
                 service.record(&workspace, &record, &caller, ran);
             })
         };
-        let Opened { stream, session } = shells
-            .open(&opening, caller, recorder)
-            .map_err(|reason| ActionCallError::Refused { reason })?;
+        // The host opens the shell synchronously, reading the workspace as it starts it: it runs
+        // off this reactor, which is the one that answers what those reads wait on (a write just
+        // before them among it), so the open never waits on the thread that has to answer it.
+        let opened = {
+            let caller = caller.clone();
+            self.runtime
+                .spawn_blocking(move || shells.open(&opening, &caller, recorder))
+                .await
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: format!("the terminal's shell stopped before it opened: {error}"),
+                })?
+        };
+        let Opened { stream, session } =
+            opened.map_err(|reason| ActionCallError::Refused { reason })?;
         // A fresh tab shows its window's default session record, which no device wrote yet: the
         // host founds it at that id with the genesis every device derives for it, so what the
         // device writes there later merges with this. A record the workspace holds already is
