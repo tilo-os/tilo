@@ -539,12 +539,15 @@ fn right_click(session: &mut Session, at: (f64, f64)) {
 }
 
 /// A point on the shell where nothing of it stands: under the bar and off every control drawn, so
-/// a press there is the shell's own ground.
+/// a press there is the shell's own ground. The layers and the page the shell draws on are controls
+/// of its own, most of the screen wide; what is in the way is a control of a part's size.
 fn shell_ground(session: &Session) -> (f64, f64) {
+    let screen = f64::from(WIDTH) * f64::from(HEIGHT);
     let controls: Vec<(f64, f64, f64, f64)> = session
         .controls()
         .into_iter()
         .map(|control| control.rect)
+        .filter(|(_, _, width, height)| width * height < screen / 4.0)
         .collect();
     let covered = |(x, y): (f64, f64)| {
         controls
@@ -552,11 +555,11 @@ fn shell_ground(session: &Session) -> (f64, f64) {
             .any(|(cx, cy, cw, ch)| x >= *cx && x <= cx + cw && y >= *cy && y <= cy + ch)
     };
     for (across, down) in [
-        (0.5, 0.85),
-        (0.5, 0.7),
-        (0.15, 0.9),
-        (0.85, 0.9),
-        (0.5, 0.5),
+        (0.5, 0.75),
+        (0.85, 0.75),
+        (0.15, 0.75),
+        (0.5, 0.6),
+        (0.5, 0.9),
     ] {
         let at = (f64::from(WIDTH) * across, f64::from(HEIGHT) * down);
         if !covered(at) {
