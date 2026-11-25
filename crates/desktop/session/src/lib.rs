@@ -186,7 +186,6 @@ mod device_shell;
 #[cfg(target_os = "linux")]
 mod device_state;
 #[cfg(target_os = "linux")]
-mod device_tickets;
 #[cfg(target_os = "linux")]
 mod device_workspaces;
 #[cfg(target_os = "linux")]

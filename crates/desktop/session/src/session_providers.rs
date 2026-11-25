@@ -1,10 +1,11 @@
 //! The providers of the person's seat, served on the device's one dispatch over the shell's link
 //! ([`runtime_collab::ShellClient::provide`]) under the ids apps have always called them by
 //! ([`runtime_collab::wire::shell::SEAT_PROVIDERS`]): the workspace's activity as the shell shows
-//! it, the tickets this computer issues to add another, the machines the person planned, their
-//! model keys and settings on this computer, and the account it is signed in to. Each needs what
-//! only this session holds, so the daemon admits a call, under the app whose window offers it, and
-//! hands it here to carry out.
+//! it, the machines the person planned, their model keys and settings on this computer, and the
+//! account it is signed in to. Each needs what only this session holds, so the daemon admits a
+//! call, under the app whose window offers it, and hands it here to carry out. What the daemon
+//! answers itself (the person's devices, tickets and identities under `tilo.device`) it serves
+//! alone: the session registers none of it beside it.
 //!
 //! What each offers is published to the daemon as it stands when served, and again whenever the
 //! session says it moved ([`SeatServed::moved`]): Settings' published sections are the ones whose
@@ -17,7 +18,6 @@ use tilo_actions::remote::{ActionProvider, Admits, CataloguePage, CatalogueRow};
 use tokio::sync::watch;
 
 use crate::activity_provider::ActivityWire;
-use crate::device_tickets::DeviceTickets;
 use crate::machine_steps::MachineSteps;
 use crate::model_steps::ModelSteps;
 use crate::server_account::ServerAccountApi;
@@ -59,7 +59,6 @@ pub(crate) fn serve_on(shell: &ShellClient, parts: SeatProviders) -> SeatServed 
         settings,
     } = parts;
     provide(shell, &served, activity);
-    provide(shell, &served, Arc::new(DeviceTickets));
     provide(shell, &served, machines);
     provide(shell, &served, models);
     provide(shell, &served, ServerAccountApi::session());

@@ -75,6 +75,19 @@ pub(crate) fn follow_dictation(shared: &Shared) {
     open_settings(shared, SPEECH_MODELS_ANCHOR);
 }
 
+/// Settings' page of the person's devices, whose "Add a device" prints the ticket a new device
+/// joins with.
+const ADD_DEVICE_PAGE: &str = "settings://devices_sync";
+
+impl Shared {
+    /// Add a device, wherever it was asked for (the person's own card, Settings' Devices and
+    /// access, an app's own offer): Settings at its devices page, where the ticket is printed.
+    /// The device's daemon issues the ticket itself (`tilo.device`).
+    pub(crate) fn open_add_device(&self) {
+        open_settings(self, ADD_DEVICE_PAGE);
+    }
+}
+
 /// Open Settings at the page `link` names — a `settings://` page or a page's anchor — through the
 /// action path search rows run; a plain launch opens Settings itself too when no action host runs
 /// an app's actions.

@@ -318,17 +318,15 @@ pub const SHELL_PROVIDERS: &str = "session.";
 /// application the dispatch admits its calls under (the one whose window offers them). Each needs
 /// the person's seat, so the desktop session answers it: the activity the shell shows, the person's
 /// settings and model keys on this computer, the account this computer is signed in to, the
-/// machines it plans and the tickets it issues to add another, and the workspace's events and
-/// its assistant's look-round, which read the shortcuts this session saves.
+/// machines it plans, and the workspace's events and its assistant's look-round, which read the shortcuts this session saves.
 pub const SEAT_PROVIDERS: &[(&str, &str)] = {
     use tilo_actions::remote::{
-        device_tickets, machines, model_providers, server_account, settings_resources,
-        workspace_activity, workspace_events, workspace_initiative,
+        machines, model_providers, server_account, settings_resources, workspace_activity,
+        workspace_events, workspace_initiative,
     };
     const SETTINGS: &str = "so.tilo.settings";
     &[
         (workspace_activity::PROVIDER, workspace_activity::APP_ID),
-        (device_tickets::PROVIDER, SETTINGS),
         (machines::PROVIDER, "so.tilo.imager"),
         (model_providers::PROVIDER, SETTINGS),
         (server_account::PROVIDER, SETTINGS),
