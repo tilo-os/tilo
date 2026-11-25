@@ -213,8 +213,6 @@ mod portal_link;
 mod power;
 #[path = "primary_display.rs"]
 mod primary_display;
-#[path = "profile_name.rs"]
-mod profile_name;
 #[path = "quick_devices.rs"]
 mod quick_devices;
 #[path = "recents.rs"]

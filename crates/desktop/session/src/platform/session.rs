@@ -1090,7 +1090,6 @@ impl Session {
             ),
             crate::people::Given {
                 scale: options.scale,
-                device_person: options.person.clone(),
                 notes: {
                     let notes = std::sync::Arc::clone(&notes);
                     Rc::new(move || notes.windows())

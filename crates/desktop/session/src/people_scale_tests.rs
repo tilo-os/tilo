@@ -105,9 +105,8 @@ tilo_test_env::scenario! {
             &mut placed,
             Given {
                 scale: 2.0,
-                device_person: "Quinten".into(),
-                notes: Rc::new(Vec::new),
-                apps: None,
+                    notes: Rc::new(Vec::new),
+            apps: None,
                 handle,
                 sync: None,
                 here: Rc::new(|_: &mut Layout| {}),
@@ -149,33 +148,6 @@ tilo_test_env::scenario! {
             listed.iter().any(|label| label == "Follow Claude Code"),
             "the roster lists the agent the bar shows: {listed:?}"
         );
-    }
-
-    phase a_face_pressed_again_brings_everyone_here;
-    // A press on someone's face opens their card where the roster stands; a second press on the same
-    // face, their card shown, brings everyone here in its place. The bar has no people button while
-    // it shows a face, so this is how a pointer reaches the roster.
-    {
-        let _settled = ui::motion::testing::settled();
-        let (people, mut frame) = agent_here().expect("the roster places its layer");
-        let card = |labels: &[String]| labels.iter().any(|label| label == "Claude Code’s profile");
-        people.borrow().show_person("run");
-        settle(&mut frame);
-        let shown = labels(&frame);
-        assert!(
-            card(&shown),
-            "the first press opens the agent's card: {shown:?}"
-        );
-
-        people.borrow().show_person("run");
-        settle(&mut frame);
-        let shown = labels(&frame);
-        assert!(!card(&shown), "the second press closes the card: {shown:?}");
-        assert!(
-            shown.iter().any(|label| label == "Follow Claude Code"),
-            "and everyone here stands in its place: {shown:?}"
-        );
-        assert!(people.borrow().is_open());
     }
 
     phase the_pinned_roster_is_centred_on_a_phone;
@@ -324,11 +296,9 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
         &mut placed,
         Given {
             scale: 1.0,
-            device_person: "Quinten".into(),
             notes: Rc::new(Vec::new),
             apps: None,
             handle,
-            // A card is read from the session's model of the person.
             sync: Some(Rc::new(crate::sync::Client::untethered(
                 iroh::SecretKey::from_bytes(&[0x51; 32]).public(),
                 crate::sync::OwnPresence::default(),
