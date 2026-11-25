@@ -1485,9 +1485,11 @@ fn issue_device_certificate_at(
 
 /// Verify the complete personal-root/device chain without changing it.
 ///
-/// Login uses this after the human-facing ceremony. Every persisted secret,
-/// public key and certificate must describe the same root and device, and the
-/// certificate must be valid at `now_ns`. Missing, malformed, weakly-permissioned
+/// Login and every session start use this. It reads only what any program of
+/// the account may: the identity's public record, its certificate for this
+/// device and the device's public key, which the device's daemon answers. They
+/// must describe the same root and device, and the certificate must be valid
+/// at `now_ns`. Missing, malformed, weakly-permissioned
 /// or mismatched state is an error; this function never creates or repairs it.
 pub fn verify_collaboration_identity(
     identity_dir: &Path,
@@ -1535,33 +1537,32 @@ pub fn verify_collaboration_identity(
         }
         return Ok(());
     }
-    let identity = crate::store::load_from_path(primary_path)
+    // The record is read for its public fields alone: an account's root is sealed with the device
+    // key, which only the device's daemon opens, so verifying never unlocks it.
+    let metadata = crate::store::load_metadata_from_path(&primary_path)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    if !identity.is_single_device() {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            crate::store::CANNOT_SIGN_ALONE,
-        ));
-    }
-    let root_public = persist::read_public_key(&paths.user_pubkey)
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    let device = crate::trusted_device::device_public_key(paths)?;
-    let cert = persist::read_device_cert(&paths.device_cert)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    let root = metadata.group_public_key;
+    // This identity's certificate for the device. The device owner's is the system-facing one
+    // too, and an owner may hold only that one.
+    let cert = match persist::read_device_cert(&paths.device_cert_for_user(&root)) {
+        Ok(cert) => cert,
+        Err(_) => persist::read_device_cert(&paths.device_cert)
+            .map_err(|e| io::Error::other(e.to_string()))?,
+    };
     tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
         tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
             || io::Error::other(error.to_string()),
             tilo_user_identity::CertificateClockError::into_io,
         )
     })?;
-
-    let expected_root = identity.group_public_key();
-    if root_public != expected_root || cert.user_public_key != expected_root {
+    if cert.user_public_key != root {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "personal identity and persisted certification root do not match",
         ));
     }
+    // The device's key is its daemon's, which answers which key it is.
+    let device = crate::trusted_device::device_public_key(paths)?;
     if cert.device_public_key != device {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

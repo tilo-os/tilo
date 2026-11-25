@@ -365,18 +365,14 @@ fn verify(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
 /// The device's own person has no key to certify; a daemon that is not running, or refuses,
 /// leaves the account served the device's own actions, and is logged.
 fn certify_this_computers_key(identity_path: &Path) {
-    let signer = match tilo_identity::store::load_from_path(identity_path.to_path_buf()) {
-        Ok(signer) => signer,
-        Err(error) => {
-            tracing::warn!(%error, "this account's identity cannot certify its key on this computer");
-            return;
-        }
-    };
-    let certified = if signer.is_single_device() {
-        tilo_api::daemon::who::certify_my_key(&signer)
-    } else {
+    // A root sealed with the device key opens only in the daemon, which then signs with it.
+    let held = tilo_identity::store::load_from_path(identity_path.to_path_buf())
+        .ok()
+        .filter(tilo_identity::store::SigningIdentity::is_single_device);
+    let certified = match held {
+        Some(signer) => tilo_api::daemon::who::certify_my_key(&signer),
         // The root stays with the daemon: this account holds only its public record.
-        tilo_api::daemon::who::certify_here()
+        None => tilo_api::daemon::who::certify_here(),
     };
     match certified {
         Ok(true) => tracing::info!("this account acts on this computer as its own certified key"),

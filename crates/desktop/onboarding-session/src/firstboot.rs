@@ -57,25 +57,36 @@ pub fn ensure_collaboration_identity(
     )
 }
 
-/// [`ensure_collaboration_identity`] for an identity that already exists,
-/// then whether this device's certificate is valid at the clock's reading.
-/// A certificate refused for the clock alone is reported as
-/// a [`tilo_user_identity::CertificateClockError`]: the identity is intact and
+/// Whether the identity this account already holds verifies on this device,
+/// from what the session may read ([`verify_collaboration_identity`]): its
+/// public record, its certificate for this device, and the device's public
+/// key, which the device's daemon answers. The root is sealed with the device
+/// key and only the daemon opens it, so nothing here unlocks it. A certificate
+/// refused for the clock alone is reported as a
+/// [`tilo_user_identity::CertificateClockError`]: the identity is intact and
 /// the session waits for the clock, whether this device is the identity's
 /// first or one joined later.
 ///
 /// # Errors
 ///
-/// As [`ensure_collaboration_identity`], and the clock refusal.
+/// The account holds no person yet, the clock refusal, a chain that does not
+/// verify, or a daemon that does not answer which key the device has.
 pub fn verify_existing_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
-) -> Result<ProvisionOutcome, io::Error> {
-    let outcome = ensure_collaboration_identity(identity_dir, paths)?;
-    match device_certificate_clock_refusal(paths, tilo_clock::unix_now_ns()) {
-        Some(refusal) => Err(refusal.into_io()),
-        None => Ok(outcome),
+) -> Result<(), io::Error> {
+    let identity_dir = &tilo_identity::store::account_identity_dir(identity_dir);
+    if tilo_identity::store::resolve_active_identity(identity_dir).is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "this account holds no person yet: this computer's daemon makes them",
+        ));
     }
+    let now = tilo_clock::unix_now_ns();
+    if let Some(refusal) = device_certificate_clock_refusal(paths, now) {
+        return Err(refusal.into_io());
+    }
+    verify_collaboration_identity(identity_dir, paths, now)
 }
 
 /// The identity whose certificates this session renews, once
