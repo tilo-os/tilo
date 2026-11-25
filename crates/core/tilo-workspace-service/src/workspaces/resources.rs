@@ -1498,14 +1498,25 @@ impl Workspaces {
             .has_change(&write.change.hash())
         {
             // As for a document that opens to nothing: a change the workspace holds back or
-            // refuses leaves the document short of it, and only these counters say which.
+            // refuses leaves the document short of it, and only these counters and what the open
+            // left out say which.
+            let left_out: Vec<String> = opened
+                .unmerged
+                .iter()
+                .map(|write| format!("{}: {:?}", hex::encode(write.author), write.reason))
+                .collect();
             return Err(format!(
                 "the staged resource change did not pass document admission: held back {}, \
-                 waiting for {}, duplicate {}, refused {}",
+                 waiting for {}, duplicate {}, refused {}, left out {}",
                 taken.deferred,
                 taken.incomplete.as_deref().unwrap_or("nothing"),
                 taken.duplicate,
-                taken.rejected
+                taken.rejected,
+                if left_out.is_empty() {
+                    "nothing".to_owned()
+                } else {
+                    left_out.join("; ")
+                }
             ));
         }
         Ok(envelopes)
@@ -1839,6 +1850,7 @@ impl Workspaces {
                 &written_on,
                 &|invocation| context.invoker_of(invocation).cloned(),
                 &otherwise,
+                person,
                 &mut unserved,
             );
         }
@@ -2282,14 +2294,15 @@ impl Workspaces {
 /// The command names the verb and invocation, and the workspace service names who made it: whoever invoked
 /// the invocation a write serves, when the workspace service delivered that one to the app, and
 /// `otherwise` (the person the route certifies, or the caller its view was opened for) for any
-/// other write, whose resource type and verb are added to `unserved`; and the device it was
-/// written on, `device` (its key in hex and what it calls itself), which is where a resource the
-/// write makes live is live.
+/// other write, whose resource type and verb are added to `unserved`; the person the route's
+/// caller is, `person`; and the device it was written on, `device` (its key in hex and what it
+/// calls itself), which is where a resource the write makes live is live.
 fn stamp_resource_invoker(
     command: &mut tilo_resource_store::wire::Command,
     device: &(String, String),
     served: &dyn Fn(&str) -> Option<tilo_actions::Actor>,
     otherwise: &tilo_actions::Actor,
+    person: &str,
     unserved: &mut Vec<(String, String)>,
 ) {
     use tilo_resource_store::wire::Command;
@@ -2300,7 +2313,7 @@ fn stamp_resource_invoker(
         Command::Undo { stamp, .. } => ("", stamp),
         Command::Batch(commands) => {
             for command in commands {
-                stamp_resource_invoker(command, device, served, otherwise, unserved);
+                stamp_resource_invoker(command, device, served, otherwise, person, unserved);
             }
             return;
         }
@@ -2331,6 +2344,15 @@ fn stamp_resource_invoker(
         unserved.push((kind.to_owned(), stamp.verb.clone()));
         otherwise.clone()
     });
+    // An agent writes what its person handed it: the stamp names that person, as every receiver
+    // decides an agent by the pair of its id and the person it acted for, never by its id alone.
+    if stamp.acted_for.is_none()
+        && invoker
+            .member_id()
+            .is_some_and(tilo_action_policy::MemberId::is_agent)
+    {
+        stamp.acted_for = Some(person.to_owned());
+    }
     stamp.invoker = tilo_resource_store::Stamp::by(&invoker);
     device.0.clone_into(&mut stamp.device);
     device.1.clone_into(&mut stamp.device_name);

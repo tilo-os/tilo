@@ -21,8 +21,8 @@ pub use key_group::ContentKeys;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{
-    DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeysChangedFuture, PreAdmitRequest,
-    WorkspaceSummary, Workspaces,
+    DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeysChangedFuture, MemberDevice,
+    PreAdmitRequest, WorkspaceSummary, Workspaces,
 };
 use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
@@ -550,6 +550,7 @@ pub async fn test_host_with_grants(
             sink: None,
         },
         grants,
+        None,
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )
@@ -572,6 +573,7 @@ pub async fn test_host_in_the_clear(
         state_root,
         key,
         cert,
+        None,
         None,
         None,
         #[cfg(not(target_arch = "wasm32"))]
@@ -598,6 +600,7 @@ pub async fn test_host_holding(
         key,
         cert,
         DeviceKeyGroups { keys, sink: None },
+        None,
         None,
         #[cfg(not(target_arch = "wasm32"))]
         None,
@@ -626,6 +629,37 @@ pub async fn test_host_holding_mounting(
         cert,
         DeviceKeyGroups { keys, sink: None },
         None,
+        None,
+        Some(tilolang),
+    )
+    .await
+}
+
+/// [`test_host_holding_mounting`] opened as the device `key`/`cert` acts as, as every device's
+/// service is opened: a device's member copies sync from the first workspace it holds, and what
+/// a start replays of its store is judged as the device it is, from the moment it opens.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn test_host_holding_mounting_as_member(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    keys: Arc<TestGroupKeys>,
+    tilolang: crate::tl_records::Tilolang,
+) -> TestHost {
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups { keys, sink: None },
+        None,
+        Some(Arc::new(MemberDevice {
+            cert: cert.clone(),
+            signer: Arc::new(key.clone()),
+        })),
         Some(tilolang),
     )
     .await
@@ -660,6 +694,7 @@ pub async fn test_host_keyed(
         cert,
         keys.groups(),
         None,
+        None,
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )
@@ -675,6 +710,7 @@ async fn host_on(
     cert: &DeviceCert,
     channels: impl Into<Option<DeviceKeyGroups>>,
     grants: Option<usize>,
+    member: Option<Arc<MemberDevice>>,
     #[cfg(not(target_arch = "wasm32"))] tilolang: Option<crate::tl_records::Tilolang>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -690,6 +726,7 @@ async fn host_on(
         WorkspaceService::open(
             ServiceConfig {
                 max_workspace_grants: grants,
+                member,
                 #[cfg(not(target_arch = "wasm32"))]
                 tilolang,
                 // Each device knows only the app surfaces named to it: tests run side by side in one
