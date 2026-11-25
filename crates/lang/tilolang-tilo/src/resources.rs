@@ -23,7 +23,7 @@ pub mod kinds;
 mod steps;
 
 use std::cell::{Cell as StdCell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use serde_json::Value as Json;
@@ -286,6 +286,9 @@ struct Inner {
     /// made, an outside effect handed over, a mark), [`PLATFORM_WRITES`].
     writer: RefCell<Option<Actor>>,
     cache: RefCell<HashMap<String, Option<Held>>>,
+    /// The ids the store answered it holds none of as a kind, by kind: asked again, they read
+    /// none without asking, until their record moves or this store writes.
+    absent: RefCell<HashSet<(String, String)>>,
     /// Written and not yet sent: `None` for a resource removed.
     local: RefCell<HashMap<String, Option<Held>>>,
     /// Committed and not yet sent.
@@ -605,6 +608,7 @@ impl ResourceStore {
                 kinds: RefCell::new(Kinds::default()),
                 writer: RefCell::default(),
                 cache: RefCell::default(),
+                absent: RefCell::default(),
                 local: RefCell::default(),
                 unsent: RefCell::default(),
                 txn: RefCell::default(),
@@ -1088,6 +1092,7 @@ impl ResourceStore {
 
     fn forget_reads(&self) {
         self.inner.cache.borrow_mut().clear();
+        self.inner.absent.borrow_mut().clear();
         self.inner.listings.borrow_mut().clear();
         self.inner.versions.borrow_mut().clear();
     }
@@ -1113,6 +1118,10 @@ impl ResourceStore {
             .cache
             .borrow_mut()
             .retain(|id, _| !docs.contains(doc_of(id)));
+        self.inner
+            .absent
+            .borrow_mut()
+            .retain(|(_, id)| !docs.contains(doc_of(id)));
         self.inner
             .versions
             .borrow_mut()
@@ -1843,6 +1852,8 @@ impl ResourceStore {
     fn command(&self, command: Command) -> Result<Reply, StoreError> {
         if command.writes() {
             self.forget_versions_of(&command);
+            // A write may bring back what was read as none (an undo of a removal).
+            self.inner.absent.borrow_mut().clear();
             // What this write adds is pending until another device takes it in.
             self.inner.reach.borrow_mut().clear();
         }
@@ -1982,6 +1993,10 @@ impl ResourceStore {
         if let Some(Some(cached)) = self.inner.cache.borrow().get(id) {
             return Ok(of_kind(cached));
         }
+        let asked = (kind.to_owned(), id.to_owned());
+        if self.inner.absent.borrow().contains(&asked) {
+            return Ok(None);
+        }
         let reply = self.command(Command::Get {
             kind: kind.to_owned(),
             id: id.to_owned(),
@@ -1990,11 +2005,16 @@ impl ResourceStore {
             Reply::Resource(found) => found.map(|indexed| Held::of(kind, indexed)),
             other => return Err(backend(format!("a read answered {other:?}"))),
         };
-        if held.is_some() {
-            self.inner
-                .cache
-                .borrow_mut()
-                .insert(id.to_owned(), held.clone());
+        match &held {
+            Some(_) => {
+                self.inner
+                    .cache
+                    .borrow_mut()
+                    .insert(id.to_owned(), held.clone());
+            }
+            None => {
+                self.inner.absent.borrow_mut().insert(asked);
+            }
         }
         Ok(held)
     }
