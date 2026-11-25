@@ -153,6 +153,9 @@ ask whether the larger thing could be done a better way; if it could, say so bef
 
 ## Git and delivery
 
+- `main` is the unstable integration branch, with fairly minimal testing.
+  Releases are cut from it onto a release branch, which takes the fixes and
+  stabilization until it ships; every fix made there is ported back to `main`.
 - Commit small and push straight to `main` (`git pull --rebase origin main`,
   then `git push origin HEAD:main`). There is no merge queue and no
   integration branch. The pre-commit hook is fast and reads only what the
