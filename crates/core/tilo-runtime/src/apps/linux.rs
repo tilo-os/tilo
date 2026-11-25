@@ -2,23 +2,25 @@
 //!
 //! The launcher finds session services only at
 //! `$XDG_RUNTIME_DIR/tilo/services/<name>.sock`, and document media at
-//! `TILO_FS_BLOB_SOCKET`. The profile binds its sockets in its own private
-//! directory, so each launch hands the launcher a private runtime directory
-//! inside the profile whose `tilo/services` links to them. The launcher
-//! connects and authenticates each service itself, exactly as under the
-//! desktop session; nothing it checks is relaxed.
+//! `TILO_FS_BLOB_SOCKET`. The profile binds its sockets in a directory of its
+//! own, short enough for a socket's address, so each launch hands the launcher a
+//! private runtime directory beside them whose `tilo/services` links to the
+//! sockets. It never sits inside the profile: a person's profile path is as deep
+//! as their home and state keep it, and a socket there would not fit. The
+//! launcher connects and authenticates each service itself, exactly as under
+//! the desktop session; nothing it checks is relaxed.
 
 use super::{Apps, Launch};
 use crate::daemon::Sockets;
 use app_catalogue::apps::InstalledApp;
 use std::{
     io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
 };
 
-/// The launcher's view of `XDG_RUNTIME_DIR`, inside the profile.
-const LAUNCH_RUNTIME_DIR: &str = "run";
+/// The launcher's view of `XDG_RUNTIME_DIR`, beside the daemon's service sockets.
+const LAUNCH_RUNTIME_DIR: &str = "launch";
 /// A Unix socket path longer than this cannot be connected (`sun_path`).
 const MAX_SOCKET_PATH: usize = 107;
 
@@ -112,7 +114,7 @@ fn command(
     original: &super::original::OriginalLaunch,
 ) -> Result<(Command, PathBuf), String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
-    let runtime_dir = service_directory(&apps.root, sockets)
+    let runtime_dir = service_directory(sockets)
         .map_err(|error| format!("refusing to launch: the launcher's services: {error}"))?;
     let mut command = Command::new(&launcher);
     command
@@ -182,11 +184,22 @@ fn wayland_socket() -> Result<PathBuf, String> {
     Ok(socket)
 }
 
-/// Prepare `<root>/run/tilo/services` with the profile's collaboration and
+/// Prepare `<sockets>/launch/tilo/services` with the profile's collaboration and
 /// identity sockets and the daemon's native endpoint under the names the
 /// launcher looks for; the runtime directory to hand it.
-fn service_directory(root: &Path, sockets: &Sockets) -> io::Result<PathBuf> {
-    let runtime_dir = root.join(LAUNCH_RUNTIME_DIR);
+///
+/// The runtime directory is a private directory beside the daemon's service
+/// sockets, never under the profile: a profile's path is the person's home and
+/// state, which may be longer than a socket's address holds, while the sockets
+/// already live where a socket fits.
+fn service_directory(sockets: &Sockets) -> io::Result<PathBuf> {
+    let services_dir = sockets.collab.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a service socket has no directory",
+        )
+    })?;
+    let runtime_dir = services_dir.join(LAUNCH_RUNTIME_DIR);
     let services = runtime_dir.join("tilo/services");
     tilo_files::native::private::directory(&runtime_dir)?;
     tilo_files::native::private::directory(&runtime_dir.join("tilo"))?;
@@ -200,7 +213,10 @@ fn service_directory(root: &Path, sockets: &Sockets) -> io::Result<PathBuf> {
         if link.as_os_str().len() > MAX_SOCKET_PATH {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("the profile path is too long for {}", link.display()),
+                format!(
+                    "the launcher's runtime path is too long for {}",
+                    link.display()
+                ),
             ));
         }
         if std::fs::read_link(&link).ok().as_deref() != Some(target.as_path()) {
@@ -267,8 +283,9 @@ mod tests {
             let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
             let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
             let _native = std::os::unix::net::UnixListener::bind(&sockets.native).unwrap();
-            let runtime_dir = service_directory(&root, &sockets).unwrap();
-            assert_eq!(service_directory(&root, &sockets).unwrap(), runtime_dir);
+            let runtime_dir = service_directory(&sockets).unwrap();
+            assert_eq!(service_directory(&sockets).unwrap(), runtime_dir);
+            assert_eq!(runtime_dir, root.join(LAUNCH_RUNTIME_DIR));
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", &runtime_dir);
             assert_eq!(
@@ -287,6 +304,69 @@ mod tests {
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o077, 0);
+        }
+
+        phase a_launch_runtime_lives_beside_the_sockets_however_deep_the_profile;
+        {
+            // The person's profile is their home and state, which may be deeper than a socket's
+            // address holds: the launcher's runtime directory is beside the daemon's sockets, so
+            // the profile's depth never refuses a launch.
+            let temp = tempfile::tempdir().unwrap();
+            let base = std::fs::canonicalize(temp.path()).unwrap();
+            let mut profile = base.join("home/.local/state/tilo/runtime");
+            while profile
+                .join("run/tilo/services/collab.sock")
+                .as_os_str()
+                .len()
+                <= MAX_SOCKET_PATH
+            {
+                profile = profile.join("a-state-directory-named-long");
+            }
+            let sockets_dir = base.join("sockets");
+            std::fs::create_dir(&sockets_dir).unwrap();
+            let sockets = Sockets {
+                collab: sockets_dir.join("collab.sock"),
+                identity: sockets_dir.join("identity.sock"),
+                blobs: sockets_dir.join("blobs.sock"),
+                native: sockets_dir.join("native.sock"),
+            };
+            let runtime_dir = service_directory(&sockets).unwrap();
+            assert_eq!(runtime_dir, sockets_dir.join(LAUNCH_RUNTIME_DIR));
+            assert!(!runtime_dir.starts_with(&profile));
+            for name in [
+                launcher::services::COLLAB_SERVICE,
+                launcher::services::IDENTITY_SERVICE,
+                launcher::services::NATIVE_SERVICE,
+            ] {
+                let link = runtime_dir.join(format!("tilo/services/{name}.sock"));
+                assert!(link.as_os_str().len() <= MAX_SOCKET_PATH, "{link:?}");
+            }
+        }
+
+        phase a_runtime_that_does_not_fit_a_socket_is_refused_by_name;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut dir = std::fs::canonicalize(temp.path()).unwrap();
+            while dir
+                .join(LAUNCH_RUNTIME_DIR)
+                .join("tilo/services/collab.sock")
+                .as_os_str()
+                .len()
+                <= MAX_SOCKET_PATH
+            {
+                dir = dir.join("a-directory-named-long");
+            }
+            let sockets = Sockets {
+                collab: dir.join("collab.sock"),
+                identity: dir.join("identity.sock"),
+                blobs: dir.join("blobs.sock"),
+                native: dir.join("native.sock"),
+            };
+            let error = service_directory(&sockets).unwrap_err();
+            assert!(
+                error.to_string().contains("too long for"),
+                "{error}"
+            );
         }
 
         phase no_launcher_binary_refuses_rather_than_running_unconfined;
