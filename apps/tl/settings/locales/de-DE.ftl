@@ -2467,7 +2467,7 @@ d-m7zme2k3 = Geltungswörter
     .w-until-it-lapses = bis es abläuft
 
 d-c7nx7kj5 = Erteilungswörter
-    .w-given-by = { $allows } · { $expiry } · erteilt von { $granted_by }
+    .w-given-by = { $allows }, { $expiry }, erteilt von { $granted_by }
 
 d-vjrdgx4p = Bereichstitel
     .w-apps = Apps
