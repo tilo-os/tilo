@@ -88,3 +88,4 @@ tests::an_app_keeps_its_own_storage_and_reaches_no_other_apps_or_the_daemons_pip
 tests::the_job_ends_the_app_with_its_holder	Wine has no AppContainer to start the app in; a Windows worker runs it
 tests::a_confined_app_the_daemon_does_not_hold_is_refused_handles	Wine has no AppContainer to start the app in; a Windows worker runs it
 handles::tests::a_process_of_another_session_is_refused	Wine runs every process in one session; a Windows worker has the system's besides
+windows::tests::a_section_round_trips_and_its_handle_cannot_write	crashes Wine with a page fault inside its own mapping code; a Windows worker runs it

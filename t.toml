@@ -4909,6 +4909,8 @@ run = "bash tools/ci/windows/walk.sh build /target/windows/sdk/sdk-x86_64.tar.zs
 needs = ["build/windows-sdk-x86_64", "build/windows-runtime-x86_64"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 outputs = ["/target/windows/x86_64/walk/**"]
+# Two Windows builds of the daemon's graph and a release build of the tilolang compiler.
+timeout_secs = 5400
 # The daemon test build that may start a tilolang process unconfined, which nothing that ships
 # carries, tilo-install and Video's package, for the walk above.
 default = false
