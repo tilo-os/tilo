@@ -4894,7 +4894,6 @@ name = "wine/windows-x86_64-tests"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/windows/wine-test.sh units /target/windows/x86_64/tests/imager-tests.exe"
 needs = ["build/windows-x86_64-tests"]
-image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 requires = ["arch=x86_64"]
 default = false
 
@@ -4904,7 +4903,8 @@ name = "wine/windows-x86_64-runtime"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/windows/wine-test.sh runtime /target/windows/x86_64/runtime/tilo-runtime.exe && bash tools/ci/windows/walk.sh run /target/windows/x86_64/walk /target/windows/x86_64/walk-shots"
 needs = ["build/windows-runtime-x86_64", "build/windows-walk-x86_64"]
-image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+# The Wine checks run in the default builder: its Wine is built with os/external-assets/wine, whose
+# random source works on a node with more than 256 processors.
 requires = ["arch=x86_64"]
 # The Windows daemon serves under Wine, then a person's use of it is walked: Video installed,
 # opened, acted on, a clip played and its History read (tools/ci/windows/walk.py). The pictures
@@ -4942,7 +4942,6 @@ name = "wine/windows-x86_64-install"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/windows/wine-test.sh install /target/windows/x86_64/package"
 needs = ["package/windows-x86_64"]
-image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 requires = ["arch=x86_64"]
 default = false
 
