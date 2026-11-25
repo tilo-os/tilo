@@ -888,6 +888,64 @@ impl Serialize for DeviceCapabilities {
     }
 }
 
+/// The scope bytes `capabilities`' agent grant writes after the extended marker, and the named
+/// grant written after its own marker instead, which nothing else confines besides.
+fn binary_agent_scope(
+    capabilities: &DeviceCapabilities,
+) -> Result<(Vec<u8>, Option<&AgentGrant>), &'static str> {
+    // An agent's grant goes first, after its own marker, and its extended form names no scope
+    // again.
+    let mut named = None;
+    let scope: Vec<u8> = match &capabilities.agent {
+        None => Vec::new(),
+        Some(AgentScope::AllWorkspaces) => vec![SCOPE_ALL],
+        Some(AgentScope::Workspace(id)) => [&[SCOPE_WORKSPACE][..], id].concat(),
+        Some(AgentScope::AgentHash { workspace, agent }) => {
+            [&[SCOPE_AGENT][..], workspace, agent].concat()
+        }
+        Some(AgentScope::Agent(grant)) => {
+            if !grant.is_well_formed() {
+                return Err(
+                    "an agent's grant names its agent, one to 16 workspaces and at most 64 apps, \
+                     each once and in order",
+                );
+            }
+            named = Some(grant);
+            Vec::new()
+        }
+    };
+    if named.is_some()
+        && (capabilities.workspace.is_some()
+            || capabilities.records.is_some()
+            || capabilities.placing.is_some())
+    {
+        return Err("an agent's grant reaches the workspaces it names, and no device's confinement");
+    }
+    Ok((scope, named))
+}
+
+/// The marker and records `capabilities` confine a placed device or a placement grant to, when
+/// they are well formed and confine it to nothing else.
+fn binary_records(
+    capabilities: &DeviceCapabilities,
+) -> Result<(u8, Option<&PlacedRecords>), &'static str> {
+    let (marker, records) = match (&capabilities.records, &capabilities.placing) {
+        (Some(_), Some(_)) => {
+            return Err("a certificate is a placed device's or a placement grant, never both");
+        }
+        (Some(records), None) => (PLACED_BINARY_MARKER, Some(records)),
+        (None, Some(granted)) => (PLACING_BINARY_MARKER, Some(granted)),
+        (None, None) => (PLACED_BINARY_MARKER, None),
+    };
+    if records.is_some() && capabilities.workspace.is_some() {
+        return Err("a device reaches placed records or one workspace, never both");
+    }
+    if records.is_some_and(|records| !records.is_well_formed()) {
+        return Err("a placed device's records are between one and 64, each once and in order");
+    }
+    Ok((marker, records))
+}
+
 /// The positional binary form of `capabilities`; `issued` marks a
 /// certificate whose issuer's certificate follows its signature.
 fn serialize_binary_capabilities<S: serde::Serializer>(
@@ -907,36 +965,7 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         capabilities.retired.act_as_host,
         capabilities.retired.read_all_workspaces,
     ];
-    // An agent's grant goes first, after its own marker, and its extended form names no scope
-    // again.
-    let mut named = None;
-    let scope: Vec<u8> = match &capabilities.agent {
-        None => Vec::new(),
-        Some(AgentScope::AllWorkspaces) => vec![SCOPE_ALL],
-        Some(AgentScope::Workspace(id)) => [&[SCOPE_WORKSPACE][..], id].concat(),
-        Some(AgentScope::AgentHash { workspace, agent }) => {
-            [&[SCOPE_AGENT][..], workspace, agent].concat()
-        }
-        Some(AgentScope::Agent(grant)) => {
-            if !grant.is_well_formed() {
-                return Err(serde::ser::Error::custom(
-                    "an agent's grant names its agent, one to 16 workspaces and at most 64 apps, \
-                     each once and in order",
-                ));
-            }
-            named = Some(grant);
-            Vec::new()
-        }
-    };
-    if named.is_some()
-        && (capabilities.workspace.is_some()
-            || capabilities.records.is_some()
-            || capabilities.placing.is_some())
-    {
-        return Err(serde::ser::Error::custom(
-            "an agent's grant reaches the workspaces it names, and no device's confinement",
-        ));
-    }
+    let (scope, named) = binary_agent_scope(capabilities).map_err(serde::ser::Error::custom)?;
     let bit = |set: bool, bit: u8| if set { bit } else { 0 };
     let extended = bit(capabilities.foreign, EXTENDED_FOREIGN)
         | bit(capabilities.agent.is_some(), EXTENDED_AGENT)
@@ -958,26 +987,7 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         4
     };
     let workspace = capabilities.workspace;
-    let (marker, records) = match (&capabilities.records, &capabilities.placing) {
-        (Some(_), Some(_)) => {
-            return Err(serde::ser::Error::custom(
-                "a certificate is a placed device's or a placement grant, never both",
-            ));
-        }
-        (Some(records), None) => (PLACED_BINARY_MARKER, Some(records)),
-        (None, Some(granted)) => (PLACING_BINARY_MARKER, Some(granted)),
-        (None, None) => (PLACED_BINARY_MARKER, None),
-    };
-    if records.is_some() && workspace.is_some() {
-        return Err(serde::ser::Error::custom(
-            "a device reaches placed records or one workspace, never both",
-        ));
-    }
-    if records.is_some_and(|records| !records.is_well_formed()) {
-        return Err(serde::ser::Error::custom(
-            "a placed device's records are between one and 64, each once and in order",
-        ));
-    }
+    let (marker, records) = binary_records(capabilities).map_err(serde::ser::Error::custom)?;
     let len = len.saturating_add(if workspace.is_some() { 17 } else { 0 });
     let len = len.saturating_add(if named.is_some() { 2 } else { 0 });
     let len = len.saturating_add(records.map_or(0, |records| {
@@ -1204,6 +1214,76 @@ fn agent_scope<E: serde::de::Error>(
     }
 }
 
+/// The named agent grant an agent's marker is followed by, well formed, and the extended marker
+/// that must follow it: nothing confines an agent's grant besides.
+fn named_agent_grant<'de, A: serde::de::SeqAccess<'de>>(
+    seq: &mut A,
+    read: &mut usize,
+) -> Result<AgentGrant, A::Error> {
+    use serde::de::Error;
+    let grant: AgentGrant = seq
+        .next_element()?
+        .ok_or_else(|| A::Error::invalid_length(*read, &"an agent's grant"))?;
+    *read = read.saturating_add(1);
+    if !grant.is_well_formed() {
+        return Err(A::Error::custom(
+            "an agent's grant names its agent, one to 16 workspaces and at most 64 apps, \
+             each once and in order",
+        ));
+    }
+    let first = capability_byte(seq, read)?;
+    if first != EXTENDED_BINARY_MARKER {
+        return Err(A::Error::invalid_value(
+            serde::de::Unexpected::Unsigned(first.into()),
+            &"the extended capabilities of an agent's grant",
+        ));
+    }
+    Ok(grant)
+}
+
+/// The extended capability bits after the extended marker, and the agent scope they grant: the
+/// `named` grant read before them, or the scope that follows them. `placed` marks a placed
+/// device's or a placement grant's, which take the extended form with no bit of their own.
+fn extended_capabilities<E: serde::de::Error>(
+    next: &mut impl FnMut() -> Result<u8, E>,
+    named: Option<AgentGrant>,
+    placed: bool,
+) -> Result<(u8, Option<AgentScope>), E> {
+    let written = next()?;
+    let extended = written & !RETIRED_ADMINISTER;
+    // Only an agent's grant, a stand-in, an issuer, a server key,
+    // Browser pages and a workspace service need the extended form; anything else has exactly
+    // one encoding already.
+    let known = EXTENDED_FOREIGN
+        | EXTENDED_AGENT
+        | EXTENDED_STAND_IN
+        | EXTENDED_ISSUED
+        | EXTENDED_SERVER_KEY
+        | EXTENDED_BROWSER_PAGES
+        | EXTENDED_WORKSPACE_SERVICE;
+    if extended & !known != 0
+        || (written == extended && extended & !EXTENDED_FOREIGN == 0 && !placed)
+    {
+        return Err(E::invalid_value(
+            serde::de::Unexpected::Unsigned(extended.into()),
+            &"extended capabilities that grant an agent's grant or a stand-in, \
+              or name an issuer",
+        ));
+    }
+    let agent = match (extended & EXTENDED_AGENT == 0, named) {
+        (true, None) => None,
+        (true, Some(_)) => {
+            return Err(E::invalid_value(
+                serde::de::Unexpected::Unsigned(extended.into()),
+                &"the extended capabilities of an agent's grant, which grant it",
+            ));
+        }
+        (false, Some(grant)) => Some(AgentScope::Agent(grant)),
+        (false, None) => Some(agent_scope::<E>(next)?),
+    };
+    Ok((extended, agent))
+}
+
 impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
     type Value = BinaryCapabilitiesOf;
 
@@ -1238,25 +1318,9 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
         } else {
             (records, None)
         };
-        let mut named = if first == AGENT_BINARY_MARKER {
-            let grant: AgentGrant = seq
-                .next_element()?
-                .ok_or_else(|| A::Error::invalid_length(read, &"an agent's grant"))?;
-            read = read.saturating_add(1);
-            if !grant.is_well_formed() {
-                return Err(A::Error::custom(
-                    "an agent's grant names its agent, one to 16 workspaces and at most 64 apps, \
-                     each once and in order",
-                ));
-            }
-            first = capability_byte(&mut seq, &mut read)?;
-            // Its extended form follows, and nothing confines it besides.
-            if first != EXTENDED_BINARY_MARKER {
-                return Err(A::Error::invalid_value(
-                    serde::de::Unexpected::Unsigned(first.into()),
-                    &"the extended capabilities of an agent's grant",
-                ));
-            }
+        let named = if first == AGENT_BINARY_MARKER {
+            let grant = named_agent_grant(&mut seq, &mut read)?;
+            first = EXTENDED_BINARY_MARKER;
             Some(grant)
         } else {
             None
@@ -1278,41 +1342,8 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
         let (extended, agent, flags) = match first {
             FOREIGN_BINARY_MARKER => (EXTENDED_FOREIGN, None, [next()?, next()?, next()?, next()?]),
             EXTENDED_BINARY_MARKER => {
-                let written = next()?;
-                let extended = written & !RETIRED_ADMINISTER;
-                // Only an agent's grant, a stand-in, an issuer, a server key,
-                // Browser pages and a workspace service need the extended form; anything else has exactly
-                // one encoding already.
-                let known = EXTENDED_FOREIGN
-                    | EXTENDED_AGENT
-                    | EXTENDED_STAND_IN
-                    | EXTENDED_ISSUED
-                    | EXTENDED_SERVER_KEY
-                    | EXTENDED_BROWSER_PAGES
-                    | EXTENDED_WORKSPACE_SERVICE;
-                if extended & !known != 0
-                    || (written == extended
-                        && extended & !EXTENDED_FOREIGN == 0
-                        && records.is_none()
-                        && placing.is_none())
-                {
-                    return Err(A::Error::invalid_value(
-                        serde::de::Unexpected::Unsigned(extended.into()),
-                        &"extended capabilities that grant an agent's grant or a stand-in, \
-                          or name an issuer",
-                    ));
-                }
-                let agent = match (extended & EXTENDED_AGENT == 0, named.take()) {
-                    (true, None) => None,
-                    (true, Some(_)) => {
-                        return Err(A::Error::invalid_value(
-                            serde::de::Unexpected::Unsigned(extended.into()),
-                            &"the extended capabilities of an agent's grant, which grant it",
-                        ));
-                    }
-                    (false, Some(grant)) => Some(AgentScope::Agent(grant)),
-                    (false, None) => Some(agent_scope::<A::Error>(&mut next)?),
-                };
+                let placed = records.is_some() || placing.is_some();
+                let (extended, agent) = extended_capabilities(&mut next, named, placed)?;
                 (extended, agent, [next()?, next()?, next()?, next()?])
             }
             _ => (0, None, [first, next()?, next()?, next()?]),
