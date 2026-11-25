@@ -327,6 +327,10 @@ impl LocalAppConnection {
     /// Copies of the pidfds pinning the app's process, and its launcher's when the launcher
     /// handed it over: what the seat hands the daemon with the app's connection. `None` where the
     /// kernel pins no process.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(clippy::unused_self, reason = "only Linux's kernel pins a process the app has")
+    )]
     pub(super) fn pidfds(
         &self,
     ) -> Option<(

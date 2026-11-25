@@ -323,6 +323,10 @@ impl Workspaces {
 
     /// What controls this device's cloud mounts: a test's service, else the
     /// files service that mounts them here.
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        expect(clippy::unused_self, reason = "only a test stands its own service in")
+    )]
     pub(in crate::workspaces) fn cloud_control(
         &self,
     ) -> std::sync::Arc<dyn cloud_control::CloudControl> {
