@@ -383,20 +383,6 @@ impl AttributedWriter {
             session: Some(session.into()),
         }
     }
-
-    /// Who acted: the agent, in its session when it has one. `None` for an
-    /// app or a program, which write as the person.
-    #[must_use]
-    pub fn acting(&self) -> Option<tilo_actions::Acting> {
-        let Self::Agent { agent, session } = self else {
-            return None;
-        };
-        let acting = tilo_actions::Acting::agent(agent.clone());
-        Some(match session {
-            Some(session) => acting.in_session(session.clone()),
-            None => acting,
-        })
-    }
 }
 
 /// An author that acted for someone: an agent's change is the agent's, on
