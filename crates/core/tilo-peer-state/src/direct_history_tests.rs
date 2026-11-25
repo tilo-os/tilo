@@ -70,7 +70,10 @@ fn join(parts: usize) -> (u64, u64, usize) {
         .install(&finalize(intent, pending, bootstrap).unwrap(), now)
         .unwrap();
     let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
-    let host = host_of(governor, &key, parts, now, &directory);
+    // The keys the host seals its parts under, and the ones the newcomer opens them with: one
+    // key group, made once, so both hold the same.
+    let keys = crate::sealed_records::members_keys(WORKSPACE);
+    let host = host_of(governor, &key, &keys, parts, now, &directory);
     let generation = |owner: &NativeWorkspaceOwner| {
         owner
             .with_current(workspace, |view| Ok(view.generation()))
@@ -81,23 +84,23 @@ fn join(parts: usize) -> (u64, u64, usize) {
         .owning(owner.clone(), workspace)
         .unwrap();
     let moved = moved_during_join(&host, &member, &key, parts);
-    let held = held_parts(&member, parts);
+    let held = held_parts(&member, &keys, parts);
     (moved, generation(&owner).saturating_sub(before), held)
 }
 
 /// The host serving `parts` parts: each started with its text and then changed
-/// an item at a time, every write published sealed and kept in the host's store
-/// under `directory`.
+/// an item at a time, every write published sealed under `keys` and kept in the
+/// host's store under `directory`.
 fn host_of(
     mut governor: StatePeer,
     key: &SigningKey,
+    keys: &key_group::ContentKeys,
     parts: usize,
     now: SystemTime,
     directory: &tempfile::TempDir,
 ) -> DirectSync {
     let mut written = Vec::new();
     let person = governor.owner_certificates()[0].user_public_key;
-    let keys = crate::sealed_records::members_keys(WORKSPACE);
     for part in 0..parts {
         let record = format!("part:{part}");
         let artifact = collab_types::document_artifact_id(APP, WORKSPACE, &record);
@@ -188,12 +191,11 @@ fn moved_during_join(
 
 /// How many of `parts` parts `member` holds whole: each its text and
 /// [`CHANGES_EACH`] changes.
-fn held_parts(member: &DirectSync, parts: usize) -> usize {
-    let keys = crate::sealed_records::members_keys(WORKSPACE);
+fn held_parts(member: &DirectSync, keys: &key_group::ContentKeys, parts: usize) -> usize {
     (0..parts)
         .filter(|part| {
             member.read(|peer| {
-                crate::sealed_records::opened(peer, &keys, (APP, &format!("part:{part}")))
+                crate::sealed_records::opened(peer, keys, (APP, &format!("part:{part}")))
                     .and_then(|bytes| AutoCommit::load(&bytes).ok())
                     .is_some_and(|document| document.length(ROOT) == CHANGES_EACH + 1)
             })
