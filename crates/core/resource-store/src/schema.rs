@@ -29,6 +29,11 @@ pub const MOVE_VERB: &str = "move";
 /// it has the move, and no app declares it.
 pub const CREATE_VERB: &str = "create";
 
+/// The verb that founds a record in a branch of its workspace: the fork's founding step onto the
+/// history the branch copies. It founds one record, or writes that record's content, and nothing
+/// else. Every schema has it, as it has the move, and no app declares it.
+pub const BRANCH_VERB: &str = tilo_actions::stamp::Stamp::BRANCH_VERB;
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
@@ -51,6 +56,11 @@ static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
                 creates: true,
                 ..Verb::default()
             },
+            Verb {
+                name: BRANCH_VERB.to_owned(),
+                branches: true,
+                ..Verb::default()
+            },
         ])
         .collect()
 });
@@ -68,6 +78,10 @@ pub struct Schema {
 /// What one verb writes: each kind it writes resources of, and the kinds it may write that
 /// another surface declares.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says what kind of verb it is, and a verb is one kind or none"
+)]
 pub struct Verb {
     pub name: String,
     pub writes: BTreeMap<String, Writes>,
@@ -81,6 +95,9 @@ pub struct Verb {
     pub moves: bool,
     /// The creation ([`CREATE_VERB`]): it founds an empty resource of any declared kind.
     pub creates: bool,
+    /// The branch ([`BRANCH_VERB`]): it founds a record in a branch of its workspace, on the
+    /// history the branch copies, or writes that record's content.
+    pub branches: bool,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -313,8 +330,8 @@ impl Schema {
     /// Every declared verb that names `name`: the verb of that name, and each family of verbs
     /// declared by a prefix ending in `*` (`set-*`, a typed setter per field of a kind whose
     /// fields another table lists) that `name` starts with.
-    /// The verbs of history ([`HISTORY_VERBS`]), the move ([`MOVE_VERB`]) and the creation
-    /// ([`CREATE_VERB`]) are declared in every schema.
+    /// The verbs of history ([`HISTORY_VERBS`]), the move ([`MOVE_VERB`]), the creation
+    /// ([`CREATE_VERB`]) and the branch ([`BRANCH_VERB`]) are declared in every schema.
     pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
         self.verbs.iter().chain(HISTORY.iter()).filter(move |verb| {
             verb.name == name

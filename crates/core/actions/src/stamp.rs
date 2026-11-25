@@ -191,6 +191,11 @@ impl Stamp {
     /// each kind that migrates declares on its surface.
     pub const MIGRATE_VERB: &str = "migrate";
 
+    /// The verb of a change that founds a record in a branch of its workspace: the fork's
+    /// founding step on the history the branch copies, under the verb every store has and no app
+    /// declares.
+    pub const BRANCH_VERB: &str = "branch";
+
     /// The stamp a change's message `message` names; `None` for one that names none.
     #[must_use]
     pub fn of_message(message: &str) -> Option<Self> {

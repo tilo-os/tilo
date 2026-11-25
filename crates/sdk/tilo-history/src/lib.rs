@@ -750,6 +750,10 @@ impl<'a> Reader<'a> {
         if verb.action.action == tilo_actions::CREATE_ACTION {
             return self.named_or_not("history-verb-create", scope, &args);
         }
+        // A record a branch took in, with its history: the step that founded it there.
+        if verb.action.action == tilo_actions::stamp::Stamp::BRANCH_VERB {
+            return self.named_or_not("history-verb-branch", scope, &args);
+        }
         let action = self
             .labels
             .and_then(|labels| labels.action(&key))

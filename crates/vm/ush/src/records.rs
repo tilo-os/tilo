@@ -459,7 +459,17 @@ impl Records {
         environment
             .write_resource(&mut doc)
             .map_err(|e| RecordError::Model(e.to_string()))?;
-        doc.commit();
+        // The step that founds the record in the branch names the store's branch verb: the fork
+        // keeps the history it was copied with, and this one step says where it is now.
+        let step = collab_types::document::identity::branch_step(
+            key,
+            Environment::KIND,
+            Environment::LABEL,
+        );
+        let message = step
+            .change_message()
+            .ok_or_else(|| RecordError::Model("the branch's step names no entry".to_owned()))?;
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
         into.write(key, &mut doc, None)?;
         Ok(true)
     }

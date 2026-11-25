@@ -394,6 +394,33 @@ fn a_resource_the_platform_made_reads_as_its_creation() {
 }
 
 #[test]
+fn a_record_a_branch_took_in_reads_as_branched() {
+    let branched = |label: &str| {
+        ActionContext::for_resource("root-1", "Comment", "Comment").with_described(
+            Described::new(Did::verb(
+                ActionKey::new("", "Comment", tilo_actions::stamp::Stamp::BRANCH_VERB),
+                [],
+            ))
+            .on("root-1", label),
+        )
+    };
+    let english = Reader::new("en-US");
+    assert_eq!(
+        english.sentence(&branched("Plan")),
+        "Branched Plan from another workspace"
+    );
+    assert_eq!(
+        english.sentence(&branched("")),
+        "Branched from another workspace"
+    );
+    let german = Reader::new("de-DE");
+    assert_eq!(
+        german.sentence(&branched("Plan")),
+        "Plan aus einem anderen Arbeitsbereich übernommen"
+    );
+}
+
+#[test]
 fn a_step_the_app_has_no_message_for_says_so_and_reads_the_fallback() {
     let moved = entry(edit("folder", Some("Inbox".into()), Some("Ops".into())));
     let what = moved.what.as_ref().unwrap();

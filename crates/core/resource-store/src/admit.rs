@@ -199,6 +199,15 @@ pub(crate) fn within_verb(
     if verbs.is_empty() {
         return Err(format!("no verb `{}` is declared", stamp.verb));
     }
+    // A branch's founding step is one record's: a change that touches another record is no step
+    // of a branch's.
+    if verbs.iter().any(|verb| verb.branches) && touched.resources.len() > 1 {
+        return Err(format!(
+            "`{}` is one record's step, and this change touches {}",
+            stamp.verb,
+            touched.resources.len()
+        ));
+    }
     for (id, touch) in &touched.resources {
         let Some(kind) = &touch.kind else {
             continue;
@@ -207,11 +216,11 @@ pub(crate) fn within_verb(
         // by prefix writes its own kinds beside a verb of the same name another app declares.
         if !verbs
             .iter()
-            .any(|verb| verb_admits(schema, verb, id, kind, touch).is_ok())
+            .any(|verb| verb_admits(schema, verb, stamp, id, kind, touch).is_ok())
         {
             return verbs
                 .iter()
-                .try_for_each(|verb| verb_admits(schema, verb, id, kind, touch));
+                .try_for_each(|verb| verb_admits(schema, verb, stamp, id, kind, touch));
         }
     }
     Ok(())
@@ -237,10 +246,12 @@ fn marks(stamp: &Stamp, operations: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `verb` admits what `touch` does to the resource `id` of `kind`.
+/// Whether `verb` admits what `touch` does to the resource `id` of `kind`, by the step `stamp`
+/// names.
 fn verb_admits(
     schema: &Schema,
     verb: &crate::schema::Verb,
+    stamp: &Stamp,
     id: &str,
     kind: &str,
     touch: &Touch,
@@ -266,6 +277,39 @@ fn verb_admits(
             Ok(())
         } else {
             Err(format!("`{}` only founds an empty `{id}`", verb.name))
+        };
+    }
+    // A branch carries one record across with its history, and admits only the change its own
+    // writer makes: the entry naming the branch verb. A change that merely names the verb is no
+    // step of a branch's.
+    if verb.branches {
+        schema
+            .get(kind)
+            .ok_or_else(|| format!("no type `{kind}` is declared"))?;
+        let what = stamp
+            .context
+            .as_deref()
+            .and_then(|context| context.what.as_ref());
+        if !matches!(
+            what,
+            Some(tilo_actions::Did::Verb(call)) if call.action.action == verb.name
+        ) {
+            return Err(format!(
+                "`{}` only admits the step its writer makes on `{id}`",
+                verb.name
+            ));
+        }
+        // The step itself writes the record's content or founds the record it carried across,
+        // and nothing the store keeps of it: no kind, place, field or removal. The platform's
+        // own fields are no write of an app's.
+        let wrote = touch.removed
+            || touch.placed
+            || touch.retyped_from.is_some()
+            || touch.fields.iter().any(|field| !field.starts_with('$'));
+        return if !wrote && (touch.content || touch.made) {
+            Ok(())
+        } else {
+            Err(format!("`{}` only carries `{id}` across", verb.name))
         };
     }
     let Some(writes) = verb.writes.get(kind) else {

@@ -133,6 +133,26 @@ pub fn stamp_scoped(
     true
 }
 
+/// The entry of a branch's founding step on the record `id` of `kind`: the framework copies a
+/// record with its history into a branch under it, naming the store's built-in branch verb and
+/// nobody's action, so a holder judges the step as the fork's, and history reads it as one.
+#[must_use]
+pub fn branch_step(id: &str, kind: &str, label: &str) -> tilo_actions::ActionContext {
+    tilo_actions::ActionContext {
+        change: tilo_actions::ChangeKind::Housekeeping,
+        ..tilo_actions::ActionContext::for_resource(id, kind, label).with_described(
+            tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(
+                    String::new(),
+                    kind,
+                    tilo_actions::stamp::Stamp::BRANCH_VERB,
+                ),
+                [],
+            )),
+        )
+    }
+}
+
 /// Commit what a brand-new resource starts with (its identity, references and
 /// first content) as its genesis, which names itself as such.
 pub fn commit_genesis(doc: &mut AutoCommit) {

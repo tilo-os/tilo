@@ -48,6 +48,8 @@ history-verb-did-unnamed = { $did }
 history-verb-did-in = { $did } in { $item }
 history-verb-create = { $item } erstellt
 history-verb-create-unnamed = Erstellt
+history-verb-branch = { $item } aus einem anderen Arbeitsbereich übernommen
+history-verb-branch-unnamed = Aus einem anderen Arbeitsbereich übernommen
 
 history-group = { $count ->
     [one] Eine Änderung

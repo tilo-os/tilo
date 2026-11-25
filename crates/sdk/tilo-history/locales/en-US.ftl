@@ -55,6 +55,8 @@ history-verb-did-unnamed = { $did }
 history-verb-did-in = { $did } in { $item }
 history-verb-create = Created { $item }
 history-verb-create-unnamed = Created
+history-verb-branch = Branched { $item } from another workspace
+history-verb-branch-unnamed = Branched from another workspace
 
 history-group = { $count ->
     [one] One change

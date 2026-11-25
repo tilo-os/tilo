@@ -51,13 +51,23 @@ pub fn branch(source: &AutoCommit, to_workspace: &str) -> Result<AutoCommit, Tra
         return Ok(doc);
     }
     let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
+    let step = identity(&doc).ok_or(ResourceOpenError::IdentityMismatch)?;
     let meta = meta_obj(&mut doc).ok_or(ResourceOpenError::IdentityMismatch)?;
     doc.put(&meta, super::WORKSPACE, to_workspace)
         .map_err(automerge)?;
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
+    // The step that founds the copied history in the branch names the store's branch verb, as
+    // no person's action produced it.
+    let context = collab_types::document::identity::branch_step(
+        step.id.as_str(),
+        step.kind.as_str(),
+        step.kind.as_str(),
     );
+    let message = context
+        .change_message()
+        .ok_or(TransferError::NotTransferable(
+            "the branch's founding step is written as an entry",
+        ))?;
+    doc.commit_with(CommitOptions::default().with_message(message));
     Ok(doc)
 }
 

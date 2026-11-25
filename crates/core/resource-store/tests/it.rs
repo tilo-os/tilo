@@ -2697,6 +2697,113 @@ mod store {
         assert!(there.get("Comment", "c3", &all).is_none());
     }
 
+    /// A branch keeps the history it copies and adds one step naming the store's branch verb: it
+    /// founds the record it carried across, or writes that record's content, and nothing else. A
+    /// write merely naming the verb, one that writes a field of the store's own, one touching
+    /// another record, or one naming no verb is refused.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one verb's admission and every write it refuses, told together"
+    )]
+    fn a_branch_steps_the_copied_history_and_writes_nothing_else() {
+        use automerge::transaction::Transactable as _;
+        use tilo_resource_store::{BRANCH_VERB, MOVE_VERB, Refusal};
+        let mut there = issues();
+        there.declare(Schema::from_surface(&super::tracker_surface()));
+        let anyone = |_: &Proposal<'_>| true;
+        // The step the fork's writer commits, read back as the store reads a change.
+        let context = collab_types::document::identity::branch_step("c1", "Comment", "Comment");
+        let message = context.change_message().expect("an entry");
+        let entered = Stamp::of_message(&message).expect("the branch's step");
+        assert_eq!(entered.verb, BRANCH_VERB);
+        let empty = || Resource {
+            readers: MEMBERS.to_owned(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::new(),
+        };
+        // The record it carried across is founded in the branch's store.
+        let founding = issues().put("Comment", "c1", empty(), &entered).unwrap();
+        assert_eq!(deliver(&founding, &mut there, &anyone), []);
+        // Its content step writes the record's content on that history.
+        let mut here = issues();
+        let placed = here
+            .put("Comment", "c2", empty(), &stamp(MOVE_VERB, "i1"))
+            .unwrap();
+        send(&placed, &mut there);
+        let ((), content) = here
+            .edit_content("Comment", "c2", &entered, |tx, root| {
+                tx.put(root, "text", "Ada").map(drop)
+            })
+            .unwrap();
+        assert_eq!(
+            deliver(&[content.expect("a change")], &mut there, &anyone),
+            []
+        );
+        // A field of the store's own is no step of a branch's.
+        let field = here
+            .put(
+                "Comment",
+                "c2",
+                Resource {
+                    readers: MEMBERS.to_owned(),
+                    parent: None,
+                    order: None,
+                    fields: BTreeMap::from([("text".to_owned(), Cell::One("Smuggled".into()))]),
+                },
+                &entered,
+            )
+            .unwrap();
+        assert!(matches!(
+            deliver(&field, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("carries")
+        ));
+        // One step names one record, never two.
+        {
+            use automerge::{ObjType, ROOT};
+            let mut two = automerge::AutoCommit::new();
+            for id in ["c3", "c4"] {
+                let held = two
+                    .put_object(ROOT, format!("r:{id}"), ObjType::Map)
+                    .unwrap();
+                two.put(&held, "k", "Comment").unwrap();
+            }
+            two.commit_with(
+                automerge::transaction::CommitOptions::default().with_message(message.clone()),
+            );
+            let pair = Written {
+                doc: "*/Comment#7".to_owned(),
+                readers: MEMBERS.to_owned(),
+                change: two.get_last_local_change().unwrap(),
+            };
+            assert!(matches!(
+                deliver(&[pair], &mut there, &anyone).as_slice(),
+                [Refusal::Undeclared(why)] if why.contains("one record")
+            ));
+        }
+        // A write that merely names the verb is no branch step.
+        let bare = here
+            .edit_content("Comment", "c2", &stamp(BRANCH_VERB, "i2"), |tx, root| {
+                tx.put(root, "text", "Grace").map(drop)
+            })
+            .unwrap()
+            .1
+            .expect("a change");
+        assert!(matches!(
+            deliver(&[bare], &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("only admits the step")
+        ));
+        // A write naming no verb stays refused.
+        let unnamed = issues()
+            .put("Comment", "c5", empty(), &Stamp::default())
+            .unwrap();
+        assert!(matches!(
+            deliver(&unnamed, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("verb")
+        ));
+    }
+
     /// A checkpoint, a description and a link are verbs every schema has: a change that writes
     /// nothing, by someone who may write the document, saying little. One that writes, says too
     /// much, comes from someone who may not write, or names a verb nobody declared is refused.
@@ -3398,8 +3505,12 @@ mod store {
         reader: &str,
         command: &collab_types::store::wire::Command,
     ) -> collab_types::store::wire::Reply {
-        tilo_resource_store::wire::read(store, command, &tilo_resource_store::wire::reads_as(reader))
-            .expect("a read is answered")
+        tilo_resource_store::wire::read(
+            store,
+            command,
+            &tilo_resource_store::wire::reads_as(reader),
+        )
+        .expect("a read is answered")
     }
 
     /// Every way a member reads the store, of the draft `id` with `subject`: whether any of them
@@ -3511,7 +3622,10 @@ mod store {
         assert!(
             written.iter().all(|write| write.readers == "ada"),
             "the draft is sealed to its author, not to the mailbox's readers: {:?}",
-            written.iter().map(|write| &write.readers).collect::<Vec<_>>()
+            written
+                .iter()
+                .map(|write| &write.readers)
+                .collect::<Vec<_>>()
         );
         let every = vec![
             "get",
@@ -3587,7 +3701,10 @@ mod store {
             "with no rule, the draft is where its mailbox is"
         );
         store.declare(draft_rule());
-        assert!(store.misplaced(DRAFT, "d1"), "the draft is held where its rule does not place it");
+        assert!(
+            store.misplaced(DRAFT, "d1"),
+            "the draft is held where its rule does not place it"
+        );
         assert_eq!(
             sees_draft(&store, "bo", "d1", "Quarterly"),
             Vec::<&str>::new(),
