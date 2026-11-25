@@ -354,23 +354,7 @@ impl Planned {
             args.push(node.display().to_string());
         }
         if window {
-            match open {
-                Some(Open::File(path)) => {
-                    args.push("--open".to_owned());
-                    args.push(path.display().to_string());
-                }
-                Some(Open::Uri(uri)) => {
-                    args.push("--open-uri".to_owned());
-                    args.push(uri.clone());
-                    if visitor {
-                        // A window opened for whoever works the record rather
-                        // than for the person: it browses as a visitor, with none
-                        // of their sign-ins.
-                        args.push("--open-as-visitor".to_owned());
-                    }
-                }
-                None => {}
-            }
+            args.extend(Self::open_args(open, visitor));
         }
         if let Some(origin) = context.connector {
             // The app's connector for `origin`, not a window: the process runs the origin's
@@ -412,6 +396,30 @@ impl Planned {
             env,
             window_identities: package_identities(package.id),
         })
+    }
+
+    /// What a window opens: the file at its path, or the URI, browsing as a visitor when it is
+    /// opened for whoever works the record rather than for the person.
+    fn open_args(open: Option<&Open>, visitor: bool) -> Vec<String> {
+        let mut args = Vec::new();
+        match open {
+            Some(Open::File(path)) => {
+                args.push("--open".to_owned());
+                args.push(path.display().to_string());
+            }
+            Some(Open::Uri(uri)) => {
+                args.push("--open-uri".to_owned());
+                args.push(uri.clone());
+                if visitor {
+                    // A window opened for whoever works the record rather than
+                    // for the person: it browses as a visitor, with none of
+                    // their sign-ins.
+                    args.push("--open-as-visitor".to_owned());
+                }
+            }
+            None => {}
+        }
+        args
     }
 
     /// One of the machine's own applications, from its desktop entry.
