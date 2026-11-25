@@ -242,7 +242,7 @@ fn a_daemon_only_sessions_repl_runs_a_program() {
         collab: false,
         state: Some(root.path().join("state")),
         app_socket: tilo_session::AppSocket::At(root.path().join("app_wire.sock")),
-        api_server: Some(root.path().join("api.sock")),
+        api_socket: Some(root.path().join("api.sock")),
         ..Options::default()
     });
     until(&mut session, "the bar's controls", |session| {
