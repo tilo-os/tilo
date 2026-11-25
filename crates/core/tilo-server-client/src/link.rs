@@ -248,8 +248,8 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tilo_server_protocol::auth::{self, Hello, HelloAck, HelloRefused};
-    let failed = |error: String| Refusal::Other(error);
     const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
+    let failed = |error: String| Refusal::Other(error);
     let client_nonce: [u8; 32] = rand::random();
     let hello = Hello::new(cert.clone(), client_nonce);
     let hello = postcard::to_allocvec(&hello).map_err(|error| failed(error.to_string()))?;
