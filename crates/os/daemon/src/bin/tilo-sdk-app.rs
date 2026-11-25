@@ -3,7 +3,8 @@
 //! It is what a native SDK program does: names the app this computer launched it as, attaches
 //! itself to the daemon that started it, publishes the actions it offers, and stays until the
 //! daemon ends. Its package may name a lifetime (`tilo-app-lifetime-ms` beside the program), so a
-//! test can let one app end while another keeps running.
+//! test can let one app end while another keeps running, and may ask for a second instance
+//! (`tilo-app-second-instance`), which the daemon starts, attested like any instance.
 //!
 //! Nothing here ships: the daemon package installs `tilo-runtime` alone.
 
@@ -34,10 +35,15 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     manager.publish_action_directory(collaboration::local_app_id());
-    // A package may ask for a second process of the same app: a program that starts another, as
-    // an app's own child does. The child inherits the services this process was handed, and
-    // attaches as an instance of its own.
-    let child = spawn_child();
+    // A package may ask for a second instance of the same app. The daemon starts it, as it
+    // started this process, and that instance gets a connection of its own; only the first
+    // instance asks, which the app's own directory records for every instance started after it.
+    if first_to_ask() {
+        if let Err(error) = runtime_portal::native::launch_another_instance(&app) {
+            eprintln!("tilo-sdk-app: asking for a second instance of {app}: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    }
     let deadline = lifetime().map(|life| Instant::now() + life);
     // An app ends with the session it was launched for: the daemon going away is this app's
     // computer stopping. A lifetime a test names ends it while the app it runs beside stays.
@@ -47,26 +53,24 @@ fn main() -> std::process::ExitCode {
         let _ = manager.poll();
         std::thread::sleep(Duration::from_millis(10));
     }
-    if let Some(mut child) = child {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
     std::process::ExitCode::SUCCESS
 }
 
-/// A second process of this app, when the package beside the program asks for one
-/// (`tilo-app-spawn-child`): the child is this program again, told it is the child, so it spawns
-/// no third.
-fn spawn_child() -> Option<std::process::Child> {
-    if std::env::var_os("TILO_SDK_APP_CHILD").is_some() || beside("tilo-app-spawn-child").is_none()
-    {
-        return None;
+/// Whether the package beside the program asks for a second instance
+/// (`tilo-app-second-instance`), and this process is the first to take the ask: the app's own
+/// directory keeps the mark, so the instance started for it never asks again.
+fn first_to_ask() -> bool {
+    if beside("tilo-app-second-instance").is_none() {
+        return false;
     }
-    let program = std::env::current_exe().ok()?;
-    std::process::Command::new(program)
-        .env("TILO_SDK_APP_CHILD", "1")
-        .spawn()
-        .ok()
+    let Some(dir) = std::env::var_os("TILO_APP_DIR") else {
+        return false;
+    };
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(std::path::PathBuf::from(dir).join("second-instance-asked"))
+        .is_ok()
 }
 
 /// The file `name` beside this program, in the package's payload.

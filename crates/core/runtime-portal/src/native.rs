@@ -1,6 +1,88 @@
 //! Automatic attachment at the native GUI boundary. No process environment is
 //! mutated: the host supplies connected descriptors when it execs the app again.
+//!
+//! A launch is asked of this computer's daemon over its native endpoint
+//! ([`LaunchRequest`]): what runs is the package the daemon has installed,
+//! never a program the caller names. An app the launcher started asks for
+//! another instance of itself that way ([`launch_another_instance`]); a
+//! program a person runs from a terminal attaches with [`ensure_attached`].
 use std::io;
+
+/// The value of [`LaunchRequest::native`] that asks this computer's daemon to start an app.
+pub const LAUNCH: &str = "launch";
+
+/// `{"native":"launch", ...}`: a program asking this computer's daemon to start an app.
+///
+/// It names only the app, the workspace and whether it is the app's default
+/// presentation. What runs — the program, its sandbox, its grants and the
+/// records it reaches — is the installed package this computer resolves the
+/// name to: a program is never one the caller names.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchRequest {
+    pub native: String,
+    pub app_id: String,
+    /// The workspace the caller read from the daemon a moment before.
+    pub workspace: String,
+    /// Whether this starts the app's default presentation, which one already shown answers.
+    pub presentation: bool,
+}
+
+impl LaunchRequest {
+    /// The launch of `app_id` in `workspace`: its default presentation when `presentation`, else an
+    /// instance of its own.
+    #[must_use]
+    pub fn new(app_id: &str, workspace: &str, presentation: bool) -> Self {
+        Self {
+            native: LAUNCH.to_owned(),
+            app_id: app_id.to_owned(),
+            workspace: workspace.to_owned(),
+            presentation,
+        }
+    }
+
+    /// Whether `request`, a native endpoint's first line, asks this computer to start an app.
+    #[must_use]
+    pub fn is_launch(request: &[u8]) -> bool {
+        serde_json::from_slice::<serde_json::Value>(request).is_ok_and(|request| {
+            request.get("native").and_then(serde_json::Value::as_str) == Some(LAUNCH)
+        })
+    }
+
+    /// This request as the one line the daemon's native endpoint reads.
+    ///
+    /// # Errors
+    /// The request does not encode.
+    pub fn line(&self) -> serde_json::Result<Vec<u8>> {
+        let mut line = serde_json::to_vec(self)?;
+        line.push(b'\n');
+        Ok(line)
+    }
+}
+
+/// Ask this computer's daemon to start another instance of `app_id` in this app's workspace, over
+/// the native service connection the launcher handed this app: the launch a person's `--run-app`
+/// makes, which starts the installed package's own program and records the instance like any
+/// other. A launched app that wants a second process with a connection of its own asks here; it
+/// never makes a connection by re-running the daemon.
+///
+/// # Errors
+/// This program is not an app the launcher started, or the daemon refused the launch, saying why.
+pub fn launch_another_instance(app_id: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        unix::launch_another_instance(app_id)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = app_id;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a second instance of an app is asked of the daemon that started it, which this \
+             platform has none of",
+        ))
+    }
+}
 
 /// The automatic host records which process received its descriptor transfer.
 /// A normal later `Command` child retains environment strings, not that transfer.
@@ -62,11 +144,17 @@ mod unix {
     use std::{
         env,
         ffi::OsStr,
-        io,
-        os::unix::{fs::PermissionsExt, process::CommandExt},
+        io::{self, BufRead as _, Write as _},
+        os::{
+            fd::FromRawFd as _,
+            unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
+        },
         path::{Path, PathBuf},
         process::Command,
+        time::Duration,
     };
+
+    use super::LaunchRequest;
 
     fn invalid(message: &str) -> io::Error {
         io::Error::new(io::ErrorKind::InvalidInput, message)
@@ -190,6 +278,55 @@ mod unix {
         }
     }
 
+    /// How long the exchange with the daemon may take: the daemon starts the instance through the
+    /// launcher before it answers, and a slow start is still a start.
+    const LAUNCH_ANSWER_BOUND: Duration = Duration::from_secs(60);
+
+    /// Why a program with no inherited connection cannot be given an instance: what a person
+    /// can do about it, as [`ensure_attached`]'s own refusal says.
+    fn not_launched(app_id: &str) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "this program is not an app this computer launched, so it has no instance of its \
+                 own to ask for: no native service connection (`TILO_SVC_NATIVE_FD`) or workspace \
+                 was handed to it; run it with `tilo-runtime --run-app {app_id}` and name \
+                 `native` in its [sandbox.services]"
+            ),
+        )
+    }
+
+    pub(super) fn launch_another_instance(app_id: &str) -> io::Result<()> {
+        let workspace = env::var("TILO_WORKSPACE_ID")
+            .ok()
+            .filter(|workspace| !workspace.trim().is_empty())
+            .ok_or_else(|| not_launched(app_id))?;
+        let fd = crate::service_fd("native").ok_or_else(|| not_launched(app_id))?;
+        // The exchange runs on a duplicate: the app's own native connection stays open, and this
+        // process keeps it for whatever else it reaches there.
+        // SAFETY: `fcntl` duplicates an open descriptor into one this process owns.
+        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        if duplicate < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `duplicate` is a descriptor this process owns and nothing else uses.
+        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+        let mut stream = UnixStream::from(owned);
+        stream.set_read_timeout(Some(LAUNCH_ANSWER_BOUND))?;
+        stream.set_write_timeout(Some(LAUNCH_ANSWER_BOUND))?;
+        stream.write_all(&LaunchRequest::new(app_id, &workspace, false).line()?)?;
+        stream.flush()?;
+        let mut answer = String::new();
+        std::io::BufReader::new(&stream).read_line(&mut answer)?;
+        let answer: serde_json::Value = serde_json::from_str(answer.trim()).map_err(|error| {
+            io::Error::other(format!("the launch's answer, {answer:?}: {error}"))
+        })?;
+        match answer.get("error").and_then(serde_json::Value::as_str) {
+            Some(error) => Err(io::Error::other(error.to_owned())),
+            None => Ok(()),
+        }
+    }
+
     fn executable(path: &Path) -> bool {
         std::fs::metadata(path)
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
@@ -253,5 +390,43 @@ mod unix {
             && root.join("Cargo.toml").is_file()
             && root.join("crates/core/tilo-runtime/Cargo.toml").is_file())
         .then(|| target.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+mod launch_request_tests {
+    use super::{LAUNCH, LaunchRequest};
+
+    #[test]
+    fn a_launch_names_only_the_app_the_workspace_and_the_presentation() {
+        let request = LaunchRequest::new("dev.tilo.app", "workspace-one", false);
+        let line = request.line().expect("a request line");
+        assert!(line.ends_with(b"\n"), "one line: {line:?}");
+        assert!(
+            LaunchRequest::is_launch(&line),
+            "the daemon reads it as a launch"
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&line).expect("json"),
+            serde_json::json!({
+                "native": LAUNCH,
+                "app_id": "dev.tilo.app",
+                "workspace": "workspace-one",
+                "presentation": false,
+            })
+        );
+        assert_eq!(
+            serde_json::from_slice::<LaunchRequest>(&line).expect("the daemon's own reading"),
+            request
+        );
+        // A program is never named: what runs is the package the daemon has installed.
+        let named = br#"{"native":"launch","app_id":"a","workspace":"w","presentation":false,"executable":"/bin/sh"}"#;
+        assert!(
+            serde_json::from_slice::<LaunchRequest>(named).is_err(),
+            "a launch naming a program is refused"
+        );
+        // Anything else on the endpoint is not a launch.
+        assert!(!LaunchRequest::is_launch(b"{\"native\":\"status\"}\n"));
+        assert!(!LaunchRequest::is_launch(b"not json\n"));
     }
 }

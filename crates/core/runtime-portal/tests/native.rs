@@ -399,3 +399,91 @@ tilo_test_env::scenario! {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_second_instance_is_asked_of_the_daemon;
+
+    phase an_app_asks_over_the_native_connection_the_launcher_handed_it;
+    {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(ours);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_SVC_NATIVE_FD", fd.to_string());
+        env.set("TILO_WORKSPACE_ID", "workspace-one");
+        let answering = std::thread::spawn(move || {
+            let mut reader = BufReader::new(theirs);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            reader
+                .into_inner()
+                .write_all(b"{\"started\":true}\n")
+                .unwrap();
+            line
+        });
+        runtime_portal::native::launch_another_instance("dev.tilo.second")
+            .expect("the daemon started the instance");
+        let request: serde_json::Value =
+            serde_json::from_str(&answering.join().unwrap()).expect("the request the app sent");
+        assert_eq!(
+            request,
+            serde_json::json!({
+                "native": "launch",
+                "app_id": "dev.tilo.second",
+                "workspace": "workspace-one",
+                "presentation": false,
+            })
+        );
+        // SAFETY: the call borrowed this descriptor and never owned it; nothing else uses it now.
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+    }
+
+    phase a_refusal_says_why_and_an_unlaunched_program_says_how_to_run;
+    {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(ours);
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_SVC_NATIVE_FD", fd.to_string());
+            env.set("TILO_WORKSPACE_ID", "workspace-one");
+            let answering = std::thread::spawn(move || {
+                let mut reader = BufReader::new(theirs);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                reader
+                    .into_inner()
+                    .write_all(
+                        b"{\"error\":\"dev.tilo.second is not installed on this computer\"}\n",
+                    )
+                    .unwrap();
+            });
+            let refused = runtime_portal::native::launch_another_instance("dev.tilo.second")
+                .expect_err("the daemon refused the launch");
+            answering.join().unwrap();
+            assert!(
+                refused.to_string().contains("is not installed on this computer"),
+                "{refused}"
+            );
+        }
+        // SAFETY: the call borrowed this descriptor and never owned it; nothing else uses it now.
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_SVC_NATIVE_FD");
+        env.remove("TILO_WORKSPACE_ID");
+        let refused = runtime_portal::native::launch_another_instance("dev.tilo.second")
+            .expect_err("a program the launcher did not start has no instance to ask for");
+        assert!(
+            refused
+                .to_string()
+                .contains("not an app this computer launched"),
+            "{refused}"
+        );
+        assert!(
+            refused
+                .to_string()
+                .contains("--run-app dev.tilo.second"),
+            "{refused}"
+        );
+    }
+}

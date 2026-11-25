@@ -1106,33 +1106,52 @@ fn app_of(session: &Arc<Daemon>) -> crate::seats::AppOf {
 
 /// What answers a connection from a process the daemon started, as the app it runs.
 fn app_take(session: &Arc<Daemon>) -> AppTake {
+    // The launch an app asks on this connection: it reaches the same launch a person's program
+    // asks of the daemon, which starts the installed package and records the instance.
+    #[cfg(unix)]
+    let launch = Some(launch_take(session));
+    #[cfg(not(unix))]
+    let launch = None;
     let session = Arc::downgrade(session);
     Box::new(move |stream, slot, seated, app| {
         let session = session
             .upgrade()
             .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-        serve_app(stream, slot, seated, &session, &app)
+        serve_app(stream, slot, seated, &session, &app, launch.clone())
     })
 }
 
 /// Answer one connection from an app the daemon started, as that app in its workspace: the
-/// action wire alone, decided by the workspace's broker with the app's grants. Anything else an
-/// app asks, its MCP projection above all, is refused before its first call.
+/// action wire, decided by the workspace's broker with the app's grants, and the launch it asks
+/// for another instance of itself. Anything else an app asks, its MCP projection above all, is
+/// refused before its first call.
 fn serve_app(
     stream: Stream,
     slot: ConnectionSlot,
     _seated: Seated,
     session: &Arc<Daemon>,
     app: &AppAt,
+    launch: Option<Arc<LaunchTake>>,
 ) -> io::Result<()> {
     // Closed when the person's part ends, as every connection it serves is.
     let held = session.connections().hold(&stream);
-    serve_as_app(stream, Frames::of_an_app(session, app), (slot, held))
+    serve_as_app(
+        stream,
+        Frames::of_an_app(session, app),
+        launch,
+        (slot, held),
+    )
 }
 
 /// Answer `stream` with `frames`, an app's own connection, on a thread of its own while it lasts,
-/// holding `held` until it ends: the action wire alone, its first line a frame.
-fn serve_as_app(stream: Stream, frames: Frames, held: impl Send + 'static) -> io::Result<()> {
+/// holding `held` until it ends: the action wire, its first line a frame, or the launch `launch`
+/// makes for the app.
+fn serve_as_app(
+    stream: Stream,
+    frames: Frames,
+    launch: Option<Arc<LaunchTake>>,
+    held: impl Send + 'static,
+) -> io::Result<()> {
     std::thread::Builder::new()
         .name("tilo-native-app".into())
         .spawn(move || {
@@ -1151,6 +1170,12 @@ fn serve_as_app(stream: Stream, frames: Frames, held: impl Send + 'static) -> io
                 return;
             }
             let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
+            if let Some(launch) =
+                launch.filter(|_| runtime_portal::native::LaunchRequest::is_launch(&line))
+            {
+                launch(stream, &line, Vec::new());
+                return;
+            }
             if !crate::device::local::is_frame(&line) {
                 // An app reaches the device's actions alone, never its MCP projection.
                 crate::device::local::refuse(
@@ -1191,7 +1216,7 @@ pub(crate) fn own_lines(session: &Arc<Daemon>) -> crate::device::processes::OwnL
         };
         // Closed when the person's part ends, as every connection it serves is.
         let held = session.connections().hold(&ours);
-        serve_as_app(ours, Frames::of_an_app(&session, &at), held)?;
+        serve_as_app(ours, Frames::of_an_app(&session, &at), None, held)?;
         Ok(runtime_portal::packet::descriptor_of(theirs))
     })
 }
@@ -2403,35 +2428,17 @@ pub fn connect(
 
 /// What a launcher asks this computer's daemon to do: start an app.
 #[cfg(unix)]
-const LAUNCH: &str = "launch";
+const LAUNCH: &str = runtime_portal::native::LAUNCH;
 
 /// How long a second start of an app's default presentation waits for the first to show its
 /// window before it is refused.
 #[cfg(unix)]
 const PRESENTATION_GRACE: Duration = Duration::from_secs(3);
 
-/// `{"native":"launch", ...}`: a person's program asking this computer to start an app.
-///
-/// It names only the app, the workspace and whether it is the app's default presentation. What
-/// runs — the program, its sandbox, its grants and the records it reaches — is the installed
-/// package this computer resolves the name to: a program is never one the caller names.
-#[cfg(unix)]
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LaunchRequest {
-    native: String,
-    app_id: String,
-    /// The workspace the caller read from this daemon a moment before.
-    workspace: String,
-    /// Whether this starts the app's default presentation, which one already shown answers.
-    presentation: bool,
-}
-
 /// Whether `request` asks this computer to start an app.
 #[cfg(unix)]
 fn is_launch_request(request: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(request)
-        .is_ok_and(|request| request.get("native").and_then(Value::as_str) == Some(LAUNCH))
+    runtime_portal::native::LaunchRequest::is_launch(request)
 }
 
 /// What answers a launcher's request: it starts the app this computer has installed, on the
@@ -2441,7 +2448,12 @@ fn is_launch_request(request: &[u8]) -> bool {
 fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
     let session = Arc::downgrade(session);
     Arc::new(move |mut stream, request, descriptors| {
-        let reply = match start_requested(&session, request, &descriptors) {
+        // The process at the other end, as the kernel names it: an app this computer started asks
+        // for another instance of itself, and a person's own program for an app it names.
+        let peer = crate::seats::Peer::of(&stream)
+            .ok()
+            .and_then(|peer| peer.pid);
+        let reply = match start_requested(&session, request, &descriptors, peer) {
             Ok(reply) => reply,
             Err(error) => json!({"error": error.to_string()}),
         };
@@ -2453,14 +2465,16 @@ fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
 }
 
 /// Start the app `request` names, as this computer's person asks: the installed package decides
-/// what runs, and the launch path a window takes starts it and records the process.
+/// what runs, and the launch path a window takes starts it and records the process. `peer` is the
+/// process asking, when the kernel names it.
 #[cfg(unix)]
 fn start_requested(
     session: &std::sync::Weak<Daemon>,
     request: &[u8],
     descriptors: &[runtime_portal::process_link::Descriptor],
+    peer: Option<u32>,
 ) -> io::Result<Value> {
-    let request: LaunchRequest = serde_json::from_slice(request)
+    let request: runtime_portal::native::LaunchRequest = serde_json::from_slice(request)
         .map_err(|error| invalid(format!("the launch request: {error}")))?;
     if request.native != LAUNCH {
         return Err(invalid("this is not a launch request"));
@@ -2493,6 +2507,16 @@ fn start_requested(
         return Err(io::Error::other(format!(
             "this computer serves {serving} now, not {}; start the app again",
             request.workspace
+        )));
+    }
+    // An app this computer started asks for another instance of itself: the launch a person's own
+    // program makes is not an app's to make for another app.
+    if let Some((started, _)) = peer.and_then(|pid| daemon.app_of(pid))
+        && started != request.app_id
+    {
+        return Err(io::Error::other(format!(
+            "this process runs {started}: an app asks for another instance of itself, not of {}",
+            request.app_id
         )));
     }
     let apps = daemon.apps();
@@ -2553,13 +2577,11 @@ pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Res
     // Starting the app of the workspace this computer serves is its default presentation: a
     // second start shows the window already running.
     let presentation = workspace == status.workspace;
-    let request = json!({
-        "native": LAUNCH,
-        "app_id": app_id,
-        "workspace": workspace,
-        "presentation": presentation,
-    });
-    let answer = ask_launch(profile, &request)?;
+    let request = runtime_portal::native::LaunchRequest::new(app_id, &workspace, presentation);
+    let answer = ask_launch(
+        profile,
+        &serde_json::to_value(request).map_err(io::Error::other)?,
+    )?;
     match answer.get("error").and_then(Value::as_str) {
         Some(error) => Err(io::Error::other(error.to_owned())),
         None => Ok(()),

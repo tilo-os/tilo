@@ -755,13 +755,14 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
 }
 
 /// A built development app: its manifest and payload in one directory, the SDK app with
-/// `lifetime_ms` and, with `spawn_child`, one that starts a second process of itself. `app` is
-/// the app's own id; the device it is installed on gives it the dev id it runs as.
+/// `lifetime_ms` and, with `second_instance`, a package that asks the daemon for another instance
+/// of itself. `app` is the app's own id; the device it is installed on gives it the dev id it runs
+/// as.
 fn dev_app_build(
     profile: &Path,
     app: &str,
     lifetime_ms: u64,
-    spawn_child: bool,
+    second_instance: bool,
 ) -> Result<PathBuf> {
     let dir = profile.join(format!("dev-app-{}", app.replace('.', "-")));
     std::fs::create_dir_all(&dir)?;
@@ -776,8 +777,8 @@ fn dev_app_build(
         .stderr(std::process::Stdio::null())
         .status();
     std::fs::write(dir.join("tilo-app-lifetime-ms"), format!("{lifetime_ms}\n"))?;
-    if spawn_child {
-        std::fs::write(dir.join("tilo-app-spawn-child"), b"")?;
+    if second_instance {
+        std::fs::write(dir.join("tilo-app-second-instance"), b"")?;
     }
     let isa = match std::env::consts::ARCH {
         "x86_64" => "x86_64 = \"v3\"",
@@ -808,6 +809,8 @@ mode = "off"
 
 [sandbox.services]
 collab = "optional@52"
+# The daemon the app asks for another instance of itself.
+native = "optional@52"
 
 [entrypoint]
 bin = "app"
@@ -824,7 +827,7 @@ fn install_dev(profile: &Path, dir: &Path, app: &str) -> Result<String> {
     let keys = tilo_device_identity::persist::IdentityPaths::under(profile.join("identity"));
     let device = tilo_device_identity::persist::load_device_key(&keys)
         .context("the profile's device key")?;
-    let payload = ["app", "tilo-app-lifetime-ms", "tilo-app-spawn-child"]
+    let payload = ["app", "tilo-app-lifetime-ms", "tilo-app-second-instance"]
         .into_iter()
         .filter(|name| dir.join(name).is_file())
         .map(|name| package_actions::HostFile {
@@ -973,8 +976,9 @@ fn independent_sdk_apps_late_join_and_one_ends_while_the_other_runs() -> Result<
     Ok(())
 }
 
-/// An app whose process starts another of itself gets two connections, and both are its
-/// instances: ordinary process spawning after the app adopted the services it was handed.
+/// An app that asks this computer's daemon for a second instance of itself gets two connections,
+/// and both are its instances: the daemon starts the second as it started the first, attested
+/// like any instance.
 #[test]
 fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result<()> {
     let mut profile = DaemonProfile::unstarted()?;
