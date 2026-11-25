@@ -1850,17 +1850,19 @@ fn placed(t: Task, project: Option<Project>) -> Option<Text> {
     } else { place }
 }
 
-/// A task's number stands before its title, as `#12` names it; a list row says where the task
-/// stands in its work, and a card, whose column says that, how far its steps are and its labels.
+/// A task's number stands beside where it stands in its work, in the row's facts, as `#12` names
+/// it: a row is known, found and quoted by what it says first, and its number is one of its facts.
+/// A list row says where the task stands in its work, and a card, whose column says that, how far
+/// its steps are and its labels.
 view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>, card: Bool) {
     let due: Option<Date> = if day { .none } else { own_due(t, under) }
+    let standing = if card { subtask_count(t) ?? "" } else { status_word(t.status) }
     row(
         t.title,
-        prefix: "#{t.number}",
         checkbox: t.done,
         check: check(t),
         secondary: row_facts(t, project, card),
-        value: if card { subtask_count(t) ?? "" } else { status_word(t.status) },
+        value: if standing == "" { "#{t.number}" } else { "#{t.number} · {standing}" },
         note: proposal_note(t),
         meta: due,
         mark: t.priority,

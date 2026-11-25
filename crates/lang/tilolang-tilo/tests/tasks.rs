@@ -840,8 +840,9 @@ fn lists(view: &ViewInstance) -> Vec<List> {
         .collect()
 }
 
-/// A task's row names it by its number before its title and says where it stands in its work;
-/// its card on a board, whose column says that, says how far its steps are and its labels.
+/// A task's row is known by its title; its number stands in its facts beside where it stands in its
+/// work, and its card on a board, whose column says that, says its number, how far its steps are
+/// and its labels.
 #[test]
 fn a_tasks_row_and_card_say_its_number_status_steps_and_labels() {
     let (ada, root) = workspace();
@@ -866,11 +867,13 @@ fn a_tasks_row_and_card_say_its_number_status_steps_and_labels() {
     go_to(&mut view, "Tasks");
     let row = home_row_node(&mut view, &target(&post).expect("a task"));
     let drawn = *row.of_kind("ui.ListRow").first().expect("the row is drawn");
+    // The row's name is its title: its number is a fact beside where it stands, never before the
+    // name a person hears or finds it by.
+    assert_eq!(drawn.props.get("prefix"), None);
     assert_eq!(
-        drawn.props.get("prefix"),
-        Some(&Value::text(format!("#{number}")))
+        drawn.props.get("value"),
+        Some(&Value::text(format!("#{number} · In progress")))
     );
-    assert_eq!(drawn.props.get("value"), Some(&Value::text("In progress")));
 
     let Value::Ref(at) = &root else {
         panic!("a resource: {root:?}")
@@ -893,14 +896,11 @@ fn a_tasks_row_and_card_say_its_number_status_steps_and_labels() {
         .of_kind("ui.ListRow")
         .first()
         .expect("the card draws its row");
-    assert_eq!(
-        drawn.props.get("prefix"),
-        Some(&Value::text(format!("#{number}")))
-    );
+    assert_eq!(drawn.props.get("prefix"), None);
     assert_eq!(
         drawn.props.get("value"),
-        Some(&Value::text("1/2")),
-        "one of two steps done"
+        Some(&Value::text(format!("#{number} · 1/2"))),
+        "its number and one of two steps done"
     );
     assert_eq!(drawn.props.get("secondary"), Some(&Value::text("launch")));
 }
