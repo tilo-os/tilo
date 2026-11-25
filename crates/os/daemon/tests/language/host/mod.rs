@@ -522,7 +522,7 @@ impl Host {
             root,
             root.verifying_key().to_bytes(),
             label,
-            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+            DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
         );
         let direct = tilo_api::direct::Direct::here(
             self.daemon() as Arc<dyn tilo_api::session::Here>,
@@ -534,13 +534,13 @@ impl Host {
         Key { direct }
     }
 
-    /// A key of the person's reaching all their workspaces, named `label`: the key an SDK or a
-    /// backend keeps, calling `/v1` and MCP.
+    /// A server key of the person's reaching all their workspaces, named `label`: the key an
+    /// SDK or a backend keeps, calling `/v1` and MCP as they do.
     #[must_use]
     pub fn key(&self, label: &str) -> Key {
         let (key, cert) = self.certify(
             label,
-            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+            DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
         );
         let direct = tilo_api::direct::Direct::here(
             self.daemon() as Arc<dyn tilo_api::session::Here>,
@@ -552,8 +552,8 @@ impl Host {
         Key { direct }
     }
 
-    /// A key of the person's reaching `workspace` alone, named `label`: what a backend keyed for
-    /// one customer's workspace is.
+    /// A server key of the person's reaching `workspace` alone, named `label`: what a backend
+    /// keyed for one customer's workspace is.
     ///
     /// # Panics
     ///
@@ -565,7 +565,25 @@ impl Host {
             .into_bytes();
         let (key, cert) = self.certify(
             label,
-            DeviceCapabilities::agent_grant(AgentScope::Workspace(id)),
+            DeviceCapabilities::own_key_grant(AgentScope::Workspace(id)),
+        );
+        let direct = tilo_api::direct::Direct::here(
+            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            key,
+            cert,
+            label,
+        )
+        .unwrap();
+        Key { direct }
+    }
+
+    /// An agent's grant of the person's, named `label`, reaching all their workspaces: a key
+    /// their root certified for an agent, which acts as that agent and never as them.
+    #[must_use]
+    pub fn agent_key(&self, label: &str) -> Key {
+        let (key, cert) = self.certify(
+            label,
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
         );
         let direct = tilo_api::direct::Direct::here(
             self.daemon() as Arc<dyn tilo_api::session::Here>,

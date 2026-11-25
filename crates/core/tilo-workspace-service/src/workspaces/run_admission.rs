@@ -244,11 +244,14 @@ impl Workspaces {
     /// Admit a run of the key `key` certifies, in `workspace`, a workspace this service governs,
     /// presenting `presentation` (the key's own proof for the workspace): the caller its calls
     /// are is the key itself, never its person, so each call is decided by what the workspace
-    /// grants that key ([`Self::enter`] keeps a key's grant as it admits it).
+    /// grants that key ([`Self::enter`] keeps a key's grant as it admits it). A key the person
+    /// made for their own programs is them at the key; an agent's grant is the agent alone, and
+    /// its calls are decided by what the workspace grants that agent.
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here (a member copy's key enters where it is kept).
+    /// The workspace is not governed here (a member copy's key enters where it is kept), or the
+    /// key's grant does not reach it.
     pub async fn admit_key(
         &self,
         workspace: &str,
@@ -259,13 +262,31 @@ impl Workspaces {
         if self.member_material(selected).is_some() {
             return Err("this workspace is kept on another device; its keys act there".into());
         }
+        // A grant reaches the workspaces its person approved it for, and no others: a key for
+        // one workspace acts in that one alone.
+        if let Some(scope) = key.capabilities.agent
+            && !scope.reaches(workspace)
+        {
+            return Err("this key's grant does not reach that workspace".into());
+        }
         self.workspace(workspace)
             .await
             .map_err(|_| "this device does not keep that workspace")?;
-        let caller = Caller::authenticated(key.user_public_key, key.device_public_key)
-            .in_workspace(workspace)
-            .from_foreign_device(true)
-            .in_new_execution();
+        // A server key is the person at the key, as its certificate says
+        // ([`tilo_user_identity::DeviceCapabilities::own_key_in`]). Any other grant is an
+        // agent's: it acts as its own member, never as the person who delegated it.
+        let caller = if key.capabilities.agent.is_some() && !key.capabilities.server_key {
+            Caller::delegated_agent(
+                tilo_action_policy::key_agent_id(&key.device_public_key),
+                key.user_public_key,
+                key.device_public_key,
+            )
+        } else {
+            Caller::authenticated(key.user_public_key, key.device_public_key)
+        }
+        .in_workspace(workspace)
+        .from_foreign_device(true)
+        .in_new_execution();
         self.admitted_run(selected, caller, key, Pinned::Own, presentation)
     }
 

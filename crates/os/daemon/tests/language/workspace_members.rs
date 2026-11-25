@@ -257,3 +257,93 @@ fn an_administrators_page_may_not_unmake_an_administrator_nor_take_the_workspace
         );
     });
 }
+
+/// An agent's grant is the agent and no more: a key the person's root certified for an agent is
+/// refused letting someone in, which the person may do, and the workspace invites no one.
+#[test]
+fn an_agents_grant_is_refused_what_its_grant_does_not_allow() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let agent = host.agent_key("Reviewer's agent");
+        let inviting =
+            format!("/v1/workspaces/{workspace}/resources/workspace/invitations/actions/invite");
+        let (status, refused) = agent
+            .request(
+                "POST",
+                &inviting,
+                &[
+                    ("content-type", "application/json"),
+                    ("tilo-invocation", "invite"),
+                ],
+                json!({"role": "editor", "invitee_name": "Gooseberry jam"})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .await;
+        assert_ne!(status, 200, "an agent's grant invites no one: {refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|said| said.contains("may not invite")),
+            "the agent is refused by its own grant: {refused}"
+        );
+
+        // The same invitation, by a device of the person's: the request is the workspace's to
+        // take, and the key's grant is what refused it.
+        let computer = host.member("Ada's computer", &workspace).await;
+        let invited = computer
+            .call(
+                WORKSPACE_GOVERNANCE_PROVIDER,
+                at(&workspace, "invite"),
+                &json!({"role": "editor", "invitee_name": "Gooseberry jam"}),
+            )
+            .await;
+        assert!(
+            matches!(invited, Ok(InvocationUpdate::Succeeded { .. })),
+            "the person's own computer invites: {invited:?}"
+        );
+    });
+}
+
+/// A key is refused the workspace itself beyond the administration: it renames nothing, which a
+/// device of its person's does, and its person's rename is the one the workspace takes.
+#[test]
+fn a_key_the_person_approved_renames_no_workspace() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let key = host.key("Ada's backend");
+        let renaming = format!("/v1/workspaces/{workspace}/resources/workspace/actions/rename");
+        let (status, refused) = key
+            .post(&renaming, &json!({"name": "Named by a key"}))
+            .await;
+        assert_ne!(status, 200, "the key renames no workspace: {refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|said| said.contains("this computer is not one of the person's own")),
+            "the workspace's own rule refuses it: {refused}"
+        );
+
+        // The person's own computer renames it, so the refusal is the key's and not the
+        // workspace's.
+        let computer = host.member("Ada's computer", &workspace).await;
+        let renamed = computer
+            .call(
+                WORKSPACE_GOVERNANCE_PROVIDER,
+                at(&workspace, "rename"),
+                &json!({"name": "Named by its owner"}),
+            )
+            .await;
+        match renamed {
+            Ok(InvocationUpdate::Succeeded { output, .. }) => assert_eq!(
+                output
+                    .value
+                    .as_ref()
+                    .and_then(|answer| answer["name"].as_str()),
+                Some("Named by its owner"),
+                "the person's own computer renames it"
+            ),
+            other => panic!("the person's own computer renames it: {other:?}"),
+        }
+    });
+}

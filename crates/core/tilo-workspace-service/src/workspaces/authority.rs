@@ -33,8 +33,9 @@
 //! signed on a device of theirs, never relayed.
 //!
 //! An agent's call is decided by its own grants first, where it is asked
-//! ([`super::actions::agents`]); here it is held to what its person may, as
-//! every key of theirs is.
+//! ([`super::actions::agents`]); here it is held to what its person may, and a
+//! key that is no device of theirs to no more than the workspace leaves a device
+//! that is not theirs.
 
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
@@ -54,6 +55,11 @@ pub(super) enum WorkspaceOp<'a> {
     /// One of the workspace's governance actions on the workspace itself
     /// ([`roles::governance`]).
     Govern(&'static str),
+    /// Reading one of the workspace's governance listings through `action`, the
+    /// governance action whose grant a reading member holds
+    /// ([`roles::governance`]): reading changes nothing, so what a key may not
+    /// change ([`Self::Govern`]) it may still read.
+    Read(&'static str),
     /// Let someone in at `Role` (`add-member`), never above the role of whoever lets them in:
     /// issuing an invitation, which is letting its holder in put off, and redeeming it, decided
     /// then by its issuer's grants.
@@ -90,7 +96,7 @@ impl WorkspaceOp<'_> {
     fn name(self) -> &'static str {
         match self {
             Self::Host(operation) => operation.name(),
-            Self::Govern(action) => action,
+            Self::Govern(action) | Self::Read(action) => action,
             Self::MakeAdministrator => "make-administrator",
             Self::MakeOwner => "make-owner",
             Self::Change(change) => change.action(),
@@ -380,7 +386,7 @@ fn decide_by_governance(
     let permits = |who: &str, foreign: bool| -> Result<(), tilo_action_policy::Refusal> {
         let authority = member.policy.person_on_device(who, foreign);
         match op {
-            WorkspaceOp::Govern(action) => {
+            WorkspaceOp::Govern(action) | WorkspaceOp::Read(action) => {
                 member.policy.check_action(&authority, action, &cx, false)
             }
             WorkspaceOp::Admit(role) => member.policy.check_admission(&authority, role, &cx, false),
@@ -411,10 +417,14 @@ fn decide_by_governance(
             }
         }
     };
-    // A key is no device of the person's own: what only one of those may change — the
-    // administration, the workspace itself, a place — it may not, and the workspace's own
-    // refusal says so.
+    // A key is no device of the person's own. What the workspace's own rule leaves to a device
+    // of theirs it may not do, and the workspace's refusal says so: the administration, the
+    // workspace itself, and a place. It lets people in at a role its person may hand out, and
+    // reads what the workspace lists. Its own rule decides it: asked as a member whose device is
+    // not theirs, the workspace refuses what only its owner or its administrators may change
+    // ([`tilo_action_policy::Cap::FOREIGN_DEVICE`]).
     if !crate::workspace_access::person_device(device) {
+        let capped = member.policy.person_on_device(person, true);
         let refusal = match op {
             WorkspaceOp::MakeAdministrator | WorkspaceOp::AdmitAdministrator => {
                 Some(tilo_action_policy::Refusal::Administrators {
@@ -429,7 +439,26 @@ fn decide_by_governance(
                     unmaking: true,
                 })
             }
-            _ => None,
+            // Letting someone in, at a role the workspace already let this key hand out, and
+            // the listings a reading member holds.
+            WorkspaceOp::Admit(_)
+            | WorkspaceOp::Read(_)
+            | WorkspaceOp::Change(Change::AddMember { .. })
+            | WorkspaceOp::Host(_) => None,
+            // Letting people in is the one governance a key keeps.
+            WorkspaceOp::Govern(action) if action == roles::governance::ADD_MEMBER => None,
+            // The workspace itself: its name, its settings and its grants.
+            WorkspaceOp::Govern(action) => member
+                .policy
+                .check_action(&capped, action, &cx, false)
+                .err(),
+            // Who is in it and what they hold, beyond letting someone in.
+            WorkspaceOp::Change(change) => member
+                .policy
+                .check(person, &capped, change, &cx, false)
+                .err(),
+            // Both were turned into one of the above above.
+            WorkspaceOp::Place(..) | WorkspaceOp::Role(..) => None,
         };
         if let Some(refusal) = refusal {
             return Err(refused(op, &refusal));

@@ -174,6 +174,9 @@ impl Workspaces {
         let workspace = member.policy.workspace.clone();
         let mut granted = acting.handed_preset(&workspace);
         granted.extend(caller.granted());
+        // The approval its person signed is the key's own grant: what the workspace hands the
+        // agent a key acts as (its certificate names it).
+        granted.extend(member.granted.iter().cloned());
         AgentGrants {
             agent: Some(agent.clone()),
             workspace,

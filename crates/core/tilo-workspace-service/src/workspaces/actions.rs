@@ -2556,6 +2556,14 @@ impl Workspaces {
             // Anyone may leave: removing themselves is decided by the change itself.
             let leaving = action == governance::REMOVE_MEMBER
                 && args.key("person")? == Some(device.user_public_key);
+            // A listing is a read, and a change to who is in the workspace is decided where it
+            // is made ([`Self::check_governance`]): the pre-check is a probe then, and a key
+            // may read what the workspace lists without the governance it may not change.
+            let reading = VERBS
+                .iter()
+                .find(|verb| verb.id == action)
+                .is_some_and(|verb| verb.kind == ActionKind::Read)
+                || Self::governance_is_decided_later(action);
             let permitted = match check {
                 "" => true,
                 _ if leaving => true,
@@ -2563,7 +2571,11 @@ impl Workspaces {
                 check => self.permits(
                     &device,
                     Some(&workspace),
-                    WorkspaceOp::Govern(check),
+                    if reading {
+                        WorkspaceOp::Read(check)
+                    } else {
+                        WorkspaceOp::Govern(check)
+                    },
                     tilo_clock::unix_now_ns(),
                 ),
             };
@@ -2596,6 +2608,21 @@ impl Workspaces {
             args: &args,
         };
         self.governance_run(action, call).await
+    }
+
+    /// Whether the change `action` makes is decided where it is made, so the check a governance
+    /// call makes before it is only a probe: [`Self::check_governance`] decides a change to who
+    /// is in the workspace, and this host decides naming it where it renames it.
+    fn governance_is_decided_later(action: &str) -> bool {
+        matches!(
+            action,
+            ADD_MEMBER
+                | WORKSPACE_INVITE
+                | governance::REMOVE_MEMBER
+                | governance::BAN
+                | governance::UNBAN
+                | governance::RENAME
+        )
     }
 
     /// The person's own checks of the governance action `action` with `args`
@@ -3870,6 +3897,15 @@ impl Workspaces {
         };
         match action {
             governance::RENAME => {
+                // The workspace itself changes from a device of its person's own: the check a
+                // governance call makes before it is a probe ([`Self::governance_is_decided_later`]).
+                self.check_now(
+                    device,
+                    Some(workspace),
+                    WorkspaceOp::Govern(governance::RENAME),
+                )
+                .await
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 let renamed = self
                     .rename(workspace, args.required_text("name")?)
                     .await
