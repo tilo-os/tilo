@@ -3,7 +3,7 @@
 //! Settings connects Google Drive, `OneDrive`, Dropbox, Nextcloud, `WebDAV`
 //! and `iCloud` Drive accounts; the storage daemon mounts them. Mail signs
 //! in to Gmail and Outlook. Every `OAuth` sign-in uses Tilo's one client
-//! registration per provider ([`ClientTable`], `oauth-clients.toml`), with
+//! registration per provider ([`ClientTable`]), with
 //! the scopes of its use ([`OAuthUse`]: files or mail), and every grant is
 //! sealed and refreshed here. The long-lived secret never leaves this crate:
 //!

@@ -74,8 +74,6 @@ tilo-seal = { path = "../../core/tilo-seal", optional = true }
 tilo-oauth = { path = "../tilo-oauth", default-features = false }
 serde.workspace = true
 tracing.workspace = true
-# The committed public client registrations (`oauth-clients.toml`).
-toml.workspace = true
 tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
 reqwest = { workspace = true, optional = true, features = ["blocking", "form", "json"] }
 serde_json = { workspace = true, optional = true }

@@ -1,7 +1,7 @@
 //! The unofficial subscription sign-ins against the live services.
 //!
 //! Signing in with a `ChatGPT` account and with GitHub for Copilot uses the
-//! public clients of `OpenAI`'s and GitHub's own tools (`oauth-clients.toml`),
+//! public clients of `OpenAI`'s and GitHub's own tools (`ClientTable::defaults`),
 //! which either company may change or close at any time. These canaries sign
 //! nothing in and spend nothing: they check that each client, redirect and
 //! endpoint Tilo relies on still answers the way the sign-in expects, so a

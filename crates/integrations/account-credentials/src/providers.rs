@@ -2,7 +2,7 @@
 //!
 //! An [`OAuthIssuer`] is a provider that registered Tilo as an installed app
 //! and signs the person in (Google, Microsoft, Dropbox): its endpoints, and
-//! one client registration in `oauth-clients.toml`. An [`OAuthUse`] is one
+//! one client registration in [`crate::ClientTable`]. An [`OAuthUse`] is one
 //! thing a grant from that issuer is for ([`Capability::Files`] for cloud
 //! storage, [`Capability::Mail`] for IMAP and SMTP). Scopes belong to the
 //! use, so Google Drive and Gmail share Google's client with different

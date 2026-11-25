@@ -454,9 +454,9 @@ tilo_test_env::scenario! {
         let root = dir.path().join("tilo");
         let server = FakeAuthorizationServer::start();
         let mut table = crate::ClientTable::default();
-        table.google.client_id = "shared.apps.googleusercontent.com".into();
-        table.google.scopes.mail = vec!["mail".into()];
-        table.google.scopes.models = vec!["cloud-platform".into()];
+        table.google.client_id = "shared.apps.googleusercontent.com";
+        table.google.scopes.mail = &["mail"];
+        table.google.scopes.models = &["cloud-platform"];
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove("TILO_OAUTH_GOOGLE_CLIENT_ID")
             .remove("TILO_OAUTH_GOOGLE_CLIENT_SECRET");
@@ -719,17 +719,11 @@ tilo_test_env::scenario! {
         {
             return;
         }
-        let table = crate::ClientTable::parse(
-            r#"
-        [google]
-        client_id = "shared.apps.googleusercontent.com"
-        client_secret = "desktop-secret"
-        [google.scopes]
-        files = ["drive"]
-        mail = ["mail"]
-        "#,
-        )
-        .unwrap();
+        let mut table = crate::ClientTable::default();
+        table.google.client_id = "shared.apps.googleusercontent.com";
+        table.google.client_secret = "desktop-secret";
+        table.google.scopes.files = &["drive"];
+        table.google.scopes.mail = &["mail"];
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove("TILO_OAUTH_GOOGLE_CLIENT_ID")
             .remove("TILO_OAUTH_GOOGLE_CLIENT_SECRET")
@@ -843,11 +837,11 @@ tilo_test_env::scenario! {
     {
         let server = FakeAuthorizationServer::start();
         let mut table = crate::ClientTable::default();
-        table.spotify.client_id = "registered-public-client".into();
-        table.spotify.scopes.music = vec![
-            "user-read-private".into(),
-            "user-library-read".into(),
-            "user-library-modify".into(),
+        table.spotify.client_id = "registered-public-client";
+        table.spotify.scopes.music = &[
+            "user-read-private",
+            "user-library-read",
+            "user-library-modify",
         ];
         let use_ = crate::OAuthUse::new(crate::OAuthIssuer::Spotify, crate::Capability::Music);
         let credential_store = CredentialStore::for_root(None)
@@ -877,12 +871,12 @@ tilo_test_env::scenario! {
 
 fn google_services_store(files: bool, mail: bool) -> CredentialStore {
     let mut table = crate::ClientTable::default();
-    table.google.client_id = "google-services-client".into();
+    table.google.client_id = "google-services-client";
     if files {
-        table.google.scopes.files = vec!["https://www.googleapis.com/auth/drive".into()];
+        table.google.scopes.files = &["https://www.googleapis.com/auth/drive"];
     }
     if mail {
-        table.google.scopes.mail = vec!["https://mail.google.com/".into()];
+        table.google.scopes.mail = &["https://mail.google.com/"];
     }
     CredentialStore::for_root(None).with_client_table(table)
 }

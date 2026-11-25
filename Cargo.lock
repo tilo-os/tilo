@@ -133,7 +133,6 @@ dependencies = [
  "tilo-secrets",
  "tilo-test-env",
  "tilo-test-http",
- "toml 1.0.6+spec-1.1.0",
  "tracing",
  "url",
  "uuid",

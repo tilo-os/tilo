@@ -3,7 +3,7 @@
 //! password.
 //!
 //! Mail owns none of the machinery: the client registration and mail scopes come from Tilo's
-//! one client table ([`account_credentials::ClientTable`], `oauth-clients.toml`). The grant is
+//! one client table ([`account_credentials::ClientTable`]). The grant is
 //! an entry of the workspace's vault, renewed where the vault is; Mail is handed only a current
 //! access token, which the mail client presents as `XOAUTH2`.
 

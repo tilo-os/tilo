@@ -564,7 +564,7 @@ impl CredentialStore {
     }
 
     /// Use `table` instead of the committed client registrations
-    /// (`oauth-clients.toml`); environment overrides still apply.
+    /// ([`ClientTable::defaults`]); environment overrides still apply.
     #[must_use]
     pub fn with_client_table(mut self, table: ClientTable) -> Self {
         self.clients = Arc::new(table);
