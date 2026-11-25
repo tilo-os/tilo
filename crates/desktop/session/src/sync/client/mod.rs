@@ -201,9 +201,10 @@ impl SiblingDials {
         }
     }
 
-    /// Dial `device` as a sibling, unless it is this device. The peer network dials again whatever has no
-    /// session, for as long as that lasts.
-    pub(crate) fn dial(&self, device: [u8; 32]) {
+    /// Dial `device` as a sibling, unless it is this device, at where its record says it answers
+    /// (the addresses its own daemon wrote) and through the person's relay when they name one.
+    /// The peer network dials again whatever has no session, for as long as that lasts.
+    pub(crate) fn dial(&self, device: [u8; 32], addresses: &[std::net::SocketAddr]) {
         if device == self.ours {
             return;
         }
@@ -214,6 +215,9 @@ impl SiblingDials {
         let mut addr = EndpointAddr::new(id);
         if let Some(relay) = &self.relay {
             addr = addr.with_relay_url(relay.clone());
+        }
+        for address in addresses {
+            addr = addr.with_ip_addr(*address);
         }
         let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
     }
@@ -1522,8 +1526,8 @@ impl Client {
             let mut changes = store.changes();
             let mut again = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
-                for device in store.kept_devices() {
-                    dials.dial(device.device_public_key);
+                for (device, addresses) in store.kept_devices_at() {
+                    dials.dial(device.device_public_key, &addresses);
                 }
                 wake();
                 tokio::select! {

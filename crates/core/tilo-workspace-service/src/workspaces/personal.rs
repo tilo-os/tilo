@@ -272,6 +272,41 @@ impl Workspaces {
         .await
     }
 
+    /// Say in the person's record of their devices where this device's endpoint answers: the
+    /// socket addresses it is bound at, so their other devices dial it directly when no relay
+    /// and no discovery find it — how an offline or local-only device is paired on its own
+    /// network. A relay is not among them: every endpoint of a device reads that from the
+    /// setting. A service whose endpoint is bound nowhere yet writes nothing.
+    ///
+    /// # Errors
+    /// The record did not take the fact: it is not held here, or a write was refused.
+    pub async fn say_endpoint(&self) -> Result<(), String> {
+        let addrs: Vec<std::net::SocketAddr> = self
+            .endpoint_addr()
+            .addrs
+            .iter()
+            .filter_map(|address| match address {
+                iroh_base::TransportAddr::Ip(socket) => Some(*socket),
+                _ => None,
+            })
+            .collect();
+        if addrs.is_empty() {
+            return Ok(());
+        }
+        let cert = &self.inner.host.cert;
+        let value = hex::encode(
+            postcard::to_allocvec(&addrs)
+                .map_err(|error| format!("a device's endpoint: {error}"))?,
+        );
+        self.keep_fact(
+            &cert.user_public_key,
+            &hex::encode(cert.device_public_key),
+            devices::ENDPOINT_FACT,
+            &value,
+        )
+        .await
+    }
+
     /// Say that a session of `cert`'s device was here at `at_ms`, opening or
     /// ending. Only a device the person's record holds says it; an opening is
     /// written at most once a minute, and an ending always is.

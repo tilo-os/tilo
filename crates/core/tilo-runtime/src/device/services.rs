@@ -1891,6 +1891,7 @@ impl Daemon {
                 )
             })
             .transpose()?;
+        let addr_watch = endpoint.watch_addr();
         let workspaces = open_workspaces(
             &identity,
             endpoint,
@@ -1898,6 +1899,27 @@ impl Daemon {
             key_sessions.as_ref(),
             keeping.as_ref().zip(itself.clone()),
         )?;
+        // The person's record of their devices says where this one answers, so their other
+        // devices dial it directly when no relay and no discovery find it: the addresses are
+        // the ones the endpoint is bound at, told again whenever a network change moves them.
+        {
+            let workspaces = Arc::clone(&workspaces);
+            tilo_rt::app().handle().spawn(async move {
+                use iroh::Watcher as _;
+                let mut watch = addr_watch;
+                loop {
+                    if let Err(error) = workspaces.service().workspaces().say_endpoint().await {
+                        tracing::debug!(
+                            %error,
+                            "the person's record does not say where this device answers"
+                        );
+                    }
+                    if watch.updated().await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
         // The records the device kept before anyone claimed it: its settings. The person's
         // services carry them into their own workspace, where they read them through the same
         // record API, and the settings actions write the one store from then on.

@@ -642,3 +642,47 @@ async fn a_change_of_the_devices_record_names_the_app_that_keeps_it() {
     );
     drop(desk);
 }
+
+/// The desktop says where its endpoint answers in the record of the person's devices; the laptop
+/// reads those addresses there, so it dials the desktop directly when no relay and no discovery
+/// find it.
+#[tokio::test]
+async fn a_devices_record_says_where_its_endpoint_answers() {
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (desk, desk_cert, laptop, own) = desk_and_laptop(one.path(), two.path()).await;
+    let answers: Vec<std::net::SocketAddr> = desk
+        .workspaces()
+        .endpoint_addr()
+        .addrs
+        .iter()
+        .filter_map(|address| match address {
+            iroh_base::TransportAddr::Ip(socket) => Some(*socket),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !answers.is_empty(),
+        "the desktop's endpoint is bound at an address"
+    );
+    desk.workspaces()
+        .say_endpoint()
+        .await
+        .expect("the desktop says where its endpoint answers");
+    let told = answers.clone();
+    let key = hex::encode(desk_cert.device_public_key);
+    tilo_test_env::within("the laptop reads where the desktop answers", async move {
+        loop {
+            let devices = read_on::<Devices>(laptop.workspaces(), &own, DEVICES).await;
+            if devices.is_ok_and(|devices| {
+                devices
+                    .devices
+                    .iter()
+                    .any(|(device, kept)| device.as_str() == key && kept.endpoint_addrs() == told)
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}

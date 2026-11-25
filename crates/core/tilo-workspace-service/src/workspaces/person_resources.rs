@@ -238,6 +238,17 @@ impl PersonResources {
     /// The person's devices whose certificates hold now, as their own workspace says them.
     #[must_use]
     pub fn kept_devices(&self) -> Vec<DeviceCert> {
+        self.kept_devices_at()
+            .into_iter()
+            .map(|(cert, _)| cert)
+            .collect()
+    }
+
+    /// The person's devices whose certificates hold now, each with where it says its endpoint
+    /// answers: the addresses another of their devices dials it at when no relay and no
+    /// discovery find it.
+    #[must_use]
+    pub fn kept_devices_at(&self) -> Vec<(DeviceCert, Vec<std::net::SocketAddr>)> {
         let Some(own) = self.certificate() else {
             return Vec::new();
         };
@@ -253,7 +264,7 @@ impl PersonResources {
                 let cert: DeviceCert = postcard::from_bytes(&bytes).ok()?;
                 (cert.user_public_key == own.user_public_key
                     && tilo_user_identity::verify_device_cert_at(&cert, now).is_ok())
-                .then_some(cert)
+                .then(|| (cert, kept.endpoint_addrs()))
             })
             .collect()
     }

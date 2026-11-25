@@ -830,7 +830,20 @@ impl Workspaces {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let workspaces = self.clone();
             let cert = admitted.cert;
-            runtime.spawn(async move { workspaces.session_opened(&cert).await });
+            runtime.spawn(async move {
+                workspaces.session_opened(&cert).await;
+                // This device's own session opened: its record now says where its endpoint
+                // answers, so its person's other devices dial it directly when no relay and no
+                // discovery find it.
+                if cert.device_public_key == workspaces.inner.host.cert.device_public_key
+                    && let Err(error) = workspaces.say_endpoint().await
+                {
+                    tracing::debug!(
+                        %error,
+                        "the person's record does not say where this device answers"
+                    );
+                }
+            });
         }
         Ok(admitted.scope)
     }

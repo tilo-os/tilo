@@ -77,6 +77,11 @@ pub use tilo_user_identity::root_holder::root_holder_digest;
 /// with a host, ms since the epoch, little-endian.
 pub const SEEN_FACT: &str = "seen";
 
+/// The fact under which a device's entry keeps where its endpoint answers, as postcard of its
+/// socket addresses in hex: the addresses another of the person's devices dials it at when no
+/// relay and no discovery find it, as an offline device pairs on its own network.
+pub const ENDPOINT_FACT: &str = "endpoint";
+
 /// The person's devices, by device key (lowercase hex), their Wi-Fi and their answers to boots.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Devices {
@@ -395,6 +400,24 @@ impl Device {
             .try_into()
             .ok()?;
         Some(i64::from_le_bytes(bytes))
+    }
+
+    /// Where this device says its endpoint answers, as its entry keeps it: the addresses another
+    /// of the person's devices dials it at when no relay and no discovery find it. Empty while
+    /// it has said none.
+    #[must_use]
+    pub fn endpoint_addrs(&self) -> Vec<std::net::SocketAddr> {
+        let Some(value) = self.facts.get(ENDPOINT_FACT) else {
+            return Vec::new();
+        };
+        let Ok(bytes) = hex::decode(value) else {
+            return Vec::new();
+        };
+        tilo_failure::ignored!(
+            "a device's endpoint fact is the device's own to write",
+            postcard::from_bytes(&bytes).ok()
+        )
+        .unwrap_or_default()
     }
 }
 
