@@ -1341,13 +1341,15 @@ fn governance_tree(mut rows: Vec<CatalogueRow>, name: &str) -> Vec<CatalogueRow>
         rows.insert(0, root);
     }
     let holds = rows.iter().any(|row| !row.parent_resource.is_empty());
-    let surface = String::from_utf8_lossy(WORKSPACE_SURFACE).into_owned();
+    let mut surface = Some(String::from_utf8_lossy(WORKSPACE_SURFACE).into_owned());
     for row in &mut rows {
         if row.parent_resource.is_empty() {
             row.has_children = holds;
             // The workspace's own actions are what its root publishes: a caller reads their
-            // surface from the row it finds them under.
-            row.surface = Some(surface.clone());
+            // surface from the first row of the workspace's it finds. It travels once, on that
+            // row, and not again on every row beside it: a copy on each made a page of them
+            // larger than the frame it is sent in.
+            row.surface = surface.take();
         }
     }
     rows
