@@ -373,11 +373,6 @@ pub struct RecordHost<'a> {
     pub device: &'a [u8; 32],
 }
 
-/// An action named as its app's own surface publishes it: what a change that names an action is
-/// checked against, since the name a caller signed and the name the app publishes may be two for
-/// one action.
-pub type PublishedName<'a> = &'a dyn Fn(&str) -> Option<String>;
-
 /// Whether the change `context` records is outside the call `target` names: another resource
 /// than the call's, or another verb than the one it asked. Such a change counts only as a step
 /// the called action declares ([`verify_recorded`]).
