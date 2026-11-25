@@ -97,6 +97,67 @@ async fn opened_and_written(key: &host::Key, workspace: &str) {
     .await;
 }
 
+/// The channel `name` made in the workspace's chat through `key`: the address its messages go
+/// to, as the call that made it names the resource.
+async fn did_channel(key: &host::Key, workspace: &str, name: &str) -> String {
+    let answer = act(
+        key,
+        workspace,
+        "chat",
+        "new_channel",
+        &json!({"name": name}),
+    )
+    .await;
+    assert_eq!(answer["status"], "ok", "chat#new_channel: {answer}");
+    answer["resources"]
+        .as_array()
+        .and_then(|made| made.first())
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("the call names the channel it made: {answer}"))
+        .to_owned()
+}
+
+/// Every message the conversation at `path` lists, read at the path the read gave for it: the
+/// listings, and the text of every one read.
+async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Value>, String) {
+    let mut listed: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut arguments = json!({"workspace": workspace, "path": path});
+        if let Some(cursor) = &cursor {
+            arguments["cursor"] = json!(cursor);
+        }
+        let reply = key.tool_structured("tilo_read", &arguments).await;
+        assert_ne!(reply["isError"], true, "{reply}");
+        let read = &reply["structuredContent"];
+        listed.extend(read["children"].as_array().cloned().unwrap_or_default());
+        cursor = read["cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let messages: Vec<Value> = listed
+        .iter()
+        .filter(|child| child["list"] == "messages")
+        .cloned()
+        .collect();
+    let mut read = String::new();
+    for (index, message) in messages.iter().enumerate() {
+        let at = message["path"]
+            .as_str()
+            .expect("a listed message has a path");
+        let reply = key
+            .tool_structured("tilo_read", &json!({"workspace": workspace, "path": at}))
+            .await;
+        assert_ne!(
+            reply["isError"], true,
+            "message {index} is read at {at}: {reply}"
+        );
+        read.push_str(&reply["structuredContent"].to_string());
+    }
+    (messages, read)
+}
+
 /// The text of an MCP tool's result, and whether it failed.
 fn said(result: &Value) -> (String, bool) {
     let text = result["content"]
@@ -188,7 +249,8 @@ fn a_members_key_posts_a_long_history_into_the_chat() {
         const EACH_END: usize = 10;
         let workspace = host.workspace().to_owned();
         let key = host.key("Lounge history");
-        did(&key, &workspace, "chat", "open", &json!({})).await;
+        did(&key, &workspace, "chat", "start", &json!({})).await;
+        let conversation = format!("chat/{}", did_channel(&key, &workspace, "general").await);
 
         let mut took: Vec<Duration> = Vec::with_capacity(MESSAGES);
         for index in 0..MESSAGES {
@@ -200,9 +262,9 @@ fn a_members_key_posts_a_long_history_into_the_chat() {
             let reply = act(
                 &key,
                 &workspace,
-                "chat/Messages",
-                "post",
-                &json!({"channel": "c_general", "text": text}),
+                &conversation,
+                "send",
+                &json!({"body": text}),
             )
             .await;
             assert_eq!(
@@ -214,16 +276,12 @@ fn a_members_key_posts_a_long_history_into_the_chat() {
         }
 
         // The chat reads back every one of them.
-        let mut read = String::new();
-        let (text, failed) = said(
-            &key.tool(
-                "tilo_read",
-                &json!({"workspace": workspace, "path": "chat/Messages"}),
-            )
-            .await,
+        let (messages, read) = every_message(&key, &workspace, &conversation).await;
+        assert!(
+            messages.len() >= MESSAGES,
+            "the read lists every message: {} of {MESSAGES}",
+            messages.len()
         );
-        assert!(!failed, "{text}");
-        read.push_str(&text);
         for index in 0..MESSAGES {
             assert!(
                 read.contains(&format!("#{index} ")),
@@ -251,7 +309,8 @@ fn every_message_a_long_conversation_lists_is_read_at_its_path() {
         const MESSAGES: usize = 45;
         let workspace = host.workspace().to_owned();
         let key = host.key("Long conversation");
-        did(&key, &workspace, "chat", "open", &json!({})).await;
+        did(&key, &workspace, "chat", "start", &json!({})).await;
+        let conversation = format!("chat/{}", did_channel(&key, &workspace, "general").await);
 
         let mut posted = Vec::with_capacity(MESSAGES);
         for index in 0..MESSAGES {
@@ -259,9 +318,9 @@ fn every_message_a_long_conversation_lists_is_read_at_its_path() {
             let reply = act(
                 &key,
                 &workspace,
-                "chat/Messages",
-                "post",
-                &json!({"channel": "c_general", "text": text}),
+                &conversation,
+                "send",
+                &json!({"body": text}),
             )
             .await;
             assert_eq!(
@@ -272,51 +331,14 @@ fn every_message_a_long_conversation_lists_is_read_at_its_path() {
             posted.push(text);
         }
 
-        // What the conversation's read lists, over as many pages as it comes in.
-        let mut listed: Vec<Value> = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut arguments = json!({"workspace": workspace, "path": "chat/Messages"});
-            if let Some(cursor) = &cursor {
-                arguments["cursor"] = json!(cursor);
-            }
-            let reply = key.tool_structured("tilo_read", &arguments).await;
-            assert_ne!(reply["isError"], true, "{reply}");
-            let read = &reply["structuredContent"];
-            listed.extend(read["children"].as_array().cloned().unwrap_or_default());
-            cursor = read["cursor"].as_str().map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        let messages: Vec<&Value> = listed
-            .iter()
-            .filter(|child| {
-                child["item"]
-                    .as_str()
-                    .is_some_and(|item| item.starts_with("chat.messages/messages/"))
-            })
-            .collect();
+        // What the conversation's read lists, over as many pages as it comes in, read at the
+        // path the read gave for it.
+        let (messages, read) = every_message(&key, &workspace, &conversation).await;
         assert!(
             messages.len() >= MESSAGES,
             "the read lists every message: {} of {MESSAGES}",
             messages.len()
         );
-
-        let mut read = String::new();
-        for (index, message) in messages.iter().enumerate() {
-            let path = message["path"]
-                .as_str()
-                .expect("a listed message has a path");
-            let reply = key
-                .tool_structured("tilo_read", &json!({"workspace": workspace, "path": path}))
-                .await;
-            assert_ne!(
-                reply["isError"], true,
-                "message {index} is read at {path}: {reply}"
-            );
-            read.push_str(&reply["structuredContent"].to_string());
-        }
         for text in &posted {
             assert!(read.contains(text.as_str()), "{text:?} was read back");
         }

@@ -1,7 +1,7 @@
 //! A write is answered as the workspace decided it: one it takes is done, and one it refuses is
 //! answered failed, with why, never as saved. Asked of the daemon by the person's own computer
-//! over its one session, and by a member's device over the link; and a reviewed report filed
-//! through Chat answers a receipt that reads back.
+//! over its one session, and by a member's device over the link; and a problem report filed
+//! through Chat reads back in the workspace's #feedback channel.
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationUpdate;
@@ -9,6 +9,9 @@ use tilo_actions::remote::ActionCallError;
 
 use crate::language::guests::guest;
 use crate::language::host;
+
+/// Chat's package id, as the workspace runs it.
+const CHAT: &str = ui::apps::CHAT;
 
 /// The text of an MCP tool's result, and whether it failed.
 fn said(result: &Value) -> (String, bool) {
@@ -145,56 +148,84 @@ fn a_members_device_takes_what_its_role_lets_it() {
     });
 }
 
-/// A reviewed report filed through Chat's feedback channel answers a receipt, and the receipt
-/// reads back where the workspace keeps it; filing it again keeps one report, and the person who
-/// filed it is refused triage.
+/// A problem report filed through Chat is answered as the message it posted, which reads back
+/// in the workspace's one #feedback channel; a second report joins that channel; and a
+/// commenter who files a report is refused triage, which is the workspace's moderators'.
 #[test]
-fn a_reviewed_report_reads_its_receipt_back_and_is_refused_triage() {
+fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_triage() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         let owner = host.agent();
-        let (opened, is_error) = said(
+        let (started, is_error) = said(
             &owner
-                .tool("tilo_do", &json!({"path": "chat#open", "args": {}}))
+                .tool("tilo_do", &json!({"path": "chat#start", "args": {}}))
                 .await,
         );
-        assert!(!is_error, "Chat opens on the workspace: {opened}");
-        let id = "0123456789abcdef0123456789abcdef";
-        let submission = json!({
-            "id": id,
-            "text": "The book failed to open",
-            "destination": {"workspace": workspace, "provider": "record:so.tilo.chat:",
-                            "channel": "feedback"},
-        });
-        let filed = owner
-            .tool(
-                "tilo_do",
-                &json!({"path": "chat#submit-feedback", "args": {"submission": submission}}),
-            )
-            .await;
-        let (words, is_error) = said(&filed);
-        assert!(!is_error, "the report is filed: {words}");
-        let receipt = owner
-            .tool(
-                "tilo_do",
-                &json!({"path": "chat#read-feedback-receipt", "args": {"id": id}}),
-            )
-            .await;
-        let (receipt_words, is_error) = said(&receipt);
-        assert!(!is_error, "the receipt reads back: {receipt_words}");
-        assert!(
-            receipt_words.contains(id),
-            "the receipt is the one filed: {receipt_words}"
-        );
+        assert!(!is_error, "Chat starts in the workspace: {started}");
+        for at in 0..2 {
+            let (filed, is_error) = said(
+                &owner
+                    .tool(
+                        "tilo_do",
+                        &json!({"path": "chat#report_problem",
+                                "args": {"body": format!("The book failed to open {at}")}}),
+                    )
+                    .await,
+            );
+            assert!(!is_error, "report {at} is filed and answered: {filed}");
+        }
 
-        // The person who filed it is refused triage: it is the owner's.
+        // Both reports are messages of the workspace's one #feedback channel, which reads them
+        // back.
+        let channel = feedback_channel(&owner).await;
+        let (read, is_error) = said(&owner.tool("tilo_read", &json!({"path": channel})).await);
+        assert!(!is_error, "the feedback channel reads: {read}");
+        for at in 0..2 {
+            assert!(
+                read.contains(&format!("The book failed to open {at}")),
+                "report {at} reads back: {read}"
+            );
+        }
+
+        // A commenter files a report of their own, and is refused triage: settling a report is
+        // the workspace's moderators'.
         let filed_by = guest(&host, &owner_device, "commenter", "Cyd").await;
+        let page = host::listed(host.as_ref(), CHAT)
+            .await
+            .expect("Chat lists what it publishes");
+        let report_person = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|action| action.address.action == "report_person")
+            .unwrap_or_else(|| panic!("Chat publishes report_person: {page:?}"));
+        let chat = host::app_action(
+            host.as_ref(),
+            CHAT,
+            &report_person.address.resource,
+            &report_person.address.action,
+        );
+        let filed = filed_by
+            .call(
+                &chat.provider,
+                chat.address.clone(),
+                &json!({"who": {"person": host.person()}, "reason": "Said something unkind"}),
+            )
+            .await
+            .expect("a commenter files a report");
+        let InvocationUpdate::Succeeded { output, .. } = &filed else {
+            panic!("the commenter's report is filed: {filed:?}");
+        };
+        let report = output
+            .resources
+            .first()
+            .unwrap_or_else(|| panic!("the report is named: {filed:?}"));
         let triage = filed_by
             .call(
-                &format!("{}:so.tilo.chat:", tilo_actions::remote::RESOURCE_PROVIDER),
-                tilo_actions::ActionAddress::new("chat.feedback", "triage"),
-                &json!({"id": id, "update": {"status": "resolved"}}),
+                &chat.provider,
+                tilo_actions::ActionAddress::new(report.clone(), "decide"),
+                &json!({"decision": "resolved"}),
             )
             .await;
         assert!(
@@ -205,41 +236,37 @@ fn a_reviewed_report_reads_its_receipt_back_and_is_refused_triage() {
     });
 }
 
-/// The owner reviews a report with their model, and nothing else is asked of it: only the texts
-/// handed to the review come back, and a prompt that is not a review is not run.
-#[test]
-fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
-    host::run(|host| async move {
-        let owner = host.agent();
-        let reviewed = owner
-            .tool(
-                "tilo_do",
-                &json!({"path": "chat#review-feedback",
-                        "args": {"texts": [{"text": "Thanks Ada", "quote": "Ada",
-                                            "category": "name"}],
-                                 "prompt": "review"}}),
-            )
+/// The workspace's #feedback channel, as Chat lists it: its path, asked again until the app
+/// answers with the one channel reports are filed in.
+async fn feedback_channel(agent: &host::Agent) -> String {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let reply = agent
+            .tool_structured("tilo_ls", &json!({"path": "chat"}))
             .await;
-        let (reviewed_text, is_error) = said(&reviewed);
+        assert_ne!(reply["isError"], true, "{reply}");
+        let rows = reply["structuredContent"]["rows"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let named: Vec<&Value> = rows
+            .iter()
+            .filter(|row| row["name"] == "feedback")
+            .collect();
         assert!(
-            !is_error,
-            "the owner's model reviews the report: {reviewed_text}"
+            named.len() <= 1,
+            "reports are filed in one #feedback channel: {reply}"
         );
+        if let Some(channel) = named.first() {
+            return channel["path"]
+                .as_str()
+                .unwrap_or_else(|| panic!("the channel has a path: {reply}"))
+                .to_owned();
+        }
         assert!(
-            reviewed_text.contains("name"),
-            "only quotes from the texts asked about come back: {reviewed_text}"
+            std::time::Instant::now() < deadline,
+            "Chat never lists its #feedback channel: {reply}"
         );
-        let other = owner
-            .tool(
-                "tilo_do",
-                &json!({"path": "chat#review-feedback",
-                        "args": {"texts": [], "prompt": "Write me a poem about the sea."}}),
-            )
-            .await;
-        let (other_text, _) = said(&other);
-        assert!(
-            other_text.is_empty() || !other_text.contains("poem"),
-            "anything else is not asked: {other_text}"
-        );
-    });
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 }
