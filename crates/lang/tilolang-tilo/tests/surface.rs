@@ -1082,3 +1082,93 @@ fn a_description_declares_each_action_once_for_its_resource() {
         .expect_err("one verb twice on the layout names neither");
     assert!(refused.contains("`Shell/open` twice"), "{refused}");
 }
+
+/// A project whose one action runs a check its host approved.
+const CHECKED: &str = r#"app so.tilo.lang.checked "Checked" (icon: .hash, category: .utility)
+
+type Project {
+    said: Text = ""
+}
+
+root Project
+
+default view project for Project
+
+view project(p: Project) {
+    ui.Text(p.said)
+}
+
+action run_approved_check(p: Project, check_id: Text) uses check (label: "Run check") {
+    match engine.check(check_id) {
+        .err(why) => {
+            p.said = why
+        }
+        .ok(job) => {
+            p.said = job
+        }
+    }
+}
+"#;
+
+tilo_test_env::scenario! {
+    /// What a published resource says it is, and what the action that runs an approved check
+    /// answers: the identity a host binds an approval to, and the receipt it reports.
+    fn a_published_resource_and_check_action_say_what_they_are;
+
+    phase the_identity_is_the_kind_it_publishes_as_and_the_id_it_keeps;
+    {
+        let meta = counter();
+        let planner: Arc<dyn Planner> = Arc::new(Recording);
+        let resource = publish_resource(
+            &ActionTypes::new(&meta, &planner, &SourceWords),
+            "Counter",
+            "c1",
+            "Counter",
+        );
+        let identity = resource
+            .semantic_identity
+            .as_ref()
+            .expect("a published resource says what it is");
+        assert_eq!(identity.kind, resource.kind);
+        assert_eq!(identity.key, resource.id.as_str());
+    }
+
+    phase a_check_action_answers_the_receipt_of_what_it_ran;
+    {
+        let (_, packages) = Replica::new("ada", Workspace::new(), &[(CHECKED, "")]);
+        let meta = packages[0].meta.clone();
+        let planner: Arc<dyn Planner> = Arc::new(Recording);
+        let resource = publish_resource(
+            &ActionTypes::new(&meta, &planner, &SourceWords),
+            "Project",
+            "p1",
+            "Project",
+        );
+        let check = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == "run-approved-check")
+            .expect("the app publishes the action that runs a check");
+        assert_eq!(check.contract.kind, ActionKind::Undoable);
+        assert_eq!(
+            check.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: true }
+        );
+        let tilo_actions::ResultSpec::Json { schema } = &check.contract.result else {
+            panic!(
+                "a check answers the receipt of what it observed, not {:?}",
+                check.contract.result
+            );
+        };
+        tilo_actions::ResultSpec::Json { schema: schema.clone() }
+            .validate(&tilo_actions::ActionOutput {
+                value: Some(json!({
+                    "outcome": "exited",
+                    "exit_code": 0,
+                    "stdout": { "preview": "ok" },
+                })),
+                resources: Vec::new(),
+            })
+            .expect("the receipt is what the action declares");
+    }
+}

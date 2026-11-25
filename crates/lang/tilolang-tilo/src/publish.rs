@@ -544,7 +544,11 @@ fn described(
         let contract = &mut spec.type_mut().contract;
         contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
         if matches!(contract.result, tilo_actions::ResultSpec::None) {
-            contract.result = tilo_actions::ResultSpec::Job;
+            // What it answers is the host's receipt of what the commands did: a document with
+            // the outcome, the exit code and the output they printed.
+            contract.result = tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({ "type": "object" }),
+            };
         }
         let untrusted = tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned();
         if !contract.tags.contains(&untrusted) {
@@ -950,7 +954,13 @@ pub fn publish_resource(
     id: &str,
     label: &str,
 ) -> ResourceSpec {
-    types.resource(type_name, id, label.to_owned(), true)
+    let mut resource = types.resource(type_name, id, label.to_owned(), true);
+    // What the resource is, whatever alias a window publishes it under: the kind it publishes
+    // as and the id it keeps. A host that approves work on one resource, and a caller that
+    // names it from another device, bind to exactly it by this.
+    resource.semantic_identity =
+        tilo_actions::ResourceSemanticIdentity::new(resource.kind.clone(), resource.id.to_string());
+    resource
 }
 
 /// The `open` view action of the published resource `anchor`: what a search hit invokes.

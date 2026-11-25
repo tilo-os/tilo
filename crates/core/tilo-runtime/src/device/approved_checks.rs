@@ -296,6 +296,10 @@ impl Approvals for SettingsApprovals {
         record: &str,
         identity: &ResourceSemanticIdentity,
     ) -> Result<Option<Arc<Registered>>, String> {
+        // An app's records are kept in its workspace's document of it, whose route names no
+        // record; the setting and the route meet in the one spelling of it.
+        let record = tilo_broker_core::published::canonical_document(record)
+            .unwrap_or_else(|_| record.to_owned());
         let Some(setting) = self.records.get(CHECKS) else {
             return Ok(None);
         };
@@ -306,7 +310,7 @@ impl Approvals for SettingsApprovals {
         }
         for project in config.projects {
             let registered = self.project(project)?;
-            if registered.matches(app, workspace, record, identity) {
+            if registered.matches(app, workspace, &record, identity) {
                 return Ok(Some(Arc::new(registered)));
             }
         }
@@ -592,10 +596,13 @@ impl Admits for NativeChecks {
             .name("approved-check".into())
             .spawn(move || {
                 let invocation = serving.invocation().0.to_string();
+                // The job names the record the approval does, in its one spelling.
+                let record = tilo_broker_core::published::canonical_document(serving.record())
+                    .unwrap_or_else(|_| serving.record().to_owned());
                 let ask = Ask {
                     app: serving.app(),
                     workspace: serving.workspace(),
-                    record: serving.record(),
+                    record: &record,
                     resource: &serving.address().resource,
                     identity: &identity,
                     check_id: &check_id,

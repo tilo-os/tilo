@@ -297,13 +297,13 @@ fn device_directory() -> tempfile::TempDir {
 }
 
 /// The `checks` setting approving one project at `root`, for `workspace`.
-fn approved_setting(root: &std::path::Path, workspace: &str) -> serde_json::Value {
+fn approved_setting(root: &std::path::Path, workspace: &str, record: &str) -> serde_json::Value {
     serde_json::json!({
         "version": 1,
         "projects": [{
             "app_id": APP,
             "workspace": workspace,
-            "record": RECORD,
+            "record": record,
             "resource_identity": { "kind": "git_client.repo", "key": RESOURCE },
             "checks": [{
                 "id": "unit",
@@ -340,7 +340,7 @@ fn the_settings_record_approves_a_project_and_its_removal_refuses_the_next_check
     let device = [7; 32];
     let (records, approvals) = settings_approvals(directory.path(), device);
     records
-        .set(CHECKS, approved_setting(directory.path(), &workspace))
+        .set(CHECKS, approved_setting(directory.path(), &workspace, RECORD))
         .expect("the person approves a project");
 
     let identity = identity();
@@ -372,6 +372,27 @@ fn the_settings_record_approves_a_project_and_its_removal_refuses_the_next_check
 }
 
 #[test]
+fn a_setting_for_an_apps_workspace_document_names_it_by_its_one_spelling() {
+    let directory = device_directory();
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let device = [7; 32];
+    let (records, approvals) = settings_approvals(directory.path(), device);
+    // An app whose records live in the workspace's document of it joins the route with no
+    // record id; the approval and the route meet in the alias every surface carries.
+    records
+        .set(CHECKS, approved_setting(directory.path(), &workspace, ""))
+        .expect("the person approves the app's workspace document");
+    let identity = identity();
+    for record in ["", "@tilo:package-primary"] {
+        let project = approvals
+            .find(APP, &workspace, record, &identity)
+            .expect("the setting reads")
+            .expect("the approved project is found");
+        assert_eq!(project.binding.record, "@tilo:package-primary");
+    }
+}
+
+#[test]
 fn a_setting_that_does_not_read_is_refused_legibly() {
     let directory = device_directory();
     let device = [7; 32];
@@ -396,7 +417,7 @@ fn an_entry_naming_a_path_this_device_lacks_is_refused() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let device = [7; 32];
     let (records, approvals) = settings_approvals(directory.path(), device);
-    let mut setting = approved_setting(directory.path(), &workspace);
+    let mut setting = approved_setting(directory.path(), &workspace, RECORD);
     setting["projects"][0]["checks"][0]["checkout"] =
         serde_json::json!(directory.path().join("missing"));
     records.set(CHECKS, setting).expect("a setting is written");
