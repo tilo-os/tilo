@@ -82,17 +82,17 @@ fn published(session: &Session) -> Value {
 /// a frame drawn by it is visibly other than the stock theme's. The device's daemon compiles it
 /// when the package arrives.
 fn triangle_module() -> Vec<u8> {
-    use tilo_ui::part_paint::{Brush, PaintedPart, ParamSpec, PartScene};
+    use ui::part_paint::{Brush, PaintedPart, ParamSpec, PartScene};
 
     let mut part = PartScene::new();
-    let mut triangle = tilo_ui::kurbo::BezPath::new();
+    let mut triangle = ui::kurbo::BezPath::new();
     triangle.move_to((60.0, 0.0));
     triangle.line_to((108.0, 40.0));
     triangle.line_to((12.0, 40.0));
     triangle.close_path();
     part.fill(
         triangle,
-        Brush::Solid(tilo_ui::peniko::Color::from_rgb8(0xd0, 0x30, 0x20)),
+        Brush::Solid(ui::peniko::Color::from_rgb8(0xd0, 0x30, 0x20)),
     );
     let answer = tilo_theme_sdk::wire::paint_answer(Some(&PaintedPart::new(part)));
     let params = tilo_theme_sdk::wire::params_answer(&[
@@ -217,7 +217,7 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
         &common::agent("passerby"),
         APPEARANCE,
         "apply-theme",
-        &arguments(json!({ "package": PACKAGE })),
+        &json!({ "package": PACKAGE }),
     );
     assert!(
         refused.is_err(),
