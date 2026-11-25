@@ -1752,7 +1752,7 @@ mod tests {
                 None,
                 &[],
                 &BuildOptions::default(),
-                "00",
+                Some("00"),
             )
         };
         let local = manifest(&[]);

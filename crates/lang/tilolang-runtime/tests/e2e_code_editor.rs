@@ -269,7 +269,7 @@ mod cases {
                 .last()
                 .cloned()
                 .expect("a job was started");
-            let handler = kept.done.clone().expect("the start named its end");
+            let handler = kept.done.expect("the start named its end");
             let call = self.rt.job_call(&handler, &record).unwrap();
             self.rt
                 .invoke_action(&me(), call)
