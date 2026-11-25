@@ -676,7 +676,11 @@ impl Calls {
     /// This is no app's connection, or it closed.
     pub fn hear_call(&self, speaker: String, opus: Vec<u8>) -> Result<(), Value> {
         self.lane()?
-            .hear_call(tilo_actions::remote::call::CallAudio { speaker, opus })
+            .hear_call(tilo_actions::remote::call::CallAudio {
+                speaker,
+                opus,
+                skipped: 0,
+            })
             .map_err(|error| lane_refusal(&error))
     }
 
@@ -688,11 +692,7 @@ impl Calls {
     pub fn said_call(&self) -> Result<CallSaid, Value> {
         let line = self.lane()?;
         Ok(CallSaid {
-            frames: line
-                .said_call()
-                .into_iter()
-                .map(|frame| (frame.speaker, frame.opus))
-                .collect(),
+            frames: line.said_call(),
             asked: line.asked_call().map(|asked| (asked.call, asked.status)),
         })
     }
@@ -1502,8 +1502,9 @@ async fn founded(provider: &Provider) -> Result<Value> {
 /// what it completed with, or its refusal as the API answers one.
 /// What a carried call said since an app last looked ([`Calls::said_call`]).
 pub struct CallSaid {
-    /// Each frame a workspace participant said, by their account here, and its Opus bytes.
-    pub frames: Vec<(String, Vec<u8>)>,
+    /// Each frame a workspace participant said, by their account here, with its Opus bytes and
+    /// the frames of their stream dropped just before it.
+    pub frames: Vec<tilo_actions::remote::call::CallAudio>,
     /// Where the device last asked the app to be in the outside call (none: in no call), and the
     /// line its people are shown there about who is on the workspace's side, when that is new.
     pub asked: Option<(Option<String>, Option<String>)>,

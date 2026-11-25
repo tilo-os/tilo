@@ -121,6 +121,11 @@ export interface CallReport {
 export interface CallFrame {
   speaker: string;
   opus: Uint8Array;
+  /**
+   * Frames of this stream the device dropped just before this one: a sender leaves their place
+   * in its timeline (RTP sequence and timestamp), so the receiver conceals the gap.
+   */
+  skipped?: number;
 }
 
 /**
@@ -157,7 +162,7 @@ interface NativeDaemon {
   reportCall(report: CallReport): Promise<unknown>;
   hearCall(speaker: string, opus: Uint8Array): unknown;
   saidCall(): {
-    frames: { speaker: string; opus: Uint8Array }[];
+    frames: { speaker: string; opus: Uint8Array; skipped?: number }[];
     asked?: { call?: string | null; status?: string | null } | null;
   };
 }
@@ -388,7 +393,11 @@ export class DaemonTransport implements Transport {
     }
     const asked = said.asked ?? null;
     return {
-      frames: said.frames.map((frame) => ({ speaker: frame.speaker, opus: frame.opus })),
+      frames: said.frames.map((frame) => ({
+        speaker: frame.speaker,
+        opus: frame.opus,
+        skipped: frame.skipped ?? 0,
+      })),
       asked: asked === null ? null : { call: asked.call ?? null, status: asked.status ?? null },
     };
   }

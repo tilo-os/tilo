@@ -141,6 +141,8 @@ export class Voice {
     this.acked = true;
     /// Opus frames the workspace said, waiting for their 20 ms.
     this.queue = [];
+    /// Frames dropped since the last one queued: their place goes with the next.
+    this.dropped = 0;
     this.attempt = 0;
     this.dave = this.#makeDave();
     /// The chain that keeps what this call hears in the order it arrived.
@@ -163,14 +165,20 @@ export class Voice {
     this.#open(false);
   }
 
-  /// Queue one Opus frame the workspace's call said. A frame that arrives while the queue is
-  /// already a second deep is dropped, not queued: the outside call is live audio.
-  say(opus) {
+  /// Queue one Opus frame the workspace's call said, after `skipped` frames of its stream the
+  /// device dropped: their place in the timeline is left for the receiver to conceal. A frame
+  /// that arrives while the queue is already a second deep is dropped too, not queued: the
+  /// outside call is live audio.
+  say(opus, skipped = 0) {
     if (this.closed || this.muted) return;
     // A call that speaks DAVE has no clear media to send until its keys are in place.
     if (this.dave.needsKeys()) return;
-    if (this.queue.length > 50) return;
-    this.queue.push(Buffer.from(opus));
+    if (this.queue.length > 50) {
+      this.dropped += 1;
+      return;
+    }
+    this.queue.push({ opus: Buffer.from(opus), skipped: skipped + this.dropped });
+    this.dropped = 0;
   }
 
   /// Stop sending and stop playing: the person or the bridge silenced this side.
@@ -539,7 +547,10 @@ export class Voice {
         this.speaking = true;
         this.#send({ op: 5, d: { speaking: MICROPHONE, delay: 0, ssrc: this.ssrc } });
       }
-      return this.#packetOut(frame);
+      // What was dropped before this frame still spent its place, so the receiver hears the
+      // gap and conceals it rather than decoding this frame as though it followed the last.
+      for (let n = 0; n < frame.skipped; n += 1) this.sender?.skip();
+      return this.#packetOut(frame.opus);
     }
     if (!this.speaking) return;
     if (this.silenceLeft > 0) {

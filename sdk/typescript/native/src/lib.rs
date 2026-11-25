@@ -170,9 +170,10 @@ impl Daemon {
             frames: said
                 .frames
                 .into_iter()
-                .map(|(speaker, opus)| CallFrame {
-                    speaker,
-                    opus: opus.into(),
+                .map(|frame| CallFrame {
+                    speaker: frame.speaker,
+                    opus: frame.opus.into(),
+                    skipped: frame.skipped,
                 })
                 .collect(),
             asked: said.asked.map(|(call, status)| CallAsk { call, status }),
@@ -185,6 +186,8 @@ impl Daemon {
 pub struct CallFrame {
     pub speaker: String,
     pub opus: Buffer,
+    /// Frames of this stream dropped just before this one: their place is left in the timeline.
+    pub skipped: u32,
 }
 
 /// Where the device asks an app to be in the outside call it carries (`call: null`: in none), and

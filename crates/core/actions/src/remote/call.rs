@@ -95,6 +95,10 @@ pub struct CallAudio {
     pub speaker: String,
     /// The 20 ms Opus frame (48 kHz), untouched.
     pub opus: Vec<u8>,
+    /// Frames of this speaker's stream dropped just before this one, so the receiver leaves
+    /// their place in its timeline and conceals the gap instead of joining the two sides of it.
+    #[serde(default)]
+    pub skipped: u32,
 }
 
 /// What the device says about the call it carries, for the service's own line there.
@@ -222,19 +226,22 @@ mod tests {
         let frame = CallAudio {
             speaker: "7001".into(),
             opus: vec![1, 2, 3],
+            skipped: 0,
         };
         assert!(frame.valid());
         assert!(
             !CallAudio {
                 speaker: String::new(),
-                opus: vec![1]
+                opus: vec![1],
+                skipped: 0,
             }
             .valid()
         );
         assert!(
             !CallAudio {
                 speaker: "7001".into(),
-                opus: vec![0; MAX_CALL_AUDIO_BYTES + 1]
+                opus: vec![0; MAX_CALL_AUDIO_BYTES + 1],
+                skipped: 0,
             }
             .valid()
         );

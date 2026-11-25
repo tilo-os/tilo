@@ -724,9 +724,12 @@ async fn said_audio(out: Out, mut speaks: mpsc::UnboundedReceiver<(String, Vec<u
                 }
                 _ = every.tick() => {
                     if let Some((speaker, opus)) = mixer.tick_said() {
+                        // A lone speaker's stream keeps the place of each frame the mixer shed
+                        // from it; a mix is encoded anew and has no such gap.
+                        let skipped = mixer.take_shed();
                         let speaker = speaker.unwrap_or_else(|| MIXED.to_owned());
                         out(frame_line(RemoteActionMessage::CallSaid(
-                            tilo_actions::remote::call::CallAudio { speaker, opus },
+                            tilo_actions::remote::call::CallAudio { speaker, opus, skipped },
                         )));
                     }
                 }
@@ -739,4 +742,56 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+    use tilo_actions::remote::RemoteActionFrame;
+    use tilo_actions::remote::call::CallAudio;
+
+    /// The next frame the lane handed the app.
+    async fn said(lines: &mut mpsc::UnboundedReceiver<String>) -> CallAudio {
+        loop {
+            let line = lines.recv().await.unwrap();
+            if let RemoteActionMessage::CallSaid(frame) =
+                RemoteActionFrame::decode(line.as_bytes()).unwrap().message
+            {
+                return frame;
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lone_speakers_dropped_frames_keep_their_place_in_the_stream() {
+        let (written, mut lines) = mpsc::unbounded_channel::<String>();
+        let out: Out = Arc::new(move |line| {
+            let _ = written.send(line);
+        });
+        let (speak, speaks) = mpsc::unbounded_channel();
+        let lane = tokio::spawn(said_audio(out, speaks));
+        let ada = |n: u8| ("ada".to_owned(), vec![n]);
+        speak.send(ada(0)).unwrap();
+        speak.send(ada(1)).unwrap();
+        let first = said(&mut lines).await;
+        assert_eq!(
+            (first.speaker.as_str(), first.opus, first.skipped),
+            ("ada", vec![0], 0)
+        );
+        // A burst past what the device holds of one speaker: the oldest two are dropped, and the
+        // frame after them says so.
+        for n in 2..6 {
+            speak.send(ada(n)).unwrap();
+        }
+        let next = said(&mut lines).await;
+        assert_eq!((next.opus, next.skipped), (vec![3], 2));
+        let last = said(&mut lines).await;
+        assert_eq!((last.opus, last.skipped), (vec![4], 0));
+        lane.abort();
+    }
 }

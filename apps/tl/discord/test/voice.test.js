@@ -63,6 +63,16 @@ test("a call identifies, discovers its address, and seals both directions", asyn
     expect(call.heard[0].speaker).toBe(USER);
     expect([...call.heard[0].opus]).toEqual([9, 8, 7]);
 
+    // Frames the device dropped before one keep their place: the stream's sequence and
+    // timestamp move past them, so Discord conceals the gap instead of joining its two sides.
+    call.voice.say(new Uint8Array([6]));
+    call.voice.say(new Uint8Array([7]), 2);
+    await until(() => fake.packets.some((packet) => packet.frame[0] === 7), "the frame after a gap");
+    const before = fake.packets.find((packet) => packet.frame[0] === 6);
+    const after = fake.packets.find((packet) => packet.frame[0] === 7);
+    expect(after.sequence - before.sequence).toBe(3);
+    expect(after.timestamp - before.timestamp).toBe(3 * 960);
+
     // A pause is silence for a moment, then the microphone is off.
     call.voice.say(new Uint8Array([5]));
     await until(() => fake.packets.length >= 2, "the second packet");
