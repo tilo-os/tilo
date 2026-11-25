@@ -266,17 +266,29 @@ fn list_extensions(shared: &Shared, request_id: u32) {
 /// Ask the store for newer versions of the store extensions installed here and install them,
 /// then say what came of it and what is installed now.
 fn check_updates(shared: &Shared, queue: &CommandQueue, tab: u32, request_id: u32, version: &str) {
-    let Some(root) = super::extensions::extensions_dir() else {
+    // The extensions and the store that serves them belong to the process that runs them: a
+    // page keeps none and reaches none, so it answers without reading a directory.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (queue, tab, version);
         shared.event(WebViewEvent::ExtensionUpdates {
             request_id,
             checked: 0,
             updated: Vec::new(),
             failed: vec!["this device keeps no extensions".to_owned()],
         });
-        return;
-    };
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let Some(root) = super::extensions::extensions_dir() else {
+            shared.event(WebViewEvent::ExtensionUpdates {
+                request_id,
+                checked: 0,
+                updated: Vec::new(),
+                failed: vec!["this device keeps no extensions".to_owned()],
+            });
+            return;
+        };
         let fetch = |id: &str, installed: Option<&str>| {
             super::extensions::web_store::fetch(id, installed, version)
         };
@@ -300,18 +312,8 @@ fn check_updates(shared: &Shared, queue: &CommandQueue, tab: u32, request_id: u3
                 .collect(),
             failed: updates.failed,
         });
+        list_extensions(shared, request_id);
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (queue, tab, version);
-        shared.event(WebViewEvent::ExtensionUpdates {
-            request_id,
-            checked: 0,
-            updated: Vec::new(),
-            failed: vec!["this build has no Chrome Web Store".to_owned()],
-        });
-    }
-    list_extensions(shared, request_id);
 }
 
 /// Turn the installed extension `id` on or off.
