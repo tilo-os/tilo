@@ -47,20 +47,24 @@ fn a_computers_own_tasks_are_made_and_answered_done() {
                 "so.tilo.tasks#new_task {title} as the person: {answer}"
             );
             assert!(!answer.contains("pending"), "{title} settled: {answer}");
-        }
-        let (issues, is_error) = said(
-            &computer
-                .tool(
-                    "tilo_read",
-                    &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}),
-                )
-                .await,
-        );
-        assert!(!is_error, "{issues}");
-        for title in ["First", "Second", "Third"] {
+            // The create answers the issue it made, by the address its answer names: the task
+            // is read where it stands, as the fields the app answers for it.
+            let issue = answer
+                .lines()
+                .find_map(|line| line.strip_prefix("-> "))
+                .unwrap_or_else(|| panic!("the create answers the issue it made: {answer}"));
+            let (task, is_error) = said(
+                &computer
+                    .tool(
+                        "tilo_read",
+                        &json!({"path": format!("so.tilo.tasks/{issue}")}),
+                    )
+                    .await,
+            );
+            assert!(!is_error, "{title} reads where it was made: {task}");
             assert!(
-                issues.contains(title),
-                "the workspace keeps {title}: {issues}"
+                task.contains(title),
+                "the workspace keeps {title}: {task}"
             );
         }
     });
@@ -91,10 +95,14 @@ fn a_members_device_takes_what_its_role_lets_it() {
             .unwrap_or_else(|| panic!("the create answers the issue it made: {words}"))
             .to_owned();
 
+        // The record the create made the issue in, which its address names before the item.
+        let record = issue
+            .split('/')
+            .next()
+            .unwrap_or_else(|| panic!("the issue names its record: {issue}"));
         let tasks = format!(
-            "{}:so.tilo.tasks:{}",
-            tilo_actions::remote::RESOURCE_PROVIDER,
-            collab_types::document::DocumentId::workspace_default().as_str()
+            "{}:so.tilo.tasks:{record}",
+            tilo_actions::remote::RESOURCE_PROVIDER
         );
         let refused = |called: &Result<InvocationUpdate, ActionCallError>| {
             matches!(called, Ok(InvocationUpdate::Failed { .. }))
