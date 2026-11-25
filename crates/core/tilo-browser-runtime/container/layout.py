@@ -161,9 +161,11 @@ for page, entry in pages.items():
     if text.count(statement) != 1:
         sys.exit(f'{page}: expected one import of {entry}')
     text = text.replace(statement, f"from '{prefix}v/{version}/{start}';")
-    for rel in ('preload', 'modulepreload'):
-        hint = f'<link rel="{rel}" href="{prefix}'
-        text = text.replace(hint, f'{hint}v/{version}/')
+    # A hint may say more than where (`fetchpriority`, `as`, `crossorigin`),
+    # before its href or after it: only where it points moves.
+    text = re.sub(r'(<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*\bhref=")'
+                  + re.escape(prefix) + r'(?!v/)',
+                  lambda match: f'{match.group(1)}{prefix}v/{version}/', text)
     # A module the page loads by a script of its own (the first screen's,
     # which works before the entry module is in) is in the bundle too, and
     # moves with it: left at the page's path it would be a request for nothing.
@@ -175,17 +177,24 @@ for page, entry in pages.items():
     text = re.sub(r'(<script\b[^>]*\bsrc=")' + re.escape(prefix) + r'(?!v/)([^"]+\.m?js)"', versioned, text)
     # The start module the page preloads itself leads the graph's hints; every
     # other module it reaches gets one here.
-    anchor = f'<link rel="modulepreload" href="{prefix}v/{version}/{start}">'
-    if text.count(anchor) != 1:
+    # The hints it writes say what the page's own hint of its start module says
+    # beside where (how soon each is wanted), and a hint the page wrote itself
+    # for a module of the graph gives way to them.
+    def preload_of(name):
+        return re.compile(r'<link\b[^>]*\brel="modulepreload"[^>]*\bhref="'
+                          + re.escape(f'{prefix}v/{version}/{name}') + r'"[^>]*>')
+    anchors = preload_of(start).findall(text)
+    if len(anchors) != 1:
         sys.exit(f'{page}: expected one modulepreload of {start}')
+    anchor = anchors[0]
     for name in names:
         if name == start:
             continue
-        text = re.sub(r'\n[ \t]*' + re.escape(f'<link rel="modulepreload" href="{prefix}v/{version}/{name}">'),
-                      '', text)
-    hints = ''.join(f'\n  <link rel="modulepreload" href="{prefix}v/{version}/{name}">'
+        text = re.sub(r'\n[ \t]*' + preload_of(name).pattern, '', text)
+    target = f'href="{prefix}v/{version}/{start}"'
+    hints = ''.join('\n  ' + anchor.replace(target, f'href="{prefix}v/{version}/{name}"')
                     for name in names)
-    text = text.replace(anchor, hints)
+    text = text.replace(anchor, hints, 1)
     (site / page).parent.mkdir(parents=True, exist_ok=True)
     (site / page).write_text(text)
     # Only the pages at the top are entries: a copy under v/ would be served
