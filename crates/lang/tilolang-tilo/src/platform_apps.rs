@@ -638,6 +638,16 @@ pub fn platform_packages() -> Result<Vec<PackageMeta>, String> {
     packages().iter().cloned().collect()
 }
 
+/// Whether `app` is one of the platform's packages, read without copying them.
+///
+/// # Errors
+/// A platform surface does not read.
+pub fn is_platform_app(app: &str) -> Result<bool, String> {
+    packages().iter().try_fold(false, |held, package| {
+        Ok(held || package.as_ref().map_err(Clone::clone)?.app == app)
+    })
+}
+
 /// The packages of the platform's apps among `apps`, each read from the surface it publishes:
 /// what a package whose `use`s name them compiles against. An app whose surface does not read
 /// stops only a package that names it.

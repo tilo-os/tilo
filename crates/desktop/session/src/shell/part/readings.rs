@@ -311,8 +311,8 @@ fn held_here(app: &str) -> bool {
     if app == tilolang_tilo::tilolang::stdlib::APP {
         return true;
     }
-    match tilolang_tilo::platform_apps::platform_packages() {
-        Ok(packages) => packages.iter().any(|meta| meta.app == app),
+    match tilolang_tilo::platform_apps::is_platform_app(app) {
+        Ok(held) => held,
         Err(why) => {
             tracing::error!(%why, "the platform's packages do not read");
             false

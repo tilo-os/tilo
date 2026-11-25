@@ -108,15 +108,16 @@ struct Published {
 }
 
 /// What a published tree is read from: what the view was asked to do, the
-/// record it holds, the input and models the toolkit was handed, and the
-/// permissions in force. A tree published at one inputs is the tree at an
+/// record it holds, the input the toolkit was handed, the frames its tree
+/// ran (each one takes up what its models moved), and the permissions in
+/// force. A tree published at one inputs is the tree at an
 /// equal one.
 #[derive(PartialEq, Eq)]
 struct TreeInputs {
     moves: u64,
     heads: Vec<ui_core::automerge::ChangeHash>,
     input: u64,
-    model: u64,
+    frames: u64,
     permissions: u64,
 }
 
@@ -610,7 +611,7 @@ impl AttachedView {
                 .with(&self.checkout.id, ui_core::automerge::AutoCommit::get_heads)
                 .unwrap_or_default(),
             input: ui_core::input_generation::generation(),
-            model: ui_core::input_generation::model(),
+            frames: self.frame_as_is().frames(),
             permissions: ui_core::permissions::shared_revision(),
         }
     }

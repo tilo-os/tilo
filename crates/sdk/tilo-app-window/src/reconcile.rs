@@ -284,28 +284,46 @@ fn feel(node: &UiNode) -> Option<ui::motion::Feel> {
 /// within another view's layout takes the width that layout offers and adds no second gutter.
 #[must_use]
 pub fn normalize(node: &UiNode) -> UiNode {
-    let mut out = page_once(node);
+    drawn(page_once(node, true))
+}
+
+/// [`normalize`] without the rows a virtual list holds: what a window builds, as the list reads
+/// those as it shows them.
+#[must_use]
+pub fn normalize_shown(node: &UiNode) -> UiNode {
+    drawn(page_once(node, false))
+}
+
+fn drawn(mut out: UiNode) -> UiNode {
     crate::attach::hoist_in(&mut out);
     crate::attach::raise_menus(&mut out);
     crate::date::under_headings(crate::shell::titled_lists(out))
 }
 
-fn page_once(node: &UiNode) -> UiNode {
-    fn walk(node: &UiNode, inside: bool) -> UiNode {
+fn page_once(node: &UiNode, rows: bool) -> UiNode {
+    fn walk(node: &UiNode, inside: bool, rows: bool) -> UiNode {
         let nested = inside || node.kind == "page" || node.kind == "embed";
-        let mut out = node.clone();
-        if inside && node.kind == "page" {
-            "stack".clone_into(&mut out.kind);
-            out.props.clear();
+        // A page inside another is a stack: it keeps its children and nothing of its own.
+        let (kind, props) = if inside && node.kind == "page" {
+            ("stack".to_owned(), std::collections::BTreeMap::new())
+        } else {
+            (node.kind.clone(), node.props.clone())
+        };
+        let drops_rows = !rows && tilo_render_protocol::patch::is_virtual_list(&node.kind);
+        UiNode {
+            kind,
+            key: node.key.clone(),
+            props,
+            binding: node.binding.clone(),
+            events: node.events.clone(),
+            anchor: node.anchor.clone(),
+            children: (node.children.iter())
+                .filter(|child| !drops_rows || child.kind == crate::adapter::PART)
+                .map(|child| walk(child, nested, rows))
+                .collect(),
         }
-        out.children = node
-            .children
-            .iter()
-            .map(|child| walk(child, nested))
-            .collect();
-        out
     }
-    walk(node, false)
+    walk(node, false, rows)
 }
 
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.

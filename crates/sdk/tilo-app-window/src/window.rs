@@ -1467,8 +1467,8 @@ impl AppWindow {
             let Some(detail) = self.detail.as_ref() else {
                 return;
             };
-            let tree = crate::reconcile::normalize(&detail.tree);
-            let composed = crate::shell::prefixed(&crate::shell::without_rows(&tree), DETAIL);
+            let tree = crate::reconcile::normalize_shown(&detail.tree);
+            let composed = crate::shell::prefixed(&tree, DETAIL);
             self.reconcile_into_pane(&composed);
             self.built = Some(composed);
             self.refresh_bound();
@@ -1477,22 +1477,18 @@ impl AppWindow {
         let Some(root) = self.root.as_ref() else {
             return;
         };
-        let root_tree = crate::reconcile::normalize(&root.tree);
+        let root_tree = crate::reconcile::normalize_shown(&root.tree);
         if self.shape == Shape::Part {
             // A shell's part is its view, with no window shell composed around it.
-            let composed = crate::shell::without_rows(&root_tree);
-            self.reconcile_into_pane(&composed);
-            self.built = Some(composed);
+            self.reconcile_into_pane(&root_tree);
+            self.built = Some(root_tree);
             self.refresh_bound();
             return;
         }
-        let root_shell = crate::shell::as_shell(&crate::shell::without_rows(&root_tree));
+        let root_shell = crate::shell::as_shell(&root_tree);
         let detail_shell = self.detail.as_ref().map(|detail| {
-            let tree = crate::reconcile::normalize(&detail.tree);
-            crate::shell::prefixed(
-                &crate::shell::as_shell(&crate::shell::without_rows(&tree)),
-                DETAIL,
-            )
+            let tree = crate::reconcile::normalize_shown(&detail.tree);
+            crate::shell::prefixed(&crate::shell::as_shell(&tree), DETAIL)
         });
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
         // A page while it shows something other than the window itself: a view that shows the

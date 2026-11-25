@@ -665,8 +665,13 @@ fn transport_resource(
     rows: &tilo_workspace_service::live::LiveRows,
     services: &tilo_service::Services,
 ) -> Option<(String, tilo_actions::ResourceSpec, Option<Value>)> {
+    // With nothing live there is nothing to look up: what the services publish is not read.
+    let rows = rows.rows();
+    if rows.is_empty() {
+        return None;
+    }
     let resources = services.resources();
-    rows.rows().into_iter().rev().find_map(|row| {
+    rows.into_iter().rev().find_map(|row| {
         let (address, _, spec) = located(&resources, &row)?;
         let spec = spec?;
         let declares = |name: &str| spec.actions.iter().any(|a| a.id == name);

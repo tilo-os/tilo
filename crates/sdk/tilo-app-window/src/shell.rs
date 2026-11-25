@@ -234,29 +234,6 @@ pub fn offers_switch(shell: &UiNode) -> bool {
     })
 }
 
-/// `node` without the rows a virtual list holds: the list reads those as it shows them.
-#[must_use]
-pub fn without_rows(node: &UiNode) -> UiNode {
-    let virtual_list = tilo_render_protocol::patch::is_virtual_list(&node.kind);
-    UiNode {
-        kind: node.kind.clone(),
-        key: node.key.clone(),
-        props: node.props.clone(),
-        binding: node.binding.clone(),
-        events: node.events.clone(),
-        anchor: node.anchor.clone(),
-        children: if virtual_list {
-            node.children
-                .iter()
-                .filter(|child| child.kind == PART)
-                .map(without_rows)
-                .collect()
-        } else {
-            node.children.iter().map(without_rows).collect()
-        },
-    }
-}
-
 const HEADER_PROPS: &[&str] = &["title", "count", "content_kind"];
 
 /// Whether `nodes` only stand in for content not chosen yet: empty states, or nothing.

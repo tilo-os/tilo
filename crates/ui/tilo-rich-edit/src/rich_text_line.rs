@@ -278,11 +278,9 @@ pub struct RichTextLine {
     /// What the last frame drew, appended again while the line holds and
     /// only moves ([`ui::widget::CachedPaint`]).
     face: ui::widget::CachedPaint,
-    /// What `face` was drawn from, and the model and permission generations it was drawn at: a
-    /// sync hands the tree a changed document without a flag of its own, and a permission
+    /// What `face` was drawn from, and the permission generation it was drawn at: a permission
     /// change alters the field's check.
     face_key: Option<LineFace>,
-    face_model: u64,
     face_permissions: u64,
     accent_rgb: Option<[u8; 3]>,
     syntax: Option<ui::tokens::SyntaxPalette>,
@@ -346,7 +344,6 @@ impl RichTextLine {
             paint_dirty: true,
             face: ui::widget::CachedPaint::default(),
             face_key: None,
-            face_model: 0,
             face_permissions: 0,
             accent_rgb: None,
             syntax: None,
@@ -1348,9 +1345,7 @@ impl RichTextLine {
         if self.paint_dirty || self.face.is_empty() {
             return false;
         }
-        if self.face_model != ui::input_generation::model()
-            || self.face_permissions != env.paint_permissions
-        {
+        if self.face_permissions != env.paint_permissions {
             return false;
         }
         if self.inner.paint_changed() || self.inner.needs_animation_frame() {
@@ -1780,7 +1775,6 @@ impl Widget for RichTextLine {
             ));
             self.face = face;
             self.face_key = Some(self.face_of(theme));
-            self.face_model = ui::input_generation::model();
             self.face_permissions = env.paint_permissions;
             note_face_work(Some(self.inner.value()));
         }

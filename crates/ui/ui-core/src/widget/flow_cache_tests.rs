@@ -150,12 +150,80 @@ fn a_cache_that_read_outside_state_repaints_once_input_arrives() {
     );
 }
 
+/// A widget that paints what its update took up, and keeps no flag of its own.
 struct Gauge {
     value: Rc<Cell<f32>>,
+    shown: f32,
     rect: Rect,
+    /// How often it drew rather than having its column replay its drawing.
+    draws: Rc<Cell<u32>>,
+}
+
+impl Gauge {
+    fn new(value: &Rc<Cell<f32>>, draws: &Rc<Cell<u32>>) -> Self {
+        Self {
+            value: Rc::clone(value),
+            shown: value.get(),
+            rect: Rect::ZERO,
+            draws: Rc::clone(draws),
+        }
+    }
+}
+
+#[test]
+fn a_sync_redraws_the_columns_above_what_it_moved_and_no_other() {
+    let t0 = crate::time::now();
+    let mut frame = ShotFrame::new((320, 120), Theme::dark());
+    let (clock, clock_draws) = (Rc::new(Cell::new(40.0f32)), Rc::new(Cell::new(0)));
+    let (note, note_draws) = (Rc::new(Cell::new(80.0f32)), Rc::new(Cell::new(0)));
+    let column = |value, draws| Box::new(Column::new().push(Box::new(Gauge::new(value, draws))));
+    let mut screen = Column::new()
+        .push(column(&clock, &clock_draws))
+        .push(column(&note, &note_draws));
+    let first = frame_at(&mut frame, &mut screen, t0);
+    crate::widget::Widget::mark_drawn(&mut screen);
+    let draws = || (clock_draws.get(), note_draws.get());
+    assert_eq!(draws(), (1, 1), "the first frame draws both");
+
+    clock.set(140.0);
+    let unreported = frame_at(&mut frame, &mut screen, t0 + Duration::from_millis(16));
+    assert!(
+        first.encoding_eq(&unreported) && draws() == (1, 1),
+        "a widget that keeps no flag of its own reports nothing by itself"
+    );
+    assert!(
+        screen.update(&frame.state.doc, &frame.state.root),
+        "the sync's update took up the new value"
+    );
+    let synced = frame_at(&mut frame, &mut screen, t0 + Duration::from_millis(32));
+    assert!(
+        !first.encoding_eq(&synced),
+        "the screen shows the new value"
+    );
+    assert_eq!(
+        draws(),
+        (2, 1),
+        "the clock's columns draw it again; the note's column replays what it drew"
+    );
+    crate::widget::Widget::mark_drawn(&mut screen);
+    assert!(
+        !screen.update(&frame.state.doc, &frame.state.root),
+        "nothing else moved"
+    );
+    let rested = frame_at(&mut frame, &mut screen, t0 + Duration::from_millis(48));
+    assert_eq!(draws(), (2, 1), "at rest nothing draws");
+    assert!(
+        synced.encoding_eq(&rested),
+        "and the screen is the one the sync drew"
+    );
 }
 
 impl Widget for Gauge {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        let moved = self.shown != self.value.get();
+        self.shown = self.value.get();
+        moved
+    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -176,7 +244,8 @@ impl Widget for Gauge {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, _text, _theme, mut env) = ctx.parts();
-        let width = f64::from(self.value.get());
+        self.draws.set(self.draws.get() + 1);
+        let width = f64::from(self.shown);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -188,43 +257,6 @@ impl Widget for Gauge {
     fn name(&self) -> &'static str {
         "Gauge"
     }
-}
-
-#[test]
-fn a_cache_repaints_what_a_sync_handed_the_tree() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((320, 120), Theme::dark());
-    let value = Rc::new(Cell::new(40.0f32));
-    let mut column = Column::new().push(Box::new(Gauge {
-        value: Rc::clone(&value),
-        rect: Rect::ZERO,
-    }));
-
-    let first = frame_at(&mut frame, &mut column, t0);
-    crate::widget::Widget::mark_drawn(&mut column);
-    let at_rest = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(16));
-    assert!(
-        first.encoding_eq(&at_rest),
-        "a frame that nothing reached replays the drawing the cache kept"
-    );
-
-    value.set(140.0);
-    let unreported = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(32));
-    assert!(
-        at_rest.encoding_eq(&unreported),
-        "a widget that keeps no flag of its own reports nothing by itself"
-    );
-
-    crate::input_generation::note_model();
-    let synced = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(48));
-    assert!(
-        !at_rest.encoding_eq(&synced),
-        "the sync handed the tree a changed document: the cache holds a \
-         drawing of the one before it, so it draws again"
-    );
-    crate::widget::Widget::mark_drawn(&mut column);
-    let rested = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(64));
-    assert!(synced.encoding_eq(&rested), "and it rests on that document");
 }
 
 #[test]

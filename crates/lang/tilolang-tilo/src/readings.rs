@@ -21,7 +21,7 @@ pub const HELD_IN: &str = "$in";
 #[must_use]
 pub fn reading_of(host: &Host, resource: &str) -> Option<Json> {
     let (app, path) = split_published(resource)?;
-    host.package(app)?;
+    host.inner.package_of(app).ok()?;
     let at = resource_at(host, app, path)?;
     let schema = crate::schema::lookup(&at.ty)?;
     let runtime = host.runtime();

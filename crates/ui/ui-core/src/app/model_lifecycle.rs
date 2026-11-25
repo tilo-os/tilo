@@ -373,11 +373,8 @@ impl super::App {
         if !updated {
             return false;
         }
-        // What the model moved reaches widgets that paint it without a flag
-        // of their own, so drawings kept from the last frame are stale. It is
-        // laid out when a widget says its size moved: a picture that arrived,
-        // a label that changed; a value that only repaints is drawn.
-        crate::input_generation::note_model();
+        // What the model moved is laid out when a widget says its size moved: a picture that
+        // arrived, a label that changed; a value that only repaints is drawn.
         self.invalidate_widget_resource_cache();
         self.needs_sync = true;
         self.layout.layout_dirty |=

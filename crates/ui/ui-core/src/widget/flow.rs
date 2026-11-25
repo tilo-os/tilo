@@ -50,7 +50,9 @@ pub(super) struct Flow {
     /// input. One that read nothing outside keeps across it.
     cache_input: u64,
     cache_outside: bool,
-    cache_model: u64,
+    /// A child's update changed what it shows since the cache was drawn: a widget that paints what
+    /// its update took up keeps no flag of its own, and only the columns above it draw again.
+    pub(super) updated: bool,
     cache_present: bool,
     descendant_caches_released: bool,
     cache_carries_material: bool,
@@ -124,7 +126,7 @@ impl Flow {
             cache_written: 0,
             cache_input: 0,
             cache_outside: false,
-            cache_model: 0,
+            updated: false,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
@@ -466,7 +468,6 @@ impl Flow {
         let written = env.marks_generation;
         let input_moved =
             self.cache_outside && self.cache_input != crate::input_generation::generation();
-        let model_moved = self.cache_model != crate::input_generation::model();
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
@@ -475,7 +476,7 @@ impl Flow {
             || self.cache_writes
             || self.cache_written != written
             || input_moved
-            || model_moved
+            || self.updated
             || any_child_dirty
             || self.cache_carries_material
             || self.drawn_shifted
@@ -588,7 +589,7 @@ impl Flow {
             self.cache_writes = writes;
             self.cache_written = written;
             self.cache_input = crate::input_generation::generation();
-            self.cache_model = crate::input_generation::model();
+            self.updated = false;
             self.cache_present = true;
             self.descendant_caches_released = false;
             env.viewport = prev_vp;
@@ -655,7 +656,7 @@ impl Flow {
         self.cache_present = false;
         self.descendant_caches_released = false;
         self.drawn_shifted = false;
-        let model_moved = self.cache_model != crate::input_generation::model();
+        let updated = std::mem::take(&mut self.updated);
         let first = near.start;
         for (offset, child) in self
             .children
@@ -664,7 +665,7 @@ impl Flow {
             .iter_mut()
             .enumerate()
         {
-            if !model_moved
+            if !updated
                 && !child.needs_redraw()
                 && !child.needs_animation_frame()
                 && crate::draw_cull::kept(scene, transform, child.paint_bounds())
@@ -682,7 +683,6 @@ impl Flow {
             );
             self.reach = self.reach.max(paint_reach(child.as_ref()));
         }
-        self.cache_model = crate::input_generation::model();
         true
     }
 
@@ -785,6 +785,7 @@ macro_rules! flow_widget_methods {
             for child in &mut self.flow.children {
                 changed |= child.update(state, path);
             }
+            self.flow.updated |= changed;
             changed
         }
 
