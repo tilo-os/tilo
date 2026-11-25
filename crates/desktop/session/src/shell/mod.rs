@@ -409,6 +409,7 @@ impl Shell {
         // the tabs of the workspace in front, and a window whose app holds secrets is left out, so
         // its view shows the app's mark instead of its pixels.
         let handle = self.lists.handle.clone();
+        part.carry_floats(handle.clone());
         part.show_pictures(
             ui::widget::Previews::new(),
             Rc::new(move |key: &str| pictured(&handle, key)),

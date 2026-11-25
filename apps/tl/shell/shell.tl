@@ -227,17 +227,33 @@ template view style_shell(a: Layout, traditional: Bool, body: View) {
 /// The person's places as windows in rows and strips, scrolled sideways (`strips_view`).
 view strips(a: Layout) {
     let lists = shell_lists(false, space.width_class == .expanded or space.width_class == .wide)
-    style_shell(a, false) {
-        layers(fill) {
-            strips_view(a, lists, fill)
-            // Where the person is among the strips, each card at its own edge of the band. The
-            // stack is placed here, not in the views: a view call is a boundary of its own, and
-            // a stack placed inside one never reaches this layer — it stands at the band's top.
-            row(at: .leading, align: .center, padding: .tight) {
-                strip_before(a)
+    layers(fill) {
+        style_shell(a, false) {
+            layers(fill) {
+                strips_view(a, lists, fill)
+                // Where the person is among the strips, each card at its own edge of the band.
+                // The stack is placed here, not in the views: a view call is a boundary of its
+                // own, and a stack placed inside one never reaches this layer — it stands at the
+                // band's top.
+                row(at: .leading, align: .center, padding: .tight) {
+                    strip_before(a)
+                }
+                row(at: .trailing, align: .center, padding: .tight) {
+                    strip_count(a)
+                }
             }
-            row(at: .trailing, align: .center, padding: .tight) {
-                strip_count(a)
+        }
+        // The floating windows stand on the display where the layout keeps them, over the rows.
+        for s in floating_strips(a) {
+            stack(
+                at: .top_leading,
+                x: s.float_x.to_float(),
+                y: s.float_y.to_float(),
+                min: s.float_width.to_float() * 1dp,
+                max: s.float_width.to_float() * 1dp,
+                height: s.float_height.to_float() * 1dp,
+            ) {
+                strip_window(a, s, lists, fill)
             }
         }
     }

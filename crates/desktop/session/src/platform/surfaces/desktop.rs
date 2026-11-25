@@ -3,8 +3,9 @@
 //! [`desktop`] makes the [`ShellDesktop`] a session runs the desktop on: the policy that keeps its
 //! windows as tabs of the desktop's workspaces ([`tilo_desktop_policy`]), the desktop's pass, and
 //! the shell's published side. The tilolang shell draws the desktop and its wells place the windows
-//! ([`super::WellPolicy`]), reading the same desktop; nothing of it is drawn here. A press made
-//! with Super held on a floating window carries it: the desktop moves the window and puts it down.
+//! ([`super::WellPolicy`]), reading the same desktop; nothing of it is drawn here. A floating
+//! window carried by its bar, or by a press made with Super held anywhere on it, is the desktop's
+//! to move and put down.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -572,10 +573,12 @@ impl ShellSurface for ShellDesktop {
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
     /// The carried window is let go where the hand is: in a gap of its strip it snaps back there,
-    /// anywhere else it floats there.
+    /// anywhere else it floats there. A window carried by its bar's lift lands nowhere else.
     fn press_ended(&mut self, x: f64, y: f64) {
         let desktop = self.desktop.borrow();
-        desktop.policy.handle().put_down(desktop.point(x, y));
+        if desktop.policy.handle().put_down(desktop.point(x, y)) {
+            ui::widget::drag_bus::carry_away();
+        }
     }
 
     /// Only what is asked of it brings it a pass: a command queued on its handle, or a change

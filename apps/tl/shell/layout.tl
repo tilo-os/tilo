@@ -140,6 +140,14 @@ type LayoutStrip (origin: session.layout_strip) {
     /// Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds
     /// up to it (a thing found where the person clicked).
     canvas_hugs: Bool
+    /// Whether its window floats over the workspace's windows rather than standing in its row.
+    floating: Bool
+    /// Where the floating window stands now on the display this part draws, from its top-left
+    /// corner: where the layout keeps it, or where the person's hand has it while they carry it.
+    float_x: Int
+    float_y: Int
+    float_width: Int
+    float_height: Int
     /// Whether the window has just closed: the session keeps it in the reading while the shell
     /// draws its frame's departure, back into the control the person opened it from.
     leaving: Bool

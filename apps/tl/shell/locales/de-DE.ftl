@@ -1393,6 +1393,18 @@ d-m75kjoue = Aktionsleiste
 
 d-s3lpes2e = Aktionsleiste
 
+d-jlviav7f = Schwebend
+    .doc = Ob sein Fenster über den Fenstern des Arbeitsbereichs schwebt, statt in seiner Reihe zu stehen.
+
+d-mgsaujmo = Schwebend x
+    .doc = Wo das schwebende Fenster jetzt auf dem Bildschirm steht, den dieser Teil zeichnet, von seiner linken oberen Ecke aus: wo das Layout es hält oder wo die Hand der Person es hat, während sie es trägt.
+
+d-2jtaykbx = Schwebend y
+
+d-3oajnqvp = Schwebende Breite
+
+d-76b3pbs6 = Schwebende Höhe
+
 d-s6rivl3a = Fläche schmiegt sich an
     .doc = Ob `canvas_height` das Höchste ist, was er nimmt: was er zeigt, ist so hoch wie das, was es hält, bis dahin (etwas, das gefunden wurde, wo die Person geklickt hat).
 
@@ -1413,6 +1425,16 @@ d-w25t6rl7-filter-canvas_width = Aktionsleiste
 d-w25t6rl7-filter-canvas_height = Aktionsleiste
 
 d-w25t6rl7-filter-canvas_hugs = Aktionsleiste
+
+d-w25t6rl7-filter-floating = Schwebend
+
+d-w25t6rl7-filter-float_x = Schwebend x
+
+d-w25t6rl7-filter-float_y = Schwebend y
+
+d-w25t6rl7-filter-float_width = Schwebende Breite
+
+d-w25t6rl7-filter-float_height = Schwebende Höhe
 
 d-farfsl4d = Platz des Layouts
     .doc = Ein Platz: ein Fenster, das eine Ressource durch eine Ansicht zeigt.

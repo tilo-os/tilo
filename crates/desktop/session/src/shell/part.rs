@@ -650,6 +650,13 @@ pub struct ShellPart {
     wells: Option<ui::widget::Wells>,
     /// The display this part draws on, as its views read it and its wells are keyed.
     screen: Option<tilo_session_core::shell::LayoutDisplayReading>,
+    /// The desktop whose floating windows the part draws over the windows beneath them, and
+    /// carries when the person lifts one by its bar ([`Self::carry_floats`]).
+    floats: Option<tilo_session_core::desktop::state::DesktopHandle>,
+    /// Where the pointer is, in the logical layout, and where the last press began: where a
+    /// floating window lifted by its bar was taken.
+    pointer: (f64, f64),
+    pressed_at: (f64, f64),
 }
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
@@ -803,6 +810,9 @@ impl ShellPart {
             content_workspace: String::new(),
             wells,
             screen: None,
+            floats: None,
+            pointer: (0.0, 0.0),
+            pressed_at: (0.0, 0.0),
         };
         if seed {
             part.seed();
@@ -1055,6 +1065,13 @@ impl ShellPart {
     pub fn set_theme(&mut self, theme: ui::Theme) {
         self.widgets.set_theme(theme);
         self.again = true;
+    }
+
+    /// Draw the floating windows of `desktop` over the windows beneath them, where its layout
+    /// has them, and carry one where the person lifts it by its bar: the desktop moves it with the
+    /// hand and puts it down where it is let go.
+    pub fn carry_floats(&mut self, desktop: tilo_session_core::desktop::state::DesktopHandle) {
+        self.floats = Some(desktop);
     }
 
     /// Show the live pictures of the windows the part's views name

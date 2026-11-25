@@ -98,7 +98,9 @@ impl ShellSurface for ShellPart {
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
         self.input = true;
+        self.pointer = (x, y);
         self.widgets.pointer_motion(x, y);
+        self.follow_lifted_float();
     }
 
     fn pointer_leave(&mut self) {
@@ -109,7 +111,53 @@ impl ShellSurface for ShellPart {
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.input = true;
         self.took_press();
+        if pressed {
+            self.pressed_at = self.pointer;
+        }
         self.widgets.pointer_button(button, pressed);
+    }
+
+    /// The floating windows' cards, bar and body, which the part draws over the windows beneath
+    /// them: those windows are drawn around a card and under its shadows, and a press on it is the
+    /// part's.
+    fn drawn_over_windows(&self) -> Vec<tilo_session_core::surface::WindowCover> {
+        let (Some(desktop), Some((_, (ox, oy, width, height)))) = (&self.floats, &self.output)
+        else {
+            return Vec::new();
+        };
+        if self.hidden() {
+            return Vec::new();
+        }
+        let display = ui::kurbo::Rect::new(
+            f64::from(*ox),
+            f64::from(*oy),
+            f64::from(*ox) + f64::from(*width),
+            f64::from(*oy) + f64::from(*height),
+        );
+        let theme = self.widgets.theme();
+        desktop
+            .float_covers()
+            .into_iter()
+            .filter(|(_, card)| display.contains(card.center()))
+            .filter_map(|(tab, card)| {
+                let radius = ui::widget::SurfaceLevel::Window
+                    .radius(theme)
+                    .min(card.height() / 2.0);
+                Some(tilo_session_core::surface::WindowCover {
+                    window: desktop.window_of_tab(tab)?,
+                    rect: (
+                        ui::num::i32_of_f64(card.x0.round()),
+                        ui::num::i32_of_f64(card.y0.round()),
+                        ui::num::i32_of_f64(card.width().round()).max(1),
+                        ui::num::i32_of_f64(card.height().round()).max(1),
+                    ),
+                    shadows: ui::surface::floating_lift(theme)
+                        .iter()
+                        .map(|shadow| frame_of(shadow, radius))
+                        .collect(),
+                })
+            })
+            .collect()
     }
 
     /// A press landed somewhere else — a window over the shell, or another surface of the
@@ -294,5 +342,59 @@ impl ShellSurface for ShellPart {
             drew |= self.draw();
         }
         drew
+    }
+}
+
+impl super::ShellPart {
+    /// A floating window's bar the person lifted, as its frame carries it on the toolkit's drag
+    /// bus: the desktop carries that window from where the press took it, and it follows the hand
+    /// until it is let go.
+    fn follow_lifted_float(&mut self) {
+        let Some(desktop) = &self.floats else {
+            return;
+        };
+        let Some(flight) = ui::widget::drag_bus::current() else {
+            return;
+        };
+        let (x, y) = self.pointer;
+        if desktop.carried_tab().is_none() {
+            let ui::dnd::DragPayload::Custom { kind, blob } = &flight.payload else {
+                return;
+            };
+            // What any other lift carries (a file, a message, a place of another app) is no
+            // floating window's bar: only the shell's own place names a tab it draws.
+            if kind != ui::widget::RESOURCE_PAYLOAD {
+                return;
+            }
+            let Some(Ok(Ok(tab))) = blob
+                .strip_prefix(b"shell:place:")
+                .map(|tab| std::str::from_utf8(tab).map(str::parse::<u64>))
+            else {
+                return;
+            };
+            let (px, py) = self.pressed_at;
+            if !desktop.carry_float_by_bar(tab, ui::kurbo::Point::new(px, py)) {
+                return;
+            }
+        }
+        desktop.carry_to(ui::kurbo::Point::new(x, y));
+    }
+}
+
+/// A shadow a floating window's card casts on the windows under it, as the compositor draws it
+/// round the card.
+fn frame_of(shadow: &ui::tokens::Shadow, radius: f64) -> tilo_session_core::surface::WindowFrame {
+    let colour = |color: vello::peniko::Color| color.to_rgba8().to_u8_array();
+    tilo_session_core::surface::WindowFrame {
+        radius,
+        shadow: (shadow.blur > 0.0).then(|| tilo_session_core::surface::Shadow {
+            offset_y: f64::from(shadow.offset_y),
+            blur: f64::from(shadow.blur),
+            rgba: colour(shadow.color),
+        }),
+        edge: shadow.outline.map(|line| tilo_session_core::surface::Edge {
+            width: f64::from(line.width),
+            rgba: colour(line.color),
+        }),
     }
 }

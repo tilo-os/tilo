@@ -615,6 +615,24 @@ fn strip_fields(s: &LayoutStripReading) -> Vec<(&'static str, Value)> {
         ("canvas_width", Value::Int(s.canvas_width)),
         ("canvas_height", Value::Int(s.canvas_height)),
         ("canvas_hugs", Value::Bool(s.canvas_hugs)),
+        ("floating", Value::Bool(s.floating)),
+        // Where the floating window stands now, on the display the shell draws it over.
+        (
+            "float_x",
+            Value::Int(s.float_at.first().copied().unwrap_or(0)),
+        ),
+        (
+            "float_y",
+            Value::Int(s.float_at.get(1).copied().unwrap_or(0)),
+        ),
+        (
+            "float_width",
+            Value::Int(s.float_at.get(2).copied().unwrap_or(0)),
+        ),
+        (
+            "float_height",
+            Value::Int(s.float_at.get(3).copied().unwrap_or(0)),
+        ),
         ("shell", text(&s.shell)),
     ]
 }

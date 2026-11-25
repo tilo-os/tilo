@@ -77,6 +77,12 @@ pub struct LayoutStripReading {
     pub float_width: i64,
     #[serde(default)]
     pub float_height: i64,
+    /// Where the floating window stands now on the display it floats over, from that display's
+    /// top-left corner, as `x, y, width, height`: where the record keeps it on this device's
+    /// display, or where the person's hand has it while they carry it. Empty while it floats on no
+    /// display this device draws.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub float_at: Vec<i64>,
     /// Whether the window has just closed: the shell keeps it in the reading while its frame plays
     /// its departure, back into the control it was opened from, and draws it marked leaving.
     #[serde(default)]
@@ -267,6 +273,7 @@ pub fn of(
                     float_dy: float.map_or(0, |float| i64::from(float.dy)),
                     float_width: float.map_or(0, |float| i64::from(float.width)),
                     float_height: float.map_or(0, |float| i64::from(float.height)),
+                    float_at: Vec::new(),
                     leaving: false,
                     control: Vec::new(),
                     shell: SHELL.to_owned(),

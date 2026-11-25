@@ -465,6 +465,12 @@ impl WidgetSurface {
         self.owe();
     }
 
+    /// The theme the tree is drawn with.
+    #[must_use]
+    pub fn theme(&self) -> &ui::Theme {
+        self.host.theme()
+    }
+
     /// Draw the tree with `theme`: the person's palette, tokens and fonts,
     /// as the session's presentation settings hand them to every surface.
     pub fn set_theme(&mut self, theme: ui::Theme) {

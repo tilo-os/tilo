@@ -1143,10 +1143,16 @@ impl Reconciler {
         let mut placement = placement_in(parent, inherited, child);
         // A fragment draws nothing of its own, so what it asks for is the child under it:
         // a `for`'s fill reaches each row it places in a row or a grid, and the narrowest width it
-        // names floors each of them.
+        // names floors each of them; where it stands among layers is where each row stands.
         let mut passed = None;
         let mut aspect = None;
         for fragment in through {
+            if placement.at.is_none() {
+                placement.at = position(fragment);
+            }
+            if placement.offset.is_none() {
+                placement.offset = offset(parent, fragment);
+            }
             passed = number(fragment, "fill").or(passed);
             if prop(child, "min").is_none()
                 && let Some(min) = length(fragment, "min")
@@ -2229,13 +2235,14 @@ fn frames(node: &UiNode) -> bool {
         .any(|child| child.kind == "ui.Card" || holds_cards(child))
 }
 
-/// The children `node` places in its parts. What a `for` or an `if` places in a grid or a row
-/// arrives as a fragment; there each of its children is a cell or an item of its own, where a
-/// fragment built as a stack would pile them into one. Elsewhere a fragment is a part of its own,
-/// its children stacked tight.
+/// The children `node` places in its parts. What a `for` or an `if` places in a grid, a row or
+/// layers arrives as a fragment; there each of its children is a cell, an item or a layer of its
+/// own, where a fragment built as a stack would pile them into one. Elsewhere a fragment is a part
+/// of its own, its children stacked tight.
 fn placed(node: &UiNode) -> Vec<Placed<'_>> {
-    // A row and a grid place every child a loop's fragment holds, as parts of their own, so a row's
-    // items share the row's spans one by one. Every other container keeps a fragment as a part of
+    // A row, a grid and layers place every child a loop's fragment holds, as parts of their own, so
+    // a row's items share the row's spans one by one and each layer stands where it says (`at`,
+    // `x`, `y`) over the others. Every other container keeps a fragment as a part of
     // its own: a view call is a box where the view put it, and what the view asks for is
     // asked of that box.
     fn flatten<'a>(
@@ -2264,7 +2271,7 @@ fn placed(node: &UiNode) -> Vec<Placed<'_>> {
     // menu takes no place of its own ([`Reconciler::with_menu`]).
     let holds_menu = crate::attach::arranges(&node.kind);
     let mut out = Vec::new();
-    if matches!(node.kind.as_str(), "grid" | "row") {
+    if matches!(node.kind.as_str(), "grid" | "row" | "layers") {
         flatten(node, holds_menu, &mut Vec::new(), &mut out);
     } else {
         out.extend(
@@ -2976,5 +2983,76 @@ mod tests {
             before[..],
             "the cells already shown keep their widgets"
         );
+    }
+
+    /// A stack standing at `x`, `y` from the top leading corner of the layers it is in, as a
+    /// floating window stands over the rows of a desktop.
+    fn standing_at(key: &str, x: i64, y: i64) -> UiNode {
+        let mut stack = stack(key, vec![text(&format!("{key}-text"), "Notes")]);
+        stack
+            .props
+            .insert("at".to_owned(), Value::text("top_leading"));
+        stack.props.insert("x".to_owned(), Value::Int(x));
+        stack.props.insert("y".to_owned(), Value::Int(y));
+        stack
+    }
+
+    fn layers_over(children: Vec<UiNode>) -> UiNode {
+        let mut base = stack("base", vec![text("base-text", "rows")]);
+        base.props.insert("fill".to_owned(), Value::Int(1));
+        let mut layers = node("layers", "ly");
+        layers.props.insert("fill".to_owned(), Value::Int(1));
+        layers.children = std::iter::once(base).chain(children).collect();
+        layers
+    }
+
+    /// Where `key` stands from the layers' top leading corner.
+    fn from_layers(rects: &BTreeMap<String, ui::vello::kurbo::Rect>, key: &str) -> (f64, f64) {
+        let layers = rects["ly"];
+        let rect = rects
+            .get(key)
+            .unwrap_or_else(|| panic!("{key} is laid out: {rects:?}"));
+        (rect.x0 - layers.x0, rect.y0 - layers.y0)
+    }
+
+    /// The rows of a `for` under `layers` each stand where they say, as a stack written straight
+    /// in the layers does: a row is a fragment, and the view made of the loop's body one more
+    /// inside it, yet each row is a layer of its own rather than one layer piling them. An
+    /// argument that does not read the item (`at: .top_leading`) is the row's, on its fragment.
+    #[test]
+    fn positioned_rows_of_a_for_under_layers_stand_at_their_x_and_y() {
+        let row = |key: &str, x: i64, y: i64| {
+            let mut stack = standing_at(key, x, y);
+            let at = stack.props.remove("at").expect("the stack names its place");
+            let mut body = node("fragment", &format!("{key}~body"));
+            body.children = vec![stack];
+            let mut row = node("fragment", &format!("{key}~row"));
+            row.props.insert("at".to_owned(), at);
+            row.children = vec![body];
+            row
+        };
+        let view = layers_over(vec![
+            standing_at("direct", 40, 30),
+            UiNode {
+                children: vec![row("a", 320, 160), row("b", 80, 400)],
+                ..node("fragment", "for")
+            },
+        ]);
+        let rects = laid_out_all(&view, (1280, 800));
+        assert_eq!(from_layers(&rects, "direct"), (40.0, 30.0));
+        assert_eq!(from_layers(&rects, "a"), (320.0, 160.0), "{rects:?}");
+        assert_eq!(from_layers(&rects, "b"), (80.0, 400.0), "{rects:?}");
+    }
+
+    /// What an `if` places under `layers` stands where it says, as a stack written straight in
+    /// the layers does.
+    #[test]
+    fn a_positioned_stack_an_if_places_under_layers_stands_at_its_x_and_y() {
+        let view = layers_over(vec![UiNode {
+            children: vec![standing_at("shown", 320, 160)],
+            ..node("fragment", "if")
+        }]);
+        let rects = laid_out_all(&view, (1280, 800));
+        assert_eq!(from_layers(&rects, "shown"), (320.0, 160.0), "{rects:?}");
     }
 }

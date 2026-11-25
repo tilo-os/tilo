@@ -1478,6 +1478,16 @@ impl Layout {
             .handle
             .read(|tree| reading_of(tree, &records, &catalog, &self.names));
         reading.person = self.person_name();
+        // A floating window is drawn where this device lays it out: where the record keeps it on
+        // this display, or where the person's hand has it while they carry it.
+        for (group, at) in self.handle.floats_drawn() {
+            let key = group.to_string();
+            if let Some(strip) = reading.strips.iter_mut().find(|strip| strip.key == key) {
+                strip.float_at = [at.x0, at.y0, at.width(), at.height()]
+                    .map(|side| ui::num::i64_of_f64(side.round()))
+                    .to_vec();
+            }
+        }
         // A query lives while its place does: one whose place has gone (closed, replaced, undone)
         // is no longer the person's to see, and drops here.
         let places: std::collections::BTreeSet<String> = reading

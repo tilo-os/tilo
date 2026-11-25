@@ -329,16 +329,27 @@ impl super::DesktopHandle {
     /// of it: the window follows the press ([`Self::carry_to`]) until it is let go
     /// ([`Self::put_down`]). Whether a floating window stands there to carry.
     pub fn carry_float_at(&self, point: Point) -> bool {
+        self.carry_float(point, |shown| shown.window.contains(point))
+    }
+
+    /// The floating window showing `tab` , taken by its bar where the press at `grab` (the
+    /// surface's coordinates) began: what a person's lift of that bar carries. Whether it floats.
+    pub fn carry_float_by_bar(&self, tab: TabId, grab: Point) -> bool {
+        self.carry_float(grab, |shown| shown.tab == tab)
+    }
+
+    /// The floating window `taken` answers for, carried from `grab`.
+    fn carry_float(&self, grab: Point, taken: impl Fn(&super::shown::ShownTab) -> bool) -> bool {
         let mut shared = self.shared.borrow_mut();
-        let taken = shared
+        let found = shared
             .shown_tabs
             .0
             .iter()
             .rev()
-            .find(|shown| shown.floated && shown.window.contains(point));
+            .find(|shown| shown.floated && taken(shown));
         let Some(&super::shown::ShownTab {
             tab, group, window, ..
-        }) = taken
+        }) = found
         else {
             return false;
         };
@@ -349,12 +360,34 @@ impl super::DesktopHandle {
             strip,
             group,
             tab,
-            grab: point,
+            grab,
             from: window,
             at: window,
             area,
         });
         true
+    }
+
+    /// The window the person carries now, by the tab in front of it.
+    pub fn carried_tab(&self) -> Option<TabId> {
+        self.shared.borrow().carried.map(|carried| carried.tab)
+    }
+
+    /// Each floating window the shell draws, by its group, and where it stands on the display it
+    /// floats over, from that display's top-left corner: where the record keeps it, or where the
+    /// person's hand has it while they carry it.
+    pub fn floats_drawn(&self) -> Vec<(GroupId, Rect)> {
+        let shared = self.shared.borrow();
+        shared
+            .shown_tabs
+            .0
+            .iter()
+            .filter(|shown| shown.floated)
+            .filter_map(|shown| {
+                let (_, area) = super::shown::section_holding(&shared, shown.group)?;
+                Some((shown.group, shown.window - area.origin().to_vec2()))
+            })
+            .collect()
     }
 
     /// The hand carrying a floating window moved to `point`: the window follows it, keeping the

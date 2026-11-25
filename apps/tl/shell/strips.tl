@@ -24,9 +24,26 @@ fn places_of(a: Layout, strip: Text) -> List<LayoutPlace> {
 
 /// The strips the row `row` holds on the display this part draws on, in the document's order: a
 /// shell over several displays draws each display's own strips, so every window stands on the
-/// display the person put it on rather than on all of them.
+/// display the person put it on rather than on all of them. A floating window stands over the row
+/// rather than in it (`floating_strips`).
 fn strips_of(a: Layout, row: Text) -> List<LayoutStrip> {
-    a.strips.filter(s -> s.row == row and s.display == device.screen.output)
+    a.strips.filter(s -> s.row == row and s.display == device.screen.output and not s.floating)
+}
+
+/// The windows floating over the workspace the shell shows, on the display this part draws on,
+/// in the document's order: each stands where the layout keeps it, over the rows and the shell's
+/// bar. Its bar is a window's bar like any other: a press brings it forward, and carrying it by
+/// the bar moves it, into a gap of its strip or to where it is let go.
+fn floating_strips(a: Layout) -> List<LayoutStrip> {
+    if let workspace = shown_workspace(a) {
+        return a.strips.filter(
+            s -> s.floating
+                and s.float_width > 0
+                and s.workspace == workspace.key
+                and s.display == device.screen.output,
+        )
+    }
+    return []
 }
 
 /// Whether a strip of the row `row` holds a window.
@@ -356,7 +373,7 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool) {
             focused: in_front,
             keep: if in_front { "front" } else { "" },
             lists_actions: lists_the_shown(shown),
-            carries: window_resource(shown),
+            carries: if s.floating { floating_bar(shown) } else { window_resource(shown) },
             fill,
         ) {
             // A press on the window's bar brings it forward, the keyboard in it.
@@ -429,6 +446,12 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool) {
 /// lifted, so a foreign window's bar is no drag at all.
 fn window_resource(shown: Option<LayoutPlace>) -> Text {
     if let p = shown { p.resource } else { "" }
+}
+
+/// What a floating window's bar carries when the person picks it up: the place it shows, so the
+/// session carries the window itself, into a gap of its strip or to where it is let go.
+fn floating_bar(shown: Option<LayoutPlace>) -> Text {
+    if let p = shown { the_place(p.key).id() } else { "" }
 }
 
 /// The glyph a window's own bar stands before its name: the app's own, so a window whose content
