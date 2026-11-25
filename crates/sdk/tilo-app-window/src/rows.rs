@@ -43,6 +43,9 @@ pub struct RemoteRows {
     rows: HashMap<String, UiNode>,
     changes: Vec<ListModelChange<String>>,
     asked: Option<Asked>,
+    /// `asked` is the range the app sent before it was asked: the first rows, with the patch that
+    /// shows the list. A range the list shows inside it is answered already.
+    sent: bool,
     /// Rows the list shows that the app is still to be asked for.
     wanted: Option<Asked>,
     /// The row whose menu the person opened, by key: the app sends it again with its menu.
@@ -88,6 +91,7 @@ impl RemoteRows {
             rows: HashMap::new(),
             changes: Vec::new(),
             asked: None,
+            sent: false,
             wanted: None,
             menu: None,
             awaiting: false,
@@ -109,6 +113,7 @@ impl RemoteRows {
     pub fn take_wanted(&mut self) -> Option<(Level, String, Asked)> {
         let asked = self.wanted.take()?;
         self.asked = Some(asked.clone());
+        self.sent = false;
         self.awaiting = true;
         Some((self.level, self.list.clone(), asked))
     }
@@ -131,6 +136,7 @@ impl RemoteRows {
             self.rows.retain(|key, _| keep.contains(key.as_str()));
         }
         let mut arrived = Vec::new();
+        let sent_keys = keys.len();
         for (offset, key) in keys.into_iter().enumerate() {
             let Some(index) = start.checked_add(offset).filter(|index| *index < len) else {
                 break;
@@ -150,6 +156,16 @@ impl RemoteRows {
             arrived.push(row.key.clone());
             self.rows
                 .insert(row.key.clone(), crate::attach::hoist(&row));
+        }
+        // Rows that come unasked are the first ones the app sends with the list: they answer an ask
+        // for any range inside them, so showing the list takes no second round.
+        if self.asked.is_none() && self.wanted.is_none() && !arrived.is_empty() {
+            self.asked = Some(Asked {
+                range: start.min(len)..start.saturating_add(sent_keys).min(len),
+                open: None,
+                menu: self.menu.clone(),
+            });
+            self.sent = true;
         }
         arrived.sort();
         arrived.dedup();
@@ -201,6 +217,7 @@ impl RemoteRows {
                     self.rows.clear();
                     *self.index.get_mut() = None;
                     self.asked = None;
+                    self.sent = false;
                     self.awaiting = false;
                     ListModelChange::Reset
                 }
@@ -411,6 +428,15 @@ impl RowSource for RemoteRows {
         // the row that opened or closed, whose document it renders or drops.
         let menu = self.menu.clone();
         let asked = Asked { range, open, menu };
+        if self.sent
+            && let Some(sent) = &self.asked
+            && (sent.open.as_ref(), sent.menu.as_ref())
+                == (asked.open.as_ref(), asked.menu.as_ref())
+            && sent.range.start <= asked.range.start
+            && asked.range.end.min(self.keys.len()) <= sent.range.end
+        {
+            return;
+        }
         if self.asked.as_ref() != Some(&asked) {
             self.wanted = Some(asked);
         }
@@ -730,6 +756,29 @@ mod tests {
         assert_eq!(rows.take_wanted(), None, "asked once");
         assert!(!rows.wants());
         assert_eq!(rows.key_at(5), None, "a row not named yet");
+    }
+
+    /// The app sends a list's first rows with the patch that shows it: a range inside them is
+    /// answered, so the list asks nothing, and a range past them is asked for.
+    #[test]
+    fn rows_sent_unasked_answer_the_range_they_cover() {
+        let mut rows = rows();
+        let keys = (0..48).map(|i| format!("v/{i}")).collect();
+        rows.rows(200, 0, keys, Vec::new());
+        rows.request_range(0..20, None);
+        assert!(!rows.wants(), "the rows it shows came with the list");
+        rows.request_range(30..60, None);
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.range),
+            Some(30..60),
+            "rows past the ones sent are asked for"
+        );
+        rows.request_range(0..20, Some("v/4".to_owned()));
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.open),
+            Some(Some("v/4".to_owned())),
+            "the row the person opens is asked for"
+        );
     }
 
     /// The app names a list shorter than the one the window holds: the list hears it, so it settles
