@@ -803,9 +803,9 @@ mod tests {
     use tilo_workspace_search::records::{RecordIndex, RecordReader, StoreReader, Unread};
     use tilo_workspace_search::{AppContentIndex, IndexSearch, deciding};
 
-    use crate::apps::services::ResourceRequestContext;
     use crate::workspaces::fixtures::{TestHost, hosting_device_with, test_host_holding};
     use crate::workspaces::{OwnWorkspaceOffer, Workspaces};
+    use tilo_broker_core::services::ResourceRequestContext;
 
     const NOTES: &str = "tilo.notes";
     const NOTE: &str = "tilo.notes.note";

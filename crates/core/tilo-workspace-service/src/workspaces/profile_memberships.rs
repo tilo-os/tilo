@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tilo_broker_core::services::WorkspaceAuthorityHandle;
 
 use super::Workspaces;
-use crate::apps::services::{WorkspaceMembershipFuture, WorkspaceMemberships};
+use tilo_broker_core::services::{WorkspaceMembershipFuture, WorkspaceMemberships};
 
 /// The member list the broker on a host serves: which workspaces this host holds, and the picture
 /// each person set in the profile it keeps for them. The workspace service a device runs installs

@@ -1329,7 +1329,7 @@ impl Workspaces {
     /// As [`Self::open_resources`].
     pub async fn open_resource_query(
         &self,
-        context: &crate::apps::services::ResourceRequestContext,
+        context: &tilo_broker_core::services::ResourceRequestContext,
         query: collab_types::store::Query,
     ) -> Result<tokio::sync::mpsc::UnboundedReceiver<collab_types::store::Page>, String> {
         self.open_resources(context, query).await
@@ -1746,7 +1746,7 @@ impl Workspaces {
     #[cfg(feature = "apps")]
     async fn read_store(
         &self,
-        context: &crate::apps::services::ResourceRequestContext,
+        context: &tilo_broker_core::services::ResourceRequestContext,
         workspace: &str,
         command: &collab_types::store::wire::Command,
     ) -> Result<collab_types::store::wire::Reply, String> {
@@ -2028,7 +2028,7 @@ impl Workspaces {
     #[cfg(feature = "apps")]
     pub async fn resource_command(
         &self,
-        context: &crate::apps::services::ResourceRequestContext,
+        context: &tilo_broker_core::services::ResourceRequestContext,
         mut command: collab_types::store::wire::Command,
     ) -> Result<collab_types::store::wire::Reply, String> {
         let workspace = context.workspace_id();
@@ -2128,7 +2128,7 @@ impl Workspaces {
     #[cfg(feature = "apps")]
     async fn record_change_command(
         &self,
-        context: &crate::apps::services::ResourceRequestContext,
+        context: &tilo_broker_core::services::ResourceRequestContext,
         workspace: &str,
         (app, kind, record): (&str, Option<&str>, &str),
         (changes, commit): (&[u8], Option<&collab_types::WorkspaceCommit>),
@@ -2581,10 +2581,11 @@ impl Workspaces {
             device.device(),
         )
         .in_workspace(workspace);
-        let mut context =
-            crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller)
-                .serving(serving)
-                .of_kind(kind.map(str::to_owned));
+        let mut context = tilo_broker_core::services::ResourceRequestContext::authenticated(
+            app, workspace, caller,
+        )
+        .serving(serving)
+        .of_kind(kind.map(str::to_owned));
         // The device's own reads and writes of an app's record name the record they are of.
         if let collab_types::store::wire::Command::RecordChanges {
             record: Some(record),
@@ -2611,7 +2612,7 @@ impl Workspaces {
     #[cfg(feature = "apps")]
     pub(crate) async fn open_resources(
         &self,
-        context: &crate::apps::services::ResourceRequestContext,
+        context: &tilo_broker_core::services::ResourceRequestContext,
         query: collab_types::store::Query,
     ) -> Result<tokio::sync::mpsc::UnboundedReceiver<collab_types::store::Page>, String> {
         let reader = person_reading(context.reader());
@@ -2679,7 +2680,7 @@ type Stamped = (Option<tilo_actions::Actor>, Vec<(String, String)>);
 /// and nothing to stamp, for a command that writes nothing.
 #[cfg(feature = "apps")]
 fn stamp_resource_write(
-    context: &crate::apps::services::ResourceRequestContext,
+    context: &tilo_broker_core::services::ResourceRequestContext,
     workspace: &str,
     command: &mut collab_types::store::wire::Command,
     device: &super::MemberDevice,

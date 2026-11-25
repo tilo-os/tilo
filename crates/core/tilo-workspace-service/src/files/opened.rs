@@ -24,9 +24,9 @@ use tilo_fs::namespace::FileToPut;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
-use crate::apps::services::{FilesEntry, FilesPutCall};
 use crate::content::{ContentScope, ContentShelf};
 use crate::workspaces::Workspaces;
+use tilo_broker_core::services::{FilesEntry, FilesPutCall};
 
 /// The most files one open puts into the tree: a bounded request and change,
 /// answered within the bound a workspace's actions answer in. A larger folder
@@ -296,11 +296,12 @@ impl OpenedFiles {
             .map(|invoker| invoker.acting.clone());
         // An agent's put is the call it signed: this device signs none for it.
         if let Some(acting) = acting.as_ref().filter(|acting| acting.is_agent())
-            && request.signed.as_deref().is_none_or(|signed| {
-                !tilo_server_protocol::invocation::signs_for(acting, signed)
-            })
+            && request
+                .signed
+                .as_deref()
+                .is_none_or(|signed| !tilo_server_protocol::invocation::signs_for(acting, signed))
         {
-            return Err(crate::apps::services::KEYLESS_AGENT.to_owned());
+            return Err(tilo_broker_core::services::KEYLESS_AGENT.to_owned());
         }
         let kept = tilo_rt::app()
             .block_on(self.workspaces.carried_call(

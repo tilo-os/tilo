@@ -226,7 +226,10 @@ impl Workspaces {
     /// person it acts for: whom a broker admits as an agent there. None while the list does not
     /// exist or cannot be read.
     #[cfg(feature = "apps")]
-    pub async fn listed_agents(&self, workspace: &str) -> Vec<crate::apps::services::ListedAgent> {
+    pub async fn listed_agents(
+        &self,
+        workspace: &str,
+    ) -> Vec<tilo_broker_core::services::ListedAgent> {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let Ok(Some(agents)) = self
             .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
@@ -236,7 +239,7 @@ impl Workspaces {
         };
         agents
             .active()
-            .map(|agent| crate::apps::services::ListedAgent {
+            .map(|agent| tilo_broker_core::services::ListedAgent {
                 id: agent.id.0.as_str().to_owned(),
                 name: agent.name.clone(),
                 avatar: agent.avatar.clone(),

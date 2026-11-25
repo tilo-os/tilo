@@ -308,7 +308,7 @@ pub(super) struct Governance<'a> {
 /// service holds, each as its copy here describes it, read without waiting on any workspace's
 /// lock.
 #[cfg(feature = "apps")]
-impl crate::apps::services::WorkspaceAuthority for Workspaces {
+impl tilo_broker_core::services::WorkspaceAuthority for Workspaces {
     /// The revocations the workspace's copy here holds: what an agent's key and a saved
     /// shortcut's signer are checked against here.
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {

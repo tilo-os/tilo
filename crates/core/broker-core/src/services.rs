@@ -11,6 +11,8 @@ use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
 mod agent_sessions;
 mod own_device;
+mod resource_requests;
+mod workspace_memberships;
 mod workspace_nodes;
 
 pub use agent_sessions::{
@@ -18,6 +20,10 @@ pub use agent_sessions::{
     session_answer_id, session_answer_scope,
 };
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
+pub use resource_requests::{FilesEntry, FilesPutCall, KEYLESS_AGENT, ResourceRequestContext};
+pub use workspace_memberships::{
+    WorkspaceMembershipFuture, WorkspaceMemberships, WorkspaceStatusFuture,
+};
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 
 /// Current native device identity, installed only by the authenticated host.

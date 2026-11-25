@@ -22,7 +22,7 @@ use ui::history_source::DocumentHistoryEdit;
 use ui::history_source::verbs::HistoryEdit;
 
 use super::{OpenedFiles, Putting, put_scope};
-use crate::apps::services::FilesPutCall;
+use tilo_broker_core::services::FilesPutCall;
 
 /// One verb's change of the tree, answered with what the verb answers.
 type TreeChange<'a> = Box<dyn FnMut(&mut Namespace) -> Result<Value, String> + 'a>;
