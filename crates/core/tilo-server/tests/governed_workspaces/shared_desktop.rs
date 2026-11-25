@@ -352,6 +352,22 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     )
     .await;
     let workspace = hosted.workspace_id;
+    // The desktop record starts as a member's first write of a part it never held does: a
+    // device the workspace lets create it starts it, and the pages' native changes fill it.
+    let laptop_link = Linked::open(&server, &laptop, workspace)
+        .await
+        .expect("the workspace admits Alice's laptop");
+    laptop_link
+        .publish(|peer| {
+            peer.publication_mut().publish_document(
+                DESKTOP_APP,
+                DESKTOP_DOCUMENT,
+                AutoCommit::new().save(),
+                &laptop.sk,
+                SystemTime::now(),
+            )
+        })
+        .expect("the workspace's desktop starts");
     let ada_link = page_link(&server, &ada_browser, workspace).await;
     let ben_link = page_link(&server, &ben_browser, workspace).await;
     let mut mo_link = page_link(&server, &mo_browser, workspace).await;
@@ -424,24 +440,9 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     let renames = ada_page.write(&server, &named(both.clone(), "Ada's")).await;
     let refused = commit(&ada_link, &renames).await.unwrap_err();
     assert!(refused.contains("may not rename"), "{refused}");
-    // Nor through a write large enough to travel in segments: they go on as
-    // they come, and the last one, which completes it, is refused, so none
-    // of it applies anywhere.
-    let mut huge = named(both.clone(), "Ada's");
-    huge.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title =
-        (0..400_000u32).fold(String::new(), |mut title, n| {
-            use std::fmt::Write as _;
-            write!(title, "{:x}", n.wrapping_mul(2_654_435_761)).unwrap();
-            title
-        });
-    let frames = ada_page.write_frames(&server, &huge).await;
-    assert!(frames.len() > 1, "{} frames", frames.len());
-    let (last, first) = frames.split_last().unwrap();
-    for frame in first {
-        let _ = commit(&ada_link, frame).await.unwrap();
-    }
-    let refused = commit(&ada_link, last).await.unwrap_err();
-    assert!(refused.contains("may not rename"), "{refused}");
+    // A write larger than one frame is no case here: a page's write over this host is in the
+    // clear, and only a sealed record's history is carried in segments (the segments' gathering
+    // and a refused completion are `document_frame`'s and the sealed records' tests').
     // Nor may Cy, through a plain write over his link: it is dropped,
     // and his next write, which is his to make, lands without it.
     let cy_link = page_link(&server, &cy_laptop, workspace).await;
