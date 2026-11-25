@@ -1407,7 +1407,8 @@ pub(crate) fn with_offers(manifest: &str, offers: &[Value]) -> String {
                 let defaulted = matches!(
                     (key, value.as_str()),
                     ("kind", Some("undoable")) | ("operation", Some("effect"))
-                ) && (key != "asks" || !value.as_array().is_some_and(Vec::is_empty))
+                ) || (key == "asks" && value.as_array().is_some_and(Vec::is_empty));
+                !defaulted
             }) else {
                 continue;
             };
