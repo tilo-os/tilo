@@ -19,10 +19,18 @@ mod json_stdout;
 mod publishing;
 mod surfaces;
 
+/// What `tilolang --version` prints: the release this program was built for, which
+/// `cli-release.sh build` sets from the tag it builds (`TILO_CLI_VERSION`), else the crate's own
+/// version (a published crate carries the release's, a build from the tree its own).
+const RELEASE_VERSION: &str = match option_env!("TILO_CLI_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
 #[command(
     name = "tilolang",
-    version,
+    version = RELEASE_VERSION,
     about = "Create and work on Tilo apps",
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
                   Start with `tilolang guide` for short offline workflows.\n\n\

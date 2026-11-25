@@ -20,7 +20,8 @@
 #                                      toolchain the check's setup installs), aarch64-apple-darwin
 #                                      or x86_64-apple-darwin (on a Mac), packed as OUT/tilo-<os>-
 #                                      <arch>.tar.gz; holds no credentials. Built for a tag, the
-#                                      program says that release as `tilo --version`.
+#                                      programs say that release as `tilo --version` and
+#                                      `tilolang --version`.
 #                                      `tilo-runtime` is built with it and packed beside it, and
 #                                      for Linux `tilolang-process` and `tilo-launcher` too, each
 #                                      as static as it is; `tilolang` is built in the same build
@@ -238,8 +239,9 @@ cmd_build() {
       *) die "$target is built on Linux or a Mac, not on $(uname -s)" ;;
     esac
   fi
-  # The release's version, so `tilo --version` names the release this program is from. A build
-  # that releases nothing (a branch's, a working tree's) keeps the crate's own version.
+  # The release's version, so `tilo --version` and `tilolang --version` name the release these
+  # programs are from. A build that releases nothing (a branch's, a working tree's) keeps the
+  # crates' own version.
   local released
   if [[ ${T_REF:-} == tag:* || -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
     released=$(version)
@@ -288,6 +290,8 @@ cmd_build() {
       if [[ -n ${TILO_CLI_VERSION:-} ]]; then
         [[ $("$program" --version) == "tilo $TILO_CLI_VERSION" ]] \
           || die "$program --version does not name the release $TILO_CLI_VERSION it was built for"
+        [[ $("$tilolang" --version) == "tilolang $TILO_CLI_VERSION" ]] \
+          || die "$tilolang --version does not name the release $TILO_CLI_VERSION it was built for"
       fi
       task_program_starts "$task_program"
       "$launcher" --help >/dev/null || die "$launcher --help failed"
