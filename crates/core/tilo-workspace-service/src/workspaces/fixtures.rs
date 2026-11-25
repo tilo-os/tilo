@@ -406,23 +406,24 @@ pub fn declare_built_in_app(host: &TestHost, app: &str) {
 }
 
 /// Install `app` in `workspace` as the person this service's device acts for, at the version
-/// whose surface this device declares for it ([`declare_app`]), as the workspace's `install`
-/// action records one: the workspace runs that version, so the app's writes name it, and
-/// installing gives the app its own records.
+/// whose surface this device declares for it ([`declare_app`]), or a version that publishes
+/// none where it declares none, as the workspace's `install` action records one: the workspace
+/// runs that version, so the app's writes name it, and installing gives the app its own records.
 ///
 /// # Errors
-/// This device declares no surface for `app`, or the workspace refused the install.
+/// The workspace refused the install.
 pub async fn install_app(
     workspaces: &Workspaces,
     workspace: &str,
     app: &str,
 ) -> Result<(), String> {
     let surface = collab_types::app_surface::hash_of(app)
-        .ok_or_else(|| format!("this device declares no surface for {app}"))?;
+        .map(hex::encode)
+        .unwrap_or_default();
     let release = tilo_peer_state::workspace_membership::AppRelease {
         app: app.into(),
         version: "1.0.0".into(),
-        surface: hex::encode(surface),
+        surface,
         package: "00".repeat(32),
         publisher: "00".repeat(32),
         file: None,

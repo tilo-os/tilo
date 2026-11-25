@@ -73,17 +73,8 @@ impl Workspaces {
         app: &str,
         error: String,
     ) -> String {
-        let Ok(state) = self.workspace(workspace).await else {
+        let Some(policy) = self.policy_of(workspace).await else {
             return error;
-        };
-        let policy = {
-            let governed = state.lock().await;
-            let policy = governed.peer().governance().governed_policy();
-            drop(governed);
-            match policy {
-                Ok(policy) => policy,
-                Err(_) => return error,
-            }
         };
         let acting = tilo_actions::Acting::by_app(app);
         let keeps = Authority::of_acting(&acting, &policy, &[])

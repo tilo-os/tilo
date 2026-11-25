@@ -24,7 +24,8 @@ use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled, signed_from};
 use super::turn_use_tests::asks;
 use crate::workspaces::Workspaces;
-use crate::workspaces::fixtures::{test_host, test_host_holding};
+use crate::workspaces::fixtures::{install_app, revoke_grant, test_host, test_host_holding};
+use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::tests::{governor, guest_device};
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -32,6 +33,27 @@ const NAME: &str = "ada@example.test";
 /// What no site shows as a setup key: it holds digits a seed never does.
 const NOT_A_SEED: &str = "correct horse battery staple 0189";
 const KEY: &str = "sk-live-ada-own-key";
+
+/// Install Passwords in `workspace`, as a member installs it: what gives it its own records,
+/// the vault among them. The vault is the workspace's own record, which no surface of the
+/// app's declares.
+async fn install_passwords(workspaces: &Workspaces, workspace: &str) {
+    install_app(workspaces, workspace, tilo_app_id::apps::PASSWORDS)
+        .await
+        .unwrap();
+}
+
+/// What `workspaces` answers `caller` for `action` of `store` in `workspace_id`.
+async fn reach(
+    workspaces: &Workspaces,
+    (workspace_id, caller, device): (WorkspaceId, &Caller, Option<&DeviceCert>),
+    (store, action, effect): (Store, &str, tilo_action_policy::ActionKind),
+) -> Result<tilo_action_policy::Answer, ActionCallError> {
+    workspaces
+        .reaching((Some(workspace_id), caller, device), store, action, effect)
+        .await
+        .map(|reach| reach.answer)
+}
 
 /// Who each change of `workspace_id`'s vault names as made for, in order: the people its
 /// history entry names, and whether it keeps the call they signed.
@@ -588,7 +610,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     ] {
         let refused = ask(&service, workspace_id, (&ada, &agent), action, argument).await;
         assert!(
-            matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
+            matches!(refused, Err(ActionCallError::ConfirmationRequired(_))),
             "{action}: {refused:?}"
         );
     }
@@ -628,17 +650,12 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
 
     // Nobody else reaches it, however it names itself.
     let person = hex::encode(ada.user_public_key);
-    let not_her: [(&str, &DeviceCert, Caller); 6] = [
+    let not_her: [(&str, &DeviceCert, Caller); 5] = [
         ("a bot", &ada, Caller::local_bot("a-bot")),
         (
             "an app acting for her",
             &ada,
             Caller::local_app("so.tilo.chat").acting_for(person.clone()),
-        ),
-        (
-            "another app on her own device",
-            &ada,
-            caller(&ada).through_app("so.tilo.notes"),
         ),
         (
             "her Passwords on another person's device",
@@ -667,6 +684,23 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
                 "{who}, {action}: {refused:?}"
             );
         }
+    }
+
+    // Another app on her own device holds no grant to the vault: what it calls is asked of
+    // her first, and nothing is done until she answers.
+    let notes = caller(&ada).through_app("so.tilo.notes");
+    for (action, argument) in [
+        (person_vault::LIST, json!({})),
+        (person_vault::ADD, a_login("https://attacker.example")),
+        (person_vault::REMOVE, json!({"item": &reference})),
+        (person_vault::REVEAL, json!({"item": &reference})),
+        (person_vault::COPY, json!({"item": &reference})),
+    ] {
+        let asked = ask(&service, workspace_id, (&ada, &notes), action, argument).await;
+        assert!(
+            matches!(asked, Err(ActionCallError::ConfirmationRequired(_))),
+            "another app, {action}: {asked:?}"
+        );
     }
 
     // Nothing of the workspace's moved.
@@ -751,7 +785,7 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
         )
         .await;
         assert!(
-            matches!(by_agent, Err(ActionCallError::ConfirmationRequired { .. })),
+            matches!(by_agent, Err(ActionCallError::ConfirmationRequired(_))),
             "the agent, {action}: {by_agent:?}"
         );
         let by_stranger = ask(
@@ -808,6 +842,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
+    install_passwords(workspaces, &workspace).await;
     let passwords = caller(&ada).through_app(tilo_app_id::apps::PASSWORDS);
     let hers = (&ada, &passwords);
 
@@ -989,7 +1024,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
     .unwrap();
     assert_eq!(still["value"], "home-5g");
 
-    // Passwords hands an item to nothing else, and no other app reaches the vault at all.
+    // Passwords hands an item to nothing else, and every other app asks its person first.
     let released = ask_at(
         &service,
         workspace_id,
@@ -1010,10 +1045,10 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
             (person_vault::COPY, json!({"item": &reference})),
             (person_vault::REMOVE, json!({"item": &reference})),
         ] {
-            let refused = ask(&service, workspace_id, (&ada, &other), action, argument).await;
+            let asked = ask(&service, workspace_id, (&ada, &other), action, argument).await;
             assert!(
-                matches!(refused, Err(ActionCallError::UnknownAction)),
-                "{app}, {action}: {refused:?}"
+                matches!(asked, Err(ActionCallError::ConfirmationRequired(_))),
+                "{app}, {action}: {asked:?}"
             );
         }
     }
@@ -1225,7 +1260,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     )
     .await;
     assert!(
-        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+        matches!(unasked, Err(ActionCallError::ConfirmationRequired(_))),
         "{unasked:?}"
     );
     let view = allowed_at(
@@ -1476,7 +1511,7 @@ async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
     )
     .await;
     assert!(
-        matches!(typed, Err(ActionCallError::ConfirmationRequired { .. })),
+        matches!(typed, Err(ActionCallError::ConfirmationRequired(_))),
         "{typed:?}"
     );
     nothing_was_used(&service, workspace_id, hers, &items).await;
@@ -1554,7 +1589,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     )
     .await;
     assert!(
-        matches!(typed, Err(ActionCallError::ConfirmationRequired { .. })),
+        matches!(typed, Err(ActionCallError::ConfirmationRequired(_))),
         "{typed:?}"
     );
 
@@ -2364,4 +2399,97 @@ async fn last_allowed(
         .next_back()
         .and_then(|context| context.signed)
         .and_then(|call| call.allowed)
+}
+
+/// An app reaches the workspace's stores by the grants naming it, never by its name. An app that
+/// calls itself Mail reads no sign-ins until its signed manifest declares it signs in, and then
+/// only those; Passwords reaches the vault once installing it gave it its own records, and
+/// asks its person before that and again once that grant is taken back.
+#[tokio::test]
+async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
+    use tilo_action_policy::{ActionKind, Answer};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, _) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let mail = tilo_app_id::apps::MAIL;
+    let sign_ins = (Store::MAIL, person_accounts::SIGN_INS, ActionKind::Read);
+
+    // Named Mail, with no grant: nothing.
+    let named = Caller::launched(mail).in_workspace(&workspace);
+    assert!(
+        matches!(
+            reach(workspaces, (workspace_id, &named, None), sign_ins).await,
+            Err(ActionCallError::NotPermitted)
+        ),
+        "a name is no grant"
+    );
+
+    // With the grant its signed manifest declares: the sign-ins, and nothing else.
+    let declared = named.clone().granting(vec![tilo_action_policy::Grant::new(
+        person_accounts::sign_in_grant_id(mail, &workspace),
+        tilo_action_policy::Grantee::app(mail),
+        person_accounts::sign_ins_node(&workspace),
+        tilo_action_policy::KindSet::READ,
+        Answer::Allow,
+        tilo_action_policy::Grantee::person(hex::encode(ada.user_public_key)),
+    )]);
+    assert_eq!(
+        reach(workspaces, (workspace_id, &declared, None), sign_ins).await,
+        Ok(Answer::Allow)
+    );
+    for (store, action, effect) in [
+        (Store::MAIL, person_accounts::SET_SERVICES, ActionKind::Undoable),
+        (Store::VAULT, person_vault::LIST, ActionKind::Read),
+    ] {
+        assert!(
+            matches!(
+                reach(workspaces, (workspace_id, &declared, None), (store, action, effect)).await,
+                Err(ActionCallError::NotPermitted)
+            ),
+            "{action}"
+        );
+    }
+
+    // Passwords, named but not installed: alone it reaches nothing, and through its person
+    // the vault asks them first.
+    let passwords = tilo_app_id::apps::PASSWORDS;
+    let list = (Store::VAULT, person_vault::LIST, ActionKind::Read);
+    let alone = Caller::launched(passwords).in_workspace(&workspace);
+    let through_ada = caller(&ada).through_app(passwords);
+    assert!(matches!(
+        reach(workspaces, (workspace_id, &alone, None), list).await,
+        Err(ActionCallError::NotPermitted)
+    ));
+    assert_eq!(
+        reach(workspaces, (workspace_id, &through_ada, Some(&ada)), list).await,
+        Ok(Answer::Ask)
+    );
+
+    // Installed, the grant to its own records reaches the vault.
+    install_passwords(workspaces, &workspace).await;
+    assert_eq!(
+        reach(workspaces, (workspace_id, &through_ada, Some(&ada)), list).await,
+        Ok(Answer::Allow)
+    );
+    assert_eq!(
+        reach(workspaces, (workspace_id, &alone, None), list).await,
+        Ok(Answer::Allow)
+    );
+
+    // Taken back, it asks again.
+    revoke_grant(
+        workspaces,
+        &workspace,
+        tilo_action_policy::roles::app_records_grant_id(passwords),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reach(workspaces, (workspace_id, &through_ada, Some(&ada)), list).await,
+        Ok(Answer::Ask)
+    );
+    server.shutdown().await;
 }

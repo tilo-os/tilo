@@ -1573,8 +1573,7 @@ impl Daemon {
         caller.granting(vec![tilo_action_policy::Grant::new(
             tilo_actions::remote::person_accounts::sign_in_grant_id(app, workspace),
             tilo_action_policy::Grantee::app(app),
-            tilo_action_policy::TreePath::workspace(workspace.to_owned())
-                .app(tilo_actions::remote::person_accounts::PROVIDER),
+            tilo_actions::remote::person_accounts::sign_ins_node(workspace),
             tilo_action_policy::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(self.person_id()),

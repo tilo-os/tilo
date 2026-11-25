@@ -275,23 +275,22 @@ impl crate::workspaces::Workspaces {
         rows
     }
 
-    /// The rows of the vault Passwords is offered as `asked`, by its own provider: each call of
-    /// it the workspace's policy lets its person ask. No other caller is offered them here.
+    /// The rows of the vault an app is offered as `asked`, by the vault's own provider: each
+    /// call of it the app's grants and its person's let it make or ask. A caller that is no app
+    /// is offered the vault's rows under the workspace's ([`Self::vault_rows`]).
     pub(super) async fn passwords_rows(&self, asked: super::Asked<'_>) -> Vec<CatalogueRow> {
         let (_, caller, _) = asked;
-        if caller
-            .acting()
-            .app()
-            .is_none_or(|app| app.as_str() != tilo_app_id::apps::PASSWORDS)
-        {
+        if caller.acting().app().is_none() {
             return Vec::new();
         }
+        // An app is offered what its grants already let it do; what it would have to ask for
+        // first, it asks for when it calls, never by finding it listed.
         let mut rows = Vec::new();
         for (verb, action) in VAULT_VERBS {
             if self
                 .reaching(asked, Store::VAULT, action, verb.kind)
                 .await
-                .is_ok()
+                .is_ok_and(|reach| reach.answer == tilo_action_policy::Answer::Allow)
             {
                 rows.push(verb.row(VAULT, person_vault::RESOURCE, "Vault"));
             }

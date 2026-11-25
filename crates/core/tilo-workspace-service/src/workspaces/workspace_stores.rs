@@ -28,19 +28,6 @@ use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
-/// The vault's calls Passwords makes as its own person: listing, adding and removing items,
-/// reading their uses, taking leaves back, and copying or showing one secret to that person.
-/// Never a release to anything else.
-const PASSWORDS_REACHES: [&str; 7] = [
-    tilo_actions::remote::person_vault::LIST,
-    tilo_actions::remote::person_vault::ADD,
-    tilo_actions::remote::person_vault::REMOVE,
-    tilo_actions::remote::person_vault::USES,
-    tilo_actions::remote::person_vault::TAKE_BACK,
-    tilo_actions::remote::person_vault::COPY,
-    tilo_actions::remote::person_vault::REVEAL,
-];
-
 use super::hosted_use::agent_of;
 use super::{WorkspaceId, Workspaces};
 
@@ -55,7 +42,7 @@ pub struct Store {
 impl Store {
     /// The workspace's mail accounts, in Mail.
     pub const MAIL: Self = Self {
-        app: "so.tilo.mail",
+        app: tilo_app_id::apps::MAIL,
         kind: tilo_actions::remote::person_accounts::PROVIDER,
     };
     /// The workspace's calendar accounts, in Calendar: only agents' hosts keep them.
@@ -174,32 +161,33 @@ impl Workspaces {
     ) -> Result<Reach, ActionCallError> {
         let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let acting = caller.acting();
-        // An app whose signed manifest declares it signs in reads the logins the workspace's
-        // vault keeps, as the app its connection is: the one verb its grant names it for, and
-        // no other accounts verb and no store at all.
+        // An app acting by itself holds the grants naming it, never a person's: those the
+        // workspace recorded (what installing it gave it), and those its device hands it from
+        // its signed manifest. With nobody at it to ask, what none of them allows is refused.
         if let Some(app) = acting.app()
-            && store == Store::MAIL
-            && action == tilo_actions::remote::person_accounts::SIGN_INS
-            && tilo_actions::remote::person_accounts::signs_in(caller, app, &workspace.to_string())
+            && acting.person_id().is_none()
         {
+            let policy = self
+                .policy_of(&workspace.to_string())
+                .await
+                .ok_or(ActionCallError::UnknownAction)?;
+            let node = store.node(&policy.workspace, action);
+            let answer = app_answer(
+                app.as_str(),
+                (&policy, &caller.granted()),
+                (&node, effect),
+                &Context::at_time(tilo_clock::wall()),
+            );
+            if answer != Answer::Allow {
+                return Err(ActionCallError::NotPermitted);
+            }
             return Ok(Reach {
                 workspace,
                 person: self.device_cert().user_public_key,
                 agent: None,
-                answer: Answer::Allow,
+                answer,
                 acting: acting.clone(),
             });
-        }
-        // An app reaches no store, but for Passwords at the vault whose kind it owns: as its
-        // own person, on their own device, it may do there what they may of the vault's own
-        // calls, and never hand an item to anything else.
-        if let Some(app) = acting.app()
-            && !(store == Store::VAULT
-                && app.as_str() == tilo_app_id::apps::PASSWORDS
-                && acting.person_id().is_some()
-                && PASSWORDS_REACHES.contains(&action))
-        {
-            return Err(ActionCallError::UnknownAction);
         }
         let certificate = certificate
             .filter(|certificate| {
@@ -240,6 +228,17 @@ impl Workspaces {
             agent_read(&verdict, narrowed(access.policy.as_ref(), caller))
         } else {
             verdict.answer
+        };
+        // A person working through an app reaches only what the app's grants reach too: what
+        // installing it gave it, or what its person answers when asked.
+        let answer = match acting.app() {
+            Some(app) => answer.min(app_answer(
+                app.as_str(),
+                (access.policy.as_ref(), &caller.granted()),
+                (&node, effect),
+                &Context::at_time(now),
+            )),
+            None => answer,
         };
         if answer == Answer::Deny {
             return Err(ActionCallError::NotPermitted);
@@ -436,4 +435,24 @@ fn narrowed(policy: &tilo_action_policy::WorkspacePolicy, caller: &Caller) -> bo
     agent_of(caller).is_some_and(|(agent, person)| {
         policy.answers_narrow(agent, person, &Context::at_time(tilo_clock::wall()))
     })
+}
+
+/// What the grants naming `app` answer for `effect` at `node`: the workspace's (what installing
+/// the app gave it, or a member gave it since) and those its device hands it from its signed
+/// manifest (`granted`). A node none of them reaches is asked of the person, never allowed by
+/// the app's name; a grant that denies it refuses it.
+fn app_answer(
+    app: &str,
+    (policy, granted): (&tilo_action_policy::WorkspacePolicy, &[tilo_action_policy::Grant]),
+    (node, effect): (&TreePath, ActionKind),
+    cx: &Context<'_>,
+) -> Answer {
+    let decided = policy
+        .party_of(tilo_action_policy::Grantee::app(app))
+        .with_grants(granted)
+        .decide(node, effect, cx);
+    match (decided.answer, decided.basis) {
+        (Answer::Deny, tilo_action_policy::Basis::NoGrant) => Answer::Ask,
+        (answer, _) => answer,
+    }
 }

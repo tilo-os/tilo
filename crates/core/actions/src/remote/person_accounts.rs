@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionAddress, Caller, RemoteActionTarget};
+use super::{ActionAddress, RemoteActionTarget};
 
 /// The provider that answers the person's mail accounts under.
 pub const PROVIDER: &str = "tilo.accounts";
@@ -87,16 +87,16 @@ pub fn sign_in_grant_id(app: &str, workspace: &str) -> String {
     format!("manifest:{app}:{workspace}:sign-ins")
 }
 
-/// Whether `caller` is the app `app`'s own connection in `workspace`, holding the grant its
-/// signed manifest declares: the one that lets it read the logins the vault keeps.
+/// Where reading the workspace's sign-ins ([`SIGN_INS`]) stands in its policy: the verb at the
+/// accounts Mail keeps. The grant an app's signed manifest declares names this node, and the
+/// workspace decides an app's read of the sign-ins by that grant as by any other.
 #[must_use]
-pub fn signs_in(caller: &Caller, app: &str, workspace: &str) -> bool {
-    let id = sign_in_grant_id(app, workspace);
-    caller.granted().iter().any(|grant| {
-        grant.id.as_str() == id
-            && grant.grantee == tilo_action_policy::Grantee::app(app)
-            && grant.answer == tilo_action_policy::Answer::Allow
-    })
+pub fn sign_ins_node(workspace: &str) -> tilo_action_policy::TreePath {
+    tilo_action_policy::TreePath::workspace(workspace.to_owned())
+        .app(tilo_app_id::apps::MAIL)
+        .kind(PROVIDER)
+        .rest()
+        .action(SIGN_INS)
 }
 
 /// Read the logins the workspace's vault keeps, as a [`MailSignIns`]: their names, sign-in

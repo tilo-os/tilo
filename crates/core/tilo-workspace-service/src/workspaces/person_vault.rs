@@ -141,8 +141,8 @@ impl Workspaces {
         if action == person_vault::TAKE_BACK && caller.acting().is_agent() {
             return Err(ActionCallError::UnknownAction);
         }
-        // A secret is shown or copied for its own person alone: no agent is, and no app but
-        // Passwords reaches the vault at all ([`Workspaces::reaching`]).
+        // A secret is shown or copied for its own person alone: no agent is, and an app reaches
+        // the vault only as its grants let it ([`Workspaces::reaching`]).
         if matches!(action, person_vault::COPY | person_vault::REVEAL)
             && (caller.acting().is_agent() || caller.acting().person_id().is_none())
         {
