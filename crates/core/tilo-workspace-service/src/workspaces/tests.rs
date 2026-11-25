@@ -14,6 +14,7 @@ pub(crate) use super::fixtures::{
 };
 
 pub(crate) mod admission_cost;
+mod catch_up;
 #[cfg(feature = "agents")]
 mod host_address;
 mod invitation_read;

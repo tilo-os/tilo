@@ -822,11 +822,11 @@ impl Workspaces {
                 Ok(Ok(cursors)) => cursors,
                 Ok(Err(error)) => {
                     tracing::debug!(%workspace, %error, "the caller's store was not taken by dialling back; what its link brought stands");
-                    self.standing_here(workspace_id)?
+                    self.standing_here(workspace_id)
                 }
                 Err(_) => {
                     tracing::debug!(%workspace, "the caller could not be dialled back in time; what its link brought stands");
-                    self.standing_here(workspace_id)?
+                    self.standing_here(workspace_id)
                 }
             }
         };
@@ -850,17 +850,18 @@ impl Workspaces {
     }
 
     /// Where this device's store stands on `workspace_id`, as a catch-up answers:
-    /// what the workspace's link has brought in already.
+    /// what the workspace's link has brought in already. Read from the store
+    /// itself, which is the one its links keep: a host that holds the workspace
+    /// and serves no link of it yet answers where what it was handed brought it,
+    /// rather than refusing the catch-up that asks.
     #[cfg(not(target_arch = "wasm32"))]
-    fn standing_here(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<Vec<tilo_peer_state::store::Cursor>, String> {
+    fn standing_here(&self, workspace_id: WorkspaceId) -> Vec<tilo_peer_state::store::Cursor> {
         self.inner
-            .direct
-            .link(workspace_id)
-            .ok_or_else(|| "no link serves the workspace here".to_owned())?
-            .standing()
+            .store
+            .stands(workspace_id)
+            .into_iter()
+            .map(|(cursor, _)| cursor)
+            .collect()
     }
 
     /// The address of `caller`, a device `workspace` names among those
