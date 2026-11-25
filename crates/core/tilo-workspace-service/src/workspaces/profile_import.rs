@@ -407,8 +407,13 @@ impl Workspaces {
             return;
         }
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let workspaces = self.clone();
-            runtime.spawn(async move { workspaces.import_held_app_files().await });
+            let workspaces = self.downgrade();
+            runtime.spawn(async move {
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                workspaces.import_held_app_files().await;
+            });
         }
     }
 

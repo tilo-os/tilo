@@ -104,6 +104,7 @@ mod telling;
 mod vault;
 
 use super::authority::WorkspaceOp;
+use super::weak::WeakWorkspaces;
 #[cfg(not(target_arch = "wasm32"))]
 use super::workspace_stores::Store;
 use super::{
@@ -3901,7 +3902,9 @@ pub(crate) struct ServiceWorkspaceActions {
 }
 
 pub(crate) struct Shared {
-    workspaces: OnceLock<Workspaces>,
+    /// The workspaces this governance answers for: held without keeping them alive, since a
+    /// provider this governance answers with lives in them.
+    workspaces: OnceLock<WeakWorkspaces>,
     runtime: tokio::runtime::Handle,
     /// What each admitted invocation came to.
     log: Mutex<InvocationLog<InvocationState>>,
@@ -3944,7 +3947,7 @@ impl ServiceWorkspaceActions {
 
     /// Serve `workspaces`; only the first workspaces attached are served. Their members' devices
     /// ask this governance on the device action service too.
-    pub(crate) fn attach(&self, workspaces: Workspaces) {
+    pub(crate) fn attach(&self, workspaces: &Workspaces) {
         workspaces.govern_device_actions_with(Arc::downgrade(&self.shared));
         workspaces.answer_asked_with(Arc::new(HostAsked(Arc::downgrade(&self.shared))));
         self.serve(workspaces);
@@ -3954,14 +3957,14 @@ impl ServiceWorkspaceActions {
     /// provider is answered: a call made here reaches it there, admission among them. Every
     /// service that holds workspaces does, whether it founded them or holds them for a device
     /// that joined them ([`Self::attach`] for one that founds).
-    pub(crate) fn serve(&self, workspaces: Workspaces) {
+    pub(crate) fn serve(&self, workspaces: &Workspaces) {
         workspaces.providers().provide(
             WORKSPACE_GOVERNANCE_PROVIDER,
             WORKSPACE_GOVERNANCE_PROVIDER,
             super::providers::Reach::ThisDevice,
             Arc::new(Governing(self.clone())),
         );
-        let _ = self.shared.workspaces.set(workspaces);
+        let _ = self.shared.workspaces.set(workspaces.downgrade());
     }
 
     /// This host for requests about workspace `workspace_id`, from a caller
@@ -4020,6 +4023,7 @@ impl ServiceWorkspaceActions {
                 .shared
                 .workspaces
                 .get()
+                .and_then(WeakWorkspaces::upgrade)
                 .is_some_and(|workspaces| workspaces.own().is_some())
     }
 
@@ -4215,7 +4219,7 @@ impl ActionProvider for InWorkspace {
     /// of there, so a person's device reads their own workspace's list from the server holding
     /// it as it reads it from any holder.
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        let workspaces = self.server.shared.workspaces.get().cloned()?;
+        let workspaces = self.server.shared.workspaces.get()?.upgrade()?;
         Some(workspaces.resource_reads())
     }
 
@@ -4225,7 +4229,11 @@ impl ActionProvider for InWorkspace {
     /// run for its types to be readable.
     fn installed_surface(&self, app: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         let (Some(workspaces), Some(workspace_id)) = (
-            self.server.shared.workspaces.get().cloned(),
+            self.server
+                .shared
+                .workspaces
+                .get()
+                .and_then(WeakWorkspaces::upgrade),
             self.workspace_id,
         ) else {
             return Pending::ready(None);
@@ -4267,7 +4275,13 @@ impl ActionProvider for InWorkspace {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let Some(workspaces) = self.server.shared.workspaces.get().cloned() else {
+        let Some(workspaces) = self
+            .server
+            .shared
+            .workspaces
+            .get()
+            .and_then(WeakWorkspaces::upgrade)
+        else {
             return Pending::ready(Ok(CataloguePage::from_rows("0".into(), Vec::new(), &query)));
         };
         let (caller, workspace_id, certificate) =
@@ -4287,7 +4301,13 @@ impl ActionProvider for InWorkspace {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
-        let Some(workspaces) = self.server.shared.workspaces.get().cloned() else {
+        let Some(workspaces) = self
+            .server
+            .shared
+            .workspaces
+            .get()
+            .and_then(WeakWorkspaces::upgrade)
+        else {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         if request.target == mcp_server::target(mcp_server::SERVER) {
@@ -4341,9 +4361,14 @@ impl ActionProvider for InWorkspace {
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // A follow reads the MCP server as it is now.
         if self.server.follows_mcp(caller, id)
-            && let Some(workspaces) = self.server.shared.workspaces.get()
+            && let Some(workspaces) = self
+                .server
+                .shared
+                .workspaces
+                .get()
+                .and_then(WeakWorkspaces::upgrade)
         {
-            self.server.mcp_moved(workspaces, caller, id);
+            self.server.mcp_moved(&workspaces, caller, id);
         }
         // A follow of the workspace's accounts is read again as they change
         // ([`Self::next_change`]): reading the record waits on it.
@@ -4356,7 +4381,7 @@ impl ActionProvider for InWorkspace {
             return Some(moved);
         }
         if self.server.follows_accounts(caller, id) {
-            let workspaces = self.server.shared.workspaces.get()?.clone();
+            let workspaces = self.server.shared.workspaces.get()?.upgrade()?;
             let mut changes = workspaces.person_settings_changes();
             let (host, caller, id) = (self.server.clone(), caller.clone(), *id);
             return Some(self.server.spawn(async move {
@@ -4371,7 +4396,7 @@ impl ActionProvider for InWorkspace {
         if !self.server.follows_mcp(caller, id) {
             return None;
         }
-        let workspaces = self.server.shared.workspaces.get()?.clone();
+        let workspaces = self.server.shared.workspaces.get()?.upgrade()?;
         let mut changes = workspaces.inner.mcp_server.changes();
         if self.server.mcp_moved(&workspaces, caller, id) {
             return Some(Pending::ready(()));
@@ -4430,7 +4455,8 @@ impl ActionProvider for InWorkspace {
                 .shared
                 .workspaces
                 .get()
-                .and_then(Workspaces::asked_store)
+                .and_then(WeakWorkspaces::upgrade)
+                .and_then(|workspaces| workspaces.asked_store())
             && let Some(at) = store.record(&id.0.to_string())
         {
             store.withdraw(&at, TAKEN_BACK);
@@ -4530,12 +4556,12 @@ impl Governing {
             .shared
             .workspaces
             .get()
-            .map(|workspaces| &workspaces.inner.host.cert)
+            .and_then(WeakWorkspaces::upgrade)
+            .map(|workspaces| workspaces.inner.host.cert.clone())
             .filter(|own| {
                 caller.device_public_key() == Some(&own.device_public_key)
                     && caller.user_public_key() == Some(&own.user_public_key)
-            })
-            .cloned();
+            });
         InWorkspace {
             server: self.0.clone(),
             workspace_id,
@@ -5052,7 +5078,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             .shared
             .workspaces
             .get()
-            .cloned()
+            .and_then(WeakWorkspaces::upgrade)
             .ok_or_else(not_waiting)?;
         let mut asking = server.shared.asked_calls.lock_recover();
         let remembered = asking.remove(&request.invocation);

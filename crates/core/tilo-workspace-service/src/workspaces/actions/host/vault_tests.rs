@@ -25,8 +25,8 @@ use super::super::tests::{admit, caller, governed, settled, signed_from};
 use super::turn_use_tests::asks;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{install_app, revoke_grant, test_host, test_host_holding};
-use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::tests::{governor, guest_device};
+use crate::workspaces::workspace_stores::Store;
 
 const PASSWORD: &str = "correct horse battery staple";
 const NAME: &str = "ada@example.test";
@@ -144,7 +144,16 @@ pub(super) async fn asked(
             .invoke(caller, request.clone()),
     )
     .await?;
-    super::waiting::at_once(service.shared.workspaces.get().unwrap(), request, receipt)
+    super::waiting::at_once(
+        &service
+            .shared
+            .workspaces
+            .get()
+            .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+            .unwrap(),
+        request,
+        receipt,
+    )
 }
 
 /// `action` of the vault, asked as [`ask_at`] asks.
@@ -2441,12 +2450,21 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
         Ok(Answer::Allow)
     );
     for (store, action, effect) in [
-        (Store::MAIL, person_accounts::SET_SERVICES, ActionKind::Undoable),
+        (
+            Store::MAIL,
+            person_accounts::SET_SERVICES,
+            ActionKind::Undoable,
+        ),
         (Store::VAULT, person_vault::LIST, ActionKind::Read),
     ] {
         assert!(
             matches!(
-                reach(workspaces, (workspace_id, &declared, None), (store, action, effect)).await,
+                reach(
+                    workspaces,
+                    (workspace_id, &declared, None),
+                    (store, action, effect)
+                )
+                .await,
                 Err(ActionCallError::NotPermitted)
             ),
             "{action}"

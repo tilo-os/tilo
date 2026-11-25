@@ -9,7 +9,7 @@ use tilo_device_identity::login::Reached;
 use tilo_lock::RwLockRecover as _;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tilo_workspace_service::handshake::LiveIdentity;
-use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::WeakWorkspaces;
 
 /// This host, as the pages it serves reach it.
 pub(crate) struct PageTickets {
@@ -17,8 +17,9 @@ pub(crate) struct PageTickets {
     pub(crate) identity: LiveIdentity,
     /// Where the host is dialled.
     pub(crate) endpoint: iroh::Endpoint,
-    /// The workspaces this host governs, whose records keep each person's devices.
-    pub(crate) records: Option<Workspaces>,
+    /// The workspaces this host governs, whose records keep each person's devices: held
+    /// without keeping them alive, since the device's one set of tickets lives in them.
+    pub(crate) records: Option<WeakWorkspaces>,
 }
 
 impl tilo_peer_state::new_device::PageHost for PageTickets {
@@ -46,6 +47,9 @@ impl tilo_peer_state::new_device::PageHost for PageTickets {
             return;
         };
         runtime.spawn(async move {
+            let Some(records) = records.upgrade() else {
+                return;
+            };
             let label = cert.device_label.clone();
             records.keep_issued_device(&cert, &label).await;
         });

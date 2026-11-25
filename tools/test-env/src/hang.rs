@@ -98,6 +98,29 @@ pub fn wait_for<T>(what: impl Display, mut probe: impl FnMut() -> Option<T>) -> 
     }
 }
 
+/// [`wait_for`], giving up after `bound` rather than the suite's hang bound: for a condition
+/// that must hold promptly once its cause is gone, as an address a stopped server frees.
+#[track_caller]
+pub fn wait_for_within<T>(
+    what: impl Display,
+    bound: Duration,
+    mut probe: impl FnMut() -> Option<T>,
+) -> T {
+    let deadline = Instant::now()
+        .checked_add(bound)
+        .expect("the bound fits in an Instant");
+    let mut pause = POLL_MIN;
+    loop {
+        if let Some(value) = probe() {
+            return value;
+        }
+        let now = Instant::now();
+        assert!(now < deadline, "gave up waiting for {what} after {bound:?}");
+        thread::sleep(pause.min(deadline.saturating_duration_since(now)));
+        pause = pause.saturating_mul(2).min(POLL_MAX);
+    }
+}
+
 #[track_caller]
 pub fn recv<T>(what: impl Display, receiver: &Receiver<T>) -> T {
     match receiver.recv_timeout(hang_bound()) {

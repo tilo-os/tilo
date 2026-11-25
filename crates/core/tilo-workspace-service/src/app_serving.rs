@@ -1027,7 +1027,8 @@ impl ActionProvider for HostOperations {
 /// certificate names. Only the entry action is answered here; nothing else is reachable in this
 /// scope without a certificate.
 pub(crate) struct EntryOperations {
-    workspaces: crate::workspaces::Workspaces,
+    /// Held without keeping them alive: this answers from a provider the workspaces keep.
+    workspaces: crate::workspaces::WeakWorkspaces,
     revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     runtime: tokio::runtime::Handle,
 }
@@ -1039,11 +1040,11 @@ impl EntryOperations {
     /// Outside a runtime context, where there is nothing to answer on.
     #[must_use]
     pub(crate) fn new(
-        workspaces: crate::workspaces::Workspaces,
+        workspaces: &crate::workspaces::Workspaces,
         revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     ) -> Self {
         Self {
-            workspaces,
+            workspaces: workspaces.downgrade(),
             revocations,
             runtime: tokio::runtime::Handle::current(),
         }
@@ -1112,7 +1113,9 @@ impl ActionProvider for EntryOperations {
         }
         let invocation = request.invocation;
         let (completer, answer) = tilo_actions::remote::pending();
-        let workspaces = self.workspaces.clone();
+        let Some(workspaces) = self.workspaces.upgrade() else {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        };
         self.runtime.spawn(async move {
             let entry = tilo_server_protocol::entering::Entry {
                 entering,

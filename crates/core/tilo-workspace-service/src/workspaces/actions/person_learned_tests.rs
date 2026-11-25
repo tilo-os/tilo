@@ -54,9 +54,15 @@ impl Asking<'_> {
                 .invoke(caller, request.clone()),
         )
         .await;
-        let workspaces = self.server.shared.workspaces.get().unwrap();
+        let workspaces = self
+            .server
+            .shared
+            .workspaces
+            .get()
+            .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+            .unwrap();
         let receipt = answered(
-            workspaces,
+            &workspaces,
             (Some(self.workspace), Some(device)),
             caller,
             &request,

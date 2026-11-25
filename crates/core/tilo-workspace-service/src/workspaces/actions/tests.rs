@@ -578,7 +578,7 @@ pub(crate) async fn governed(
 pub(crate) fn host_dispatch(workspaces: &Workspaces) -> ServiceWorkspaceActions {
     workspaces.inner.jobs.governance().unwrap_or_else(|| {
         let host = ServiceWorkspaceActions::new();
-        host.attach(workspaces.clone());
+        host.attach(workspaces);
         host
     })
 }

@@ -52,7 +52,9 @@ pub use environment::{Clock, Network, TestEnv};
 pub use fixture::{Fixture, WORKSPACE_DOCUMENT};
 #[cfg(target_os = "linux")]
 pub use hang::exited;
-pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
+pub use hang::{
+    Within, hang_bound, hang_deadline, recv, wait_for, wait_for_within, wait_until, within,
+};
 #[cfg(feature = "document")]
 pub use net::document::{FakeDocumentNet, at_path};
 pub use net::{Converged, FakeNet, Peer};

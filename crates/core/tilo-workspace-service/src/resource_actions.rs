@@ -27,6 +27,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, LocalTransport};
 use tilo_server_protocol::WorkspaceId;
 
+use crate::workspaces::WeakWorkspaces;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_workspace::devices::{DEVICES, Devices};
 use crate::workspaces::providers::Reach;
@@ -39,7 +40,7 @@ pub fn register(workspaces: &Workspaces) {
         RESOURCE_PROVIDER,
         Reach::Devices,
         Arc::new(ResourceActions {
-            workspaces: workspaces.clone(),
+            workspaces: workspaces.downgrade(),
             declared: Arc::from(Declared::all()),
         }),
     );
@@ -48,7 +49,8 @@ pub fn register(workspaces: &Workspaces) {
 /// The resources of the workspaces a device keeps, as their owners' actions change them.
 #[derive(Clone)]
 struct ResourceActions {
-    workspaces: Workspaces,
+    /// Held without keeping them alive: this answers from a provider they keep.
+    workspaces: WeakWorkspaces,
     declared: Arc<[Declared]>,
 }
 
@@ -208,6 +210,17 @@ fn named_arguments(
 }
 
 impl ResourceActions {
+    /// The workspaces this answers for, while the device still keeps them.
+    #[expect(
+        clippy::result_large_err,
+        reason = "a call's refusal is the same status every action here answers with"
+    )]
+    fn here(&self) -> Result<Workspaces, ReceiptStatus> {
+        self.workspaces.upgrade().ok_or(ReceiptStatus::Rejected {
+            error: ActionCallError::UnknownAction,
+        })
+    }
+
     async fn applied(
         &self,
         caller: &Caller,
@@ -239,8 +252,8 @@ impl ResourceActions {
             WorkspaceId::parse(&workspace).ok_or_else(|| invalid("that is not a workspace"))?;
         let arguments = named_arguments(&request.argument).map_err(|status| *status)?;
         // Whoever the workspace does not admit is refused before anything of it is read.
-        let policy = self
-            .workspaces
+        let workspaces = self.here()?;
+        let policy = workspaces
             .workspace_policy(workspace_id, caller)
             .await
             .ok_or_else(|| rejected(ActionCallError::NotPermitted))?;
@@ -323,7 +336,8 @@ impl ResourceActions {
         };
         // The action is this device's write of the record in the workspace's store, founding it
         // as its kind does where the store holds none yet.
-        self.workspaces
+        let workspaces = self.here()?;
+        workspaces
             .author_record(&workspace, (app, declared.kind.kind(), id), |doc| {
                 Ok(change(doc))
             })
@@ -358,7 +372,8 @@ impl ResourceActions {
                 },
             });
         };
-        self.workspaces
+        let workspaces = self.here()?;
+        workspaces
             .move_record((workspace, &to), (app, id, &target), caller)
             .await
             .map_err(|error| failed("refused", error))?;

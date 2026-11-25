@@ -664,7 +664,7 @@ impl Server {
             crate::page_tickets::PageTickets {
                 identity: live.clone(),
                 endpoint: endpoint.clone(),
-                records: Some(governed.clone()),
+                records: Some(governed.downgrade()),
             },
         ));
         let web = Box::new(WebContext {
@@ -688,7 +688,12 @@ impl Server {
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_mut() {
             let mut tasks = lock_background_tasks(&background_tasks);
-            tasks.extend(origin.tasks().into_iter().map(|task| AbortOnDrop(Some(task))));
+            tasks.extend(
+                origin
+                    .tasks()
+                    .into_iter()
+                    .map(|task| AbortOnDrop(Some(task))),
+            );
         }
         // A server of the person's own takes part in their Servers
         // workspace, whose record of their servers says what it should be.

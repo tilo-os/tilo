@@ -251,9 +251,14 @@ async fn ask_as(
     let provider = host.device_page(workspace_id, device);
     let invocation = request.invocation;
     let first = settled(provider.invoke(caller, request.clone())).await;
-    let workspaces = host.shared.workspaces.get().unwrap();
+    let workspaces = host
+        .shared
+        .workspaces
+        .get()
+        .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+        .unwrap();
     let mut receipt = answered(
-        workspaces,
+        &workspaces,
         (Some(workspace_id), Some(device)),
         caller,
         &request,

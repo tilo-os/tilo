@@ -79,7 +79,16 @@ async fn asked_by_agent(
         request.clone(),
     ))
     .await?;
-    at_once(service.shared.workspaces.get().unwrap(), request, receipt)
+    at_once(
+        &service
+            .shared
+            .workspaces
+            .get()
+            .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+            .unwrap(),
+        request,
+        receipt,
+    )
 }
 
 /// Everything the host's asked records show and keep of `workspace`, as text: what the person

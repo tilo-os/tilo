@@ -132,9 +132,14 @@ async fn a_sign_in_asked_by(
         asking.clone(),
     ))
     .await;
-    let workspaces = actions.shared.workspaces.get().unwrap();
+    let workspaces = actions
+        .shared
+        .workspaces
+        .get()
+        .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+        .unwrap();
     answered(
-        workspaces,
+        &workspaces,
         (Some(workspace_id), Some(member)),
         caller,
         &asking,

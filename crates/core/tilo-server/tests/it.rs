@@ -38,6 +38,8 @@ mod bridged_avatar;
 mod browser_transport;
 #[path = "chat_content.rs"]
 mod chat_content;
+#[path = "drop_frees_address.rs"]
+mod drop_frees_address;
 #[path = "files_at_disk_speed.rs"]
 mod files_at_disk_speed;
 #[path = "governed_workspace_access.rs"]

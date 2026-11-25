@@ -41,9 +41,11 @@ async fn server(
     if iroh_listen.port() != 0 {
         // A stopped server's connections let go of its socket shortly after
         // its shutdown returns.
-        tilo_test_env::wait_for("the stopped server's address to be free", || {
-            std::net::UdpSocket::bind(iroh_listen).ok().map(drop)
-        });
+        tilo_test_env::wait_for_within(
+            "the stopped server's address to be free",
+            std::time::Duration::from_secs(2),
+            || std::net::UdpSocket::bind(iroh_listen).ok().map(drop),
+        );
     }
     start_server(
         ServerConfig {

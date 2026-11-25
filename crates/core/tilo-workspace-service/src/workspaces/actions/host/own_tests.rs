@@ -37,8 +37,13 @@ async fn on_host(
     request: InvokeRequest,
 ) -> Result<InvocationReceipt, ActionCallError> {
     let first = settled(host.as_host(device).invoke(caller, request.clone())).await;
-    let workspaces = host.shared.workspaces.get().unwrap();
-    answered(workspaces, (None, Some(device)), caller, &request, first).await
+    let workspaces = host
+        .shared
+        .workspaces
+        .get()
+        .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+        .unwrap();
+    answered(&workspaces, (None, Some(device)), caller, &request, first).await
 }
 
 fn own_request(argument: Value) -> InvokeRequest {
@@ -1074,7 +1079,12 @@ async fn govern(
     )
     .await;
     let receipt = answered(
-        host.shared.workspaces.get().unwrap(),
+        &host
+            .shared
+            .workspaces
+            .get()
+            .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+            .unwrap(),
         (Some(workspace.workspace_id), None),
         &key,
         &request,

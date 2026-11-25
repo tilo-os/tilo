@@ -11,6 +11,7 @@ use tilo_action_policy::{Answer, Context, Grant};
 use tilo_actions::remote::asked::AskedGrants;
 use tilo_actions::remote::{Pending, pending};
 
+use super::weak::WeakWorkspaces;
 use super::{GovernedWorkspace, Workspaces};
 
 /// What refuses a grant asked of this host for someone other than its own person.
@@ -88,14 +89,17 @@ impl Workspaces {
     #[must_use]
     pub fn asked_grants(&self, runtime: tokio::runtime::Handle) -> Arc<dyn AskedGrants> {
         Arc::new(HostGrants {
-            workspaces: self.clone(),
+            workspaces: self.downgrade(),
             runtime,
         })
     }
 }
 
 struct HostGrants {
-    workspaces: Workspaces,
+    /// Held without keeping them alive: the store these grants answer through lives in the
+    /// workspaces themselves, and a strong handle here would keep the host's workspaces, and
+    /// the endpoint they hold, from ever being let go.
+    workspaces: WeakWorkspaces,
     runtime: tokio::runtime::Handle,
 }
 
@@ -108,6 +112,10 @@ impl AskedGrants for HostGrants {
             person.to_owned(),
         );
         self.runtime.spawn(async move {
+            let Some(workspaces) = workspaces.upgrade() else {
+                done.complete(Err("this server no longer keeps its workspaces".to_owned()));
+                return;
+            };
             done.complete(
                 workspaces
                     .give_asked_grant(&workspace, &person, grant)

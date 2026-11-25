@@ -54,9 +54,14 @@ async fn in_workspace(
             .invoke(caller, request.clone()),
     )
     .await;
-    let workspaces = actions.shared.workspaces.get().unwrap();
+    let workspaces = actions
+        .shared
+        .workspaces
+        .get()
+        .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+        .unwrap();
     let receipt = answered(
-        workspaces,
+        &workspaces,
         (Some(workspace_id), None),
         caller,
         &request,

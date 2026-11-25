@@ -97,7 +97,13 @@ impl<'a> Asking<'a> {
         )
         .await?;
         super::waiting::at_once(
-            self.actions.shared.workspaces.get().unwrap(),
+            &self
+                .actions
+                .shared
+                .workspaces
+                .get()
+                .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+                .unwrap(),
             request,
             receipt,
         )

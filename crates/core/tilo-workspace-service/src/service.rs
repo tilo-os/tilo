@@ -347,10 +347,10 @@ impl ServiceSessions {
         host_revocations: Arc<std::sync::RwLock<RevocationList>>,
     ) {
         if governance.is_none() {
-            crate::workspaces::ServiceWorkspaceActions::new().serve(workspaces.clone());
+            crate::workspaces::ServiceWorkspaceActions::new().serve(workspaces);
         }
         if let Some(governance) = governance {
-            governance.attach(workspaces.clone());
+            governance.attach(workspaces);
             // Sessions ask its workspaces what a device may do; the lock is set
             // before the endpoint routes any session to the service.
             let _ = self.handler.admin.set(Arc::new(workspaces.clone()));
@@ -370,7 +370,7 @@ impl ServiceSessions {
             workspaces.action_service().admit_uncertified(
                 tilo_server_protocol::workspaces::ENTRY_SCOPE,
                 Arc::new(crate::app_serving::EntryOperations::new(
-                    workspaces.clone(),
+                    workspaces,
                     host_revocations,
                 )),
             );
