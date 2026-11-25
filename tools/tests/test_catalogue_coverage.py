@@ -216,11 +216,15 @@ class PackageCatalogueCoverageTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        # A compiler that writes the package's words from a file beside its sources.
+        # A compiler that writes the package's words from a file beside its sources, and answers
+        # `catalogue --help` as one that has the command does.
         self.binary = self.root / "tilolang"
         self.binary.write_text(
             "#!/usr/bin/env python3\n"
             "import pathlib, sys\n"
+            "if sys.argv[1:] == ['catalogue', '--help']:\n"
+            "    print('usage: tilolang catalogue <package>')\n"
+            "    raise SystemExit(0)\n"
             "print((pathlib.Path(sys.argv[2]) / 'source.ftl').read_text(), end='')\n"
         )
         self.binary.chmod(0o755)
