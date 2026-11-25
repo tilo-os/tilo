@@ -129,11 +129,15 @@ async fn admitted_author(
     .await
 }
 
-/// Wait until `hosted` admits `device` to `workspace`: the link it opens.
+/// Wait until `hosted` admits `device` to `workspace` as a member's device: the link it opens
+/// once the members it reads name the device. A device it does not name yet is let in only to
+/// sign its own row, and that link ends once the row is in, to be dialled again.
 async fn member_at(hosted: &Hosted, device: &TestDevice, workspace: WorkspaceId) -> Linked {
     tilo_test_env::within("the host admits the member", async {
         loop {
-            if let Ok(linked) = Linked::open_hosted(hosted, device, workspace).await {
+            if names(hosted, &workspace.to_string(), device).await
+                && let Ok(linked) = Linked::open_hosted(hosted, device, workspace).await
+            {
                 return linked;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
