@@ -59,9 +59,9 @@ impl Asks {
 pub struct Answering<'a> {
     pub asks: Asks,
     /// Put a question to the person: their yes, or no. Asked only for [`Asks::Prompt`].
-    pub prompt: &'a mut dyn FnMut(&Asked) -> Result<bool>,
+    pub prompt: &'a mut (dyn FnMut(&Asked) -> Result<bool> + Send),
     /// A line the person reads: the run's progress, a question asked of them, their answer.
-    pub say: &'a mut dyn FnMut(&str),
+    pub say: &'a mut (dyn FnMut(&str) + Send),
 }
 
 /// One device's migrations, stepped by one caller through a dispatch that reaches the device.
