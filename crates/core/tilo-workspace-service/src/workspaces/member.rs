@@ -343,7 +343,6 @@ const HOLD_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
 const REDIAL: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a write waits for the member copy's link before it is refused:
 /// the write is undone, as one the owner could not take is.
-#[cfg(any(feature = "apps", feature = "agents", test))]
 const REACHED_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The device a member copy acts as: the person's own, whose key the
