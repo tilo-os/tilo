@@ -384,3 +384,55 @@ fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
     assert_eq!(decided, Ok(Receipt::Admit));
     assert_eq!(asked.into_inner(), vec![Some(agent)]);
 }
+
+/// A sealed write an app made by itself, signed by the owner's device: a receiver that has not
+/// opened it decides it as the app its claims name, by the grant installing the app gave it, and
+/// never as the owner whose device signed it. A write whose claims name no one is refused.
+#[test]
+fn a_sealed_write_by_an_app_is_decided_by_the_apps_grant_not_its_signer() {
+    let app = Acting::by_app(FILES);
+    let mut written = write_by(Some(&app));
+    // An app that publishes no surface is decided as an edit of its record.
+    written.surface = None;
+    let (op, _) = sealed(&written);
+    let decided = |policy: &WorkspacePolicy, op: &collab_types::op::SignedOp| {
+        let signer = person(policy, "owner");
+        let cx = Context::at_secs(1);
+        let allows = |invoker: Option<&Acting>, node: &TreePath, kind: ActionKind| {
+            ChangeAuthor::answer(&signer, invoker, node, kind, &cx) == Answer::Allow
+        };
+        decide_opened(
+            (op, None),
+            &tree(),
+            (None, None, None),
+            None,
+            &Surfaces::default(),
+            &allows,
+            (None, Some(&signer.acting)),
+        )
+    };
+    assert!(
+        matches!(
+            decided(&policy(None), &op),
+            Err(ReceiptRefusal::NotGranted { .. })
+        ),
+        "the owner's device lends an app nothing by signing its write"
+    );
+    let mut installed = policy(None);
+    installed.grants.push(tilo_action_policy::roles::app_records_grant(
+        WORKSPACE, FILES, "owner",
+    ));
+    assert_eq!(decided(&installed, &op), Ok(Receipt::Admit));
+    // The same write in the clear is decided the same way.
+    assert!(decided(&policy(None), &written).is_err());
+    assert_eq!(decided(&installed, &written), Ok(Receipt::Admit));
+    let mut nameless = op;
+    for claim in &mut nameless.claims {
+        claim.invoker = None;
+    }
+    assert_eq!(
+        decided(&installed, &nameless),
+        Err(ReceiptRefusal::NoInvoker),
+        "a write that names no one is no one's to admit"
+    );
+}

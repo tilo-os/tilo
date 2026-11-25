@@ -130,6 +130,29 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
         "Clocks reaches no other app's records by being installed"
     );
 
+    // A write of Clocks' records that names no one who made it is refused before it is signed:
+    // it would be decided as the person whose device signed it, with their rights.
+    let nameless = collab_types::store::wire::Command::Put {
+        kind: "tl.so.tilo.clocks.Alarm".to_owned(),
+        id: "nameless".to_owned(),
+        resource: collab_types::store::Resource {
+            readers: String::new(),
+            parent: None,
+            order: None,
+            fields: std::collections::BTreeMap::new(),
+        },
+        stamp: Default::default(),
+    };
+    match workspaces
+        .record_command(&workspace, APP, &person, nameless)
+        .await
+    {
+        Err(tilo_workspace_service::workspaces::RecordFailure::Refused(why)) => {
+            assert!(why.contains("names no one"), "{why}");
+        }
+        other => panic!("a write naming no one is refused: {other:?}"),
+    }
+
     // Its trigger writes its own record, the alarm's notice, with nobody at it.
     alarm(&workspaces, &workspace, &packages, &person, ("Standup", 6, 0, "")).await;
     let (ran, said) = ring_next(&workspaces, &workspace, &packages, &person).await;

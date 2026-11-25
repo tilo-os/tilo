@@ -2081,6 +2081,11 @@ impl Workspaces {
         command: collab_types::store::wire::Command,
     ) -> Result<collab_types::store::wire::Reply, String> {
         use collab_types::store::wire::Reply;
+        // Every write names who made it, the app itself where nobody is at it: one that names no
+        // one is signed by nobody here, as it would be decided as this device's person.
+        if app_records::names_no_one(&command) {
+            return Err(app_records::nameless(app));
+        }
         // The store's types and verbs are declared before the first write, not by a read that
         // came before it: a store nobody read yet places a write by what its surfaces name.
         drop(self.store_of(&mut governed));

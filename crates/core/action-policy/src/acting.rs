@@ -339,6 +339,16 @@ mod tests {
                 Answer::Deny,
                 "an app holds no person's grants, the owner's included"
             );
+            // Nor does the owner's device lend it theirs by signing what it wrote.
+            let own = TreePath::workspace(WORKSPACE).app("so.tilo.notes");
+            let signed = crate::MemberAccess::person(policy(), "owner")
+                .invoked_by(&app)
+                .expect("the owner's device writes for an app it runs");
+            assert_eq!(
+                signed.answer(&own, ActionKind::Undoable, &Context::at_secs(1)),
+                Answer::Deny,
+                "the device that signs an app's write bounds it, and grants it nothing"
+            );
             // Installing Notes gave it its own records, and nothing beyond them.
             let mut policy = policy();
             policy.grants.push(crate::roles::app_records_grant(

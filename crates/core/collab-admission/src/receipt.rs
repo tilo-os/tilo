@@ -249,7 +249,7 @@ fn decide_op_settled(
                 .filter(|_| op.surface.is_some() || pinned.is_some())
             else {
                 return decide_as_document_edit(
-                    changes_of(op)?.as_deref(),
+                    (changes_of(op)?.as_deref(), &op.claims),
                     (document, holding),
                     allows,
                     (imported, signer),
@@ -407,10 +407,11 @@ fn check_genesis_first(
 
 /// A change of an app that publishes no surface (and of a document that names
 /// none), decided as an edit of the document by whoever made each of its
-/// changes, as far as the receiver reads them. A genesis among them is decided last against the
-/// record as this receiver keeps it, `holding`, so a change refused its grant says so first.
+/// changes: as the receiver reads them, or, where it reads none (a sealed op it has not
+/// opened), as the op's signed `claims` name them. A genesis among them is decided last against
+/// the record as this receiver keeps it, `holding`, so a change refused its grant says so first.
 fn decide_as_document_edit(
-    changes: Option<&[automerge::Change]>,
+    (changes, claims): (Option<&[automerge::Change]>, &[ChangeClaim]),
     (document, holding): (&WrittenDocument<'_>, Option<&automerge::Automerge>),
     allows: &Allows<'_>,
     (imported, signer): (Option<&Acting>, Option<&Acting>),
@@ -421,14 +422,39 @@ fn decide_as_document_edit(
     // unless an import step said whose it is. A framework change that names no one is its
     // signer's, and a checkpoint carries its writes' own.
     let mut invokers: Vec<Option<Acting>> = Vec::new();
-    for change in changes.into_iter().flatten() {
-        invokers.push(match (crate::claim::maker_of(change), imported) {
-            (crate::claim::Maker::Named, _) => collab_types::claim::invoker_of(change),
-            (crate::claim::Maker::Derived, _) => None,
-            (crate::claim::Maker::Signer, _) => signer.cloned(),
-            (crate::claim::Maker::Nobody, Some(person)) => Some(person.clone()),
-            (crate::claim::Maker::Nobody, None) => return Err(ReceiptRefusal::NoInvoker),
-        });
+    match changes {
+        Some(changes) => {
+            for change in changes {
+                invokers.push(match (crate::claim::maker_of(change), imported) {
+                    (crate::claim::Maker::Named, _) => collab_types::claim::invoker_of(change),
+                    (crate::claim::Maker::Derived, _) => None,
+                    (crate::claim::Maker::Signer, _) => signer.cloned(),
+                    (crate::claim::Maker::Nobody, Some(person)) => Some(person.clone()),
+                    (crate::claim::Maker::Nobody, None) => return Err(ReceiptRefusal::NoInvoker),
+                });
+            }
+        }
+        // Who made a write this receiver cannot read is who its claims name: signed with the
+        // write, and checked against its changes by every device that opens it. Never the
+        // signing device alone, which would let an app's write, or an agent's, stand as if
+        // the signer's person had made it.
+        None => {
+            for claim in claims {
+                invokers.push(match (&claim.invoker, &claim.action) {
+                    (Some(invoker), _) => Some(Acting::clone(invoker)),
+                    // A record's founding, which every device derives alike, names no one.
+                    (
+                        None,
+                        ClaimedAction::Framework(FrameworkChange::Genesis | FrameworkChange::Structure),
+                    ) => None,
+                    (None, ClaimedAction::Framework(_)) => signer.cloned(),
+                    (None, _) => match imported {
+                        Some(person) => Some(person.clone()),
+                        None => return Err(ReceiptRefusal::NoInvoker),
+                    },
+                });
+            }
+        }
     }
     if invokers.is_empty() {
         invokers.push(None);

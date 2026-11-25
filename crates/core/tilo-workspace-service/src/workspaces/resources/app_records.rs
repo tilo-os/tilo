@@ -33,6 +33,26 @@ pub(super) fn written_by_app(command: &Command, app: &str) -> bool {
     }
 }
 
+/// Whether a write of `command` names no one who made it: a record's write is the app's own or
+/// a member's, and says which, so admission decides it by that one's grants.
+pub(super) fn names_no_one(command: &Command) -> bool {
+    match command {
+        Command::Put { stamp, .. } | Command::Remove { stamp, .. } | Command::Edit { stamp, .. } => {
+            stamp.invoked_by().is_none()
+        }
+        Command::Batch(commands) => commands.iter().any(names_no_one),
+        _ => false,
+    }
+}
+
+/// Why a write of `app` that names no one is refused ([`names_no_one`]).
+pub(super) fn nameless(app: &str) -> String {
+    format!(
+        "a write of {app} names no one who made it: a write the app makes by itself names the \
+         app, and one it makes for a member names that member"
+    )
+}
+
 /// An app's name as a person reads it: the last segment of its id, in sentence case.
 fn app_name(app: &str) -> String {
     tilo_actions::field_type::label_of(app.rsplit('.').next().unwrap_or(app))
