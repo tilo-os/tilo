@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 use tilo_device_identity::login::daemon::{DeviceActions, DeviceRefusal};
 use tilo_device_identity::login::{
-    CHECK_CALLER_PROOF, ENDORSE_IMAGE, OPEN_VAULT, SEAL_VAULT, SEALED_BY_ANOTHER_KEY,
+    CHECK_CALLER_PROOF, ENDORSE_IMAGE, OPEN_VAULT, SEAL_VAULT, SEALED_BY_ANOTHER_KEY, SET_UP_UNLOCK,
 };
 use tilo_identity::daemon_signer::DaemonSigner;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
@@ -218,6 +218,21 @@ fn a_fresh_computer_signs_at_once_through_its_first_sign_in() {
         };
         signs_at_once(b"a program proves it is this device");
         seals_at_once();
+
+        // A disk unlock asked before any person signed in has no person's services to wait for
+        // (a server whose join failed): it is told so at once, never left waiting.
+        let asked = std::time::Instant::now();
+        let refused = actions
+            .ask_followed(
+                SET_UP_UNLOCK,
+                json!({ "request": "00", "half": hex::encode([0_u8; 32]) }),
+            )
+            .expect_err("a computer with no person sets up no unlock");
+        assert!(
+            refused.message.contains("this device has no person yet"),
+            "{refused:?}"
+        );
+        assert!(asked.elapsed() < AT_ONCE, "refusing took {:?}", asked.elapsed());
 
         // The first sign-in: the computer founds its person, through the same call `tilo` makes.
         let place = tilo_api::daemon::DaemonPlace::at(native.parent().unwrap(), profile);

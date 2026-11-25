@@ -6,7 +6,7 @@ Documentation=file:///usr/share/doc/tilo/server.md
 # (tilo-disk-encrypt finish --unlock owner-device).
 After=tilo-server.service
 Requires=tilo-server.service
-ConditionPathExists=/var/lib/tilo/sibling-enrol/enrol.conf
+ConditionPathExists=/var/lib/tilo/install-key/volume.conf
 ConditionPathExists=!/var/lib/tilo-server/decommissioned
 
 [Service]

@@ -46,6 +46,9 @@ const LOOKING: Duration = Duration::from_secs(2);
 /// follows the call sees it move, and a stage that takes long is never mistaken for a daemon
 /// that stopped answering.
 const REPORTING: Duration = Duration::from_secs(2);
+/// What a call that needs the person's part is told when it does not run yet.
+const STILL_STARTING: &str =
+    "this device's person's services are still starting: ask again in a moment";
 /// What a founding call reports as it makes the person and starts their part.
 pub(crate) const FOUNDING_STARTING: &str = "starting the person part";
 /// What it reports while it waits for them to found their own workspace here.
@@ -530,14 +533,23 @@ impl DeviceOnly {
     /// Why an action that needs a person is not answered now.
     fn needs_a_person(&self) -> ActionCallError {
         let reason = if self.claimed() {
-            "this device's person's services are still starting: ask again in a moment"
+            STILL_STARTING
         } else {
-            "this device has no person yet: set it up with `tilo login --new-identity`, or log \
-             it in with a ticket from one of your devices (`tilo login <ticket>`) first"
+            self.why_no_person()
         };
         ActionCallError::Refused {
             reason: reason.into(),
         }
+    }
+
+    /// What a device no person's certificate names says to what needs one.
+    #[expect(
+        clippy::unused_self,
+        reason = "said of this device, beside the other answers it gives"
+    )]
+    const fn why_no_person(&self) -> &'static str {
+        "this device has no person yet: set it up with `tilo login --new-identity`, or log it \
+         in with a ticket from one of your devices (`tilo login <ticket>`) first"
     }
 
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
@@ -845,12 +857,25 @@ impl DeviceOnly {
             let update = ended(super::key_use::answer(action, &args, &self.0.key));
             return Pending::ready(Ok(self.keep(invocation, update)));
         }
-        // A boot is set up through the person's own dispatch, which their services run.
+        // A boot is set up through the person's own dispatch, which their services run: a device
+        // no person's certificate names has none to start, and is told so at once.
+        if !self.claimed() {
+            let update = failed(invocation, self.why_no_person());
+            return Pending::ready(Ok(self.keep(invocation, update)));
+        }
         let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
         let answering = self.clone();
         let founding = Arc::clone(&self.0.founding);
         self.0.runtime.spawn(async move {
-            let unlocking = founding.boot_unlock().await;
+            // Within the bound every call that needs the person's part waits for it, and then
+            // the same words.
+            let Ok(unlocking) =
+                tokio::time::timeout(crate::daemon::WAITED_WITHIN, founding.boot_unlock()).await
+            else {
+                let update = failed(invocation, STILL_STARTING);
+                answering.keep(invocation, update);
+                return;
+            };
             let update = ended(unlocking.enrol(&args).await);
             answering.keep(invocation, update);
         });

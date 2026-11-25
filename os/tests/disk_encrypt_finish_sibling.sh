@@ -54,7 +54,7 @@ attempt() {
     > "$work/stdout" 2> "$work/stderr"
 }
 
-sibling_dir="$var/lib/tilo/sibling-enrol"
+sibling_dir="$var/lib/tilo/install-key"
 
 # --- an owner-device plan keeps the key inside the root ---------------------
 fresh
@@ -66,12 +66,12 @@ flagged_key="$(ls -l "$sibling_dir/luks.key" 2>/dev/null | cut -c1-10)"
   || bad "the kept key is not mode 0600 (got '$flagged_key')"
 [ "$(stat -c '%a' "$sibling_dir")" = 700 ] && ok "its directory is 0700" \
   || bad "the kept key's directory is not 0700"
-grep -qx "luks_uuid=$uuid" "$sibling_dir/enrol.conf" \
+grep -qx "luks_uuid=$uuid" "$sibling_dir/volume.conf" \
   && ok "the enrolment file names the volume" \
-  || { bad "the enrolment file is wrong"; cat "$sibling_dir/enrol.conf" >&2; }
-grep -qx "key_file=$sibling_dir/luks.key" "$sibling_dir/enrol.conf" \
+  || { bad "the enrolment file is wrong"; cat "$sibling_dir/volume.conf" >&2; }
+grep -qx "key_file=$sibling_dir/luks.key" "$sibling_dir/volume.conf" \
   && ok "the enrolment file names the kept key" || bad "the enrolment file names another key"
-[ "$(stat -c '%a' "$sibling_dir/enrol.conf")" = 600 ] \
+[ "$(stat -c '%a' "$sibling_dir/volume.conf")" = 600 ] \
   && ok "the enrolment file is root-only" || bad "the enrolment file is not 0600"
 [ -f "$var/lib/tilo-server/sibling-unlock-pending" ] \
   && ok "the installed status starts out pending" || bad "no pending marker was written"

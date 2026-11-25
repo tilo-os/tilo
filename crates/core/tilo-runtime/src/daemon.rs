@@ -1802,7 +1802,7 @@ impl Native {
 /// seconds: a person's part that is not up is said, never waited on for as long as it is broken.
 /// A session asking for its shell is the seats' to answer, and its shell starts once the person's
 /// services run.
-const WAITED_WITHIN: Duration = Duration::from_secs(30);
+pub(crate) const WAITED_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a connection's session is made within before it is told why it was not: a daemon whose
 /// person's part cannot be made answers a caller at once, never holding the connection.

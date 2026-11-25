@@ -23,16 +23,16 @@
 # (os/tests/server_unlock.sh); a boot passes none of them.
 set -euo pipefail
 
-sibling_dir="${TILO_SERVER_SIBLING_DIR:-/var/lib/tilo/sibling-enrol}"
-sibling_conf="$sibling_dir/enrol.conf"
-sibling_key="$sibling_dir/luks.key"
-waiting="$sibling_dir/waiting.json"
+key_dir="${TILO_SERVER_INSTALL_KEY_DIR:-/var/lib/tilo/install-key}"
+key_conf="$key_dir/volume.conf"
+install_key="$key_dir/luks.key"
+waiting="$key_dir/waiting.json"
 state_root="${TILO_SERVER_STATE_ROOT:-/var/lib/tilo-server}"
 pending_marker="$state_root/sibling-unlock-pending"
 auth_bin="${TILO_TILO_AUTH:-/usr/libexec/tilo/tilo-auth}"
 cryptsetup_bin="${TILO_CRYPTSETUP:-cryptsetup}"
 # Root in every boot; a check runs the same logic as its own account.
-sibling_owner="${TILO_SERVER_SIBLING_OWNER:-0}"
+key_owner="${TILO_SERVER_KEY_OWNER:-0}"
 
 log() { printf 'tilo-server-unlock: %s\n' "$*" >&2; }
 
@@ -45,56 +45,56 @@ handed() {
 
 # The install-time file, read without sourcing it: it names the volume and the one key file the
 # installer left root-only in this root.
-read_sibling_enrol() {
+read_install_key() {
     local metadata uuid key
-    [[ -f "$sibling_conf" && ! -L "$sibling_conf" ]] || return 1
-    metadata="$(stat -c '%u:%a:%h:%s' -- "$sibling_conf" 2>/dev/null || true)"
-    [[ "$metadata" =~ ^$sibling_owner:600:1:([0-9]+)$ ]] || return 1
+    [[ -f "$key_conf" && ! -L "$key_conf" ]] || return 1
+    metadata="$(stat -c '%u:%a:%h:%s' -- "$key_conf" 2>/dev/null || true)"
+    [[ "$metadata" =~ ^$key_owner:600:1:([0-9]+)$ ]] || return 1
     (( BASH_REMATCH[1] > 0 && BASH_REMATCH[1] <= 4096 )) || return 1
-    uuid="$(sed -n 's/^luks_uuid=//p' "$sibling_conf")"
-    key="$(sed -n 's/^key_file=//p' "$sibling_conf")"
+    uuid="$(sed -n 's/^luks_uuid=//p' "$key_conf")"
+    key="$(sed -n 's/^key_file=//p' "$key_conf")"
     [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
-    [ "$key" = "$sibling_key" ] || return 1
+    [ "$key" = "$install_key" ] || return 1
     [ -f "$key" ] && [ ! -L "$key" ] || return 1
     metadata="$(stat -c '%u:%a:%h:%s' -- "$key" 2>/dev/null || true)"
-    [[ "$metadata" =~ ^$sibling_owner:600:1:([0-9]+)$ ]] || return 1
+    [[ "$metadata" =~ ^$key_owner:600:1:([0-9]+)$ ]] || return 1
     (( BASH_REMATCH[1] >= 32 && BASH_REMATCH[1] <= 4096 ))
-    SIBLING_UUID="$uuid"
+    VOLUME_UUID="$uuid"
 }
 
 # What the unlock will open. The installed system finds it by the LUKS UUID; a check names it
 # directly.
-sibling_device() {
-    if [ -n "${TILO_SIBLING_DEVICE:-}" ]; then
-        if [ ! -b "$TILO_SIBLING_DEVICE" ] && [ "${TILO_SIBLING_ALLOW_REGULAR:-0}" != 1 ]; then
+unlock_device() {
+    if [ -n "${TILO_UNLOCK_DEVICE:-}" ]; then
+        if [ ! -b "$TILO_UNLOCK_DEVICE" ] && [ "${TILO_UNLOCK_ALLOW_REGULAR:-0}" != 1 ]; then
             return 1
         fi
-        printf '%s' "$TILO_SIBLING_DEVICE"
+        printf '%s' "$TILO_UNLOCK_DEVICE"
         return 0
     fi
-    printf '/dev/disk/by-uuid/%s' "$SIBLING_UUID"
+    printf '/dev/disk/by-uuid/%s' "$VOLUME_UUID"
 }
 
 # The volume, once the install file is one to trust: nothing to do without one, a refusal for an
 # unsafe one, and pending while the volume is not there.
 volume() {
-    if ! read_sibling_enrol; then
-        log "refusing an unsafe or malformed install-key file at $sibling_conf"
+    if ! read_install_key; then
+        log "refusing an unsafe or malformed install-key file at $key_conf"
         return 1
     fi
-    DEV="$(sibling_device)" && [ -e "$DEV" ] \
-        || { log "the volume $SIBLING_UUID is not present; its unlock stays pending"; return 2; }
+    DEV="$(unlock_device)" && [ -e "$DEV" ] \
+        || { log "the volume $VOLUME_UUID is not present; its unlock stays pending"; return 2; }
 }
 
 prepare() {
-    [ -e "$sibling_conf" ] || [ -L "$sibling_conf" ] || return 0
+    [ -e "$key_conf" ] || [ -L "$key_conf" ] || return 0
     volume || return 1
     # Already set up (a boot that ended before the install key went): only that key is left.
     "$auth_bin" sibling status "$DEV" >/dev/null 2>&1 && return 0
     local dir
     dir="$(handed)" || return 1
     log "asking the person's root to certify this server's boot key"
-    "$auth_bin" sibling prepare "$DEV" --key-file "$sibling_key" \
+    "$auth_bin" sibling prepare "$DEV" --key-file "$install_key" \
         --waiting "$waiting" --hand-to "$dir"
 }
 
@@ -107,7 +107,7 @@ register() {
 }
 
 finish() {
-    [ -e "$sibling_conf" ] || [ -L "$sibling_conf" ] || return 0
+    [ -e "$key_conf" ] || [ -L "$key_conf" ] || return 0
     local found=0
     volume || found=$?
     [ "$found" -ne 2 ] || return 0
@@ -115,7 +115,7 @@ finish() {
     if [ -e "$waiting" ]; then
         local dir
         dir="$(handed)" || return 1
-        if ! "$auth_bin" sibling finish "$DEV" --key-file "$sibling_key" \
+        if ! "$auth_bin" sibling finish "$DEV" --key-file "$install_key" \
             --waiting "$waiting" --answer-in "$dir"; then
             log "the unlock is not set up; the next boot asks again"
             return 0
@@ -126,13 +126,13 @@ finish() {
         return 0
     fi
     # The install key's slot must not outlive the unlock that replaces it.
-    if ! "$cryptsetup_bin" luksRemoveKey "$DEV" --key-file "$sibling_key"; then
+    if ! "$cryptsetup_bin" luksRemoveKey "$DEV" --key-file "$install_key"; then
         log "the install key slot could not be removed; it will be retried at the next boot"
         return 0
     fi
-    shred -u "$sibling_key" 2>/dev/null || rm -f "$sibling_key"
-    rm -f "$sibling_conf"
-    rmdir "$sibling_dir" 2>/dev/null || true
+    shred -u "$install_key" 2>/dev/null || rm -f "$install_key"
+    rm -f "$key_conf"
+    rmdir "$key_dir" 2>/dev/null || true
     rm -f "$pending_marker"
     log "the unlock is set up with the person's devices, and the install key is removed"
 }

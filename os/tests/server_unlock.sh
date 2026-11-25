@@ -22,7 +22,7 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 bin="$work/bin"
-sib="$work/sibling-enrol"
+sib="$work/install-key"
 state="$work/state"
 run="$work/run"
 dev="$work/volume"
@@ -75,8 +75,8 @@ fresh() {
   rm -rf "$sib" "$state" "$run" "$work/token"
   install -d -m 0700 "$sib" "$state" "$run"
   ( umask 0077; head -c 64 /dev/urandom > "$sib/luks.key" )
-  printf 'luks_uuid=%s\nkey_file=%s\n' "$uuid" "$sib/luks.key" > "$sib/enrol.conf"
-  chmod 0600 "$sib/enrol.conf"
+  printf 'luks_uuid=%s\nkey_file=%s\n' "$uuid" "$sib/luks.key" > "$sib/volume.conf"
+  chmod 0600 "$sib/volume.conf"
   : > "$state/sibling-unlock-pending"
   chmod 0644 "$state/sibling-unlock-pending"
   : > "$dev"
@@ -88,9 +88,9 @@ person=yes
 remove_result=ok
 part() {
   env PATH="$bin:$PATH" RUNTIME_DIRECTORY="$run" \
-    TILO_SERVER_SIBLING_DIR="$sib" TILO_SERVER_STATE_ROOT="$state" \
-    TILO_SERVER_SIBLING_OWNER="$uid" \
-    TILO_SIBLING_DEVICE="$dev" TILO_SIBLING_ALLOW_REGULAR=1 \
+    TILO_SERVER_INSTALL_KEY_DIR="$sib" TILO_SERVER_STATE_ROOT="$state" \
+    TILO_SERVER_KEY_OWNER="$uid" \
+    TILO_UNLOCK_DEVICE="$dev" TILO_UNLOCK_ALLOW_REGULAR=1 \
     TILO_TILO_AUTH="$bin/auth" TILO_CRYPTSETUP="$bin/cryptsetup" \
     FAKE_LOG="$log" FAKE_TOKEN="$work/token" FAKE_PREPARE="$prepare_result" \
     FAKE_PERSON="$person" FAKE_REMOVE_RESULT="$remove_result" \
@@ -140,7 +140,7 @@ grep -q "^auth sibling register $run$" "$log" && ok "the account asks its daemon
 grep -q "^cryptsetup luksRemoveKey $dev --key-file $sib/luks.key$" "$log" \
   && ok "the install key's slot is removed" \
   || { bad "the install key slot was left behind"; cat "$log" >&2; }
-[ ! -e "$sib/luks.key" ] && [ ! -e "$sib/enrol.conf" ] \
+[ ! -e "$sib/luks.key" ] && [ ! -e "$sib/volume.conf" ] \
   && ok "the key and its file are gone" || bad "the key or its file survived"
 [ ! -e "$state/sibling-unlock-pending" ] \
   && ok "the status stops calling the unlock pending" || bad "the pending marker survived"
@@ -158,7 +158,7 @@ grep -q 'the person said no' "$work/stderr" && ok "the person's words are said" 
 grep -q "^auth sibling finish $dev --key-file $sib/luks.key --waiting $sib/waiting.json --answer-in $run$" "$log" \
   && ok "root settles the slot it added" || { bad "the slot was not settled"; cat "$log" >&2; }
 [ ! -e "$sib/waiting.json" ] && ok "nothing waits after a no" || bad "a no left something waiting"
-[ -f "$sib/luks.key" ] && [ -f "$sib/enrol.conf" ] && [ -e "$state/sibling-unlock-pending" ] \
+[ -f "$sib/luks.key" ] && [ -f "$sib/volume.conf" ] && [ -e "$state/sibling-unlock-pending" ] \
   && ok "the key, its file and the pending status stay for the next boot" \
   || bad "a no dropped what the next boot needs"
 grep -q luksRemoveKey "$log" && bad "a no removed the install key slot" \
@@ -195,7 +195,7 @@ boot && ok "a failed slot removal is not a failed step" || bad "a failed slot re
 
 # --- unsafe install files are refused, never handed to cryptsetup ------------
 fresh
-chmod 0644 "$sib/enrol.conf"
+chmod 0644 "$sib/volume.conf"
 boot && bad "a world-readable install file was accepted" || ok "a world-readable install file is refused"
 [ -f "$sib/luks.key" ] && ok "a refusal leaves the kept key alone" || bad "a refusal removed the key"
 
@@ -204,8 +204,8 @@ chmod 0644 "$sib/luks.key"
 boot && bad "a world-readable key was accepted" || ok "a world-readable key is refused"
 
 fresh
-printf 'luks_uuid=%s\nkey_file=%s\n' "$uuid" "$work/elsewhere" > "$sib/enrol.conf"
-chmod 0600 "$sib/enrol.conf"
+printf 'luks_uuid=%s\nkey_file=%s\n' "$uuid" "$work/elsewhere" > "$sib/volume.conf"
+chmod 0600 "$sib/volume.conf"
 boot && bad "an install file naming another key was accepted" \
   || ok "an install file may only name the kept key"
 [ ! -s "$log" ] && ok "a refused file never reaches tilo-auth or cryptsetup" \

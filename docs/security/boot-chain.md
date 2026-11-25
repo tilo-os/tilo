@@ -823,7 +823,7 @@ The first boot then opens with another of the person's devices approving the
 boot, and `tilo-server-unlock.service` has nothing left to set up: it removes
 the install key's LUKS2 keyslot with `cryptsetup luksRemoveKey` and shreds the
 key `tilo-disk-encrypt finish` kept root-only (0600, in a 0700 directory)
-inside the encrypted root at `/var/lib/tilo/sibling-enrol/luks.key`. A server
+inside the encrypted root at `/var/lib/tilo/install-key/luks.key`. A server
 whose unlock is not set up yet sets it up there the same way, once its daemon
 runs: root adds the keyslot, the daemon's own account (`tilo-server`) asks its
 daemon, which has the person's root certify the boot key, and root writes the

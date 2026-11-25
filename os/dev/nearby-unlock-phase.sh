@@ -355,14 +355,14 @@ sudo_b "set -eu
   head -c 64 /dev/urandom > /root/unlock-e2e/install.key
   cryptsetup luksAddKey --batch-mode --key-file /root/unlock-e2e/pass \
     --new-keyfile /root/unlock-e2e/install.key $b_root_part
-  rm -rf /var/lib/tilo/sibling-enrol
-  install -d -m 0700 /var/lib/tilo/sibling-enrol
-  cp /root/unlock-e2e/install.key /var/lib/tilo/sibling-enrol/luks.key
-  chmod 0600 /var/lib/tilo/sibling-enrol/luks.key
+  rm -rf /var/lib/tilo/install-key
+  install -d -m 0700 /var/lib/tilo/install-key
+  cp /root/unlock-e2e/install.key /var/lib/tilo/install-key/luks.key
+  chmod 0600 /var/lib/tilo/install-key/luks.key
   printf 'luks_uuid=%s\nkey_file=%s\n' \
-    \"\$(cryptsetup luksUUID $b_root_part)\" /var/lib/tilo/sibling-enrol/luks.key \
-    > /var/lib/tilo/sibling-enrol/enrol.conf
-  chmod 0600 /var/lib/tilo/sibling-enrol/enrol.conf
+    \"\$(cryptsetup luksUUID $b_root_part)\" /var/lib/tilo/install-key/luks.key \
+    > /var/lib/tilo/install-key/volume.conf
+  chmod 0600 /var/lib/tilo/install-key/volume.conf
   install -d -m 0700 /var/lib/tilo-server
   : > /var/lib/tilo-server/sibling-unlock-pending
 " > "$out/unlock-server-setup.txt" 2>&1 \
@@ -387,8 +387,8 @@ grep -q 'the unlock is set up with the person.s devices, and the install key is 
 sudo_b "cryptsetup luksDump $b_root_part" > "$out/unlock-server-luksdump.txt"
 grep -q 'tilo-sibling-unlock' "$out/unlock-server-luksdump.txt" \
   || die "the server-shaped enrolment left no sibling token"
-sudo_b "test ! -e /var/lib/tilo/sibling-enrol/luks.key \
-    && test ! -e /var/lib/tilo/sibling-enrol/enrol.conf \
+sudo_b "test ! -e /var/lib/tilo/install-key/luks.key \
+    && test ! -e /var/lib/tilo/install-key/volume.conf \
     && test ! -e /var/lib/tilo-server/sibling-unlock-pending" \
   || die "the install key, its file or the pending status survived the enrolment"
 slots_after="$(awk '/^Keyslots:/{k=1;next} /^[^ ]/{k=0} k && $2==\"luks2\"{n++} END{print n+0}' "$out/unlock-server-luksdump.txt")"

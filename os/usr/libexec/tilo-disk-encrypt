@@ -46,8 +46,8 @@
 # plan says `owner-device`, or one whose plan says (or leaves open) `tpm` on a
 # machine with no usable TPM, `finish --unlock … --var <installed /var>` keeps
 # the throwaway install key: it writes it root-only into the encrypted root at
-# <var>/lib/tilo/sibling-enrol/luks.key, with the volume's LUKS UUID beside it
-# in enrol.conf, and leaves its key slot in the header. Once the server's daemon
+# <var>/lib/tilo/install-key/luks.key, with the volume's LUKS UUID beside it
+# in volume.conf, and leaves its key slot in the header. Once the server's daemon
 # runs, tilo-server-unlock.service spends that key on the sibling slot, removes
 # the key's own slot and shreds the file.
 # Both files are inside the encrypted root and neither value is ever logged.
@@ -753,20 +753,20 @@ stage_sibling_enrol() {
   [ "$(stat -c %s "$key")" -ge 32 ] || die "finish: the install key at $key is too short to keep"
   uuid="$(cryptsetup luksUUID "$dev")"
   [ -n "$uuid" ] || die "finish: could not read the LUKS UUID to record"
-  dir="$var/lib/tilo/sibling-enrol"
+  dir="$var/lib/tilo/install-key"
   install -d -m 0755 "$(dirname "$dir")"
   install -d -m 0700 "$dir"
-  label_like "$dir" /var/lib/tilo/sibling-enrol
+  label_like "$dir" /var/lib/tilo/install-key
   # Written private from the first byte, then renamed into place.
   ( umask 0077; cat "$key" > "$dir/.luks.key.new" )
   chmod 0600 "$dir/.luks.key.new"
   mv -f "$dir/.luks.key.new" "$dir/luks.key"
-  label_like "$dir/luks.key" /var/lib/tilo/sibling-enrol/luks.key
-  tmp="$dir/.enrol.conf.new"
+  label_like "$dir/luks.key" /var/lib/tilo/install-key/luks.key
+  tmp="$dir/.volume.conf.new"
   ( umask 0077; printf 'luks_uuid=%s\nkey_file=%s\n' "$uuid" "$dir/luks.key" > "$tmp" )
   chmod 0600 "$tmp"
-  mv -f "$tmp" "$dir/enrol.conf"
-  label_like "$dir/enrol.conf" /var/lib/tilo/sibling-enrol/enrol.conf
+  mv -f "$tmp" "$dir/volume.conf"
+  label_like "$dir/volume.conf" /var/lib/tilo/install-key/volume.conf
   # The status the server reports reads this marker, and spends it only after
   # the slot is enrolled and the key is gone.
   install -d -m 0700 "$var/lib/tilo-server"
