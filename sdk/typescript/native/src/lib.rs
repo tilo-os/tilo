@@ -152,7 +152,7 @@ impl Daemon {
     /// `{refused}`. Nothing waits for an answer, as nothing waits in a live call.
     #[napi]
     pub fn hear_call(&self, speaker: String, opus: Buffer) -> serde_json::Value {
-        match self.calls.hear_call(speaker, opus.to_vec()) {
+        match self.calls.hear_call(speaker, opus.into()) {
             Ok(()) => serde_json::Value::Null,
             Err(refused) => serde_json::json!({ "refused": refused }),
         }
