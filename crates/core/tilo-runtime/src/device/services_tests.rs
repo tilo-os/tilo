@@ -2639,8 +2639,9 @@ const OWN_ASK_TEST: &str =
 /// no answer to it.
 #[test]
 fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
+    use tilo_actions::remote::asked::{AskedRecords as _, RESOLVE};
     use tilo_actions::remote::{
-        ActionProvider as _, Confirmation, ReceiptStatus, asked, workspace_invocations,
+        ActionProvider as _, Confirmation, ReceiptStatus, workspace_invocations,
     };
 
     let Some(root) = isolated_root(OWN_ASK_TEST) else {
@@ -2679,10 +2680,7 @@ fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
         InvokeRequest::plain(
             RemoteActionTarget {
                 provider: workspace_invocations::PROVIDER.into(),
-                address: tilo_actions::ActionAddress::new(
-                    question.record.record.clone(),
-                    asked::RESOLVE,
-                ),
+                address: tilo_actions::ActionAddress::new(question.record.record.clone(), RESOLVE),
             },
             approve,
         )
