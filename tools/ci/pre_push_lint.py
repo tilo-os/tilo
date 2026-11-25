@@ -55,6 +55,13 @@ the `cargo` on PATH, else t's (`t cargo metadata`). Formatting is checked by the
 `rustfmt` on PATH, which must be the version the toolchain pins, or by t's `fmt`
 check where there is none.
 
+A failure is not the push's own when main has it at the push's base: t compares each failed
+check's findings and tests one by one against the base's verdict of the same key, so a check
+that is red on main for one lint does not hide a second, new one here, and exits 3 when every
+failure is inherited, flaky or already fixed. Such a push passes, saying which of main's reds
+it pushes past and who claimed them; a failure t cannot place - the base has no verdict, or
+the two failures cannot be told apart - is refused as before.
+
 A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
 remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
 directories at its head. A push retried after main moved, whose rebase resolved nothing and whose
@@ -137,6 +144,9 @@ CARGO_REMARKS = (
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
                       r"|Locking|Updating|Adding|Documenting)\s")
 ZERO_OID = {"0"}
+# t's exit code when every failure of a run is one that isn't the change's: main has it at the
+# run's base, it is flaky, or t already pushed its fix (t's `ui::output::EXIT_ONLY_INHERITED`).
+EXIT_ONLY_INHERITED = 3
 # Where the passes a later push may stand on are kept, in the repository's common git directory
 # (shared by its worktrees), and how many of the newest are: one line each.
 PASSES = "tilo-pre-push-passes"
@@ -1011,6 +1021,9 @@ def say_t_failure(output: str, fixes: set[str]) -> bool:
     failed = [result for result in finished if result.get("outcome") != "pass"]
     for result in failed:
         say(f"  {result['check']}: {result.get('outcome')} - whole log: t log {result.get('log')}")
+        words = blame_words(result)
+        if words:
+            say(f"  {words}")
         say_lines(str(result.get("excerpt") or "").strip().splitlines())
         if result["check"] in fixes:
             say(f"  write the generated files back with: t fix {result['check']}")
@@ -1021,13 +1034,81 @@ def say_t_failure(output: str, fixes: set[str]) -> bool:
     return bool(failed or errors)
 
 
+def inherited(result: dict) -> bool:
+    """Whether t blamed a failure on main at the run's base."""
+    blame = result.get("blame")
+    return isinstance(blame, dict) and "inherited" in blame
+
+
+def not_yours(result: dict) -> bool:
+    """Whether t blamed a failed result on something other than the change.
+
+    t's Blame says main has it at the run's base (`inherited`), the same inputs passed before
+    (`flaky`), or t already pushed the fix. Everything else - new, unknown, uncompared - may be
+    the change's.
+    """
+    if result.get("fixed") is not None:
+        return True
+    return inherited(result) or result.get("blame") == "flaky"
+
+
+def blame_words(result: dict) -> str:
+    """Whose failure t says a result is, in words: its Blame, naming the base's red."""
+    if result.get("fixed") is not None:
+        return "t already pushed its fix; pull it"
+    blame = result.get("blame")
+    if isinstance(blame, dict):
+        said = blame.get("inherited")
+        if isinstance(said, dict):
+            since = str(said.get("since") or "")
+            owner = said.get("claimed_by")
+            says = f"main has failed it since {since[:12]}" if since else "main has it too"
+            return f"{says}, claimed by {owner}" if owner else f"{says}, unclaimed"
+        if "uncompared" in blame:
+            return "main's failure and this one can't be told apart one by one: it may be yours"
+    return {
+        "flaky": "flaky: the same inputs passed before",
+        "unknown": "may be yours: main has no result at your base",
+        "new": "new: passes on your base",
+    }.get(blame if isinstance(blame, str) else "", "")
+
+
+def say_past_reds(results: list[dict]) -> None:
+    """Say the failures a push passes because they are not its own, each with whose it is.
+
+    Main's reds are counted as such; a flaky failure or one t already fixed is said beside them,
+    not counted as a red the push pushes past.
+    """
+    inherited_results = [result for result in results if inherited(result)]
+    others = [result for result in results if result not in inherited_results]
+    if inherited_results:
+        count = len(inherited_results)
+        say(f"pre-push: pushing past {count} red{'s' if count != 1 else ''} main already has:")
+        for result in inherited_results:
+            say(f"  {result['check']}: {blame_words(result)}")
+    for result in others:
+        say(f"pre-push: {result['check']}: {blame_words(result) or 'not yours'}")
+
+
 def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,
            fixes: set[str]) -> int:
+    passed_through: list[dict] = []
+    failed = []
     for run, status, output in results:
+        if run.t and status == EXIT_ONLY_INHERITED:
+            # Every failure t found is main's at the push's base (or flaky, or already fixed):
+            # a lane that stops for them pushes with --no-verify, and skips its own lints too.
+            say_t_results(output)
+            passed_through += [result for result in t_outcomes(output)[0]
+                               if result.get("outcome") == "fail"]
+            continue
         if run.t and status == 0:
             say_t_results(output)
-    failed = [(run, output) for run, status, output in results if status != 0]
+        if status != 0:
+            failed.append((run, output))
     if not failed:
+        if passed_through:
+            say_past_reds(passed_through)
         say(f"pre-push: lint passed in {elapsed:.0f}s ({checked})")
         return 0
     for run, output in failed:
