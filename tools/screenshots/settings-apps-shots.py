@@ -8,11 +8,17 @@ sees with Mail's `smtp.send` listed.
 
 It runs where the session build and the tilolang tool are, as an app-walk does:
 
-  t exec --nested --needs nested-session --needs font-seed \
-    --fetch target/settings-shots \
+  t exec --nested --needs nested-session --needs font-seed --fetch target/settings-shots \
     -- env TILO_NESTED_SESSION_BUILD=/target/nested-session \
            TILO_FONT_ASSET_CACHE=/target/font-seed TILO_FONT_ASSETS_OFFLINE=1 \
            python3 -I -B tools/screenshots/settings-apps-shots.py
+
+`--build` makes the session build in the exec's own image, through t's compiler cache, instead of
+needing the nested-session check's image chain:
+
+  t exec --nested --needs font-seed --fetch target/settings-shots \
+    -- env TILO_FONT_ASSET_CACHE=/target/font-seed TILO_FONT_ASSETS_OFFLINE=1 \
+           python3 -I -B tools/screenshots/settings-apps-shots.py --build
 """
 
 import json
@@ -39,7 +45,7 @@ dest.parent.mkdir(parents=True, exist_ok=True)
 if tool.is_file() and not dest.exists():
     dest.symlink_to(tool)
 
-prepare(STATE, apps="terminal")
+prepare(STATE, apps="terminal", built="--build" in sys.argv[1:])
 tapps = tl_packages(STATE, OUT, ["settings", "mail"])
 
 session = Session(STATE).start(apps="terminal", fresh=True, tapps=tapps)
