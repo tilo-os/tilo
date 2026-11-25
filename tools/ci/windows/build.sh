@@ -90,7 +90,7 @@ runtime_package() {
     "$version" "$identity" "$tools" "$work/package" windows >/dev/null
   local whole=("$work"/package/whole-*.tapp)
   [ "${#whole[@]}" = 1 ] && [ -f "${whole[0]}" ] || { printf 'no runtime package was packed\n' >&2; exit 1; }
-  root="$("$tools/tilo-app-package" inspect "${whole[0]}" | sed -n 's/^package-id: //p')"
+  root="$("$tools/tilo-app-package" inspect "${whole[0]}" | sed -n 's/^package-id: tapp://p')"
   [[ "$root" =~ ^[0-9a-f]{64}$ ]] || { printf 'unexpected runtime package id %s\n' "$root" >&2; exit 1; }
   rm -rf -- "$runtimes" && mkdir -p "$runtimes"
   install -m 0644 "${whole[0]}" "$runtimes/$root.tapp"
