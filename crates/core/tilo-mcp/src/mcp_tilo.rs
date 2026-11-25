@@ -1551,7 +1551,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Who a program sent now is written by, as the task's host names it: `{actor, agent,
-    /// on_behalf_of}`, the caller this session acts as. The host decides nothing by it; every
+    /// on_behalf_of, handed}`, the caller this session acts as, and whether its person's device
+    /// handed it the session and answers for what it does. The host decides nothing by it; every
     /// read and change still comes back here and passes the check as that caller.
     fn program_author(&self) -> Value {
         let caller = self.execution_caller();
@@ -1560,6 +1561,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             "actor": acting.by,
             "agent": !acting.is_person(),
             "on_behalf_of": acting.acted_for_person(),
+            "handed": acting.handed,
         })
     }
 
