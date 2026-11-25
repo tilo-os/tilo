@@ -152,6 +152,63 @@ fn a_folder_in_use_is_unmounted_and_its_session_ends() {
     drop(runtime);
 }
 
+/// A folder whose mount another mount namespace holds a copy of (one made after it was
+/// mounted, as a sandbox or a container is): unmounting it here succeeds, yet its filesystem
+/// stays mounted there. Its connection is ended all the same, so the session's thread returns
+/// rather than serving the copy for as long as that namespace lives.
+#[test]
+fn a_folder_mounted_in_another_namespace_too_is_unmounted_and_its_session_ends() {
+    require_fuse!();
+    let tmp = tempfile::tempdir().unwrap();
+    let at = tmp.path().join("mnt");
+    std::fs::create_dir(&at).unwrap();
+    let (fs, runtime) = mounted(tmp.path());
+    let session = mount(fs, &at);
+    std::fs::write(at.join("kept.txt"), b"kept").unwrap();
+
+    // A namespace of its own, with a copy of every mount here, this one among them.
+    let mut elsewhere = std::process::Command::new("unshare")
+        .args(["--user", "--map-root-user", "--mount", "--", "sleep", "600"])
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .expect("unshare makes a namespace of its own");
+    let copied = elsewhere.id();
+    let started = std::time::Instant::now();
+    while !std::fs::read_to_string(format!("/proc/{copied}/mountinfo"))
+        .is_ok_and(|mounts| mounts.contains(at.file_name().unwrap().to_str().unwrap()))
+        || std::fs::read_link(format!("/proc/{copied}/ns/mnt")).ok()
+            == std::fs::read_link("/proc/self/ns/mnt").ok()
+    {
+        assert!(
+            elsewhere.try_wait().unwrap().is_none(),
+            "unshare could not make a namespace of its own"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the namespace never held a copy of the mount"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let (ended, unmounted) = std::sync::mpsc::channel();
+    let mount_point = at.clone();
+    std::thread::spawn(move || {
+        let _ = ended.send(crate::fuse_session::unmount_and_join(session, &mount_point));
+    });
+    let unmounted = unmounted.recv_timeout(std::time::Duration::from_secs(30));
+    elsewhere.kill().unwrap();
+    elsewhere.wait().unwrap();
+    unmounted
+        .expect("the session of a folder mounted elsewhere too did not end when it was unmounted")
+        .expect("the folder unmounts");
+    let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap();
+    assert!(
+        crate::fuse_session::fuse_mount_at(&mounts, &at).is_none(),
+        "the folder is not mounted here any more: {mounts}"
+    );
+    drop(runtime);
+}
+
 /// `rm -rf` of a tree of directories and files: every name in it goes, and the whole removal
 /// reports nothing left.
 #[test]

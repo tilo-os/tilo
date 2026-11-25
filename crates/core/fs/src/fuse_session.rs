@@ -41,77 +41,90 @@ pub fn unmount_and_join(session: fuser::BackgroundSession, mount_point: &Path) -
 }
 
 /// Unmounts the filesystem at `mount_point`; one still in use has its connection
-/// ended and its mount detached. Returns whether it did: where this process may
-/// not unmount, fuser's own unmount does it.
+/// ended and its mount detached. Returns whether it did: a mount this process does not find
+/// is left to fuser's own unmount.
+///
+/// fuser's own unmount, where this process may not unmount, is `fusermount3 -u -z`, a lazy
+/// detach: a folder still in use (a shell standing in it, a file held open, this daemon's own
+/// watches) keeps its connection, so the session's thread never returns and whatever its
+/// filesystem holds (the workspace's stores, its runtime's tasks) outlives the holder that
+/// ended. The connection is the mounting user's to abort, at the FUSE control filesystem's
+/// entry for the mount's device.
 #[cfg(target_os = "linux")]
 fn end_connection(mount_point: &Path) -> io::Result<bool> {
     use rustix::io::Errno;
     use rustix::mount::{UnmountFlags, unmount};
 
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let Some((listed, connection)) = fuse_connection_at(&mountinfo, mount_point) else {
+        return Ok(false);
+    };
+    let control = Path::new("/sys/fs/fuse/connections").join(connection.to_string());
     match unmount(mount_point, UnmountFlags::empty()) {
-        Ok(()) => return Ok(true),
-        Err(Errno::PERM) => return end_connection_unprivileged(mount_point),
+        Ok(()) => {}
+        Err(Errno::PERM) => {
+            if !fusermount(&listed, false)? {
+                trace(&format!("busy; aborting connection {connection}"));
+                abort(&control, &listed)?;
+                // Aborted, the mount answers ENOTCONN until it is detached from the tree.
+                if !fusermount(&listed, true)? {
+                    return Err(io::Error::other(format!(
+                        "{FUSERMOUNT} could not detach the folder at {}",
+                        listed.display()
+                    )));
+                }
+            }
+        }
         Err(Errno::INVAL) => return Ok(false),
-        Err(Errno::BUSY) => {}
+        Err(Errno::BUSY) => {
+            trace("busy; forcing a detach");
+            // The mount point is never opened here: serving that open is what the session
+            // being ended must do, and the thread that would wait for it is this one. Every
+            // change this daemon answered is already journaled and its content committed, so
+            // nothing of its own is left in the kernel to flush.
+            //
+            // `MNT_FORCE` makes FUSE abort the connection before the unmount, so its open files
+            // fail with `ENOTCONN` and the workers' reads end.
+            unmount(mount_point, UnmountFlags::FORCE | UnmountFlags::DETACH)?;
+        }
         Err(error) => return Err(error.into()),
     }
-    if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
-        eprintln!("unmount: busy; forcing a detach");
+    // Unmounted here, the filesystem stays mounted wherever its mount reached besides (another
+    // mount namespace it propagated to), and its connection serves on there: the session's
+    // thread would wait for it. A connection the unmount ended has no control entry any more.
+    if control.exists() {
+        trace(&format!(
+            "unmounted; connection {connection} lingers, aborting it"
+        ));
+        abort(&control, &listed)?;
     }
-    // The mount point is never opened here: serving that open is what the session being ended
-    // must do, and the thread that would wait for it is this one. Every change this daemon
-    // answered is already journaled and its content committed, so nothing of its own is left in
-    // the kernel to flush.
-    //
-    // `MNT_FORCE` makes FUSE abort the connection before the unmount, so
-    // its open files fail with `ENOTCONN` and the workers' reads end.
-    unmount(mount_point, UnmountFlags::FORCE | UnmountFlags::DETACH)?;
     Ok(true)
 }
 
-/// Unmount the filesystem at `mount_point` as a user who may not unmount: through
-/// [`FUSERMOUNT`], and one still in use has its connection aborted first.
-///
-/// fuser's own unmount here is `fusermount3 -u -z`, a lazy detach: a folder still in use (a
-/// shell standing in it, an editor holding a file, this daemon's own watches) keeps its
-/// connection, so the session thread never returns and whatever its filesystem holds (the
-/// workspace's stores, its runtime's tasks) outlives the holder that ended. The connection is
-/// this user's to abort, at the FUSE control filesystem's entry for the mount's device.
+/// Abort the FUSE connection whose control entry is `control`, the one of the folder at `listed`:
+/// its requests fail with `ENOTCONN` and its session's thread returns. One already gone is ended.
 #[cfg(target_os = "linux")]
-fn end_connection_unprivileged(mount_point: &Path) -> io::Result<bool> {
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
-    let Some((listed, connection)) = fuse_connection_at(&mountinfo, mount_point) else {
-        // Not mounted any more: whoever unmounted it ended its connection.
-        return Ok(true);
-    };
-    if fusermount(&listed, false)? {
-        return Ok(true);
-    }
-    if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
-        eprintln!("unmount: busy; aborting connection {connection}");
-    }
-    let abort = Path::new("/sys/fs/fuse/connections")
-        .join(connection.to_string())
-        .join("abort");
-    std::fs::write(&abort, b"1").map_err(|error| {
-        io::Error::new(
+fn abort(control: &Path, listed: &Path) -> io::Result<()> {
+    let abort = control.join("abort");
+    match std::fs::write(&abort, b"1") {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io::Error::new(
             error.kind(),
             format!(
-                "the folder at {} is in use and its FUSE connection could not be ended at {}: \
-                 {error}",
+                "the FUSE connection of the folder at {} could not be ended at {}: {error}",
                 listed.display(),
                 abort.display()
             ),
-        )
-    })?;
-    // Aborted, the mount answers ENOTCONN until it is detached from the tree.
-    if !fusermount(&listed, true)? {
-        return Err(io::Error::other(format!(
-            "{FUSERMOUNT} could not detach the folder at {}",
-            listed.display()
-        )));
+        )),
     }
-    Ok(true)
+}
+
+#[cfg(target_os = "linux")]
+fn trace(what: &str) {
+    if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
+        eprintln!("unmount: {what}");
+    }
 }
 
 /// Run `fusermount3 -u` on `listed`, lazily when `detach`: whether it unmounted.
