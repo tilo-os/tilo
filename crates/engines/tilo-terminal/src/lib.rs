@@ -68,7 +68,9 @@ pub use provider::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use screen::{Line, Screen};
 #[cfg(not(target_arch = "wasm32"))]
-pub use session::{PtyReadDisposition, ReaderLease, Session, SessionEnd, classify_pty_read};
+pub use session::{
+    FarSide, PtyReadDisposition, ReaderLease, Session, SessionEnd, classify_pty_read,
+};
 pub use target::{EnvironmentSummary, SessionTarget, default_target, picker_targets};
 
 /// A grid position: the row in the whole scrollback (history included), and the column.

@@ -228,6 +228,23 @@ impl Live {
         live
     }
 
+    /// A live session whose program runs at a far end this process does not own, as an SSH
+    /// channel's shell: `far` carries its bytes and its window's size both ways, and the grid is
+    /// this process's.
+    ///
+    /// # Errors
+    ///
+    /// Why the session could not be kept.
+    pub fn carrying(
+        far: crate::session::FarSide,
+        content: ContentStore,
+        columns: u16,
+        rows: u16,
+        wake: Option<Wake>,
+    ) -> Result<Arc<Self>, OpenError> {
+        Self::of(Session::over(far), content, columns, rows, wake)
+    }
+
     /// The session's own id, which the app's record and the window name it by.
     #[must_use]
     pub fn id(&self) -> &str {
@@ -745,6 +762,156 @@ mod tests {
             assert!(live.ended());
             let end = live.end();
             assert_eq!(end, None, "closing alone reports no shell exit");
+        }
+    }
+
+    /// A far end built from channels: the bytes it was sent, the output it feeds, and the size
+    /// and close it heard.
+    #[derive(Clone, Default)]
+    struct Far {
+        input: Arc<Mutex<Vec<u8>>>,
+        output: Arc<Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>>,
+        sizes: Arc<Mutex<Vec<(u16, u16)>>>,
+        closed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct Output(std::sync::mpsc::Receiver<Vec<u8>>);
+
+    impl std::io::Read for Output {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let bytes = match self.0.recv() {
+                Ok(bytes) => bytes,
+                Err(_) => return Ok(0),
+            };
+            let taken = bytes.len().min(buffer.len());
+            buffer[..taken].copy_from_slice(&bytes[..taken]);
+            Ok(taken)
+        }
+    }
+
+    struct Input(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Input {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn far() -> (crate::session::FarSide, Far) {
+        let (output, received) = std::sync::mpsc::channel();
+        let far = Far::default();
+        *far.output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(output);
+        let sizes = Arc::clone(&far.sizes);
+        let closed = Arc::clone(&far.closed);
+        (
+            crate::session::FarSide {
+                writer: Box::new(Input(Arc::clone(&far.input))),
+                reader: Box::new(Output(received)),
+                resize: Box::new(move |columns, rows| {
+                    sizes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((columns, rows));
+                }),
+                close: Box::new(move || closed.store(true, Ordering::Release)),
+                shell_name: "ssh".to_owned(),
+            },
+            far,
+        )
+    }
+
+    tilo_test_env::scenario! {
+        fn a_session_over_a_far_side_prints_types_and_resizes_both_ways;
+
+        phase what_the_far_side_prints_reaches_the_grid;
+        {
+            let (far_side, far) = far();
+            let live = Live::carrying(
+                far_side,
+                tilo_content::ContentStore::memory(),
+                80,
+                24,
+                None,
+            )
+            .unwrap();
+            let sender = far
+                .output
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("the far side writes once");
+            sender.send(b"tilo-remote ready\r\n".to_vec()).unwrap();
+            tilo_test_env::wait_until("the banner in the grid", || {
+                live.rows()
+                    .iter()
+                    .any(|line| line.text.contains("tilo-remote ready"))
+            });
+
+            live.write(b"ls\r").unwrap();
+            assert_eq!(
+                far.input
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_slice(),
+                b"ls\r",
+                "the grid's keys reach the far side"
+            );
+
+            live.resize(100, 30).unwrap();
+            assert_eq!(
+                *far.sizes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                vec![(100, 30)],
+                "the window's size reaches the far side"
+            );
+
+            live.session().report_end(crate::session::SessionEnd::Lost(
+                "the connection dropped".to_owned(),
+            ));
+            live.close();
+            assert!(far.closed.load(Ordering::Acquire), "closing lets the far side go");
+        }
+
+        phase a_lost_connection_is_reported_as_lost_not_as_an_exit;
+        {
+            let (far_side, far) = far();
+            let live = Live::carrying(
+                far_side,
+                tilo_content::ContentStore::memory(),
+                80,
+                24,
+                None,
+            )
+            .unwrap();
+            live.session().report_end(crate::session::SessionEnd::Lost(
+                "the machine hung up".to_owned(),
+            ));
+            drop(
+                far.output
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take(),
+            );
+            tilo_test_env::wait_until("the session to end", || live.ended());
+            let (events, _) = live.events(0);
+            assert!(
+                events.iter().any(|event| matches!(
+                    event,
+                    Event::Lost(reason) if reason == "the machine hung up"
+                )),
+                "{events:?}"
+            );
         }
     }
 }

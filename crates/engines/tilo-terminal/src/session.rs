@@ -61,6 +61,8 @@ impl SessionEnd {
 pub struct ReaderLease {
     lease: Option<runtime_portal::pending_connection::ReaderLifetime>,
     report: std::cell::RefCell<Option<Vec<u8>>>,
+    /// How the far side said the session ended, when it said so before its stream closed.
+    reported: Option<SessionEnd>,
 }
 
 impl ReaderLease {
@@ -69,6 +71,20 @@ impl ReaderLease {
         Self {
             lease,
             report: std::cell::RefCell::new(None),
+            reported: None,
+        }
+    }
+
+    /// A lease whose session already told how it ends.
+    #[must_use]
+    pub fn telling(
+        lease: Option<runtime_portal::pending_connection::ReaderLifetime>,
+        reported: Option<SessionEnd>,
+    ) -> Self {
+        Self {
+            lease,
+            report: std::cell::RefCell::new(None),
+            reported,
         }
     }
 
@@ -89,11 +105,13 @@ impl ReaderLease {
         false
     }
 
-    /// How the session ended, once its terminal closed: what the supervisor
-    /// reported, else (a local shell, or a supervisor that only closes the
-    /// lease) the shell exited.
+    /// How the session ended, once its terminal closed: what the far side said, else what the
+    /// supervisor reported, else (a local shell) the shell exited.
     #[must_use]
     pub fn end(&self) -> SessionEnd {
+        if let Some(reported) = &self.reported {
+            return reported.clone();
+        }
         if self.report.borrow().is_none() {
             let _ = self.open();
         }
@@ -150,6 +168,23 @@ pub(crate) struct Backend {
     pub(crate) lease: Option<runtime_portal::pending_connection::SessionLifetime>,
 }
 
+/// The far end of a session this process does not run: the bytes its input goes to, the bytes
+/// its output comes from, and how its window's size and its end reach it. What a connection
+/// carries a session over — an SSH channel, a supervisor's hand-off — is this, and the engine
+/// that runs it keeps the connection.
+pub struct FarSide {
+    /// Input goes here: the bytes typed at the grid.
+    pub writer: Box<dyn Write + Send>,
+    /// Output comes from here, until it ends.
+    pub reader: Box<dyn Read + Send>,
+    /// The window was resized: told to the far side, in cells.
+    pub resize: Box<dyn Fn(u16, u16) + Send + Sync>,
+    /// The session is being closed: the far side is let go.
+    pub close: Box<dyn Fn() + Send + Sync>,
+    /// The program at the far prompt, when its name is known.
+    pub shell_name: String,
+}
+
 /// One open terminal session.
 pub struct Session {
     pub(crate) id: String,
@@ -157,6 +192,11 @@ pub struct Session {
     pub(crate) reader: Mutex<Option<Box<dyn Read + Send>>>,
     pub(crate) master: Mutex<Box<dyn MasterPty + Send>>,
     pub(crate) shell_name: String,
+    /// How the far side said the session ended, before its stream closed: a connection lost,
+    /// never a shell that exited.
+    reported_end: Mutex<Option<SessionEnd>>,
+    /// What closing the session tells the far side.
+    on_close: Option<Box<dyn Fn() + Send + Sync>>,
     /// The session on another device this one relays, when it was carried.
     pub(crate) relayed: Option<String>,
     /// The supervisor's own id for this session, when its host opened it.
@@ -235,6 +275,36 @@ impl Session {
         )
     }
 
+    /// A session whose program runs at a far end this process does not own, as an SSH channel's
+    /// shell or a supervisor's hand-off: `far` carries its bytes and its size both ways.
+    #[must_use]
+    pub fn over(far: FarSide) -> Self {
+        let FarSide {
+            writer,
+            reader,
+            resize,
+            close,
+            shell_name,
+        } = far;
+        let mut session = Self::from_parts(
+            writer,
+            reader,
+            Box::new(RemoteMaster { resize }),
+            shell_name,
+        );
+        session.on_close = Some(close);
+        session
+    }
+
+    /// The far side says how the session ended: a connection lost, or the program gone. Read by
+    /// the reader when its stream closes, so a lost connection is never reported as an exit.
+    pub fn report_end(&self, end: SessionEnd) {
+        *self
+            .reported_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(end);
+    }
+
     /// A session over a pty someone else opened and handed over, as a supervisor does.
     pub(crate) fn from_backend(backend: Backend) -> Self {
         let Backend {
@@ -259,6 +329,8 @@ impl Session {
             commands,
             editor: Mutex::new(editor),
             lease: Mutex::new(lease),
+            reported_end: Mutex::new(None),
+            on_close: None,
             closed: AtomicBool::new(false),
         }
     }
@@ -280,6 +352,8 @@ impl Session {
             commands: None,
             editor: Mutex::new(None),
             lease: Mutex::new(None),
+            reported_end: Mutex::new(None),
+            on_close: None,
             closed: AtomicBool::new(false),
         }
     }
@@ -356,12 +430,18 @@ impl Session {
     /// The lease the supervisor closes when the session ends.
     #[must_use]
     pub fn reader_lease(&self) -> ReaderLease {
-        ReaderLease::new(
+        let reported = self
+            .reported_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        ReaderLease::telling(
             self.lease
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
                 .and_then(|socket| socket.clone_for_reader().ok()),
+            reported,
         )
     }
 
@@ -433,6 +513,46 @@ impl Session {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .flush()
             .ok();
+        if let Some(close) = &self.on_close {
+            close();
+        }
+    }
+}
+
+/// The master of a session that runs at a far end: a resize is the far side's to hear, and the
+/// pty this process might open is none.
+struct RemoteMaster {
+    resize: Box<dyn Fn(u16, u16) + Send + Sync>,
+}
+
+impl MasterPty for RemoteMaster {
+    fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+        Ok(PtySize::default())
+    }
+
+    fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
+        (self.resize)(size.cols, size.rows);
+        Ok(())
+    }
+
+    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+        Ok(Box::new(std::io::sink()))
+    }
+
+    fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+        Ok(Box::new(std::io::empty()))
+    }
+
+    fn process_group_leader(&self) -> Option<i32> {
+        None
+    }
+
+    fn as_raw_fd(&self) -> Option<i32> {
+        None
+    }
+
+    fn tty_name(&self) -> Option<std::path::PathBuf> {
+        None
     }
 }
 
