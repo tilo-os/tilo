@@ -23,7 +23,8 @@ use tilo_session::{Backend, Reach, SessionEnvironment};
 /// any other executable before it starts one as the login session. A release
 /// build never carries it.
 ///
-/// `#[used]` keeps the linker from discarding a static nothing reads.
+/// `main` reads it: `#[used]` alone keeps it in the object file, and the
+/// linker's section collection still drops a static nothing refers to.
 #[cfg(all(feature = "dev-session", debug_assertions))]
 #[used]
 static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1";
@@ -36,7 +37,7 @@ static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1"
 /// carries it, so the dev image had nothing to prove that the session it ships
 /// is the one it built rather than the base image's.
 ///
-/// `#[used]` keeps the linker from discarding a static nothing reads.
+/// `main` reads it, as it does the marker above.
 #[cfg(all(feature = "dev-overrides", not(debug_assertions)))]
 #[used]
 static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--";
@@ -44,6 +45,12 @@ static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
+
+    // The build markers stay in the executable only while something refers to them.
+    #[cfg(all(feature = "dev-session", debug_assertions))]
+    let _ = std::hint::black_box(&DEV_SESSION_BUILD_MARKER);
+    #[cfg(all(feature = "dev-overrides", not(debug_assertions)))]
+    let _ = std::hint::black_box(&DEV_IMAGE_SESSION_BUILD_MARKER);
 
     // A workspace this session joins is decoded in a worker process started from this executable;
     // that worker is served here and exits. This comes before anything here starts a thread, as
