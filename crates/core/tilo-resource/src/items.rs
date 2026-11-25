@@ -201,15 +201,7 @@ pub fn item_resource_id_in(kind: &str, field: &str, item: &Id) -> String {
     format!("{kind}/{field}/{item}")
 }
 
-/// The kind an item published under `resource_id` has, `<kind>.<field>`,
-/// read from its id, `<kind>/<field>/<item>`; `None` for an id naming no
-/// item of a top-level collection.
-pub fn item_kind(resource_id: &str) -> Option<String> {
-    let (collection, item) = resource_id.rsplit_once('/')?;
-    let (kind, field) = collection.split_once('/')?;
-    (!kind.is_empty() && !field.is_empty() && !field.contains('/') && !item.is_empty())
-        .then(|| format!("{kind}.{field}"))
-}
+pub use tilo_resource_plain::item_kind;
 
 /// A reference to one item of a collection, as an action that names an item
 /// of its own record takes it.

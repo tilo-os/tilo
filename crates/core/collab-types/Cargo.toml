@@ -37,8 +37,8 @@ app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../../deskt
 # A capability names the app whose sandbox it is.
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
-# The hue someone wears until they choose one, as every surface derives it.
-tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
+# Where a presence is and the hue a person wears, which the toolkit reads without this crate.
+tilo-presence-types = { version = "0.1.0", path = "../presence-types" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }

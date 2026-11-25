@@ -86,7 +86,7 @@ impl WorkspaceEmoji {
     /// The emoji a reaction's or a text's `:name:` names, when the workspace has it.
     #[must_use]
     pub fn resolve(&self, written: &str) -> Option<&CustomEmoji> {
-        tilo_resource::custom_emoji_name(written).and_then(|name| self.get(name))
+        tilo_resource_plain::custom_emoji_name(written).and_then(|name| self.get(name))
     }
 
     /// The emoji whose names hold `query`, ignoring case: those starting with it first.

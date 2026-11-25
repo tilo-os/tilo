@@ -45,6 +45,8 @@ tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # A capability names the app its sandbox belongs to.
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+# The plain part of this vocabulary, which the toolkit reads without the rest.
+tilo-resource-plain = { version = "0.1.0", path = "../resource-plain" }
 tilo-content = { version = "0.1.0", path = "../content", default-features = false }
 tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }
 

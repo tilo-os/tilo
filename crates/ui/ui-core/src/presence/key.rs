@@ -1,10 +1,10 @@
-//! Presence keys are wire types and live in `collab_types::presence`.
+//! Presence keys are wire types and live in `tilo_presence_types`.
 
-pub use collab_types::presence::{
+pub use tilo_presence_types::{
     DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod view_key_tests {
     use super::*;
     use crate::presence::local_workspace_key;

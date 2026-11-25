@@ -931,7 +931,7 @@ impl EmojiPicker {
             .map(String::as_str)
             .or_else(|| self.selected());
         let name = match announced {
-            Some(text) => tilo_resource::custom_emoji_name(text)
+            Some(text) => tilo_resource_plain::custom_emoji_name(text)
                 .map_or_else(|| emoji_catalogue::emoji_name(text), str::to_owned),
             None if self.items.get(self.selected) == Some(&Item::AddCustom) => {
                 crate::i18n::widget_format("emoji-chooser-add", &[])
@@ -1044,7 +1044,7 @@ impl EmojiPicker {
                 Item::Emoji(text) => {
                     let side = cell.height() * 0.66;
                     let glyph = Rect::from_center_size(cell.center(), (side, side));
-                    if tilo_resource::custom_emoji_name(text).is_some()
+                    if tilo_resource_plain::custom_emoji_name(text).is_some()
                         && crate::workspace_emoji::emoji()
                             .resolve(text)
                             .and_then(|emoji| crate::workspace_emoji::emoji().image(&emoji.name))

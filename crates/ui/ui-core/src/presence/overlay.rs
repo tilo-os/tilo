@@ -36,6 +36,7 @@ impl PresenceCtx {
             .collect();
         DrawEnv {
             viewport: self.viewport.get(),
+            #[cfg(feature = "model")]
             permissions: self.permission_context(),
             paint_permissions: self.paint_permission_generation(),
             marks_changing: self.shows_writes(crate::time::now()),

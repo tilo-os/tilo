@@ -1052,7 +1052,7 @@ impl RichTextLayout {
                     let mut a = Self::run_attrs(r, style, size, line_height_mult);
                     let fragment = offset_map.shape_fragment(&r.text, start);
                     if r.workspace_emoji
-                        && let Some(name) = tilo_resource::custom_emoji_name(&r.text)
+                        && let Some(name) = tilo_resource_plain::custom_emoji_name(&r.text)
                     {
                         let run_size = r.size.unwrap_or(size);
                         let glyphs = fragment.chars().count();

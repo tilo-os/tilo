@@ -1063,14 +1063,14 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
         );
     };
     let named = presence.names.get(member);
-    match named.and_then(|name| crate::history_source::human_label(name, member.id())) {
+    match named.and_then(|name| super::human_label(name, member.id())) {
         Some(name) => name.to_owned(),
         None if member.is_person() => crate::i18n::widget_format("interaction-member", &[]),
         None => crate::i18n::widget_format("interaction-agent", &[]),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 pub(crate) mod tests {
     use super::*;
     use crate::text_render::TextRenderer;

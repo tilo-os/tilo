@@ -7,28 +7,24 @@
 
 mod bridged;
 mod call;
-mod hue;
-mod key;
 mod payload;
 mod said;
 mod shell;
 mod shown;
-mod status;
 
 pub use crate::member::{Member, Person, joined_at_from_packed};
 pub use bridged::{Bridged, MAX_ACCOUNT_CHARS, MAX_BRIDGED_NAME_CHARS};
 pub use call::CallPresence;
-pub use hue::{
-    PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, agent_client, agent_identity,
-    identity_color, identity_rgb, member_color, user_color,
-};
-pub use key::{
-    AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, ViewRect,
-    ViewSubset,
-};
-pub use payload::{Availability, IDLE_AFTER, PresencePayload};
+pub use payload::PresencePayload;
 pub use said::{DESKTOP_APP, Presence, stand_in};
 pub use tilo_action_policy::PersonId;
+pub use tilo_presence_types::{
+    AppKind, Availability, DIGEST_KEY_FIELD, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus,
+    MAX_STATUS_CHARS, PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PathSegment, PointerSpace,
+    PresenceHue, PresenceKey, PresenceVisibility, SelectionRange, StatusOrigin, StatusSharing,
+    ViewRect, ViewSubset, agent_client, agent_identity, identity_color, identity_rgb, member_color,
+    user_color,
+};
 
 /// What a member says in one presence frame: the semantics every
 /// publisher and reader of a workspace's presence shares. One enum, so a
@@ -38,7 +34,3 @@ pub use shell::{
     MAX_ACTIVITY_BYTES, ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow,
 };
 pub use shown::{Shown, ShownFocus, ShownLayout, ShownPoint, ShownWave, ShownWindow};
-pub use status::{
-    INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PresenceVisibility, StatusOrigin,
-    StatusSharing,
-};

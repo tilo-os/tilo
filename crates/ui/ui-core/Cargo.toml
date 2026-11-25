@@ -28,7 +28,7 @@ default = ["native", "broker-transport", "model"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "dep:tilo-doc", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "dep:settings-model"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "dep:settings-model"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -321,13 +321,11 @@ collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../..
 # The collaborative filesystem's records and history protocol, read by the
 # file history and conflict widgets.
 fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol", optional = true }
-# The canonical document model. `history_source` reads a live document's
-# change graph through `tilo_resource::history`, materialises past versions
-# with `tilo_doc::snapshot::at` and
-# turns it into the `HistoryEntry` rows the timeline + scrubber render, and
-# uses `tilo-doc`'s structural snapshot diff to write each row's summary. Pure
-# model code — no renderer, no I/O — so this stays a cheap dep.
-tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc", optional = true }
+# The document engine's line breaks, paragraphs and paging, which text layout
+# reads in every build. With `model` (its `model` feature), `history_source`
+# also materialises past versions with `tilo_doc::snapshot::at` and writes each
+# history row's summary from its structural snapshot diff.
+tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc", default-features = false }
 # Version history, stamped commits and replay of any document.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
@@ -344,6 +342,12 @@ tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 tilo-reference = { version = "0.1.0", path = "../../core/reference", optional = true }
 # Who may invoke which action: grants over the published tree.
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
+# Where a presence is and the hue a person wears: the plain values other people's cursors,
+# selections and faces are drawn from, with or without the collaboration model.
+tilo-presence-types = { version = "0.1.0", path = "../../core/presence-types" }
+# The plain part of the resource vocabulary: text splices, search scopes, item kinds and workspace
+# emoji names, read with or without the record model.
+tilo-resource-plain = { version = "0.1.0", path = "../../core/resource-plain" }
 # Window-group widths and drop targets are the layout model's own types.
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model", optional = true }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so

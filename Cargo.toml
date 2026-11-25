@@ -161,6 +161,8 @@ members = [
     "crates/core/automation",
     "crates/core/key-group",
     "crates/core/collab-types",
+    "crates/core/presence-types",
+    "crates/core/resource-plain",
     "crates/core/collab-admission",
     "crates/core/resource-store",
     "crates/core/collaboration",

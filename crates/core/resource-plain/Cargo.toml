@@ -1,0 +1,22 @@
+[package]
+name = "tilo-resource-plain"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "Resource vocabulary that needs no store or CRDT: text splices, search scopes, item kinds, emoji names."
+
+[lib]
+name = "tilo_resource_plain"
+path = "src/lib.rs"
+
+# A leaf: the toolkit reads these without Tilo's model, and `tilo-resource` publishes them.
+[dependencies]
+serde.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

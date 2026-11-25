@@ -114,7 +114,7 @@ pub struct StripLayout {
 /// How wide `emoji` is drawn in a pill: a square for a picture or a
 /// Unicode emoji, the `:name:` text for a workspace emoji without one.
 fn emoji_width(emoji: &str, metrics: &StripMetrics, text: &mut TextRenderer) -> f64 {
-    if tilo_resource::custom_emoji_name(emoji).is_some() && custom_picture(emoji).is_none() {
+    if tilo_resource_plain::custom_emoji_name(emoji).is_some() && custom_picture(emoji).is_none() {
         f64::from(text.measure_style(emoji, None, &metrics.count).0).ceil()
     } else {
         metrics.emoji
@@ -124,7 +124,7 @@ fn emoji_width(emoji: &str, metrics: &StripMetrics, text: &mut TextRenderer) -> 
 /// The decoded picture of a workspace emoji, when `emoji` names one the
 /// window's workspace has and it is decoded.
 fn custom_picture(emoji: &str) -> Option<vello::peniko::ImageData> {
-    let name = tilo_resource::custom_emoji_name(emoji)?;
+    let name = tilo_resource_plain::custom_emoji_name(emoji)?;
     crate::workspace_emoji::emoji().image(name)
 }
 
@@ -878,7 +878,7 @@ fn paint_add(ctx: &mut PaintCtx<'_>, rect: Rect, hovered: bool, metrics: &StripM
 /// `style` and `ink` while it has none, or the Unicode emoji centred and
 /// sized to the rect.
 pub fn paint_emoji(ctx: &mut PaintCtx<'_>, rect: Rect, emoji: &str, style: &TextStyle, ink: Color) {
-    if tilo_resource::custom_emoji_name(emoji).is_some() {
+    if tilo_resource_plain::custom_emoji_name(emoji).is_some() {
         if let Some(picture) = custom_picture(emoji) {
             let side = rect.width().min(rect.height());
             crate::image_store::paint_image_contain(

@@ -16255,11 +16255,11 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-canonical-json",
  "tilo-content-types",
- "tilo-face",
  "tilo-failure",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
+ "tilo-presence-types",
  "tilo-resource",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
@@ -19199,6 +19199,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-presence-types"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-face",
+ "tilo-test-env",
+ "web-time",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-presentation"
 version = "0.1.0"
 dependencies = [
@@ -19456,6 +19472,7 @@ dependencies = [
  "tilo-lock",
  "tilo-resource",
  "tilo-resource-macros",
+ "tilo-resource-plain",
  "tilo-sort",
  "tilo-test-env",
  "tilo-wake",
@@ -19472,6 +19489,14 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-resource-plain"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "workspace-hack",
 ]
 
@@ -21214,6 +21239,7 @@ dependencies = [
  "tilo-paint-strokes",
  "tilo-paths",
  "tilo-platform-caps",
+ "tilo-presence-types",
  "tilo-presentation",
  "tilo-process",
  "tilo-process-services",
@@ -21221,6 +21247,7 @@ dependencies = [
  "tilo-registry-types",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-resource-plain",
  "tilo-rich-edit",
  "tilo-rt",
  "tilo-runtime-collab",

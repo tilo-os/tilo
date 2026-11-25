@@ -228,7 +228,7 @@ pub fn shortcode_matches(query: &str, limit: usize) -> Vec<Shortcode> {
 /// not know it.
 #[must_use]
 pub fn emoji_name(emoji: &str) -> String {
-    if tilo_resource::custom_emoji_name(emoji).is_some() {
+    if tilo_resource_plain::custom_emoji_name(emoji).is_some() {
         return emoji.to_owned();
     }
     let Some(info) = catalogue().info(emoji) else {

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// understand rather than mis-reading it.
 pub const FROZEN_VERSION: u32 = 1;
 
-pub use collab_types::presence::{ViewRect, ViewSubset};
+pub use tilo_presence_types::{ViewRect, ViewSubset};
 
 /// The focused widget's ephemeral presentation state, captured through the same mechanism
 /// the undo path uses to restore a caret across a rebuild.
@@ -87,6 +87,7 @@ impl View {
     }
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn capture_widget_view_bound(
     root: &dyn crate::widget::Widget,
     focus: Option<FocusView>,
@@ -121,6 +122,7 @@ pub(crate) fn capture_focus(
     })
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, view: &View) {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
         return;
@@ -298,7 +300,7 @@ pub trait FreezeThaw {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod tests {
     use super::*;
     use crate::Theme;
@@ -383,8 +385,8 @@ mod tests {
             })
         }
         fn restore_view_state(&mut self, view: &ViewContribution) {
-            self.scroll = view.scroll.clone();
-            self.mode = view.view_mode.clone();
+            self.scroll.clone_from(&view.scroll);
+            self.mode.clone_from(&view.view_mode);
         }
     }
 
