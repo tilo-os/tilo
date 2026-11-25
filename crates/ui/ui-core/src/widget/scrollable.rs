@@ -982,10 +982,13 @@ impl Scrollable {
         let Some(id) = self.reveal_id.as_deref() else {
             return;
         };
+        // A descendant that is built but not laid out yet has no box: the layout that places it
+        // shows it.
         let Some(rect) = self
             .child
             .as_ref()
             .and_then(|child| placed(child.as_ref(), id))
+            .filter(|rect| rect.width() > 0.0 || rect.height() > 0.0)
         else {
             return;
         };
@@ -1062,8 +1065,10 @@ impl Scrollable {
             .child
             .as_ref()
             .and_then(|child| kept(child.as_ref(), &name))
+            .filter(|(_, rect)| rect.width() > 0.0 || rect.height() > 0.0)
         else {
-            // The one it keeps has not been placed yet: the layout that places it asks again.
+            // The one it keeps has not been placed yet (a window just built has no box until a
+            // layout gives it one): the layout that places it asks again.
             return;
         };
         if self.kept == Some(identity) {
