@@ -31,8 +31,21 @@ const TITLE: &str = "I rewrote my window compositor in Rust";
 const STREAM: &str = "https://media.example/v-compositor.mp4";
 /// The channel it belongs to.
 const CHANNEL: &str = "Low Level Learning";
+/// The file, in the profile the window opened, the connector writes the asks it answers to.
+const ASKS: &str = "connector-asks";
 
 type TubeApp = TestApp<TlApp>;
+
+/// The one test a window starts this binary to run as its connector
+/// (`window::app`'s `connector_command`): nothing else of the window's runs there. A run of the
+/// whole binary, which starts no connector, has nothing to stand in for.
+#[test]
+fn the_connector_process() {
+    if std::env::var_os(runtime_portal::origin_connector::ORIGIN_ENV).is_none() {
+        return;
+    }
+    connector_process();
+}
 
 /// The connector process this window starts: this test binary, run with the origin the window
 /// names and the socket it handed over.
@@ -48,12 +61,131 @@ fn connector_process() {
     });
     match origin.as_str() {
         "youtube" => {
-            tilolang_youtube::connector::serve(
-                &tilolang_youtube::scripted(scripted()),
-                attachments,
+            let service: std::sync::Arc<dyn tilolang_youtube::Service> = std::sync::Arc::new(
+                Asked {
+                    service: scripted(),
+                    log: connector_log(),
+                },
             );
+            tilolang_youtube::connector::serve(&service, attachments);
         }
         other => panic!("the window started no connector this test stands in for: {other}"),
+    }
+}
+
+/// The file the connector writes each ask it answers to, beside the profile the window opened:
+/// the window's own process is this child's parent, so both name the same directory.
+fn asked_log(profile: &std::path::Path) -> std::path::PathBuf {
+    profile.join(ASKS)
+}
+
+/// [`asked_log`] as the connector's process names it, from the process that started it.
+fn connector_log() -> std::path::PathBuf {
+    #[cfg(unix)]
+    let parent = std::os::unix::process::parent_id();
+    #[cfg(not(unix))]
+    let parent = 0;
+    asked_log(&std::env::temp_dir().join(format!(
+        "tilo-tube-origins-{parent}"
+    )))
+}
+
+/// The asks the connector answered, oldest first: `search <query>`, `stream <key>`.
+fn asks(profile: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(asked_log(profile)).map_or_else(
+        |_| Vec::new(),
+        |log| log.lines().map(str::to_owned).collect(),
+    )
+}
+
+/// The scripted service, with each ask it answers written down: what the window asked the
+/// connector for, which the window's own record is not readable for.
+struct Asked {
+    service: tilolang_youtube::Scripted,
+    log: std::path::PathBuf,
+}
+
+impl Asked {
+    /// Note the ask `line`, for the test that started this connector.
+    fn noted(&self, line: &str) {
+        use std::io::Write as _;
+        if let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log)
+        {
+            let _ = writeln!(log, "{line}");
+        }
+    }
+}
+
+impl tilolang_youtube::Service for Asked {
+    fn search(
+        &self,
+        query: &str,
+        filter: &tilolang_youtube::SearchFilter,
+    ) -> Result<tilolang_youtube::SearchPage, tilolang_youtube::ServiceError> {
+        self.noted(&format!("search {query}"));
+        self.service.search(query, filter)
+    }
+
+    fn channel(
+        &self,
+        key: &str,
+    ) -> Result<tilolang_youtube::ChannelPage, tilolang_youtube::ServiceError> {
+        self.service.channel(key)
+    }
+
+    fn playlist(
+        &self,
+        key: &str,
+    ) -> Result<tilolang_youtube::PlaylistPage, tilolang_youtube::ServiceError> {
+        self.service.playlist(key)
+    }
+
+    fn trending(&self) -> Result<tilolang_youtube::TrendingPage, tilolang_youtube::ServiceError> {
+        self.service.trending()
+    }
+
+    fn stream(
+        &self,
+        key: &str,
+        quality: &str,
+    ) -> Result<String, tilolang_youtube::ServiceError> {
+        let answered = self.service.stream(key, quality);
+        match &answered {
+            Ok(address) => self.noted(&format!("stream {key} {address}")),
+            Err(_) => self.noted(&format!("stream {key} failed")),
+        }
+        answered
+    }
+
+    fn comments(
+        &self,
+        key: &str,
+    ) -> Result<tilolang_youtube::CommentsPage, tilolang_youtube::ServiceError> {
+        self.service.comments(key)
+    }
+
+    fn segments(
+        &self,
+        key: &str,
+    ) -> Result<tilolang_youtube::SegmentPage, tilolang_youtube::ServiceError> {
+        self.service.segments(key)
+    }
+
+    fn branding(
+        &self,
+        key: &str,
+    ) -> Result<tilolang_youtube::Branding, tilolang_youtube::ServiceError> {
+        self.service.branding(key)
+    }
+
+    fn votes(
+        &self,
+        key: &str,
+    ) -> Result<tilolang_youtube::Votes, tilolang_youtube::ServiceError> {
+        self.service.votes(key)
     }
 }
 
@@ -102,12 +234,20 @@ fn until(app: &mut TubeApp, what: &str, mut done: impl FnMut(&mut TubeApp) -> bo
     panic!("the window never {what}; it shows {:?}", app.texts());
 }
 
-/// The resource `app` publishes `action` on, once it does: the one whose record holds `marker`
-/// when a marker is named (the video the search found), else any.
+/// The resource `app` publishes `action` on, once it does: the one the window names with `marker`
+/// when a marker is named (the video the search found, by its title), else any.
 fn published(app: &mut TubeApp, action: &str, marker: Option<&str>) -> String {
     let began = std::time::Instant::now();
     while began.elapsed() < std::time::Duration::from_secs(60) {
         app.settle();
+        // The resources the window publishes, each under the name the app calls it by: a video's
+        // is its title.
+        let named: Vec<(String, String)> = app
+            .harness()
+            .resources()
+            .iter()
+            .map(|resource| (resource.id.as_str().to_owned(), resource.label.clone()))
+            .collect();
         let surface = app.agent_surface();
         for row in surface.as_array().into_iter().flatten() {
             if row["action"] != action {
@@ -117,9 +257,9 @@ fn published(app: &mut TubeApp, action: &str, marker: Option<&str>) -> String {
                 continue;
             };
             let holds = marker.is_none_or(|marker| {
-                ui_core::resource::DocumentId::parse(resource)
-                    .and_then(|id| app.resource_document(&id))
-                    .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(marker))
+                named
+                    .iter()
+                    .any(|(id, label)| id == resource && label.contains(marker))
             });
             if holds {
                 return resource.to_owned();
@@ -153,15 +293,14 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     until(&mut app, "shows the video the search found", |app| {
         app.texts().iter().any(|text| text.contains(TITLE))
     });
-    // Playing it asks the connector for the address its bytes play from, and the record keeps
-    // what the connector answered.
+    // Playing it asks the connector for the address its bytes play from: the address only the
+    // scripted service names, answered for the video the window plays.
     let video = published(&mut app, "progress", Some(TITLE));
     app.call_on(&video, "progress", json!({ "at": 0.0 }))
         .expect("the client plays the video");
-    until(&mut app, "plays the video's stream", |app| {
-        ui_core::resource::DocumentId::parse(&video)
-            .and_then(|id| app.resource_document(&id))
-            .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(STREAM))
+    let streamed = format!("stream {VIDEO} {STREAM}");
+    until(&mut app, "asks the connector where the video plays from", |_| {
+        asks(&profile).contains(&streamed)
     });
     drop(app);
     let _ = std::fs::remove_dir_all(&profile);
