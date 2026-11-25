@@ -1,11 +1,4 @@
-//! Native Unix-descriptor service entry point.
-#[cfg(unix)]
+//! The gateway's service entry point: a local socket on Unix, a named pipe on Windows.
 fn main() {
     tilo_model_gateway::service::main();
-}
-
-#[cfg(not(unix))]
-fn main() {
-    eprintln!("tilo-model-gateway: Unix capability transport is required");
-    std::process::exit(1);
 }

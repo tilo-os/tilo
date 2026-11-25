@@ -15,7 +15,6 @@ mod subject;
 use std::fs;
 #[cfg(test)]
 use std::io::Read;
-use std::os::unix::net::UnixListener;
 #[cfg(test)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -52,6 +51,8 @@ use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use std::future::Future;
 use tilo_lock::MutexRecover as _;
+use tilo_socket::Listener;
+use tilo_socket::tokio::Stream;
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
@@ -135,23 +136,30 @@ pub fn main() {
 }
 
 fn serve(socket: &Path) -> Result<(), String> {
+    // Only a Unix service is socket-activated: systemd hands it the listening socket.
+    #[cfg(unix)]
     // SAFETY: activation is taken over before the runtime starts any thread.
     let activated = unsafe { tilo_files::native::private::activated_socket(socket) }
         .map_err(|error| error.to_string())?;
-    let listener = if let Some(listener) = activated {
-        listener
-    } else {
-        bind_listener(socket)?
+    #[cfg(not(unix))]
+    let activated = None;
+    let listener = match activated {
+        Some(listener) => listener,
+        None => bind_listener(socket)?,
     };
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| error.to_string())?;
     let http = Arc::new(provider_client()?);
     tilo_rt::daemon("model-gateway")
         .run(async move {
             let listener =
-                tokio::net::UnixListener::from_std(listener).map_err(|error| error.to_string())?;
-            serve_on(listener, http, MAX_CLIENTS, HANDOFF_TIMEOUT, same_user).await
+                tilo_socket::tokio::listener(listener).map_err(|error| error.to_string())?;
+            serve_on(
+                listener,
+                http,
+                MAX_CLIENTS,
+                HANDOFF_TIMEOUT,
+                tilo_socket::tokio::peer_is_this_login,
+            )
+            .await
         })
         .map_err(|error| error.to_string())?
 }
@@ -183,14 +191,14 @@ fn provider_builder() -> reqwest::ClientBuilder {
 
 /// Serve clients concurrently, each as its own task, at most `limit` at
 /// once, so one idle, slow or long-running client (a Plan in flight, a
-/// stalled handoff) never delays another. `authenticate` is the same-user
+/// stalled handoff) never delays another. `authenticate` is the same-login
 /// peer check in production. Returns only when accepting fails.
 async fn serve_on(
-    listener: tokio::net::UnixListener,
+    listener: tilo_socket::tokio::Listener,
     http: Arc<reqwest::Client>,
     limit: usize,
     handoff: Duration,
-    authenticate: fn(&tokio::net::UnixStream) -> bool,
+    authenticate: fn(&Stream) -> bool,
 ) -> Result<(), String> {
     let slots = Arc::new(Semaphore::new(limit.max(1)));
     loop {
@@ -214,7 +222,7 @@ async fn serve_on(
     }
 }
 
-fn bind_listener(socket: &Path) -> Result<UnixListener, String> {
+fn bind_listener(socket: &Path) -> Result<Listener, String> {
     if let Some(parent) = socket.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -234,7 +242,7 @@ impl Drop for StopReader {
 async fn negotiate_cancellation(
     request: Request,
     enabled: &mut bool,
-    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    writer: &mut tokio::io::WriteHalf<Stream>,
 ) -> Result<Option<(Option<u64>, Request)>, ()> {
     let selected = match request {
         Request::CancellationSupported => {
@@ -274,21 +282,17 @@ async fn negotiate_cancellation(
 }
 
 #[cfg(test)]
-async fn serve_connection(stream: tokio::net::UnixStream, http: &reqwest::Client) {
+async fn serve_connection(stream: Stream, http: &reqwest::Client) {
     serve_connection_within(stream, http, HANDOFF_TIMEOUT).await;
 }
 
 /// Serve one connection, closing it if its launcher handoff has not arrived
 /// within `handoff`.
-async fn serve_connection_within(
-    mut stream: tokio::net::UnixStream,
-    http: &reqwest::Client,
-    handoff: Duration,
-) {
+async fn serve_connection_within(mut stream: Stream, http: &reqwest::Client, handoff: Duration) {
     let Ok(Ok(handoff)) = tokio::time::timeout(handoff, read_handoff(&mut stream)).await else {
         return;
     };
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     // One reader owns partial frames throughout provider work. Never cancel a
     // read halfway through a prefix/body and then restart it on the same stream.
     let (incoming, mut received) = tokio::sync::mpsc::channel(8);
@@ -441,7 +445,7 @@ async fn read_request_frame(
         .map_err(|_| ())?
 }
 
-async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, String> {
+async fn read_handoff(stream: &mut Stream) -> Result<Handoff, String> {
     let body = match HANDOFF_FRAMING.read_async(stream).await {
         Ok(Some(body)) => body,
         Ok(None) => return Err("missing launcher authentication".into()),
@@ -1823,20 +1827,6 @@ fn provider_url(profile: &ProviderProfile) -> String {
     agent_provider_config::wire::url(profile)
 }
 
-/// Whether the peer's `SO_PEERCRED` uid is this process's effective uid.
-#[cfg(target_os = "linux")]
-fn same_user(stream: &tokio::net::UnixStream) -> bool {
-    let euid = rustix::process::geteuid().as_raw();
-    stream.peer_cred().is_ok_and(|peer| peer.uid() == euid)
-}
-
-// Peer authentication is implemented only for the native Linux gateway.
-// Other hosts may exercise provider logic but must not accept service clients.
-#[cfg(not(target_os = "linux"))]
-fn same_user(_stream: &tokio::net::UnixStream) -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -2105,17 +2095,21 @@ mod tests {
     }
 
     /// The real accept loop on its own runtime, serving `listener` (peer
-    /// check stubbed: other hosts refuse every peer, and the check itself is
-    /// unchanged). `workers` of one proves concurrency comes from serving
-    /// clients as tasks, not from a thread each.
-    fn serve_in_background(listener: UnixListener, workers: usize) {
+    /// check stubbed: the client is this process's own, and the production
+    /// check is [`tilo_socket::tokio::peer_is_this_login`]). `workers` of one
+    /// proves concurrency comes from serving clients as tasks, not from a
+    /// thread each.
+    fn serve_in_background(listener: tilo_socket::Listener, workers: usize) {
         serve_in_background_within(listener, workers, HANDOFF_TIMEOUT);
     }
 
     /// [`serve_in_background`], closing connections whose handoff has not
     /// arrived within `handoff`.
-    fn serve_in_background_within(listener: UnixListener, workers: usize, handoff: Duration) {
-        listener.set_nonblocking(true).unwrap();
+    fn serve_in_background_within(
+        listener: tilo_socket::Listener,
+        workers: usize,
+        handoff: Duration,
+    ) {
         let http = Arc::new(provider_client().unwrap());
         std::thread::spawn(move || {
             let runtime = tilo_rt::daemon("gateway-test")
@@ -2123,7 +2117,7 @@ mod tests {
                 .build()
                 .unwrap();
             runtime.block_on(async move {
-                let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+                let listener = tilo_socket::tokio::listener(listener).unwrap();
                 serve_on(listener, http, MAX_CLIENTS, handoff, |_| true).await
             })
         });
@@ -2132,7 +2126,7 @@ mod tests {
     fn serve_test_socket(handoff: Duration) -> PathBuf {
         let nonce = tilo_clock::unix_now_ns();
         let path = std::env::temp_dir().join(format!("gw-{}-{nonce}.sock", std::process::id()));
-        serve_in_background_within(UnixListener::bind(&path).unwrap(), 2, handoff);
+        serve_in_background_within(tilo_socket::bind(&path).unwrap(), 2, handoff);
         path
     }
 
@@ -2199,7 +2193,7 @@ mod tests {
 
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("gateway.sock");
-            serve_in_background(UnixListener::bind(&path).unwrap(), 1);
+            serve_in_background(tilo_socket::bind(&path).unwrap(), 1);
 
             // Connected first, then silent partway through its authentication.
             let mut stalled = UnixStream::connect(&path).unwrap();

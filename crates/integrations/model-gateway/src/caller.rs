@@ -9,7 +9,7 @@ pub fn provider_admin_app(app_id: &str) -> bool {
 }
 
 /// Chat can generate conversation text, not execute tools or replay tool history.
-#[cfg(any(all(unix, feature = "server"), test))]
+#[cfg(any(feature = "server", test))]
 pub(crate) fn chat_completion(request: &crate::Request) -> bool {
     use agent_provider_config::protocol::{Content, Role, ToolChoice};
     matches!(request, crate::Request::Complete { request, .. } | crate::Request::CompleteDefault { request, .. }
@@ -25,7 +25,7 @@ pub(crate) fn chat_completion(request: &crate::Request) -> bool {
 mod tests {
     use super::*;
 
-    #[cfg(all(unix, feature = "server"))]
+    #[cfg(feature = "server")]
     fn completion() -> serde_json::Value {
         serde_json::json!({
             "verb": "complete", "profile_id": "profile", "model_id": "model",
@@ -35,7 +35,7 @@ mod tests {
         })
     }
 
-    #[cfg(all(unix, feature = "server"))]
+    #[cfg(feature = "server")]
     #[tokio::test]
     async fn chat_cannot_acquire_agent_photos_or_settings_authority() {
         let request = serde_json::from_value(completion()).unwrap();

@@ -38,7 +38,7 @@ server = [
     "dep:bytes",
     "dep:futures-util",
     "dep:tilo-files",
-    "dep:rustix",
+    "dep:tilo-socket",
     "dep:tilo-api",
     "dep:anyhow",
 ]
@@ -49,7 +49,6 @@ local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:im
 
 [dependencies]
 tilo-model-client = { version = "0.1.0", path = "../../sdk/model-client", default-features = false }
-libc.workspace = true
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
@@ -60,6 +59,9 @@ sha2.workspace = true
 zeroize.workspace = true
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-files = { optional = true, path = "../../platform/tilo-files" }
+# The gateway's local connections: a Unix socket, or a named pipe on Windows, with the peer's
+# identity checked the same way on both.
+tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"], optional = true }
 url.workspace = true
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../provider-config" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
@@ -101,6 +103,3 @@ tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true
-
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"], optional = true }
