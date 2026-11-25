@@ -262,7 +262,13 @@ async fn a_moment_before_each_board_entry_fires_once_and_follows_the_records() {
         cert: cert.clone(),
         signer: Arc::new(key.clone()),
     }));
-    declare_app(&host, "so.tilo.calendar", CALENDAR_SURFACE.as_bytes());
+    declare_app(
+        &host,
+        "so.tilo.calendar",
+        tilo_surface_compile::compile(CALENDAR_SURFACE)
+            .expect("the surface compiles")
+            .as_bytes(),
+    );
     let workspace = workspaces.create("Calendars").await.unwrap().workspace;
     let clock = Pinned::at(pinned_at("2026-10-19T06:00:00Z"));
     let keep_event = async |id: &str,
@@ -521,7 +527,13 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
         cert: cert.clone(),
         signer: Arc::new(key.clone()),
     }));
-    declare_app(&host, "so.tilo.mail", MAIL_SURFACE.as_bytes());
+    declare_app(
+        &host,
+        "so.tilo.mail",
+        tilo_surface_compile::compile(MAIL_SURFACE)
+            .expect("the surface compiles")
+            .as_bytes(),
+    );
     let workspace = workspaces.create("Mail").await.unwrap().workspace;
     let clock = Pinned::at(pinned_at("2026-11-23T08:00:00Z"));
     let keep_message = async |id: &str,

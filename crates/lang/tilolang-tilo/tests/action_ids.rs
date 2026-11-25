@@ -23,12 +23,12 @@ const OVEN_ONLY: &str = "{\"resources\":[{\"fields\":[{\"path\":\"heat\",\"type\
 fn kitchen() -> String {
     OVEN_ONLY
         .replace(
-            "fields = [{ path = \"left\", type = \"int\" }]\n",
-            "fields = [{ path = \"left\", type = \"int\" }]\n\n[[resources.verbs]]\nid = \"dismiss\"\nkind = \"outside\"\nparams = []\n",
+            "\"kind\":\"kitchen.timer\",\"label\":\"Timer\",\"version\":1",
+            "\"kind\":\"kitchen.timer\",\"label\":\"Timer\",\"verbs\":[{\"id\":\"dismiss\",\"kind\":\"outside\",\"params\":[]}],\"version\":1",
         )
         .replace(
-            "label = \"Counter\"\nversion = 1\nfields = []\n",
-            "label = \"Counter\"\nversion = 1\nfields = []\n\n[[resources.verbs]]\nid = \"dismiss\"\nkind = \"outside\"\nparams = [{ name = \"reason\", required = true, type = \"text\", schema = { type = \"string\" } }]\n",
+            "\"kind\":\"kitchen.counter\",\"label\":\"Counter\",\"verbs\":[",
+            "\"kind\":\"kitchen.counter\",\"label\":\"Counter\",\"verbs\":[{\"id\":\"dismiss\",\"kind\":\"outside\",\"params\":[{\"name\":\"reason\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},",
         )
 }
 

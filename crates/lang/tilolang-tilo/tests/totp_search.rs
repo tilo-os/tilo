@@ -25,7 +25,7 @@ use crate::fixtures::{Replica, Workspace, call, target};
 const APP: &str = "so.tilo.totp";
 const SOURCE: &str = include_str!("../../../../apps/tl/totp/app.tl");
 const IDS: &str = include_str!("../../../../apps/tl/totp/app.ids");
-const VAULT: &str = include_str!("../../../../apps/tl/vault/surface.toml");
+const VAULT: &str = include_str!("../../../../apps/tl/vault/surface.json");
 
 /// The two accounts' seeds, as the services gave them.
 const ACME_KEY: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";

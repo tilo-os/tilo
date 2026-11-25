@@ -6,7 +6,7 @@
 //! address, whichever build wrote it and on whichever target.
 //!
 //! Only build tools read `surface.toml`. A runtime reads the compiled form
-//! ([`collab_types::surface::SurfaceFile`]), and refuses anything else: a surface sent in the
+//! (`collab_types::surface::SurfaceFile`), and refuses anything else: a surface sent in the
 //! authored form has no address the system would have given it.
 
 use std::path::{Path, PathBuf};
@@ -47,7 +47,7 @@ pub fn compile_value(resources: &[Value], reads: &[String]) -> String {
             Value::Array(reads.iter().cloned().map(Value::String).collect()),
         );
     }
-    tilo_canonical_json::to_string(&Value::Object(surface))
+    canonical(&Value::Object(surface))
 }
 
 /// Whether `json` is the canonical compiled form of itself: re-encoding it gives the same bytes.

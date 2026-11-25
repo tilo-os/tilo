@@ -372,7 +372,8 @@ tilo_test_env::scenario! {
     // A native app's read action is an action of its document in the catalogue,
     // typed by the value the surface publishes it answers with.
     {
-        let text = r#"
+        let text = tilo_surface_compile::compile(
+            r#"
 [[resources]]
 kind = "pdf.document"
 label = "PDF"
@@ -397,8 +398,10 @@ fields = [
 [[resources.types]]
 name = "FormField"
 fields = [{ name = "name", type = "text" }]
-"#;
-        let meta = tilolang_tilo::catalogue::described("so.tilo.pdf-viewer", "PDF Viewer", text)
+"#,
+        )
+        .expect("the surface compiles");
+        let meta = tilolang_tilo::catalogue::described("so.tilo.pdf-viewer", "PDF Viewer", &text)
             .expect("the surface reads as a package");
         let read = meta
             .actions
@@ -1028,7 +1031,8 @@ params = []
 /// one, which a call could not tell apart.
 #[test]
 fn a_description_declares_each_action_once_for_its_resource() {
-    let read = tilolang_tilo::catalogue::described("t.session", "Session", ONE_VERB_ON_TWO)
+    let compiled = tilo_surface_compile::compile(ONE_VERB_ON_TWO).expect("the surface compiles");
+    let read = tilolang_tilo::catalogue::described("t.session", "Session", &compiled)
         .expect("one verb on two resources is two actions");
     let mut opens: Vec<(&str, &str)> = read
         .actions
@@ -1051,6 +1055,7 @@ fn a_description_declares_each_action_once_for_its_resource() {
         1,
     );
     assert_ne!(alone, ONE_VERB_ON_TWO, "the layout's `open` is taken out");
+    let alone = tilo_surface_compile::compile(&alone).expect("the surface compiles");
     let ids: Vec<String> = tilolang_tilo::catalogue::described("t.session", "Session", &alone)
         .expect("the app's open alone")
         .actions
@@ -1060,7 +1065,7 @@ fn a_description_declares_each_action_once_for_its_resource() {
         .collect();
     assert_eq!(ids, ["App/open"]);
     // What the session sends a loose call with is the layout's `open`, never the app's.
-    let loose = tilolang_tilo::catalogue::loose_verbs(ONE_VERB_ON_TWO).unwrap();
+    let loose = tilolang_tilo::catalogue::loose_verbs(&compiled).unwrap();
     assert_eq!(
         loose["Shell/open"].params.len(),
         1,
@@ -1071,6 +1076,7 @@ fn a_description_declares_each_action_once_for_its_resource() {
         "[[resources]]\ninstances = true",
         "[[resources.verbs]]\nid = \"open\"\nkind = \"outside\"\nparams = []\n\n[[resources]]\ninstances = true",
     );
+    let twice = tilo_surface_compile::compile(&twice).expect("the surface compiles");
     let refused = tilolang_tilo::catalogue::described("t.session", "Session", &twice)
         .expect_err("one verb twice on the layout names neither");
     assert!(refused.contains("`Shell/open` twice"), "{refused}");

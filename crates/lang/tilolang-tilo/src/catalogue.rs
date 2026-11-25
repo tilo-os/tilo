@@ -1222,7 +1222,8 @@ fields = [ { name = "rx_per_sec", type = "float" } ]
     /// names that one.
     #[test]
     fn two_resources_publishing_one_type_name_keep_their_own() {
-        let surfaces = parse_surfaces(DEVICE).expect("the surfaces read");
+        let compiled = tilo_surface_compile::compile(DEVICE).expect("the surfaces compile");
+        let surfaces = parse_surfaces(&compiled).expect("the surfaces read");
         let meta = package_of("so.tilo.device", "Device", &surfaces);
         let names: Vec<&str> = meta.types.iter().map(|ty| ty.name.as_str()).collect();
         assert!(names.contains(&"Network"), "{names:?}");

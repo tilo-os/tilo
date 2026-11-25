@@ -431,8 +431,8 @@ fn a_field_a_changed_surface_no_longer_has_is_refused_before_anything_is_sent() 
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
     assert!(host.runtime().unload_foreign("settings"));
     let narrowed = catalogue::parse_surfaces(&NOTIFICATIONS.replace(
-        r#"fields = [{ name = "enabled", type = "bool" }]"#,
-        r#"fields = [{ name = "start_minute", type = "int" }]"#,
+        r#"{"name":"enabled","type":"bool"}"#,
+        r#"{"name":"start_minute","type":"int"}"#,
     ))
     .expect("a surface file");
     host.runtime()
