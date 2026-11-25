@@ -254,13 +254,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// publishes: the actions its resources offer, and those that open a window. `None` when
     /// the workspace lists no surface for it here, or one that does not read.
     async fn declares_action(&self, app_id: &str, action: &str) -> Option<bool> {
-        let installed = self.tree.installed().await.ok()?;
-        let surface = installed
-            .iter()
-            .find(|app| app.app_id == app_id)?
-            .surface
-            .as_deref()?;
-        let file = collab_types::surface::SurfaceFile::from_json(surface).ok()?;
+        let surface = self.surface_bytes(app_id).await?;
+        let text = String::from_utf8_lossy(&surface);
+        let file = collab_types::surface::SurfaceFile::from_json(text.as_ref()).ok()?;
         Some(crate::offered::declared(&file, action).is_some())
     }
 

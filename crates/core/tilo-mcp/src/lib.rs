@@ -158,6 +158,12 @@ pub struct McpServer<H> {
     /// catalogue: a listing reads it once a session rather than every page
     /// ([`McpServer::program_forms`]).
     forms: std::sync::Mutex<Option<agent::ProgramForms>>,
+    /// What each app this session read publishes, by app id: a signed package's surface does not
+    /// change while it is installed, so a read of an app's types, or an action it does not
+    /// declare, is answered without listing the workspace's applications again
+    /// ([`McpServer::surface_bytes`]). Only a surface that was found is kept: one the workspace
+    /// listed nothing of may be installed a moment later.
+    surfaces: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>>,
     /// How long the task's program is given to start and answer a listing's
     /// catalogue ([`QUERY_ANSWER_WAIT`], the wait a listing gives its own
     /// answers).
@@ -656,6 +662,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             programs_on_device: false,
             task: tokio::sync::Mutex::new(None),
             forms: std::sync::Mutex::default(),
+            surfaces: std::sync::Mutex::default(),
             task_answer_wait: QUERY_ANSWER_WAIT,
             task_given_up: std::sync::atomic::AtomicBool::new(false),
             acted: std::sync::Mutex::default(),

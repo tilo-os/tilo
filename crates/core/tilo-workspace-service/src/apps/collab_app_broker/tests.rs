@@ -430,6 +430,8 @@ include!("../native_checkout_tests.rs");
 #[cfg(all(test, target_os = "linux"))]
 include!("../workspace_document_ownership_tests.rs");
 #[cfg(test)]
+include!("store_cost_tests.rs");
+#[cfg(test)]
 include!("../durable_local_invocation_matrix_tests.rs");
 #[cfg(test)]
 include!("../document_content_tests.rs");

@@ -659,6 +659,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// whose resource no record provider answers leaves the last one named:
     /// the agent still acts there.
     fn acted_in(&self, provider: &str, app_id: &str) {
+        // The app answered where it runs: the calls after this one reach it there, rather than
+        // looking up again whether it runs and starting it when it does not.
+        self.tree.saw_running(app_id, provider);
         let Some((app, document)) = tilo_actions::remote::resource_parts(provider) else {
             return;
         };
@@ -1058,10 +1061,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// ([`collab_types::surface::canonical`]): the one this process runs it
     /// with, or the signed package the workspace has installed.
     async fn surface_bytes(&self, app_id: &str) -> Option<Vec<u8>> {
-        match crate::offered::published_surface(&self.tree, app_id).await {
+        let known = self.surfaces.lock_recover().get(app_id).cloned();
+        if let Some(surface) = known {
+            return Some((*surface).clone());
+        }
+        let found = match crate::offered::published_surface(&self.tree, app_id).await {
             Some(surface) => Some(surface),
             None => self.host.installed_surface(app_id).await.flatten(),
+        }?;
+        let mut surfaces = self.surfaces.lock_recover();
+        if surfaces.len() >= tilo_actions::tree::RESOLVED_PATHS {
+            surfaces.clear();
         }
+        surfaces.insert(app_id.to_owned(), std::sync::Arc::new(found.clone()));
+        Some(found)
     }
 
     /// The refusal of `name` in `app_id` when the app declares it and this caller, which may

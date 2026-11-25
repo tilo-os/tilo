@@ -3124,3 +3124,5 @@ mod written_out;
 #[cfg(test)]
 #[path = "mcp_agent_address_tests.rs"]
 mod address_tests;
+#[path = "mcp_agent_catalogue_tests.rs"]
+mod catalogue;

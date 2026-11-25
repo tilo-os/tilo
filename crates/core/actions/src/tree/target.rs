@@ -213,7 +213,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         // The instance the workspace started, as it names it; a host serving the workspace's
         // records names the record it started the app on.
         let output = output.unwrap_or_default();
-        output
+        let started = output
             .get("peer_id")
             .and_then(serde_json::Value::as_u64)
             .map(|peer| peer.to_string())
@@ -224,7 +224,13 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
                     .filter(|provider| crate::remote::is_resource_provider(provider))
                     .map(str::to_owned)
             })
-            .ok_or_else(|| format!("{app_id} started, but named no instance of it").into())
+            .ok_or_else(|| {
+                Unresolved::Said(format!("{app_id} started, but named no instance of it"))
+            })?;
+        // The app runs now on `started`: the call after this one invokes it where it is rather
+        // than starting it again.
+        self.saw_running(&app_id, &started);
+        Ok(started)
     }
 
     /// The resource `address` names, written either as its listing publishes
