@@ -317,11 +317,9 @@ fn a_key_the_person_approved_renames_no_workspace() {
             .post(&renaming, &json!({"name": "Named by a key"}))
             .await;
         assert_ne!(status, 200, "the key renames no workspace: {refused}");
-        assert!(
-            refused["error"]["message"]
-                .as_str()
-                .is_some_and(|said| said.contains("this computer is not one of the person's own")),
-            "the workspace's own rule refuses it: {refused}"
+        assert_eq!(
+            refused["error"]["code"], "unknown_action",
+            "the workspace offers a key no rename: {refused}"
         );
 
         // The person's own computer renames it, so the refusal is the key's and not the

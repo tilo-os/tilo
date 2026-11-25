@@ -4844,6 +4844,16 @@ impl AdmittedRuntimeSession {
             .unwrap_or_else(|| self.admission.caller())
     }
 
+    /// Whether this is a key's own run: the key its person approved, acting as the agent its
+    /// certificate names, on the device that key itself is. An agent a device of the person's
+    /// runs is another device's, so its acting key is never the admitted one.
+    fn is_key_run(&self) -> bool {
+        self.agent.as_ref().is_some_and(|agent| {
+            agent.acting().is_agent()
+                && agent.device_public_key() == self.admission.caller().device_public_key()
+        })
+    }
+
     /// Whether `caller` is who this run was admitted for. A program the person runs reaches
     /// their own run as the local person, each in an execution of its own: that narrows what its
     /// calls own, never who makes them. A run projected into one execution admits only that one.
@@ -5618,8 +5628,14 @@ impl RuntimeActionProvider {
             return shown;
         }
         // An agent's call waits for its person's yes as its asked record; the person's own
-        // is answered where they pressed it.
-        if let (Some(asked), Some(agent)) = (&self.asked, &session.agent)
+        // is answered where they pressed it. A key's call on the workspace's own tree is not
+        // an agent's: this device answers it as the key, and what the tree offers it is
+        // decided by the key's own grant.
+        let key_tree = request.target.provider
+            == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            && session.is_key_run();
+        if !key_tree
+            && let (Some(asked), Some(agent)) = (&self.asked, &session.agent)
             && let (Some(id), Some(name)) = (agent.acting().agent_id(), agent.agent_called())
         {
             let run = super::asked::Run::Agent {
