@@ -15,8 +15,9 @@ use tilo_actions::remote::workspace_initiative::ProposedTask;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::proposals::InTracker;
+use crate::agent_shortcuts::TASKS;
 use crate::agents::task_work::{self, Held};
-use crate::agents::triggered::{self, TASKS};
+use crate::agents::triggered;
 use crate::agents::{WorkspaceActionProvider, invoke_named};
 use crate::workspaces::Workspaces;
 use tilo_server_protocol::WorkspaceId;

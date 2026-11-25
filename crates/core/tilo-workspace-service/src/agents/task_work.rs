@@ -30,8 +30,9 @@ use tilo_actions::remote::{
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::triggered::{self, TASKS};
+use super::triggered;
 use super::{Outcome, invoke_named, money};
+use crate::agent_shortcuts::TASKS;
 use crate::workspaces::Workspaces;
 
 /// The kind of what a task of [`TASKS`] keeps while an agent works it.
@@ -253,7 +254,7 @@ impl Task {
         workspace: &str,
         event: &DocumentEvent,
     ) -> Option<Self> {
-        if event.kind != triggered::TASK {
+        if event.kind != crate::agent_shortcuts::TASK {
             return None;
         }
         let id = event.item.as_ref()?.id.clone();
@@ -671,7 +672,10 @@ impl Held {
 
     /// Whether `member` is doing it.
     pub(super) fn assigned_to(&self, member: &tilo_action_policy::MemberId) -> bool {
-        !self.assignee.is_empty() && self.assignee.contains(&triggered::names(member))
+        !self.assignee.is_empty()
+            && self
+                .assignee
+                .contains(&crate::agent_shortcuts::names(member))
     }
 
     /// The agent doing it, when an agent is.
@@ -728,7 +732,7 @@ pub(super) async fn tasks(
     workspace: &str,
     filters: Vec<collab_types::store::Filter>,
 ) -> Result<Vec<Held>, String> {
-    let mut query = collab_types::store::Query::of(triggered::TASK, 500);
+    let mut query = collab_types::store::Query::of(crate::agent_shortcuts::TASK, 500);
     query.filters = filters;
     Ok(workspaces
         .store_found(workspace, query)
@@ -766,7 +770,7 @@ pub fn made_task(answer: &Value) -> Option<&str> {
 /// The task `id` of `workspace`, as this device holds it.
 pub async fn task(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Held> {
     workspaces
-        .store_held(workspace, triggered::TASK, id)
+        .store_held(workspace, crate::agent_shortcuts::TASK, id)
         .await
         .map(|held| Held::of(id.to_owned(), &held))
 }

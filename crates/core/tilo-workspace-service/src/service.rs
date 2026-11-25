@@ -533,22 +533,6 @@ fn service_handlers(
     ]
 }
 
-/// The workspaces' own ALPNs on a server's router.
-pub fn workspaces_protocols(
-    sessions: &ServiceSessions,
-    workspaces: &crate::workspaces::Workspaces,
-) -> Vec<(&'static [u8], Box<dyn DynProtocolHandler>)> {
-    service_handlers(sessions, workspaces)
-        .into_iter()
-        .map(|(alpn, handler)| {
-            (
-                alpn,
-                Box::new(Shared(handler)) as Box<dyn DynProtocolHandler>,
-            )
-        })
-        .collect()
-}
-
 /// A member device's link to its workspace over iroh. A device dials from the endpoint it runs
 /// under its device key, so the connection itself says which device it is, and its first stream
 /// names the workspace. A page dials with an endpoint key of its own, which is not its device
@@ -872,17 +856,6 @@ impl WorkspaceService {
     #[must_use]
     pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
         self.workspaces.documents()
-    }
-
-    /// The resources of the workspaces this service holds, as the broker answers an app's Open of
-    /// one and the session's own reads of one.
-    #[cfg(feature = "apps")]
-    #[must_use]
-    pub fn document_reads(&self) -> Arc<dyn crate::apps::services::NativeDocumentReads> {
-        Arc::new(crate::apps::service_reads::ServiceReads::new(
-            self.workspaces.clone(),
-            self.metrics_counter(),
-        ))
     }
 
     /// The certificate this service proves itself with.

@@ -32,15 +32,15 @@ use tilo_workspace_agent::{Agent, OWNER, WorkspaceAgents};
 
 use super::own_agent_tests::{Answers, PLAN_READY, SCOUT, argument, chat_writes, mentioning};
 use super::{govern, record_route, settled};
+use tilo_workspace_service::agent_shortcuts::{self, CHAT, MESSAGE};
 use tilo_workspace_service::agents::agent_keys::AgentKeys;
 use tilo_workspace_service::agents::ticketed_keys::{
     AgentKeyAsk, AgentKeyTicket, AgentKeyTickets, DeviceAgentKeys,
 };
-use tilo_workspace_service::agents::triggered::{CHAT, MESSAGE};
 use tilo_workspace_service::agents::{Model, ServerAgents};
+use tilo_workspace_service::apps::test_support::Started;
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::{Actor, Ineligible, NotTaken, Order, Turn};
-use tilo_workspace_service::workspaces::fixtures::Started;
 use tilo_workspace_service::workspaces::fixtures::invited;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, TestHost, device_cert, hosting_device, test_host_holding,
@@ -441,9 +441,10 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     // that copy changes; this one arms once, so wait for the trigger to be there first.
     let arming = std::time::Instant::now() + tilo_test_env::hang_bound();
     while !adas.described().await.iter().any(|workspace| {
-        workspace.shortcuts.iter().any(|saved| {
-            saved.id() == tilo_workspace_service::agents::triggered::shortcut_id(SCOUT)
-        })
+        workspace
+            .shortcuts
+            .iter()
+            .any(|saved| saved.id() == agent_shortcuts::shortcut_id(SCOUT))
     }) {
         assert!(
             std::time::Instant::now() < arming,
@@ -537,8 +538,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     let event = serde_json::from_value(firing.inputs[tilo_automation::EVENT_INPUT].clone())
         .expect("the firing carries the change");
     let engine = adas.agent_keys().expect("the server runs its engine");
-    let place = tilo_workspace_service::agents::triggered::Where::of(&event)
-        .expect("the change is a message");
+    let place = tilo_workspace_service::work::Where::of(&event).expect("the change is a message");
     let taken = settled(engine.answer(
         workspace.clone(),
         SCOUT.to_owned(),
@@ -614,7 +614,11 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         hosted.bea_root.verifying_key().to_bytes(),
         "certified by Bea's root"
     );
-    let scope = signer.capabilities.agent.as_ref().expect("an agent's grant");
+    let scope = signer
+        .capabilities
+        .agent
+        .as_ref()
+        .expect("an agent's grant");
     assert!(scope.is_agent(SCOUT), "for Scout alone");
     assert_eq!(scope.workspace(), Some(*workspace_id.as_uuid().as_bytes()));
 

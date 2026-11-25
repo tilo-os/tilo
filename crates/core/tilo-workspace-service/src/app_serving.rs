@@ -18,6 +18,26 @@ use tilo_server_protocol::page::{
     OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal, PointerEvent,
 };
 
+/// Whether `target` is the open of Browser in a workspace (`app.so.tilo.browser#open`), for
+/// whoever holds only what a request addresses.
+#[cfg(feature = "agents")]
+#[must_use]
+pub fn opens_browser_at(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
+    use tilo_actions::remote::{APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX};
+    tilo_actions::remote::provider_workspace(&target.provider).is_some()
+        && target.address.resource
+            == format!(
+                "{APPLICATION_RESOURCE_PREFIX}{}",
+                tilo_app_id::apps::BROWSER
+            )
+        && target.address.action == APPLICATION_OPEN_ACTION
+}
+
+/// What a host that places no Browser answers an open of it with: words that say why, since its
+/// person cannot reach a window here.
+#[cfg(feature = "agents")]
+pub const UNPLACED: &str = "Browser doesn't open here. Open it on your own device instead.";
+
 /// Answers remote-action requests addressed to this host.
 ///
 /// `caller` is the actor the server authenticated for the connection the
@@ -568,9 +588,9 @@ impl Served {
                     let reason = match &message {
                         #[cfg(feature = "agents")]
                         RemoteActionMessage::Invoke(request)
-                            if crate::agents::windows::opens_browser_at(&request.target) =>
+                            if opens_browser_at(&request.target) =>
                         {
-                            crate::agents::windows::UNPLACED
+                            UNPLACED
                         }
                         _ => "the host does not answer that request",
                     };

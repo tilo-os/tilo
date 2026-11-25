@@ -189,6 +189,8 @@ pub use workspace_stores::{Reach, Store};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted_use;
 // The vault items a workspace's machine hands the programs it starts.
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+pub mod app_invocations;
 #[cfg(feature = "agents")]
 pub mod machine_secrets;
 pub(crate) mod record_reads;
@@ -1555,8 +1557,11 @@ impl Workspaces {
         // The device actions answer on the endpoint, so they sign as the key it is keyed by, and
         // hand whoever asks the certificate of that key.
         let (signer, answering) = host.endpoint_identity();
-        let (action_service, jobs, answers) =
-            device_actions::action_service(Arc::clone(&workspaces), Arc::clone(&host.surfaces), signer);
+        let (action_service, jobs, answers) = device_actions::action_service(
+            Arc::clone(&workspaces),
+            Arc::clone(&host.surfaces),
+            signer,
+        );
         action_service.answer_under(answering);
         // The apps this host serves answer on the same action service its workspaces' devices
         // reach it on, beside the work and governance it answers itself. The workspace's accounts

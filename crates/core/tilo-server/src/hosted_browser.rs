@@ -98,8 +98,9 @@ use tilo_actions::{ActionFailure, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::windows::{
-    Ends, Releasing, TurnFill, Windows, opened_resource, opens_browser_at, page_action,
+    Ends, Releasing, TurnFill, Windows, opened_resource, page_action,
 };
+use tilo_workspace_service::app_serving::opens_browser_at;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 // A page action handed to a window for a turn this server carries out itself.
@@ -2194,7 +2195,7 @@ pub fn no_payment_method(free: u64) -> Refusal {
 /// say why, since a Browser window cannot run here.
 #[must_use]
 pub fn unplaced() -> String {
-    tilo_workspace_service::agents::windows::UNPLACED.to_owned()
+    tilo_workspace_service::app_serving::UNPLACED.to_owned()
 }
 
 /// What a host that places no Linux apps refuses an open of one with.

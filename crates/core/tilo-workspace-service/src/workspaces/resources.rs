@@ -2245,7 +2245,7 @@ impl Workspaces {
 
     /// Each record of a workspace here whose reach moved: one of this device's writes of it was
     /// sent, taken in by another device that keeps the workspace, or refused. What tells an
-    /// app's windows to read `reach(r)` again ([`crate::apps::collab_inbound::follow_reach`]).
+    /// app's windows to read `reach(r)` again (the app host's `follow_reach`).
     #[must_use]
     pub fn reach_moved(
         &self,

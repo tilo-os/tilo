@@ -644,7 +644,7 @@ async fn an_idle_held_read_body() {
 
     let checks = Arc::new(AtomicUsize::new(0));
     let reads = Arc::new(CountedReads {
-        inner: server.host().document_reads(),
+        inner: crate::apps::service_reads::ServiceReads::of(server.host()),
         checks: Arc::clone(&checks),
     });
     let route = CrdtRoute::record(APP, workspace.clone(), RECORD);

@@ -439,7 +439,7 @@ async fn an_agent_installs_with_its_triggers_pauses_resumes_and_leaves_with_them
         .await
         .expect("the owner installs the agent");
     let scout = made["agent"].as_str().expect("the agent's id").to_owned();
-    let shortcut = triggered::shortcut_id(&scout);
+    let shortcut = crate::agent_shortcuts::shortcut_id(&scout);
     assert!(
         saved_triggers(workspaces, &workspace)
             .await
@@ -480,9 +480,9 @@ async fn an_agent_installs_with_its_triggers_pauses_resumes_and_leaves_with_them
         engine.acts_as(&workspace, &scout).await,
         "the agent's own key takes its turn"
     );
-    let place = |item: &str| triggered::Where {
+    let place = |item: &str| crate::work::Where {
         app: "so.tilo.lang.chat".to_owned(),
-        kind: triggered::MESSAGE.to_owned(),
+        kind: crate::agent_shortcuts::MESSAGE.to_owned(),
         record: "general".to_owned(),
         item: item.to_owned(),
         change: item.to_owned(),

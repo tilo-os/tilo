@@ -971,7 +971,7 @@ pub trait AgentEngine: Send + Sync {
         &self,
         workspace: String,
         agent: String,
-        place: crate::agents::triggered::Where,
+        place: Where,
         event: tilo_automation::dispatch::DocumentEvent,
         saver: String,
         (invocation, stop): (
@@ -983,6 +983,79 @@ pub trait AgentEngine: Send + Sync {
         Pending::ready(Err(
             "this device's agent engine answers no trigger".to_owned()
         ))
+    }
+}
+
+/// The change that starts a turn, as the answer action takes it: the app it was made in, the
+/// kind and id of the item it made or changed, the resource that item is nested in, and the
+/// change itself. Every device that saw the change names the same cause.
+#[cfg(feature = "agents")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct Where {
+    /// The app the change was made in.
+    pub app: String,
+    /// The kind of the item it made or changed.
+    pub kind: String,
+    /// The item's store id.
+    #[serde(rename = "resource")]
+    pub item: String,
+    /// The id of the resource the item is nested in, when it is nested in one: a message's
+    /// conversation or thread.
+    #[serde(rename = "in", default, skip_serializing_if = "String::is_empty")]
+    pub record: String,
+    /// The change's hash, hex.
+    pub change: String,
+}
+
+#[cfg(feature = "agents")]
+impl Where {
+    /// The cause of `event`: a message of Chat, a task of Tasks, a message of Mail, or a report
+    /// on the workspace's moderation record. `None` for a change of anything else, which no
+    /// agent's trigger answers.
+    #[must_use]
+    pub fn of(event: &tilo_automation::dispatch::DocumentEvent) -> Option<Self> {
+        use crate::agent_shortcuts::{CHAT, MAIL, MAIL_MESSAGE, MESSAGE, MODERATION, TASK, TASKS};
+
+        let app = match event.kind.as_str() {
+            MESSAGE => CHAT,
+            TASK => TASKS,
+            MAIL_MESSAGE => MAIL,
+            MODERATION => MODERATION,
+            _ => return None,
+        };
+        Some(Self {
+            app: app.to_owned(),
+            kind: event.kind.clone(),
+            item: event.item.as_ref()?.id.clone(),
+            // The resource the item is nested in, as the change read it.
+            record: event
+                .after
+                .as_ref()
+                .and_then(|after| after.pointer("/$in/$id"))
+                .and_then(serde_json::Value::as_str)
+                .map_or_else(|| event.record.clone(), str::to_owned),
+            change: event.change.clone(),
+        })
+    }
+
+    /// The inputs the turn that answers here is named by: every device that saw the change
+    /// names the same turn, whatever the change said.
+    #[must_use]
+    pub fn inputs(&self) -> serde_json::Value {
+        serde_json::json!({"app": self.app, "kind": self.kind, "resource": self.item})
+    }
+
+    /// The item that asked, as an action's argument that picks an existing resource takes it
+    /// ([`tilo_actions::resource_reference_schema`]): its app, kind and id.
+    #[must_use]
+    pub fn reference(&self) -> serde_json::Value {
+        serde_json::json!({"app": self.app, "kind": self.kind, "id": self.item, "label": ""})
+    }
+
+    /// Where the ask is in the workspace, by its address: `app/conversation`.
+    #[must_use]
+    pub fn conversation(&self) -> String {
+        format!("{}/{}", self.app, self.record)
     }
 }
 

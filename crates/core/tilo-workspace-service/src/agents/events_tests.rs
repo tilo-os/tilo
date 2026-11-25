@@ -57,7 +57,7 @@ fn told_by(step: &Step) -> (&str, &BTreeMap<String, Binding>) {
     };
     assert_eq!(
         (action.app.as_str(), action.action.as_str()),
-        (super::super::triggered::CHAT, "write_to")
+        (crate::agent_shortcuts::CHAT, "write_to")
     );
     let Some(Binding::Template(text)) = args.get("body") else {
         panic!("the words are a template: {args:?}");

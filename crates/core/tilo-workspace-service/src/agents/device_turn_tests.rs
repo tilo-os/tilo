@@ -301,7 +301,7 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         agents.triggered(
             &workspace,
             SCOUT,
-            super::triggered::Where::of(&wrote).expect("a message is a change an agent answers"),
+            crate::work::Where::of(&wrote).expect("a message is a change an agent answers"),
             wrote,
             person.clone(),
             (invocation, Arc::default()),
@@ -395,7 +395,7 @@ async fn a_stopped_reply_keeps_what_came_and_says_it_was_stopped() {
         agents.triggered(
             &workspace,
             SCOUT,
-            super::triggered::Where::of(&wrote).expect("a message is a change an agent answers"),
+            crate::work::Where::of(&wrote).expect("a message is a change an agent answers"),
             wrote,
             person.clone(),
             (invocation, stop),
@@ -438,7 +438,7 @@ async fn a_reply_that_breaks_off_keeps_what_came_and_says_why() {
         agents.triggered(
             &workspace,
             SCOUT,
-            super::triggered::Where::of(&wrote).expect("a message is a change an agent answers"),
+            crate::work::Where::of(&wrote).expect("a message is a change an agent answers"),
             wrote,
             person.clone(),
             (invocation, Arc::default()),
@@ -473,16 +473,16 @@ fn message_written(
         workspace: workspace.to_owned(),
         record: "asked-1".to_owned(),
         app: CHAT.to_owned(),
-        kind: super::triggered::MESSAGE.to_owned(),
+        kind: crate::agent_shortcuts::MESSAGE.to_owned(),
         change: "change-1".to_owned(),
         actor: tilo_action_policy::Acting::person(person.to_owned()),
         did: tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new(CHAT, super::triggered::MESSAGE, "send"),
+            tilo_actions::ActionKey::new(CHAT, crate::agent_shortcuts::MESSAGE, "send"),
             [],
         ),
         arguments: serde_json::Map::new(),
         item: Some(tilo_automation::dispatch::ItemRef {
-            kind: super::triggered::MESSAGE.to_owned(),
+            kind: crate::agent_shortcuts::MESSAGE.to_owned(),
             id: "asked-1".to_owned(),
             label: String::new(),
         }),

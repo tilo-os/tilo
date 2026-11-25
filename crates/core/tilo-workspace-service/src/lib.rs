@@ -41,6 +41,9 @@ pub mod own_device;
 // for them, which a page cannot.
 /// The agents a device runs for the workspaces it holds, and the events and look-rounds
 /// their turns reach.
+/// The shortcut a new agent comes with, which starts its turn.
+#[cfg(feature = "agents")]
+pub mod agent_shortcuts;
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 pub mod agents;
 /// What changed in the records of the workspaces a device holds.

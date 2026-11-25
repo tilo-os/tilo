@@ -207,3 +207,40 @@ impl crate::apps::services::AgentRoster for TreeAgents {
         })
     }
 }
+
+/// The runs a test's broker was asked to start, each of which ran to its end at once.
+#[cfg(feature = "agents")]
+#[derive(Default)]
+pub struct Started(pub std::sync::Mutex<Vec<crate::apps::triggers::Firing>>);
+
+#[cfg(feature = "agents")]
+#[allow(clippy::unwrap_used, reason = "a fixture failing is its test failing")]
+impl crate::apps::triggers::StartRun for Started {
+    fn start(
+        &self,
+        firing: &crate::apps::triggers::Firing,
+        _: tilo_automation::AutomationInvocationId,
+    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
+        let mut started = self.0.lock().unwrap();
+        started.push(firing.clone());
+        Ok(u64::try_from(started.len()).unwrap())
+    }
+
+    fn ended(
+        &self,
+        firing: &crate::apps::triggers::Firing,
+        run: tilo_automation::AutomationInvocationId,
+    ) -> Option<tilo_automation::InvocationReport> {
+        Some(tilo_automation::InvocationReport {
+            invocation: run,
+            shortcut: firing.shortcut.clone(),
+            version: None,
+            trigger: firing.trigger.kind().into(),
+            mode: tilo_automation::InvocationMode::Unattended,
+            steps: Vec::new(),
+            output: None,
+            degraded: Vec::new(),
+            outcome: tilo_automation::InvocationOutcome::Completed,
+        })
+    }
+}

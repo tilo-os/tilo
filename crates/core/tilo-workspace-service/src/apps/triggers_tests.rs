@@ -15,9 +15,8 @@ use tilo_automation::{
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 use super::*;
-use crate::workspaces::fixtures::{
-    Started, hosting_device, on_issue_change, save_signed, test_host,
-};
+use crate::apps::test_support::Started;
+use crate::workspaces::fixtures::{hosting_device, on_issue_change, save_signed, test_host};
 
 tilo_test_env::scenario! {
     fn a_committed_change_is_a_record_event_only_with_its_entry;

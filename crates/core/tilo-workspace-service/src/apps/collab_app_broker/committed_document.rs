@@ -1315,12 +1315,6 @@ impl JoinedChannel {
 }
 
 impl super::AppBrokerState {
-    /// A write another device made in `record` of `app` in `workspace` landed here: what a read
-    /// holding that record open sees changed, and what nothing else announces.
-    pub fn wake_document_reads(&self, workspace: &str, app: &str, record: &str) {
-        self.wake_committed_reads(&CrdtRoute::record(app, workspace, record));
-    }
-
     /// Wake the held committed-read waits of every channel `route`
     /// delivers to: a write on it changed what their reads answer (a sealed
     /// record's read is made of the writes this broker holds), and nothing

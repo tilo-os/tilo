@@ -30,13 +30,14 @@ use tilo_resource_store::Stamp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 
-use tilo_workspace_service::agents::triggered::{self, CHAT, MESSAGE};
+use tilo_workspace_service::agent_shortcuts::{self, CHAT, MESSAGE};
 use tilo_workspace_service::agents::{Model, ServerAgents};
+use tilo_workspace_service::apps::test_support::Started;
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::answer_grant;
 use tilo_workspace_service::workspaces::fixtures::{
-    Started, TestGroupKeys, device_cert, hosting_device, test_host_holding,
+    TestGroupKeys, device_cert, hosting_device, test_host_holding,
 };
 use tilo_workspace_service::workspaces::fixtures::{invitation, invited, membership_log_alone};
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
@@ -332,7 +333,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         "her mention fires her trigger once: {firings:?}"
     );
     let firing = &firings[0];
-    assert_eq!(firing.shortcut, triggered::shortcut_id(SCOUT));
+    assert_eq!(firing.shortcut, agent_shortcuts::shortcut_id(SCOUT));
     assert_eq!(firing.saver, bea_person, "the trigger is Bea's");
 
     // The firing starts the agent's answer on her device; the engine there takes the turn, and
@@ -381,7 +382,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         .triggered(
             &workspace,
             SCOUT,
-            triggered::Where::of(&event).expect("the change is a message"),
+            tilo_workspace_service::work::Where::of(&event).expect("the change is a message"),
             event,
             firing.saver.clone(),
             (tilo_actions::InvocationId::new(), Arc::default()),

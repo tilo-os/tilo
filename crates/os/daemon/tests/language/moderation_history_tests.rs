@@ -350,8 +350,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     let agents =
         ServerAgents::on_device(workspaces.clone(), provider, Arc::new(keys)).scripted(model);
     let event = posted(&workspace, &owner, "m-1");
-    let place =
-        tilo_workspace_service::agents::triggered::Where::of(&event).expect("a message is a place");
+    let place = tilo_workspace_service::work::Where::of(&event).expect("a message is a place");
     let started = agents
         .triggered(
             &workspace,
@@ -455,8 +454,7 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
             .scripted(model);
     let saver = "c2".repeat(32); // a member whose grants do not reach the record
     let event = posted(&workspace, &owner, "m-1");
-    let place =
-        tilo_workspace_service::agents::triggered::Where::of(&event).expect("a message is a place");
+    let place = tilo_workspace_service::work::Where::of(&event).expect("a message is a place");
     let started = agents
         .triggered(
             &workspace,

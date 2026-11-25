@@ -8,7 +8,9 @@
     reason = "in a test these are the assertion"
 )]
 
-use super::{CHAT, MESSAGE, Where, turn_caller};
+use super::{CHAT, turn_caller};
+use crate::agent_shortcuts::MESSAGE;
+use crate::work::Where;
 use tilo_action_policy::{ActionKind, Answer, PersonId};
 use tilo_actions::remote::Caller;
 

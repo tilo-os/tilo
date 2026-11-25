@@ -314,7 +314,7 @@ impl Workspaces {
         Ok(id)
     }
 
-    /// Save the triggers a new agent answers first (`triggered::triggers`) as `acting`'s person's,
+    /// Save the triggers a new agent answers first (`crate::agent_shortcuts::triggers`) as `acting`'s person's,
     /// when it is this device's own person who keeps the agent: a shortcut is signed as the device
     /// that saves it, so another person's agent is theirs to save.
     #[cfg(feature = "agents")]
@@ -329,14 +329,14 @@ impl Workspaces {
             return;
         };
         let save = tilo_automation::ShortcutChange::Save(Box::new(
-            crate::agents::triggered::triggers(agent, person, name),
+            crate::agent_shortcuts::triggers(agent, person, name),
         ));
         if let Err(error) = self.change_own_shortcuts(workspace, save).await {
             tracing::warn!(%workspace, %agent, %error, "a new agent's triggers were not saved");
         }
     }
 
-    /// Save `agent`'s chat watch (`triggered::moderates`) as `acting`'s person's, when it is
+    /// Save `agent`'s chat watch (`crate::agent_shortcuts::moderates`) as `acting`'s person's, when it is
     /// this device's own person who keeps the agent: it is one more shortcut of theirs, saved
     /// when they make the agent that watches the workspace's chat.
     #[cfg(feature = "agents")]
@@ -345,7 +345,7 @@ impl Workspaces {
             return;
         };
         let save = tilo_automation::ShortcutChange::Save(Box::new(
-            crate::agents::triggered::moderates(agent, person, name),
+            crate::agent_shortcuts::moderates(agent, person, name),
         ));
         if let Err(error) = self.change_own_shortcuts(workspace, save).await {
             tracing::warn!(%workspace, %agent, %error, "an agent's chat watch was not saved");
@@ -374,8 +374,8 @@ impl Workspaces {
             })
             .unwrap_or_default();
         let its = [
-            crate::agents::triggered::shortcut_id(agent),
-            crate::agents::triggered::moderation_shortcut_id(agent),
+            crate::agent_shortcuts::shortcut_id(agent),
+            crate::agent_shortcuts::moderation_shortcut_id(agent),
         ];
         for shortcut in its.into_iter().filter(|its| saved.contains(its)) {
             let delete = tilo_automation::ShortcutChange::Delete(shortcut);

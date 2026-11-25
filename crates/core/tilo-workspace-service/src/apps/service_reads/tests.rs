@@ -43,7 +43,7 @@ async fn a_resource_the_service_holds_reads_from_it() {
     .await
     .unwrap();
 
-    let reads = server.host().document_reads();
+    let reads = super::ServiceReads::of(server.host());
     assert!(reads.seals_documents(&workspace));
     assert_eq!(
         reads.resource_read(&workspace, APP, RESOURCE),
@@ -129,7 +129,7 @@ async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
     let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Reads").await.unwrap();
     let workspace = created.workspace;
-    let reads = server.host().document_reads();
+    let reads = super::ServiceReads::of(server.host());
     assert!(reads.seals_documents(&workspace));
     assert_eq!(
         reads.resource_read(&workspace, APP, "another-note"),
@@ -161,7 +161,7 @@ async fn a_chains_head_names_no_part_of_a_store() {
     let workspace = created.workspace;
     let base = "derived:messages@derived:default";
     let head = neighbour_wire::chain_head(base);
-    let reads = server.host().document_reads();
+    let reads = super::ServiceReads::of(server.host());
     let asked = |resource: &str| {
         NativeDocumentReadContext::for_reader(
             CrdtRoute::record(APP, workspace.clone(), resource.to_owned()),

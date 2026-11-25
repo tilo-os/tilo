@@ -100,10 +100,11 @@ use tilo_actions::remote::{
 use tilo_resource_store::Stamp;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::ResourceRequestContext;
+use tilo_workspace_service::apps::test_support::Started;
 use tilo_workspace_service::apps::triggers::{Firing, Runner};
 use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::workspaces::fixtures::{
-    Started, TestGroupKeys, TestHost, declare_built_in_app, hosting_device, test_host_holding,
+    TestGroupKeys, TestHost, declare_built_in_app, hosting_device, test_host_holding,
 };
 use tilo_workspace_service::workspaces::{DocumentRoute, MemberDevice, ResourceWrite, Workspaces};
 

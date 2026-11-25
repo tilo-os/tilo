@@ -246,7 +246,11 @@ fn listed_answer(
     record: &str,
 ) -> tilo_actions::ActionAddress {
     let mut listed = Vec::new();
-    crate::apps::collab_app_broker::with_questions(&mut listed, store.waiting_in(workspace), None);
+    crate::workspaces::app_invocations::with_questions(
+        &mut listed,
+        store.waiting_in(workspace),
+        None,
+    );
     let answering = tilo_actions::remote::workspace_invocations::tree_rows(&listed)
         .into_iter()
         .find_map(|row| row.action)

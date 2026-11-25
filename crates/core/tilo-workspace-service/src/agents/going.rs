@@ -39,7 +39,7 @@ pub(super) type Place = (String, String, String);
 pub(super) fn place(workspace: &str, turn: &Turn) -> Place {
     let at = match &turn.ask {
         // Each task is worked on in sessions of its own, whatever else its agent works on.
-        Ask::Triggered(place) if place.app == super::triggered::TASKS => {
+        Ask::Triggered(place) if place.app == crate::agent_shortcuts::TASKS => {
             format!("{}/{}", place.app, place.item)
         }
         Ask::Triggered(_) => turn.conversation.clone(),
@@ -142,7 +142,7 @@ impl Going {
 
     fn hand(&self, turn: Turn, reading: Option<Reading>) -> Handed {
         let in_conversation =
-            matches!(&turn.ask, Ask::Triggered(place) if place.app == super::triggered::CHAT);
+            matches!(&turn.ask, Ask::Triggered(place) if place.app == crate::agent_shortcuts::CHAT);
         if !turn.typed || turn.person != self.person || !in_conversation {
             return Handed::Left;
         }
@@ -319,9 +319,9 @@ pub(super) mod tests {
                 ..Agent::default()
             },
             person: "ada".to_owned(),
-            ask: Ask::Triggered(crate::agents::triggered::Where {
-                app: crate::agents::triggered::CHAT.to_owned(),
-                kind: crate::agents::triggered::MESSAGE.to_owned(),
+            ask: Ask::Triggered(crate::work::Where {
+                app: crate::agent_shortcuts::CHAT.to_owned(),
+                kind: crate::agent_shortcuts::MESSAGE.to_owned(),
                 record: "ada with scout".to_owned(),
                 item: message.to_owned(),
                 change: message.to_owned(),

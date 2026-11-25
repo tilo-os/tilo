@@ -113,7 +113,7 @@ pub use web_search::{PROVIDER as WEB_SEARCH_PROVIDER, WebSearch};
 const WENT_ON: &str = "I am going on with what you wrote next, and answer below.";
 
 /// The app that keeps the conversations.
-const CHAT: &str = triggered::CHAT;
+const CHAT: &str = crate::agent_shortcuts::CHAT;
 /// The app that keeps the workspace's list of its agents.
 const AGENTS_OWNER: &str = tilo_workspace_agent::OWNER;
 /// The messages before the one that asked a turn is told, at most: what was said around it.
@@ -528,13 +528,13 @@ pub enum Ask {
     /// A change one of the agent's triggers fired on ([`triggered`]): the answer is written
     /// where the change was made, a reply in its conversation, an answer to the mail
     /// conversation it arrived in, or a comment on its task.
-    Triggered(triggered::Where),
+    Triggered(crate::work::Where),
 }
 
 impl Ask {
     /// The message of Chat it is, as the conversation it is in and its id there; none for a
     /// task.
-    fn message(&self) -> Option<&triggered::Where> {
+    fn message(&self) -> Option<&crate::work::Where> {
         match self {
             Self::Triggered(place) if place.app == CHAT => Some(place),
             Self::Triggered(_) => None,
@@ -677,7 +677,7 @@ struct EngineKeys {
 struct Answer {
     workspace: String,
     agent: String,
-    place: triggered::Where,
+    place: crate::work::Where,
     event: tilo_automation::dispatch::DocumentEvent,
     saver: String,
     /// The `#answer` invocation, and the stop its cancel sets.
@@ -730,7 +730,7 @@ impl crate::work::AgentEngine for EngineKeys {
         &self,
         workspace: String,
         agent: String,
-        place: triggered::Where,
+        place: crate::work::Where,
         event: tilo_automation::dispatch::DocumentEvent,
         saver: String,
         invocation: (InvocationId, Arc<AtomicBool>),
@@ -1076,7 +1076,7 @@ impl ServerAgents {
     /// Read again which agents the workspaces here keep: each one's answer is what a trigger
     /// reaches ([`EngineKeys::answering`]). `known` holds the agents each workspace kept at the
     /// last read, `None` before the first: an agent a person made since comes with its triggers
-    /// ([`triggered::triggers`]) unless the action that made it saved them, and one retired or
+    /// ([`crate::agent_shortcuts::triggers`]) unless the action that made it saved them, and one retired or
     /// removed since takes its triggers with it.
     async fn read_answering(&self, known: &mut Option<BTreeMap<String, BTreeSet<String>>>) {
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
@@ -1122,19 +1122,19 @@ impl ServerAgents {
                         .is_ok_and(|person| person.root() == Some(me))
                 };
                 for agent in agents.agents.iter().filter(kept) {
-                    let shortcut = triggered::shortcut_id(&agent.id.0);
+                    let shortcut = crate::agent_shortcuts::shortcut_id(&agent.id.0);
                     if before.contains(&agent.id.0) || !mine(agent) || saved.contains(&shortcut) {
                         continue;
                     }
                     let save = tilo_automation::ShortcutChange::Save(Box::new(
-                        triggered::triggers(&agent.id.0, &agent.acts_for, &agent.name),
+                        crate::agent_shortcuts::triggers(&agent.id.0, &agent.acts_for, &agent.name),
                     ));
                     if let Err(error) = self.workspaces.change_own_shortcuts(&id, save).await {
                         tracing::warn!(workspace = %id, agent = %agent.id.0, %error, "a new agent's triggers were not saved");
                     }
                 }
                 for gone in before.difference(&tracked) {
-                    let shortcut = triggered::shortcut_id(gone);
+                    let shortcut = crate::agent_shortcuts::shortcut_id(gone);
                     if !saved.contains(&shortcut) {
                         continue;
                     }
@@ -1178,7 +1178,7 @@ impl ServerAgents {
         &self,
         workspace: &str,
         agent: &str,
-        place: triggered::Where,
+        place: crate::work::Where,
         event: tilo_automation::dispatch::DocumentEvent,
         saver: String,
         (invocation, stop): (InvocationId, Arc<AtomicBool>),

@@ -127,8 +127,7 @@ struct Inner {
     /// What answers this device's app calls, whose record of the invocations it took
     /// another device reads over its link ([`Providers::invocations`]).
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    invocations:
-        std::sync::RwLock<Option<std::sync::Weak<crate::apps::collab_app_broker::AppBrokerState>>>,
+    invocations: std::sync::RwLock<Option<super::app_invocations::WeakAppInvocations>>,
     /// The host that placed this device for records of one workspace, when it is such a device:
     /// the action service admitted its requests already ([`Providers::answer_placing_host`]).
     placing_host: std::sync::OnceLock<[u8; 32]>,
@@ -174,18 +173,13 @@ impl Providers {
     /// now on: what another device reads of an invocation it was given proof of
     /// ([`super::RecordReads`]).
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    pub(crate) fn keep_invocations(
-        &self,
-        apps: std::sync::Weak<crate::apps::collab_app_broker::AppBrokerState>,
-    ) {
+    pub fn keep_invocations(&self, apps: super::app_invocations::WeakAppInvocations) {
         *self.0.invocations.write_recover() = Some(apps);
     }
 
     /// What answers this device's app calls, whose record of invocations this device answers reads of, while it runs.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    pub(crate) fn invocations(
-        &self,
-    ) -> Option<std::sync::Weak<crate::apps::collab_app_broker::AppBrokerState>> {
+    pub(crate) fn invocations(&self) -> Option<super::app_invocations::WeakAppInvocations> {
         self.0.invocations.read_recover().clone()
     }
 
@@ -490,7 +484,7 @@ impl Providers {
 
     /// Answer for the seat with `answers` from now on: the services of the screen, the sound, the
     /// person's settings and the windows a desktop session holds for this device
-    /// (`crate::apps::seat`). It is kept apart from every provider a call names: no app, agent
+    /// (the app host's seat). It is kept apart from every provider a call names: no app, agent
     /// or other device reaches it, only the services this device's broker forwards to it, with
     /// the facts it admitted the asking app on. One seat at a time; a later shell's replaces it.
     pub fn serve_seat(

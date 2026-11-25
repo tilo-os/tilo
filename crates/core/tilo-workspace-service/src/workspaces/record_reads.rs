@@ -37,7 +37,7 @@ use tilo_server_protocol::workspaces::MEMBERSHIP_APP;
 use super::{WeakWorkspaces, Workspaces};
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-type Broker = crate::apps::collab_app_broker::AppBrokerState;
+use super::app_invocations::{AppInvocations, WeakAppInvocations, may_act_in, questions_reading};
 
 /// The engine jobs a device's daemon runs ([`DEVICE_JOBS`]): kept in the device's own record
 /// space, read and followed through the one record API like any record. The daemon owns them, so
@@ -113,7 +113,7 @@ pub struct RecordReads {
     workspaces: Option<WeakWorkspaces>,
     /// The apps this device serves itself, which decide a caller inside it by its grants.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    broker: Option<std::sync::Weak<Broker>>,
+    broker: Option<WeakAppInvocations>,
     /// The app action server this host was given, which reads for every other caller.
     served: Option<Arc<dyn ResourceReads>>,
     /// What admits a caller to the invocations of a dispatch's workspace: its admitted run.
@@ -288,7 +288,7 @@ impl RecordReads {
     /// invocations this device's app calls were asked for, read over a device link.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     #[must_use]
-    pub(crate) fn with_invocations(mut self, apps: Option<std::sync::Weak<Broker>>) -> Self {
+    pub(crate) fn with_invocations(mut self, apps: Option<WeakAppInvocations>) -> Self {
         self.broker = apps;
         self
     }
@@ -298,14 +298,14 @@ impl RecordReads {
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     pub fn of_daemon(
         workspaces: &Workspaces,
-        broker: &Arc<Broker>,
+        broker: &Arc<impl AppInvocations + 'static>,
         admitted: Option<Admitted>,
         jobs: Arc<dyn DeviceJobReads>,
         other_devices: OtherDeviceReads,
     ) -> Arc<Self> {
         Arc::new(Self {
             workspaces: Some(WeakWorkspaces(Arc::downgrade(&workspaces.inner))),
-            broker: Some(Arc::downgrade(broker)),
+            broker: Some(Arc::downgrade(broker) as WeakAppInvocations),
             served: None,
             admitted,
             runtime: tokio::runtime::Handle::try_current().ok(),
@@ -338,12 +338,12 @@ impl RecordReads {
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     pub fn with_apps(
         workspaces: &Workspaces,
-        broker: &Arc<Broker>,
+        broker: &Arc<impl AppInvocations + 'static>,
         admitted: Option<Admitted>,
     ) -> Arc<Self> {
         Arc::new(Self {
             workspaces: Some(WeakWorkspaces(Arc::downgrade(&workspaces.inner))),
-            broker: Some(Arc::downgrade(broker)),
+            broker: Some(Arc::downgrade(broker) as WeakAppInvocations),
             served: None,
             admitted,
             runtime: tokio::runtime::Handle::try_current().ok(),
@@ -392,12 +392,12 @@ impl RecordReads {
                 .into_iter()
                 .filter(|waiting| Some(&waiting.person) == person.as_ref())
                 .collect();
-            crate::apps::collab_app_broker::questions_reading(asked, &address.record)
+            questions_reading(asked, &address.record)
         }
     }
 
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    fn broker(&self) -> Option<Arc<Broker>> {
+    fn broker(&self) -> Option<Arc<dyn AppInvocations>> {
         self.broker.as_ref().and_then(std::sync::Weak::upgrade)
     }
 
@@ -604,7 +604,7 @@ impl RecordReads {
         let seconds = now
             .duration_since(web_time::SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
-        if !Broker::may_act_in(&decided, &policy, seconds) {
+        if !may_act_in(&decided, &policy, seconds) {
             return Err(refused());
         }
         if address.app == PRESENCE {

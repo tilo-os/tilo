@@ -15,10 +15,11 @@ mod session_tests {
     };
     use tilo_actions::{ActionAddress, ActionInvoker, ActionOutput};
     use tilo_server_protocol::WorkspaceId;
+    use tilo_workspace_service::agent_shortcuts::TASKS;
     use tilo_workspace_service::agents::task_work::{
         Task, TaskWork, Work, made_task, task, with_place,
     };
-    use tilo_workspace_service::agents::triggered::{self, TASKS};
+    use tilo_workspace_service::agents::triggered;
     use tilo_workspace_service::agents::{EngineActions, Outcome, WorkspaceActionProvider};
     use tilo_workspace_service::workspaces::Workspaces;
     use tilo_workspace_service::workspaces::fixtures::{
@@ -374,7 +375,7 @@ mod session_tests {
         /// The task `id` as the store keeps it.
         async fn content(&self, id: &str) -> Map<String, Value> {
             let command = Command::Content {
-                kind: triggered::TASK.to_owned(),
+                kind: tilo_workspace_service::agent_shortcuts::TASK.to_owned(),
                 id: id.to_owned(),
             };
             let reply = self

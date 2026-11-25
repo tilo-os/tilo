@@ -1,7 +1,7 @@
 //! Account webhooks as a workspace holds them: each a saved shortcut whose one trigger is
 //! [`TriggerSpec::Webhook`] and whose one step posts the event, owned by the key that registered
 //! it. The workspace's governance actions register, list and remove them; the device that keeps
-//! the workspace posts them ([`crate::apps::webhooks`]).
+//! the workspace posts them (the app host's webhooks).
 
 use std::collections::BTreeMap;
 use std::time::Duration;

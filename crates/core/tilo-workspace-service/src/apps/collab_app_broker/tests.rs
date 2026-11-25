@@ -444,6 +444,7 @@ pub struct LocalDirectoryFixture {
     _fanout: Arc<FanoutState>,
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
+    #[cfg(test)]
     directory: Rc<dyn wire::DirectorySource>,
     directory_state: Rc<RefCell<TestActionDirectory>>,
     pub broker: crate::apps::collab_broker::AppActionBroker,
@@ -458,24 +459,6 @@ pub struct LocalDirectoryFixture {
 impl LocalDirectoryFixture {
     pub fn query_count(&self) -> usize {
         self.directory_state.borrow().query_count
-    }
-    pub fn reconnect_directory(&self) {
-        self.directories.directories.borrow_mut().insert(
-            self.peer_id,
-            RegisteredActionDirectory {
-                registration: Rc::new(uuid::Uuid::new_v4()),
-                pagination: directory_pagination::DirectoryPagination::default(),
-                publishing_person: self.source_identity.as_ref().and_then(|source| {
-                    source
-                        .certificate
-                        .as_ref()
-                        .map(|certificate| person_id_for_root(certificate.user_public_key))
-                }),
-                app_id: self.route.app_id.clone(),
-                route: self.route.clone(),
-                directory: Rc::clone(&self.directory),
-            },
-        );
     }
 
     pub fn set_confirmation_required(&self, required: bool) {
@@ -681,6 +664,7 @@ pub fn local_directory_fixture_with_authority(
         membership: None,
         state,
         directories,
+        #[cfg(test)]
         directory,
         directory_state,
         cluster_id,

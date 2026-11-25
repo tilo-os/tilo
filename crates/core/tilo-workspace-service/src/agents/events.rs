@@ -519,9 +519,9 @@ fn event_steps(definition: &Definition, kept: &Kept, text: &str) -> Vec<Step> {
     let mut steps = vec![Step::new(
         "tell",
         StepKind::Invoke {
-            action: ActionKey::new(super::triggered::CHAT, CONVERSATIONS_KIND, WRITE_TO),
+            action: ActionKey::new(crate::agent_shortcuts::CHAT, CONVERSATIONS_KIND, WRITE_TO),
             resource: Selector::Fixed(super::triggered::published(
-                super::triggered::CHAT,
+                crate::agent_shortcuts::CHAT,
                 CONVERSATIONS,
             )),
             args: BTreeMap::from([

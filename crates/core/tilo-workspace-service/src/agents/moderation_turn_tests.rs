@@ -26,8 +26,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 use super::agent_keys::AgentKeys;
-use super::triggered::{CHAT, MESSAGE};
 use super::{Model, ServerAgents};
+use crate::agent_shortcuts::{CHAT, MESSAGE};
 
 const CHANNEL: &str = "tl.so.tilo.chat.TextChannel";
 const APP_MODERATION: &str = "tilo.moderation";
@@ -208,7 +208,7 @@ async fn a_moderation_turns_caller_carries_the_saver_and_the_author() {
         agents.triggered(
             &workspace,
             SCOUT,
-            super::triggered::Where::of(&event).expect("a message is a change an agent answers"),
+            crate::work::Where::of(&event).expect("a message is a change an agent answers"),
             event,
             moderator.clone(),
             (tilo_actions::InvocationId::new(), Arc::default()),

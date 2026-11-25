@@ -17,7 +17,7 @@ use std::sync::{Arc, Weak};
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeRequest, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
-    ResourceAddress, ResourceChange, ResourceChanges,
+    ResourceChange, ResourceChanges,
 };
 
 use super::AppBrokerState;
@@ -353,45 +353,6 @@ fn person_reading(caller: &Caller) -> Option<&str> {
     match caller.acting().person_id() {
         Some(person) if !caller.is_session_delegated() => Some(person),
         _ => agent_person(caller).map(|(person, _)| person),
-    }
-}
-
-impl AppBrokerState {
-    /// A store read of `address` for `caller` inside this device, the read decided already by
-    /// the workspace the address names: it reads, and writes nothing.
-    pub(crate) async fn store_read_record(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-        read: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionCallError> {
-        let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
-        let decided = self.reading_caller(caller, &address.workspace)?;
-        let command: collab_types::store::wire::Command = serde_json::from_value(read)
-            .map_err(|error| invalid(format!("not a store command: {error}")))?;
-        // A reader reads: what it changes goes through the app's actions, decided there.
-        if command.writes() {
-            return Err(invalid("a read of resources writes nothing".into()));
-        }
-        let resources =
-            self.services
-                .resources
-                .clone()
-                .ok_or_else(|| ActionCallError::Unavailable {
-                    reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
-                })?;
-        let context = crate::apps::services::ResourceRequestContext::authenticated(
-            address.app.clone(),
-            &address.workspace,
-            decided,
-        );
-        // The store answers under the workspace's async lock, and a store on another device answers
-        // over its link: the read waits for both without holding the thread that asked.
-        let reply = resources
-            .command(&context, command)
-            .await
-            .map_err(|reason| ActionCallError::Unavailable { reason })?;
-        serde_json::to_value(reply).map_err(|error| invalid(error.to_string()))
     }
 }
 

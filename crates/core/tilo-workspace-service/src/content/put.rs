@@ -3,7 +3,7 @@
 //!
 //! The bytes land under [`CONTENT_PUT_SCOPE`], no app's own, so every app of the workspace reads
 //! them once an action hands it their reference. The broker decides who may put
-//! ([`crate::apps::collab_app_broker::AppBrokerState::content_puts`]); a get answers only from
+//! (the app broker's `content_puts`); a get answers only from
 //! the store of the workspace the caller is in.
 
 use std::sync::Arc;

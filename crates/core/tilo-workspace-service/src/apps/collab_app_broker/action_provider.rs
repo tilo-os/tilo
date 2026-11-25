@@ -870,44 +870,6 @@ impl AppBrokerState {
                 .any(|root| root.peer_id == peer_id && root.app_id == app_id)
     }
 
-    /// Whether `caller` may act in `workspace`. A caller confined to a workspace
-    /// was admitted to it by its connection; any other caller must be a
-    /// member.
-    pub(crate) fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
-        // A placed device's caller takes part in no workspace's actions: it reads its records
-        // where records are read, and nothing here.
-        if caller.placed_records().is_some() {
-            return false;
-        }
-        match caller.workspace() {
-            // Confinement says which workspace a connection was admitted to, not
-            // that an agent still belongs to it: an agent whose membership
-            // was removed must lose its catalogue and authority at once. It
-            // takes part as the unconfined branch decides: an enrolled agent
-            // through its own grant, an agent a person's device handed this
-            // session to (`Caller::delegated_to`) through that person's.
-            Some(confined) => {
-                confined == workspace.id().to_string()
-                    && if caller.acting().is_agent() {
-                        BrokerActor::for_caller(caller).reads_in(workspace, now)
-                    } else {
-                        true
-                    }
-            }
-            None => {
-                // An application or a bot is always admitted into one workspace;
-                // unconfined, it takes part in none.
-                if caller.acting().app().is_some() || caller.acting().is_bot() {
-                    false
-                } else {
-                    // Anyone else takes part in a workspace they may read; a foreign
-                    // device reads wherever its person does.
-                    BrokerActor::for_caller(caller).reads_in(workspace, now)
-                }
-            }
-        }
-    }
-
     /// Why an agent confined to a workspace is served nothing there when the
     /// reason is not that the workspace holds nothing: this session's workspaces
     /// are not attached, the policy clock cannot be read, the workspace is
@@ -930,7 +892,7 @@ impl AppBrokerState {
                 .map(|workspace| {
                     (
                         workspace.name.clone(),
-                        Self::may_act_in(caller, workspace, now),
+                        crate::workspaces::app_invocations::may_act_in(caller, workspace, now),
                     )
                 })
         });
@@ -965,8 +927,9 @@ impl AppBrokerState {
         let actor = self.caller_actor(caller);
         membership
             .decide_in_workspace(workspace, |workspace| {
-                let workspace =
-                    workspace.filter(|workspace| Self::may_act_in(caller, workspace, now))?;
+                let workspace = workspace.filter(|workspace| {
+                    crate::workspaces::app_invocations::may_act_in(caller, workspace, now)
+                })?;
                 Some(decide(workspace, &actor, now))
             })
             .ok()
@@ -985,7 +948,9 @@ impl AppBrokerState {
             .decide_in_tree(|tree| {
                 tree.workspaces
                     .iter()
-                    .filter(|workspace| Self::may_act_in(caller, workspace, now))
+                    .filter(|workspace| {
+                        crate::workspaces::app_invocations::may_act_in(caller, workspace, now)
+                    })
                     .map(|workspace| workspace.id().to_string())
                     .collect::<Vec<_>>()
             })
@@ -1009,7 +974,9 @@ impl AppBrokerState {
         let Ok(workspaces) = membership.decide_in_tree(|tree| {
             tree.workspaces
                 .iter()
-                .filter(|workspace| Self::may_act_in(caller, workspace, now))
+                .filter(|workspace| {
+                    crate::workspaces::app_invocations::may_act_in(caller, workspace, now)
+                })
                 .cloned()
                 .collect::<Vec<_>>()
         }) else {

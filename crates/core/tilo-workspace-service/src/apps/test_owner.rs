@@ -192,20 +192,6 @@ impl SessionOwner {
         certificate
     }
 
-    /// List [`Self::second_device`] in this owner's workspace, signed by that
-    /// device itself, and commit the workspace that lists it.
-    pub fn admit_second_device(&mut self) -> Result<(), String> {
-        let certificate = self.second_device();
-        let now = tilo_clock::wall();
-        let mut candidate = self.peer.clone();
-        candidate.governance_mut().admit_member_device(
-            &certificate,
-            &Self::second_device_key(),
-            now,
-        )?;
-        self.commit(candidate)
-    }
-
     /// The owner `root` last committed.
     pub fn open(root: &Path) -> Result<Self, String> {
         let bytes = std::fs::read(root.join(STATE)).map_err(|e| e.to_string())?;

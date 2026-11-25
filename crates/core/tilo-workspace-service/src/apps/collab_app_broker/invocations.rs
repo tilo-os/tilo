@@ -29,6 +29,7 @@ use tilo_actions::remote::{
 use tilo_actions::{EffectReceiptStatus, InvocationUpdate};
 
 use super::AppBrokerState;
+use crate::workspaces::app_invocations::with_questions;
 
 impl AppBrokerState {
     /// Share `records`, the device's record of the invocations it was asked for, with this
@@ -113,80 +114,6 @@ impl AppBrokerState {
         let items = of_member(items, query.by.as_deref());
         let items = of_status(items, only);
         Ok(page(items, query))
-    }
-
-    /// The workspace's invocations as a record read, whole (an empty id) or one by its id, as
-    /// `caller` may read each call there. What a program, an agent and a view read through the
-    /// record API, never as an action.
-    pub fn read_invocations(
-        &self,
-        caller: &Caller,
-        workspace: &str,
-        record: &str,
-        asked: Vec<tilo_actions::remote::asked::Waiting>,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        super::action_provider::check_execution(caller)?;
-        let one = (!record.is_empty()).then(|| record.to_owned());
-        let mut page = self.invocations_of(
-            workspace,
-            caller,
-            &InvocationsQuery {
-                limit: MOST,
-                invocation: one,
-                ..InvocationsQuery::default()
-            },
-            None,
-        )?;
-        let kept = page.items.len();
-        with_questions(
-            &mut page.items,
-            asked,
-            (!record.is_empty()).then_some(record),
-        );
-        if record.is_empty() {
-            let waiting = page
-                .items
-                .iter()
-                .filter(|invocation| invocation.status == InvocationStatus::Waiting)
-                .count();
-            let total = page
-                .total
-                .saturating_add(page.items.len().saturating_sub(kept));
-            return Ok(tilo_actions::remote::ResourceCopy::reading(
-                serde_json::json!({ "items": page.items, "total": total, "waiting": waiting }),
-                None,
-            ));
-        }
-        Ok(match page.items.into_iter().next() {
-            Some(invocation) => tilo_actions::remote::ResourceCopy::reading(
-                serde_json::to_value(invocation).map_err(|error| ActionCallError::Unavailable {
-                    reason: error.to_string(),
-                })?,
-                None,
-            ),
-            None => tilo_actions::remote::ResourceCopy::Absent,
-        })
-    }
-
-    /// Wake `wake` once the workspace's invocations next change, decided as a read is: the
-    /// record of a call recorded there, or of one that has not ended, moving.
-    pub(crate) fn watch_invocations(
-        &self,
-        caller: &Caller,
-        workspace: &str,
-        wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        if self.decide_for(caller, workspace, |_, _, _| ()).is_none() {
-            return Err(ActionCallError::NotPermitted);
-        }
-        let records = self
-            .invocations
-            .get()
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "this workspace's dispatch keeps no record of its invocations".into(),
-            })?;
-        records.watch(workspace, wake);
-        Ok(())
     }
 
     /// Whether `caller` may write the resource `origin` names in `workspace` now: what stopping
@@ -522,98 +449,126 @@ fn page(items: Vec<Invocation>, query: &InvocationsQuery) -> Listed {
     }
 }
 
-/// The workspace's invocations as a dispatch that keeps no record of its own reads them: the calls
-/// in `waiting` that wait for their person, whole or `record` alone.
-///
-/// # Errors
-/// A call that does not read as JSON.
-pub fn questions_reading(
-    waiting: Vec<tilo_actions::remote::asked::Waiting>,
-    record: &str,
-) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-    let mut items = Vec::new();
-    with_questions(&mut items, waiting, (!record.is_empty()).then_some(record));
-    if record.is_empty() {
-        let waiting = items.len();
-        return Ok(tilo_actions::remote::ResourceCopy::reading(
-            serde_json::json!({ "items": items, "total": waiting, "waiting": waiting }),
+impl crate::workspaces::app_invocations::AppInvocations for AppBrokerState {
+    fn read_invocations(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        record: &str,
+        asked: Vec<tilo_actions::remote::asked::Waiting>,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        super::action_provider::check_execution(caller)?;
+        let one = (!record.is_empty()).then(|| record.to_owned());
+        let mut page = self.invocations_of(
+            workspace,
+            caller,
+            &InvocationsQuery {
+                limit: MOST,
+                invocation: one,
+                ..InvocationsQuery::default()
+            },
             None,
-        ));
+        )?;
+        let kept = page.items.len();
+        with_questions(
+            &mut page.items,
+            asked,
+            (!record.is_empty()).then_some(record),
+        );
+        if record.is_empty() {
+            let waiting = page
+                .items
+                .iter()
+                .filter(|invocation| invocation.status == InvocationStatus::Waiting)
+                .count();
+            let total = page
+                .total
+                .saturating_add(page.items.len().saturating_sub(kept));
+            return Ok(tilo_actions::remote::ResourceCopy::reading(
+                serde_json::json!({ "items": page.items, "total": total, "waiting": waiting }),
+                None,
+            ));
+        }
+        Ok(match page.items.into_iter().next() {
+            Some(invocation) => tilo_actions::remote::ResourceCopy::reading(
+                serde_json::to_value(invocation).map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })?,
+                None,
+            ),
+            None => tilo_actions::remote::ResourceCopy::Absent,
+        })
     }
-    Ok(match items.into_iter().next() {
-        Some(invocation) => tilo_actions::remote::ResourceCopy::reading(
-            serde_json::to_value(invocation).map_err(|error| ActionCallError::Unavailable {
-                reason: error.to_string(),
-            })?,
-            None,
-        ),
-        None => tilo_actions::remote::ResourceCopy::Absent,
-    })
-}
 
-/// `items`, a reading of a workspace's invocations, with what each call that waits in
-/// `waiting` asks its person, and each such call the device keeps no record of (it waited across
-/// a restart, or another dispatch here keeps it) listed beside them: only `only`, when the
-/// reading names one.
-pub fn with_questions(
-    items: &mut Vec<Invocation>,
-    waiting: Vec<tilo_actions::remote::asked::Waiting>,
-    only: Option<&str>,
-) {
-    use tilo_actions::remote::asked::AskedBy;
-    for question in waiting {
-        let id = question.invocation.0.to_string();
-        if only.is_some_and(|only| only != id) {
-            continue;
+    fn watch_invocations(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        wake: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        if self.decide_for(caller, workspace, |_, _, _| ()).is_none() {
+            return Err(ActionCallError::NotPermitted);
         }
-        if let Some(item) = items
-            .iter_mut()
-            .find(|item| item.id.as_deref() == Some(id.as_str()))
-        {
-            item.status = InvocationStatus::Waiting;
-            item.person = Some(question.person);
-            item.asked = Some(Box::new(question.asked));
-            continue;
-        }
-        let by = match &question.asked.facts.by {
-            AskedBy::Agent(agent) => InvocationBy {
-                name: agent.name.clone(),
-                kind: "agent".to_owned(),
-                id: Some(agent.id.clone()),
-            },
-            AskedBy::App { app, title, .. } => InvocationBy {
-                name: title.clone(),
-                kind: "app".to_owned(),
-                id: Some(app.clone()),
-            },
-            AskedBy::Device(device) => InvocationBy {
-                name: device.name.clone(),
-                kind: "device".to_owned(),
-                id: Some(device.id.clone()),
-            },
-            AskedBy::Program { name, app_id } => InvocationBy {
-                name: name.clone(),
-                kind: "program".to_owned(),
-                id: app_id.clone(),
-            },
-        };
-        let row = Invocation {
-            id: Some(id.clone()),
-            calls: vec![id],
-            by,
-            status: InvocationStatus::Waiting,
-            started_ms: i64::try_from(question.asked.asked_at_ms).unwrap_or(i64::MAX),
-            action: Some(question.asked.action.clone()),
-            remembered: true,
-            person: Some(question.person),
-            asked: Some(Box::new(question.asked)),
-            ..Invocation::default()
-        };
-        // Newest first, as the reading is.
-        let at = items
-            .iter()
-            .position(|item| item.started_ms <= row.started_ms)
-            .unwrap_or(items.len());
-        items.insert(at, row);
+        let records = self
+            .invocations
+            .get()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "this workspace's dispatch keeps no record of its invocations".into(),
+            })?;
+        records.watch(workspace, wake);
+        Ok(())
+    }
+
+    fn reading_caller(&self, caller: &Caller, workspace: &str) -> Result<Caller, ActionCallError> {
+        Self::reading_caller(self, caller, workspace)
+    }
+
+    fn caller_actor(&self, caller: &Caller) -> super::BrokerActor {
+        Self::caller_actor(self, caller)
+    }
+
+    fn store_read_record<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+        read: serde_json::Value,
+    ) -> crate::workspaces::app_invocations::StoreReading<'a> {
+        Box::pin(async move {
+            let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
+            let decided = self.reading_caller(caller, &address.workspace)?;
+            let command: collab_types::store::wire::Command = serde_json::from_value(read)
+                .map_err(|error| invalid(format!("not a store command: {error}")))?;
+            // A reader reads: what it changes goes through the app's actions, decided there.
+            if command.writes() {
+                return Err(invalid("a read of resources writes nothing".into()));
+            }
+            let resources =
+                self.services
+                    .resources
+                    .clone()
+                    .ok_or_else(|| ActionCallError::Unavailable {
+                        reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+                    })?;
+            let context = crate::apps::services::ResourceRequestContext::authenticated(
+                address.app.clone(),
+                &address.workspace,
+                decided,
+            );
+            // The store answers under the workspace's async lock, and a store on another device answers
+            // over its link: the read waits for both without holding the thread that asked.
+            let reply = resources
+                .command(&context, command)
+                .await
+                .map_err(|reason| ActionCallError::Unavailable { reason })?;
+            serde_json::to_value(reply).map_err(|error| invalid(error.to_string()))
+        })
+    }
+
+    fn reach(
+        &self,
+        workspace: &str,
+        device: [u8; 32],
+    ) -> Option<tilo_peer_state::actions::RemoteDevice> {
+        self.hosted_workspaces()?.reach(workspace, device)
     }
 }

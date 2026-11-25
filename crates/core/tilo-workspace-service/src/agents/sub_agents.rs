@@ -91,7 +91,7 @@ pub(super) async fn tell(
     (provider, caller): (&WorkspaceActionProvider, &Caller),
     rich_text: &dyn crate::tl_records::RichText,
     workspace: &str,
-    place: &triggered::Where,
+    place: &crate::work::Where,
     (agent, name): (&tilo_actions::MemberId, &str),
     text: &str,
 ) -> Result<(), String> {

@@ -7,13 +7,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller,
-    RemoteActionMessage, RemoteActionTarget, provider_workspace,
-};
+use tilo_actions::remote::{ActionCallError, Caller, RemoteActionMessage, RemoteActionTarget};
 use tilo_actions::selection::logical_resource_id;
 use tilo_actions::{InvocationId, InvocationUpdate, remote::InvokeRequest};
-use tilo_app_id::apps::BROWSER as APP;
 use tilo_server_protocol::WorkspaceId;
 use zeroize::Zeroizing;
 
@@ -71,19 +67,6 @@ pub const PAGE_RESOURCE: &str = "browser.page";
 pub fn page_action(target: &RemoteActionTarget, provider: &str) -> bool {
     target.provider == provider && logical_resource_id(&target.address.resource) == PAGE_RESOURCE
 }
-
-/// Whether `target` is the open of Browser in a workspace (`app.so.tilo.browser#open`), for
-/// whoever holds only what a request addresses.
-#[must_use]
-pub fn opens_browser_at(target: &RemoteActionTarget) -> bool {
-    provider_workspace(&target.provider).is_some()
-        && target.address.resource == format!("{APPLICATION_RESOURCE_PREFIX}{APP}")
-        && target.address.action == APPLICATION_OPEN_ACTION
-}
-
-/// What a host that places no Browser answers an open of it with: words that say why, since its
-/// person cannot reach a window here.
-pub const UNPLACED: &str = "Browser doesn't open here. Open it on your own device instead.";
 
 /// The record an answered open of Browser made, when it made one: the
 /// record its answer names.

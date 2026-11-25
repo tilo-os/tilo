@@ -112,11 +112,7 @@ struct TurnTeam {
     agent: Agent,
     /// Where the turn tells its team, for a turn asked in a conversation: what it answers there,
     /// and as whom. A sub-agent it starts is told its job there, and each note.
-    telling: Option<(
-        super::WorkspaceActionProvider,
-        Caller,
-        super::triggered::Where,
-    )>,
+    telling: Option<(super::WorkspaceActionProvider, Caller, crate::work::Where)>,
     /// What the turn is offered: nothing for a caller that is no turn of this agent.
     offered: Vec<CatalogueRow>,
 }

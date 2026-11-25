@@ -8,6 +8,7 @@ use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::WorkspaceId;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_workspace_service::apps::services::WorkspaceGrants;
+use tilo_workspace_service::workspaces::app_invocations::AppInvocations as _;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
@@ -1272,7 +1273,9 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     ));
     native
         .seats
-        .serve(std::sync::Arc::new(ShellsOf(std::sync::Arc::clone(&session))));
+        .serve(std::sync::Arc::new(ShellsOf(std::sync::Arc::clone(
+            &session,
+        ))));
     {
         let native = std::sync::Arc::clone(&native);
         std::thread::spawn(move || native.accept(&listener));
@@ -1748,10 +1751,7 @@ fn shell_child(
         .stdout(Stdio::from(std::fs::File::create(&log).unwrap()))
         // A helper that fails says why where the test that started it reads it.
         .stderr(Stdio::from(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(&log)
-                .unwrap(),
+            std::fs::OpenOptions::new().append(true).open(&log).unwrap(),
         ));
     (command, log)
 }

@@ -11,10 +11,12 @@ use serde_json::json;
 use tilo_actions::remote::ActionCallError;
 use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::DocumentEvent;
+use tilo_workspace_service::agent_shortcuts;
+use tilo_workspace_service::apps::test_support::Started;
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::{
-    ActsAsScout, Started, declare_app, on_issue_change, save_signed,
+    ActsAsScout, declare_app, on_issue_change, save_signed,
 };
 
 use super::{Device, Write, mount, write};
@@ -175,7 +177,8 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     use collab_types::store::wire::{Command, Edit};
     use collab_types::store::{Cell, Resource, Value};
     use tilo_resource_store::Stamp;
-    use tilo_workspace_service::agents::triggered::{MayRead, Where, unreadable};
+    use tilo_workspace_service::agents::triggered::{MayRead, unreadable};
+    use tilo_workspace_service::work::Where;
 
     struct Allows;
     impl MayRead for Allows {
@@ -340,7 +343,8 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
 )]
 async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answer() {
     use tilo_action_policy::{Actor as Who, MemberId};
-    use tilo_workspace_service::agents::triggered::{self, Where};
+    use tilo_workspace_service::agents::triggered;
+    use tilo_workspace_service::work::Where;
 
     const CHAT: &str = "so.tilo.chat";
     const MESSAGE: &str = "tl.so.tilo.chat.Message";
@@ -352,7 +356,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
+        agent_shortcuts::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
         (key, cert),
     )
     .await;
@@ -493,7 +497,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     .await;
     let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
-    assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
+    assert_eq!(firings[0].shortcut, agent_shortcuts::shortcut_id("scout"));
     let event: DocumentEvent =
         serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
     let place = Where::of(&event).unwrap();
@@ -674,7 +678,8 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     use tilo_action_policy::Actor as Who;
     use tilo_app_id::AppId;
     use tilo_resource_store::Stamp;
-    use tilo_workspace_service::agents::triggered::{self, Where};
+    use tilo_workspace_service::agents::triggered;
+    use tilo_workspace_service::work::Where;
 
     const MAIL: &str = "so.tilo.mail";
     const THREAD: &str = "tl.so.tilo.mail.Thread";
@@ -735,7 +740,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
+        agent_shortcuts::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
         (&key, &cert),
     )
     .await;
@@ -809,7 +814,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     .await;
     let firings = super::fired(&mut runner, &mut writes, &started).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
-    assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
+    assert_eq!(firings[0].shortcut, agent_shortcuts::shortcut_id("scout"));
     let event: DocumentEvent =
         serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
     assert!(event.incoming_message, "{event:?}");
@@ -898,7 +903,6 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
     use tilo_action_policy::Actor as Who;
     use tilo_app_id::AppId;
     use tilo_resource_store::Stamp;
-    use tilo_workspace_service::agents::triggered;
 
     const MAIL: &str = "so.tilo.mail";
     const THREAD: &str = "tl.so.tilo.mail.Thread";
@@ -956,7 +960,7 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
+        agent_shortcuts::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
         (&key, &cert),
     )
     .await;
@@ -1090,7 +1094,9 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     use collab_types::store::wire::{Command, Edit};
     use tilo_action_policy::{Actor as Who, MemberId};
     use tilo_resource_store::Stamp;
-    use tilo_workspace_service::agents::triggered::{self, CHAT, MESSAGE, MODERATION, Where};
+    use tilo_workspace_service::agent_shortcuts::{CHAT, MESSAGE, MODERATION};
+    use tilo_workspace_service::agents::triggered;
+    use tilo_workspace_service::work::Where;
 
     let device = Device::start("Moderation", Some(CHAT)).await;
     let (key, cert) = (&device.key, &device.cert);
@@ -1101,7 +1107,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     save_signed(
         workspaces,
         &workspace,
-        triggered::moderates("scout", &hex::encode(cert.user_public_key), "Scout"),
+        agent_shortcuts::moderates("scout", &hex::encode(cert.user_public_key), "Scout"),
         (key, cert),
     )
     .await;
@@ -1230,7 +1236,8 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(
         firings[0].trigger,
-        triggered::moderates("scout", &hex::encode(cert.user_public_key), "Scout").triggers[0],
+        agent_shortcuts::moderates("scout", &hex::encode(cert.user_public_key), "Scout").triggers
+            [0],
         "the watch's message trigger fired"
     );
     assert_eq!(firings[0].saver, hex::encode(cert.user_public_key));
@@ -1299,7 +1306,8 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(
         firings[0].trigger,
-        triggered::moderates("scout", &hex::encode(cert.user_public_key), "Scout").triggers[1],
+        agent_shortcuts::moderates("scout", &hex::encode(cert.user_public_key), "Scout").triggers
+            [1],
         "the watch's report trigger fired"
     );
     let event: DocumentEvent =
@@ -1316,7 +1324,9 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     workspaces
         .change_own_shortcuts(
             &workspace,
-            tilo_automation::ShortcutChange::Delete(triggered::moderation_shortcut_id("scout")),
+            tilo_automation::ShortcutChange::Delete(agent_shortcuts::moderation_shortcut_id(
+                "scout",
+            )),
         )
         .await
         .unwrap();
@@ -1350,7 +1360,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     use tilo_action_policy::{Actor as Who, MemberId};
     use tilo_resource_store::Stamp;
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
-    use tilo_workspace_service::agents::triggered::{self, Where};
+    use tilo_workspace_service::work::Where;
 
     const CHAT: &str = "so.tilo.chat";
     const MESSAGE: &str = "tl.so.tilo.chat.Message";
@@ -1383,7 +1393,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", &person, "Scout"),
+        agent_shortcuts::triggers("scout", &person, "Scout"),
         (&key, &cert),
     )
     .await;
@@ -1527,7 +1537,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     send("m-1", "general", &Who::member(MemberId::person(&person))).await;
     let firings = fired(&mut runner).await;
     assert_eq!(firings.len(), 1, "{firings:?}");
-    assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
+    assert_eq!(firings[0].shortcut, agent_shortcuts::shortcut_id("scout"));
     let event: DocumentEvent =
         serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
     let place = Where::of(&event).unwrap();

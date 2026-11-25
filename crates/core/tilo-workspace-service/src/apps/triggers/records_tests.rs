@@ -22,10 +22,11 @@ use tilo_automation::Shortcut;
 use tilo_resource_store::Stamp;
 
 use super::{Order, Runner, StartRun};
+use crate::apps::test_support::Started;
 use crate::workspaces::MemberDevice;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{
-    Started, declare_app, hosting_device, save_signed, test_host as test_server,
+    declare_app, hosting_device, save_signed, test_host as test_server,
 };
 
 /// The Calendar app's entries, with the fields a moment reads.
@@ -851,7 +852,7 @@ async fn a_mention_written_through_an_apps_route_fires_the_agents_trigger() {
     save_signed(
         &workspaces,
         &workspace,
-        crate::agents::triggered::triggers("scout", &person, "Scout"),
+        crate::agent_shortcuts::triggers("scout", &person, "Scout"),
         (&key, &cert),
     )
     .await;

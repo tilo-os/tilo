@@ -1554,7 +1554,7 @@ async fn served_invocation_running(
         .providers
         .invocations()
         .and_then(|apps| apps.upgrade())
-        .and_then(|apps| apps.hosted_workspaces()?.reach(workspace, forwarder));
+        .and_then(|apps| apps.reach(workspace, forwarder));
     #[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
     let link: Option<tilo_peer_state::actions::RemoteDevice> = None;
     let link = link.ok_or_else(|| {

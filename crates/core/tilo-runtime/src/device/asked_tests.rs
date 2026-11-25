@@ -474,7 +474,7 @@ fn a_waiting_question_reads_in_the_workspaces_invocations() {
         status: InvocationStatus::Running,
         ..Invocation::default()
     }];
-    tilo_workspace_service::apps::collab_app_broker::with_questions(
+    tilo_workspace_service::workspaces::app_invocations::with_questions(
         &mut recorded,
         waiting.clone(),
         None,
@@ -488,7 +488,7 @@ fn a_waiting_question_reads_in_the_workspaces_invocations() {
     assert!(asked.facts.facts.iter().any(|fact| fact.label == "To"));
 
     let mut after_restart = Vec::new();
-    tilo_workspace_service::apps::collab_app_broker::with_questions(
+    tilo_workspace_service::workspaces::app_invocations::with_questions(
         &mut after_restart,
         waiting.clone(),
         None,
@@ -503,7 +503,7 @@ fn a_waiting_question_reads_in_the_workspaces_invocations() {
     assert_eq!(after_restart[0].status, InvocationStatus::Waiting);
 
     let mut another = Vec::new();
-    tilo_workspace_service::apps::collab_app_broker::with_questions(
+    tilo_workspace_service::workspaces::app_invocations::with_questions(
         &mut another,
         waiting,
         Some("another"),

@@ -42,6 +42,18 @@ impl ServiceReads {
         }
     }
 
+    /// The resources of the workspaces `service` holds, as the broker answers an app's Open of
+    /// one and the session's own reads of one.
+    #[cfg(test)]
+    pub(crate) fn of(
+        service: &crate::service::WorkspaceService,
+    ) -> std::sync::Arc<dyn crate::apps::services::NativeDocumentReads> {
+        std::sync::Arc::new(Self::new(
+            service.workspaces().clone(),
+            service.metrics_counter(),
+        ))
+    }
+
     /// The workspaces to answer from.
     #[expect(
         clippy::unnecessary_wraps,

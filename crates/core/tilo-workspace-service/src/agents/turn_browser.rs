@@ -24,8 +24,9 @@ use tilo_actions::remote::{
 use tilo_actions::{InvocationId, InvocationUpdate};
 
 use super::turn_provider::{Ending, Rows};
-use super::windows::{Windows, opened_resource, opens_browser_at};
+use super::windows::{Windows, opened_resource};
 use super::{Reply, TurnProvider, WorkspaceActionProvider, WorkspaceId, later, unavailable};
+use crate::app_serving::opens_browser_at;
 
 /// What a turn is told where this server has no machine to open a Browser window in.
 const NO_MACHINE: &str = "This server has no machine to open a Browser window in, so no web \

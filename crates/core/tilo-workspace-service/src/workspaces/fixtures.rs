@@ -242,13 +242,6 @@ impl TestGroupKeys {
         self.hand(workspace, keys);
     }
 
-    /// The groups a read asked the person's other devices for the frames of, and the epoch this
-    /// device held then, oldest first.
-    #[must_use]
-    pub fn asked_behind(&self) -> Vec<(collab_types::WorkspaceId, u64)> {
-        self.behind.lock().expect("the fixture's asks").clone()
-    }
-
     /// Hand the fixture `keys` as every member's keys of `workspace`: keys that reach a device
     /// after it opened.
     ///
@@ -1383,42 +1376,6 @@ pub async fn membership_log_alone(
     };
     let log = tilo_peer_state::workspace::candidate(None, &changes).unwrap();
     tilo_peer_state::members::replay(&log, workspace)
-}
-
-/// The runs a test's broker was asked to start, each of which ran to its end at once.
-#[cfg(feature = "agents")]
-#[derive(Default)]
-pub struct Started(pub Mutex<Vec<crate::apps::triggers::Firing>>);
-
-#[cfg(feature = "agents")]
-impl crate::apps::triggers::StartRun for Started {
-    fn start(
-        &self,
-        firing: &crate::apps::triggers::Firing,
-        _: tilo_automation::AutomationInvocationId,
-    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
-        let mut started = self.0.lock().unwrap();
-        started.push(firing.clone());
-        Ok(u64::try_from(started.len()).unwrap())
-    }
-
-    fn ended(
-        &self,
-        firing: &crate::apps::triggers::Firing,
-        run: tilo_automation::AutomationInvocationId,
-    ) -> Option<tilo_automation::InvocationReport> {
-        Some(tilo_automation::InvocationReport {
-            invocation: run,
-            shortcut: firing.shortcut.clone(),
-            version: None,
-            trigger: firing.trigger.kind().into(),
-            mode: tilo_automation::InvocationMode::Unattended,
-            steps: Vec::new(),
-            output: None,
-            degraded: Vec::new(),
-            outcome: tilo_automation::InvocationOutcome::Completed,
-        })
-    }
 }
 
 /// Save `shortcut` in `workspace`, signed by the device `cert` names.

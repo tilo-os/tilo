@@ -101,50 +101,6 @@ pub struct SessionEgress {
 }
 
 impl Metrics {
-    /// Bump the accepted-connection counter.
-    pub fn inc_conns_accepted(&self) {
-        self.conns_accepted.fetch_add(1, Ordering::Relaxed);
-    }
-    /// Bump the auth-success counter.
-    pub fn inc_conns_authed(&self) {
-        self.conns_authed.fetch_add(1, Ordering::Relaxed);
-    }
-    /// Bump the auth-rejection counter.
-    pub fn inc_auth_rejected(&self) {
-        self.auth_rejected.fetch_add(1, Ordering::Relaxed);
-    }
-    /// Bump the delta-receive counter.
-    pub fn inc_deltas_received(&self) {
-        self.deltas_received.fetch_add(1, Ordering::Relaxed);
-    }
-    pub fn add_bytes_queued(&self, n: u64) {
-        self.bytes_queued.fetch_add(n, Ordering::Relaxed);
-    }
-    pub fn add_deltas_fanned_out(&self, n: u64) {
-        self.deltas_fanned_out.fetch_add(n, Ordering::Relaxed);
-    }
-    /// Bump the subscribe counter.
-    pub fn inc_subscribes(&self) {
-        self.subscribes.fetch_add(1, Ordering::Relaxed);
-    }
-    /// Add retained baseline envelopes replayed to a subscriber.
-    pub fn add_replayed_retained(&self, n: u64) {
-        self.replayed_retained.fetch_add(n, Ordering::Relaxed);
-    }
-    /// Add pending-queue envelopes replayed to a subscriber.
-    pub fn add_replayed_pending(&self, n: u64) {
-        self.replayed_pending.fetch_add(n, Ordering::Relaxed);
-    }
-    /// Bump the dropped-subscriber counter (any error reason).
-    pub fn inc_subscriber_dropped(&self) {
-        self.subscriber_dropped.fetch_add(1, Ordering::Relaxed);
-    }
-    /// Bump the backpressure-drop counter (a subset of `subscriber_dropped`).
-    pub fn inc_subscriber_dropped_backpressure(&self) {
-        self.subscriber_dropped_backpressure
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Count one document read out of the workspaces this service holds.
     pub fn inc_documents_read(&self) {
         self.documents_read.fetch_add(1, Ordering::Relaxed);
