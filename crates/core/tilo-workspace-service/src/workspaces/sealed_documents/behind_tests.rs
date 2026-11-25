@@ -166,23 +166,21 @@ async fn a_copy_that_passed_a_write_over_takes_it_in_again_on_load() {
 }
 
 /// The server keeps a member's compaction its governor's copy never decided, as when the node
-/// was ended between the two, and the compaction covers a write the copy passed over: the
-/// server keeps that write nowhere but inside the compaction then. Loading the workspace takes
-/// the compaction with the node's keys, as it holds every change the copy holds.
+/// was ended between the two, and the compaction covers a write the copy passed over. The
+/// server keeps that write beside the compaction until every device with the record's keys has
+/// checked it, the copy among them; loading the workspace takes the compaction with the node's
+/// keys, as it holds every change the copy holds, and the record reads whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
     let (lounge, session) = lounge_with_link().await;
     let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &session).await;
     kept_untold(&lounge, &compaction);
-    tilo_test_env::within("the server folds the writes the compaction covers", async {
-        while retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
+    assert!(
+        retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
             .await
-            .contains(&second)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+            .contains(&second),
+        "the server keeps the write until the copy has checked the compaction"
+    );
 
     lounge
         .workspaces
