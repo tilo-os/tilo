@@ -62,7 +62,10 @@ async fn write_misplaced_draft(workspaces: &Workspaces, workspace: &str) -> Resu
                 parent: None,
                 order: None,
                 fields: BTreeMap::from([
-                    ("subject".to_owned(), Cell::One(Value::from("Quarterly plan"))),
+                    (
+                        "subject".to_owned(),
+                        Cell::One(Value::from("Quarterly plan")),
+                    ),
                     ("sent".to_owned(), Cell::One(Value::Bool(false))),
                 ]),
             },
@@ -196,7 +199,7 @@ async fn a_repair_taken_in_twice_leaves_one_copy() {
     );
     // The same change taken in twice is taken once: the second repair adds nothing.
     for writes in [&first, &second] {
-        for write in writes.iter() {
+        for write in writes {
             store
                 .receive(
                     &write.doc,

@@ -490,23 +490,28 @@ pub(crate) fn kept_report(
         ));
     }
     let governed = GovernedWorkspace::open(path.to_path_buf(), None)?;
-    let (members, name) = {
-        let peer = governed.peer();
-        let governance = peer.governance();
-        let members = governance
-            .governed_members(tilo_clock::wall())
-            .map_or(0, |members| members.members.len());
-        let name = governance
-            .workspace_name()
-            .unwrap_or_else(|| governed.workspace().to_owned());
-        (members, name)
-    };
+    let (members, name) = governed_summary(&governed.peer(), &governed);
     let mut store = governed.resources.store_mut();
     crate::readers_report::declare_surfaces(&mut store, surfaces);
     Ok((
         name,
         crate::readers_report::WorkspaceReport::of(&store, members),
     ))
+}
+
+/// The count of `governed`'s members that stand now, and the name its governance gives the
+/// workspace, as [`kept_report`] reports them: what `peer`'s governance says, read under the
+/// peer's lock.
+#[cfg(not(target_arch = "wasm32"))]
+fn governed_summary(peer: &StatePeer, governed: &GovernedWorkspace) -> (usize, String) {
+    let governance = peer.governance();
+    let members = governance
+        .governed_members(tilo_clock::wall())
+        .map_or(0, |members| members.members.len());
+    let name = governance
+        .workspace_name()
+        .unwrap_or_else(|| governed.workspace().to_owned());
+    (members, name)
 }
 
 impl GovernedWorkspace {
