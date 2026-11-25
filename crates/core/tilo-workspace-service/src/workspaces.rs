@@ -2519,6 +2519,8 @@ impl Workspaces {
                 .map_err(|_| "the workspace service stopped before it answered".to_owned())?,
             None => work.await,
         }
+    }
+
     /// The runtime the service named for its writes thread, where it named one: the thread
     /// nothing else drives ([`WorkspacesInner::record_writes`]).
     #[cfg(not(target_arch = "wasm32"))]
