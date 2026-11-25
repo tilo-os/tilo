@@ -540,6 +540,15 @@ d-zenjiysp = Registry
 
 d-owkrdhjj = Problem
 
+d-jmxig2ub = Auftragswörter
+    .doc = Die eigene Zeile der Engine über einen Auftrag, sobald er sich bewegt hat.
+    .noun = { $count ->
+        [one] Auftragswort
+       *[other] Auftragswörter
+    }
+
+d-pwpo5osg = Status
+
 d-vtmqhpab = Gelesener Fall
     .doc = Der Moderationsfall einer Registry, wie diese App ihn für eine Aktualisierung behält.
     .noun = { $count ->
@@ -812,6 +821,23 @@ d-3asz6773 = Ein Paket, das ein Attestor geprüft hat, dem dieser Computer schon
 
 d-2klx4tra = Aktualisieren
     .doc = Liest die Quellen des Arbeitsbereichs erneut: die Registries, Flathub und die Flatpak-Repositories dieses Computers, und was der Arbeitsbereich ausführt.
+
+d-e3kequ3n = Lesen bewegt
+    .doc = Das Lesen ging weiter: die Zeile, die das Fenster zeigt, während es läuft.
+
+d-e3kequ3n-j = J
+
+d-gwtrq5yk = Lesen fertig
+    .doc = Das Lesen endete: der Katalog, den es fand, oder warum es keinen fand.
+
+d-gwtrq5yk-j = J
+
+d-mkrs77sc = Änderung fertig
+    .doc = Der Auftrag, den die Änderung einer App ist, so weit die Engine gekommen ist: seine Zeile sagt, wo er steht, und was er gemacht hat, wird gelesen, sobald er endet.
+
+d-mkrs77sc-a = A
+
+d-mkrs77sc-j = J
 
 d-banfx2pr = Lesen beginnen
     .doc = Ein Auftrag, der den Katalog selbst ändert statt einer App, verfolgt wie das Lesen: sein Ende liest die Quellen erneut, sodass ein neues Repository oder eine Aktualisierung von allem ankommt.

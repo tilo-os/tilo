@@ -87,6 +87,7 @@ d-e57w5mgi-filter-is_select = Gibt Zeilen zurück
 d-e57w5mgi-filter-elapsed_ms = Dauer in ms
 
 d-bpgwkoxz = Ergebnis
+    .doc = Was die Anweisung geantwortet hat, als JSON, sobald sie fertig ist.
 
 d-yheverkf = Verbindung
 
@@ -282,6 +283,10 @@ d-yhmbqfbq-why = Grund
 d-wavfygex-answer = Antwort
 
 d-77ih35sb-answer = Antwort
+
+d-dyll4uhn = Kürzungshinweis
+    .w-this-result-was-cut-at-1 = Dieses Ergebnis wurde bei 1.000 Zeilen gekürzt. Schränke die Abfrage ein oder blättere stattdessen durch die Tabelle.
+    .w-this-result-was-cut-to-keep = Dieses Ergebnis wurde gekürzt, damit das Fenster bedienbar bleibt: 8 MB davon werden gehalten. Schränke die Abfrage ein, um den Rest zu sehen.
 
 d-v5uqe3yc = Abfrage speichern
 

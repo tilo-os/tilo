@@ -494,6 +494,19 @@ d-5qtsbxfs = Grund
     .w-the-site-s-certificate-changed-so = Das Zertifikat der Website hat sich geändert, jemand gibt sich womöglich als sie aus
     .w-couldn-t-start-fetching = Abruf konnte nicht gestartet werden
 
+d-6r4x5y4o = Ortsbezeichnung
+    .w-unread = Ungelesen
+    .w-starred = Markiert
+    .w-feed = Feed
+    .w-folder = Ordner
+    .w-all-articles = Alle Artikel
+
+d-2yjh2vht = Leerwörter
+    .w-no-unread-articles = Keine ungelesenen Artikel
+    .w-no-starred-articles = Keine markierten Artikel
+    .w-no-articles-with-this-tag = Keine Artikel mit diesem Schlagwort
+    .w-no-articles-yet = Noch keine Artikel
+
 d-mb7lwq2a = Abo hinzufügen~present
 
 d-j45dc6en = Neuer Ordner~present

@@ -174,6 +174,9 @@ d-yqdomzqj = Beantwortet
 
 d-yqdomzqj-j = J
 
+d-v6mghqnx = Nachweis von
+    .w-tilo-publisher = tilo-publisher={ $lower }
+
 d-32nhaxk2 = Fenster der App-Veröffentlichung
     .w-that-didn-t-work = Das hat nicht funktioniert
 

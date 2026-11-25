@@ -561,6 +561,14 @@ d-mqmxnv4s = Name
 
 d-khrei3pe-filter-fps = Bilder/s
 
+d-cvn34nlm = Auftragsantwort
+    .noun = { $count ->
+        [one] Auftragsantwort
+       *[other] Auftragsantworten
+    }
+
+d-2qflgu2y = Auftrag
+
 d-7ufzdmfk = Schnittaufnahme
     .doc = Der Schnitt, wie das Gerät ihn liest: schlichte Werte mit den Namen, die die Engine kennt.
     .noun = { $count ->

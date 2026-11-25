@@ -225,6 +225,19 @@ d-c7sluhhk = Messung beendet
 
 d-c7sluhhk-j = J
 
+d-xh5o3eoc = Ortsbezeichnung
+    .w-home = Home
+    .w-file-system = Dateisystem
+    .w-workspace = Arbeitsbereich
+
+d-kmtdpgxq = Dateien als Text
+    .w-1-file = 1 Datei
+    .w-files = { $n } Dateien
+
+d-rst6skyt = Unlesbarkeitstext
+    .w-1-item-couldn-t-be-read = 1 Element konnte nicht gelesen werden
+    .w-items-couldn-t-be-read = { $n } Elemente konnten nicht gelesen werden
+
 d-bmoxtaea = Analyse
 
 d-atuiqpvv = Ortsseite

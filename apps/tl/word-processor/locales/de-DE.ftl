@@ -243,6 +243,16 @@ d-yseg6olm = Eine Datei lesen
 
 d-yseg6olm-file = Datei
 
+d-ldg26iqo = Änderungsart
+    .w-deleted = Gelöscht
+    .w-inserted = Eingefügt
+
+d-gij47fxu = Bereichsname
+    .w-page-setup = Seite einrichten
+    .w-text = Text
+    .w-comments = Kommentare
+    .w-review = Überprüfen
+
 d-pnlur6tt = Absatz anhängen~present
 
 d-ldyo3esg = Text ersetzen~present

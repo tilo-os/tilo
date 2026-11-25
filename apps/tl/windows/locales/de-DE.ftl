@@ -166,6 +166,9 @@ d-b5rfyupy = Dauer in Worten
     .w-minutes = { $value } Minuten
     .w-hours = { $value } Stunden
 
+d-plojzp75 = Einrichtungsname
+    .w-programs = { $len } Programme
+
 d-vpoqei5j = Freigaben der gemeinsamen Sitzung
     .w-sound = Ton
     .w-clipboard = Zwischenablage

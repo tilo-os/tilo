@@ -452,6 +452,12 @@ d-f2a66q6a = Seitenwörter
 
 d-f2a66q6a-page_at = Page at
 
+d-gqdd5xo6 = Seiten gesagt
+    .w-1-page = 1 Seite
+    .w-pages = { $pages } Seiten
+    .w-1-problem = { $said } · 1 Problem
+    .w-problems = { $said } · { $errors } Probleme
+
 d-gog7heib = Bibliothek
     .w-no-typst-documents-yet = Noch keine Typst-Dokumente
     .w-open-one-from-this-device-or = Öffne eins von diesem Gerät oder beginne ein neues.

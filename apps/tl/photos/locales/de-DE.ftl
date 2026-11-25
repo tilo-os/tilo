@@ -584,6 +584,16 @@ d-emafkrvf = Geteilte Namenszeile
     .w-none = Keine
     .w-mixed = Gemischt
 
+d-7tb3xlhh = Ortstitel
+    .w-library = Bibliothek
+    .w-timeline = Zeitleiste
+    .w-favorites = Favoriten
+    .w-people = Personen
+    .w-tags = Tags
+    .w-folders = Ordner
+    .w-places = Orte
+    .w-photos = Fotos
+
 d-v2p3fpqt = Auswahl bearbeiten~present
 
 d-4gwd7453 = Importauftrag
@@ -723,6 +733,8 @@ d-lkqkgzw2-found = Gefunden
 d-7mf7wkrg = Importiert
     .doc = Das Ende eines Imports: Jedes gelesene Bild wird ein Foto oder ergänzt das Foto, das dasselbe Bild schon ergab, und was er nicht lesen konnte, wird für einen neuen Versuch behalten.
     .did = hat Fotos hinzugefügt
+
+d-7mf7wkrg-j = J
 
 d-pgozefho = Import anhalten
     .doc = Hält den laufenden Import an: Er endet nach dem Bild, das er gerade liest, und was er bis dahin gelesen hat, kommt in die Bibliothek.

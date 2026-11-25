@@ -2029,6 +2029,17 @@ d-5jny2jyp = Gesehen
 d-inchqje5 = Engine
     .doc = Die Nummer der Seiten-Engine für einen Download, den eine Erweiterung gestartet hat.
 
+d-mxa5f3ud = Download gespeichert
+    .doc = Wo ein beendeter Download gespeichert wurde und als was, wie es der Datensatz seines Auftrags sagt.
+    .noun = { $count ->
+        [one] gespeicherter Download
+       *[other] gespeicherte Downloads
+    }
+
+d-xig3oj7a = Pfad
+
+d-as5zgbcl = Name
+
 d-i75qjot6 = Auftrag
     .doc = Der Auftrag, mit dem ein wiederholter Download endete, den die Antwort der Seite wieder nennt.
 
