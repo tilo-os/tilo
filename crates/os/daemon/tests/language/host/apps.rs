@@ -351,8 +351,23 @@ fn copy_tree(from: &Path, to: &Path) {
 pub fn install_rust(root: &Path, package: &str, bin: &str) {
     let dir = packages().parent().unwrap().join(package);
     let manifest = std::fs::read_to_string(dir.join("tilo-app.toml"))
-        .unwrap_or_else(|error| panic!("{package}'s manifest: {error}"))
-        .replace("ush    = \"required@37\"", "ush    = \"optional@37\"");
+        .unwrap_or_else(|error| panic!("{package}'s manifest: {error}"));
+    // The device shell service at whatever interface version the manifest names, made optional.
+    let manifest = manifest
+        .lines()
+        .map(|line| {
+            if line
+                .split('=')
+                .next()
+                .is_some_and(|key| key.trim() == "ush")
+            {
+                line.replacen("\"required@", "\"optional@", 1)
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut parsed = tilo_app_package::Manifest::from_toml_str(&manifest)
         .unwrap_or_else(|error| panic!("{package}'s manifest reads: {error}"));
     let publisher = tilo_app_package::SigningIdentity::from_seed(&[9_u8; 32]);
