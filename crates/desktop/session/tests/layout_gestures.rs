@@ -13,7 +13,7 @@ use serde_json::json;
 use tilo_compositor::{GestureEvent, InputEvent};
 use tilo_session::Session;
 
-use crate::common::{drawn_name, on_screen, until};
+use crate::common::{on_screen, until};
 use crate::layout_shortcuts::{CHROME, new_strip, open, session, settle, strips, workspace};
 
 /// A swipe of `fingers` fingers travelling `(dx, dy)`, landed, moved and lifted as a touchpad
@@ -159,7 +159,21 @@ fn three_fingers_carry_the_strip_and_it_glides_on() {
     let _settled = ui::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 6);
-    let beside = drawn_name(&session, &notes[4]);
+    // The row keeps the window in front in view, so a window picked by its place among six may
+    // stand off the screen with its bar out of reach: the marker is one of the windows the shell
+    // draws, and the direction it moves when the fingers carry the row is what is asserted.
+    let beside = crate::common::wait_for(&mut session, "a window on the screen", |session| {
+        crate::common::places(session)
+            .into_iter()
+            .map(|place| {
+                if place.title.is_empty() {
+                    place.name
+                } else {
+                    place.title
+                }
+            })
+            .find(|name| on_screen(session, name).is_some())
+    });
     let at = |session: &Session| on_screen(session, &beside).map(|(x, ..)| x);
     let before = at(&session).unwrap_or_else(|| panic!("{beside} stands on the screen"));
 
