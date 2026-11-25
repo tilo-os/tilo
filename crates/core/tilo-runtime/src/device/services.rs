@@ -1217,6 +1217,20 @@ impl Daemon {
         self.workspaces.search_index_services()
     }
 
+    /// What a plain connection from the person's own account reaches in `workspace`, and the
+    /// caller it is there ([`Self::connection_tree_in`]): what `tilo do`'s own prompt answers a
+    /// question that waits for the person on, for a test that has no socket to connect to.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    #[cfg(feature = "test-support")]
+    pub fn own_connection_in(
+        self: &Arc<Self>,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        self.connection_tree_in(Some(workspace))
+    }
+
     /// The workspaces this device holds, through its opened workspace service.
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {

@@ -257,7 +257,9 @@ async fn waiting_record(host: &Host, invocation: InvocationId) -> String {
     }
 }
 
-/// Accept `transfer` as the person, answering their asked record with a yes.
+/// Accept `transfer` as the person, answering their asked record with a yes at `tilo`'s own
+/// prompt: the CLI on a connection the kernel says is theirs. A program making the same answer
+/// on a plain connection is refused, and the transfer still waits for the person.
 async fn keep(host: &Host, transfer: &str) {
     let (dispatch, caller) = (host.dispatch(), host.caller());
     let accept = request(
@@ -277,14 +279,30 @@ async fn keep(host: &Host, transfer: &str) {
         "the accept waits for the person's yes: {answered:?}"
     );
     let record = waiting_record(host, invocation).await;
-    let resolve = request(
-        "tilo.invocations",
-        &record,
-        "resolve",
-        json!({"resolution": "approve"}),
+    let resolve = || {
+        request(
+            "tilo.invocations",
+            &record,
+            "resolve",
+            json!({"resolution": "approve"}),
+        )
+    };
+    let by_a_program = dispatch.invoke(&caller, resolve()).await;
+    assert!(
+        matches!(
+            &by_a_program,
+            Some(Err(ActionCallError::Refused { reason }))
+                if reason == tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM
+        ),
+        "a program does not answer for the person: {by_a_program:?}"
     );
-    let answered = dispatch
-        .invoke(&caller, resolve)
+    let (own, person) = host
+        .daemon()
+        .own_connection_in(host.workspace())
+        .expect("the person's own connection reaches the workspace");
+    assert!(person.is_own_connection(), "{person:?}");
+    let answered = own
+        .invoke(&person, resolve())
         .await
         .expect("the person's yes is admitted")
         .expect("the person's yes is admitted");
