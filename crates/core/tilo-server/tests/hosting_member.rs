@@ -305,8 +305,9 @@ async fn every_device_of_the_governing_person_holds_the_workspace_and_no_one_els
 }
 
 /// A holder the workspace's owner detaches lets the workspace go: it no longer holds it
-/// open, though its files stay. Attached again, it serves the workspace from
-/// those files and catches up on what the workspace published meanwhile.
+/// open, though its files stay. Only the device that keeps the owner's root attaches it
+/// again; attached again, it serves the workspace from those files and catches up on what
+/// the workspace published meanwhile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_files() {
     let alice = TestUser::fresh("Alice");
@@ -361,15 +362,34 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
         .await
         .unwrap();
 
-    workspaces
-        .attach_server(
+    let attach = || {
+        workspaces.attach_server(
             &workspace.workspace,
             nas.device_pubkey(),
             member.host.node_addr(),
             CopyRole::KeyHolder,
         )
+    };
+    let refused = attach()
         .await
-        .unwrap();
+        .expect_err("a device that does not keep the root attaches no removed holder again");
+    assert!(
+        refused.contains("Only the device that keeps your identity adds it back"),
+        "{refused}"
+    );
+    // The laptop is the device that keeps Alice's root: marked so by that root, in the record
+    // of her devices her own workspace keeps, it may readmit the holder the workspace took off.
+    tilo_server::servers::found(workspaces)
+        .await
+        .expect("the laptop keeps Alice's own workspace");
+    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+        workspaces,
+        &alice.user_sk,
+        &laptop.cert,
+    )
+    .await
+    .expect("the root marks the laptop as the device that keeps it");
+    attach().await.unwrap();
     assert!(
         retained().await.is_some_and(|bodies| bodies.len() >= kept),
         "served again from what it kept"
