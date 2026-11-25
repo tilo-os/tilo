@@ -19,7 +19,10 @@ struct Joining {
 fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
     let definition = crate::application_test_support::runner_probe_definition();
     let workspace_id = uuid::Uuid::new_v4().to_string();
-    let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+    // A window's records: it reads them through the workspace's store and publishes what it
+    // changes on its own route, which is what joins the broker below. A store that writes through
+    // its port itself (a native process) is the one path its changes take, and publishes none.
+    let mut owners = crate::resource::ResourceOwners::reading(Rc::new(
         crate::resource::MemoryWorkspace::default(),
     ));
     let records = owners.open(&definition.app_id, &workspace_id).unwrap();
