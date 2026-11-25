@@ -289,9 +289,11 @@ fn verb_admits(
     touch: &Touch,
     writes: &[(String, String, Option<ScalarValue>)],
 ) -> Result<(), String> {
-    // A move founds, fills and removes a resource of whatever kind the store declares: whether its
-    // caller may is the workspace's to decide, on each side of it.
-    if verb.moves {
+    // A move founds, fills and removes a resource of whatever kind the store declares, and a verb
+    // the platform writes under (an invocation, a suggestion and its decision, a settling block)
+    // writes any field and content of a declared kind: whether the caller may is the workspace's
+    // to decide, and the kind is the store's.
+    if verb.moves || verb.platform {
         return schema
             .get(kind)
             .map(drop)

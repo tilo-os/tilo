@@ -119,6 +119,10 @@ impl Surfaces {
     /// declares here are left out of what the package declares, while the bytes and their hash —
     /// what its changes name — stay as the package ships them. A kind the system does not declare
     /// here stays the package's, so a package is still the one place its type is written.
+    ///
+    /// A package that declares one of the verbs the platform reserves
+    /// ([`crate::Stamp::RESERVED_VERBS`]) names none: under one a change may write past any
+    /// surface's write set, so no app may take one for an action of its own.
     pub fn register_package(&self, app_id: &str, bytes: &[u8]) {
         let mut file = match crate::surface::SurfaceFile::compiled(bytes) {
             Ok(file) => file,
@@ -131,6 +135,19 @@ impl Surfaces {
                 return;
             }
         };
+        if let Some(verb) = file
+            .resources
+            .iter()
+            .flat_map(|resource| &resource.verbs)
+            .find(|verb| crate::Stamp::RESERVED_VERBS.contains(&verb.id.as_str()))
+        {
+            tracing::warn!(
+                app = app_id,
+                verb = verb.id,
+                "the app declares a verb the platform reserves; its surface is refused"
+            );
+            return;
+        }
         file.resources
             .retain(|resource| !self.keeps_system(&resource.kind));
         let hash = *blake3::hash(bytes).as_bytes();
@@ -623,6 +640,64 @@ mod tests {
                 bytes_of("test.built-in"),
                 Some(package.as_bytes()),
                 "the package's stays"
+            );
+        }
+
+        phase a_package_naming_a_workspace_record_the_system_keeps_declares_its_own_kinds;
+        {
+            const APP: &str = "test.system-beside-own";
+            // A package naming the workspace's emoji beside its own kind, as the tilolang host
+            // names the record of the app that keeps it.
+            let file = compiled(
+                "[[resources]]\nkind = \"tilo.workspace.emoji\"\nlabel = \"Emoji\"\nversion = 1\n\n[[resources]]\nkind = \"test.system-beside-own.kind\"\nlabel = \"Own\"\nversion = 1\n",
+            );
+            let parsed =
+                crate::surface::SurfaceFile::compiled(file.as_bytes()).expect("the compiled form");
+            let owner = crate::WORKSPACE_DOCUMENTS
+                .iter()
+                .find(|kept| kept.kind == "tilo.workspace.emoji")
+                .expect("the emoji is a record the system keeps")
+                .app;
+            for resource in parsed
+                .resources
+                .into_iter()
+                .filter(|resource| resource.kind == "tilo.workspace.emoji")
+            {
+                Surfaces::process().declare_system(owner, resource);
+            }
+            register_package(APP, file.as_bytes());
+            assert_eq!(
+                Surfaces::process().kinds_of(APP),
+                ["test.system-beside-own.kind"],
+                "the system's declaration from its type judges the emoji, never the package's copy"
+            );
+            assert!(
+                Surfaces::process().keeps_system("tilo.workspace.emoji"),
+                "the system's emoji stays declared"
+            );
+            assert!(
+                hash_of(APP).is_some(),
+                "the package's surface still decides the changes that name it"
+            );
+        }
+
+        phase a_package_declaring_a_platform_verb_names_none;
+        {
+            const APP: &str = "test.platform-verb";
+            // An action an app gives the name of a verb the platform writes under would write
+            // past its own surface's write set: the surface is refused, and the app's records
+            // with it.
+            let file = compiled(
+                "[[resources]]\nkind = \"test.platform-verb.kind\"\nlabel = \"Own\"\nversion = 1\n\n[[resources.verbs]]\nid = \"$undo\"\nkind = \"undoable\"\n",
+            );
+            register_package(APP, file.as_bytes());
+            assert!(
+                hash_of(APP).is_none(),
+                "a package declaring the platform's own verb is refused"
+            );
+            assert!(
+                bytes_of(APP).is_none(),
+                "and none of its surface is held here"
             );
         }
     }

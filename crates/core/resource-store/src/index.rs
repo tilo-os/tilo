@@ -1539,9 +1539,10 @@ impl Index {
     /// [`Self::refile`] filed it under.
     #[must_use]
     pub fn filed(&self, kind: &str, id: &str) -> Option<&str> {
-        self.kinds.get(kind)?.iter().find_map(|(readers, table)| {
-            table.rows.contains_key(id).then_some(readers.as_str())
-        })
+        self.kinds
+            .get(kind)?
+            .iter()
+            .find_map(|(readers, table)| table.rows.contains_key(id).then_some(readers.as_str()))
     }
 
     fn take_out(&mut self, kind: &str, id: &str, doc: &str) {

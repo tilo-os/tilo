@@ -42,6 +42,19 @@ pub const BRANCH_VERB: &str = tilo_actions::stamp::Stamp::BRANCH_VERB;
 /// schema has it, as it has the move.
 pub const ORIGIN_VERB: &str = collab_types::Stamp::ORIGIN_VERB;
 
+/// The verbs the platform writes under, which no app declares
+/// ([`collab_types::Stamp::PLATFORM_VERBS`]): a call a device carries out, an agent's suggestion
+/// and the decision on it, and a block that settles one. Each writes what any field or content of
+/// a declared kind holds, as the move places one of any kind. Every schema has them, as it has the
+/// move, so a store with declared verbs judges the platform's own writes by their kind and not by
+/// a verb no app names. A step taken back or brought back (`$undo`, `$restore`) is reserved the
+/// same way and stays undeclared until its grant check lands.
+pub const PLATFORM_VERBS: [&str; 4] = collab_types::Stamp::PLATFORM_VERBS;
+
+/// The verbs no surface an app ships may declare ([`collab_types::Stamp::RESERVED_VERBS`]): the
+/// platform's own, and the two a step back or a version brought back writes under.
+pub const RESERVED_VERBS: [&str; 6] = collab_types::Stamp::RESERVED_VERBS;
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
@@ -53,6 +66,11 @@ static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
             marks: true,
             ..Verb::default()
         })
+        .chain(PLATFORM_VERBS.iter().map(|name| Verb {
+            name: (*name).to_owned(),
+            platform: true,
+            ..Verb::default()
+        }))
         .chain([
             Verb {
                 name: MOVE_VERB.to_owned(),
@@ -123,6 +141,9 @@ pub struct Verb {
     /// The origin's write ([`ORIGIN_VERB`]): it writes any field and content of a declared kind,
     /// as the move places one of any kind.
     pub origins: bool,
+    /// A verb the platform writes under ([`PLATFORM_VERBS`]): it writes any field and content of
+    /// a declared kind, as the move places one of any kind.
+    pub platform: bool,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -364,10 +385,11 @@ impl Schema {
     /// Every declared verb that names `name`: the verb of that name, and each family of verbs
     /// declared by a prefix ending in `*` (`set-*`, a typed setter per field of a kind whose
     /// fields another table lists) that `name` starts with.
-    /// The verbs of history ([`HISTORY_VERBS`]), the move ([`MOVE_VERB`]), the creation
-    /// ([`CREATE_VERB`]), the branch ([`BRANCH_VERB`]) and the origin's write ([`ORIGIN_VERB`])
-    /// are declared in every schema. The origin's write is the platform's alone: a surface that
-    /// names it declares nothing under it, so no app action is admitted by the name.
+    /// The verbs of history ([`HISTORY_VERBS`]), the verbs the platform writes under
+    /// ([`PLATFORM_VERBS`]), the move ([`MOVE_VERB`]), the creation ([`CREATE_VERB`]), the branch
+    /// ([`BRANCH_VERB`]) and the origin's write ([`ORIGIN_VERB`]) are declared in every schema.
+    /// The origin's write is the platform's alone: a surface that names it declares nothing under
+    /// it, so no app action is admitted by the name.
     pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
         self.verbs
             .iter()

@@ -119,3 +119,107 @@ fn a_document_with_a_long_id_is_kept_across_a_start() {
     drop(store);
     assert!(read, "the resource reads again after the start");
 }
+
+/// The person `person` as a stamp names its invoker.
+fn as_person(person: [u8; 32]) -> tilo_action_policy::Actor {
+    tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(person)))
+}
+
+/// A platform write's stamp: `verb`, naming `actor` as its invoker, or who it acted for.
+fn platform_stamp(
+    verb: &str,
+    actor: Option<tilo_action_policy::Actor>,
+    acted_for: Option<[u8; 32]>,
+) -> Stamp {
+    Stamp {
+        verb: verb.to_owned(),
+        invoker: actor.map(|actor| Stamp::by(&actor)).unwrap_or_default(),
+        acted_for: acted_for.map(hex::encode),
+        ..Stamp::default()
+    }
+}
+
+/// A call the person `person`'s device `key` signed, as a host keeps it beside a change it
+/// carried out for them.
+fn signed_call(person: [u8; 32]) -> Box<tilo_actions::remote::SignedCall> {
+    use ed25519_dalek::Signer as _;
+    use tilo_actions::remote::signed_invocation::InvocationStatement;
+    use tilo_actions::remote::{SignedCall, SignedInvocation};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let statement = InvocationStatement {
+        workspace: "w".to_owned(),
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: "test.provider".to_owned(),
+            address: tilo_actions::ActionAddress::new("record", "action"),
+        },
+        arguments: [0; 32],
+        on_behalf_of: None,
+        issued_at_ns: 0,
+        signer: key.verifying_key().to_bytes(),
+    };
+    let signature = key.sign(&statement.signing_message());
+    let cert = DeviceCert {
+        user_public_key: person,
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "test".to_owned(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 0,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    Box::new(SignedCall {
+        signed: SignedInvocation::new(
+            statement,
+            signature.to_bytes(),
+            postcard::to_allocvec(&cert).expect("a certificate writes"),
+        ),
+        argument: None,
+        allowed: None,
+    })
+}
+
+/// A platform verb's wider write belongs to the device or person the invocation names: the
+/// author's own person, or a signed call by the named person. Another member's device naming
+/// them is refused, and a verb that is no platform verb belongs to whoever wrote it.
+#[test]
+fn a_platform_verb_belongs_to_the_person_the_invocation_names() {
+    let person = [0xab; 32];
+    let other = [0xcd; 32];
+    for verb in tilo_resource_store::PLATFORM_VERBS {
+        let own = platform_stamp(verb, Some(as_person(person)), None);
+        assert!(
+            super::platform_write_belongs(Some(&own), Some(person)),
+            "{verb} from the person it names"
+        );
+        let foreign = platform_stamp(verb, Some(as_person(other)), None);
+        assert!(
+            !super::platform_write_belongs(Some(&foreign), Some(person)),
+            "{verb} naming another member is no device of the author's"
+        );
+        let acted = platform_stamp(verb, None, Some(person));
+        assert!(
+            super::platform_write_belongs(Some(&acted), Some(person)),
+            "{verb} made for the person it acted for"
+        );
+        // A host that carries the person's call writes as itself, and keeps their signature.
+        let mut signed = platform_stamp(verb, Some(as_person(person)), None);
+        signed.signed = Some(signed_call(person));
+        assert!(
+            super::platform_write_belongs(Some(&signed), Some(other)),
+            "{verb} carried for the person by their signed call"
+        );
+        // A signature by someone other than the named person is no call of theirs.
+        let mut forged = platform_stamp(verb, Some(as_person(person)), None);
+        forged.signed = Some(signed_call(other));
+        assert!(
+            !super::platform_write_belongs(Some(&forged), Some(other)),
+            "{verb} whose signature is not the named person's"
+        );
+    }
+    // A verb the platform does not write under is the author's own, whatever it names.
+    let own_verb = platform_stamp("type", Some(as_person(other)), None);
+    assert!(super::platform_write_belongs(Some(&own_verb), Some(person)));
+}

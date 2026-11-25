@@ -949,11 +949,26 @@ impl HostedWorkspace {
         changes: Vec<AmChange>,
     ) -> Result<bool, String> {
         // Every change of one write is its author's: whether they may write the document is
-        // asked once, of the workspace's one permission check.
-        let permitted = self
-            .may_start(author, (app, doc), tilo_clock::wall())
-            .is_ok();
-        let admit = move |_: &tilo_resource_store::Proposal<'_>| permitted;
+        // asked once, of the workspace's one permission check, and so is who they are.
+        let now = tilo_clock::wall();
+        let permitted = self.may_start(author, (app, doc), now).is_ok();
+        let author_person = match self.peer().permissions(author, now) {
+            Ok(member) => member
+                .acting
+                .by
+                .member_id()
+                .and_then(|member| member.person_id())
+                .and_then(person_bytes),
+            Err(error) => {
+                tracing::warn!(%error, "a write's author is no member of the workspace");
+                None
+            }
+        };
+        // A platform verb's wider write is the platform's alone: the invocation it belongs to
+        // must be the author's, or carried by their signed call.
+        let admit = move |proposal: &tilo_resource_store::Proposal<'_>| {
+            permitted && platform_write_belongs(proposal.stamp, author_person)
+        };
         // A sealed write was decided, by members without its key, by the kinds its claims name;
         // the store refuses each change unless they are the kinds it reads. A claim that names no
         // kind was decided against the record's own surface, and is left to that.
@@ -2387,7 +2402,8 @@ impl Workspaces {
     /// asks: a record the command writes first is founded as one of them.
     ///
     /// # Errors
-    /// As [`Self::own_resource_command`].
+    /// As [`Self::own_resource_command`], or the command names one of the verbs the platform
+    /// writes under, which no app writes under.
     #[cfg(feature = "apps")]
     pub async fn own_kind_command(
         &self,
@@ -2396,6 +2412,11 @@ impl Workspaces {
         command: collab_types::store::wire::Command,
         serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
     ) -> Result<collab_types::store::wire::Reply, String> {
+        if let Some(verb) = platform_verb_of(&command) {
+            return Err(format!(
+                "`{verb}` is the platform's own verb: no app writes under it"
+            ));
+        }
         let device = self.member_identity()?;
         let caller = tilo_actions::remote::Caller::authenticated(
             device.cert.user_public_key,
@@ -2701,6 +2722,80 @@ fn caller_may(
         }
     }
     Ok(())
+}
+
+/// The platform's own verb `command` writes under, when it names one: the admission a verb of
+/// that name gives (any field of a declared kind) is the platform's alone, and no app writes
+/// under one, whatever action it gave the name to.
+#[cfg(feature = "apps")]
+fn platform_verb_of(command: &collab_types::store::wire::Command) -> Option<&str> {
+    use collab_types::store::wire::Command;
+    fn named(stamp: &tilo_resource_store::Stamp) -> Option<&str> {
+        tilo_resource_store::RESERVED_VERBS
+            .contains(&stamp.verb.as_str())
+            .then_some(stamp.verb.as_str())
+    }
+    match command {
+        Command::Put { stamp, .. }
+        | Command::Remove { stamp, .. }
+        | Command::Undo { stamp, .. }
+        | Command::Edit { stamp, .. }
+        | Command::Checkpoint { stamp, .. }
+        | Command::Restore { stamp, .. }
+        | Command::UndoMany { stamp, .. } => named(stamp),
+        Command::Batch(commands) => commands.iter().find_map(platform_verb_of),
+        _ => None,
+    }
+}
+
+/// The person `person`, a member's id, as the key the workspace knows them by.
+fn person_bytes(person: &str) -> Option<[u8; 32]> {
+    match hex::decode(person) {
+        Ok(bytes) => match bytes.try_into() {
+            Ok(person) => Some(person),
+            Err(_) => {
+                tracing::warn!(person, "a member's person id is not 32 bytes");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!(person, %error, "a member's person id is not hex");
+            None
+        }
+    }
+}
+
+/// Whether the author of `stamp`, a change under one of the platform's own verbs, is the device
+/// or person the invocation belongs to: the change names its invoker (or who it acted for), and
+/// that person is the author device's own, or the change carries their signed call. A change
+/// under no platform verb belongs to whoever wrote it.
+fn platform_write_belongs(
+    stamp: Option<&tilo_resource_store::Stamp>,
+    author_person: Option<[u8; 32]>,
+) -> bool {
+    let Some(stamp) = stamp else {
+        return true;
+    };
+    if !tilo_resource_store::PLATFORM_VERBS.contains(&stamp.verb.as_str()) {
+        return true;
+    }
+    let acting = stamp.invoked_by().map(tilo_action_policy::Acting::from);
+    let author = author_person.map(hex::encode);
+    let named = author.as_deref().is_some_and(|author| {
+        acting
+            .as_ref()
+            .is_some_and(|acting| acting.people().contains(&author))
+            || stamp.acted_for.as_deref() == Some(author)
+    });
+    if named {
+        return true;
+    }
+    match (acting, stamp.signed.as_deref()) {
+        (Some(acting), Some(call)) => {
+            tilo_server_protocol::invocation::signs_for(&acting, &call.signed)
+        }
+        _ => false,
+    }
 }
 
 /// Whether the reader set `readers` names `reader` ([`tilo_resource_store::wire::reads_as`]).

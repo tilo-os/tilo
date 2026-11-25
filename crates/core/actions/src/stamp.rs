@@ -196,6 +196,38 @@ impl Stamp {
     /// declares.
     pub const BRANCH_VERB: &str = "branch";
 
+    /// The verb of a change that takes back a step (`$undo`), and of one that brings a version
+    /// back (`$restore`): the platform's own writes through history, under verbs whose `$` no
+    /// app declares.
+    pub const UNDO_VERB: &str = "$undo";
+    pub const RESTORE_VERB: &str = "$restore";
+
+    /// The verbs the platform writes under, which no app declares: a call a device carries out
+    /// (`$invocation`), an agent's suggestion and the decision on it (`$suggest`,
+    /// `$decide-invocation`), and a block that settles one (`$settle-block`). A store's schema
+    /// declares them, and under them a change may write any field or content of a declared kind,
+    /// so a surface an app ships may declare none of them.
+    pub const PLATFORM_VERBS: [&str; 4] = [
+        "$invocation",
+        "$suggest",
+        "$decide-invocation",
+        "$settle-block",
+    ];
+
+    /// The verbs no surface an app ships may declare, whether or not a schema admits them yet:
+    /// the platform's own ([`Self::PLATFORM_VERBS`]) and the two that take a step back or bring a
+    /// version back ([`Self::UNDO_VERB`], [`Self::RESTORE_VERB`]). Their `$` names are the
+    /// platform's, so an app's own `undo` or `restore` action is a different verb, judged by its
+    /// own surface's write set.
+    pub const RESERVED_VERBS: [&str; 6] = [
+        "$invocation",
+        "$suggest",
+        "$decide-invocation",
+        "$settle-block",
+        Self::UNDO_VERB,
+        Self::RESTORE_VERB,
+    ];
+
     /// The stamp a change's message `message` names; `None` for one that names none.
     #[must_use]
     pub fn of_message(message: &str) -> Option<Self> {

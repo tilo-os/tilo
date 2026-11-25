@@ -1025,7 +1025,7 @@ mod store {
     use super::*;
     use collab_types::store::Resource;
     use tilo_resource_store::store::DOCUMENT_LIMIT;
-    use tilo_resource_store::{Proposal, Received, Stamp, Store, StoreError, Written};
+    use tilo_resource_store::{Proposal, Received, Refusal, Stamp, Store, StoreError, Written};
 
     const MEMBERS: &str = "*";
 
@@ -1061,6 +1061,45 @@ mod store {
                 nested: Vec::new(),
                 live: None,
                 founding: Vec::new(),
+            }],
+            ..Schema::default()
+        });
+        store
+    }
+
+    /// [`issues`], with one verb declared: what makes a change's verb checked at all, as every
+    /// workspace store that declares any verb does.
+    fn verbed() -> Store {
+        let mut store = issues();
+        store.declare(Schema {
+            verbs: vec![tilo_resource_store::Verb {
+                name: "edit".to_owned(),
+                writes: BTreeMap::from([(
+                    ISSUE.to_owned(),
+                    tilo_resource_store::Writes::default(),
+                )]),
+                ..tilo_resource_store::Verb::default()
+            }],
+            ..Schema::default()
+        });
+        store
+    }
+
+    /// [`issues`] with an app's own verb named `undo`, which writes only the issue's title:
+    /// the platform writes under `$undo`, so no app needs the plain name for it.
+    fn app_undo() -> Store {
+        let mut store = issues();
+        store.declare(Schema {
+            verbs: vec![tilo_resource_store::Verb {
+                name: "undo".to_owned(),
+                writes: BTreeMap::from([(
+                    ISSUE.to_owned(),
+                    tilo_resource_store::Writes {
+                        fields: BTreeSet::from(["title".to_owned()]),
+                        sets_only: false,
+                    },
+                )]),
+                ..tilo_resource_store::Verb::default()
             }],
             ..Schema::default()
         });
@@ -2497,6 +2536,90 @@ mod store {
         );
     }
 
+    /// The verbs the platform writes under name no app. A store that declares any verb refused
+    /// their changes as undeclared, so a device could not keep the call it carried out, the
+    /// suggestion it made or the decision on it, and a step could be taken neither back nor
+    /// brought back. Every schema declares them, as it declares the move and the creation: each
+    /// writes any field of a declared kind and no kind the store does not declare.
+    #[test]
+    fn the_platforms_verbs_are_declared_in_every_schema_and_write_a_declared_kind() {
+        let anyone = |_: &Proposal<'_>| true;
+        let made = |verb: &str, kind: &str| {
+            let resource = Resource {
+                readers: MEMBERS.to_owned(),
+                parent: None,
+                order: None,
+                fields: fields("platform", "open"),
+            };
+            issues()
+                .put(kind, "p", resource, &stamp(verb, "i1"))
+                .unwrap()
+        };
+        for verb in tilo_resource_store::PLATFORM_VERBS {
+            assert_eq!(
+                deliver(&made(verb, ISSUE), &mut verbed(), &anyone),
+                [],
+                "{verb} writes a declared kind"
+            );
+            assert!(
+                matches!(
+                    deliver(&made(verb, "gallery.Item"), &mut verbed(), &anyone).as_slice(),
+                    [Refusal::Undeclared(why)] if why.contains("gallery.Item")
+                ),
+                "{verb} writes no kind the store does not declare"
+            );
+        }
+        assert!(
+            matches!(
+                deliver(&made("$nope", ISSUE), &mut verbed(), &anyone).as_slice(),
+                [Refusal::Undeclared(why)] if why.contains("no verb `$nope`")
+            ),
+            "a verb no schema declares is still refused"
+        );
+    }
+
+    /// An app's own verb named `undo` keeps exactly the write set its surface declares: the
+    /// platform's wider admission is the reserved `$undo`, which the app may not declare, so a
+    /// name collision never borrows it.
+    #[test]
+    fn an_apps_undo_action_keeps_its_surfaces_write_set() {
+        let anyone = |_: &Proposal<'_>| true;
+        let only_title = || Resource {
+            readers: MEMBERS.to_owned(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::from([("title".to_owned(), Cell::One("undo".into()))]),
+        };
+        let inside = issues()
+            .put(ISSUE, "i", only_title(), &stamp("undo", "i1"))
+            .unwrap();
+        assert_eq!(
+            deliver(&inside, &mut app_undo(), &anyone),
+            [],
+            "the field its surface lists is the app's to write under undo"
+        );
+        let outside = issues()
+            .put(
+                ISSUE,
+                "i",
+                Resource {
+                    readers: MEMBERS.to_owned(),
+                    parent: None,
+                    order: None,
+                    fields: BTreeMap::from([("state".to_owned(), Cell::One("open".into()))]),
+                },
+                &stamp("undo", "i1"),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                deliver(&outside, &mut app_undo(), &anyone).as_slice(),
+                [Refusal::Undeclared(why)] if why.contains("`undo` writes no `Issue.state`")
+            ),
+            "a field its surface lists not is refused: the platform's admission is not borrowed"
+        );
+    }
+
     /// A package's root is made by the host as a change of its own, against the package's
     /// surface: the store admits it, since the surface declares the record and that `$create`
     /// writes it. A surface read without its own record refused every app's first change.
@@ -3119,7 +3242,7 @@ mod store {
     /// and so is a claim of only the new kind; one that writes both is taken.
     #[test]
     fn a_change_of_a_records_kind_is_refused_where_its_old_kind_does_not_allow_it() {
-        use tilo_resource_store::{Refusal, Verb, Writes};
+        use tilo_resource_store::{Verb, Writes};
         let ty = |name: &str| record_type(name);
         let verb = |name: &str, kinds: &[&str]| Verb {
             name: name.to_owned(),

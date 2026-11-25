@@ -912,7 +912,7 @@ impl ResourceStore {
                     .map(|(_, _, invocation)| invocation.clone())
             })
             .filter(|own| own != invocation);
-        let stamp = self.history_stamp("undo", invoker);
+        let stamp = self.history_stamp(Stamp::UNDO_VERB, invoker);
         let stamp = Stamp {
             undoes: Some(invocation.to_owned()),
             invocation: served.unwrap_or_else(|| stamp.invocation.clone()),
@@ -992,7 +992,7 @@ impl ResourceStore {
                 .first()
                 .map(|(_, _, invocation)| invocation.clone())
         });
-        let stamp = self.history_stamp("undo", invoker);
+        let stamp = self.history_stamp(Stamp::UNDO_VERB, invoker);
         let stamp = Stamp {
             invocation: served.unwrap_or_else(|| stamp.invocation.clone()),
             ..stamp
@@ -1060,7 +1060,7 @@ impl ResourceStore {
         live: Option<Vec<String>>,
         invoker: Option<&Actor>,
     ) -> Result<String, StoreError> {
-        let stamp = self.history_stamp("restore", invoker);
+        let stamp = self.history_stamp(Stamp::RESTORE_VERB, invoker);
         let own = stamp.invocation.clone();
         self.command(Command::Restore {
             resources: self.kinds_and_ids(resources),
