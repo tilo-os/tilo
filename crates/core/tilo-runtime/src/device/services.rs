@@ -3866,27 +3866,17 @@ impl tilo_api::session::AccountHere for Daemon {
         let device = self.cert.clone();
         Box::pin(async move {
             known(&device, &key)?;
-            // A workspace this device keeps for its person is theirs, however it was made: a branch
-            // is only ever of one of theirs.
-            let _ = workspaces
-                .copies()
-                .claim_own(&device.user_public_key, &source)
-                .await;
             let branch = id.unwrap_or_else(Uuid::new_v4).to_string();
-            let mut arguments = Map::new();
-            arguments.insert("workspace".into(), json!(source));
-            arguments.insert("name".into(), json!(name));
-            arguments.insert("branch".into(), json!(branch));
-            if !labels.is_empty() {
-                arguments.insert("labels".into(), json!(labels));
-            }
-            let made: CreatedWorkspace = answer(
-                workspaces
-                    .service()
-                    .ask_own(key.cert(), BRANCH_OWN_WORKSPACE, arguments)
-                    .await,
-            )?;
-            enter_here(&workspaces, &made.workspace.workspace, &device).await?;
+            let made = branch_here(
+                &workspaces,
+                key.cert(),
+                &device,
+                source,
+                name,
+                branch,
+                labels,
+            )
+            .await?;
             Ok(listed_workspace(made.workspace, &workspaces))
         })
     }
@@ -3927,26 +3917,7 @@ impl tilo_api::session::AccountHere for Daemon {
         let device = self.cert.clone();
         Box::pin(async move {
             known(&device, &key)?;
-            let _ = workspaces
-                .copies()
-                .claim_own(&device.user_public_key, &workspace)
-                .await;
-            // A workspace the device does not keep for its person is not the key's to delete, and one
-            // it deleted before is no such workspace either.
-            if !workspaces
-                .copies()
-                .owns(&device.user_public_key, &workspace)
-            {
-                return Err(ServerError::NotFound);
-            }
-            let mut arguments = Map::new();
-            arguments.insert("workspace".into(), json!(workspace));
-            workspaces
-                .service()
-                .ask_own(key.cert(), DELETE_WORKSPACE, arguments)
-                .await
-                .map(drop)
-                .map_err(unavailable)
+            delete_here(&workspaces, key.cert(), &device, &workspace).await
         })
     }
 
@@ -4102,6 +4073,75 @@ impl Daemon {
     fn knows(&self, key: &GrantKey) -> bool {
         known(&self.cert, key).is_ok()
     }
+}
+
+/// Make `branch`, a branch of `source` called `name`, one of `device`'s person's own, on this
+/// device: `acting` asks the workspace service for it, and `device` signs its way into the branch
+/// made. Answers the branch the service made.
+///
+/// # Errors
+/// The source is not one the device keeps for its person, the service could not copy it whole, or
+/// the device could not enter the branch.
+pub(crate) async fn branch_here(
+    workspaces: &ServiceWorkspaces,
+    acting: &DeviceCert,
+    device: &DeviceCert,
+    source: String,
+    name: String,
+    branch: String,
+    labels: WorkspaceLabels,
+) -> Result<CreatedWorkspace, ServerError> {
+    // A workspace this device keeps for its person is theirs, however it was made: a branch is
+    // only ever of one of theirs.
+    let _ = workspaces
+        .copies()
+        .claim_own(&device.user_public_key, &source)
+        .await;
+    let mut arguments = Map::new();
+    arguments.insert("workspace".into(), json!(source));
+    arguments.insert("name".into(), json!(name));
+    arguments.insert("branch".into(), json!(branch));
+    if !labels.is_empty() {
+        arguments.insert("labels".into(), json!(labels));
+    }
+    let made: CreatedWorkspace = answer(
+        workspaces
+            .service()
+            .ask_own(acting, BRANCH_OWN_WORKSPACE, arguments)
+            .await,
+    )?;
+    enter_here(workspaces, &made.workspace.workspace, device).await?;
+    Ok(made)
+}
+
+/// Delete `workspace`, one of `device`'s person's own, on this device: `acting` asks the
+/// workspace service for it.
+///
+/// # Errors
+/// The device keeps no workspace of that id for its person, or the service did not delete it.
+pub(crate) async fn delete_here(
+    workspaces: &ServiceWorkspaces,
+    acting: &DeviceCert,
+    device: &DeviceCert,
+    workspace: &str,
+) -> Result<(), ServerError> {
+    let _ = workspaces
+        .copies()
+        .claim_own(&device.user_public_key, workspace)
+        .await;
+    // A workspace the device does not keep for its person is not the key's to delete, and one it
+    // deleted before is no such workspace either.
+    if !workspaces.copies().owns(&device.user_public_key, workspace) {
+        return Err(ServerError::NotFound);
+    }
+    let mut arguments = Map::new();
+    arguments.insert("workspace".into(), json!(workspace));
+    workspaces
+        .service()
+        .ask_own(acting, DELETE_WORKSPACE, arguments)
+        .await
+        .map(drop)
+        .map_err(unavailable)
 }
 
 /// Enter `workspace` as this device's, as `device`, signing its own row there with this device's

@@ -27,7 +27,9 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::workspace_view::{CREATE, JOIN, LIST, Listed, MEMBERSHIP, resource};
+use tilo_peer_state::workspace_view::{
+    BRANCH, CREATE, DELETE, JOIN, LIST, Listed, MEMBERSHIP, resource,
+};
 use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_workspace_service::apps::shell::{
     ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
@@ -439,7 +441,9 @@ fn named(argument: InvokeArgument) -> Result<Map<String, Value>, String> {
 }
 
 /// The person's workspace list's `action` with `arguments`: [`CREATE`] founds a workspace this
-/// device keeps, [`JOIN`] joins the workspace an invitation is to. Answers the workspace's id.
+/// device keeps, [`JOIN`] joins the workspace an invitation is to, [`BRANCH`] copies one of the
+/// person's own into a new one, and [`DELETE`] deletes one where this device keeps it. Answers
+/// the workspace the action made, when it makes one.
 async fn listed(
     workspaces: &ServiceWorkspaces,
     action: &str,
@@ -451,20 +455,52 @@ async fn listed(
             .and_then(Value::as_str)
             .ok_or_else(|| format!("`{action}` names its `{name}`"))
     };
-    let workspace = match action {
+    match action {
         CREATE => {
             let workspace = WorkspaceId::parse(text("id")?).ok_or("that is not a workspace")?;
             workspaces.found(workspace, text("name")?).await?;
-            workspace.to_string()
+            Ok(Value::String(workspace.to_string()))
         }
-        JOIN => workspaces
-            .copies()
-            .join_member(text("invite")?)
-            .await?
-            .to_string(),
-        _ => return Err(format!("the person's workspaces have no action `{action}`")),
-    };
-    Ok(Value::String(workspace))
+        JOIN => Ok(Value::String(
+            workspaces
+                .copies()
+                .join_member(text("invite")?)
+                .await?
+                .to_string(),
+        )),
+        BRANCH => {
+            let source = text("workspace")?.to_owned();
+            let name = text("name")?.to_owned();
+            let branch = match arguments.get("id").and_then(Value::as_str) {
+                Some(id) => uuid::Uuid::parse_str(id)
+                    .map_err(|_| "`id` is a workspace id (a UUID)".to_owned())?
+                    .to_string(),
+                None => uuid::Uuid::new_v4().to_string(),
+            };
+            let device = workspaces.device_cert();
+            let made = super::services::branch_here(
+                workspaces,
+                device,
+                device,
+                source,
+                name,
+                branch,
+                tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(Value::String(made.workspace.workspace))
+        }
+        DELETE => {
+            let workspace = text("workspace")?.to_owned();
+            let device = workspaces.device_cert();
+            super::services::delete_here(workspaces, device, device, &workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(Value::Null)
+        }
+        _ => Err(format!("the person's workspaces have no action `{action}`")),
+    }
 }
 
 /// Follow `invocation` on `provider` until it finishes, as long as a request is followed.
