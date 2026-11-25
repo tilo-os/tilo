@@ -2300,8 +2300,10 @@ fn ask_again(
     app: &str,
     tab: TabId,
 ) {
+    // The place is held under the app the launch opens a window of, as every launch's is: a
+    // window a session-made connection brings is matched to it by that app and its tab.
     let mut held = held.borrow_mut();
-    let queue = held.entry(app.to_owned()).or_default();
+    let queue = held.entry(launch_app(app).to_owned()).or_default();
     if !queue.iter().any(|record| record.tab == Some(tab)) {
         queue.push(HeldTab {
             tab: Some(tab),
