@@ -1176,7 +1176,7 @@ mod cases {
             .find(|node| props_text(node, "title") == "Directions")
             .and_then(|node| node.props.get("expanded").cloned())
             .unwrap_or(Value::none());
-        assert_eq!(expanded, Value::Int(1), "`2` opened the directions");
+        assert_eq!(expanded, Value::Bool(true), "`2` opened the directions");
     }
 
     phase a_geo_link_reads_its_escapes_and_its_uncertainty;
@@ -1417,7 +1417,7 @@ mod cases {
         for marker in &markers {
             assert_eq!(
                 marker.props.get("label"),
-                Some(&Value::Int(1)),
+                Some(&Value::Bool(true)),
                 "a place's marker names it: {:?}",
                 marker.props.get("name")
             );
