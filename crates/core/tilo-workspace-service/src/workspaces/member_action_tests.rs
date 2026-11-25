@@ -560,3 +560,72 @@ async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_w
     assert!(again.changes.is_empty(), "{again:?}");
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
+    use tilo_server_protocol::workspaces::JoinReply;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = made_workspace(&workspaces, "Joined").await;
+    let documents = crate::device_documents::ServiceDocuments::of(workspaces.clone());
+    let mut log = tilo_resource_store::history::feed::ChangeLog::new();
+    let cursor = feed_after(&documents, &mut log, &workspace, None).cursor;
+    let started = i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX) * 1000;
+    let token = [9u8; 8];
+    let issued = workspaces
+        .pre_admit(
+            &owner,
+            PreAdmitRequest {
+                request_id: [9; 32],
+                grant: fixtures::signed_pre_admission(&workspace, &token),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (guest_key, guest) = guest_device();
+    let reply = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            (guest.clone(), &guest_key),
+            [10; 32],
+            "Ada",
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+
+    let page = feed_after(&documents, &mut log, &workspace, Some(&cursor));
+    let joins: Vec<_> = page
+        .changes
+        .iter()
+        .filter(|change| change.entry["verb"] == governance::JOIN)
+        .collect();
+    assert_eq!(joins.len(), 1, "the invitation accepted, once: {page:?}");
+    let join = joins[0];
+    assert_eq!(join.record, "workspace/members");
+    assert_eq!(
+        join.entry["by"],
+        collab_types::Stamp::by(&actor(guest.user_public_key)).as_str(),
+        "the person who joined decided it: {join:?}"
+    );
+    let time = join.entry["time_ms"].as_i64().unwrap_or_default();
+    assert!(time >= started, "{time} < {started}: {join:?}");
+    // The governance names who sent the invitation beside who accepted it.
+    let named = stamped(&workspaces, &workspace, 0).await;
+    let (stamp, _) = named
+        .iter()
+        .find(|(stamp, _)| stamp.verb == governance::JOIN)
+        .expect("the join is named");
+    assert_eq!(
+        stamp.suggested_by,
+        collab_types::Stamp::by(&actor(owner.user_public_key)),
+        "the inviter proposed it: {stamp:?}"
+    );
+    let again = feed_after(&documents, &mut log, &workspace, Some(&page.cursor));
+    assert!(again.changes.is_empty(), "{again:?}");
+    server.shutdown().await;
+}

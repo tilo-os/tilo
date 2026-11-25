@@ -265,7 +265,14 @@ impl StatePeer {
         if before_role == Some(role) {
             changes.remove(0);
         }
-        let mut wrote = self.write_changes(doc, changes, key, now)? && {
+        // Holding someone new is adding a member; anything else of theirs this changes, their
+        // role or whether they administer the workspace, is changing their role.
+        let verb = match before_role {
+            None => tilo_action_policy::roles::governance::ADD_MEMBER,
+            Some(_) => tilo_action_policy::roles::governance::SET_ROLE,
+        };
+        let stamp = self.own_action(verb, key, now);
+        let mut wrote = self.naming(stamp, |peer| peer.write_changes(doc, changes, key, now))? && {
             before_role != Some(role) || before_admin != administrator
         };
         // The name the declaration carries, written after the role: the person

@@ -67,11 +67,19 @@ id = "add-member"
 kind = "outside"
 
 [[resources.verbs]]
+id = "join"
+kind = "outside"
+
+[[resources.verbs]]
 id = "set-role"
 kind = "outside"
 
 [[resources.verbs]]
 id = "remove-member"
+kind = "outside"
+
+[[resources.verbs]]
+id = "transfer-ownership"
 kind = "outside"
 
 [[resources]]

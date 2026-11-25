@@ -927,7 +927,17 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        self.peer.write_changes(document, vec![change], key, now)
+        // Giving a member a role of the workspace's own, or taking it, changes that member;
+        // defining a role changes nobody.
+        let stamp = matches!(change, Change::SetMemberCustomRole { .. })
+            .then(|| {
+                self.peer
+                    .own_action(tilo_action_policy::roles::governance::SET_ROLE, key, now)
+            })
+            .flatten();
+        self.peer.naming(stamp, |peer| {
+            peer.write_changes(document, vec![change], key, now)
+        })
     }
 
     /// Publish root-signed revocations into pinned governance, so every
@@ -1098,8 +1108,12 @@ impl PeerGovernanceMut<'_> {
                         person: cert.user_public_key,
                     }
                 });
-                self.peer
-                    .write_membership(document.into(), &before, key, now, admit)
+                // A person joining names the change for whoever reads the workspace's
+                // members: they joined, at the invitation of whoever sent it.
+                let joined = admit.as_ref().map(|_| joined(redemption));
+                self.peer.naming(joined, |peer| {
+                    peer.write_membership(document.into(), &before, key, now, admit)
+                })
             }
         }
     }
@@ -1466,14 +1480,21 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        self.peer.write_changes(
-            doc,
-            vec![Change::TransferOwnership {
-                person: hex::encode(user_public_key),
-            }],
+        let stamp = self.peer.own_action(
+            tilo_action_policy::roles::governance::TRANSFER_OWNERSHIP,
             key,
             now,
-        )
+        );
+        self.peer.naming(stamp, |peer| {
+            peer.write_changes(
+                doc,
+                vec![Change::TransferOwnership {
+                    person: hex::encode(user_public_key),
+                }],
+                key,
+                now,
+            )
+        })
     }
 
     /// Hold the person `user_public_key` in the workspace at `place`, as
@@ -1848,14 +1869,45 @@ impl PeerGovernanceMut<'_> {
                 doc.delete(&peers, named.as_str()).map_err(err)?;
             }
         }
-        self.peer.write_membership(
-            doc,
-            &before,
+        let stamp = self.peer.own_action(
+            tilo_action_policy::roles::governance::REMOVE_MEMBER,
             key,
             now,
-            Some(crate::members::MembershipOpCommand::Project { changes }),
-        )
+        );
+        self.peer.naming(stamp, |peer| {
+            peer.write_membership(
+                doc,
+                &before,
+                key,
+                now,
+                Some(crate::members::MembershipOpCommand::Project { changes }),
+            )
+        })
     }
+}
+
+/// The action a redemption of an invitation is, for whoever reads the
+/// workspace's members: the redeeming person joined, proposed by whoever sent
+/// the invitation (its issuer's person, or the person a host signed it for).
+/// The redemption's own request names it, so a write made again for its
+/// signatures names the same one.
+fn joined(redemption: &crate::join::VerifiedRedemption) -> super::ActionStamp {
+    let person = |root: [u8; 32]| {
+        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(root)))
+    };
+    let join = redemption.join();
+    let inviter = join
+        .inviter()
+        .map_or(join.grant().issuer.user_public_key, |inviter| {
+            inviter.user_public_key
+        });
+    let mut stamp = super::ActionStamp::of_invocation(
+        tilo_action_policy::roles::governance::JOIN,
+        person(redemption.certificate().user_public_key),
+        hex::encode(redemption.request_id()),
+    );
+    stamp.suggested_by = Some(person(inviter));
+    stamp
 }
 
 impl super::StatePeer {

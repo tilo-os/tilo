@@ -28,26 +28,48 @@ pub struct ActionStamp {
     /// makes names it, so a reader takes a ban's removal and its block as the
     /// one action they are.
     pub invocation: String,
+    /// Who proposed it, when `by` took up someone's offer: the member whose
+    /// invitation a person accepted to join.
+    pub suggested_by: Option<tilo_action_policy::Actor>,
 }
 
 impl ActionStamp {
     /// The action `verb` decided by `by`, as one administration of its own.
     #[must_use]
     pub fn new(verb: &'static str, by: tilo_action_policy::Actor) -> Self {
+        Self::of_invocation(verb, by, uuid::Uuid::new_v4().to_string())
+    }
+
+    /// The action `verb` decided by `by`, as the administration `invocation`
+    /// names: an id the writer settles from what it writes, so a write made
+    /// again for the signatures it asked for names the same one.
+    #[must_use]
+    pub const fn of_invocation(
+        verb: &'static str,
+        by: tilo_action_policy::Actor,
+        invocation: String,
+    ) -> Self {
         Self {
             verb,
             by,
-            invocation: uuid::Uuid::new_v4().to_string(),
+            invocation,
+            suggested_by: None,
         }
     }
 
-    /// The stamp this governance change commits as: its verb, invoker and
-    /// invocation, and no arguments (one may be a secret).
+    /// The stamp this governance change commits as: its verb, invoker,
+    /// invocation and whoever proposed it, and no arguments (one may be a
+    /// secret).
     fn as_stamp(&self) -> collab_types::Stamp {
         collab_types::Stamp {
             verb: self.verb.to_owned(),
             invoker: collab_types::Stamp::by(&self.by),
             invocation: self.invocation.clone(),
+            suggested_by: self
+                .suggested_by
+                .as_ref()
+                .map(collab_types::Stamp::by)
+                .unwrap_or_default(),
             ..collab_types::Stamp::default()
         }
     }
@@ -93,6 +115,53 @@ impl StatePeer {
     /// ([`Self::stamp_action`]).
     pub fn clear_action_stamp(&mut self) {
         self.action_stamp = None;
+    }
+
+    /// Make `run`, a governance write that changes the workspace's members,
+    /// as `stamp` when its caller names no action of its own: each change it
+    /// makes names that action, and none made after it does. A caller that
+    /// named the action ([`Self::stamp_action`]) keeps it, with whoever it
+    /// says decided it.
+    pub(super) fn naming<T>(
+        &mut self,
+        stamp: Option<ActionStamp>,
+        run: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        if self.action_stamp.is_some() {
+            return run(self);
+        }
+        let Some(stamp) = stamp else {
+            return run(self);
+        };
+        self.action_stamp = Some(stamp);
+        let outcome = run(self);
+        self.clear_action_stamp();
+        outcome
+    }
+
+    /// The action `verb` as `key`'s device writes it at `now`, decided by the
+    /// member that device is of: what a change of the members names when its
+    /// caller named no action. Its invocation is settled from the governance
+    /// it is written on, the action and the time, so a write made again for
+    /// its signatures names the same one. `None` for a writer that is no
+    /// member, whose write the governance refuses anyway.
+    pub(super) fn own_action(
+        &self,
+        verb: &'static str,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Option<ActionStamp> {
+        let by = self.membership(key.device_public_key(), now).ok()?.acting.by;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(self.core.workspace.as_bytes());
+        for head in self.workspace_heads().unwrap_or_default() {
+            hasher.update(&head.0);
+        }
+        hasher.update(verb.as_bytes());
+        hasher.update(collab_types::Stamp::by(&by).as_bytes());
+        hasher.update(&now_ns(now).to_le_bytes());
+        let invocation = hex::encode(&hasher.finalize().as_bytes()[..16]);
+        Some(ActionStamp::of_invocation(verb, by, invocation))
     }
 
     /// Make `run`, this copy's governance write, as the action `verb` by the

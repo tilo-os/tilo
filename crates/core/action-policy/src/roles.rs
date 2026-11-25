@@ -323,6 +323,11 @@ pub mod governance {
     /// alone does it ([`crate::Refusal::OwnershipByOwner`]); it is no action a
     /// grant gives, so it is not among [`ALL`].
     pub const TRANSFER_OWNERSHIP: &str = "transfer-ownership";
+    /// Come into the workspace by accepting an invitation: the change the
+    /// person's own device writes, which the invitation authorizes. Nobody
+    /// is granted it, so it is not among [`ALL`]; it names the change for
+    /// whoever reads the workspace's members.
+    pub const JOIN: &str = "join";
 
     pub const ALL: [&str; 15] = [
         ADD_MEMBER,

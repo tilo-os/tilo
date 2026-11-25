@@ -4994,8 +4994,15 @@ mod surface_tests {
     /// actions that make it: a change names the governance operation it is (`remove-member`,
     /// `set-role`), where the action API publishes the same change under the name its resource
     /// offers (`remove`, `role`). A store judges a change by the verb it names, so the
-    /// operations are declared by those words too.
-    const CHANGE_VERBS: [&str; 3] = ["add-member", "set-role", "remove-member"];
+    /// operations are declared by those words too: joining by an invitation and handing the
+    /// workspace over among them.
+    const CHANGE_VERBS: [&str; 5] = [
+        roles::governance::ADD_MEMBER,
+        roles::governance::JOIN,
+        roles::governance::SET_ROLE,
+        roles::governance::REMOVE_MEMBER,
+        roles::governance::TRANSFER_OWNERSHIP,
+    ];
 
     /// The resources the workspace's actions are published on, in file order: each child of its
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
