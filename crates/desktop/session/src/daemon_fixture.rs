@@ -16,7 +16,10 @@ use std::sync::Arc;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::services::{LauncherServices, ProcessServices};
+use tilo_workspace_service::apps::services::{
+    AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
+    ProcessServices,
+};
 use tilo_workspace_service::apps::shell::{
     ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
 };
@@ -160,6 +163,10 @@ impl TestDaemon {
             .block_on(async { tilo_workspace_service::resource_actions::register(&workspaces) })
             .expect("the runtime runs");
         let launched = launcher.is_some();
+        // The launcher this test starts its apps through execs them without a launcher's launch
+        // hold, so an app can reach the daemon before the session has recorded its launch.
+        let launcher =
+            launcher.map(|launcher| Arc::new(Held(launcher)) as Arc<dyn LauncherServices>);
         let links = Arc::new(ShellLinks::default());
         // The person's workspaces as the daemon publishes them to the shell: the same reading the
         // device's own daemon makes, following what changes here, so the session that links to
@@ -268,7 +275,18 @@ impl TestDaemon {
         workspaces: &[&str],
         launcher: Option<Arc<dyn LauncherServices>>,
     ) -> Self {
-        let daemon = Self::holding_launched(workspaces, launcher);
+        Self::writing_launched_for(workspaces, None, launcher)
+    }
+
+    /// [`Self::writing_launched`] with the workspace `elsewhere` names founded for `owner`
+    /// instead of this person: this device stays one of its administrators, as in a workspace
+    /// another person made.
+    pub(crate) fn writing_launched_for(
+        workspaces: &[&str],
+        elsewhere: Option<(&str, [u8; 32])>,
+        launcher: Option<Arc<dyn LauncherServices>>,
+    ) -> Self {
+        let daemon = Self::holding_launched_for(workspaces, elsewhere, launcher);
         let service = daemon.workspaces().clone();
         service.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
             cert: daemon.cert.clone(),
@@ -292,14 +310,25 @@ impl TestDaemon {
 
     /// A daemon holding each of `workspaces`.
     pub(crate) fn holding(workspaces: &[&str]) -> Self {
-        Self::holding_launched(workspaces, None)
+        Self::holding_launched_for(workspaces, None, None)
     }
 
-    fn holding_launched(workspaces: &[&str], launcher: Option<Arc<dyn LauncherServices>>) -> Self {
+    /// A daemon holding each of `workspaces`, and the one `elsewhere` names founded for its
+    /// owner.
+    fn holding_launched_for(
+        workspaces: &[&str],
+        elsewhere: Option<(&str, [u8; 32])>,
+        launcher: Option<Arc<dyn LauncherServices>>,
+    ) -> Self {
         let daemon = Self::launching(launcher);
         for workspace in workspaces {
             let id = WorkspaceId::parse(workspace).expect("a workspace");
-            daemon.found(id, workspace);
+            match elsewhere {
+                Some((elsewhere, owner)) if elsewhere == *workspace => {
+                    daemon.found_for(id, workspace, Some(owner));
+                }
+                _ => daemon.found(id, workspace),
+            }
         }
         daemon
     }
@@ -318,14 +347,21 @@ impl TestDaemon {
     /// Found `workspace` as `name` here, as the person's shell asks the daemon to, and have the
     /// session's view read how it stands, as the daemon publishes it.
     pub(crate) fn found(&self, workspace: WorkspaceId, name: &str) {
+        self.found_for(workspace, name, None);
+    }
+
+    /// [`Self::found`] for `owner`, when named: the workspace is theirs, and this device stays
+    /// one of its administrators.
+    fn found_for(&self, workspace: WorkspaceId, name: &str, owner: Option<[u8; 32]>) {
         let id = workspace.to_string();
         let workspaces = self.host.workspaces().clone();
         tilo_rt::app()
             .block_on(async move {
-                workspaces
-                    .create_workspace(name, Some(&id))
-                    .await
-                    .expect("the workspace is founded");
+                match owner {
+                    Some(owner) => workspaces.create_for(name, Some(&id), owner).await,
+                    None => workspaces.create_workspace(name, Some(&id)).await,
+                }
+                .expect("the workspace is founded");
             })
             .expect("the runtime runs");
         self.read_standing(workspace);
@@ -481,9 +517,60 @@ fn link(
         .expect("the runtime runs")
 }
 
-/// The daemon's one dispatch, as its person's shell reaches it: the device action service, which
-/// carries out the workspaces' governance (their agents included) as this device, exactly as the
-/// daemon does in a running session.
+/// How long an app's connection waits for the launch record the session makes of it: the real
+/// launcher holds an app until that record exists, and the test's stand-in does not.
+const WAITING_FOR_LAUNCH: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The launcher a test hands the daemon, with the launch hold's promise: an app that connects
+/// before the session has recorded the launch of its process waits for that record here instead
+/// of being refused.
+struct Held(Arc<dyn LauncherServices>);
+
+impl LauncherServices for Held {
+    fn applications(&self) -> Vec<LaunchableApplication> {
+        self.0.applications()
+    }
+
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String> {
+        self.0.launch(app, workspace, record, place)
+    }
+
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.0.attest_process(pid, app, workspace)
+    }
+
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        workspace: &str,
+        window_instance: Option<u64>,
+    ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        let deadline = std::time::Instant::now() + WAITING_FOR_LAUNCH;
+        loop {
+            if let Some(launch) =
+                self.0
+                    .authenticated_launch(pid, app, workspace, window_instance)?
+            {
+                return Ok(Some(launch));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
+/// The daemon's one dispatch, as its person's shell reaches it: the workspaces' governance (their
+/// agents included) carried out as this device, and every other call handed to the provider that
+/// serves it, exactly as the daemon does in a running session.
 struct Governance {
     workspaces: Workspaces,
 }
@@ -539,64 +626,73 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
 
     fn invoke(
         &self,
-        _caller: &tilo_actions::remote::Caller,
+        caller: &tilo_actions::remote::Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
         Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
-        let workspace =
+        // A governance operation is the device action service's answer; every other call is the
+        // workspace's own, handed to the provider that serves it as a device's daemon hands it —
+        // the window steps the shell asks of its apps among them.
+        if let Some((workspace, _)) =
             tilo_actions::remote::workspace_governance_operation(&request.target.address)
-                .map(|(workspace, _)| workspace.to_owned());
-        let Some(workspace) = workspace else {
-            return tilo_actions::remote::Pending::ready(Err(
-                tilo_actions::remote::ActionCallError::UnknownAction,
-            ));
-        };
-        // A change to the workspace's people and settings is the device's own, signed with its
-        // key, as the daemon's shell answers it.
-        if request.target.address.action == tilo_peer_state::workspace_view::MEMBERSHIP {
-            let command = match &request.argument {
-                tilo_actions::remote::InvokeArgument::Json(arguments) => arguments
-                    .get("command")
-                    .cloned()
-                    .and_then(|command| serde_json::from_value(command).ok()),
-                _ => None,
-            };
-            let Some(command) = command else {
-                return tilo_actions::remote::Pending::ready(Err(
-                    tilo_actions::remote::ActionCallError::InvalidRequest {
-                        reason: "a change to a workspace's people names its `command`".to_owned(),
-                    },
-                ));
-            };
-            let (answer, pending) = tilo_actions::remote::pending();
-            let workspaces = self.workspaces.clone();
-            drop(tilo_rt::app().spawn(async move {
-                let status = match workspaces
-                    .commit_own_change(&workspace, command, None)
-                    .await
-                {
-                    Ok(()) => tilo_actions::remote::ReceiptStatus::Completed {
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                    Err(reason) => tilo_actions::remote::ReceiptStatus::Rejected {
-                        error: tilo_actions::remote::ActionCallError::Refused { reason },
-                    },
+        {
+            let workspace = workspace.to_owned();
+            // A change to the workspace's people and settings is the device's own, signed with
+            // its key, as the daemon's shell answers it.
+            if request.target.address.action == tilo_peer_state::workspace_view::MEMBERSHIP {
+                let command = match &request.argument {
+                    tilo_actions::remote::InvokeArgument::Json(arguments) => arguments
+                        .get("command")
+                        .cloned()
+                        .and_then(|command| serde_json::from_value(command).ok()),
+                    _ => None,
                 };
-                answer.complete(Ok(tilo_actions::remote::InvocationReceipt {
-                    invocation: tilo_actions::InvocationId::new(),
-                    status,
+                let Some(command) = command else {
+                    return tilo_actions::remote::Pending::ready(Err(
+                        tilo_actions::remote::ActionCallError::InvalidRequest {
+                            reason: "a change to a workspace's people names its `command`"
+                                .to_owned(),
+                        },
+                    ));
+                };
+                let (answer, pending) = tilo_actions::remote::pending();
+                let workspaces = self.workspaces.clone();
+                drop(tilo_rt::app().spawn(async move {
+                    let status = match workspaces
+                        .commit_own_change(&workspace, command, None)
+                        .await
+                    {
+                        Ok(()) => tilo_actions::remote::ReceiptStatus::Completed {
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                        Err(reason) => tilo_actions::remote::ReceiptStatus::Rejected {
+                            error: tilo_actions::remote::ActionCallError::Refused { reason },
+                        },
+                    };
+                    answer.complete(Ok(tilo_actions::remote::InvocationReceipt {
+                        invocation: tilo_actions::InvocationId::new(),
+                        status,
+                    }));
                 }));
-            }));
-            return pending;
+                return pending;
+            }
+            let cert = self.workspaces.device_cert();
+            let caller = tilo_actions::remote::Caller::authenticated(
+                cert.user_public_key,
+                cert.device_public_key,
+            )
+            .in_workspace(workspace);
+            return self.workspaces.device_actions().invoke(&caller, request);
         }
-        let cert = self.workspaces.device_cert();
-        let caller = tilo_actions::remote::Caller::authenticated(
-            cert.user_public_key,
-            cert.device_public_key,
-        )
-        .in_workspace(workspace);
-        self.workspaces.device_actions().invoke(&caller, request)
+        self.workspaces
+            .providers()
+            .invoke(caller, request)
+            .unwrap_or_else(|| {
+                tilo_actions::remote::Pending::ready(Err(
+                    tilo_actions::remote::ActionCallError::UnknownAction,
+                ))
+            })
     }
 
     fn observe(

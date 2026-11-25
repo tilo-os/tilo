@@ -771,7 +771,6 @@ mod tests {
 
     use collab_types::store::wire::{Command, Edit, Reply};
     use tilo_action_policy::Role;
-    use tilo_broker_core::route::CrdtRoute;
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
@@ -788,6 +787,10 @@ mod tests {
 
     /// The kind of record the app keeps a window of: a note of its own.
     const NOTE: &str = "probe.note";
+
+    /// The person a workspace of the tests' is founded for, when the person themselves may not
+    /// write there.
+    const ANOTHER: [u8; 32] = [0x9e; 32];
 
     /// What the app's package declares of its records: the note, and the verb that writes one.
     const DECLARED: &str = r#"format = 2
@@ -876,6 +879,12 @@ verbs = [
     impl Shell {
         /// A shell of two workspaces of the person's own.
         fn new() -> Self {
+            Self::new_elsewhere(None)
+        }
+
+        /// A shell of two workspaces, the one `elsewhere` names founded for [`ANOTHER`]: this
+        /// device stays one of its administrators, and the person is not its owner.
+        fn new_elsewhere(elsewhere: Option<WorkspaceId>) -> Self {
             let mut home = tilo_test_env::TestHome::new().expect("a home");
             let started = home.home().join("started");
             let arguments = home.home().join("arguments");
@@ -887,8 +896,12 @@ verbs = [
             // the device's daemon, whose store knows the app's records as its package declares them.
             let (from, to) = (WorkspaceId::from_u128(1), WorkspaceId::from_u128(2));
             let (from_id, to_id) = (from.to_string(), to.to_string());
-            let device = crate::daemon_fixture::TestDaemon::writing_launched(
+            let elsewhere = elsewhere.map(|workspace| (workspace.to_string(), ANOTHER));
+            let device = crate::daemon_fixture::TestDaemon::writing_launched_for(
                 &[&from_id, &to_id],
+                elsewhere
+                    .as_ref()
+                    .map(|(workspace, owner)| (workspace.as_str(), *owner)),
                 Some(std::sync::Arc::clone(&launches)
                     as std::sync::Arc<
                         dyn tilo_workspace_service::apps::services::LauncherServices,
@@ -1033,16 +1046,13 @@ verbs = [
                 matches!(written, Ok(Reply::Written)),
                 "the workspace keeps the note: {written:?}"
             );
-            // The session notes what a window shows as its app holds it: this one holds the record
-            // it was launched on.
-            self.session.shared.notes.read(
-                &[(
-                    self.tab,
-                    CrdtRoute::record(PROBE, self.from.clone(), id.as_str()),
-                )],
-                &|_| Some(PROBE.to_owned()),
-                &[self.tab].into_iter().collect(),
-            );
+            // The window's app holds the record it shows, as its window reports it, which the
+            // session keeps beside the window: what the daemon's broker reads afresh each pass
+            // would name nothing until the app holds it.
+            self.session
+                .shared
+                .notes
+                .note(self.tab, PROBE, &self.from, id.as_str());
             id
         }
 
@@ -1058,14 +1068,7 @@ verbs = [
 
         /// The notes of `workspace`, by id.
         fn notes(&self, workspace: &str) -> Vec<String> {
-            self.device
-                .workspaces()
-                .stored_records(workspace)
-                .expect("the device keeps the workspace")
-                .into_iter()
-                .filter(|(app, _)| app == PROBE)
-                .map(|(_, id)| id)
-                .collect()
+            notes_in(self.device.workspaces(), workspace)
         }
 
         /// The person moves the window to the workspace behind.
@@ -1129,7 +1132,8 @@ verbs = [
             );
         }
 
-        /// `workspace` answers what the person does there with `answer`, as its owners granted.
+        /// `workspace` answers what the person writes there with `answer`, as its owners
+        /// granted: reading stays theirs, so what they did there still reads.
         fn grant(&self, workspace: &str, answer: tilo_action_policy::Answer) {
             use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
             let person = hex::encode(self.device.certificate().user_public_key);
@@ -1144,7 +1148,7 @@ verbs = [
                             "mover",
                             Grantee::person(person.clone()),
                             TreePath::workspace(&workspace),
-                            KindSet::READ_UNDOABLE,
+                            KindSet::UNDOABLE,
                             answer,
                             Grantee::person(person),
                         )],
@@ -1228,6 +1232,20 @@ verbs = [
         tilo_rt::app()
             .block_on(workspaces.own_resource_command(workspace, PROBE, command, Vec::new()))
             .expect("the runtime runs")
+    }
+
+    /// The notes of `workspace` the store keeps, by id.
+    fn notes_in(
+        workspaces: &tilo_workspace_service::workspaces::Workspaces,
+        workspace: &str,
+    ) -> Vec<String> {
+        workspaces
+            .stored_records(workspace)
+            .expect("the device keeps the workspace")
+            .into_iter()
+            .filter(|(app, _)| app == PROBE)
+            .map(|(_, id)| id)
+            .collect()
     }
 
     /// What the note `id` of `workspace` holds; `None` while the workspace holds no such note.
@@ -1539,9 +1557,11 @@ verbs = [
             |_| note_in(&workspaces, &from, &showing),
         );
         assert_eq!(back, "first draft", "saying what it said");
-        assert!(
-            shell.notes(&shell.to_id).is_empty(),
-            "nothing of it stays where the tab went"
+        let (workspaces, to) = (shell.device.workspaces().clone(), shell.to_id.clone());
+        wait(
+            &mut shell.session,
+            "nothing of it stays where the tab went",
+            |_| notes_in(&workspaces, &to).is_empty().then_some(()),
         );
     }
 
@@ -1608,7 +1628,9 @@ verbs = [
     #[test]
     fn a_move_into_a_workspace_the_person_may_not_write_leaves_everything_where_it_was() {
         let _settled = ui::motion::testing::settled();
-        let mut shell = Shell::new();
+        // The workspace behind belongs to someone else, who let the person write none of its
+        // records.
+        let mut shell = Shell::new_elsewhere(Some(WorkspaceId::from_u128(2)));
         let showing = shell.showing("first draft");
         shell.grant(&shell.from.clone(), tilo_action_policy::Answer::Allow);
         shell.grant(&shell.to_id.clone(), tilo_action_policy::Answer::Deny);
@@ -1621,7 +1643,10 @@ verbs = [
     #[test]
     fn a_move_out_of_a_workspace_the_person_may_not_remove_from_leaves_everything_where_it_was() {
         let _settled = ui::motion::testing::settled();
-        let mut shell = Shell::new();
+        // The workspace the window is in belongs to someone else: the person writes the note
+        // there as one of its editors, and may not take it out.
+        let mut shell = Shell::new_elsewhere(Some(WorkspaceId::from_u128(1)));
+        shell.grant(&shell.from.clone(), tilo_action_policy::Answer::Allow);
         let showing = shell.showing("first draft");
         shell.grant(&shell.from.clone(), tilo_action_policy::Answer::Deny);
         shell.grant(&shell.to_id.clone(), tilo_action_policy::Answer::Allow);
