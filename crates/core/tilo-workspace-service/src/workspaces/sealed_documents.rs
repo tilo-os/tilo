@@ -502,12 +502,17 @@ impl Workspaces {
             Err(reason) => return Some(Err(reason.to_string())),
         };
         let readers = readers.unwrap_or(collab_types::EVERY_MEMBER);
-        let peer = self.state(&route.cluster_id).await?;
-        let isolated =
-            match peer.requires_document_keys(&route.app_id, &route.document, tilo_clock::wall()) {
-                Ok(isolated) => isolated,
-                Err(error) => return Some(Err(error)),
-            };
+        // Read off the workspace's replica as it stands, not a copy of it taken under its lock.
+        let isolated = match self
+            .reading_of(&route.cluster_id)
+            .await?
+            .replica
+            .read(|peer| {
+                peer.requires_document_keys(&route.app_id, &route.document, tilo_clock::wall())
+            }) {
+            Ok(isolated) => isolated,
+            Err(error) => return Some(Err(error)),
+        };
         if !isolated {
             return device.group_keys(&route.cluster_id, readers, create).await;
         }

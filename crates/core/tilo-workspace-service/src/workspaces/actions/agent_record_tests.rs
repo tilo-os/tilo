@@ -236,6 +236,83 @@ async fn the_agents_record_changes_only_through_admitted_actions() {
     server.shutdown().await;
 }
 
+/// How long a change of the workspace's agents may take, from its call to its Completed receipt:
+/// the roster check, the record's grants, the record read and changed, and the write.
+const AGENTS_CHANGE_BUDGET: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// How many times each change is asked: the fastest counts, so a busy machine that holds up a
+/// few of them does not fail the test, and a change that always waits does.
+const AGENTS_CHANGE_RUNS: usize = 8;
+
+/// Listing a computer's agent and renaming it each complete within [`AGENTS_CHANGE_BUDGET`],
+/// asked over this device's dispatch as the person's computer asks them when its agent's client
+/// connects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_change_completes_within_its_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Studio").await.unwrap().workspace;
+    let mut made = Vec::new();
+    let mut creates = Vec::new();
+    for run in 0..AGENTS_CHANGE_RUNS {
+        let started = std::time::Instant::now();
+        let answered = ask(
+            workspaces,
+            &workspace,
+            &owner,
+            (
+                WORKSPACE_AGENT_CREATE,
+                json!({ "name": format!("Scout {run}"), "mcp_client": "Claude Code" }),
+            ),
+        )
+        .await
+        .expect("the owner makes an agent");
+        creates.push(started.elapsed());
+        made.push(
+            answered["agent"]
+                .as_str()
+                .expect("the agent's id")
+                .to_owned(),
+        );
+    }
+    let mut renames = Vec::new();
+    for (run, agent) in made.iter().enumerate() {
+        let started = std::time::Instant::now();
+        ask(
+            workspaces,
+            &workspace,
+            &owner,
+            (
+                WORKSPACE_AGENT_UPDATE,
+                json!({
+                    "action": WorkspaceAgents::RENAME_AGENT.id,
+                    "arguments": { "agent": agent, "name": format!("Ranger {run}") },
+                }),
+            ),
+        )
+        .await
+        .expect("the owner renames it");
+        renames.push(started.elapsed());
+    }
+    let listed = agents(workspaces, &workspace).await;
+    for (run, agent) in made.iter().enumerate() {
+        assert!(
+            listed.contains(&(agent.clone(), format!("Ranger {run}"), true)),
+            "every change landed: {listed:?}"
+        );
+    }
+    for (change, took) in [("making an agent", creates), ("renaming one", renames)] {
+        let fastest = took.iter().min().copied().unwrap();
+        assert!(
+            fastest <= AGENTS_CHANGE_BUDGET,
+            "{change} takes {fastest:?} at its fastest, over {AGENTS_CHANGE_BUDGET:?}: {took:?}"
+        );
+    }
+    server.shutdown().await;
+}
+
 /// The triggers saved in `workspace` as this device's person, by their shortcut ids and the
 /// names they go by.
 #[cfg(feature = "agents")]

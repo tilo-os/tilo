@@ -182,19 +182,16 @@ impl DeviceWork {
         let caller = caller.clone();
         let (completer, answer) = tilo_actions::remote::pending();
         self.runtime.spawn(async move {
-            let held = work
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace.to_string())
-                .cloned();
-            // The device's certificate, and who the workspace says acts on it.
-            let listed = match held {
-                Some(held) => {
-                    let held = held.lock().await;
-                    let peer = held.peer();
-                    let listed = peer
-                        .certificates()
+            // The device's certificate, and who the workspace says acts on it, read off the
+            // workspace's replica: the roster is what its signed member list says now, and a
+            // write holding the workspace's lock does not hold up every call asked meanwhile.
+            let reading = match work.turns.get().and_then(super::WeakWorkspaces::upgrade) {
+                Some(workspaces) => workspaces.reading(workspace).await,
+                None => None,
+            };
+            let listed = reading.and_then(|reading| {
+                reading.replica.read(|peer| {
+                    peer.certificates()
                         .into_iter()
                         .find(|certificate| certificate.device_public_key == device)
                         .map(|certificate| {
@@ -202,13 +199,9 @@ impl DeviceWork {
                                 .permissions(device, tilo_clock::wall())
                                 .map(|access| access.acting.by);
                             (certificate, by.ok())
-                        });
-                    drop(peer);
-                    drop(held);
-                    listed
-                }
-                None => None,
-            };
+                        })
+                })
+            });
             // What the host answers here it answers for whoever the device's certificate acts
             // as: a caller acting as anyone else on it (a bot, an app, an agent the device
             // handed its requests to) is not answered as that device's own.

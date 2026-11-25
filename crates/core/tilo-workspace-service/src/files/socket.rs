@@ -248,7 +248,7 @@ async fn serve_one(
             return Err(why);
         }
     };
-    let governed = workspaces.governed_copy(workspace).await.is_some();
+    let governed = workspaces.governs(workspace).await;
     let source =
         super::WorkspaceSource::new(Arc::clone(&content), &workspace.to_string(), WANT_WITHIN);
     let Backend {

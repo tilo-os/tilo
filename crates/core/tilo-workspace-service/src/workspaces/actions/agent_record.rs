@@ -579,14 +579,16 @@ impl Workspaces {
         verb: &str,
     ) -> Result<bool, ActionCallError> {
         let declared = declared(verb)?;
-        let state = self.workspace(workspace).await.map_err(unavailable)?;
         let device = self.signing_device().cert.device_public_key;
         let now = tilo_clock::wall();
-        let policy = state
-            .lock()
+        // The grants as the workspace's replica holds them now, read without its lock: a write
+        // under way elsewhere in the workspace does not hold up the decision.
+        let policy = self
+            .reading_of(workspace)
             .await
-            .peer()
-            .permissions(device, now)
+            .ok_or_else(|| unavailable("this server does not hold that workspace"))?
+            .replica
+            .read(|peer| peer.permissions(device, now))
             .map_err(unavailable)?
             .policy;
         let access = MemberAccess::new(policy, acting.clone());

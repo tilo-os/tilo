@@ -89,7 +89,7 @@ pub async fn start(
     content: Option<Arc<RouteContent>>,
 ) -> std::io::Result<TreeSync> {
     // A workspace this device governs has no device serving it: its copy here is the workspace.
-    let governed = workspaces.governed_copy(workspace).await.is_some();
+    let governed = workspaces.governs(workspace).await;
     let backend = Backend::of(workspaces, workspace, content, governed);
     TreeSync::start(tilo_fs::tree_sync::Config {
         workspace: backend.copy.name.clone(),

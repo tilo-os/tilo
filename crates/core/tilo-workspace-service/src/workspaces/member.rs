@@ -1204,6 +1204,14 @@ impl Workspaces {
         (!reading.member).then(|| named_copy(&reading))
     }
 
+    /// Whether this device governs `workspace` here rather than holding a member copy of it:
+    /// what [`Self::governed_copy`] answers, without copying the replica it would hand back.
+    pub async fn governs(&self, workspace: WorkspaceId) -> bool {
+        self.reading(workspace)
+            .await
+            .is_some_and(|reading| !reading.member)
+    }
+
     /// Send `message` on `workspace`'s member link, while it is up: whether
     /// it was sent. A message handed to a link whose connection is not up
     /// reaches no store of its own — group governance is kept nowhere — so
@@ -1246,11 +1254,13 @@ impl Workspaces {
     ///
     /// The workspace could not be read now.
     pub async fn is_member(&self, workspace: &str) -> Result<bool, String> {
-        let state = self.inner.workspaces.lock().await.get(workspace).cloned();
-        let Some(state) = state else {
-            return Ok(false);
-        };
-        Ok(state.lock().await.member.is_some())
+        // Read as the workspace is read without its lock: what it holds is kept in step with the
+        // copy each time it becomes or stops being a member copy, so a write that asks first does
+        // not wait behind whatever holds the workspace now.
+        Ok(self
+            .reading_of(workspace)
+            .await
+            .is_some_and(|reading| reading.member))
     }
 
     /// Keep `commit`, a write this device makes to `workspace`, which another
@@ -1665,7 +1675,7 @@ impl Workspaces {
             ));
         }
         let member = self.is_member(workspace).await?;
-        if !member && self.governed_copy(workspace_id).await.is_none() {
+        if !member && !self.governs(workspace_id).await {
             return Err(WriteRefusal::Waiting(MissingPrerequisite::Workspace));
         }
         let message = NeighbourMsg::AppDocument {
@@ -1714,7 +1724,7 @@ impl Workspaces {
         if self.is_member(workspace).await? {
             return Err("this workspace is held here as a member copy".into());
         }
-        if self.governed_copy(workspace_id).await.is_none() {
+        if !self.governs(workspace_id).await {
             return Err("this workspace is not governed here".into());
         }
         let message = Self::local_document_message(

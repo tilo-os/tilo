@@ -530,7 +530,7 @@ impl Workspaces {
     /// Whether this service holds `workspace`'s own copy, governing it, rather than a member's.
     pub(crate) async fn holds_own_copy(&self, workspace: &str) -> bool {
         match collab_types::WorkspaceId::parse(workspace) {
-            Some(id) => self.governed_copy(id).await.is_some(),
+            Some(id) => self.governs(id).await,
             None => false,
         }
     }
