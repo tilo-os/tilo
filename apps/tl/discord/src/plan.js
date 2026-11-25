@@ -364,8 +364,10 @@ export function fromDiscord(state, event) {
     ];
   }
   if (event.source === "LAYOUT_CHANGED") {
+    // What Discord shows is recorded; bringing it into Chat reads Chat's sidebar first
+    // ([`importOf`]). A channel gone from Discord is marked vanished by `observe_layout`.
     const payload = event.payload;
-    const calls = [
+    return [
       self("observe_layout", {
         bot_user: payload.bot_user ?? "",
         channels: payload.channels ?? [],
@@ -373,19 +375,135 @@ export function fromDiscord(state, event) {
         emojis: payload.emojis ?? [],
       }),
     ];
-    // A channel Discord has and the workspace has not: Chat makes a conversation, then the
-    // bridge joins the two. A channel gone from Discord is marked vanished by `observe_layout`.
-    for (const channel of payload.channels ?? []) {
-      if (byDiscord(state, "channel", channel.id) || channel.kind === "category") continue;
-      const call = chat(channel.kind === "voice" ? "new_voice_channel" : "new_channel", {
-        name: channel.name,
-        category: channel.parent ? byDiscord(state, "category", channel.parent)?.tilo ?? null : null,
-      });
+  }
+  return [];
+}
+
+// ---- adopting a server ----------------------------------------------------------------------
+
+/// Chat's sidebar as its root reads: its categories, and its text and voice channels with the
+/// category each sits in. Ids are published (`tl:so.tilo.chat:…`), as Chat's actions take them.
+export function sidebarOf(read) {
+  const categories = [];
+  const channels = [];
+  const conversation = (entry, category) => {
+    const value = entry?.value ?? entry;
+    if (value === null || typeof value !== "object" || typeof value.name !== "string") return;
+    const id = published(entry?.id ?? value.id ?? "");
+    const kind = String(value.kind ?? value.$type ?? "");
+    if (kind.endsWith("Category") || (!kind && Array.isArray(value.channels))) {
+      categories.push({ id, name: value.name });
+      for (const inner of value.channels ?? []) conversation(inner, id);
+      return;
+    }
+    const voice = kind.endsWith("VoiceChannel") || (!kind && !("messages" in value) && !("topic" in value));
+    if (!voice && !kind.endsWith("TextChannel") && kind) return;
+    channels.push({ id, name: value.name, voice, category, archived: Boolean(value.archived) });
+  };
+  for (const entry of read?.channels ?? []) conversation(entry, null);
+  return { categories, channels };
+}
+
+/// A name as Discord writes a text channel's: lower case, words joined by `-`. Two names that
+/// read the same this way are one channel's.
+function slugOf(name) {
+  return String(name ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/^#/, "");
+}
+
+/// What adopting the server Discord's layout shows means in Chat, as calls run in order.
+///
+/// Each Discord category becomes Chat's category of its name, or a new one; each text and voice
+/// channel the Chat channel of its name and kind (one in the matching category first), moved
+/// into its Discord channel's category, or a new one there. So a workspace's `#general` becomes
+/// the server's `#general` wherever it sat, and Discord is left exactly as it was. A channel's
+/// call names its category by its Discord id (`categoryFrom`), which the program resolves once
+/// the category's own call has made or joined it. While the server is still being brought in and
+/// everything Discord shows is joined, `finish_import` names the workspace's channels and
+/// categories the server had no match for, which stay the workspace's own.
+export function importOf(state, layout, sidebar) {
+  const calls = [];
+  const only = state?.only_channel || "";
+  const apart = new Set(valuesOrList(state?.discord_only));
+  const taken = new Set(mappings(state).map((entry) => entry.tilo));
+  const joined = new Map();
+  const shown = (layout?.channels ?? [])
+    .filter((channel) => !apart.has(channel.id))
+    .filter((channel) => !only || channel.id === only)
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || String(a.id).localeCompare(String(b.id)));
+  let pending = false;
+  for (const category of only ? [] : shown.filter((channel) => channel.kind === "category")) {
+    const known = byDiscord(state, "category", category.id);
+    if (known) {
+      joined.set(category.id, known.tilo);
+      continue;
+    }
+    pending = true;
+    const same = sidebar.categories.find(
+      (held) => !taken.has(held.id) && slugOf(held.name) === slugOf(category.name),
+    );
+    if (same) {
+      taken.add(same.id);
+      joined.set(category.id, same.id);
+      calls.push(self("map", { kind: "category", tilo: same.id, discord: category.id, origin: "discord" }));
+    } else {
+      const call = chat("new_category", { name: category.name });
+      call.map = { kind: "category", discord: category.id, origin: "discord" };
+      calls.push(call);
+    }
+  }
+  // Channels in Discord's order: by their category's place (the top level first), text before
+  // voice, then by their own place.
+  const rank = new Map(
+    shown.filter((channel) => channel.kind === "category").map((category, at) => [category.id, at]),
+  );
+  const listed = shown
+    .filter((channel) => channel.kind === "text" || channel.kind === "voice")
+    .map((channel) => ({ channel, key: [rank.get(channel.parent) ?? -1, channel.kind === "voice" ? 1 : 0] }))
+    .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1])
+    .map(({ channel }) => channel);
+  for (const channel of listed) {
+    if (byDiscord(state, "channel", channel.id)) continue;
+    pending = true;
+    const parent = only ? "" : channel.parent || "";
+    const voice = channel.kind === "voice";
+    const named = sidebar.channels.filter(
+      (held) => !taken.has(held.id) && held.voice === voice && slugOf(held.name) === slugOf(channel.name),
+    );
+    const there = joined.get(parent) ?? null;
+    const same = named.find((held) => there !== null && held.category === there) ?? named[0] ?? null;
+    if (same) {
+      taken.add(same.id);
+      calls.push(self("map", { kind: "channel", tilo: same.id, discord: channel.id, origin: "discord" }));
+      if (!only && (same.category ?? null) !== there) {
+        const move = chat("move_channel", { ch: same.id, category: there });
+        if (parent && there === null) move.categoryFrom = parent;
+        calls.push(move);
+      }
+    } else {
+      const call = chat(voice ? "new_voice_channel" : "new_channel", { name: channel.name, category: there });
+      if (parent && there === null) call.categoryFrom = parent;
       call.map = { kind: "channel", discord: channel.id, origin: "discord" };
       calls.push(call);
     }
-    return calls;
   }
+  if (!pending && String(state?.ownership ?? "").replace(/^\./, "") === "importing") {
+    const left = [
+      ...sidebar.categories.filter((held) => !only && !taken.has(held.id)),
+      ...sidebar.channels.filter((held) => !taken.has(held.id)),
+    ].map((held) => held.id);
+    calls.push(self("finish_import", { tilo_only: left }));
+  }
+  return calls;
+}
+
+/// A set as a read answers it: a list, or an object of its members.
+function valuesOrList(set) {
+  if (Array.isArray(set)) return set;
+  if (set !== null && typeof set === "object") return Object.keys(set);
   return [];
 }
 

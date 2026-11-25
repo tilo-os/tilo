@@ -20,6 +20,9 @@ import {
   chatChanges,
   changeTarget,
   messageOf,
+  importOf,
+  sidebarOf,
+  byDiscord,
   CHAT,
   SELF,
 } from "./src/plan.js";
@@ -453,6 +456,58 @@ export async function carryFromDiscord({
       await calls.do(call);
     } catch (error) {
       log(`a Discord event did not reach the workspace: ${error?.message ?? error}`);
+    }
+  }
+  if (event.source === "LAYOUT_CHANGED") {
+    await adoptServer({ calls, account, layout: event.payload, log });
+  }
+}
+
+/// Chat's root, whose sidebar the server's layout is brought into.
+const SIDEBAR = `${CHAT}/conversations`;
+
+/// Brings what Discord's layout shows into Chat's sidebar ([`importOf`]): a pass joins or makes
+/// every category and channel, and the next, reading the record those calls wrote, finishes the
+/// import once nothing is left to join.
+export async function adoptServer({ calls, account, layout, log = () => {} }) {
+  let state = account;
+  for (let pass = 0; pass < 2; pass += 1) {
+    let sidebar;
+    try {
+      sidebar = sidebarOf(await calls.state(SIDEBAR));
+    } catch (error) {
+      log(`Chat's sidebar did not read, so the server's layout waits: ${error?.message ?? error}`);
+      return;
+    }
+    const planned = importOf(state, layout, sidebar);
+    if (planned.length === 0) return;
+    // The categories this pass joined or made, by their Discord id: a channel's call names its
+    // category by that id until it is made.
+    const joined = new Map();
+    for (const call of planned) {
+      try {
+        if (call.categoryFrom) {
+          const category =
+            joined.get(call.categoryFrom) ?? byDiscord(state, "category", call.categoryFrom)?.tilo ?? null;
+          call.args = { ...call.args, category };
+          delete call.categoryFrom;
+        }
+        const made = await calls.do(call);
+        if (call.map?.kind === "category") {
+          const id = referenceId(made);
+          if (id) joined.set(call.map.discord, publishedOf(id));
+        } else if (call.action === "map" && call.args.kind === "category") {
+          joined.set(call.args.discord, call.args.tilo);
+        }
+      } catch (error) {
+        log(`the server's layout did not all come over: ${error?.message ?? error}`);
+      }
+    }
+    try {
+      const accounts = await calls.state(ACCOUNTS);
+      state = accounts?.accounts?.[0] ?? accounts ?? state;
+    } catch {
+      return;
     }
   }
 }

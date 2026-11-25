@@ -13,6 +13,9 @@ import {
   changeTarget,
   messageOf,
   sizeOf,
+  importOf,
+  sidebarOf,
+  SELF as SELF_APP,
 } from "../src/plan.js";
 import { callsOf } from "../main.js";
 import { looksLikeToken, webhookSend } from "../src/rest.js";
@@ -192,10 +195,83 @@ test("a channel Discord has is made here and joined to it", () => {
     source: "LAYOUT_CHANGED",
     payload: { bot_user: "900", channels: [{ id: "458", kind: "text", name: "notes" }], roles: [] },
   });
-  expect(calls[0].action).toBe("observe_layout");
-  const made = calls.find((call) => call.action === "new_channel");
-  expect(made.args.name).toBe("notes");
+  expect(calls.map((call) => call.action)).toEqual(["observe_layout"]);
+  const made = importOf(
+    state(),
+    { channels: [{ id: "458", kind: "text", name: "notes" }] },
+    { categories: [], channels: [] },
+  ).find((call) => call.action === "new_channel");
+  expect(made.args).toEqual({ name: "notes", category: null });
   expect(made.map).toEqual({ kind: "channel", discord: "458", origin: "discord" });
+});
+
+const ID = (id) => `tl:so.tilo.chat:${id}`;
+
+/// The server's layout: a "Text" category holding the bridged #design, #notes and a voice
+/// channel, and a "Voice" category of its own with #lobby.
+const LAYOUT = {
+  channels: [
+    { id: "11", kind: "category", name: "Voice", position: 1 },
+    { id: "10", kind: "category", name: "Text", position: 0 },
+    { id: "456", kind: "text", name: "design", parent: "10", position: 0 },
+    { id: "458", kind: "text", name: "notes", parent: "10", position: 1 },
+    { id: "459", kind: "voice", name: "Call", parent: "10", position: 2 },
+    { id: "460", kind: "text", name: "lobby", parent: "11", position: 0 },
+  ],
+};
+
+test("adopting a server joins the workspace's categories and channels by name and makes the rest", () => {
+  const sidebar = sidebarOf({
+    channels: [
+      { id: "k1", value: { name: "text", channels: [] } },
+      { id: "c9", value: { name: "Notes", topic: "", messages: [] } },
+      { id: "k2", value: { name: "chat", channels: [{ id: "c1", value: { name: "general", topic: "", messages: [] } }] } },
+    ],
+  });
+  expect(sidebar.categories).toEqual([
+    { id: ID("k1"), name: "text" },
+    { id: ID("k2"), name: "chat" },
+  ]);
+  expect(sidebar.channels.map((channel) => [channel.id, channel.category])).toEqual([
+    [ID("c9"), null],
+    [ID("c1"), ID("k2")],
+  ]);
+  const calls = importOf(state({ ownership: "importing" }), LAYOUT, sidebar);
+  expect(calls.map((call) => [call.action, call.args, call.categoryFrom ?? null, call.map ?? null])).toEqual([
+    // The workspace's "text" category is Discord's "Text"; "Voice" is made.
+    ["map", { kind: "category", tilo: ID("k1"), discord: "10", origin: "discord" }, null, null],
+    ["new_category", { name: "Voice" }, null, { kind: "category", discord: "11", origin: "discord" }],
+    // #notes is joined and moves into its Discord channel's category.
+    ["map", { kind: "channel", tilo: ID("c9"), discord: "458", origin: "discord" }, null, null],
+    ["move_channel", { ch: ID("c9"), category: ID("k1") }, null, null],
+    ["new_voice_channel", { name: "Call", category: ID("k1") }, null, { kind: "channel", discord: "459", origin: "discord" }],
+    // #lobby waits for the category its call makes.
+    ["new_channel", { name: "lobby", category: null }, "11", { kind: "channel", discord: "460", origin: "discord" }],
+  ]);
+  // Planned again once everything is joined, the import finishes: #general and its category had
+  // no match there and stay the workspace's own.
+  const joined = state({
+    ownership: "importing",
+    map: [
+      { kind: "channel", tilo: ID("design"), discord: "456" },
+      { kind: "category", tilo: ID("k1"), discord: "10" },
+      { kind: "category", tilo: ID("k3"), discord: "11" },
+      { kind: "channel", tilo: ID("c9"), discord: "458" },
+      { kind: "channel", tilo: ID("v1"), discord: "459" },
+      { kind: "channel", tilo: ID("c2"), discord: "460" },
+    ],
+  });
+  expect(importOf(joined, LAYOUT, sidebar)).toEqual([
+    { app: SELF_APP, action: "finish_import", args: { tilo_only: [ID("k2"), ID("c1")] } },
+  ]);
+  expect(importOf({ ...joined, ownership: "adopted" }, LAYOUT, sidebar)).toEqual([]);
+});
+
+test("a bridge of one channel joins that one alone, outside any category", () => {
+  const calls = importOf(state({ only_channel: "458" }), LAYOUT, { categories: [], channels: [] });
+  expect(calls.map((call) => [call.action, call.args])).toEqual([
+    ["new_channel", { name: "notes", category: null }],
+  ]);
 });
 
 test("a workspace message goes through the webhook, cut where Discord takes it", () => {

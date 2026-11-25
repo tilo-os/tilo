@@ -3,7 +3,7 @@
 // account's name, and an edit, a deletion and a reaction follow it there.
 
 import { test, expect } from "bun:test";
-import { run } from "../main.js";
+import { adoptServer, run } from "../main.js";
 
 /// Wait until `check()` is true, or fail the test after `timeout`.
 async function until(check, what, timeout = 3_000) {
@@ -623,4 +623,42 @@ test("a bridged channel the bot has no webhook in gets one, joined in the record
   expect(workspace.hooks).toHaveLength(2);
   workspace.finish();
   await running;
+});
+
+test("a server's category is made before the channels in it, which are made inside it", async () => {
+  const done = [];
+  let record = account({ ownership: "importing", map: [] });
+  const calls = {
+    async state(path) {
+      if (path === "so.tilo.chat/conversations") return { channels: [] };
+      return { accounts: [record] };
+    },
+    async do(call) {
+      done.push([call.action, call.args]);
+      const made = { id: `made${done.length}` };
+      if (call.map) {
+        record = {
+          ...record,
+          map: [...record.map, { kind: call.map.kind, tilo: `tl:so.tilo.chat:${made.id}`, discord: call.map.discord }],
+        };
+      }
+      return made;
+    },
+  };
+  await adoptServer({
+    calls,
+    account: record,
+    layout: {
+      channels: [
+        { id: "10", kind: "category", name: "Projects", position: 0 },
+        { id: "456", kind: "text", name: "design", parent: "10", position: 0 },
+      ],
+    },
+  });
+  expect(done).toEqual([
+    ["new_category", { name: "Projects" }],
+    ["new_channel", { name: "design", category: "tl:so.tilo.chat:made1" }],
+    // The next pass reads the record those calls wrote: everything is joined, so it finishes.
+    ["finish_import", { tilo_only: [] }],
+  ]);
 });
