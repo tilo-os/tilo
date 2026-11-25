@@ -838,6 +838,25 @@ impl HostInner {
         }
     }
 
+    /// Run the call the API admitted for `invoker`, made through `through`'s process when it
+    /// names one. A call the person approved on the system's confirm is the run they answered:
+    /// what its own code calls runs on that yes. Any other asks again for what asks.
+    fn run_admitted(
+        &self,
+        invoker: &Actor,
+        through: Option<&str>,
+        action: (&str, Vec<Value>),
+        from: Option<&ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        if crate::page::approved() {
+            self.runtime
+                .invoke_approved_through(invoker, through, action, from)
+        } else {
+            self.runtime
+                .invoke_admitted_through(invoker, through, action, from)
+        }
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         // An edit of a field an action settles is that action, given the value.
@@ -909,8 +928,7 @@ impl HostInner {
                 // The API admitted the call before it asked for its plan, asking the person
                 // first where it had to: the run does not ask them again.
                 let outcome = self
-                    .runtime
-                    .invoke_admitted_through(
+                    .run_admitted(
                         &invoker,
                         request.caller.and_then(|caller| caller.app.as_deref()),
                         (request.action_id, args),

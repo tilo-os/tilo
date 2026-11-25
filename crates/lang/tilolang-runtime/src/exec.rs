@@ -480,7 +480,7 @@ impl Core {
     ) -> Result<bool, RuntimeError> {
         Ok(match admission {
             Admission::Not => false,
-            Admission::Answered => true,
+            Admission::Answered | Admission::Approved => true,
             Admission::Pressed { shift } => {
                 let undoable = self
                     .class_of(aref)
@@ -1288,17 +1288,16 @@ impl Core {
         self.invoke_direct_as_in(identity, (invoker, None), aref, from, None, Admission::Not)
     }
 
-    /// [`Core::invoke_direct`] of a call already admitted for `invoker`, as one part of the act
-    /// `gesture`: the dispatch asked whoever had to say yes before it delivered the call, and
-    /// decided it for them, whether the person pressed it in their app's bar, the palette or
-    /// search, or answered it where the system asked them. The run does not ask again for the
+    /// [`Core::invoke_direct`] of a call the dispatch already admitted for `invoker`: it asked
+    /// whoever had to say yes before it delivered the call, so the run does not ask again for the
     /// call itself.
     ///
-    /// A person's own press is the person acting: what the app's code goes on to call runs as
-    /// theirs too, as an answer they gave runs on ([`Core::run_answered`]). What an agent, an
-    /// automation or another app's process was admitted for still asks for what it goes on to
-    /// call. Code an author wrote around the call (a block, a view of someone's) still asks for
-    /// what its author may not do: the admission decided the invoker, not that code.
+    /// When the person `approved` it on the system's confirm, the run is the one they answered:
+    /// what the app's own code goes on to call runs on that yes ([`Core::run_answered`]). A call
+    /// delivered with no such yes (the person's from the palette, an agent's, an automation's,
+    /// another app's process) still asks for what it goes on to call. Code an author wrote around
+    /// the call (a block, a view of someone's) still asks for what its author may not do: the
+    /// admission decided the invoker, not that code.
     ///
     /// # Errors
     ///
@@ -1308,16 +1307,14 @@ impl Core {
         (invoker, app): (&Actor, Option<&str>),
         aref: &ActionRef,
         from: Option<&ResourceRef>,
-        gesture: Option<&str>,
+        approved: bool,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(
-            None,
-            (invoker, app),
-            aref,
-            from,
-            gesture,
-            Admission::Answered,
-        )
+        let admission = if approved {
+            Admission::Approved
+        } else {
+            Admission::Answered
+        };
+        self.invoke_direct_as_in(None, (invoker, app), aref, from, None, admission)
     }
 
     /// [`Core::invoke_direct`] of the person `invoker`'s own press in their app's window, as one
@@ -1398,8 +1395,13 @@ impl Core {
                 .map(|pkg| pkg.hash.clone());
             ctx.chain.iter().all(|m| own.as_ref() == Some(m))
         };
-        // A person's own press: what the app's code calls on the way runs under it.
+        // A person's own press, attested where it was made, or their yes on the system's confirm
+        // to the call as it was shown: what the app's code calls on the way runs under it, as an
+        // answer they gave runs on ([`Core::run_answered`]). A call the dispatch delivered as the
+        // person with neither was admitted for itself alone, so what its code goes on to call
+        // that asks still asks.
         let person = admitted
+            && matches!(admission, Admission::Pressed { .. } | Admission::Approved)
             && app.is_none()
             && invoker
                 .member_id()
@@ -3666,6 +3668,9 @@ pub(crate) enum Admission {
     Not,
     /// The dispatch admitted it, having asked whoever had to say yes.
     Answered,
+    /// The dispatch admitted it again on the person's yes on the system's confirm, to the call as
+    /// it was shown to them.
+    Approved,
     /// The person pressed it in their app's window, with Shift held or not.
     Pressed { shift: bool },
 }

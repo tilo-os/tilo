@@ -1595,6 +1595,8 @@ pub struct Hosted {
     children: Rc<RefCell<BTreeMap<String, Child>>>,
     /// Whether the runtime sends its calls of other apps' actions on this instance's connection.
     sending: bool,
+    /// Whether the runs an earlier host over this store left waiting were ended.
+    left_runs_ended: bool,
     platform: Rc<RefCell<Roots>>,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
@@ -1752,21 +1754,14 @@ struct Delivered {
     context: Option<Box<tilo_actions::ActionContext>>,
 }
 
-/// End the runs an earlier host over `store` left waiting on a child call: the invocation each
-/// went out as died with that host, and the change it held went with it, so each is ended with
-/// the failure that is true of it rather than left waiting for ever.
-fn abandon_open_runs(
-    store: &ResourceStore,
-    connection: &Connection,
-    instance: &Instance,
-    app: &str,
-) {
+/// End the runs an earlier host over `store` left waiting on a child call, through `host`, the
+/// runtime now open over it: the invocation each went out as died with that host, and the change
+/// it held went with it, so each is ended with the failure that is true of it rather than left
+/// waiting for ever.
+fn abandon_open_runs(store: &ResourceStore, connection: &Connection, host: &Host, app: &str) {
     for (call, run, action) in store.open_runs() {
         let reason = format!("`{action}` stopped when its app restarted");
         tracing::warn!(%app, %call, %run, %reason);
-        let Some(host) = instance.host() else {
-            continue;
-        };
         match host.runtime().abandon_run(&run, &reason) {
             Ok(Some((request, invocation))) => {
                 // The person sees it where the invocation shows: its own record says it ended,
@@ -1939,11 +1934,6 @@ impl Hosted {
         // The apps this one may call, each by its package: what a call of another app's action
         // is built from.
         let callees = Rc::new(callees_of(&bundle, &spec.workspace, &spec.provided));
-        // A run an earlier host over this store left waiting on a child call cannot be answered:
-        // the invocation the call went out as died with that host, and the change the run held
-        // went with it. It is ended here with the failure that is true of it, rather than left
-        // waiting for ever.
-        abandon_open_runs(&store, &connection, &instance, &spec.app);
         let waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>> = Rc::default();
         let children: Rc<RefCell<BTreeMap<String, Child>>> = Rc::new(RefCell::new(BTreeMap::new()));
 
@@ -1969,6 +1959,7 @@ impl Hosted {
             waiting_calls,
             children,
             sending: false,
+            left_runs_ended: false,
             platform: platform_roots,
             identity: None,
             scope,
@@ -2219,6 +2210,17 @@ impl Hosted {
         events.extend(self.connection.poll());
         let mut changed = !events.is_empty();
         self.instance.sync();
+        // A run an earlier host over this store left waiting on a child call cannot be answered:
+        // the invocation the call went out as died with that host, and the change the run held
+        // went with it. It is ended with the failure that is true of it, rather than left waiting
+        // for ever, once the runtime that holds it is open, before anything the connection
+        // delivered is served.
+        if !self.left_runs_ended
+            && let Some(host) = self.instance.host()
+        {
+            abandon_open_runs(&self.store, &self.connection, &host, &self.spec.app);
+            self.left_runs_ended = true;
+        }
         // The runtime's calls of other apps' actions go out on this instance's connection, as
         // children of the invocation the broker is serving: installed once the host that makes
         // them is open.

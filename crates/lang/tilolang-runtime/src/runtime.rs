@@ -970,7 +970,27 @@ impl Runtime {
     ) -> Result<InvokeOutcome, RuntimeError> {
         let action = action.into();
         let from = from.or(action.from.as_ref());
-        self.core.invoke_admitted((actor, app), &action, from, None)
+        self.core
+            .invoke_admitted((actor, app), &action, from, false)
+    }
+
+    /// [`Runtime::invoke_admitted_through`] of a call the dispatch admitted again on the person's
+    /// yes on the system's confirm, to the call as it was shown to them: the run is the one they
+    /// answered, so what its own code goes on to call does not ask them again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_approved_through(
+        &self,
+        actor: &Actor,
+        app: Option<&str>,
+        action: impl Into<ActionRef>,
+        from: Option<&crate::value::ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let action = action.into();
+        let from = from.or(action.from.as_ref());
+        self.core.invoke_admitted((actor, app), &action, from, true)
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their

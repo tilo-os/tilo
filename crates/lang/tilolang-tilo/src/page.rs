@@ -266,6 +266,12 @@ pub fn answering<R>(
     ran
 }
 
+/// Whether this thread runs a call the person approved on the system's confirm
+/// ([`answering`]).
+pub(crate) fn approved() -> bool {
+    APPROVED.with(|slot| slot.borrow().is_some())
+}
+
 /// Hand `take` what the person typed on the system's card for the call they approved and this
 /// thread runs, one entry per take in order: what a host passes straight to where it goes (a
 /// page's sign-in, the workspace's vault), so it never becomes a value of the run. Nothing

@@ -284,7 +284,8 @@ tilo_test_env::scenario! {
         );
         settle(&mut host, &mut window);
         let address = twice(host.instances().next().expect("the instance runs"));
-        serve(&inbox, 9, InvocationId::new(), &address);
+        let served = InvocationId::new();
+        serve(&inbox, 9, served, &address);
         settle(&mut host, &mut window);
         let child = child_sent(&sent).expect("the call went through the dispatch");
         assert_eq!(counter(host.instances().next().unwrap()), 1);
@@ -311,7 +312,7 @@ tilo_test_env::scenario! {
         let InvocationUpdate::Failed { invocation, error } = ended else {
             panic!("the served invocation ends failed: {ended:?}");
         };
-        assert_eq!(invocation, child.invocation);
+        assert_eq!(invocation, served, "the invocation the run served is the one that ends");
         assert!(
             error.message.contains("stopped when its app restarted"),
             "{}",
@@ -322,8 +323,8 @@ tilo_test_env::scenario! {
         settle(&mut restarted, &mut window);
         assert_eq!(
             counter(restarted.instances().next().unwrap()),
-            1,
-            "nothing of the run went on"
+            0,
+            "a failed run's writes are taken back, and nothing of it went on"
         );
     }
 }
@@ -424,14 +425,27 @@ fn drafts(hosted: &Hosted) -> Vec<bool> {
         .collect()
 }
 
-/// Deliver the broker's invocation `id` of `action` on `resource`, with `arguments`, as `ada`.
+/// Deliver the broker's invocation `id` of `action` on `resource`, with `arguments`, as `ada`:
+/// with her yes on the system's confirm when `approved`, as the dispatch admits a call again once
+/// she answered its asked record, and as her plain call otherwise.
 fn deliver(
     inbox: &Inbox,
     id: u64,
     invocation: InvocationId,
     (resource, action): (String, String),
-    arguments: &serde_json::Value,
+    (arguments, approved): (&serde_json::Value, bool),
 ) {
+    let context = approved.then(|| {
+        let record = tilo_actions::remote::asked::RecordRef {
+            workspace: "workspace".to_owned(),
+            record: format!("asked/{invocation:?}"),
+            device: None,
+        };
+        Box::new(tilo_actions::ActionContext {
+            approval: Some(tilo_actions::remote::asked::Approval::new(record, None)),
+            ..tilo_actions::ActionContext::default()
+        })
+    });
     inbox.borrow_mut().push_back(CollabEvent::Invocation {
         id,
         invocation,
@@ -442,7 +456,7 @@ fn deliver(
             tilo_actions::ARGUMENTS_JSON_PREFIX
         )),
         actor: tilo_actions::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-        context: None,
+        context,
     });
 }
 
@@ -484,6 +498,8 @@ tilo_test_env::scenario! {
 
     phase allowed_the_send_runs_once_without_asking_again;
     {
+        // Ada's plain call of `answer`, delivered by the dispatch with neither her press nor
+        // her yes behind it: it covers `answer` alone, so the send its code makes asks her.
         let (mut host, mut window, sent, inbox, answer) = answers();
         let served = InvocationId::new();
         deliver(
@@ -491,7 +507,10 @@ tilo_test_env::scenario! {
             7,
             served,
             answer,
-            &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+            (
+                &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+                false,
+            ),
         );
         settle(&mut host, &mut window);
         let child = child_sent(&sent).expect("the send went through the dispatch");
@@ -509,8 +528,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(drafts(host.instances().next().unwrap()), [false]);
 
-        // The dispatch asks the person, who allows it: it delivers the send to the app, which
-        // runs it as the answer it was given, without asking again.
+        // The dispatch asks the person, who allows it: it delivers the send again with her yes,
+        // and the app runs it as the answer it was given, without asking again.
         receipt(
             &inbox,
             child.invocation,
@@ -530,7 +549,7 @@ tilo_test_env::scenario! {
                 child.target.address.resource.clone(),
                 child.target.address.action.clone(),
             ),
-            &serde_json::Value::Object(arguments),
+            (&serde_json::Value::Object(arguments), true),
         );
         settle(&mut host, &mut window);
         assert!(
@@ -553,15 +572,47 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase approved_the_answer_runs_its_send_on_the_same_yes;
+    {
+        // Ada approved `answer` itself on the system's confirm, as it was shown to her: the run
+        // is the one she answered, so the send its own code makes runs on that yes.
+        let (mut host, mut window, sent, inbox, answer) = answers();
+        deliver(
+            &inbox,
+            7,
+            InvocationId::new(),
+            answer,
+            (
+                &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+                true,
+            ),
+        );
+        settle(&mut host, &mut window);
+        assert!(
+            child_sent(&sent).is_none(),
+            "nobody is asked again about the send"
+        );
+        assert!(
+            matches!(answered(&sent, 7), Some(InvocationUpdate::Succeeded { .. })),
+            "the approved answer runs to its end: {:?}",
+            answered(&sent, 7)
+        );
+        assert_eq!(drafts(host.instances().next().unwrap()), [true], "the draft went");
+    }
+
     phase declined_the_answer_ends_and_its_draft_is_taken_back;
     {
+        // Ada's plain call again: the send asks her, and she says no.
         let (mut host, mut window, sent, inbox, answer) = answers();
         deliver(
             &inbox,
             9,
             InvocationId::new(),
             answer,
-            &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+            (
+                &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+                false,
+            ),
         );
         settle(&mut host, &mut window);
         let child = child_sent(&sent).expect("the send went through the dispatch");
