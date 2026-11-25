@@ -157,6 +157,82 @@ impl Declared {
     }
 }
 
+/// Who a call of a resource's action is decided as, in the workspace where `person` is the
+/// caller's person: the caller as its transport admitted it (an agent bounded by its person's
+/// answers, software by its own grants), or, where the person's own shell names an agent of
+/// theirs as the one asking ([`tilo_actions::ActionContext::invoker`], what the change is
+/// attributed to), that agent, handed the person's session as the shell hands it. An invoker that
+/// is neither the person nor an agent of theirs asks for nothing here.
+/// An agent its person narrowed with their answers here takes only what those answers name
+/// ([`tilo_action_policy::WorkspacePolicy::answers_narrow`]): the delegation it was handed adds
+/// nothing.
+fn deciding_actor(
+    caller: &Caller,
+    context: Option<&tilo_actions::ActionContext>,
+    (person, policy, now): (&str, &tilo_action_policy::WorkspacePolicy, u64),
+) -> Result<tilo_broker_core::BrokerActor, ReceiptStatus> {
+    let someone_else = context
+        .and_then(|context| context.invoker.as_ref())
+        .map(|invoker| &invoker.acting)
+        .filter(|acting| {
+            acting
+                .member_id()
+                .and_then(tilo_actions::MemberId::person_id)
+                != Some(person)
+        });
+    let asking = match someone_else {
+        None => caller.clone(),
+        Some(acting) => match acting
+            .member_id()
+            .and_then(tilo_actions::MemberId::as_agent)
+        {
+            Some((agent, of)) if of.as_str() == person && caller.acting().is_person() => {
+                caller.clone().delegated_to(agent)
+            }
+            _ => {
+                return Err(ReceiptStatus::Rejected {
+                    error: ActionCallError::NotPermitted,
+                });
+            }
+        },
+    };
+    let narrowed = asking
+        .acting()
+        .member_id()
+        .and_then(tilo_actions::MemberId::as_agent)
+        .filter(|(agent, of)| {
+            policy.answers_narrow(
+                agent,
+                of.as_str(),
+                &tilo_action_policy::Context::at_secs(now),
+            )
+        });
+    Ok(match narrowed {
+        Some((agent, of)) => {
+            tilo_broker_core::BrokerActor::agent(agent, of.as_str()).for_person(of.as_str())
+        }
+        None => tilo_broker_core::BrokerActor::for_caller(&asking),
+    })
+}
+
+/// `workspace` as its policy `policy` governs it, for deciding a call there: without the grants
+/// that last one use, which a call decided here never spends.
+fn governed(
+    workspace: &str,
+    policy: &tilo_action_policy::WorkspacePolicy,
+) -> Option<tilo_desktop_model::Workspace> {
+    let mut governed = tilo_desktop_model::Workspace::new(
+        tilo_desktop_model::WorkspaceId::parse(workspace)?,
+        String::new(),
+    );
+    governed.policy = policy.clone();
+    governed
+        .policy
+        .grants
+        .retain(|grant| grant.lifetime != tilo_action_policy::Lifetime::Once);
+    Some(governed)
+}
+
 /// A failure that ran nothing to its end, with why.
 fn failed(code: &str, message: String) -> ReceiptStatus {
     ReceiptStatus::Failed {
@@ -227,6 +303,15 @@ impl ResourceActions {
             .ok_or_else(|| rejected(ActionCallError::NotPermitted))?
             .to_owned();
         let member = tilo_actions::MemberId::person(person.clone());
+        // Who the call is decided as: never the person alone where someone else asks.
+        let decider = deciding_actor(
+            caller,
+            request.context.as_ref(),
+            (&person, &policy.access.policy, policy.unix_time),
+        )?;
+        let governed = governed(&workspace, &policy.access.policy)
+            .ok_or_else(|| invalid("that is not a workspace"))?;
+        // What this device itself may do here bounds every call it carries.
         let permissions = collaboration::permissions::PermissionContext::new(
             collaboration::permissions::Acting::person(person),
             policy.sandbox.clone(),
@@ -257,13 +342,17 @@ impl ResourceActions {
             let (resource, action) = api::locate(std::slice::from_ref(&tree), address)
                 .ok_or_else(|| rejected(ActionCallError::UnknownAction))
                 .map_err(Box::new)?;
-            match permissions.invocation_answer(
-                declared.kind.declaring_app(),
-                resource,
-                action,
-                Some(&arguments),
-                None,
-            ) {
+            let app = declared.kind.declaring_app();
+            let (decided, _) = decider.action_verdict_in(
+                &governed,
+                app,
+                (&resource.kind, resource.id.as_str(), &action.id),
+                &action.need_for(Some(&arguments), None),
+                policy.unix_time,
+            );
+            let device =
+                permissions.invocation_answer(app, resource, action, Some(&arguments), None);
+            match decided.min(device) {
                 collaboration::permissions::Answer::Deny => {
                     return Err(Box::new(rejected(ActionCallError::NotPermitted)));
                 }
@@ -469,3 +558,7 @@ impl ActionProvider for ResourceActions {
         Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }
+
+#[cfg(test)]
+#[path = "resource_actions_tests.rs"]
+mod tests;

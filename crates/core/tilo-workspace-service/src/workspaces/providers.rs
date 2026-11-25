@@ -475,17 +475,17 @@ impl Providers {
         let served = self.0.provided.read_recover();
         served
             .get(provider)
+            .cloned()
             .or_else(|| resources(&served, provider))
             .or_else(|| {
                 let (app, _) = tilo_actions::remote::resource_parts(provider)?;
-                served.get(app)
+                served.get(app).cloned()
             })
             .or_else(|| {
                 let (workspace, app) = tilo_actions::remote::application_provider(provider)?;
                 let token = tilo_actions::remote::application_provider_token(workspace, app);
-                served.get(token.as_str())
+                served.get(token.as_str()).cloned()
             })
-            .cloned()
     }
 
     /// Answer for the seat with `answers` from now on: the services of the screen, the sound, the
@@ -611,8 +611,7 @@ impl Providers {
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let provider = request.target.provider.as_str();
         let named = self.0.provided.read_recover().get(provider).cloned();
-        let registered =
-            named.or_else(|| resources(&self.0.provided.read_recover(), provider).cloned());
+        let registered = named.or_else(|| resources(&self.0.provided.read_recover(), provider));
         if (registered.is_none() || self.hosts_answer_every())
             && let Some(host) = self.host_of(caller, &request)
         {
@@ -623,7 +622,7 @@ impl Providers {
         // the call names: a workspace's own `app.<app>#open` is the open of an app this device
         // places.
         let registered = registered
-            .or_else(|| moves(&self.0.provided.read_recover(), &request.target).cloned())
+            .or_else(|| moves(&self.0.provided.read_recover(), &request.target))
             .or_else(|| self.published(&request.target, Reach::ThisDevice))
             .or_else(|| self.get(provider))?;
         Some(registered.answers.invoke(caller, request))
@@ -687,14 +686,8 @@ impl Providers {
         ) else {
             return Some(Pending::ready(Err(ActionCallError::NotPermitted)));
         };
-        // A record's actions are decided as its own app's: the grants name the app whose record
-        // it is, not the provider that applies its typed actions.
-        let app = match tilo_actions::remote::resource_parts(&request.target.provider) {
-            Some((app, _)) if &*registered.provider == tilo_actions::remote::RESOURCE_PROVIDER => {
-                Arc::from(app)
-            }
-            _ => Arc::clone(&registered.app),
-        };
+        // A record's actions are decided as its own app's ([`resources`]).
+        let app = Arc::clone(&registered.app);
         let providers = self.clone();
         let workspaces = Arc::clone(workspaces);
         let caller = caller.clone();
@@ -767,30 +760,39 @@ impl Providers {
 
 /// The provider moving the record `target` names to another workspace, when `target` is a move:
 /// any app's record moves through the store of the workspace that keeps it, as the caller's write
-/// on both sides, whichever app it is of.
-fn moves<'a>(
-    served: &'a BTreeMap<Arc<str>, Registered>,
+/// on both sides, whichever app it is of, decided as that app's ([`record_of`]).
+fn moves(
+    served: &BTreeMap<Arc<str>, Registered>,
     target: &RemoteActionTarget,
-) -> Option<&'a Registered> {
-    (target.address.action == tilo_resource_store::MOVE_VERB
-        && tilo_actions::remote::is_resource_provider(&target.provider))
-    .then(|| served.get(tilo_actions::remote::RESOURCE_PROVIDER))
-    .flatten()
+) -> Option<Registered> {
+    if target.address.action != tilo_resource_store::MOVE_VERB {
+        return None;
+    }
+    record_of(served, &target.provider)
+}
+
+/// The provider applying the typed actions of the built-in record `provider` names, registered
+/// under the resource provider itself, when it applies that record's ([`record_of`]).
+fn resources(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<Registered> {
+    record_of(served, provider).filter(|resources| resources.answers.serves(provider))
+}
+
+/// The provider registered under the resource provider itself, as it answers the record
+/// `provider` names (`record:<app>:<id>`): decided by the grants of the record's own app, never
+/// of the provider that applies its typed actions. Every path a call of such a record takes, this
+/// device's own dispatch and another device's call alike, admits it under that app, so a rule on
+/// the app's node holds whichever way the call came.
+fn record_of(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<Registered> {
+    let (app, _) = tilo_actions::remote::resource_parts(provider)?;
+    let registered = served.get(tilo_actions::remote::RESOURCE_PROVIDER)?;
+    Some(Registered {
+        app: Arc::from(app),
+        ..registered.clone()
+    })
 }
 
 /// Whether `workspace`'s grants let `device` run `action` on `resource` of the application `app`
 /// now; the refusal its caller reads when they do not.
-/// The provider applying the typed actions of the built-in record `provider` names, registered
-/// under the resource provider itself, when it applies that record's.
-fn resources<'a>(
-    served: &'a BTreeMap<Arc<str>, Registered>,
-    provider: &str,
-) -> Option<&'a Registered> {
-    served
-        .get(tilo_actions::remote::RESOURCE_PROVIDER)
-        .filter(|resources| resources.answers.serves(provider))
-}
-
 async fn permits(
     workspaces: &super::device_actions::WorkspacesMap,
     device: [u8; 32],

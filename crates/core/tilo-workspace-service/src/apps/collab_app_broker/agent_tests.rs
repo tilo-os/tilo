@@ -872,3 +872,277 @@ fn stray_invoke(
         .flatten()
         .expect("admission answers at once")
 }
+
+/// The workspace's contact directory as the provider applying its typed actions answers it: one
+/// action, and who reached it.
+#[derive(Default)]
+struct ContactDirectory {
+    reached: Mutex<Vec<tilo_actions::Actor>>,
+}
+
+/// The contact directory's own type, as every caller names its record.
+const CONTACT_KIND: &str = "tilo.contacts.identities";
+
+impl ContactDirectory {
+    fn provider() -> String {
+        format!(
+            "{}:{}:{}",
+            tilo_actions::remote::RESOURCE_PROVIDER,
+            tilo_app_id::apps::CONTACTS,
+            collab_types::workspace_document_id(CONTACT_KIND)
+        )
+    }
+
+    fn address() -> tilo_actions::ActionAddress {
+        tilo_actions::ActionAddress::new(CONTACT_KIND, "project-contact")
+    }
+
+    /// `directory`, registered as a device registers the provider of every built-in record.
+    fn providers(directory: Arc<Self>) -> crate::workspaces::providers::Providers {
+        let providers = crate::workspaces::providers::Providers::default();
+        providers.provide(
+            tilo_actions::remote::RESOURCE_PROVIDER,
+            tilo_actions::remote::RESOURCE_PROVIDER,
+            crate::workspaces::providers::Reach::Devices,
+            directory as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+        );
+        providers
+    }
+}
+
+impl tilo_actions::remote::ActionProvider for ContactDirectory {
+    fn serves(&self, provider: &str) -> bool {
+        provider == Self::provider()
+    }
+
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+        Pending::ready(Ok(tilo_actions::remote::CataloguePage::from_rows(
+            "0".to_owned(),
+            Vec::new(),
+            &query,
+        )))
+    }
+
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        _argument: Option<&str>,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        (address == &Self::address()).then(|| tilo_actions::ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: Self::address(),
+            resource_kind: CONTACT_KIND.into(),
+            resource_label: "Contacts".into(),
+            action_label: "Add a contact".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Undoable,
+                ..tilo_actions::ActionContract::default()
+            },
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        })
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+        self.reached.lock().unwrap().push(actor.actor().clone());
+        Pending::ready(Ok(InvocationReceipt {
+            invocation: request.invocation,
+            status: tilo_actions::remote::ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput::default(),
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+}
+
+/// A write to the contact directory record, made by `caller` through the broker as `invocation`.
+fn write_contacts(
+    state: &Arc<AppBrokerState>,
+    caller: &Caller,
+    invocation: u128,
+) -> Result<InvocationReceipt, ActionCallError> {
+    state
+        .action_invoke(
+            caller,
+            None,
+            None,
+            &InvokeRequest {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: ContactDirectory::provider(),
+                    address: ContactDirectory::address(),
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                appearance: None,
+                wait_ms: None,
+                signed: None,
+            },
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("admission answers at once")
+}
+
+/// Whether the broker took the write and handed it to the directory: it answers it accepted,
+/// and follows it there.
+fn taken(wrote: &Result<InvocationReceipt, ActionCallError>) -> bool {
+    matches!(
+        wrote,
+        Ok(InvocationReceipt {
+            status: tilo_actions::remote::ReceiptStatus::Accepted
+                | tilo_actions::remote::ReceiptStatus::Completed { .. },
+            ..
+        })
+    )
+}
+
+/// A record's typed actions are decided under the record's own app, whichever provider applies
+/// them: a rule on Contacts' node holds for a write to the contact directory record, for an
+/// agent and for a key the workspace otherwise lets do anything, and the person's own write
+/// still goes.
+#[tokio::test(flavor = "current_thread")]
+async fn a_rule_on_an_apps_node_holds_for_its_record_whoever_applies_it() {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let directory = Arc::new(ContactDirectory::default());
+            let f =
+                Fixture::with_services(None, ContactDirectory::providers(Arc::clone(&directory)));
+            f.list_scribe();
+            f.native.sessions.lock().unwrap().push((
+                SESSION.into(),
+                crate::apps::services::GoingSession::default(),
+            ));
+            let person = hex::encode(f.native.certificate.user_public_key);
+            let workspace = workspace_id().to_string();
+            let agent = Caller::local_person(person.clone())
+                .delegated_to("scribe")
+                .in_workspace(workspace.clone())
+                .in_agent_session(SESSION)
+                .in_new_execution();
+            // A key is a grant like any agent's, with what its person gave it.
+            let key = Caller::local_agent("deploy-key", person.clone())
+                .in_workspace(workspace.clone())
+                .in_new_execution();
+            let own = Caller::local_person(person.clone())
+                .in_workspace(workspace.clone())
+                .in_new_execution();
+            let contacts = TreePath::workspace(workspace.clone()).app(tilo_app_id::apps::CONTACTS);
+            let rule = |id: &str, member: &str, node: TreePath, answer: Answer| {
+                Grant::new(
+                    id,
+                    Grantee::agent(member, person.clone()),
+                    node,
+                    KindSet::ALL,
+                    answer,
+                    Grantee::person(person.clone()),
+                )
+            };
+            for (id, member) in [("scribe-all", "scribe"), ("key-all", "deploy-key")] {
+                put_grant(
+                    &f,
+                    rule(
+                        id,
+                        member,
+                        TreePath::workspace(workspace.clone()),
+                        Answer::Allow,
+                    ),
+                );
+            }
+            for (invocation, caller) in [(1, &agent), (2, &key)] {
+                let wrote = write_contacts(&f.state, caller, invocation);
+                assert!(
+                    taken(&wrote),
+                    "the workspace's grants let it write the directory: {wrote:?}"
+                );
+            }
+            assert_eq!(directory.reached.lock().unwrap().len(), 2);
+
+            // Contacts' node denies them: the directory record is Contacts', refused outright.
+            for (id, member) in [
+                ("scribe-contacts", "scribe"),
+                ("key-contacts", "deploy-key"),
+            ] {
+                put_grant(&f, rule(id, member, contacts.clone(), Answer::Deny));
+            }
+            for (invocation, caller) in [(3, &agent), (4, &key)] {
+                let refused = write_contacts(&f.state, caller, invocation);
+                assert!(
+                    matches!(
+                        refused,
+                        Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+                    ),
+                    "a rule on Contacts' node refuses the write to its record: {refused:?}"
+                );
+            }
+            assert_eq!(directory.reached.lock().unwrap().len(), 2, "nothing ran");
+
+            // Contacts' node asks first: the write waits for the person's answer.
+            for (id, member) in [
+                ("scribe-contacts", "scribe"),
+                ("key-contacts", "deploy-key"),
+            ] {
+                put_grant(&f, rule(id, member, contacts.clone(), Answer::Ask));
+            }
+            for (invocation, caller) in [(5, &agent), (6, &key)] {
+                let asked = write_contacts(&f.state, caller, invocation);
+                assert!(
+                    matches!(asked, Err(ActionCallError::ConfirmationRequired(_))),
+                    "a rule on Contacts' node that asks first asks: {asked:?}"
+                );
+            }
+            assert_eq!(directory.reached.lock().unwrap().len(), 2, "nothing ran");
+
+            // The person's own write is theirs, as before.
+            let wrote = write_contacts(&f.state, &own, 7);
+            assert!(
+                taken(&wrote),
+                "the person writes their workspace's directory: {wrote:?}"
+            );
+            assert_eq!(
+                directory.reached.lock().unwrap().last(),
+                Some(&tilo_actions::Actor::from(tilo_actions::MemberId::person(
+                    person
+                ))),
+            );
+            drop(f);
+        })
+        .await;
+}
