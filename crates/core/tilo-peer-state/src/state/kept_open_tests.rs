@@ -149,7 +149,7 @@ tilo_test_env::scenario! {
         // Three writers editing at once, each from what it last saw.
         let mut first = Author::new(&f.replica);
         let mut second = Author::new(&f.replica);
-        let mut third = Author::new(&f.replica);
+        let mut third = Author::by(&f.replica, &f.editor);
         let mut kept = KeptDocument::default();
         let message = write(&f.replica, &f.owner, &keys, &first.edit("value", "one"), f.now);
         admit(&mut f.replica, &f.owner, message, f.now);
@@ -846,7 +846,7 @@ pub(super) fn write_refused_history(f: &mut Fixture, keys: &ContentKeys) {
         &f.replica,
         &f.editor,
         keys,
-        &Author::new(&f.replica).edit("editor", "kept"),
+        &Author::by(&f.replica, &f.editor).edit("editor", "kept"),
         f.now,
     );
     admit(&mut f.replica, &f.editor, message, f.now);
@@ -938,7 +938,7 @@ fn a_refused_sealed_change_is_read_without_together_with_what_its_author_built_o
         &f.replica,
         &f.editor,
         &keys,
-        &Author::new(&f.replica).edit("later", "kept"),
+        &Author::by(&f.replica, &f.editor).edit("later", "kept"),
         f.now,
     );
     admit(&mut f.replica, &f.editor, message, f.now);
@@ -1054,7 +1054,7 @@ fn a_write_too_large_for_one_frame_is_decided_by_its_callers_grants() {
         &f.replica,
         &f.editor,
         &keys,
-        &Author::new(&f.replica).edit("editor", "kept"),
+        &Author::by(&f.replica, &f.editor).edit("editor", "kept"),
         f.now,
     );
     admit(&mut f.replica, &f.editor, message, f.now);

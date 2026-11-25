@@ -257,9 +257,19 @@ fn signed(
 pub(super) struct Author(pub(super) AutoCommit, pub(super) [u8; 32]);
 
 impl Author {
+    /// The record as `peer`'s own device edits it.
     pub(super) fn new(peer: &StatePeer) -> Self {
         Self::of(
             peer,
+            AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap(),
+        )
+    }
+
+    /// The record as `key`'s device edits it: the edit is that device's person's.
+    pub(super) fn by(peer: &StatePeer, key: &SigningKey) -> Self {
+        Self::as_device(
+            peer,
+            key,
             AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap(),
         )
     }
@@ -269,6 +279,14 @@ impl Author {
         Self(
             doc,
             crate::owner::testing::person_of(peer, peer.core.origin),
+        )
+    }
+
+    /// `doc` written as the person `key`'s device belongs to.
+    pub(super) fn as_device(peer: &StatePeer, key: &SigningKey, doc: AutoCommit) -> Self {
+        Self(
+            doc,
+            crate::owner::testing::person_of(peer, key.verifying_key().to_bytes()),
         )
     }
 
@@ -635,7 +653,7 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let editor = f.editor.clone();
-        let mut author = Author::new(&f.replica);
+        let mut author = Author::by(&f.replica, &editor);
         let mut written = 0;
         while held(&f.replica).len() < MAX_SEALED_OPS {
             let sealed = write(
@@ -701,7 +719,10 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.replica);
+        let mut by = [
+            Author::by(&f.replica, &f.other),
+            Author::by(&f.replica, &f.editor),
+        ];
         let mut first = None;
         let mut sizes = Vec::new();
         for round in 0..3 {
@@ -715,7 +736,7 @@ tilo_test_env::scenario! {
                     &f.replica,
                     &key,
                     &keys,
-                    &author.edit("value", &format!("{round}.{index}")),
+                    &by[index % 2].edit("value", &format!("{round}.{index}")),
                     now,
                 );
                 first.get_or_insert_with(|| next.clone());
@@ -764,7 +785,7 @@ tilo_test_env::scenario! {
         assert_eq!(held(&f.replica).len(), 1, "nothing folded comes back");
 
         // Above the mark the evidence is exact again.
-        let above = write(&f.replica, &f.other, &keys, &author.edit("value", "late"), now);
+        let above = write(&f.replica, &f.other, &keys, &by[0].edit("value", "late"), now);
         admit(&mut f.replica, &f.other, above.clone(), now);
         let mut conflicting = envelope_of(&above);
         conflicting.timestamp += Duration::from_secs(1);
@@ -1638,7 +1659,7 @@ tilo_test_env::scenario! {
     {
         let mut f = fixture();
         let (now, keys) = (f.now, f.keys());
-        let mut author = Author::new(&f.replica);
+        let mut author = Author::by(&f.replica, &f.editor);
         for value in ["1", "2", "3"] {
             let sealed = write(&f.replica, &f.editor, &keys, &author.edit("value", value), now);
             admit(&mut f.replica, &f.editor, sealed, now);
@@ -1663,7 +1684,7 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.replica);
+        let mut author = Author::by(&f.replica, &f.editor);
         let first = write(&f.replica, &f.editor, &keys, &author.edit("value", "1"), now);
         admit(&mut f.replica, &f.editor, first, now);
         assert!(f.replica.publication().sealed_to_compact().is_empty());
@@ -2831,7 +2852,7 @@ fn a_record_of_a_few_large_writes_opens_compacted_much_faster() {
     let mut f = fixture();
     let keys = f.keys();
     let (now, editor) = (f.now, f.editor.clone());
-    let mut author = Author::new(&f.replica);
+    let mut author = Author::by(&f.replica, &editor);
     let body = "The service keeps its work beside its peers, and reads it back. ".repeat(250);
     for batch in 0..2 {
         let edit = author.texts(batch * 10, 10, &body);
@@ -3475,7 +3496,7 @@ fn a_history_with_a_refused_write_compacts_without_it_and_takes_writes_again() {
         &f.replica,
         &f.editor,
         &keys,
-        &Author::new(&f.replica).edit("after", "compacted"),
+        &Author::by(&f.replica, &f.editor).edit("after", "compacted"),
         f.now,
     );
     admit(&mut f.replica, &f.editor, message.clone(), f.now);
@@ -3669,7 +3690,7 @@ fn an_honest_checkpoint_is_read_and_its_writes_go_once_every_device_with_its_key
         &f.replica,
         &f.editor,
         &keys,
-        &Author::new(&f.replica).edit("second", "written"),
+        &Author::by(&f.replica, &f.editor).edit("second", "written"),
         f.now,
     );
     admit(&mut f.replica, &f.editor, second, f.now);

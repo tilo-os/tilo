@@ -17,7 +17,7 @@ fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
     let mut f = fixture();
     let keys = f.keys();
     let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
-    let mut author = Author::new(&f.replica);
+    let mut author = Author::by(&f.replica, &editor);
     let mut written = 0usize;
     let mut compactions = Vec::new();
     for index in 0..BASE {
@@ -106,7 +106,7 @@ fn a_record_twice_the_bound_of_its_writes_compacts_only_for_its_new_writes() {
     let mut f = fixture();
     let keys = f.keys();
     let (now, editor) = (f.now, f.editor.clone());
-    let mut author = Author::new(&f.replica);
+    let mut author = Author::by(&f.replica, &editor);
     for index in 0..PARTS {
         if !f.replica.publication().sealed_to_compact().is_empty() {
             compact_set(&mut f, &keys, now);
@@ -173,7 +173,7 @@ fn a_keyless_replica_refuses_a_compaction_set_past_its_bound() {
     let mut f = fixture();
     let keys = f.keys();
     let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
-    let mut author = Author::new(&f.replica);
+    let mut author = Author::by(&f.replica, &editor);
     let sealed = write(&f.replica, &editor, &keys, &author.edit("title", "x"), now);
     admit(&mut f.replica, &editor, sealed, now);
     let before = held(&f.replica);

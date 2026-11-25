@@ -12,7 +12,7 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
     let mut f = fixture();
     let keys = f.keys();
     let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
-    let mut author = Author::new(&f.replica);
+    let mut author = Author::by(&f.replica, &editor);
     let mut state = 0x2545_F491_4F6C_DD1D_u64;
     let mut written = 0;
     let refused = loop {
