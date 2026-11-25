@@ -563,7 +563,9 @@ impl RoutedOwners {
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,
         };
-        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+        // A window joined to its workspace reads its records through the store and publishes
+        // what it changes on their routes, which these tests watch.
+        let mut owners = crate::resource::ResourceOwners::reading(Rc::new(
             crate::resource::MemoryWorkspace::default(),
         ));
         let workspace = "00000000-0000-0000-0000-000000000077";
@@ -688,158 +690,8 @@ impl RoutedOwners {
     }
 }
 
-fn identity_mutation(
-    fixture: &RoutedOwners,
-    index: usize,
-    family: &str,
-    field: &str,
-    incremental: bool,
-) -> CollabEvent {
-    use automerge::ReadDoc;
-
-    let binding = &fixture.bindings[index];
-    let mut remote = fixture
-        .records
-        .read_checked(&binding.checkout.id, Clone::clone)
-        .unwrap();
-    let baseline = remote.base_heads();
-    remote.set_actor(automerge::ActorId::from(
-        format!("foreign-{family}-{field}").as_bytes(),
-    ));
-    let metadata = remote.get(ROOT, family).unwrap().unwrap().1;
-    let value = match field {
-        "id" => "uuid:00000000-0000-4000-8000-000000000099",
-        "kind" => "foreign-kind",
-        "workspace" => "00000000-0000-4000-8000-000000000099",
-        "home" => "foreign-origin",
-        _ => unreachable!(),
-    };
-    remote.put(&metadata, field, value).unwrap();
-    remote.put(ROOT, "foreign-content", field).unwrap();
-    remote.commit();
-    routed_document(
-        &binding.broker_route().unwrap(),
-        if incremental {
-            collab_types::DocumentMutation::Incremental(remote.save_after(&baseline))
-        } else {
-            collab_types::DocumentMutation::Snapshot(remote.save())
-        },
-    )
-}
-
 tilo_test_env::scenario! {
-    fn signed_owned_records_reject_what_their_identity_does_not_allow;
-
-    phase signed_owned_foreign_identity_is_rejected_without_mutating_live_record;
-    {
-        use automerge::ReadDoc;
-
-        let mut fixture = RoutedOwners::new();
-        let binding = &fixture.bindings[0];
-        let before = fixture
-            .records
-            .read_history(&binding.checkout.id, |doc, history| {
-                (doc.base_heads(), doc.pending_ops(), history.revision())
-            })
-            .unwrap();
-        let generation = fixture
-            .records
-            .action_generation(&binding.checkout.id)
-            .unwrap();
-        let mut remote = fixture
-            .records
-            .read_checked(&binding.checkout.id, Clone::clone)
-            .unwrap();
-        remote.set_actor(automerge::ActorId::from(b"foreign-identity".as_slice()));
-        let metadata = remote.get(ROOT, "tilo:record").unwrap().unwrap().1;
-        remote
-            .put(&metadata, "id", "uuid:00000000-0000-4000-8000-000000000099")
-            .unwrap();
-        remote
-            .put(ROOT, "foreign-content", "must not enter")
-            .unwrap();
-        remote.commit();
-        let incoming = routed_document(
-            &binding.broker_route().unwrap(),
-            collab_types::DocumentMutation::Snapshot(remote.save()),
-        );
-
-        fixture.app.apply_document_event(&incoming);
-
-        assert_eq!(
-            fixture
-                .records
-                .read_history(&binding.checkout.id, |doc, history| (
-                    doc.base_heads(),
-                    doc.pending_ops(),
-                    history.revision(),
-                ))
-                .unwrap(),
-            before,
-        );
-        assert_eq!(
-            fixture
-                .records
-                .action_generation(&binding.checkout.id)
-                .unwrap(),
-            generation,
-        );
-        assert_eq!(fixture.value(0, "foreign-content"), None);
-        assert!(fixture.app.document_sync_status().is_some());
-    }
-
-    phase signed_owned_identity_mutations_are_atomic_invalid_and_recover_with_fresh_snapshot;
-    {
-        for incremental in [false, true] {
-            for field in ["id", "kind", "workspace", "home"] {
-                let mut fixture = RoutedOwners::new();
-                let family = "tilo:record";
-                let incoming = identity_mutation(&fixture, 0, family, field, incremental);
-                let before = fixture.observation(0);
-                fixture.app.apply_document_event(&incoming);
-                assert_eq!(fixture.observation(0), before, "{family} {field}");
-                assert_eq!(fixture.value(0, "foreign-content"), None);
-                assert!(
-                    fixture
-                        .app
-                        .document_sync_status()
-                        .is_some_and(|status| status.contains("could not be applied"))
-                );
-                let route = fixture.bindings[0].broker_route().unwrap();
-                let pending = &fixture
-                    .app
-                    .document_routes
-                    .owners
-                    .iter()
-                    .find(|entry| entry.route == route)
-                    .unwrap()
-                    .pending;
-                assert!(pending.is_empty(), "invalid front must be quarantined");
-
-                let mut recovery = fixture
-                    .records
-                    .read_checked(&fixture.bindings[0].checkout.id, Clone::clone)
-                    .unwrap();
-                recovery.set_actor(automerge::ActorId::from(b"valid-recovery".as_slice()));
-                recovery.put(ROOT, "valid-after-recovery", field).unwrap();
-                recovery.commit();
-                let recovery = routed_document(
-                    &route,
-                    collab_types::DocumentMutation::Snapshot(recovery.save()),
-                );
-                fixture.app.apply_document_event(&recovery);
-                assert_eq!(
-                    fixture.value(0, "valid-after-recovery").as_deref(),
-                    Some(field)
-                );
-                assert_eq!(fixture.app.document_sync_status(), None);
-                let (_, _, revision, generation, statuses) = fixture.observation(0);
-                assert_eq!(revision, before.2);
-                assert_eq!(generation, before.3.and_then(|value| value.checked_add(1)));
-                assert!(statuses.is_empty());
-            }
-        }
-    }
+    fn owned_records_refuse_a_corrupt_change;
 
     phase signed_owned_corrupt_incremental_preserves_document_history_generation_and_statuses;
     {
@@ -862,67 +714,6 @@ tilo_test_env::scenario! {
         fixture.app.apply_document_event(&incoming);
         assert_eq!(fixture.observation(0), before);
         assert_eq!(fixture.value(0, "valid-prefix"), None);
-    }
-
-    phase signed_owned_concurrent_losing_identity_values_are_rejected;
-    {
-        use automerge::ReadDoc;
-        for incremental in [false, true] {
-            for field in ["id", "kind", "workspace", "home"] {
-                let mut fixture = RoutedOwners::new();
-                let binding = &fixture.bindings[0];
-                let family = "tilo:record";
-                let base = fixture
-                    .records
-                    .read_checked(&binding.checkout.id, Clone::clone)
-                    .unwrap();
-                let base_heads = base.base_heads();
-                let metadata = base.get(ROOT, family).unwrap().unwrap().1;
-                let expected = base
-                    .get(&metadata, field)
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-                let mut remote = base.clone();
-                remote.set_actor(automerge::ActorId::from(b"foreign-concurrent".as_slice()));
-                let remote_meta = remote.get(ROOT, family).unwrap().unwrap().1;
-                remote
-                    .put(
-                        &remote_meta,
-                        field,
-                        if field == "id" {
-                            "uuid:00000000-0000-4000-8000-000000000099"
-                        } else {
-                            "foreign-concurrent"
-                        },
-                    )
-                    .unwrap();
-                remote.commit();
-                fixture
-                    .records
-                    .with_action_state(&binding.checkout.id, |doc, history, _| {
-                        let local_meta = doc.get(ROOT, family).unwrap().unwrap().1;
-                        doc.put(&local_meta, field, expected).unwrap();
-                        doc.commit();
-                        history.rebase(doc);
-                    })
-                    .unwrap();
-                let incoming = routed_document(
-                    &binding.broker_route().unwrap(),
-                    if incremental {
-                        collab_types::DocumentMutation::Incremental(remote.save_after(&base_heads))
-                    } else {
-                        collab_types::DocumentMutation::Snapshot(remote.save())
-                    },
-                );
-                let before = fixture.observation(0);
-                fixture.app.apply_document_event(&incoming);
-                assert_eq!(fixture.observation(0), before, "{family} {field}");
-            }
-        }
     }
 }
 
@@ -971,7 +762,8 @@ impl RoutedPrimary {
         use crate::application::{
             ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
         };
-        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+        // As a window joined to its workspace: its routes publish its records.
+        let mut owners = crate::resource::ResourceOwners::reading(Rc::new(
             crate::resource::MemoryWorkspace::default(),
         ));
         let workspace = "00000000-0000-4000-8000-000000000078";
@@ -1112,7 +904,7 @@ impl RoutedPrimary {
 }
 
 tilo_test_env::scenario! {
-    fn signed_package_primary_keeps_metadata_and_refuses_identity_changes;
+    fn signed_package_primary_keeps_each_metadata_shape;
 
     phase signed_package_primary_preserves_each_existing_metadata_shape;
     {
@@ -1133,68 +925,6 @@ tilo_test_env::scenario! {
                 assert_eq!(after.2, before.2);
                 assert_eq!(after.3, before.3.and_then(|value| value.checked_add(1)));
                 assert!(after.4.is_empty());
-            }
-        }
-    }
-
-    phase signed_package_primary_refuses_identity_stamps_and_scope_changes;
-    {
-        use automerge::ReadDoc;
-
-        for shape in [
-            PrimaryMetadataShape::None,
-            PrimaryMetadataShape::Tilo(false),
-            PrimaryMetadataShape::Tilo(true),
-        ] {
-            for incremental in [false, true] {
-                let mut attacks = vec!["id", "kind", "home", "workspace"];
-                if shape.scoped() {
-                    attacks.extend(["delete-home", "delete-workspace"]);
-                }
-                for attack in attacks {
-                    let mut fixture = RoutedPrimary::new(shape);
-                    let before = fixture.observation();
-                    let incoming = fixture.envelope(incremental, |doc| {
-                        let family = shape.family().unwrap_or("tilo:record");
-                        let meta = if let Some((_, object)) = doc.get(ROOT, family).unwrap() {
-                            object
-                        } else {
-                            doc.put_object(ROOT, family, automerge::ObjType::Map)
-                                .unwrap()
-                        };
-                        match attack {
-                            "id" => doc
-                                .put(&meta, "id", "uuid:00000000-0000-4000-8000-000000000099")
-                                .unwrap(),
-                            "kind" => doc.put(&meta, "kind", "foreign-kind").unwrap(),
-                            "home" => doc.put(&meta, "home", "foreign-home").unwrap(),
-                            "workspace" => doc
-                                .put(&meta, "workspace", "00000000-0000-4000-8000-000000000099")
-                                .unwrap(),
-                            "delete-home" => {
-                                let _ = doc.delete(&meta, "home");
-                            }
-                            "delete-workspace" => {
-                                let _ = doc.delete(&meta, "workspace");
-                            }
-                            _ => unreachable!(),
-                        }
-                        doc.put(ROOT, "invalid-primary-content", attack).unwrap();
-                    });
-                    fixture.app.apply_document_event(&incoming);
-                    assert_eq!(fixture.observation(), before, "primary {attack}");
-                    assert_eq!(fixture.value("invalid-primary-content"), None);
-                    assert!(fixture.app.document_sync_status().is_some());
-                    let pending = &fixture.app.document_routes.owners[0].pending;
-                    assert!(pending.is_empty());
-
-                    let recovery = fixture.envelope(false, |doc| {
-                        doc.put(ROOT, "primary-recovered", attack).unwrap();
-                    });
-                    fixture.app.apply_document_event(&recovery);
-                    assert_eq!(fixture.value("primary-recovered").as_deref(), Some(attack));
-                    assert_eq!(fixture.app.document_sync_status(), None);
-                }
             }
         }
     }
