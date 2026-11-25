@@ -38,13 +38,13 @@ fn main() -> std::process::ExitCode {
     // A package may ask for a second instance of the same app. The daemon starts it, as it
     // started this process, and that instance gets a connection of its own; only the first
     // instance asks, which the app's own directory records for every instance started after it.
-    if first_to_ask() {
-        if let Err(error) = runtime_portal::native::launch_another_instance(&app) {
-            eprintln!("tilo-sdk-app: asking for a second instance of {app}: {error}");
-            return std::process::ExitCode::FAILURE;
-        }
+    if first_to_ask()
+        && let Err(error) = runtime_portal::native::launch_another_instance(&app)
+    {
+        eprintln!("tilo-sdk-app: asking for a second instance of {app}: {error}");
+        return std::process::ExitCode::FAILURE;
     }
-    let deadline = lifetime().map(|life| Instant::now() + life);
+    let deadline = lifetime().and_then(|life| Instant::now().checked_add(life));
     // An app ends with the session it was launched for: the daemon going away is this app's
     // computer stopping. A lifetime a test names ends it while the app it runs beside stays.
     while !matches!(manager.state(), CollaborationState::Offline(_))

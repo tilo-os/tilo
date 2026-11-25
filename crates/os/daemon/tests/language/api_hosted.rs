@@ -400,14 +400,13 @@ fn a_call_is_served_after_the_host_it_used_goes_away() {
             .post("/v1/resources/account/workspaces/actions/list", &json!({}))
             .await;
         assert_eq!(status, 200, "{listed}");
-        let ids: Vec<&str> = listed["result"]["workspaces"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|workspace| workspace["id"].as_str())
-            .collect();
         assert!(
-            ids.contains(&workspace.as_str()),
+            listed["result"]["workspaces"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|workspace| workspace["id"].as_str())
+                .any(|id| id == workspace.as_str()),
             "it lists the workspace: {listed}"
         );
         let (status, read) = key

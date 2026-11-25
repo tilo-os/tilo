@@ -47,11 +47,12 @@ impl PlanTurns for Scripted {
         _: bool,
     ) -> Result<ModelResponse, ModelError> {
         self.asked.lock().unwrap().push(request.clone());
-        let call = match self.asked.lock().unwrap().len() {
+        let asked = self.asked.lock().unwrap().len();
+        let call = match asked {
             1 => Some(tool_call(
                 "read",
                 "activity",
-                json!({"app": CHAT, "person": self.person}),
+                &json!({"app": CHAT, "person": self.person}),
             )),
             2 => {
                 // What the read answered, as its model reads it: the changes it must take back.
@@ -68,7 +69,7 @@ impl PlanTurns for Scripted {
                 Some(tool_call(
                     "undo",
                     "undo",
-                    json!({"app": CHAT, "person": self.person, "changes": changes}),
+                    &json!({"app": CHAT, "person": self.person, "changes": changes}),
                 ))
             }
             _ => None,
@@ -112,7 +113,7 @@ fn changes_named(answer: &str) -> Vec<String> {
         .collect()
 }
 
-fn tool_call(id: &str, action: &str, arguments: Value) -> Content {
+fn tool_call(id: &str, action: &str, arguments: &Value) -> Content {
     Content::ToolCall(ToolCall {
         id: id.to_owned(),
         name: "tilo_do".into(),
@@ -123,8 +124,6 @@ fn tool_call(id: &str, action: &str, arguments: Value) -> Content {
         extra_content: None,
     })
 }
-
-/// The key a person's device makes for its agents: one fixed key here.
 
 /// Make `scout` through the workspace's typed create, with the moderation watch: what a
 /// Moderator's device asks.
@@ -330,9 +329,9 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     let workspace = device.workspace.clone();
     let owner = device.person();
 
-    general(&workspaces, &workspace, &cert.user_public_key).await;
-    post(&workspaces, &workspace, &cert, "a spam offer").await;
-    post(&workspaces, &workspace, &cert, "and another").await;
+    general(workspaces, &workspace, &cert.user_public_key).await;
+    post(workspaces, &workspace, cert, "a spam offer").await;
+    post(workspaces, &workspace, cert, "and another").await;
     let before = workspaces
         .record_changes(&workspace, &super::record_route(&workspace, CHAT), &owner)
         .unwrap();
@@ -446,8 +445,8 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
     let workspaces = device.workspaces();
     let workspace = device.workspace.clone();
     let owner = device.person();
-    general(&workspaces, &workspace, &cert.user_public_key).await;
-    post(&workspaces, &workspace, &cert, "a spam offer").await;
+    general(workspaces, &workspace, &cert.user_public_key).await;
+    post(workspaces, &workspace, cert, "a spam offer").await;
 
     let (model, asked) = scripted(owner.clone());
     let provider = Arc::new(tilo_actions::remote::TestProvider::new());

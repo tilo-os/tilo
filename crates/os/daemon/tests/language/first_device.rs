@@ -3,7 +3,7 @@
 //!
 //! Both are writes to `tilo.devices` from the start itself, so the store a device's service
 //! builds has to declare that kind before either lands. A start that declared none refused both
-//! with `Undeclared("no type \`tilo.devices\` is declared")`, and the daemon went down with the
+//! with ``Undeclared("no type `tilo.devices` is declared")``, and the daemon went down with the
 //! agent's session.
 #![allow(
     clippy::unwrap_used,

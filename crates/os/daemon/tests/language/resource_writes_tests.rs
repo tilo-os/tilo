@@ -1088,7 +1088,7 @@ async fn index_retained_checkpoint(
     let retention = envelope
         .encryption
         .as_ref()
-        .and_then(|metadata| metadata.retention());
+        .and_then(collab_types::EncryptionMetadata::retention);
     assert_eq!(retention, Some(ContentRetention::Checkpoint));
     // The store judges the change by the app surfaces this device knows, as a received one finds
     // them declared; the replica has kept nothing of it yet.

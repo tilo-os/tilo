@@ -224,12 +224,12 @@ async fn a_notice_raised_in_the_daemon_follows_the_person_and_their_answers_reac
     // Another notice, and this time the person chooses the action it offers on another device:
     // that action of the app runs where the notice was sent.
     raise(&workspaces, &workspace, &packages, &person).await;
-    assert!(
+    assert_eq!(
         served
             .project(&workspace, APP, "Notices", Some(&package), 3_000)
             .await
-            .expect("the second notice is kept")
-            == 1
+            .expect("the second notice is kept"),
+        1
     );
     let (id, _) = shown(&workspaces, &own).await;
     person_workspace::apply_on(

@@ -495,7 +495,8 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
             runner.arm().await;
         }
         runner.pass(since).await;
-        if let Some(firing) = started.0.lock().unwrap().first().cloned() {
+        let firing = started.0.lock().unwrap().first().cloned();
+        if let Some(firing) = firing {
             break firing;
         }
         if std::time::Instant::now() >= deadline {

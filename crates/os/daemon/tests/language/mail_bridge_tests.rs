@@ -217,7 +217,9 @@ type = "gui"
     let manifest_path = payload.join("manifest.toml");
     std::fs::write(&manifest_path, manifest).expect("the app's manifest");
     let row = format!(
-        "[[entry]]\nid = {app:?}\npayload_root = {payload:?}\nmanifest_path = {manifest_path:?}\n\n"
+        "[[entry]]\nid = {app:?}\npayload_root = \"{}\"\nmanifest_path = \"{}\"\n\n",
+        payload.display(),
+        manifest_path.display()
     );
     let registry = catalog.user().registry();
     let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
@@ -347,7 +349,7 @@ fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
         let mut disabled = held.account(off).expect("the account the person added");
         disabled.enabled = false;
         workspaces
-            .keep_workspace_account((&workspace, &by.acting(), None), &disabled)
+            .keep_workspace_account((&workspace, by.acting(), None), &disabled)
             .await
             .expect("the account is disabled");
         record_grants(

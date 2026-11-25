@@ -230,9 +230,14 @@ fn the_daemon_carries_a_programs_steps_to_another_device_as_its_own() {
         );
 
         // Bytes go into the other device's store through the same connection.
-        let bytes: Vec<u8> = (0..200_000_u32).map(|n| n as u8).collect();
+        let bytes: Vec<u8> = (0..200_000_u32)
+            .map(|n| u8::try_from(n % 256).expect("a value below 256 is a byte"))
+            .collect();
         let hash = blake3::hash(&bytes).to_hex().to_string();
-        assert_eq!(client.have(&caller, &[hash.clone()]).unwrap(), [false]);
+        assert_eq!(
+            client.have(&caller, std::slice::from_ref(&hash)).unwrap(),
+            [false]
+        );
         let mut upload = client.begin(&caller, bytes.len() as u64).unwrap();
         upload.append(0, &bytes).unwrap();
         assert!(upload.finish().unwrap().ends_with(&hash));

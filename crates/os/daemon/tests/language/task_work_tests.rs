@@ -65,7 +65,7 @@ mod session_tests {
 
     /// The person's device: its record opened over a store of its own, on a thread of its own
     /// (a host is held by one thread), each ask run as the record's published action.
-    fn device(person: String, asks: mpsc::Receiver<Ask>, opened: mpsc::Sender<Documents>) {
+    fn device(person: String, asks: &mpsc::Receiver<Ask>, opened: &mpsc::Sender<Documents>) {
         use tilolang_workspace::records::Port;
         use tilolang_workspace::records::{LocalPort, Opened, Packages, ResourceStore};
 
@@ -259,7 +259,7 @@ mod session_tests {
 
     /// A workspace of a test host, its person, and Tasks on the person's device.
     struct Host {
-        host: TestHost,
+        daemon: TestHost,
         _dir: tempfile::TempDir,
         workspaces: Workspaces,
         workspace: String,
@@ -295,7 +295,7 @@ mod session_tests {
                 .name("tasks-device".into())
                 .spawn({
                     let person = person.clone();
-                    move || self::device(person, asks, opened)
+                    move || self::device(person, &asks, &opened)
                 })
                 .unwrap();
             let documents = tokio::task::spawn_blocking(move || documents.recv().unwrap())
@@ -303,7 +303,7 @@ mod session_tests {
                 .unwrap();
             workspaces.take_documents(&workspace, documents).await;
             Self {
-                host,
+                daemon: host,
                 _dir: dir,
                 workspaces,
                 workspace,
@@ -416,7 +416,7 @@ mod session_tests {
         }
 
         async fn end(self) {
-            self.host.shutdown().await;
+            self.daemon.shutdown().await;
         }
     }
 

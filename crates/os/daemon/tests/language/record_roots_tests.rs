@@ -92,7 +92,7 @@ async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
         .expect("Tasks is built into this build");
     let viewer = member(MemberId::person(person.clone()));
     let root = with_tl_record(
-        &workspaces,
+        workspaces,
         &workspace,
         &packages,
         (viewer, &person),

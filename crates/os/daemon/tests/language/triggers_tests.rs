@@ -36,7 +36,7 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
         panic!("the shortcut watches a resource");
     };
     *filter = serde_json::from_value(json!([{ "field": "item.title", "is": "First" }])).unwrap();
-    save_signed(workspaces, &workspace, shortcut, (&key, &cert)).await;
+    save_signed(workspaces, &workspace, shortcut, (key, cert)).await;
 
     let started = Arc::new(Started::default());
     let mut runner = Runner::new(
@@ -111,7 +111,7 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
     tokio::task::yield_now().await;
 
     let begun = std::time::Instant::now();
-    save_signed(workspaces, &workspace, on_issue_change(), (&key, &cert)).await;
+    save_signed(workspaces, &workspace, on_issue_change(), (key, cert)).await;
     workspaces
         .own_resource_command(
             &workspace,
@@ -176,6 +176,31 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     use collab_types::store::{Cell, Resource, Value};
     use tilo_resource_store::Stamp;
     use tilo_workspace_service::agents::triggered::{MayRead, Where, unreadable};
+
+    struct Allows;
+    impl MayRead for Allows {
+        fn may_read_resource(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _workspace: &str,
+            _target: (&str, &str, &str),
+        ) -> Result<(), ActionCallError> {
+            Ok(())
+        }
+    }
+    struct Denies;
+    impl MayRead for Denies {
+        fn may_read_resource(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _workspace: &str,
+            _target: (&str, &str, &str),
+        ) -> Result<(), ActionCallError> {
+            Err(ActionCallError::Refused {
+                reason: "not yours".into(),
+            })
+        }
+    }
 
     const CHAT: &str = "so.tilo.chat";
     const MESSAGE: &str = "tl.so.tilo.chat.Message";
@@ -254,31 +279,6 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     .unwrap();
     let place = Where::of(&event).unwrap();
 
-    struct Allows;
-    impl MayRead for Allows {
-        fn may_read_resource(
-            &self,
-            _caller: &tilo_actions::remote::Caller,
-            _workspace: &str,
-            _target: (&str, &str, &str),
-        ) -> Result<(), ActionCallError> {
-            Ok(())
-        }
-    }
-    struct Denies;
-    impl MayRead for Denies {
-        fn may_read_resource(
-            &self,
-            _caller: &tilo_actions::remote::Caller,
-            _workspace: &str,
-            _target: (&str, &str, &str),
-        ) -> Result<(), ActionCallError> {
-            Err(ActionCallError::Refused {
-                reason: "not yours".into(),
-            })
-        }
-    }
-
     assert_eq!(
         unreadable(
             workspaces,
@@ -353,7 +353,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         workspaces,
         &workspace,
         triggered::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
-        (&key, &cert),
+        (key, cert),
     )
     .await;
     // The workspace's record of its agents holds Scout acting for its owner: a direct
@@ -392,10 +392,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     let mut writes = workspaces.document_writes();
 
     let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
-    let scout = Who::member(MemberId::agent(
-        "scout",
-        hex::encode(cert.user_public_key).clone(),
-    ));
+    let scout = Who::member(MemberId::agent("scout", hex::encode(cert.user_public_key)));
     let bridge = Who::member(MemberId::bot("bridge"));
     // The id Chat's declaration keeps for `send`: what a change its program makes claims.
     let send = tilolang_workspace::records::built_in(CHAT)
@@ -415,7 +412,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         write(
             workspaces,
             &workspace,
-            &cert,
+            cert,
             CHAT,
             Write {
                 kind,
@@ -1105,7 +1102,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
         workspaces,
         &workspace,
         triggered::moderates("scout", &hex::encode(cert.user_public_key), "Scout"),
-        (&key, &cert),
+        (key, cert),
     )
     .await;
     let started = Arc::new(Started::default());
@@ -1118,10 +1115,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     let mut writes = workspaces.document_writes();
 
     let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
-    let scout = Who::member(MemberId::agent(
-        "scout",
-        hex::encode(cert.user_public_key).clone(),
-    ));
+    let scout = Who::member(MemberId::agent("scout", hex::encode(cert.user_public_key)));
     // The id Chat's declaration keeps for `send`: what a change its program makes claims.
     let send = tilolang_workspace::records::built_in(CHAT)
         .expect("the built-in packages compile")
@@ -1139,7 +1133,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
         write(
             workspaces,
             &workspace,
-            &cert,
+            cert,
             CHAT,
             Write {
                 kind,

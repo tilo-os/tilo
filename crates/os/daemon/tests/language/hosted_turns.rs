@@ -302,8 +302,10 @@ async fn chat_provider(host: &Host) -> String {
                 && provider.workspace == host.workspace()
                 && provider.provider.parse::<u64>().is_ok()
         })
-        .map(|provider| provider.provider)
-        .unwrap_or_else(|| panic!("Chat runs in the worker's workspace"))
+        .map_or_else(
+            || panic!("Chat runs in the worker's workspace"),
+            |provider| provider.provider,
+        )
 }
 
 /// The person writes `words` in Chat's channel `channel`, mentioning their assistant, through
