@@ -734,14 +734,6 @@ impl Workspaces {
         if !workspace.seals() || neighbour_wire::KeyScope::has_named_readers(document) {
             return workspace.document_keys(app, document).await;
         }
-        let held_in_the_clear = workspace.peer().holds_document(app, document)
-            && !workspace
-                .peer()
-                .publication()
-                .is_sealed_document(app, document);
-        if held_in_the_clear {
-            return workspace.document_keys(app, document).await;
-        }
         let name = workspace.workspace();
         // The device's channel service opens the document's channel when it has
         // none yet, as the workspace's writes ask it to.

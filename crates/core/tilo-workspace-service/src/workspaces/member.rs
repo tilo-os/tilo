@@ -1211,19 +1211,6 @@ impl Workspaces {
         reading.member.then(|| named_copy(&reading))
     }
 
-    /// Where `workspace`'s copies stand, as this device's member copy reads its holders' word:
-    /// what tells a folder whether the workspace's servers keep what it holds. `None` for a
-    /// workspace this service does not hold as a member copy.
-    pub async fn member_copies(
-        &self,
-        workspace: WorkspaceId,
-    ) -> Option<tilo_peer_state::CopyStatus> {
-        let reading = self.reading(workspace).await?;
-        reading
-            .member
-            .then(|| reading.replica.read(|peer| peer.workspace().copies()))
-    }
-
     /// `workspace`'s copy as this device holds it, when this device governs
     /// it here rather than as a member: the name its governance gives it and
     /// the replica it keeps. `None` for a member copy or a workspace not held
@@ -2420,6 +2407,7 @@ impl Workspaces {
         let workspaces = self.downgrade();
         let intake = self.content_intake(&name);
         let asks = self.content_asks(workspace, link);
+        self.keep_pushing(workspace, link);
         let mut reader = link.reader();
         tokio::spawn(async move {
             while let Some(frame) = reader.recv().await {
@@ -2431,6 +2419,7 @@ impl Workspaces {
                     NeighbourMsg::DocumentContentPieces { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
+                        | NeighbourMsg::DocumentContentKept { .. }
                 );
                 let asking = matches!(frame.message, NeighbourMsg::DocumentContentWants { .. });
                 // Answers go to the content's own intake as they came: they are
@@ -2552,6 +2541,18 @@ impl Workspaces {
             self.wrote(workspace, app_id, document_id);
             if taken {
                 self.keep_soon(&mut governed);
+            }
+            // This device's own write: what it no longer names is let go at the host.
+            if self.member_device_key() == Some(author) {
+                let (workspaces, workspace, app, record) = (
+                    self.clone(),
+                    workspace.to_owned(),
+                    app_id.clone(),
+                    document_id.clone(),
+                );
+                tokio::spawn(async move {
+                    workspaces.own_write_named(&workspace, &app, &record).await;
+                });
             }
         } else {
             // A write the copy cannot take in yet (a sealed record whose keys have not reached the

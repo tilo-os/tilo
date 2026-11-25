@@ -587,19 +587,6 @@ impl Workspaces {
         // every frame the link admits from here on is this reader's, and what
         // the replica held before is not read again.
         let mut reader = link.reader();
-        // A link that starts carrying content: what this host gathers there is
-        // asked for again at once, not after a silence.
-        let mut linked = link.content_linked();
-        let relinking = WeakWorkspaces(Arc::downgrade(&self.inner));
-        let relinked = name.clone();
-        tokio::spawn(async move {
-            while linked.changed().await.is_ok() {
-                let Some(workspaces) = relinking.upgrade() else {
-                    return;
-                };
-                workspaces.content_relinked(&relinked);
-            }
-        });
         tokio::spawn(async move {
             // The link is gone: nothing more comes through it.
             while let Some(frame) = reader.recv().await {
@@ -613,9 +600,11 @@ impl Workspaces {
                     NeighbourMsg::DocumentContentPieces { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
+                        | NeighbourMsg::DocumentContentReleased { .. }
+                        | NeighbourMsg::DocumentContentKept { .. }
                 );
-                // What a member answers the host with answers a request the
-                // host made, and is the host's to keep: a device that keeps
+                // What a member pushes or answers the host with, and what it
+                // lets go of, is the host's to keep: a device that keeps
                 // its workspace's files reads the pieces here
                 // ([`Self::content_for_host`]). Asks and answers are no record
                 // writes: they go to the content's own intake, as they came,

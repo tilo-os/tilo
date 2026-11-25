@@ -48,6 +48,8 @@ pub use branch::{BranchContent, BranchFileKeys, Branched};
 mod channel_governance;
 mod collaboration;
 mod content;
+mod pushes;
+pub use pushes::content_of;
 /// The records of the content a host stopped keeping, which its members read.
 pub use refused::Refusal as ContentRefusalRecord;
 mod creating;
@@ -71,7 +73,7 @@ pub use views::ViewReadPolicy;
 pub mod terminal;
 #[cfg(all(test, feature = "agents"))]
 mod terminal_tests;
-pub use content::{ContentKeeper, ContentRefusal, WholeDocuments, WorkspaceContent};
+pub use content::{ContentHeld, ContentKeeper, ContentRefusal, WholeDocuments, WorkspaceContent};
 pub(crate) mod device_actions;
 mod follow;
 mod founding;
@@ -219,7 +221,6 @@ pub use crate::documents::device_keys::{
 };
 #[cfg(test)]
 mod copy_now_tests;
-mod desktop_document;
 #[cfg(test)]
 mod governed_grants_tests;
 pub mod membership;
@@ -1133,9 +1134,6 @@ struct WorkspacesInner {
     /// ([`Workspaces::speak_no_catch_up`]).
     #[cfg(any(test, feature = "test-support"))]
     speaks_no_catch_up: std::sync::atomic::AtomicBool,
-    /// The content each device handing a workspace over keeps none of
-    /// itself, as it handed the list in parts ([`Workspaces::keep_absent`]).
-    handed_absent: hosts::HandedAbsent,
     /// How many cursors an answer of where this device's store stands
     /// carries, when a test sets it ([`Workspaces::answer_cursors_in_pages_of`]);
     /// `0` keeps the build's own.
@@ -1207,9 +1205,6 @@ struct WorkspacesInner {
     /// out of a workspace, by workspace: how each ended, once it did
     /// ([`Workspaces::hand_on_before_leaving`]).
     handing_on: std::sync::Mutex<std::collections::HashMap<String, HandOnEnded>>,
-    /// The workspace UUID each time this device's copy turns current with
-    /// another of its holders ([`Workspaces::holders_reached`]).
-    reached: tokio::sync::broadcast::Sender<String>,
     /// Each workspace deleted here, and its server workspace
     /// ([`Workspaces::deletions`]).
     deletions: tokio::sync::broadcast::Sender<(String, WorkspaceId)>,
@@ -1603,7 +1598,6 @@ impl Workspaces {
                 live: std::sync::OnceLock::new(),
                 #[cfg(any(test, feature = "test-support"))]
                 speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
-                handed_absent: hosts::HandedAbsent::default(),
                 #[cfg(any(test, feature = "test-support"))]
                 cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
@@ -1639,7 +1633,6 @@ impl Workspaces {
                 changes: tokio::sync::broadcast::channel(64).0,
                 handing: std::sync::Mutex::default(),
                 handing_on: std::sync::Mutex::default(),
-                reached: tokio::sync::broadcast::Sender::new(64),
                 deletions: tokio::sync::broadcast::channel(64).0,
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
@@ -1753,10 +1746,6 @@ impl Workspaces {
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
             tracing::info!("recalled");
-            self.prepare_desktop_document(&mut workspace)
-                .await
-                .map_err(|e| format!("desktop record: {e}"))?;
-            tracing::info!("desktop record ready");
             // What the server's log revoked while the workspace was closed.
             self.carry_revocations(&mut workspace, &[]).await?;
             let workspace_id = workspace.workspace().to_owned();
@@ -1836,11 +1825,25 @@ impl Workspaces {
     /// and a server lets go of one its entry no longer keeps
     /// ([`servers::keeping`]); a member copy stops syncing.
     ///
+    /// What this device pushed of the workspace's content and its hosts did
+    /// not say they keep yet goes first: the release waits for it, and is
+    /// refused, naming how many files are still going, when it does not
+    /// arrive in time. Leaving would take the only copy of them along.
+    ///
     /// # Errors
     ///
-    /// The workspace is not held here, or the release could not be recorded
-    /// or its access narrowed.
+    /// The workspace is not held here, files of it are still on this device
+    /// alone, or the release could not be recorded or its access narrowed.
     pub async fn release(&self, workspace: &str) -> Result<(), String> {
+        let going = self
+            .content_delivered(workspace, hosts::CONTENT_SETTLES_WITHIN)
+            .await;
+        if going > 0 {
+            return Err(format!(
+                "{going} files are still going to the workspace's server: this device keeps \
+                 the only copy of them until the server says it keeps them"
+            ));
+        }
         let _releasing = self.inner.releasing.lock().await;
         let governed = self
             .inner

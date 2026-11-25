@@ -1,95 +1,118 @@
-//! A picture a page kept for a record of an app the host has no keeper of its
-//! own for — its Photos library, a Camera capture — reaches the workspace's
-//! host, so a page that reloads, or a member that joins after the writer left,
-//! reads it from the workspace instead of waiting for a device that is gone.
+//! A picture a page kept for a record of an app — its Photos library, a
+//! Camera capture — reaches the workspace's host as the page pushes it, so a
+//! page that reloads, or a member that joins after the writer left, reads it
+//! from the workspace instead of waiting for a device that is gone.
 //!
 //! The record names the picture by reference alone, as every record does: a
-//! sealed reference names the ciphertext's address, which is what the host
-//! asks for and keeps; a page opens the ciphertext with the key the reference
-//! carries.
+//! sealed reference names the ciphertext's address, which is what the page
+//! pushes and the host keeps; a page opens the ciphertext with the key the
+//! reference carries. Each push is its member's hold on the content: the host
+//! lets the bytes go once no member holds them, because each let go of them or
+//! is no member any more.
 use std::time::Duration;
 
 use super::*;
 
 const PHOTOS: &str = "so.tilo.photos";
 
-/// The host's next request for `address` of `PHOTOS`, as `linked` hears it.
-async fn asked_for(linked: &mut Linked, address: &str) -> Vec<u8> {
-    asked_for_each(linked, &[address]).await.remove(0)
+/// Push `bytes`, kept at `address`, from `device` over `linked` to the host
+/// `host` of `workspace`, unasked, as a page pushes what it keeps.
+fn push(
+    linked: &Linked,
+    device: &TestDevice,
+    host: &[u8; 32],
+    workspace: &str,
+    address: &str,
+    bytes: &[u8],
+) {
+    let mut frames = Vec::new();
+    let mut packer = neighbour_wire::content::Packer::new(
+        tilo_peer_state::peer_handle(&device.device_pubkey()),
+        tilo_peer_state::peer_handle(host),
+        workspace,
+        |frame| frames.push(frame),
+    );
+    let total = u64::try_from(bytes.len()).unwrap();
+    for (at, piece) in bytes
+        .chunks(neighbour_wire::content::PIECE_BYTES)
+        .enumerate()
+    {
+        packer.piece(neighbour_wire::content::Piece {
+            app_id: PHOTOS.into(),
+            hash: address.to_owned(),
+            total,
+            offset: u64::try_from(at * neighbour_wire::content::PIECE_BYTES).unwrap(),
+            bytes: piece.to_vec(),
+        });
+    }
+    packer.finish();
+    for frame in frames {
+        linked.send(frame).expect("the link carries every piece");
+    }
 }
 
-/// The host's next request for each of `addresses` of `PHOTOS`, in that order, as `linked`
-/// hears them in whatever order they come.
-async fn asked_for_each(linked: &mut Linked, addresses: &[&str]) -> Vec<Vec<u8>> {
-    tilo_test_env::within("the host asks for the record's content", async {
-        let mut asks: Vec<Option<Vec<u8>>> = vec![None; addresses.len()];
-        while asks.iter().any(Option::is_none) {
-            let Ok(Some(heard)) =
-                tokio::time::timeout(Duration::from_millis(50), linked.next()).await
-            else {
-                continue;
-            };
-            if let NeighbourMsg::DocumentContentWants { wants, .. } = &heard.message {
-                for (at, address) in addresses.iter().enumerate() {
-                    if wants.iter().any(|want| want.hash == *address) {
-                        asks[at]
-                            .get_or_insert_with(|| postcard::to_stdvec(&heard.message).unwrap());
-                    }
-                }
-            }
-        }
-        asks.into_iter().flatten().collect()
-    })
-    .await
+/// Let go of `device`'s hold on `address` of `workspace`, over `linked`, as a
+/// page does once its own write drops the record's last reference to it.
+fn release(linked: &Linked, device: &TestDevice, workspace: &str, address: &str) {
+    linked
+        .send(NeighbourMsg::DocumentContentReleased {
+            requester: tilo_peer_state::peer_handle(&device.device_pubkey()),
+            app_id: PHOTOS.into(),
+            cluster_id: workspace.to_owned(),
+            hash: address.to_owned(),
+        })
+        .expect("the link carries the release");
 }
 
-/// `ask`, a content request, with only the want for `address` left: a device
-/// answers that one and the rest is the answer the test loses.
-fn only(ask: &[u8], address: &str) -> Vec<u8> {
-    let NeighbourMsg::DocumentContentWants {
-        requester,
-        cluster_id,
-        wants,
-    } = postcard::from_bytes(ask).unwrap()
-    else {
-        panic!("a content request");
-    };
-    postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
-        requester,
-        cluster_id,
-        wants: wants
-            .into_iter()
-            .filter(|want| want.hash == address)
-            .collect(),
-    })
-    .unwrap()
-}
-
-/// The blobs `server` says, in `workspace`'s copy status, that it lacks, once that is `blobs`:
-/// what each device reads to tell its person which files are on it alone.
-async fn says_it_lacks(server: &Server, workspace: &str, blobs: u32, what: &str) {
-    let workspaces = server.workspaces().unwrap();
-    tilo_test_env::within(what, async {
+/// The host's word, as `linked` hears it, that it keeps `address`, which the
+/// device `device` pushed it: from the host's device, to that device alone.
+async fn kept(linked: &mut Linked, device: &TestDevice, host: &[u8; 32], address: &str) {
+    tilo_test_env::within("the host says it keeps what the page pushed", async {
         loop {
-            let status = workspaces.copies(workspace).await.unwrap();
-            let lacked: u32 = status
-                .shortfall
-                .iter()
-                .map(|short| match short {
-                    tilo_peer_state::Shortfall::Holder {
-                        missing: tilo_peer_state::Missing::Content { blobs },
-                        ..
-                    } => *blobs,
-                    _ => 0,
-                })
-                .sum();
-            if lacked == blobs {
+            let Some(heard) = linked.next().await else {
+                panic!("the link ended before the host said it keeps the picture");
+            };
+            if let NeighbourMsg::DocumentContentKept {
+                responder,
+                requester,
+                app_id,
+                hash,
+                ..
+            } = &heard.message
+                && hash == address
+            {
+                assert_eq!(
+                    (*responder, *requester, app_id.as_str()),
+                    (
+                        tilo_peer_state::peer_handle(host),
+                        tilo_peer_state::peer_handle(&device.device_pubkey()),
+                        PHOTOS
+                    ),
+                    "the host's device says it keeps the picture to the device that pushed it"
+                );
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
+}
+
+/// Whether `server` keeps `address` of `workspace`.
+fn keeps(server: &Server, workspace: &str, address: &str) -> bool {
+    server
+        .content()
+        .get(workspace)
+        .is_ok_and(|store| store.has(address))
+}
+
+/// A picture sealed by `store`: its reference, the ciphertext's address, and
+/// the ciphertext.
+fn sealed_picture(store: &tilo_content::ContentStore, picture: &[u8]) -> (String, String, Vec<u8>) {
+    let reference = store.put(picture).unwrap();
+    assert!(tilo_content::is_sealed(&reference));
+    let address = tilo_content::content_address(&reference).unwrap();
+    let sealed = store.read(&address).unwrap();
+    (reference, address, sealed)
 }
 
 /// What the host answers `linked`'s device when it asks how much of `workspace`'s content it
@@ -147,7 +170,7 @@ fn served(server: &Server, workspace: &str, asking: &TestDevice, address: &str) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_writer() {
+async fn a_sealed_picture_a_page_pushes_reaches_the_host_and_outlives_its_writer() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let alice_home = alice.enrol("alice-home", DeviceCapabilities::member());
@@ -165,9 +188,20 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         .expect("the workspace admits Alice's laptop");
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
+    let server_device = server.workspaces().unwrap().device_cert().device_public_key;
+    assert_eq!(
+        server.node_addr().id.as_bytes(),
+        &server_device,
+        "the host's endpoint is keyed by the device its certificate names"
+    );
+    assert_eq!(
+        server.device_signing_key().verifying_key().to_bytes(),
+        server_device,
+        "the key its link signs as is its certified device"
+    );
 
-    // Bob's page keeps the picture sealed in its record's store; the workspace's record of the
-    // app names the reference, so the host knows the ciphertext's address alone.
+    // Bob's page keeps the picture sealed in its record's store and names the
+    // reference: the host knows the ciphertext's address alone.
     let picture: Vec<u8> = b"a picture only Bob's page kept. "
         .iter()
         .copied()
@@ -175,10 +209,9 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         .take(700 * 1024)
         .collect();
     let store = tilo_content::ContentStore::memory().sealing();
-    let reference = store.put(&picture).unwrap();
-    assert!(tilo_content::is_sealed(&reference));
-    let address = tilo_content::content_address(&reference).unwrap();
-    let sealed = store.read(&address).unwrap();
+    let (reference, address, sealed) = sealed_picture(&store, &picture);
+    // The workspace's record of the app names the reference, so the host knows
+    // the ciphertext's address alone.
     crate::common::write_record(
         server.workspaces().unwrap(),
         &workspace.workspace,
@@ -199,98 +232,30 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     .await
     .expect("the record names the picture");
 
-    // The host asks for the address the store keys the ciphertext under, and
-    // Bob's page answers it as a page does.
-    let ask = asked_for(&mut bob_link, &address).await;
-    let server_device = server.workspaces().unwrap().device_cert().device_public_key;
-    match postcard::from_bytes::<NeighbourMsg>(&ask).unwrap() {
-        NeighbourMsg::DocumentContentWants {
-            cluster_id,
-            wants,
-            requester,
-            ..
-        } => {
-            let asked = wants
-                .iter()
-                .find(|want| want.hash == address)
-                .expect("the ask names the ciphertext's address");
-            assert_eq!(
-                (asked.app_id.as_str(), cluster_id.as_str()),
-                (PHOTOS, workspace.workspace.as_str()),
-                "the host asks the record's app for the ciphertext's address"
-            );
-            assert_eq!(
-                requester,
-                tilo_peer_state::peer_handle(&server_device),
-                "the ask names the device the host's link signs as"
-            );
-        }
-        _ => panic!("a content request"),
-    }
-    assert_eq!(
-        server.node_addr().id.as_bytes(),
+    // The page pushes the ciphertext beside the record, and the host says it
+    // keeps it to Bob's device alone.
+    push(
+        &bob_link,
+        &phone,
         &server_device,
-        "the host's endpoint is keyed by the device its certificate names"
-    );
-    assert_eq!(
-        server.device_signing_key().verifying_key().to_bytes(),
-        server_device,
-        "the key its link signs as is its certified device"
-    );
-    // Until it is answered, the host says it lacks the picture: read from the one record that
-    // names it, with no pass over the whole workspace since.
-    says_it_lacks(
-        &server,
         &workspace.workspace,
-        1,
-        "the host says it lacks the picture the record names",
-    )
-    .await;
-    // Its owner asks the host the same: the picture is still only on Bob's device.
+        &address,
+        &sealed,
+    );
+    kept(&mut bob_link, &phone, &server_device, &address).await;
+    assert!(
+        keeps(&server, &workspace.workspace, &address),
+        "the host keeps the picture's ciphertext once it says so"
+    );
+    // Its owner asks the host how much it keeps: the picture, held, and
+    // nothing still arriving.
     let held = content_held(&laptop_link, &workspace)
         .await
         .expect("the owner asks how much content the host keeps");
     assert_eq!(
-        held["lacking"], 1,
-        "the host answers its owner that it lacks the picture: {held}"
-    );
-    let pieces = neighbour_wire::content::answer(
-        &phone.device_pubkey(),
-        &server_device,
-        &ask,
-        |app, cluster, wanted| {
-            (app == PHOTOS && cluster == workspace.workspace && wanted == address)
-                .then(|| sealed.clone())
-        },
-    );
-    assert!(!pieces.is_empty(), "the page answers what it keeps");
-    for piece in pieces {
-        bob_link
-            .send(postcard::from_bytes(&piece).unwrap())
-            .expect("Bob's link carries every piece");
-    }
-    tilo_test_env::wait_for("the host keeps the picture's ciphertext", || {
-        server
-            .content()
-            .get(&workspace.workspace)
-            .ok()?
-            .has(&address)
-            .then_some(())
-    });
-    says_it_lacks(
-        &server,
-        &workspace.workspace,
-        0,
-        "the host says it lacks nothing once it keeps the picture",
-    )
-    .await;
-    let held = content_held(&laptop_link, &workspace)
-        .await
-        .expect("the owner asks how much content the host keeps");
-    assert_eq!(
-        (&held["lacking"], &held["named"]),
-        (&serde_json::json!(0), &serde_json::json!(1)),
-        "the host answers its owner that it keeps all the content its records name: {held}"
+        (&held["held"], &held["going"]),
+        (&serde_json::json!(1), &serde_json::json!(0)),
+        "the host answers its owner that it keeps the picture a member pushed: {held}"
     );
 
     // A member who does not choose the workspace's servers is not answered.
@@ -315,130 +280,94 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     assert_eq!(reloaded.read(&reference).as_deref(), Some(&picture[..]));
 
     drop(carol_link);
+    drop(laptop_link);
     server.shutdown().await;
 }
 
-/// An ask the host sent that nothing answers, the ask or its answer lost on a link that fell
-/// behind, is asked again once it lapses, though nothing writes to the record that names the
-/// content since: the host keeps all the workspace's content once the device that has it is
-/// there to answer.
-#[test]
-fn content_whose_ask_went_unanswered_is_asked_for_again() {
-    // The host reads the wall clock on its own threads, so the test takes the
-    // process to itself and moves the clock past an ask's lifetime instead of
-    // waiting it out.
-    tilo_test_env::in_own_process(
-        module_path!(),
-        "content_whose_ask_went_unanswered_is_asked_for_again",
-        || {
-            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(4)
-                .enable_all()
-                .build()
-                .expect("a runtime for this test alone")
-                .block_on(an_unanswered_ask_is_asked_again(process));
-        },
-    );
-}
-
-async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProcess) {
-    let started = tilo_clock::wall();
-    let _held = tilo_clock::testing::hold_wall_everywhere(process, started);
+/// Two members keep one picture: each push is that member's hold on it. The
+/// bytes stay while either holds them, a push the host already keeps is said
+/// to be kept again (its first word may have been lost on the way), and they
+/// go once the second lets go too. A member removed from the workspace holds
+/// nothing any more: their pushes go with them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_picture_two_members_push_stays_until_neither_holds_it() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
+    let carol = TestUser::fresh("Carol");
     let alice_home = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
-    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let bob_phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &alice_home).await;
     let workspace = create_and_enter(&server, &laptop, "Photos").await;
     let mut bob_link =
-        sealed_documents::joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
+        sealed_documents::joined(&server, &laptop, &workspace, &bob, &bob_phone, [7; 32])
             .await
             .unwrap();
-    crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
+    let mut carol_link =
+        sealed_documents::joined(&server, &laptop, &workspace, &carol, &carol_phone, [8; 32])
+            .await
+            .unwrap();
+    for device in [&bob_phone, &carol_phone] {
+        crate::common::wait_until_subscribed(
+            &server,
+            workspace.workspace_id,
+            &device.device_pubkey(),
+        )
         .await;
-
-    // Bob's page keeps two pictures; the workspace's record of the app names both.
-    let store = tilo_content::ContentStore::memory().sealing();
-    let mut pictures = Vec::new();
-    let mut named = Vec::new();
-    for (field, name) in [("photo", "answered"), ("picture", "lost")] {
-        let picture = format!("the picture whose ask is {name}").into_bytes();
-        let reference = store.put(&picture).unwrap();
-        let address = tilo_content::content_address(&reference).unwrap();
-        named.push((
-            field.to_owned(),
-            format!(
-                "blake3:{}:{}:{reference}",
-                blake3::hash(&picture).to_hex(),
-                picture.len()
-            ),
-        ));
-        pictures.push((address.clone(), store.read(&address).unwrap()));
     }
-    crate::common::write_record(
-        server.workspaces().unwrap(),
-        &workspace.workspace,
-        (PHOTOS, ""),
-        |doc| {
-            for (field, reference) in &named {
-                doc.put(ROOT, field.as_str(), reference.as_str())
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(())
-        },
-    )
-    .await
-    .expect("the record names both pictures");
-    let [(answered, answered_bytes), (lost, lost_bytes)] = <[_; 2]>::try_from(pictures).unwrap();
+    let host = server.workspaces().unwrap().device_cert().device_public_key;
+    let ws = workspace.workspace.as_str();
 
-    let answer = |linked: &Linked, ask: &[u8], address: &str, bytes: &[u8]| {
-        for frame in neighbour_wire::content::answer(
-            &phone.device_pubkey(),
-            &alice_home.device_pubkey(),
-            &only(ask, address),
-            |app, cluster, wanted| {
-                (app == PHOTOS && cluster == workspace.workspace && wanted == address)
-                    .then(|| bytes.to_vec())
-            },
-        ) {
-            linked
-                .send(postcard::from_bytes(&frame).unwrap())
-                .expect("Bob's link carries every piece");
-        }
-    };
-    // The host asks for both; the answer to one of them never arrives.
-    let asks = asked_for_each(&mut bob_link, &[&answered, &lost]).await;
-    answer(&bob_link, &asks[0], &answered, &answered_bytes);
-    says_it_lacks(
-        &server,
-        &workspace.workspace,
-        1,
-        "the host keeps the picture whose answer arrived",
-    )
-    .await;
+    // The same picture, pushed by both: one copy on the host, two holds.
+    let store = tilo_content::ContentStore::memory().sealing();
+    let (_, address, sealed) = sealed_picture(&store, b"the picture Bob and Carol both keep");
+    push(&bob_link, &bob_phone, &host, ws, &address, &sealed);
+    kept(&mut bob_link, &bob_phone, &host, &address).await;
+    push(&carol_link, &carol_phone, &host, ws, &address, &sealed);
+    kept(&mut carol_link, &carol_phone, &host, &address).await;
+    // Carol's word went missing: she pushes again, and is told again.
+    push(&carol_link, &carol_phone, &host, ws, &address, &sealed);
+    kept(&mut carol_link, &carol_phone, &host, &address).await;
 
-    // Long after, with no write to the record since, the host asks again.
-    let _later = tilo_clock::testing::hold_wall_everywhere(
-        process,
-        started
-            .checked_add(Duration::from_millis(
-                neighbour_wire::content::WANT_TTL_MS + 1_000,
-            ))
-            .expect("a time past an ask's lifetime"),
+    // Bob lets go. What Bob pushes next is kept after his release is taken
+    // in: the picture is still Carol's.
+    release(&bob_link, &bob_phone, ws, &address);
+    let (_, later, later_sealed) = sealed_picture(&store, b"a later picture of Bob's");
+    push(&bob_link, &bob_phone, &host, ws, &later, &later_sealed);
+    kept(&mut bob_link, &bob_phone, &host, &later).await;
+    assert!(
+        keeps(&server, ws, &address),
+        "the host keeps the picture while Carol holds it"
     );
-    let ask = asked_for(&mut bob_link, &lost).await;
-    answer(&bob_link, &ask, &lost, &lost_bytes);
-    says_it_lacks(
-        &server,
-        &workspace.workspace,
-        0,
-        "the host keeps the picture whose first ask went unanswered",
-    )
-    .await;
+
+    // Carol lets go too: nobody holds it, and the bytes go.
+    release(&carol_link, &carol_phone, ws, &address);
+    tilo_test_env::wait_for("the host lets go of the picture no member holds", || {
+        (!keeps(&server, ws, &address)).then_some(())
+    });
+
+    // Bob's later picture is his alone: once Alice removes him, it goes too.
+    server
+        .workspaces()
+        .unwrap()
+        .remove_member(
+            ws,
+            &laptop.cert,
+            RemoveMemberRequest {
+                request_id: [9; 32],
+                user_public_key: bob.user_pk,
+            },
+        )
+        .await
+        .expect("Alice removes Bob");
+    tilo_test_env::wait_for(
+        "the host lets go of what only a removed member held",
+        || (!keeps(&server, ws, &later)).then_some(()),
+    );
 
     drop(bob_link);
+    drop(carol_link);
     server.shutdown().await;
 }

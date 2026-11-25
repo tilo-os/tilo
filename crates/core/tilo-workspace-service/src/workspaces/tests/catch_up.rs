@@ -25,11 +25,10 @@ async fn a_host_that_serves_no_link_answers_a_catch_up_where_its_store_stands() 
     // link serves it: a catch-up is answered with where that store stands,
     // which is what the link read before it went, rather than refused.
     workspaces.direct().release(workspace_id);
-    let (answered, missing, _) = workspaces
-        .catch_up_from(&cert, &created.workspace, false, &BTreeSet::new())
+    let answered = workspaces
+        .catch_up_from(&cert, &created.workspace)
         .await
         .expect("the host answers where its store stands");
     assert_eq!(answered, standing, "the answer is where its store stands");
-    assert_eq!(missing, 0, "it lacks no content of what it kept");
     host.shutdown().await;
 }

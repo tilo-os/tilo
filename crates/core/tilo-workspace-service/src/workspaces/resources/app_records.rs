@@ -122,7 +122,10 @@ mod tests {
         assert_ne!(german, said, "the message is translated");
         assert!(german.contains("Clocks"), "{german}");
         let absent = crate::i18n::message(None, NOT_INSTALLED, &args);
-        assert!(absent.contains("Clocks") && absent.contains("install"), "{absent}");
+        assert!(
+            absent.contains("Clocks") && absent.contains("install"),
+            "{absent}"
+        );
         assert!(!absent.contains("took back"), "{absent}");
         let german = crate::i18n::message(Some("de-DE"), NOT_INSTALLED, &args);
         assert_ne!(german, absent, "the message is translated");

@@ -518,6 +518,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::DocumentContentPieces { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
+                        | NeighbourMsg::DocumentContentKept { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -560,6 +561,7 @@ async fn enqueue_surface_event(
                 | NeighbourMsg::DocumentContentPieces { .. }
                 | NeighbourMsg::DocumentContentLacks { .. }
                 | NeighbourMsg::DocumentContentRefused { .. }
+                | NeighbourMsg::DocumentContentKept { .. }
                 | NeighbourMsg::PermissionGrant { .. },
             ..
         }
@@ -1024,6 +1026,7 @@ impl ActorState {
             NeighbourMsg::DocumentContentPieces { .. }
                 | NeighbourMsg::DocumentContentLacks { .. }
                 | NeighbourMsg::DocumentContentRefused { .. }
+                | NeighbourMsg::DocumentContentKept { .. }
         ) {
             tracing::warn!(
                 ws = %ws,
@@ -1086,6 +1089,7 @@ impl ActorState {
             NeighbourMsg::DocumentContentPieces { .. }
                 | NeighbourMsg::DocumentContentLacks { .. }
                 | NeighbourMsg::DocumentContentRefused { .. }
+                | NeighbourMsg::DocumentContentKept { .. }
         ) {
             Duration::from_secs(2)
         } else {
@@ -1138,7 +1142,8 @@ impl ActorState {
         match msg {
             NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
-            | NeighbourMsg::DocumentContentRefused { .. } => {
+            | NeighbourMsg::DocumentContentRefused { .. }
+            | NeighbourMsg::DocumentContentKept { .. } => {
                 let _ = Self::relay_to_device(ws, Some(target), &msg);
             }
             _ => {}

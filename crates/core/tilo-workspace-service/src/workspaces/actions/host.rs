@@ -23,12 +23,12 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_server_protocol::workspaces::{
-    ActionInvitation, AdminRefusal, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE,
-    CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE,
-    ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, HostedWorkspace, LIST_REVOCATIONS, LIST_WORKSPACES, StandingPage,
-    UNHOST_WORKSPACE, WEB_SERVE, WorkspaceLabels, WorkspaceListing, administered_answer,
-    administered_request, check_labels, labelled,
+    ActionInvitation, AdminRefusal, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CREATE_OWN_WORKSPACE,
+    CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE,
+    EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
+    HostedWorkspace, LIST_REVOCATIONS, LIST_WORKSPACES, StandingPage, UNHOST_WORKSPACE, WEB_SERVE,
+    WorkspaceLabels, WorkspaceListing, administered_answer, administered_request, check_labels,
+    labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -180,17 +180,6 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
             check: CATCH_UP_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: catch_up_params,
-        },
-        ServiceOperation::CatchUpWorkspace,
-    ),
-    (
-        // Part of what a catch-up counts with, asked by whoever may ask it.
-        Verb {
-            id: CATCH_UP_ABSENT,
-            label: "Hand part of the content a device keeping a workspace keeps none of",
-            check: CATCH_UP_WORKSPACE,
-            kind: roles::GOVERNANCE_KIND,
-            params: catch_up_absent_params,
         },
         ServiceOperation::CatchUpWorkspace,
     ),
@@ -430,21 +419,6 @@ fn admit_machine_params() -> Vec<ActionParam> {
 fn catch_up_params() -> Vec<ActionParam> {
     let mut params = workspace_params();
     params.push(ActionParam::optional(
-        "names_content",
-        ParamType::Boolean,
-        "Whether the asking device's resources name content to keep.",
-    ));
-    params.push(ActionParam::optional(
-        "absent",
-        ParamType::Array,
-        "The addresses of the content the asking device keeps none of itself.",
-    ));
-    params.push(ActionParam::optional(
-        "absent_parts",
-        ParamType::Boolean,
-        "Whether that content is the list the asking device handed in parts before.",
-    ));
-    params.push(ActionParam::optional(
         "cursor_pages",
         ParamType::Boolean,
         "Whether the answer's cursors come in pages, the rest read after it.",
@@ -458,21 +432,6 @@ fn catch_up_standing_params() -> Vec<ActionParam> {
         "after",
         ParamType::Text,
         "The lineage the page starts after, postcard in hex.",
-    ));
-    params
-}
-
-fn catch_up_absent_params() -> Vec<ActionParam> {
-    let mut params = workspace_params();
-    params.push(ActionParam::optional(
-        "absent",
-        ParamType::Array,
-        "Part of the addresses of the content the asking device keeps none of itself.",
-    ));
-    params.push(ActionParam::optional(
-        "first",
-        ParamType::Boolean,
-        "Whether the part starts the list afresh; an empty first part lets it go.",
     ));
     params
 }
@@ -1588,10 +1547,8 @@ impl Workspaces {
     }
 
     /// A catch-up a device keeping a workspace asks for, already permitted
-    /// to `device`: the catch-up itself ([`CATCH_UP_WORKSPACE`]), part of the
-    /// list of content the device keeps none of itself it handed ahead of it
-    /// ([`CATCH_UP_ABSENT`]), or the rest of where this host's store stands
-    /// after it ([`CATCH_UP_STANDING`]).
+    /// to `device`: the catch-up itself ([`CATCH_UP_WORKSPACE`]), or the rest
+    /// of where this host's store stands after it ([`CATCH_UP_STANDING`]).
     async fn catch_up_invoke(
         &self,
         device: &DeviceCert,
@@ -1599,18 +1556,6 @@ impl Workspaces {
         args: &Args,
     ) -> Result<Value, ActionCallError> {
         let workspace = args.required_text("workspace")?;
-        if action == CATCH_UP_ABSENT {
-            let kept = self
-                .keep_absent(
-                    device,
-                    workspace,
-                    args.texts("absent")?,
-                    args.flag("first")?,
-                )
-                .await
-                .map_err(ActionCallError::refused)?;
-            return Ok(serde_json::json!({ "kept": kept }));
-        }
         if action == CATCH_UP_STANDING {
             let after =
                 crate::workspaces::decode_hex(args.required_text("after")?).map_err(|error| {
@@ -1625,21 +1570,9 @@ impl Workspaces {
                 more,
             });
         }
-        let absent = if args.flag("absent_parts")? {
-            self.absent_handed(device.device_public_key, workspace)
-                .ok_or_else(|| {
-                    ActionCallError::refused(
-                        "the list of content the asking device keeps none of is not \
-                          here: hand it again",
-                    )
-                })?
-        } else {
-            std::sync::Arc::new(args.texts("absent")?)
-        };
-        let (cursors, content_missing, fetched) =
-            Box::pin(self.catch_up_from(device, workspace, args.flag("names_content")?, &absent))
-                .await
-                .map_err(ActionCallError::refused)?;
+        let cursors = Box::pin(self.catch_up_from(device, workspace))
+            .await
+            .map_err(ActionCallError::refused)?;
         // A store stands on a lineage per record and author: a device
         // that reads the rest after is answered the first page.
         let (cursors, more_cursors) = if args.flag("cursor_pages")? {
@@ -1649,8 +1582,6 @@ impl Workspaces {
         };
         answer(&CaughtUpWorkspace {
             cursors: hex_postcard(&cursors)?,
-            content_missing,
-            fetched,
             more_cursors,
         })
     }

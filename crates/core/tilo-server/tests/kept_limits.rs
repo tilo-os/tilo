@@ -15,7 +15,7 @@ use tilo_action_policy::{ContentLimit, ContentPolicy, Raises};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::kept_content::KeptContent;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, governor, test_host, test_host_holding,
+    TestGroupKeys, entry_join, governor, guest_device, test_host, test_host_holding,
 };
 
 /// The app a member's messages and their files are kept in.
@@ -35,8 +35,21 @@ fn post_into(doc: &mut AutoCommit, hash: &str) {
         .unwrap();
 }
 
-/// What device `poster` answers the host with: the file `bytes`, whole.
-fn answer(host: &[u8; 32], poster: &[u8; 32], workspace: &str, bytes: &[u8]) -> Vec<u8> {
+/// A device of a person of its own, admitted into `workspace` through its
+/// entry: the key it pushes its member's files from.
+async fn joined(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    host_cert: &tilo_user_identity::DeviceCert,
+    workspace: &str,
+    seed: u8,
+) -> [u8; 32] {
+    let (key, cert) = guest_device();
+    entry_join(workspaces, host_cert, workspace, (&key, &cert), seed).await;
+    cert.device_public_key
+}
+
+/// What device `poster` pushes to the host: the file `bytes`, whole.
+fn push(host: &[u8; 32], poster: &[u8; 32], workspace: &str, bytes: &[u8]) -> Vec<u8> {
     postcard::to_allocvec(&NeighbourMsg::DocumentContentPieces {
         responder: neighbour_wire::peer_handle(poster),
         requester: neighbour_wire::peer_handle(host),
@@ -65,8 +78,8 @@ enum Posted {
     },
 }
 
-/// Answer the host's asks for `bytes`, posted by device `poster`, until it
-/// keeps the file or refuses it.
+/// Push `bytes`, posted by device `poster`, until the host keeps the file or
+/// refuses it.
 async fn deliver(
     workspaces: &tilo_server::workspaces::Workspaces,
     kept: &KeptContent,
@@ -79,11 +92,7 @@ async fn deliver(
     let hash = blake3::hash(bytes).to_hex().to_string();
     tilo_test_env::within("the host answers the post", async {
         loop {
-            workspaces.content_for_host(
-                workspace,
-                *poster,
-                &answer(host, poster, workspace, bytes),
-            );
+            workspaces.content_for_host(workspace, *poster, &push(host, poster, workspace, bytes));
             if content.get(workspace).is_ok_and(|store| store.has(&hash)) {
                 return Posted::Kept;
             }
@@ -168,9 +177,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         panic!("the record's channel is not founded here: {error}");
     }
 
-    let ada = [3_u8; 32];
-    let bo = [4_u8; 32];
-    let cy = [5_u8; 32];
+    let ada = joined(&workspaces, &host_cert, &workspace, 13).await;
+    let bo = joined(&workspaces, &host_cert, &workspace, 14).await;
+    let cy = joined(&workspaces, &host_cert, &workspace, 15).await;
     let file = |len: usize, fill: u8| vec![fill; len];
     let ada_one = file(800, 1);
     let ada_two = file(800, 2);
@@ -196,7 +205,7 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
     .await
     .expect("the messages reach the workspace");
 
-    // The host keeps what the workspace's records name: the same keeper its
+    // The host keeps what the workspace's members push: the same keeper its
     // daemon runs.
     let content = tilo_server::content::stores(scratch.path());
     workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
@@ -476,7 +485,7 @@ async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals(
         panic!("the record's channel is not founded here: {error}");
     }
 
-    let ada = [3_u8; 32];
+    let ada = joined(&workspaces, &host_cert, &workspace, 13).await;
     let one = vec![1_u8; 800];
     let two = vec![2_u8; 800];
     let three = vec![3_u8; 800];
@@ -716,7 +725,7 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
 
     // Nobody set a limit: no policy on the workspace, no budget on the host's
     // entry among its person's servers.
-    let ada = [3_u8; 32];
+    let ada = joined(&workspaces, &host_cert, &workspace, 13).await;
     tilo_test_env::within(
         "the host keeps a folder larger than every default whole",
         async {
@@ -727,8 +736,8 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
                     if content.get(&workspace).is_ok_and(|store| store.has(hash)) {
                         break;
                     }
-                    // A piece the host did not ask for yet is dropped and sent
-                    // again: the same bytes, the same address.
+                    // A piece the host dropped is sent again: the same bytes,
+                    // the same address.
                     let from = if sent >= bytes.len() { 0 } else { sent };
                     let end = (from + neighbour_wire::content::PIECE_BYTES).min(bytes.len());
                     let frame = postcard::to_allocvec(&NeighbourMsg::DocumentContentPieces {
@@ -902,7 +911,7 @@ async fn a_three_gib_folder_reaches_its_own_server_whole() {
 
     // Nobody set a limit: no policy on the workspace, no budget on the host's
     // entry among its person's servers.
-    let ada = [3_u8; 32];
+    let ada = joined(&workspaces, &host_cert, &workspace, 13).await;
     for (file, hash) in folder.iter().enumerate() {
         tilo_test_env::within(
             format!("the host keeps file {file} of the member's three gigabytes whole"),
@@ -912,8 +921,8 @@ async fn a_three_gib_folder_reaches_its_own_server_whole() {
                     if content.get(&workspace).is_ok_and(|store| store.has(hash)) {
                         break;
                     }
-                    // A piece the host did not ask for yet is dropped and sent
-                    // again: the same bytes, the same address.
+                    // A piece the host dropped is sent again: the same bytes,
+                    // the same address.
                     let from = if sent >= THREE_GIB_FILE_BYTES {
                         0
                     } else {

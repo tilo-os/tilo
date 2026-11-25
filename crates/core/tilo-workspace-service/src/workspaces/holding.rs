@@ -782,14 +782,14 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
             return;
         };
         let this = Workspaces { inner };
-        // A holder this copy turned current with holds what this device
-        // asked the workspace for and nobody answered: it is asked again now.
+        // A holder this copy turned current with is pushed again what this
+        // device pushed it and it did not say it keeps.
         let now = links.now();
         if now
             .iter()
             .any(|(device, link)| *link == Link::Current && before.get(device) != Some(link))
         {
-            drop(this.inner.reached.send(workspace.clone()));
+            this.push_again(&workspace, true);
         }
         before = now;
         let held = held_copy(&links);
@@ -830,16 +830,9 @@ fn held_copy(links: &Links) -> tilo_peer_state::HeldCopy {
 }
 
 impl Workspaces {
-    /// Each workspace whose copy here turned current with another of its
-    /// holders: what it lacks of the content its files name, the holder
-    /// may keep. A slow receiver may lag; it then asks for all it lacks.
-    #[must_use]
-    pub fn holders_reached(&self) -> tokio::sync::broadcast::Receiver<String> {
-        self.inner.reached.subscribe()
-    }
-
-    /// `workspace`'s copy here lacks `blobs` of the content its files
-    /// name: every holder reads it in the workspace's copy status.
+    /// `blobs` of `workspace`'s content are on this device alone, pushed and
+    /// not kept yet by the device they went to: every holder reads it in the
+    /// workspace's copy status.
     pub async fn lacks_content(&self, workspace: &str, blobs: u32) {
         if let Ok(governed) = self.workspace(workspace).await {
             governed.lock().await.holders.links().lacks_content(blobs);

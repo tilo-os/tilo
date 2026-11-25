@@ -2681,7 +2681,7 @@ impl Workspaces {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
-            CONTENT_HELD => Ok(self.content_held(call.workspace).await),
+            CONTENT_HELD => Ok(self.content_held_here(call.workspace)),
             CONTENT_POLICY | SET_CONTENT_POLICY => self.set_or_read_content_policy(call).await,
             CONTENT_REFUSED => {
                 // The refusal is the poster's to read, and the workspace's
@@ -3739,16 +3739,12 @@ impl Workspaces {
         Ok(answered)
     }
 
-    /// How many blobs of the content `workspace`'s records name this server
-    /// keeps none of yet (`lacking`), among how many its records name
-    /// (`named`). A record still waiting for the keys that open it counts as
-    /// one blob lacked: what it names is not known here yet.
-    async fn content_held(&self, workspace: &str) -> Value {
-        let lacking = self
-            .content_lacking(workspace, true, &std::collections::BTreeSet::new())
-            .await;
-        let named = self.content_named(workspace).await;
-        json!({ "workspace": workspace, "lacking": lacking, "named": named })
+    /// How many contents `workspace`'s members pushed this server keeps
+    /// (`held`), and how many are on their way here and not kept whole yet
+    /// (`going`): what is still missing from the server.
+    fn content_held_here(&self, workspace: &str) -> Value {
+        let held = self.content_held(workspace);
+        json!({ "workspace": workspace, "held": held.held, "going": held.going })
     }
 
     /// The workspace's content policy: the largest file a host keeps, and what
@@ -4368,7 +4364,10 @@ impl ActionProvider for InWorkspace {
                 let certificate = workspaces
                     .callers_certificate(this.workspace_id, &caller)
                     .await;
-                let asked = Self { certificate, ..this };
+                let asked = Self {
+                    certificate,
+                    ..this
+                };
                 asked.run_asked(&caller, request).await.unwrap_or(Err(
                     ActionCallError::Unavailable {
                         reason: "the workspace closed".into(),

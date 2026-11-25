@@ -950,7 +950,7 @@ fn wait_for_files(
 }
 
 /// Wait until the server keeps every file written on the member: all their
-/// bytes, and no blob it still lacks.
+/// bytes, a member's hold on each, and nothing of them still arriving.
 fn wait_until_kept(
     server: &tilo_server::Server,
     workspace: &str,
@@ -966,21 +966,20 @@ fn wait_until_kept(
     // Sealing and manifests add bytes: the bytes alone may add up while a few
     // small files are still on the member alone, which the wipe would lose.
     let workspaces = server.workspaces().unwrap();
-    let content = server.content();
     let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
-    while bytes_under(kept) < written
-        || run(tilo_server::kept_content::lacking(
-            workspaces, &content, workspace,
-        )) != Some(0)
-    {
+    loop {
+        let held = workspaces.content_held(workspace);
+        if bytes_under(kept) >= written && held.held >= written_files.len() && held.going == 0 {
+            break;
+        }
         assert!(
             started.elapsed() <= bound,
-            "the server keeps {} of the {written} bytes written on the member, lacking {:?} \
-             blobs:\n{}",
+            "the server keeps {} of the {written} bytes written on the member, holding {} of \
+             the {} files with {} still arriving:\n{}",
             bytes_under(kept),
-            run(tilo_server::kept_content::lacking(
-                workspaces, &content, workspace
-            )),
+            held.held,
+            written_files.len(),
+            held.going,
             said(),
         );
         std::thread::sleep(Duration::from_millis(100));

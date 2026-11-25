@@ -1048,9 +1048,13 @@ impl ContentPeers for MemberPeers {
     /// What the service said it lacks is answered by the device that wrote
     /// it ([`Workspaces::content_kept`]); one that fetched it leaves that to
     /// whoever it came from.
+    /// Content written here goes to the workspace's host too
+    /// ([`Workspaces::push_content`]).
     fn kept(&self, route: &CrdtRoute, hash: &str, written: bool) {
         if written {
             self.workspaces.content_kept(&route.cluster_id, hash);
+            self.workspaces
+                .push_content(&route.cluster_id, &route.app_id, hash);
         } else {
             self.workspaces.content_fetched(&route.cluster_id, hash);
         }

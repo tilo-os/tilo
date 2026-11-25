@@ -101,9 +101,7 @@ impl World {
             attestation_key,
             kept_by: device(),
         };
-        enrolment
-            .validate(&device())
-            .unwrap();
+        enrolment.validate(&device()).unwrap();
         let mut enrolments = BTreeMap::new();
         enrolments.insert(enrolment.id().unwrap(), enrolment);
         Self {
@@ -165,9 +163,7 @@ impl World {
         let Some(record) = &decided.record else {
             return;
         };
-        record
-            .validate(&sibling())
-            .unwrap();
+        record.validate(&sibling()).unwrap();
         self.decisions.insert(record.key(), record.clone());
     }
 
@@ -867,11 +863,7 @@ fn answers_merge_from_the_person_devices_only_while_they_hold() {
     };
     state.validate(&answering).unwrap();
     // A device writing another's answer is not believed.
-    assert!(
-        state
-            .validate(&device())
-            .is_err()
-    );
+    assert!(state.validate(&device()).is_err());
     // Nor are two answers to one boot, or one that holds for no time at all.
     let mut doubled = state.clone();
     doubled.decisions.push(record.clone());

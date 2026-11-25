@@ -154,17 +154,16 @@ fn copy_assets(
     documents: &[((String, String), Vec<u8>)],
     omitted: &BTreeSet<String>,
 ) -> Result<(), String> {
-    let mut named = super::collection::named_by(documents, &|address| {
+    let mut named = super::named::named_by(documents, &|address| {
         (!omitted.contains(address))
             .then(|| from.read(address))
             .flatten()
     })?;
     if !omitted.is_empty() {
-        let attachments = super::collection::named_by_matching(
-            documents,
-            &|(app, _)| app != FILES_APP,
-            &|address| from.read(address),
-        )?;
+        let attachments =
+            super::named::named_by_matching(documents, &|(app, _)| app != FILES_APP, &|address| {
+                from.read(address)
+            })?;
         named.retain(|hash| !omitted.contains(hash));
         named.extend(attachments);
     }

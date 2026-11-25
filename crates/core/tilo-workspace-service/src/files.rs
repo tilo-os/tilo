@@ -173,8 +173,8 @@ struct Copy {
     content: Option<Arc<RouteContent>>,
     /// Poked when the sync opens a record, so its answer comes now rather than at the next look.
     asked: tokio::sync::Notify,
-    /// What the workspace's holders lack of its content, as [`Copy::read_host_lacks`] last read
-    /// it.
+    /// What of the workspace's content is on this device alone, as [`Copy::read_host_lacks`]
+    /// last read it.
     lacks: Mutex<Option<u32>>,
 }
 
@@ -211,28 +211,10 @@ impl Copy {
         held.then_some(DocumentAnswer::Sent { frames: 1 })
     }
 
-    /// How many blobs of the workspace's content the holder that keeps the most of it still
-    /// lacks, by the word of the holders this member copy reads: what a folder says is only
-    /// here until it reaches a holder. `None` while no holder said.
-    async fn read_host_lacks(&self) -> Option<u32> {
-        let copies = self.workspaces.member_copies(self.workspace).await?;
-        copies
-            .holders
-            .iter()
-            .map(|holder| {
-                copies
-                    .shortfall
-                    .iter()
-                    .map(|short| match short {
-                        tilo_peer_state::Shortfall::Holder {
-                            device,
-                            missing: tilo_peer_state::Missing::Content { blobs },
-                        } if *device == holder.device => *blobs,
-                        _ => 0,
-                    })
-                    .sum::<u32>()
-            })
-            .min()
+    /// How many contents this device pushed to the workspace's holders that none of them said it
+    /// keeps yet: what a folder says is only here until it reaches a holder.
+    fn read_host_lacks(&self) -> Option<u32> {
+        Some(u32::try_from(self.workspaces.content_going(&self.name)).unwrap_or(u32::MAX))
     }
 
     /// Answer each record the sync opened that has no answer yet and can have one now.
@@ -462,14 +444,14 @@ async fn follow(
     if copy.governed && wakes.send(Wake::HostReady).is_err() {
         return;
     }
-    // The holders' word arrives in the workspace's own state, which says nothing when it moves:
-    // it is read now and then, and the sync told only when it changed.
+    // What is still going to the holders is read now and then, and the sync told only when it
+    // changed.
     let mut look = tokio::time::interval(HOLDERS_EVERY);
     loop {
         let mut told = Vec::new();
         tokio::select! {
             _ = look.tick() => {
-                let lacks = copy.read_host_lacks().await;
+                let lacks = copy.read_host_lacks();
                 if std::mem::replace(&mut *copy.lacks.lock_recover(), lacks) == lacks {
                     continue;
                 }

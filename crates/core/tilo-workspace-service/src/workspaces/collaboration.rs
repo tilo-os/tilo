@@ -595,7 +595,10 @@ impl Workspaces {
                 .await
                 .map_err(|error| error.to_string())?;
             let governed = held.lock().await;
-            governed.peer().governance().removed_from_member_list(device)
+            governed
+                .peer()
+                .governance()
+                .removed_from_member_list(device)
         };
         if !removed {
             return Ok(());
@@ -603,9 +606,11 @@ impl Workspaces {
         let Some(root) =
             super::person_workspace::devices::root_mark(self, &self.inner.host.cert).await
         else {
-            return Err("The workspace removed this server. Only the device that keeps your \
+            return Err(
+                "The workspace removed this server. Only the device that keeps your \
                         identity adds it back."
-                .into());
+                    .into(),
+            );
         };
         self.name_host(workspace, |governance, key, now| {
             governance.readmit_device(device, root, key, now)

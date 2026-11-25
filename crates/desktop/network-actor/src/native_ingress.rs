@@ -279,6 +279,8 @@ pub(super) fn is_record_content(msg: &NeighbourMsg) -> bool {
             | NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
+            | NeighbourMsg::DocumentContentKept { .. }
+            | NeighbourMsg::DocumentContentReleased { .. }
     )
 }
 

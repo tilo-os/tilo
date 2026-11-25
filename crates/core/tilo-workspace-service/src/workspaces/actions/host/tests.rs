@@ -99,7 +99,6 @@ const HOST_OPERATIONS: [&str; 23] = [
     HOST_WORKSPACE,
     UNHOST_WORKSPACE,
     tilo_server_protocol::workspaces::CATCH_UP_WORKSPACE,
-    tilo_server_protocol::workspaces::CATCH_UP_ABSENT,
     tilo_server_protocol::workspaces::CATCH_UP_STANDING,
     super::PLAN_MACHINE,
     super::LIST_MACHINES,

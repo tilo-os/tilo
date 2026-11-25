@@ -2106,6 +2106,7 @@ impl Task {
                 | neighbour_wire::NeighbourMsg::DocumentContentPieces { .. }
                 | neighbour_wire::NeighbourMsg::DocumentContentLacks { .. }
                 | neighbour_wire::NeighbourMsg::DocumentContentRefused { .. }
+                | neighbour_wire::NeighbourMsg::DocumentContentKept { .. }
         ) {
             self.content_arrived(workspace_id, author, &message);
             return;

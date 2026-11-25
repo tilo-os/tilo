@@ -1,5 +1,6 @@
-//! What the host keeps of each workspace's content, by the member whose answer
-//! brought it and the hour it came, in a file beside the content it counts.
+//! What the host keeps of each workspace's content, by the member whose push
+//! brought it and the hour it came, and who holds it, in a file beside the
+//! content it counts.
 //!
 //! The limits count bytes per member, per workspace and per hour. A host that
 //! kept its ledgers in memory alone forgot, on a restart, that a member had
@@ -28,6 +29,14 @@ pub(super) struct Entry {
     pub(super) member: String,
     pub(super) bytes: u64,
     pub(super) at: u64,
+    /// The app whose record pushed it.
+    #[serde(default)]
+    pub(super) app: String,
+    /// Who holds it: members, lowercase hex, and the manifests of the files
+    /// it is a chunk of. Each change of them is a line of its own, the last
+    /// one standing.
+    #[serde(default)]
+    pub(super) held: Vec<String>,
 }
 
 /// The ledger of each workspace the host keeps content for.

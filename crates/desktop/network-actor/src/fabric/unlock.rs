@@ -15,14 +15,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, BootId, CHALLENGE_LIFETIME_NS, Challenge, PROTOCOL_VERSION, RefusalReason,
-    Release, SiblingFrame, SlotId, UnlockHello, UnlockRequest, approval_code,
-    attest,
+    Release, SiblingFrame, SlotId, UnlockHello, UnlockRequest, approval_code, attest,
 };
 use tilo_user_identity::{
     CertifiedFleet, DeviceCapabilities, DeviceCert, DeviceCertification,
     device_cert_signing_digest, verify_device_cert,
 };
-
 
 /// Requests one device may start within [`RATE_WINDOW_NS`].
 pub const MAX_REQUESTS_PER_WINDOW: usize = 5;
@@ -39,8 +37,8 @@ const MAX_OPEN_CHALLENGES: usize = 256;
 
 pub use tilo_unlock_protocol::published::{
     AutoApproval, DecisionKey, DecisionOutcome, MAX_ACCEPTED_BOOT_CHAINS, MAX_UNLOCK_DECISIONS,
-    MAX_UNLOCK_ENROLMENTS, PublishedError, UnlockDecisionEntry, UnlockEnrolment,
-    UnlockFabricState, decision_for,
+    MAX_UNLOCK_ENROLMENTS, PublishedError, UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState,
+    decision_for,
 };
 
 /// What the person's fabric says about disk unlock: the enrolments and

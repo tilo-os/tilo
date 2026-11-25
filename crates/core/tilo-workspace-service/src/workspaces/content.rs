@@ -92,16 +92,14 @@ impl ContentRefusal {
 /// Where content members answer the host with goes.
 pub trait ContentKeeper: Send + Sync {
     /// Take `message`, a content frame the member device `from` sent this
-    /// host in `workspace`, when it answers a request this keeper made: such a
-    /// piece counts against what the keeper keeps, not the member's general
-    /// content budget. `message` comes back when it answers none of them, for
-    /// whatever else this host asked. The frame is decoded once, and taken in
-    /// one look at what is asked for: a large tree's pieces arrive by the
-    /// thousand.
+    /// host in `workspace` unasked: a piece of content it pushes, or word that
+    /// it lets go of content it pushed before. `message` comes back when this
+    /// keeper takes none of it. The frame is decoded once: a large tree's
+    /// pieces arrive by the thousand.
     ///
     /// # Errors
     ///
-    /// `message`, handed back, when it answers no request of this keeper's.
+    /// `message`, handed back, when this keeper takes none of it.
     fn take(
         &self,
         workspace: &str,
@@ -109,26 +107,19 @@ pub trait ContentKeeper: Send + Sync {
         message: NeighbourMsg,
     ) -> Result<(), Box<NeighbourMsg>>;
 
-    /// A link to `workspace`'s devices started: ask again at once for what
-    /// is still being gathered there, since what a link that ended carried
-    /// of the asks and their answers ended with it.
-    fn relinked(&self, workspace: &str) {
+    /// What `workspace` keeps here that its members pushed: how many contents
+    /// a member holds (`held`), and how many are on their way (`going`).
+    fn held(&self, workspace: &str) -> ContentHeld {
         let _ = workspace;
+        ContentHeld::default()
     }
 
-    /// How many blobs of the content the resources of `workspace` that open
-    /// here name and this keeps none of yet, and, when `waiting`, one for each
-    /// resource still waiting for the keys that open it: none for one that
-    /// keeps no resource's content. Content `beside` addresses is not
-    /// counted.
-    fn lacks<'a>(
-        &'a self,
-        workspace: &'a str,
-        waiting: bool,
-        beside: &'a BTreeSet<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
-        let _ = (workspace, waiting, beside);
-        Box::pin(std::future::ready(0))
+    /// The content this keeps of `workspace` for the members who pushed it,
+    /// each with its app: what this device hands a server taking the
+    /// workspace over.
+    fn holdings(&self, workspace: &str) -> Vec<(String, String)> {
+        let _ = workspace;
+        Vec::new()
     }
 
     /// The content of `workspace` this keeper stopped keeping because a limit
@@ -141,45 +132,15 @@ pub trait ContentKeeper: Send + Sync {
         let _ = workspace;
         Box::pin(std::future::ready(Vec::new()))
     }
-
-    /// The addresses of the content the resources of `workspace` that open
-    /// here name and this keeps none of yet.
-    fn lacked<'a>(
-        &'a self,
-        workspace: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = BTreeSet<String>> + Send + 'a>> {
-        let _ = workspace;
-        Box::pin(std::future::ready(BTreeSet::new()))
-    }
-
-    /// How many blobs of content the resources of `workspace` that open here
-    /// name: none for one that keeps no resource's content.
-    fn names<'a>(
-        &'a self,
-        workspace: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
-        let _ = workspace;
-        Box::pin(std::future::ready(0))
-    }
 }
 
-/// A member's answer to content this host asked a workspace for: a piece of
-/// it, or word that the member keeps none of it.
-#[derive(Clone, Debug)]
-pub(crate) struct ContentAnswer {
-    pub(crate) workspace: String,
-    pub(crate) from: [u8; 32],
-    pub(crate) lacks: bool,
-}
-
-/// Where each content answer this host takes in is told, to whoever waits
-/// for one ([`Workspaces::content_answers`]).
-pub(super) struct ContentAnswers(tokio::sync::broadcast::Sender<ContentAnswer>);
-
-impl Default for ContentAnswers {
-    fn default() -> Self {
-        Self(tokio::sync::broadcast::channel(64).0)
-    }
+/// What a host keeps of a workspace's pushed content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ContentHeld {
+    /// Contents a member holds here.
+    pub held: usize,
+    /// Contents a member is pushing here and the host does not keep whole yet.
+    pub going: usize,
 }
 
 /// The content source a host's workspaces answer from, and the keeper of what
@@ -187,8 +148,6 @@ impl Default for ContentAnswers {
 #[derive(Default)]
 pub(super) struct ContentSlot {
     pub(super) sources: RwLock<Vec<Arc<dyn WorkspaceContent>>>,
-    /// The answers members give the content this host asks for.
-    pub(super) answers: ContentAnswers,
     /// Held weakly: a keeper keeps the workspaces that answer members' pieces
     /// (a host's files do), so a strong handle here would keep the keeper and
     /// the workspaces alive — and the host's endpoint with them — for as long
@@ -204,6 +163,8 @@ pub(super) struct ContentSlot {
     /// content ([`Workspaces::content_answer`]): answered again once it keeps
     /// it ([`Workspaces::content_kept`]).
     pub(super) owed: Mutex<OwedAsks>,
+    /// The content this device pushed to its workspaces' hosts.
+    pub(super) pushes: super::pushes::Pushes,
 }
 
 /// Asks owed, at most this many contents at once; past it, the oldest go.
@@ -671,74 +632,50 @@ impl Workspaces {
 
     /// [`Self::content_for_host`] for a message already decoded.
     fn content_message_for_host(&self, workspace: &str, from: [u8; 32], message: NeighbourMsg) {
-        let lacks = matches!(message, NeighbourMsg::DocumentContentLacks { .. });
-        self.keep_content_for_host(workspace, from, message);
-        // Told once what it brings is kept.
-        let answers = &self.inner.content.answers.0;
-        if answers.receiver_count() > 0 {
-            drop(answers.send(ContentAnswer {
-                workspace: workspace.to_owned(),
-                from,
-                lacks,
-            }));
+        if let NeighbourMsg::DocumentContentKept {
+            requester,
+            cluster_id,
+            hash,
+            ..
+        } = &message
+        {
+            if *requester == tilo_peer_state::peer_handle(&self.device_cert().device_public_key)
+                && cluster_id == workspace
+            {
+                self.content_pushed(workspace, hash);
+            }
+            return;
         }
+        self.keep_content_for_host(workspace, from, message);
     }
 
     /// Hand `message` to whoever asked for what it brings
     /// ([`Self::content_for_host`]).
     fn keep_content_for_host(&self, workspace: &str, from: [u8; 32], message: NeighbourMsg) {
-        let mut message = message;
-        for keeper in self.inner.content.keepers() {
-            match keeper.take(workspace, from, message) {
-                Ok(()) => return,
-                Err(back) => message = *back,
-            }
-        }
         // The asker of a surface is this host: a piece is kept when it is
         // addressed to the host's own device, whoever among the members
-        // answered with it.
+        // answered with it. Everything else addressed to it was pushed here.
         let device = self.device_cert().device_public_key;
-        let assembled = self.inner.content.surfaces.lock_recover().assemble(
-            &device,
-            message,
-            tilo_clock::unix_now_ms(),
-        );
+        let mut surfaces = self.inner.content.surfaces.lock_recover();
+        if !surfaces.expects_in(&device, &message) && !surfaces.awaits_in(&device, &message) {
+            drop(surfaces);
+            let mut message = message;
+            for keeper in self.inner.content.keepers() {
+                match keeper.take(workspace, from, message) {
+                    Ok(()) => return,
+                    Err(back) => message = *back,
+                }
+            }
+            return;
+        }
+        let assembled = surfaces.assemble(&device, message, tilo_clock::unix_now_ms());
+        drop(surfaces);
         for arrived in assembled
             .into_iter()
             .filter_map(neighbour_wire::content::Assembled::verified)
         {
             crate::surfaces::keep(&arrived.hash, &arrived.bytes);
         }
-    }
-
-    /// A link to `workspace`'s devices started: whatever gathers content there
-    /// asks again at once for what it still waits on ([`ContentKeeper::relinked`]).
-    pub(crate) fn content_relinked(&self, workspace: &str) {
-        for keeper in self.inner.content.keepers() {
-            keeper.relinked(workspace);
-        }
-    }
-
-    /// Each answer a member gives the content this host asks for from now on.
-    pub(crate) fn content_answers(&self) -> tokio::sync::broadcast::Receiver<ContentAnswer> {
-        self.inner.content.answers.0.subscribe()
-    }
-
-    /// How many blobs of the content the resources of `workspace` that open
-    /// here name this host keeps none of yet, as what keeps them counts, and,
-    /// when `waiting`, one for each resource still waiting for its keys.
-    /// Content `beside` addresses is not counted.
-    pub(crate) async fn content_lacking(
-        &self,
-        workspace: &str,
-        waiting: bool,
-        beside: &BTreeSet<String>,
-    ) -> usize {
-        let mut lacking = 0_usize;
-        for keeping in self.inner.content.keepers() {
-            lacking = lacking.saturating_add(keeping.lacks(workspace, waiting, beside).await);
-        }
-        lacking
     }
 
     /// The content of `workspace` this host stopped keeping because a limit
@@ -781,24 +718,19 @@ impl Workspaces {
         })
     }
 
-    /// The addresses of the content the resources of `workspace` that open
-    /// here name this host keeps none of yet, as what keeps them says.
-    pub(crate) async fn content_lacked(&self, workspace: &str) -> BTreeSet<String> {
-        let mut lacked = BTreeSet::new();
-        for keeping in self.inner.content.keepers() {
-            lacked.extend(keeping.lacked(workspace).await);
-        }
-        lacked
-    }
-
-    /// How many blobs of content the resources of `workspace` that open here
-    /// name, as what keeps them counts.
-    pub(crate) async fn content_named(&self, workspace: &str) -> usize {
-        let mut named = 0_usize;
-        for keeping in self.inner.content.keepers() {
-            named = named.saturating_add(keeping.names(workspace).await);
-        }
-        named
+    /// What `workspace` keeps here that its members pushed, as what keeps it
+    /// counts.
+    #[must_use]
+    pub fn content_held(&self, workspace: &str) -> ContentHeld {
+        self.inner
+            .content
+            .keepers()
+            .iter()
+            .map(|keeping| keeping.held(workspace))
+            .fold(ContentHeld::default(), |all, one| ContentHeld {
+                held: all.held.saturating_add(one.held),
+                going: all.going.saturating_add(one.going),
+            })
     }
 
     /// Ask `workspace`'s members for the app surface `hash` of `app` this host
@@ -849,20 +781,34 @@ impl Workspaces {
             NeighbourMsg::decode(&body)
         )
         .map_err(|error| error.to_string())?;
-        let link = self
-            .inner
-            .direct
-            .link(workspace_id)
-            .ok_or("the workspace has no link here")?;
-        link.send_content(message).await.map_err(|error| {
-            format!("a workspace's link did not carry the host's request: {error}")
-        })?;
+        self.tell_members(workspace_id, message).await?;
         Ok(self
             .inner
             .link_remotes
             .lock_recover()
             .get(&workspace_id)
             .map_or(0, BTreeSet::len))
+    }
+
+    /// Send `message`, a content frame of this host's, on `workspace`'s own
+    /// link, to the members it is addressed to, waiting for room.
+    ///
+    /// # Errors
+    ///
+    /// No link serves the workspace here, or it did not carry the frame.
+    pub async fn tell_members(
+        &self,
+        workspace: WorkspaceId,
+        message: NeighbourMsg,
+    ) -> Result<(), String> {
+        let link = self
+            .inner
+            .direct
+            .link(workspace)
+            .ok_or("the workspace has no link here")?;
+        link.send_content(message)
+            .await
+            .map_err(|error| format!("a workspace's link did not carry the host's frame: {error}"))
     }
 
     /// The answer to `body`, a presence the member device `asker` of
@@ -990,7 +936,7 @@ impl Workspaces {
     }
 
     /// The bytes of content `hash` of `app_id` this device keeps for `workspace`.
-    fn read_kept(&self, workspace: &str, app_id: &str, hash: &str) -> Option<Vec<u8>> {
+    pub(super) fn read_kept(&self, workspace: &str, app_id: &str, hash: &str) -> Option<Vec<u8>> {
         self.app_file(workspace, hash)
             .or_else(|| {
                 self.inner

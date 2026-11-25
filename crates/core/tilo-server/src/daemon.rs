@@ -738,8 +738,8 @@ impl Server {
         // Members read what this host keeps for their workspace from its
         // content, and the files of the workspaces it holds are kept there
         // so a member that comes up after the one that wrote them left reads
-        // the same bytes from this host alone. What no record of a workspace
-        // names any more is let go of, so replaced files do not pile up.
+        // the same bytes from this host alone. What no member holds any more
+        // is let go of, so replaced files do not pile up.
         governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
             &content,
         ))));
@@ -749,13 +749,6 @@ impl Server {
         )));
         let kept = crate::kept_content::KeptContent::new(governed.clone(), Arc::clone(&content));
         push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
-        push_background_task(
-            &background_tasks,
-            tokio::spawn(crate::content::collection::run(
-                governed.clone(),
-                Arc::clone(&content),
-            )),
-        );
         // A workspace its owner deleted takes its content and its app
         // workers with it.
         push_background_task(

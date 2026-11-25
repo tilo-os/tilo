@@ -3,17 +3,17 @@
 //!
 //! Everything this host keeps for a workspace goes there and is read from
 //! there: a file a caller uploaded and what an app made in a record kept for
-//! it, what the workspace's records reference ([`crate::kept_content`]),
+//! it, what the workspace's members pushed ([`crate::kept_content`]),
 //! and the files its members posted in
 //! Chat. Members read any of it by asking
 //! their workspace for the hash their record names
 //! ([`crate::workspaces::Workspaces::content_answer`]), and are answered from
 //! that workspace's store alone: possessing a hash grants nothing in another
-//! workspace. What no record of a workspace names any more is let go of
-//! ([`collection`]).
+//! workspace. What no member holds any more is let go of
+//! ([`crate::kept_content`]).
 
 pub mod branch;
-pub mod collection;
+mod named;
 
 use std::path::Path;
 use std::sync::Arc;

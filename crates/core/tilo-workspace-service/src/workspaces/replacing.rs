@@ -66,14 +66,8 @@ impl Workspaces {
 /// The app that keeps records of the store kind `kind`: the one this process named for it, else
 /// the package its `tl.<app>.<Type>` kind spells. `None` for a kind naming no app.
 fn app_of_kind(kind: &str) -> Option<String> {
-    collab_types::app_surface::app_of_kind(kind).or_else(|| {
-        Some(
-            kind.strip_prefix("tl.")?
-                .rsplit_once('.')?
-                .0
-                .to_owned(),
-        )
-    })
+    collab_types::app_surface::app_of_kind(kind)
+        .or_else(|| Some(kind.strip_prefix("tl.")?.rsplit_once('.')?.0.to_owned()))
 }
 
 /// The writes that move the record `id` of `kind` out of the document every member reads into

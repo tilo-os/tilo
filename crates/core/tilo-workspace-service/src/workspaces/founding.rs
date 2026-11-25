@@ -88,8 +88,7 @@ impl GovernedWorkspace {
         // first use: a seed record would go out in the clear before its
         // channel exists, and every member who joins after the channel
         // opened refuses that cleartext. The shared desktop starts with
-        // the first layout written to it, sealed, as in a workspace that
-        // never had one (`prepare_desktop_document`).
+        // the first layout written to it, sealed.
         seed.documents.clear();
         peer.install_seed(seed, key, now)?;
         let (registries, defaults) = starts;

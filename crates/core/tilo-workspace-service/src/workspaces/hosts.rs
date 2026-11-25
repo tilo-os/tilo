@@ -35,9 +35,8 @@ use tilo_peer_state::actions::RemoteDevice;
 use tilo_peer_state::join::{Role, TransportHint};
 use tilo_server_protocol::workspaces::WorkspaceHolder;
 use tilo_server_protocol::workspaces::{
-    CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CaughtUpWorkspace,
-    HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, StandingPage,
-    UNHOST_WORKSPACE,
+    CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CaughtUpWorkspace, HOST_ACTIONS_PROVIDER,
+    HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, StandingPage, UNHOST_WORKSPACE,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -45,22 +44,14 @@ use super::{CollaborationError, GovernedWorkspace, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
 
-/// How many addresses of the content a handing device keeps none of one ask
-/// carries: about seventy bytes each in its frame, so an ask stays well
-/// within [`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`]. A list no
-/// longer than this goes in the catch-up itself, as a build before lists in
-/// parts takes it; a longer one goes ahead of it in parts
-/// ([`CATCH_UP_ABSENT`]).
-const ABSENT_PER_ASK: usize = 4096;
-
 /// How many answers a catch-up takes at most: one follows each time what the device
 /// answering it lacks narrowed or its store moved, and a device that keeps writing while it
 /// answers moves its store without ever catching up, so the asking is bounded.
 const CATCH_UP_ANSWERS: u32 = 100;
 
-/// How long a server taking a workspace in waits for its content to move before it answers what
-/// it still lacks ([`Workspaces::content_settled`]).
-const CONTENT_SETTLES_WITHIN: Duration = Duration::from_secs(60);
+/// How long a device handing a workspace over waits for the server to keep the
+/// content it pushed ([`Workspaces::hand_content_to`]).
+pub(super) const CONTENT_SETTLES_WITHIN: Duration = Duration::from_secs(60);
 
 /// How long a catch-up waits to dial the device that asked it: one that reached
 /// this device over the workspace's link itself has its changes here already, and
@@ -75,92 +66,8 @@ const CATCH_UP_DIAL: Duration = Duration::from_secs(10);
 /// records and authors the workspace has ([`CATCH_UP_STANDING`]).
 const CURSORS_PER_ANSWER: usize = 512;
 
-/// The most addresses the list one handing device hands here holds: a
-/// workspace whose content its handing device keeps none of past this is
-/// refused, rather than held in memory without bound.
-const MAX_ABSENT: usize = 1 << 21;
-
-/// The longest address such a list holds.
-const MAX_ABSENT_ADDRESS: usize = 256;
-
-/// How long a list handed in parts is kept after it was last handed to or
-/// counted with: a catch-up that ended without letting it go leaves it no
-/// longer than this.
-const ABSENT_KEPT_FOR: Duration = Duration::from_secs(600);
 /// How long a host's operation waits for another host to finish it.
 const HOST_ANSWERED: Duration = Duration::from_secs(120);
-
-/// The list of content one device handing a workspace over keeps none of
-/// itself, with when it was last handed to or counted with.
-type AbsentList = (Arc<BTreeSet<String>>, Instant);
-
-/// The content each device handing a workspace over keeps none of itself,
-/// as it handed the list here in parts ([`CATCH_UP_ABSENT`]), by device and
-/// workspace.
-#[derive(Default)]
-pub(super) struct HandedAbsent(Mutex<HashMap<([u8; 32], String), AbsentList>>);
-
-impl HandedAbsent {
-    /// Add `part` to the list kept under `key`, afresh when `first`; an
-    /// empty first part lets the list go. Lists not handed to or counted
-    /// with for [`ABSENT_KEPT_FOR`] go first. Answers how many addresses the
-    /// list holds.
-    fn keep(
-        &self,
-        key: &([u8; 32], String),
-        part: BTreeSet<String>,
-        first: bool,
-    ) -> Result<usize, String> {
-        let now = tilo_clock::now();
-        let mut lists = self.0.lock_recover();
-        lists.retain(|_, (_, touched)| now.duration_since(*touched) < ABSENT_KEPT_FOR);
-        if first {
-            lists.remove(key);
-        }
-        let kept = if first && part.is_empty() {
-            Some(0)
-        } else if first || lists.contains_key(key) {
-            let (list, touched) = lists
-                .entry(key.clone())
-                .or_insert_with(|| (Arc::default(), now));
-            *touched = now;
-            let list = Arc::make_mut(list);
-            list.extend(part);
-            Some(list.len())
-        } else {
-            None
-        };
-        if kept.is_some_and(|kept| kept > MAX_ABSENT) {
-            lists.remove(key);
-        }
-        drop(lists);
-        match kept {
-            None => Err(
-                "the first part of the list of content this device keeps none of is not here: \
-                 hand the list again"
-                    .into(),
-            ),
-            Some(kept) if kept > MAX_ABSENT => Err(format!(
-                "the content the asking device keeps none of is more than the {MAX_ABSENT} \
-                 addresses this server takes of it"
-            )),
-            Some(kept) => Ok(kept),
-        }
-    }
-
-    /// The list kept under `key`, counted with now, when one is.
-    fn counted_with(&self, key: &([u8; 32], String)) -> Option<Arc<BTreeSet<String>>> {
-        let now = tilo_clock::now();
-        let mut lists = self.0.lock_recover();
-        lists.retain(|_, (_, touched)| now.duration_since(*touched) < ABSENT_KEPT_FOR);
-        let list = lists.get_mut(key).map(|(list, touched)| {
-            *touched = now;
-            Arc::clone(list)
-        });
-        drop(lists);
-        list
-    }
-}
 
 /// A hand-over of a workspace to a server under way ([`Workspaces::handing_to`]), until dropped:
 /// then those following the workspace's governance read it again, the server holding it or not.
@@ -744,20 +651,16 @@ impl Workspaces {
     /// Ask `reached`, a server `workspace` names among those keeping it, to
     /// take in what this device's store keeps of it ([`CATCH_UP_WORKSPACE`]),
     /// and see in where its store stands then that it keeps every change of
-    /// this device's it may read, and in what it says it lacks that it keeps
-    /// all the content those changes name. The server is asked again only
-    /// after an answer that narrowed what it lacks, or that says it fetched
-    /// content while it answered, for what reached this device while it took
-    /// in the rest: an answer that did neither is its last. What it lacks may
-    /// count more than the last answer did and still follow content fetched:
-    /// it counts over the resources that open there, which grow as the
-    /// workspace's arrive.
+    /// this device's it may read; then push it the content this device keeps
+    /// of the workspace, and wait for it to say it keeps it all
+    /// ([`Self::hand_content_to`]). The server is asked again only after an
+    /// answer that narrowed what it lacks: an answer that did not is its last.
     ///
     /// # Errors
     ///
     /// The server did not answer the ask (a build before it, or one that
-    /// could not reach this device), or an answer left it lacking changes or
-    /// content and neither narrowed it nor fetched any.
+    /// could not reach this device), an answer left it lacking changes and did
+    /// not narrow them, or it did not keep the content in time.
     async fn caught_up_with_this(
         &self,
         workspace: &str,
@@ -769,69 +672,32 @@ impl Workspaces {
             // its changes in a store to hand over.
             return Ok(());
         };
-        let server = reached.certificate.device_public_key;
-        // Whether the server waits for the keys of what it cannot open yet:
-        // only for content this device's resources name.
-        let names_content = self.content_named(workspace).await > 0;
-        // What this device keeps none of itself it cannot hand over: the
-        // server is not held to it. A list longer than one ask carries goes
-        // ahead in parts, and the server counts with it as it holds it.
-        let absent = self.content_lacked(workspace).await;
-        let parted = absent.len() > ABSENT_PER_ASK;
-        if parted {
-            hand_absent(reached, workspace, &absent).await?;
-        }
-        let absent = (!parted).then(|| absent.into_iter().map(Value::String).collect());
-        let caught_up = self
-            .caught_up_counting(workspace, &link, reached, names_content, absent)
-            .await;
-        if parted {
-            // The list is the server's to let go once the catch-up ended,
-            // and it does after a while unasked.
-            let mut arguments = Map::new();
-            arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
-            arguments.insert("first".into(), Value::Bool(true));
-            arguments.insert("absent".into(), Value::Array(Vec::new()));
-            if let Err(error) = reached.ask(CATCH_UP_ABSENT, arguments).await {
-                tracing::debug!(%workspace, server = %hex::encode(server), %error, "a server did not let go of the content this device keeps none of");
-            }
-        }
-        caught_up
+        self.caught_up_counting(workspace, &link, reached).await?;
+        self.hand_content_to(workspace, reached.certificate.device_public_key)
+            .await
     }
 
     /// Ask `reached` to take in what this device keeps of `workspace`, over
     /// `link`, until it says it keeps it all, or answers that neither narrowed
     /// what it lacks, nor fetched any, nor moved where its store stands
-    /// ([`Self::caught_up_with_this`]). The content this device keeps none of
-    /// is `absent`, or, when `None`, the list it handed the server in parts.
+    /// ([`Self::caught_up_with_this`]).
     async fn caught_up_counting(
         &self,
         workspace: &str,
         link: &tilo_peer_state::direct::DirectSync,
         reached: &OtherHost,
-        names_content: bool,
-        absent: Option<Vec<Value>>,
     ) -> Result<(), String> {
         let server = reached.certificate.device_public_key;
-        // What it lacked, could not read, and held before the last answer. Its standing moves
-        // when it takes frames in even while this device keeps writing more, so a count that
-        // grew is progress too, and not an answer to give up on.
-        let mut before: Option<(usize, u32, Vec<tilo_peer_state::store::Cursor>)> = None;
+        // What it lacked and held before the last answer. Its standing moves when it takes frames
+        // in even while this device keeps writing more, so a count that grew is progress too, and
+        // not an answer to give up on.
+        let mut before: Option<(usize, Vec<tilo_peer_state::store::Cursor>)> = None;
         let mut answers: u32 = 0;
         loop {
             answers = answers.saturating_add(1);
             let mut arguments = Map::new();
             arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
-            arguments.insert("names_content".into(), Value::Bool(names_content));
             arguments.insert("cursor_pages".into(), Value::Bool(true));
-            match &absent {
-                Some(absent) => {
-                    arguments.insert("absent".into(), Value::Array(absent.clone()));
-                }
-                None => {
-                    arguments.insert("absent_parts".into(), Value::Bool(true));
-                }
-            }
             let answer = reached
                 .ask(CATCH_UP_WORKSPACE, arguments)
                 .await
@@ -852,27 +718,22 @@ impl Workspaces {
             cursors.sort_unstable();
             cursors.dedup();
             let lacked = link.lacked_by(server, &cursors)?;
-            let content_missing = caught_up.content_missing;
-            if lacked == 0 && content_missing == 0 {
+            if lacked == 0 {
                 return Ok(());
             }
-            let narrowed =
-                before
-                    .as_ref()
-                    .is_none_or(|(lacked_before, missing_before, cursors_before)| {
-                        lacked < *lacked_before
-                            || content_missing < *missing_before
-                            || cursors != *cursors_before
-                    });
-            if (!narrowed && !caught_up.fetched) || answers >= CATCH_UP_ANSWERS {
+            let narrowed = before
+                .as_ref()
+                .is_none_or(|(lacked_before, cursors_before)| {
+                    lacked < *lacked_before || cursors != *cursors_before
+                });
+            if !narrowed || answers >= CATCH_UP_ANSWERS {
                 return Err(format!(
-                    "the server {} still lacks {lacked} of the changes this device keeps and \
-                     {content_missing} blobs of the content they name (each resource still waiting \
-                     for its keys there counts as one; {answers} answers)",
+                    "the server {} still lacks {lacked} of the changes this device keeps \
+                     ({answers} answers)",
                     hex::encode(server)
                 ));
             }
-            before = Some((lacked, content_missing, cursors));
+            before = Some((lacked, cursors));
         }
     }
 
@@ -880,11 +741,8 @@ impl Workspaces {
     /// those keeping it, keeps of the workspace and this device's store lacks,
     /// over the workspace's device link ([`DirectSync::take_store`]), as the
     /// caller asks before it lets the workspace go. Answers where this
-    /// device's store stands then, and how many blobs of the content the
-    /// workspace's resources name it still lacks once the caller may have
-    /// handed them ([`Self::content_settled`]), beside what `absent`
-    /// addresses: the content the caller keeps none of either. Says too
-    /// whether it fetched any while it answered.
+    /// device's store stands then. The content the caller keeps it pushes
+    /// here itself ([`Self::hand_content_to`]).
     ///
     /// [`DirectSync::take_store`]: tilo_peer_state::direct::DirectSync::take_store
     ///
@@ -896,9 +754,7 @@ impl Workspaces {
         &self,
         caller: &DeviceCert,
         workspace: &str,
-        names_content: bool,
-        absent: &BTreeSet<String>,
-    ) -> Result<(Vec<tilo_peer_state::store::Cursor>, u32, bool), String> {
+    ) -> Result<Vec<tilo_peer_state::store::Cursor>, String> {
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "a workspace is named by its id".to_owned())?;
         let address = self.handing(caller, workspace).await?;
@@ -934,14 +790,7 @@ impl Workspaces {
                 address.device_certificate.device_public_key,
             )
             .await?;
-        let (content_missing, fetched) = self
-            .content_settled(workspace, caller.device_public_key, names_content, absent)
-            .await;
-        Ok((
-            cursors,
-            u32::try_from(content_missing).unwrap_or(u32::MAX),
-            fetched,
-        ))
+        Ok(cursors)
     }
 
     /// Where this device's store stands on `workspace_id`, as a catch-up answers:
@@ -995,37 +844,6 @@ impl Workspaces {
             })
             .or(named)
             .ok_or_else(|| "only a device keeping the workspace hands its changes over".to_owned())
-    }
-
-    /// Keep `part` of the list of content `caller`, a device keeping
-    /// `workspace`, keeps none of itself, for its catch-up to count with
-    /// ([`Self::absent_handed`]): the list afresh when `first`, and an empty
-    /// first part lets it go. Answers how many addresses the list holds.
-    ///
-    /// # Errors
-    ///
-    /// The caller is not a device keeping the workspace, the list's first
-    /// part is not here (it was let go, or this device started again), or the
-    /// list grew past what one device's list holds here ([`MAX_ABSENT`]).
-    pub(crate) async fn keep_absent(
-        &self,
-        caller: &DeviceCert,
-        workspace: &str,
-        part: BTreeSet<String>,
-        first: bool,
-    ) -> Result<usize, String> {
-        self.handing(caller, workspace).await?;
-        if part
-            .iter()
-            .any(|address| address.len() > MAX_ABSENT_ADDRESS)
-        {
-            return Err("a content address is longer than any the workspace names".into());
-        }
-        self.inner.handed_absent.keep(
-            &(caller.device_public_key, workspace.to_owned()),
-            part,
-            first,
-        )
     }
 
     /// Where this device's store of `workspace` stands on the lineages after
@@ -1098,97 +916,6 @@ impl Workspaces {
         self.inner
             .cursors_per_answer
             .store(cursors, std::sync::atomic::Ordering::Release);
-    }
-
-    /// The list of content the device `caller` keeps none of itself, as it
-    /// handed it here in parts for `workspace` ([`Self::keep_absent`]); `None`
-    /// when no list of it is here.
-    pub(crate) fn absent_handed(
-        &self,
-        caller: [u8; 32],
-        workspace: &str,
-    ) -> Option<Arc<BTreeSet<String>>> {
-        self.inner
-            .handed_absent
-            .counted_with(&(caller, workspace.to_owned()))
-    }
-
-    /// How many blobs of the content `workspace`'s resources name this device
-    /// keeps none of, once `from`, the device handing the workspace over,
-    /// may have handed them: none are lacked, fewer than when this was asked,
-    /// or `from` answered that it keeps none of one. A resource still waiting
-    /// for its keys counts as one blob lacked when `names_content`, as `from`
-    /// says when its own resources name content. Content `absent` addresses,
-    /// which `from` keeps none of either, is not counted. The workspace's members are
-    /// asked again for all this device lacks first, and each count after that
-    /// follows an answer to those asks, a write to the workspace, or a change
-    /// to its member list. Says too whether that count is below the first:
-    /// content arrived while it waited. A count that has not dropped within
-    /// [`CONTENT_SETTLES_WITHIN`] is answered as it stands.
-    async fn content_settled(
-        &self,
-        workspace: &str,
-        from: [u8; 32],
-        names_content: bool,
-        absent: &BTreeSet<String>,
-    ) -> (usize, bool) {
-        use tokio::sync::broadcast::error::RecvError;
-        // Subscribed before the asks go out, so no answer to them is missed.
-        let mut answers = self.content_answers();
-        // A resource waiting for its keys opens as a write lands or the
-        // workspace's member list moves, which may name no content at all.
-        let mut writes = self.document_writes();
-        let mut changes = self.governance_changes();
-        drop(self.inner.reached.send(workspace.to_owned()));
-        let asked = self.content_lacking(workspace, names_content, absent).await;
-        let mut lacking = asked;
-        // Nothing moving for this long ends the wait, with what is still lacked: the device handing
-        // the workspace over then hears that nothing narrowed, and says so, rather than waiting
-        // on a resource whose keys never come.
-        let quiet = tokio::time::sleep(CONTENT_SETTLES_WITHIN);
-        tokio::pin!(quiet);
-        while lacking > 0 {
-            let lacked_by_it = tokio::select! {
-                () = &mut quiet => {
-                    tracing::warn!(
-                        %workspace,
-                        from = %hex::encode(from),
-                        lacking,
-                        waits_for_keys = names_content,
-                        "a hand-over's content did not move for {} s: it still lacks this many \
-                         blobs, counting each resource still waiting for its keys as one",
-                        CONTENT_SETTLES_WITHIN.as_secs()
-                    );
-                    break;
-                }
-                answer = answers.recv() => match answer {
-                    Ok(answer) if answer.workspace == workspace => {
-                        answer.lacks && answer.from == from
-                    }
-                    Ok(_) => continue,
-                    // What this missed may be its own: the count says.
-                    Err(RecvError::Lagged(_)) => false,
-                    Err(RecvError::Closed) => break,
-                },
-                write = writes.recv() => match write {
-                    Ok(write) if write.workspace == workspace => false,
-                    Ok(_) => continue,
-                    Err(RecvError::Lagged(_)) => false,
-                    Err(RecvError::Closed) => break,
-                },
-                change = changes.recv() => match change {
-                    Ok(moved) if moved == workspace => false,
-                    Ok(_) => continue,
-                    Err(RecvError::Lagged(_)) => false,
-                    Err(RecvError::Closed) => break,
-                },
-            };
-            lacking = self.content_lacking(workspace, names_content, absent).await;
-            if lacked_by_it || lacking < asked {
-                break;
-            }
-        }
-        (lacking, lacking < asked)
     }
 
     /// Take in what `device` at `addr`, one keeping `workspace`
@@ -1972,47 +1699,6 @@ async fn read_standing(
         read.extend(cursors);
     }
     Ok(read)
-}
-
-/// Hand `reached` the list of content this device keeps none of itself of
-/// `workspace`, `absent`, in parts each one ask carries ([`CATCH_UP_ABSENT`]),
-/// for the catch-up after to count with.
-///
-/// # Errors
-///
-/// The server did not take a part: a build before lists in parts knows no
-/// such action.
-async fn hand_absent(
-    reached: &OtherHost,
-    workspace: &str,
-    absent: &BTreeSet<String>,
-) -> Result<(), String> {
-    let addresses: Vec<&String> = absent.iter().collect();
-    for (index, part) in addresses.chunks(ABSENT_PER_ASK).enumerate() {
-        let mut arguments = Map::new();
-        arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
-        arguments.insert("first".into(), Value::Bool(index == 0));
-        arguments.insert(
-            "absent".into(),
-            Value::Array(
-                part.iter()
-                    .map(|address| Value::String((*address).clone()))
-                    .collect(),
-            ),
-        );
-        reached
-            .ask(CATCH_UP_ABSENT, arguments)
-            .await
-            .map_err(|error| {
-                format!(
-                    "the server {} did not take the list of the {} blobs of content this device \
-                     keeps none of: {error}",
-                    hex::encode(reached.certificate.device_public_key),
-                    absent.len()
-                )
-            })?;
-    }
-    Ok(())
 }
 
 /// The invocation of the host operation `action` with `arguments`.

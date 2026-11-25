@@ -1,13 +1,15 @@
-//! A holder handed a workspace takes in the content its records name, from
-//! the holder that hands it over as from any other device that keeps it.
+//! A holder handed a workspace is pushed the content the holder handing it
+//! over keeps, and every holder pushes the others what members push it.
 //!
 //! A record names its binaries by reference alone: the bytes live in a
 //! content store beside it. A new holder copies every record, and a record
 //! that names content its store lacks is worth nothing once the device that
-//! had those bytes is gone. So a holder that arrives, or one already holding,
-//! fetches each content its records reference from a device that keeps it,
-//! puts it in its own store, and says how much it still lacks in the
-//! workspace's copy status until it lacks none.
+//! had those bytes is gone. So the holder handing a workspace over pushes the
+//! new one what it keeps and counts the hand-over done once the new one says
+//! it keeps it all; a holder a member pushes to pushes the content on to the
+//! workspace's other holders, again as each comes back; and until another
+//! holder keeps it, the workspace's copy status says how much is on this one
+//! alone.
 use std::time::Duration;
 
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
@@ -18,8 +20,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, start_server};
 
-/// The app a record of a kept picture is written in: a record whose content
-/// no keeper of the workspace's own fetches for it.
+/// The app a record of a kept picture is written in.
 const PHOTOS: &str = "so.tilo.photos";
 
 fn identity(user: &TestUser, device: &TestDevice) -> ServerIdentity {
@@ -66,14 +67,8 @@ fn free_address() -> std::net::SocketAddr {
     socket.local_addr().unwrap()
 }
 
-/// Whether `holder` says it still lacks content: the row it wrote in the
-/// workspace's copy status, as every holder reads it.
-async fn lacks_content(holder: &Server, workspace: &str) -> bool {
-    content_blobs(holder, workspace).await.is_some()
-}
-
-/// The blobs of content `holder` says it lacks in `workspace`'s copy status,
-/// when it says it lacks any.
+/// The blobs of content `holder` says are on it alone in `workspace`'s copy
+/// status, when it says any are.
 async fn content_blobs(holder: &Server, workspace: &str) -> Option<u32> {
     let workspaces = holder.workspaces().expect("the server holds workspaces");
     let status = workspaces
@@ -105,51 +100,12 @@ async fn name_picture(server: &Server, workspace: &str, hash: &str, size: usize)
     .unwrap();
 }
 
-/// Wait until `holder` says it lacks content in `workspace`'s copy status.
-async fn until_it_says_it_lacks_content(holder: &Server, workspace: &str) {
-    tilo_test_env::within("the added holder says it lacks the picture", async {
-        loop {
-            if content_blobs(holder, workspace)
-                .await
-                .is_some_and(|blobs| blobs >= 1)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
-}
-
-/// Wait until `holder` keeps `picture` at `hash` and says it lacks no content.
-async fn until_it_keeps_picture(holder: &Server, workspace: &str, hash: &str, picture: &[u8]) {
-    tilo_test_env::within(
-        "the added holder fetches it and says it lacks none",
-        async {
-            loop {
-                let kept = holder
-                    .content()
-                    .get(workspace)
-                    .ok()
-                    .and_then(|store| store.read(hash));
-                if kept.as_deref() == Some(picture)
-                    && content_blobs(holder, workspace).await.is_none()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        },
-    )
-    .await;
-}
-
 /// A workspace on server A whose record names a megabyte of content A's store
-/// keeps. Server B is added and takes a copy, and fetches the content from A
-/// although no member of the workspace holds it, before A counts it handed
+/// keeps. Server B is added and takes a copy, and A pushes it the content
+/// although no member of the workspace is there to, before A counts it handed
 /// over. A then goes away at once, and B serves the same bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_holder_added_to_a_workspace_fetches_the_content_its_records_name() {
+async fn a_holder_added_to_a_workspace_is_pushed_the_content_the_other_keeps() {
     let alice = TestUser::fresh("Alice");
     let first = alice.enrol("first-server", DeviceCapabilities::member());
     let second = alice.enrol("second-server", DeviceCapabilities::member());
@@ -229,14 +185,50 @@ async fn a_holder_added_to_a_workspace_fetches_the_content_its_records_name() {
     );
 }
 
-/// A holder stopped before it finished fetching fetches again when it starts:
-/// what its records name is measured against what its store holds each time
-/// it comes up, never remembered as done.
+/// What `member` pushes `holder`: the picture `bytes` of `workspace`, whole.
+fn pushed(holder: &Server, member: &TestDevice, workspace: &str, bytes: &[u8]) {
+    let mut frames = Vec::new();
+    let host = holder.workspaces().unwrap().device_cert().device_public_key;
+    let mut packer = neighbour_wire::content::Packer::new(
+        tilo_peer_state::peer_handle(&member.device_pubkey()),
+        tilo_peer_state::peer_handle(&host),
+        workspace,
+        |frame| frames.push(frame),
+    );
+    let total = u64::try_from(bytes.len()).unwrap();
+    for (at, piece) in bytes
+        .chunks(neighbour_wire::content::PIECE_BYTES)
+        .enumerate()
+    {
+        packer.piece(neighbour_wire::content::Piece {
+            app_id: PHOTOS.into(),
+            hash: blake3::hash(bytes).to_hex().to_string(),
+            total,
+            offset: u64::try_from(at * neighbour_wire::content::PIECE_BYTES).unwrap(),
+            bytes: piece.to_vec(),
+        });
+    }
+    packer.finish();
+    for frame in frames {
+        holder.workspaces().unwrap().content_for_host(
+            workspace,
+            member.device_pubkey(),
+            &frame.frame(),
+        );
+    }
+}
+
+/// A holder that was stopped when a member pushed the other holder a picture
+/// is pushed it once it starts again: the holder the member reached says, in
+/// the workspace's copy status, that the picture is on it alone until then,
+/// and stops saying so once the other keeps it, which it keeps across its own
+/// restart as a member's hold.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
+async fn a_holder_stopped_when_a_member_pushed_content_is_pushed_it_when_it_starts_again() {
     let alice = TestUser::fresh("Alice");
     let first = alice.enrol("first-server", DeviceCapabilities::member());
     let second = alice.enrol("second-server", DeviceCapabilities::member());
+    let laptop = alice.enrol("laptop", DeviceCapabilities::member());
     let first_state = tempfile::tempdir().unwrap();
     let second_state = tempfile::tempdir().unwrap();
     let a = server(
@@ -255,19 +247,11 @@ async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
         .create_workspace("Lounge", None)
         .await
         .unwrap();
-    let picture: Vec<u8> = b"a picture the new holder fetches after it restarts. "
-        .iter()
-        .copied()
-        .cycle()
-        .take(1024 * 1024 + 7)
-        .collect();
-    let hash = blake3::hash(&picture).to_hex().to_string();
-    a.content()
-        .get(&workspace.workspace)
+    a.workspaces()
         .unwrap()
-        .put(&picture)
-        .unwrap();
-    name_picture(&a, &workspace.workspace, &hash, picture.len()).await;
+        .enter(&workspace.workspace, (&laptop.cert, &laptop.sk))
+        .await
+        .expect("Alice's laptop enters the workspace");
     a.workspaces()
         .unwrap()
         .attach_server(
@@ -279,28 +263,58 @@ async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
         .await
         .unwrap();
 
-    // The fetch had not finished: B stops holding none of it, and starts
-    // again on its files, where its records still name the picture.
+    // B stops; Alice's laptop pushes A a picture and names it in a record.
     b.shutdown().await;
-    let b = server(&alice, &second, second_state.path(), listen).await;
-
-    tilo_test_env::within("the restarted holder fetches the record's content", async {
-        loop {
-            let kept = b
-                .content()
-                .get(&workspace.workspace)
-                .ok()
-                .and_then(|store| store.read(&hash));
-            if kept.as_deref() == Some(picture.as_slice())
-                && !lacks_content(&b, &workspace.workspace).await
-            {
-                break;
-            }
+    let picture: Vec<u8> = b"a picture the stopped holder is pushed once it is back. "
+        .iter()
+        .copied()
+        .cycle()
+        .take(1024 * 1024 + 7)
+        .collect();
+    let hash = blake3::hash(&picture).to_hex().to_string();
+    name_picture(&a, &workspace.workspace, &hash, picture.len()).await;
+    pushed(&a, &laptop, &workspace.workspace, &picture);
+    tilo_test_env::within("A says the picture is on it alone", async {
+        while content_blobs(&a, &workspace.workspace).await != Some(1) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await;
+
+    // B starts again on its files, and A pushes it what it missed.
+    let b = server(&alice, &second, second_state.path(), listen).await;
+    tilo_test_env::within(
+        "B keeps the picture and A says nothing is on it alone",
+        async {
+            loop {
+                let kept = b
+                    .content()
+                    .get(&workspace.workspace)
+                    .ok()
+                    .and_then(|store| store.read(&hash));
+                if kept.as_deref() == Some(picture.as_slice())
+                    && content_blobs(&a, &workspace.workspace).await.is_none()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        },
+    )
+    .await;
+
+    // B holds it across its own restart, and serves it once A is gone.
+    b.shutdown().await;
+    let b = server(&alice, &second, second_state.path(), listen).await;
     a.shutdown().await;
+    assert_eq!(
+        b.workspaces()
+            .unwrap()
+            .content_held(&workspace.workspace)
+            .held,
+        1,
+        "the restarted holder still holds the picture for the member who pushed it"
+    );
     assert_eq!(
         b.workspaces()
             .unwrap()
@@ -309,88 +323,6 @@ async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
             .as_deref(),
         Some(picture.as_slice()),
         "the restarted holder serves what its record names"
-    );
-}
-
-/// A holder that lacks a record's content says how much, and stops saying so
-/// once its store holds it: the number is what its records reference minus
-/// what its store holds, read afresh whenever either changes, never a count
-/// kept from the moment it took the copy.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_holder_says_how_much_content_it_lacks_until_it_keeps_it() {
-    let alice = TestUser::fresh("Alice");
-    let first = alice.enrol("first-server", DeviceCapabilities::member());
-    let second = alice.enrol("second-server", DeviceCapabilities::member());
-    let first_state = tempfile::tempdir().unwrap();
-    let second_state = tempfile::tempdir().unwrap();
-    let a = server(
-        &alice,
-        &first,
-        first_state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let b = server(
-        &alice,
-        &second,
-        second_state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let workspace = a
-        .workspaces()
-        .expect("the server holds workspaces")
-        .create_workspace("Lounge", None)
-        .await
-        .unwrap();
-
-    // The record names a picture that no store holds yet: not even the server
-    // that wrote the record has the bytes.
-    let picture: Vec<u8> = b"a picture the servers fetch once one keeps it. "
-        .iter()
-        .copied()
-        .cycle()
-        .take(1024 * 1024 + 7)
-        .collect();
-    let hash = blake3::hash(&picture).to_hex().to_string();
-    name_picture(&a, &workspace.workspace, &hash, picture.len()).await;
-    a.workspaces()
-        .unwrap()
-        .attach_server(
-            &workspace.workspace,
-            second.device_pubkey(),
-            b.node_addr(),
-            CopyRole::KeyHolder,
-        )
-        .await
-        .unwrap();
-
-    // The added holder says it lacks the picture: one blob its records name
-    // and its store does not hold.
-    until_it_says_it_lacks_content(&b, &workspace.workspace).await;
-
-    // The first server comes to keep it, and says so to whoever asked.
-    a.content()
-        .get(&workspace.workspace)
-        .unwrap()
-        .put(&picture)
-        .unwrap();
-    a.workspaces()
-        .unwrap()
-        .content_kept(&workspace.workspace, &hash);
-
-    // The added holder takes it into its store, and says it lacks none.
-    until_it_keeps_picture(&b, &workspace.workspace, &hash, &picture).await;
-
-    a.shutdown().await;
-    assert_eq!(
-        b.workspaces()
-            .unwrap()
-            .kept_content(workspace.workspace_id, &hash)
-            .await
-            .as_deref(),
-        Some(picture.as_slice()),
-        "the added holder serves what its record names"
     );
 }
 
@@ -409,7 +341,7 @@ const PER_WRITE: usize = 400;
 /// live on a member's device, as a laptop's do once it signed in. The server
 /// added takes the workspace all the same: it is not held to what the
 /// handing server keeps none of, so the hand-over finishes once the changes
-/// are across, and the content follows from the members that keep it. The
+/// are across, and the content follows as the members that keep it push it. The
 /// server added says where its store stands two cursors at a time, in pages
 /// as it does for a workspace of many records and authors. Had the list or the
 /// cursors not arrived whole, the server would still lack what they leave

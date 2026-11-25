@@ -760,6 +760,26 @@ pub enum NeighbourMsg {
         cluster_id: String,
         pieces: Vec<content::Piece>,
     },
+    /// `responder`, a host of workspace `cluster_id`, keeps every byte of `hash` that
+    /// `requester` pushed to it for a record of `app_id`: the push is answered, and the host holds
+    /// the content for `requester` until it is released ([`Self::DocumentContentReleased`]).
+    /// Appended to preserve every existing Postcard discriminant.
+    DocumentContentKept {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
+    /// `requester`'s own change of a record of `app_id` dropped its last reference to `hash`:
+    /// the hosts of workspace `cluster_id` hold it for that device no more, and let it go once
+    /// no member holds it. Appended to preserve every existing Postcard discriminant.
+    DocumentContentReleased {
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
 }
 
 impl NeighbourMsg {
@@ -882,7 +902,9 @@ impl NeighbourMsg {
             | Self::MlsGovernanceWanted { .. }
             | Self::DocumentContentRefused { .. }
             | Self::DocumentContentWants { .. }
-            | Self::DocumentContentPieces { .. } => false,
+            | Self::DocumentContentPieces { .. }
+            | Self::DocumentContentKept { .. }
+            | Self::DocumentContentReleased { .. } => false,
         }
     }
 
@@ -936,6 +958,8 @@ impl NeighbourMsg {
             Self::DocumentContentRefused { .. } => "DocumentContentRefused",
             Self::DocumentContentWants { .. } => "DocumentContentWants",
             Self::DocumentContentPieces { .. } => "DocumentContentPieces",
+            Self::DocumentContentKept { .. } => "DocumentContentKept",
+            Self::DocumentContentReleased { .. } => "DocumentContentReleased",
         }
     }
 }
@@ -1087,6 +1111,25 @@ mod tests {
                     offset: 0,
                     bytes: vec![1, 2, 3],
                 }],
+            },
+        ));
+        all.push((
+            "record content kept",
+            NeighbourMsg::DocumentContentKept {
+                responder: 3,
+                requester: 4,
+                app_id: "so.tilo.photos".into(),
+                cluster_id: "workspace".into(),
+                hash: "ab".into(),
+            },
+        ));
+        all.push((
+            "record content released",
+            NeighbourMsg::DocumentContentReleased {
+                requester: 4,
+                app_id: "so.tilo.photos".into(),
+                cluster_id: "workspace".into(),
+                hash: "ab".into(),
             },
         ));
         all

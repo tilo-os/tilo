@@ -552,6 +552,8 @@ fn records_frame(message: &NeighbourMsg) -> bool {
             | NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
+            | NeighbourMsg::DocumentContentKept { .. }
+            | NeighbourMsg::DocumentContentReleased { .. }
     )
 }
 
@@ -568,15 +570,17 @@ fn by_remote(message: &NeighbourMsg, from: [u8; 32], remote: [u8; 32]) -> bool {
             envelope.author.as_bytes() == &remote && *peer == peer_handle(&remote)
         }
         NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key == remote,
-        NeighbourMsg::DocumentContentWants { requester, .. } => *requester == peer_handle(&remote),
+        NeighbourMsg::DocumentContentWants { requester, .. }
+        | NeighbourMsg::DocumentContentReleased { requester, .. } => {
+            *requester == peer_handle(&remote)
+        }
         // An answer is the link's device's own; whoever asked is the host's to
         // carry it to, or one of its own readers: a host's server asks under a
         // key of its own, not always the one its links sign with.
         NeighbourMsg::DocumentContentPieces { responder, .. }
         | NeighbourMsg::DocumentContentLacks { responder, .. }
-        | NeighbourMsg::DocumentContentRefused { responder, .. } => {
-            *responder == peer_handle(&remote)
-        }
+        | NeighbourMsg::DocumentContentRefused { responder, .. }
+        | NeighbourMsg::DocumentContentKept { responder, .. } => *responder == peer_handle(&remote),
         NeighbourMsg::MlsGovernance { frame, .. } => frame.signed_by.as_bytes() == &remote,
         NeighbourMsg::MlsAccessRequest { request, .. } => request.device.as_bytes() == &remote,
         _ => true,
@@ -1367,7 +1371,12 @@ impl DirectSync {
         let (message, workspace) = {
             let mut peer = self.0.replica.lock();
             let heads = peer.workspace_heads().unwrap_or_default();
+            let before = peer.clone();
             let message = write(&mut peer)?;
+            if written_clear(&message) {
+                *peer = before;
+                return Err(WRITTEN_CLEAR.into());
+            }
             (message, peer.workspace_changes_since(&heads))
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -1551,6 +1560,9 @@ impl DirectSync {
     ///
     /// The frame could not be kept.
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
+        if written_clear(&message) {
+            return Err(WRITTEN_CLEAR.into());
+        }
         // Content goes on each link's own content stream, never kept: one that
         // sends much of it waits for room with [`Self::send_content`].
         if content_frame(&message) {
@@ -1721,7 +1733,11 @@ impl DirectSync {
     /// link that does ([`Self::flush_content`]). An answer no link takes is
     /// dropped instead: the link of the device that asked ended with its ask.
     fn hold_content(&self, authored: Authored, asker: Option<[u8; 32]>) {
-        if !matches!(&authored.message, NeighbourMsg::DocumentContentWants { .. }) {
+        if !matches!(
+            &authored.message,
+            NeighbourMsg::DocumentContentWants { .. }
+                | NeighbourMsg::DocumentContentReleased { .. }
+        ) {
             return;
         }
         let mut waiting = self.0.content_waiting.lock_recover();
@@ -3127,7 +3143,8 @@ impl DirectSync {
                 // ask itself reaches every other device, which may answer it.
                 NeighbourMsg::DocumentContentPieces { requester, .. }
                 | NeighbourMsg::DocumentContentLacks { requester, .. }
-                | NeighbourMsg::DocumentContentRefused { requester, .. } => {
+                | NeighbourMsg::DocumentContentRefused { requester, .. }
+                | NeighbourMsg::DocumentContentKept { requester, .. } => {
                     *requester == peer_handle(&device)
                 }
                 NeighbourMsg::AppDocument {
@@ -3489,7 +3506,13 @@ impl DirectSync {
             );
             return;
         }
-        if self.fans_out() {
+        // A release is the hosts' own to take: a host carries it to no one.
+        if self.fans_out()
+            && !matches!(
+                &authored.message,
+                NeighbourMsg::DocumentContentReleased { .. }
+            )
+        {
             let carried = Authored {
                 published: false,
                 ..authored.clone()
@@ -3990,6 +4013,13 @@ impl DirectSync {
         retained: bool,
         history: bool,
     ) -> Heard {
+        if written_clear(&message) {
+            let refused = crate::AdmissionError::Rejected {
+                reason: neighbour_wire::RefusalReason::Forbidden,
+                detail: WRITTEN_CLEAR.into(),
+            };
+            return heard_of(author, message, Err(refused), retained || history);
+        }
         let origin = if retained || history {
             TransportOrigin::RetainedServerDelta(author)
         } else {
@@ -4508,6 +4538,16 @@ fn arrived_late(error: &crate::AdmissionError) -> bool {
 /// person.
 pub const REMOVED: &str = "the workspace removed the device's person";
 
+/// Why a record's write in the clear is refused.
+pub const WRITTEN_CLEAR: &str =
+    "a workspace's records are sealed under its members' keys; a write in the clear is refused";
+
+/// Whether `message` writes a record in the clear: a workspace keeps every
+/// record sealed under its group's keys, and refuses a write that is not.
+fn written_clear(message: &NeighbourMsg) -> bool {
+    matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_none())
+}
+
 /// What a link's one-way stream carries, named by the byte it opens with: its
 /// device's frames, its answers to the other device's writes, and content.
 const FRAMES_STREAM: u8 = 0;
@@ -4569,6 +4609,8 @@ fn content_frame(message: &NeighbourMsg) -> bool {
             | NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
+            | NeighbourMsg::DocumentContentKept { .. }
+            | NeighbourMsg::DocumentContentReleased { .. }
     )
 }
 
@@ -4579,9 +4621,8 @@ fn content_reaches(message: &NeighbourMsg, device: [u8; 32]) -> bool {
     match message {
         NeighbourMsg::DocumentContentPieces { requester, .. }
         | NeighbourMsg::DocumentContentLacks { requester, .. }
-        | NeighbourMsg::DocumentContentRefused { requester, .. } => {
-            *requester == peer_handle(&device)
-        }
+        | NeighbourMsg::DocumentContentRefused { requester, .. }
+        | NeighbourMsg::DocumentContentKept { requester, .. } => *requester == peer_handle(&device),
         _ => true,
     }
 }
@@ -4594,6 +4635,7 @@ fn content_answer(message: &NeighbourMsg) -> bool {
         NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
+            | NeighbourMsg::DocumentContentKept { .. }
     )
 }
 

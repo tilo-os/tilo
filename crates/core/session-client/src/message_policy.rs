@@ -64,6 +64,8 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::DocumentContentPieces { .. }
         | NeighbourMsg::DocumentContentLacks { .. }
         | NeighbourMsg::DocumentContentRefused { .. }
+        | NeighbourMsg::DocumentContentKept { .. }
+        | NeighbourMsg::DocumentContentReleased { .. }
         // Ephemeral liveness of a member who can see the workspace; nothing is written to its
         // state.
         | NeighbourMsg::Heartbeat { .. }

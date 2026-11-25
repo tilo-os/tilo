@@ -277,30 +277,73 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
             "the answer is addressed from the device key"
         );
     }
-    let mut answers = serving.workspaces().content_answers();
+    // What the member pushes to the serving device names the same device, and goes until the
+    // serving device says it keeps it.
+    let (pushed, mut heard) = tokio::sync::mpsc::unbounded_channel();
+    let keeper: Arc<dyn super::super::ContentKeeper> = Arc::new(Heard(pushed));
+    serving.workspaces().keep_content(&keeper);
+    copies.push_content(&workspace, "so.tilo.photos", &member_keeps.address());
+    assert_eq!(
+        copies.content_going(&workspace),
+        1,
+        "the picture is on the member alone until the serving device keeps it"
+    );
+    let (from, responder) =
+        tilo_test_env::within("the member's push reaches the serving device", heard.recv())
+            .await
+            .expect("the keeper hears the push");
+    assert_eq!(
+        (from, responder),
+        (
+            cert.device_public_key,
+            tilo_peer_state::peer_handle(&cert.device_public_key)
+        ),
+        "the push names the device key the member signs its link as, not its service's"
+    );
     serving
         .workspaces()
-        .ask_members(&workspace, ask)
+        .tell_members(
+            workspace_id,
+            NeighbourMsg::DocumentContentKept {
+                responder: tilo_peer_state::peer_handle(&serving_device),
+                requester: responder,
+                app_id: "so.tilo.photos".to_owned(),
+                cluster_id: workspace.clone(),
+                hash: member_keeps.address(),
+            },
+        )
         .await
-        .expect("the workspace's link carries the ask");
-    let answer = tilo_test_env::within("the member's answer reaches the serving device", async {
-        loop {
-            let heard = answers.recv().await.expect("the answers are told");
-            if heard.workspace == workspace && !heard.lacks {
-                return heard;
-            }
-        }
-    })
-    .await;
+        .expect("the serving device says it keeps the picture");
     assert_eq!(
-        answer.from, cert.device_public_key,
-        "the answer names the device key the member signs its link as, not its service's"
+        copies
+            .content_delivered(&workspace, std::time::Duration::from_secs(10))
+            .await,
+        0,
+        "the member's push goes no more once the serving device keeps it"
     );
 
     drop(copies);
-    drop(answers);
     member.shutdown().await;
     serving.shutdown().await;
+}
+
+/// A keeper that tells each push it is handed: the device that sent it, and the
+/// device its pieces say they come from.
+struct Heard(tokio::sync::mpsc::UnboundedSender<([u8; 32], neighbour_wire::PeerId)>);
+
+impl super::super::ContentKeeper for Heard {
+    fn take(
+        &self,
+        _workspace: &str,
+        from: [u8; 32],
+        message: NeighbourMsg,
+    ) -> Result<(), Box<NeighbourMsg>> {
+        let NeighbourMsg::DocumentContentPieces { responder, .. } = &message else {
+            return Err(Box::new(message));
+        };
+        drop(self.0.send((from, *responder)));
+        Ok(())
+    }
 }
 
 /// The bytes a member keeps, named by their address.

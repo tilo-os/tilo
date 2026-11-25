@@ -551,6 +551,27 @@ impl Workspaces {
             .collect();
         Some((Some(peer.owner()), people))
     }
+
+    /// The people `workspace` has as members now, its owner among them: whose
+    /// holds on content a host keeps stand. One whose device's certificate
+    /// ran out is still a member. `None` for a workspace not governed here.
+    pub async fn member_people(
+        &self,
+        workspace: &str,
+    ) -> Option<std::collections::BTreeSet<[u8; 32]>> {
+        let peer = self.state(workspace).await?;
+        let policy = peer.governance().governed_policy().ok()?;
+        let owner = peer.owner();
+        Some(
+            peer.certificates()
+                .into_iter()
+                .map(|cert| cert.user_public_key)
+                .filter(|person| {
+                    *person == owner || policy.active_role(&hex::encode(person)).is_some()
+                })
+                .collect(),
+        )
+    }
 }
 
 #[cfg(test)]
