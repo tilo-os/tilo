@@ -20,7 +20,7 @@ const READ_BOUND: Duration = Duration::from_secs(5);
 /// made is read back from the workspace by a key of the person's, as another device sees it.
 #[test]
 fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_sees() {
-    host::run(|host| async move {
+    host::run_with(&["sheets", "word-processor"], |host| async move {
         let agent = host.agent();
         let (apps, failed) = ls(&agent, None).await;
         assert!(!failed, "{apps}");
@@ -69,7 +69,7 @@ fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_sees() 
 /// member's open puts it there, named as the agent's run's.
 #[test]
 fn an_app_an_agent_opens_reaches_the_persons_layout() {
-    host::run(|host| async move {
+    host::run_with(&["sheets"], |host| async move {
         let agent = host.agent();
         let (opened, failed) = act(&agent, "sheets#open", json!({})).await;
         assert!(!failed, "the agent opens Sheets: {opened}");
@@ -89,7 +89,7 @@ fn an_app_an_agent_opens_reaches_the_persons_layout() {
 /// agent's Sheets window reaches the person's layout all the same.
 #[test]
 fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layout() {
-    host::run(|host| async move {
+    host::run_with(&["sheets"], |host| async move {
         // The daemon founds the person's own workspace and serves no other person's: the agent's
         // open of Sheets is what a guest's page would see reach the layout.
         let agent = host.agent();
@@ -106,7 +106,7 @@ fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layout() {
 /// changes anything, puts Sheets' window in front of the person.
 #[test]
 fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout() {
-    host::run(|host| async move {
+    host::run_with(&["sheets"], |host| async move {
         let agent = host.agent();
         let (started, failed) = act(&agent, "sheets#start", json!({})).await;
         assert!(!failed, "the agent starts Sheets: {started}");
@@ -123,7 +123,7 @@ fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout() {
 /// answers at once, and nothing answers as though a window were shown.
 #[test]
 fn an_agents_open_with_no_layout_asks_the_persons_page() {
-    host::run(|host| async move {
+    host::run_with(&["sheets"], |host| async move {
         let agent = host.agent();
         let asked = Instant::now();
         let answer = agent
@@ -153,7 +153,7 @@ fn an_agents_open_with_no_layout_asks_the_persons_page() {
 /// a layout or a window to show it on.
 #[test]
 fn an_agents_writes_answer_without_waiting_out_a_timeout() {
-    host::run(|host| async move {
+    host::run_with(&["sheets"], |host| async move {
         let agent = host.agent();
         let (apps, failed) = ls(&agent, None).await;
         assert!(!failed, "{apps}");
@@ -183,7 +183,7 @@ fn an_agents_writes_answer_without_waiting_out_a_timeout() {
 /// lines, and is shown its picture as a PNG image beside them.
 #[test]
 fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
-    host::run(|host| async move {
+    host::run_with(&["sheets"], |host| async move {
         let agent = host.agent();
         let (made, failed) = act(&agent, "sheets#new-sheet", json!({"name": TITLE})).await;
         assert!(
@@ -247,7 +247,7 @@ fn a_view_an_agent_opens_stands_on_the_layout_the_persons_shell_reads() {
         ReadAnswer, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
     };
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
-    host::run(|host| async move {
+    host::run_with(&["sheets"], |host| async move {
         let agent = host.agent();
         let (opened, failed) = act(&agent, "sheets#open", json!({})).await;
         assert!(!failed, "the agent opens Sheets: {opened}");
