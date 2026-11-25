@@ -1085,8 +1085,10 @@ tilo_test_env::scenario! {
             "the content screen waits beside the window: {content:?}"
         );
         // The content would show something new, but no frame paints it while
-        // the sidebar is in front: it asks for nothing until it is shown.
+        // the sidebar is in front: the frame the change runs leaves it
+        // unpainted, and it asks for nothing until it is shown.
         set_content_animating(&mut h, true);
+        assert!(content_animating(&h), "no frame painted the culled screen");
         let shell = h.root::<NavShell>();
         assert!(
             !shell.needs_animation_frame(),
@@ -1094,9 +1096,13 @@ tilo_test_env::scenario! {
         );
         assert!(!shell.needs_redraw(), "a culled screen asks for a redraw");
 
+        // Shown, the content is painted by the very frame its change runs.
         settle(&mut h, 1280, 800);
         set_content_animating(&mut h, true);
-        assert!(h.root::<NavShell>().needs_animation_frame());
+        assert!(
+            !content_animating(&h),
+            "the frame after the change painted the shown content"
+        );
     }
 
     phase narrow_windows_push_the_content_over_the_overview;
@@ -1179,6 +1185,17 @@ fn escape_pops_the_apps_page_stack() {
     );
 }
 
+/// Whether the content probe still holds a change no frame has painted.
+fn content_animating(h: &Driver) -> bool {
+    h.root::<NavShell>()
+        .content
+        .as_any()
+        .and_then(|any| any.downcast_ref::<Probe>())
+        .expect("the content is the probe")
+        .animating
+}
+
+/// Give the content probe a change to paint; letting go of the root runs the frame that takes it.
 fn set_content_animating(h: &mut Driver, animating: bool) {
     if let Some(probe) = h
         .root_mut::<NavShell>()
