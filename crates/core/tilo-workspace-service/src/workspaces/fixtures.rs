@@ -442,7 +442,8 @@ pub async fn write_record(
         "format = 2\n\n[[resources]]\nkind = \"{kind}\"\nlabel = \"Record\"\nversion = 1\n\
          fields = [\n{fields}]\n\n[[resources.verbs]]\nid = \"type\"\nkind = \"undoable\"\n"
     );
-    workspaces.declare_package_surface(app, surface.as_bytes());
+    let compiled = tilo_surface_compile::compile(&surface).expect("the fixture is a surface");
+    workspaces.declare_package_surface(app, compiled.as_bytes());
     workspaces
         .author_record(workspace, (app, &kind, record), edit)
         .await

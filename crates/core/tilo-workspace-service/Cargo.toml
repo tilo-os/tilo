@@ -39,6 +39,8 @@ fixture-servers = ["tilo-web-search?/fixture-servers"]
 apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
+# The surface fixtures a test builds declare: what the service stores is the compiled form.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # What a Bluetooth address is, for the record of the person's accessories.
 tilo-bluetooth-address = { path = "../bluetooth-address" }
 # The device's one store, which apps write and read their resources in.
@@ -224,7 +226,6 @@ rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
 # Compiles the surface this crate publishes for the test that holds its file to it.
-tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # The committed package a provider's actions are described by, which its test reads.
 toml.workspace = true
 # The document app whose record the broker's fixture seeds and drives.
