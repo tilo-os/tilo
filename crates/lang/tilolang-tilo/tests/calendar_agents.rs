@@ -500,4 +500,69 @@ tilo_test_env::scenario! {
         assert!(matches!(hers, Ok(InvokeOutcome::Done(_))), "{hers:?}");
         assert_eq!(ada.asks.count(), 0, "her own word asks her nothing");
     }
+
+    phase a_calendar_connected_for_reading_only_refuses_every_change_before_anybody_is_asked;
+    {
+        // Her calendar account is connected for reading only: its server's calendar is one
+        // that is not written, as the calendar origin writes it.
+        let ada = Ada::new();
+        ada.origin(vec![OriginWrite::Set {
+            target: ada.work(),
+            fields: vec![(ada.field("Calendar", "writable"), Value::Bool(false))],
+        }]);
+        let board = ada.entry_from_her_server("board-7@example.org", "Board meeting", "", &[]);
+        let dinner = ada.entry_from_her_server("dinner-3@example.org", "Dinner", ADDRESS, &["bo@example.test"]);
+        let guest = match ada
+            .replica
+            .host
+            .runtime()
+            .read(&dinner, &ada.field("Event", "attendees"))
+            .unwrap()
+        {
+            Value::List(items) => items
+                .into_iter()
+                .find_map(|item| match item {
+                    Value::Ref(r) => Some((*r.target).clone()),
+                    _ => None,
+                })
+                .expect("Bo is invited"),
+            other => panic!("the guests read {other:?}"),
+        };
+        let changes: Vec<(&str, &ResourceRef, Vec<Value>)> = vec![
+            ("set_categories", &board, Ada::filing(&board, &["Board"])),
+            ("organize", &board, vec![Value::resource(&board), Value::text("bo@example.test")]),
+            ("set_categories", &dinner, Ada::filing(&dinner, &["Team"])),
+            ("uninvite", &dinner, vec![Value::resource(&dinner), Value::resource(&guest)]),
+            ("answer", &dinner, vec![Value::resource(&dinner), Value::resource(&guest), Value::text("accepted")]),
+        ];
+
+        // Her own change is refused in words that say why, before it runs.
+        for (action, at, args) in &changes {
+            let why = ada
+                .refusal(action, at, &herself())
+                .unwrap_or_else(|| panic!("{action} is refused to her before she is asked"));
+            assert!(why.contains("reading only"), "{action}: {why}");
+            let why = refused(action, ada.call(&herself(), action, args.clone()));
+            assert!(why.contains("reading only"), "{action}: {why}");
+        }
+        let why = refused(
+            "removing her own entry",
+            ada.call(&herself(), "remove", vec![Value::resource(&ada.root), Value::resource(&board)]),
+        );
+        assert!(why.contains("reading only"), "{why}");
+
+        // Her assistant's is refused before anybody is asked, also where she would allow it.
+        let assistant = assistant_of("ada").actor;
+        for (action, at, args) in &changes {
+            assert!(ada.refusal(action, at, &assistant).is_some(), "{action}");
+            refused(action, ada.allowed(&assistant, action, args.clone()));
+        }
+        assert_eq!(ada.asks.count(), 0, "nobody is asked about what is refused");
+
+        // Nothing changed.
+        assert!(ada.entry_under("board-7@example.org").is_some(), "the entry stays");
+        assert!(ada.categories(&board).is_empty() && ada.categories(&dinner).is_empty());
+        assert_eq!(ada.text(&board, "Event", "organizer"), "");
+        assert_eq!(ada.text(&guest, "Attendee", "email"), "bo@example.test");
+    }
 }

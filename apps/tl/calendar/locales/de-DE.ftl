@@ -674,6 +674,7 @@ d-37r6seh2-name = Bis
 d-ael6ndgj = Wiederholen bis
     .doc = Der letzte Tag, bis zu dem er sich wiederholt, als der Tag, den ein Zeitpunkt nennt.
     .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
+    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
 
 d-ael6ndgj-e = Um
 
@@ -778,6 +779,7 @@ d-td6wjjza = Invite
     .w-that-is-not-an-email-address = That is not an email address
     .w-they-are-coming-already = They are coming already
     .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
+    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
 
 d-td6wjjza-name = Name
 
@@ -787,6 +789,7 @@ d-luj3kjit = Male
     .doc = Wiederholt einen Termin so oft, wie die Person eingetippt hat.
     .w-an-answer-is-accepted-declined-or = Eine Antwort ist angenommen, abgelehnt oder vielleicht
     .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
+    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
 
 d-luj3kjit-g = Eingetippt
 
@@ -803,6 +806,7 @@ d-kscklssi-said = Said
 d-gtgyzaen = Remove guest
     .doc = Takes someone off an event's guests: nothing is sent to them.
     .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
+    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
 
 d-gtgyzaen-g = G
 

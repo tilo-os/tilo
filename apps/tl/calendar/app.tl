@@ -777,6 +777,7 @@ destructive action remove(c: Calendars, e: Event) (
     key: "Delete",
 ) {
     require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
+    require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     c.events.remove(e)
 }
 
@@ -926,6 +927,7 @@ action file_in(e: Event, k: Calendar) (label: "Calendar", icon: .calendar) {
 /// Invites someone to an event, by the name and address the person gives.
 action invite(e: Event, name: Text, email: Text) -> Attendee (icon: .user_plus, label: "Invite") {
     require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
+    require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require email.trim().contains("@") "That is not an email address"
     require not e.attendees.any(g -> g.email == email.trim()) "They are coming already"
     e.attendees.insert(Attendee(name: name.trim(), email: email.trim()))
@@ -934,6 +936,7 @@ action invite(e: Event, name: Text, email: Text) -> Attendee (icon: .user_plus, 
 /// Records someone's answer to an invitation: `accepted`, `declined` or `tentative`.
 action answer(e: Event, g: Attendee, status: Text) (icon: .check, label: "Answer") {
     require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
+    require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require status == "accepted" or status == "declined" or status == "tentative" "An answer is accepted, declined or maybe"
     g.status = status
 }
@@ -956,6 +959,7 @@ action answer_and_tell(e: Event, g: Attendee, said: Text) (
 /// Takes someone off an event's guests: nothing is sent to them.
 action uninvite(e: Event, g: Attendee) (icon: .x, label: "Remove guest") {
     require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
+    require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.attendees.remove(g)
 }
 
