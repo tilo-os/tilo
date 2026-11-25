@@ -603,6 +603,8 @@ enum PaletteSource {
 struct AppConstructionInputs {
     control_domain: Option<crate::ControlDomain>,
     collab_manager: CollaborationManager,
+    /// How the window takes up what `collab_manager`'s workspace sends it.
+    delivery: WorkspaceDelivery,
     configured_theme: ConstructionValue<Theme>,
     text_renderer: ConstructionValue<TextRenderer>,
     palette_source: PaletteSource,
@@ -665,6 +667,8 @@ impl AppConstructionInputs {
         Self {
             control_domain: None,
             collab_manager: CollaborationManager::disabled(),
+            // A host may put the window on a workspace after it is built.
+            delivery: WorkspaceDelivery::LINKED,
             configured_theme: ConstructionValue::Ready(inputs.theme),
             text_renderer: ConstructionValue::Ready(inputs.text_renderer),
             palette_source: PaletteSource::Host,
@@ -700,6 +704,7 @@ impl AppConstructionInputs {
         Self {
             control_domain: None,
             collab_manager,
+            delivery: WorkspaceDelivery::LINKED,
             configured_theme: ConstructionValue::Lazy(Theme::configured),
             text_renderer: ConstructionValue::Lazy(TextRenderer::new),
             palette_source: PaletteSource::Owned {
@@ -751,6 +756,8 @@ impl AppConstructionInputs {
         Self {
             control_domain: None,
             collab_manager: CollaborationManager::disabled(),
+            // A host may put the window on a workspace after it is built.
+            delivery: WorkspaceDelivery::LINKED,
             configured_theme: ConstructionValue::Lazy(Theme::dark),
             text_renderer: ConstructionValue::Lazy(crate::font_catalog::fixture_renderer),
             palette_source: PaletteSource::Owned {
@@ -1294,6 +1301,7 @@ impl App {
             AppConstructionInputs {
                 control_domain: Some(domain),
                 collab_manager: CollaborationManager::disabled(),
+                delivery: WorkspaceDelivery::UNLINKED,
                 configured_theme: ConstructionValue::Ready(theme),
                 text_renderer: ConstructionValue::Ready(text),
                 palette_source: PaletteSource::Owned {

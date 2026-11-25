@@ -1,6 +1,46 @@
 // Collaboration transport, presence, permissions, and document integration.
 
+/// How a window takes up what its workspace sends it: the requests for its action directory, and
+/// the events on its routes. Only a transport sends either. A window built with no way to reach a
+/// workspace ([`App::displayless`]) takes up nothing until a host connects one
+/// ([`App::connect_workspace`]), so a build that only makes such windows (a page that lays an app
+/// out) links none of what a workspace's traffic runs.
+#[derive(Clone, Copy)]
+pub(super) struct WorkspaceDelivery {
+    directory_requests: fn(&mut App),
+    events: fn(&mut App) -> (bool, bool),
+}
+
+impl WorkspaceDelivery {
+    /// A window on a workspace, or on a manager that may become one.
+    pub(super) const LINKED: Self = Self {
+        directory_requests: App::pump_action_directory_requests,
+        events: App::drain_collab_presence_events,
+    };
+
+    /// A window whose manager was built disabled: it is sent nothing.
+    pub(super) const UNLINKED: Self = Self {
+        directory_requests: |_| {},
+        events: App::finish_undelivered_events,
+    };
+}
+
 impl App {
+    /// Put the window on `manager`, whose transport delivers what its workspace sends: a host
+    /// without a display connects the workspace it plays this way.
+    pub(crate) fn connect_workspace(&mut self, manager: CollaborationManager) {
+        self.collaboration.manager = manager;
+        self.collaboration.delivery = WorkspaceDelivery::LINKED;
+    }
+
+    /// What a pump of a window without a workspace still owes: the manager's batch closes and
+    /// the input the window captured locally is taken up, as after a drain that found nothing.
+    fn finish_undelivered_events(&mut self) -> (bool, bool) {
+        self.collaboration.manager.finish_event_batch();
+        self.drain_local_input_capture();
+        (false, false)
+    }
+
     /// Prepare and mount an application on its already admitted collaboration manager.
     /// Host preparation runs inside the existing native read ownership. The original
     /// record binding is checked before the component factory runs, and the same
@@ -545,7 +585,7 @@ impl App {
         // inbound events. This is the sole place capability requests acquire
         // widget/document authority, and it always runs on the App owner
         // thread.
-        self.pump_action_directory_requests();
+        (self.collaboration.delivery.directory_requests)(self);
         // Hosted continuity starts after the sole request drain, before
         // notifications can cause scheduling-only invalidation. Retain live
         // stamp/snapshot for invocation checks later in this same batch.
@@ -559,7 +599,7 @@ impl App {
         self.send_collab_requests();
         any |= self.apply_heard_elsewhere();
         self.pump_document_content();
-        let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
+        let (drained, action_surface_may_have_changed) = (self.collaboration.delivery.events)(self);
         any |= drained;
         any |= self.observe_collaboration_state();
         if any {

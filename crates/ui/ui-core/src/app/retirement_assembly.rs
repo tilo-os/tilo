@@ -195,6 +195,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     let local_author = inputs.local_author.resolve_in_place();
     assembly.values.collaboration = Some(CollaborationRuntime::new(
         std::mem::replace(&mut inputs.collab_manager, CollaborationManager::disabled()),
+        inputs.delivery,
         local_author,
     ));
     assembly.values.action_publication_failure = Some(None);

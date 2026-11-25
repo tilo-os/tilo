@@ -556,7 +556,9 @@ impl Driver {
         self.note_retained_frame();
         self.check_retained_geometry_if_due();
         // What the app asked of its broker in this frame is answered in the frame after.
-        if self.serve_peer() {
+        if let Some(serve) = self.peer.as_ref().map(|peer| peer.serve)
+            && serve(self)
+        {
             return self.run_frame();
         }
         again

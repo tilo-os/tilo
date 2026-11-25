@@ -763,16 +763,20 @@ pub(super) struct CollaborationRuntime {
     /// route, which carries nothing else yet: sent, in order, once it is ready. Dropped, an
     /// invocation would wait for an answer that never comes.
     pub(super) held_requests: std::collections::VecDeque<crate::collaboration::CollabRequest>,
+    /// How the window takes up what `manager`'s workspace sends it.
+    pub(super) delivery: super::WorkspaceDelivery,
 }
 
 impl CollaborationRuntime {
     pub(super) fn new(
         manager: CollaborationManager,
+        delivery: super::WorkspaceDelivery,
         local_author: crate::permissions::MemberId,
     ) -> Self {
         crate::history_source::authors::read_as(&local_author);
         Self {
             manager,
+            delivery,
             local_author,
             key_access: None,
             shown_sync_status: None,

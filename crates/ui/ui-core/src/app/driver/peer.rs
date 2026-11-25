@@ -448,6 +448,9 @@ struct AskedCall {
 
 /// The driver's side of its peer: the exchange, and the wire id of each call it delivered.
 pub(super) struct Peer {
+    /// What a frame runs to answer what the app asked of the peer ([`Driver::serve_peer`]): it
+    /// comes with the peer, so a driver that never connects one links none of it.
+    pub(super) serve: fn(&mut Driver) -> bool,
     exchange: Rc<RefCell<Exchange>>,
     calls: Vec<(tilo_actions::InvocationId, u64)>,
     next_wire_id: u64,
@@ -496,10 +499,11 @@ impl Driver {
             sent: Vec::new(),
             announced: None,
         }));
-        self.app.collaboration.manager =
+        self.app.connect_workspace(
             crate::collaboration::CollaborationManager::with_peer_transport(RecordingPeer(
                 Rc::clone(&exchange),
-            ));
+            )),
+        );
         // A hosted component's window says which record it carries, as its connection to the
         // workspace does when it opens, and the workspace admits it there: the calls of the
         // component's own actions the workspace delivers are then the window's to run.
@@ -516,6 +520,7 @@ impl Driver {
             assert!(said, "the driver's peer takes the window's Hello");
         }
         self.peer = Some(Peer {
+            serve: Self::serve_peer,
             exchange,
             calls: Vec::new(),
             next_wire_id: 1,
@@ -759,7 +764,7 @@ impl Driver {
     /// each answer the session gave comes back as its receipt; the actions the window shows are
     /// decided as it asks, and again once permissions change ([`Self::decide_shown_actions`]).
     /// Whether anything is on its way to the app.
-    pub(super) fn serve_peer(&mut self) -> bool {
+    fn serve_peer(&mut self) -> bool {
         use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
         let Some(peer) = self.peer.as_mut() else {
             return false;
