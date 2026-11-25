@@ -160,7 +160,7 @@ fn a_write_under_the_oldest_of_many_issues_lands() {
                     .map(|at| json!(format!("Issue {at}")))
                     .collect();
                 let answer = agent
-                    .tool(
+                    .tool_structured(
                         "tilo_do",
                         &json!({"path": "so.tilo.tasks#new_tasks", "args": {"titles": titles}}),
                     )
@@ -279,7 +279,7 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
         let owner_device = host.member("its owner's computer", &workspace).await;
         let owner = host.agent();
         let filed = owner
-            .tool(
+            .tool_structured(
                 "tilo_do",
                 &json!({"path": "so.tilo.tasks#new_task", "args": {"title": "Ship the launch"}}),
             )
