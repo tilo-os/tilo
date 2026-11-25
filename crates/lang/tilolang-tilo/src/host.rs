@@ -562,17 +562,18 @@ fn published_roots(meta: &Meta) -> Meta {
     meta
 }
 
-/// The published id of every resource `value` names, in the order it names them: what an
-/// invocation's output lists as the resources it made or revealed.
-fn resources_named(app: &str, value: &Value, out: &mut Vec<String>) {
+/// The id every resource `value` names, in the order it names them: what an invocation's output
+/// lists as the resources it made or revealed, each by the id its app names it by (`issues/i1`),
+/// which a path or an action takes under its app (`so.tilo.tasks/issues/i1`).
+fn resources_named(value: &Value, out: &mut Vec<String>) {
     match value {
-        Value::Ref(made) => out.push(crate::publish::resource_id(app, &made.target.id_string())),
+        Value::Ref(made) => out.push(made.target.id_string()),
         Value::List(items) | Value::Tuple(items) => {
             for item in items {
-                resources_named(app, item, out);
+                resources_named(item, out);
             }
         }
-        Value::Opt(Some(inner)) => resources_named(app, inner, out),
+        Value::Opt(Some(inner)) => resources_named(inner, out),
         _ => {}
     }
 }
@@ -1399,12 +1400,18 @@ impl Host {
         self.inner.returned.borrow_mut().remove(action)
     }
 
-    /// What `action` of `app` returned as `value`, as the output of its invocation: the value
-    /// its declared result carries as data ([`crate::publish::result_ty`]), and the resource it
-    /// made, by its published id.
+    /// What `action` of `app` answered as `value`, as the output of its invocation: the value
+    /// its declared result carries as data ([`crate::publish::result_ty`]), and the resources it
+    /// made or touched, by their published ids.
     ///
     /// A value of a type the API carries no data for (a file, the bytes of a response) names
     /// the resource it made alone: the app shows it rather than reading it out.
+    ///
+    /// What the call made is answered beside what it declared, as a native write answers it
+    /// ([`tilo_actions::contract::MADE_FIELDS`]): each record the store created while the action
+    /// ran, by its id and the path its app publishes it at, so a caller reaches what it made with
+    /// the answer alone (`tilo_do` answers it). `value` is the returned value, when the action's
+    /// run answered one: a run that made records and declared no result answers them still.
     ///
     /// # Errors
     /// The value is not of the action's declared result type, or a type it names is in a package
@@ -1413,7 +1420,7 @@ impl Host {
         &self,
         app: &str,
         action: &str,
-        value: &Value,
+        value: Option<&Value>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let package = self.inner.package_of(app)?;
         let declared = package
@@ -1423,14 +1430,42 @@ impl Host {
             .find(|declared| declared.id == action)
             .ok_or_else(|| format!("no action {action} in {app}"))?;
         let mut output = tilo_actions::ActionOutput::default();
-        resources_named(app, value, &mut output.resources);
-        if let Some(ty) = crate::publish::result_ty(&package.meta, declared) {
-            let owner = |app: &str| {
-                self.inner
-                    .package_of(app)
-                    .map(|package| package.meta.clone())
+        if let Some(value) = value {
+            resources_named(value, &mut output.resources);
+            if let Some(ty) = crate::publish::result_ty(&package.meta, declared) {
+                let owner = |app: &str| {
+                    self.inner
+                        .package_of(app)
+                        .map(|package| package.meta.clone())
+                };
+                output.value = Some(argument_json(&owner, &package.meta, value, &ty)?);
+            }
+        }
+        let made = self.inner.store.take_made();
+        if !made.is_empty() {
+            let mut seen: std::collections::HashSet<String> =
+                output.resources.iter().cloned().collect();
+            let mut entries = Vec::with_capacity(made.len());
+            for made in made {
+                let id = made.id_string();
+                if seen.insert(id.clone()) {
+                    output.resources.push(id.clone());
+                }
+                entries.push(serde_json::json!({"id": id, "address": format!("{app}/{id}")}));
+            }
+            // A result the API carries as data is an object, which the answer rides beside; an
+            // answer that is not one (a summary in words) is kept as it is, and `resources`
+            // names what the call made.
+            output.value = match output.value.take() {
+                Some(serde_json::Value::Object(mut fields)) => {
+                    fields.insert("made".to_owned(), serde_json::Value::Array(entries));
+                    Some(serde_json::Value::Object(fields))
+                }
+                None | Some(serde_json::Value::Null) => Some(serde_json::json!({
+                    "made": serde_json::Value::Array(entries),
+                })),
+                kept => kept,
             };
-            output.value = Some(argument_json(&owner, &package.meta, value, &ty)?);
         }
         Ok(output)
     }

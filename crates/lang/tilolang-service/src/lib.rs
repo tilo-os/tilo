@@ -679,15 +679,12 @@ impl ResourceService {
             }
             let planned: DynAction = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-            returned = self
-                .host
-                .take_returned(&planned.action_id)
-                .map(|value| {
-                    self.host
-                        .action_output(&planned.app, &planned.action_id, &value)
-                })
-                .transpose()
-                .map_err(ApiError::Failed)?;
+            let returned_value = self.host.take_returned(&planned.action_id);
+            returned = Some(
+                self.host
+                    .action_output(&planned.app, &planned.action_id, returned_value.as_ref())
+                    .map_err(ApiError::Failed)?,
+            );
         }
         if let Some(refused) = self.host.store().take_refusal() {
             return Err(ApiError::Failed(refused));

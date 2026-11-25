@@ -734,16 +734,10 @@ impl Opened {
         }
         let action: DynAction = serde_json::from_slice(&encoded.payload)
             .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-        let output = self
-            .host
-            .take_returned(&action.action_id)
-            .map(|value| {
-                self.host
-                    .action_output(&action.app, &action.action_id, &value)
-            })
-            .transpose()
-            .map_err(ApiError::Failed)?;
-        Ok(output.unwrap_or_default())
+        let returned = self.host.take_returned(&action.action_id);
+        self.host
+            .action_output(&action.app, &action.action_id, returned.as_ref())
+            .map_err(ApiError::Failed)
     }
 }
 

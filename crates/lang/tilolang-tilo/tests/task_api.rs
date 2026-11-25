@@ -224,19 +224,12 @@ impl TaskApi for Apps {
         };
         match planned {
             Ok(_) => {
-                let returned = replica
-                    .host
-                    .take_returned(action)
-                    .map(|value| replica.host.action_output(app, action, &value))
-                    .transpose();
-                match returned {
-                    Ok(returned) => {
-                        let output = returned.unwrap_or_default();
-                        Answered::Done(json!({
-                            "value": output.value,
-                            "resources": output.resources,
-                        }))
-                    }
+                let returned = replica.host.take_returned(action);
+                match replica.host.action_output(app, action, returned.as_ref()) {
+                    Ok(output) => Answered::Done(json!({
+                        "value": output.value,
+                        "resources": output.resources,
+                    })),
                     Err(why) => Answered::Failed(why),
                 }
             }

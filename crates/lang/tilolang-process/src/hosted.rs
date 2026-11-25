@@ -3663,7 +3663,7 @@ impl Hosted {
                     // for a run that never waited.
                     let output = match &action {
                         Some(action) => host
-                            .action_output(&action.app, &action.action, &value)
+                            .action_output(&action.app, &action.action, Some(&value))
                             .map_err(|error| Refused::new("action_failed", error)),
                         // A run whose action is not named answers only that it ended.
                         None => Ok(tilo_actions::ActionOutput::default()),
@@ -4912,10 +4912,8 @@ fn returned(
     host: &tilolang_tilo::host::Host,
     action: &DynAction,
 ) -> Result<tilo_actions::ActionOutput, Refused> {
-    let Some(value) = host.take_returned(&action.action_id) else {
-        return Ok(tilo_actions::ActionOutput::default());
-    };
-    host.action_output(&action.app, &action.action_id, &value)
+    let value = host.take_returned(&action.action_id);
+    host.action_output(&action.app, &action.action_id, value.as_ref())
         .map_err(|error| Refused::new("action_failed", error))
 }
 
