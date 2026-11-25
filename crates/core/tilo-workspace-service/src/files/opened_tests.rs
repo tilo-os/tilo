@@ -419,12 +419,20 @@ async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
         "the workspace took the change in"
     );
 
-    // An agent of the person's asked under no key of its own: this device, which keeps the
-    // workspace's records, signs the call as the one that carried it out for the person, and
-    // the workspace takes the change in as the agent's.
+    // An agent of the person's, which the workspace admitted as one of its members, asked under
+    // no key of its own: this device, which keeps the workspace's records, signs the call as the
+    // one that carried it out for the person, and the workspace takes the change in as the
+    // agent's.
     let agents = put_content(&put.shelf, put.workspace, b"an agent's\n");
     let arguments = json!({"content": agents, "name": "agent.txt", "dir": "signed"});
     let owner = hex::encode(hosting_device().1.user_public_key);
+    crate::workspaces::fixtures::admit_agent(
+        &put.workspaces,
+        &put.name,
+        &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
+        "porter",
+    )
+    .await;
     put.allow_agent("porter", &owner).await;
     let mut request = put.signed_open(&arguments);
     request.signed = None;

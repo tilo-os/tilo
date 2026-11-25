@@ -1406,6 +1406,112 @@ fn tree_value(peer: &StatePeer) -> String {
         .to_string()
 }
 
+/// The invoker a put names for the agent `id` of `person`, acting for them under no key of its
+/// own.
+fn agent_of(id: &str, person: &str) -> tilo_actions::ActionInvoker {
+    tilo_actions::ActionInvoker::admitted(
+        &tilo_action_policy::Acting::agent(id, person)
+            .acting_for(tilo_action_policy::Acting::person(person)),
+    )
+}
+
+/// The tree change of a put the device whose key is `key` carried out for `invoker`, an agent
+/// that asked under no key of its own: the device signed the call as the one that did, keeping
+/// no argument.
+fn carried_put(
+    invoker: tilo_actions::ActionInvoker,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+) -> ActionContext {
+    let request = files_open(
+        &serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+        cert,
+        key,
+        now,
+    );
+    let mut context = tree_change(&request, invoker, &["new-file"]);
+    context.signed.as_mut().unwrap().argument = None;
+    context
+}
+
+/// The workspace's lasting grant letting the agent `id` of `person` write the folder's files,
+/// written by the owner's device `authority`.
+fn grant_agent_files(
+    peer: &mut StatePeer,
+    authority: &SigningKey,
+    id: &str,
+    person: &str,
+    now: SystemTime,
+) {
+    peer.governance_mut()
+        .put_member_grants(
+            &[tilo_action_policy::Grant::new(
+                format!("{id}-files"),
+                tilo_action_policy::Grantee::agent(id, person),
+                tilo_action_policy::TreePath::workspace(WORKSPACE).app(FILES),
+                tilo_action_policy::KindSet::READ_UNDOABLE,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(person),
+            )],
+            authority,
+            now,
+        )
+        .unwrap();
+}
+
+/// The workspace's owner, by their root key.
+fn cert_owner(peer: &StatePeer) -> [u8; 32] {
+    peer.owner_certificates()[0].user_public_key
+}
+
+/// Admit the agent `id` of the person whose root is `root` as one of the workspace's members:
+/// its own device key (from `seed`) writes its row, under a delegation of the workspace for an
+/// hour. Its device key.
+fn admit_agent(
+    peer: &mut StatePeer,
+    root: &SigningKey,
+    id: &str,
+    seed: u8,
+    now: SystemTime,
+) -> [u8; 32] {
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("Agent: {id}"),
+        capabilities: tilo_user_identity::DeviceCapabilities::nothing(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    let delegation = tilo_workspace_join::delegation::Delegation::sign(
+        root,
+        cert.device_public_key,
+        tilo_workspace_join::delegation::Delegate::Agent {
+            agent_id: id.into(),
+        },
+        id,
+        [10, 20, 30],
+        tilo_workspace_join::delegation::DelegateScope {
+            workspaces: vec![crate::join::WorkspaceId::parse(WORKSPACE).unwrap()],
+            apps: Vec::new(),
+        },
+        now_ns(now - Duration::from_secs(1)),
+        now_ns(now + Duration::from_secs(3600)),
+    )
+    .unwrap();
+    let device = cert.device_public_key;
+    assert!(
+        peer.governance_mut()
+            .admit_agent(cert, delegation, &key, now)
+            .unwrap()
+    );
+    device
+}
+
 tilo_test_env::scenario! {
     fn a_put_into_the_workspaces_folder_carries_the_open_its_caller_signed;
 
@@ -1492,60 +1598,153 @@ tilo_test_env::scenario! {
     {
         let (mut receiver, a, _ac, b, bc, now) = seeded_with_files();
         let owner = hex::encode(bc.user_public_key);
-        // The workspace lets its person's agent write the folder's files, as it grants an
-        // agent any action.
+        let root = SigningKey::from_bytes(&[1; 32]);
+        // The workspace admitted its person's agents as its members, each writing its own row.
+        admit_agent(&mut receiver, &root, "scribe", 60, now);
+        admit_agent(&mut receiver, &root, "stray", 61, now);
+        // The workspace lets the scribe write the folder's files, as it grants an agent any
+        // action, and keeps the stray from them.
+        grant_agent_files(&mut receiver, &a, "scribe", &owner, now);
         receiver
             .governance_mut()
             .put_member_grants(
                 &[tilo_action_policy::Grant::new(
-                    "scribe-files",
-                    tilo_action_policy::Grantee::agent("scribe", owner.as_str()),
+                    "stray-files",
+                    tilo_action_policy::Grantee::agent("stray", owner.as_str()),
                     tilo_action_policy::TreePath::workspace(WORKSPACE).app(FILES),
-                    tilo_action_policy::KindSet::READ_UNDOABLE,
-                    tilo_action_policy::Answer::Allow,
+                    tilo_action_policy::KindSet::UNDOABLE,
+                    tilo_action_policy::Answer::Deny,
                     tilo_action_policy::Grantee::person(owner.as_str()),
                 )],
                 &a,
                 now,
             )
             .unwrap();
-        let agent = |id: &str| {
-            tilo_actions::ActionInvoker::admitted(
-                &tilo_action_policy::Acting::agent(id, owner.as_str())
-                    .acting_for(tilo_action_policy::Acting::person(owner.as_str())),
-            )
-        };
-        // The agent asked under no key of its own; the device that keeps the workspace's
-        // records carried the put out for its person and signed the call as the device that
-        // did, keeping no argument.
-        let carried = |invoker: tilo_actions::ActionInvoker, cert: &DeviceCert, key: &SigningKey| {
-            let mut request = files_open(
-                &serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
-                cert,
-                key,
-                now,
-            );
-            let mut context = tree_change(&request, invoker, &["new-file"]);
-            context.signed.as_mut().unwrap().argument = None;
-            request.signed = None;
-            context
-        };
-        let message = tree_written(&receiver, &b, &carried(agent("scribe"), &bc, &b), "carried", now);
+        let put = carried_put(agent_of("scribe", &owner), &bc, &b, now);
+        let message = tree_written(&receiver, &b, &put, "carried", now);
         take(&mut receiver, message, now).expect("the device keeping the records carried it out");
         assert!(tree_value(&receiver).contains("carried"), "{}", tree_value(&receiver));
-        // Another agent of the same person, which the workspace never let write its files, is
-        // refused though the same device carried its put out.
-        let message = tree_written(&receiver, &b, &carried(agent("stray"), &bc, &b), "stray", now);
+        // Another admitted agent of the same person, which the workspace does not let write its
+        // files, is refused though the same device carried its put out.
+        let put = carried_put(agent_of("stray", &owner), &bc, &b, now);
+        let message = tree_written(&receiver, &b, &put, "stray", now);
         let refused = take(&mut receiver, message, now).unwrap_err();
         assert!(refused.reason.contains("not granted"), "{}", refused.reason);
         // A member's device that keeps nothing carries out no call it did not sign for its
         // caller.
         let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
-        let message =
-            tree_written(&receiver, &key, &carried(agent("scribe"), &cert, &key), "elsewhere", now);
+        let put = carried_put(agent_of("scribe", &owner), &cert, &key, now);
+        let message = tree_written(&receiver, &key, &put, "elsewhere", now);
         let refused = take(&mut receiver, message, now).unwrap_err();
         assert!(refused.reason.contains("does not check"), "{}", refused.reason);
         assert!(tree_value(&receiver).contains("carried"), "{}", tree_value(&receiver));
+    }
+
+    phase a_granted_agent_the_workspace_never_admitted_is_refused;
+    {
+        let (mut receiver, a, _ac, b, bc, now) = seeded_with_files();
+        let owner = hex::encode(bc.user_public_key);
+        // The workspace grants the agent its files, but no row of it is among its members: the
+        // word of the device keeping the records does not make it one.
+        grant_agent_files(&mut receiver, &a, "ghost", &owner, now);
+        let put = carried_put(agent_of("ghost", &owner), &bc, &b, now);
+        let message = tree_written(&receiver, &b, &put, "ghost", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        let reason = refused.reason;
+        assert!(reason.contains("no agent this workspace admitted"), "{reason}");
+        // Nor does a row of another person's agent of the same name.
+        add_member_with(&mut receiver, &a, now, 33, 34);
+        admit_agent(&mut receiver, &SigningKey::from_bytes(&[33; 32]), "ghost", 62, now);
+        let put = carried_put(agent_of("ghost", &owner), &bc, &b, now);
+        let message = tree_written(&receiver, &b, &put, "ghost", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        let reason = refused.reason;
+        assert!(reason.contains("no agent this workspace admitted"), "{reason}");
+        assert!(tree_value(&receiver).contains("seed"), "never applied: {}", tree_value(&receiver));
+    }
+
+    phase an_agent_withdrawn_after_admission_is_refused_once_the_withdrawal_reaches_the_replica;
+    {
+        let (mut receiver, a, _ac, b, bc, now) = seeded_with_files();
+        let owner = hex::encode(bc.user_public_key);
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let device = admit_agent(&mut receiver, &root, "scribe", 60, now);
+        grant_agent_files(&mut receiver, &a, "scribe", &owner, now);
+        let put = carried_put(agent_of("scribe", &owner), &bc, &b, now);
+        let message = tree_written(&receiver, &b, &put, "before", now);
+        take(&mut receiver, message, now).expect("an admitted agent's put");
+        // The workspace's governor withdraws the agent on its own copy, and the withdrawal
+        // reaches the replica as the governor's changes do.
+        let mut governor = receiver.clone();
+        let heads = receiver.workspace_heads().unwrap();
+        let later = now + Duration::from_secs(5);
+        assert!(governor.governance_mut().withdraw_agent(device, &a, later).unwrap());
+        let workspace = receiver.workspace_id().to_owned();
+        receiver
+            .receive_from(
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
+                NeighbourMsg::SyncResp {
+                    changes: governor.workspace_changes_since(&heads),
+                    workspace,
+                },
+                later,
+            )
+            .unwrap();
+        let put = carried_put(agent_of("scribe", &owner), &bc, &b, later);
+        let message = tree_written(&receiver, &b, &put, "after", later);
+        let refused = take(&mut receiver, message, later).unwrap_err();
+        assert!(refused.reason.contains("no longer acts here"), "{}", refused.reason);
+        let tree = tree_value(&receiver);
+        assert!(tree.contains("before") && !tree.contains("after"), "{tree}");
+    }
+
+    phase an_agent_granted_more_than_its_person_may_do_is_refused_the_rest;
+    {
+        // The device that keeps the records is an administrator's, not the owner's, so the
+        // workspace's grants bound what its person may do. Its agent is admitted and granted the
+        // folder's files; `kept_out` keeps the person from changing them.
+        let put_by_administrators_agent = |kept_out: bool| {
+            let (mut receiver, a, _ac, _b, _bc, now) = seeded_with_files();
+            let (key, cert, root) = add_member_with(&mut receiver, &a, now, 35, 36);
+            receiver
+                .governance_mut()
+                .set_member_administrator(root, None, &a, now)
+                .unwrap();
+            let person = hex::encode(root);
+            let owner = hex::encode(cert_owner(&receiver));
+            admit_agent(&mut receiver, &SigningKey::from_bytes(&[35; 32]), "scribe", 63, now);
+            grant_agent_files(&mut receiver, &a, "scribe", &person, now);
+            if kept_out {
+                receiver
+                    .governance_mut()
+                    .put_member_grants(
+                        &[tilo_action_policy::Grant::new(
+                            "keeper-files",
+                            tilo_action_policy::Grantee::person(person.as_str()),
+                            tilo_action_policy::TreePath::workspace(WORKSPACE).app(FILES),
+                            tilo_action_policy::KindSet::UNDOABLE,
+                            tilo_action_policy::Answer::Deny,
+                            tilo_action_policy::Grantee::person(owner.as_str()),
+                        )],
+                        &a,
+                        now,
+                    )
+                    .unwrap();
+            }
+            let put = carried_put(agent_of("scribe", &person), &cert, &key, now);
+            let message = tree_written(&receiver, &key, &put, "put", now);
+            let taken = take(&mut receiver, message, now);
+            (taken, tree_value(&receiver))
+        };
+        let (taken, tree) = put_by_administrators_agent(false);
+        taken.expect("within the agent's grants and its person's");
+        assert!(tree.contains("put"), "{tree}");
+        // The agent's own grant still allows the put, and counts for nothing past what its
+        // person may do.
+        let (taken, tree) = put_by_administrators_agent(true);
+        let refused = taken.unwrap_err();
+        assert!(refused.reason.contains("not granted"), "{}", refused.reason);
+        assert!(tree.contains("seed"), "never applied: {tree}");
     }
 
     phase a_put_outside_the_callers_grants_is_refused;

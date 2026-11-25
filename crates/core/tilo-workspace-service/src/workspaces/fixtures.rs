@@ -1291,6 +1291,51 @@ pub async fn record_grants(
     project_access(workspaces, workspace).await;
 }
 
+/// Admit the agent `id` of the person whose root is `root` to `workspace` as one of its members,
+/// as the agent's own key admits it: its row in the workspace's governance, under its person's
+/// delegation of the workspace for an hour. Then project the access the host decides its changes
+/// against.
+///
+/// # Panics
+///
+/// The workspace is not hosted here, or its governance did not take the row.
+pub async fn admit_agent(workspaces: &Workspaces, workspace: &str, root: &SigningKey, id: &str) {
+    use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
+    let (key, cert) = device_cert(root, &format!("Agent: {id}"), DeviceCapabilities::nothing());
+    let now_ns = tilo_clock::unix_now_ns();
+    let delegation = Delegation::sign(
+        root,
+        cert.device_public_key,
+        Delegate::Agent {
+            agent_id: id.into(),
+        },
+        id,
+        [10, 20, 30],
+        DelegateScope {
+            workspaces: vec![
+                tilo_server_protocol::WorkspaceId::parse(workspace).expect("a workspace's id"),
+            ],
+            apps: Vec::new(),
+        },
+        now_ns.saturating_sub(1_000_000_000),
+        now_ns.saturating_add(3_600_000_000_000),
+    )
+    .expect("the person's root signs the delegation");
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a hosted workspace");
+    {
+        let hosted = state.lock().await;
+        hosted
+            .peer()
+            .governance_mut()
+            .admit_agent(cert, delegation, &key, tilo_clock::wall())
+            .expect("the agent writes its own row");
+    }
+    project_access(workspaces, workspace).await;
+}
+
 /// Take the grants `ids` name back from `workspace`'s governance as its host, then project the
 /// access the host decides its changes against.
 ///
