@@ -1432,12 +1432,14 @@ fn places(shared: Bool) -> List<Filter<Task>> {
     } else { out }
 }
 
-/// The place a task stands in: its project's, or the first of `side` that holds it, else Inbox.
+/// The place a task stands in: its project's, or the first of `side` that holds it beside Tasks,
+/// which holds every task and so says nothing of where one belongs; Tasks only when no other does.
 fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
     if let p = x.project {
         Task.project(p)
     } else {
-        side.find(f -> tasks.items.matching(f).any(t -> t == x)) ?? Task.inbox
+        side.find(f -> f.key != Task.tasks.key and tasks.items.matching(f).any(t -> t == x))
+            ?? Task.tasks
     }
 }
 
