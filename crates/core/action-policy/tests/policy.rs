@@ -1536,9 +1536,23 @@ tilo_test_env::scenario! {
             )
             .expect("within editor");
         let bob = Authority::person(granted.party(BOB));
+        // Writing their grant again with other terms takes the one they gave back, which Bob,
+        // holding no revoke, may not.
         let again = to_carol(KindSet::READ, Answer::Allow);
+        let refused = granted.clone().apply(BOB, &bob, again, &cx(), false);
+        assert!(matches!(refused, Err(Refusal::NotPermitted(_))), "{refused:?}");
+        // Nobody writes over a grant someone else gave.
+        let over = Change::Grant(Grant::new(
+            "to-carol",
+            Grantee::person(CAROL),
+            mail(),
+            KindSet::READ,
+            Answer::Allow,
+            Grantee::person(ALICE),
+        ));
+        let alice = Authority::person(granted.party(ALICE));
         assert_eq!(
-            granted.clone().apply(BOB, &bob, again, &cx(), false),
+            granted.clone().apply(ALICE, &alice, over, &cx(), false),
             Err(Refusal::DuplicateGrant(GrantId::new("to-carol")))
         );
         let elsewhere = Change::Grant(Grant::new(
@@ -1553,6 +1567,59 @@ tilo_test_env::scenario! {
             granted.clone().apply(BOB, &bob, elsewhere, &cx(), false),
             Err(Refusal::OutsideWorkspace(TreePath::workspace("s")))
         );
+    }
+
+    phase a_giver_changing_their_mind_replaces_their_grant_in_one_change;
+    {
+        let workspace = workspace_with_members(&[(BOB, Role::Editor)]);
+        let owner = Authority::person(workspace.party(ALICE));
+        let to_app = |answer, lifetime| {
+            Change::Grant(
+                Grant::new(
+                    "mail-app",
+                    Grantee::app("mail"),
+                    mail(),
+                    KindSet::ALL,
+                    answer,
+                    Grantee::person(ALICE),
+                )
+                .with_lifetime(lifetime),
+            )
+        };
+        let held = |workspace: &WorkspacePolicy| {
+            workspace
+                .grants
+                .iter()
+                .filter(|grant| grant.id.as_str() == "mail-app")
+                .map(|grant| (grant.answer, grant.lifetime))
+                .collect::<Vec<_>>()
+        };
+        // Declined, then allowed where the app's permissions are.
+        let mut changed = workspace.clone();
+        changed
+            .apply(ALICE, &owner, to_app(Answer::Deny, Lifetime::UntilRevoked), &cx(), false)
+            .expect("the decline");
+        changed
+            .apply(ALICE, &owner, to_app(Answer::Allow, Lifetime::UntilRevoked), &cx(), false)
+            .expect("the decline replaced");
+        assert_eq!(held(&changed), vec![(Answer::Allow, Lifetime::UntilRevoked)]);
+        // Allowed once, and before it is used, allowed for good.
+        changed
+            .apply(ALICE, &owner, Change::Revoke(GrantId::new("mail-app")), &cx(), false)
+            .expect("taken back");
+        changed
+            .apply(ALICE, &owner, to_app(Answer::Allow, Lifetime::Once), &cx(), false)
+            .expect("allowed once");
+        changed
+            .apply(ALICE, &owner, to_app(Answer::Allow, Lifetime::UntilRevoked), &cx(), false)
+            .expect("the once replaced");
+        assert_eq!(held(&changed), vec![(Answer::Allow, Lifetime::UntilRevoked)]);
+        // The same grant again changes nothing.
+        let before = changed.clone();
+        changed
+            .apply(ALICE, &owner, to_app(Answer::Allow, Lifetime::UntilRevoked), &cx(), false)
+            .expect("the same grant converges");
+        assert_eq!(changed, before);
     }
 
     phase grant_and_revoke_are_actions;

@@ -334,13 +334,21 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
     let in_call = || session.speaker().call().map(|call| call.call.channel);
 
     // Asked once: the second join finds the question waiting and writes no other.
-    assert_eq!(refused(&a_join(&daemon, &at, 1)), Some(super::join_asked_first(APP)));
-    assert_eq!(refused(&a_join(&daemon, &at, 2)), Some(super::join_asked_first(APP)));
+    assert_eq!(
+        refused(&a_join(&daemon, &at, 1)),
+        Some(super::join_asked_first(APP))
+    );
+    assert_eq!(
+        refused(&a_join(&daemon, &at, 2)),
+        Some(super::join_asked_first(APP))
+    );
     assert_eq!(store.waiting_in(&workspace).len(), 1);
     assert_eq!(in_call(), None, "an asked join joins nothing");
 
     // Approve lets one join through; the next is asked again.
     the_persons_answer(&workspaces, &store, &person, &workspace, Offer::Approve);
+    let once = the_apps_grant(&workspaces, &workspace).expect("the approve is the app's grant");
+    assert_eq!(once.lifetime, tilo_action_policy::Lifetime::Once);
     let joined = a_join(&daemon, &at, 3);
     assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
     assert_eq!(in_call(), Some(CALL.to_owned()));
@@ -356,9 +364,21 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
                     .any(|grant| grant.grantee == tilo_action_policy::Grantee::app(APP))
             })
     });
-    assert_eq!(refused(&a_join(&daemon, &at, 4)), Some(super::join_asked_first(APP)));
+    assert_eq!(
+        refused(&a_join(&daemon, &at, 4)),
+        Some(super::join_asked_first(APP))
+    );
 
-    // Approve and grant lets every join through, unasked.
+    // Approved once again from another of their questions and not yet used, the person approves
+    // and grants this one: the grant given for good takes the place of the one given once.
+    tilo_rt::app()
+        .block_on(workspaces.give_asked_grant(
+            &workspace,
+            &hex::encode(workspaces.device_cert().user_public_key),
+            once.clone(),
+        ))
+        .unwrap()
+        .expect("the approve given once is written");
     the_persons_answer(
         &workspaces,
         &store,
@@ -366,6 +386,11 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
         &workspace,
         Offer::ApproveAndGrant,
     );
+    let granted = the_apps_grant(&workspaces, &workspace).expect("the grant names the app");
+    assert_eq!(granted.id, once.id, "the same grant, given for good");
+    assert_ne!(granted.lifetime, tilo_action_policy::Lifetime::Once);
+
+    // Approve and grant lets every join through, unasked.
     until("the granted join", || {
         a_join(&daemon, &at, 5) == serde_json::json!({ "Ok": null })
     });
@@ -388,6 +413,19 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
     );
 }
 
+/// The grant naming [`APP`] in `workspace`'s grants, when one does.
+fn the_apps_grant(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+) -> Option<tilo_action_policy::Grant> {
+    tilo_rt::app()
+        .block_on(workspaces.policy_of(workspace))
+        .unwrap()?
+        .grants
+        .into_iter()
+        .find(|grant| grant.grantee == tilo_action_policy::Grantee::app(APP))
+}
+
 /// The reason `answer` refuses a join, when it refuses one.
 fn refused(answer: &serde_json::Value) -> Option<String> {
     answer
@@ -408,16 +446,7 @@ fn taken_back_and_declined(
     person: &tilo_actions::remote::Caller,
     workspace: &str,
 ) {
-    let policy = tilo_rt::app()
-        .block_on(workspaces.policy_of(workspace))
-        .unwrap()
-        .unwrap();
-    let granted = policy
-        .grants
-        .iter()
-        .find(|grant| grant.grantee == tilo_action_policy::Grantee::app(APP))
-        .expect("the grant names the app")
-        .clone();
+    let granted = the_apps_grant(workspaces, workspace).expect("the grant names the app");
     tilo_rt::app()
         .block_on(workspaces.commit_own_change(
             workspace,
@@ -443,25 +472,26 @@ fn taken_back_and_declined(
         refused(&a_join(daemon, at, 8)) == Some(declined.clone())
     });
     assert_eq!(refused(&a_join(daemon, at, 9)), Some(declined));
-    assert!(store.waiting_in(workspace).is_empty(), "nobody is asked again");
+    assert!(
+        store.waiting_in(workspace).is_empty(),
+        "nobody is asked again"
+    );
     assert_eq!(session.speaker().call(), None);
-    // They change their mind where the app's permissions are: the refusal goes, and the same
-    // grant, allowed, takes its place.
-    for change in [
-        tilo_action_policy::Change::Revoke(granted.id.clone()),
-        tilo_action_policy::Change::Grant(granted),
-    ] {
-        tilo_rt::app()
-            .block_on(workspaces.commit_own_change(
-                workspace,
-                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                    change,
-                },
-                None,
-            ))
-            .unwrap()
-            .unwrap();
-    }
+    // They change their mind where the app's permissions are: the same grant, allowed, takes the
+    // refusal's place, in one change.
+    let refusal = the_apps_grant(workspaces, workspace).expect("the decline is the app's grant");
+    assert_eq!(refusal.answer, tilo_action_policy::Answer::Deny);
+    assert_eq!(refusal.id, granted.id);
+    tilo_rt::app()
+        .block_on(workspaces.commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(granted),
+            },
+            None,
+        ))
+        .unwrap()
+        .expect("the person replaces their own refusal");
     until("the allowed join", || {
         a_join(daemon, at, 10) == serde_json::json!({ "Ok": null })
     });

@@ -1130,6 +1130,27 @@ impl WorkspacePolicy {
         for named in std::iter::once(actor_person).chain(change.person()) {
             PersonId::parse(named).map_err(|_| Refusal::NotAPerson(named.to_owned()))?;
         }
+        if let Change::Grant(grant) = &change
+            && self.grants.iter().any(|held| {
+                held.id == grant.id
+                    && held.granted_by == grant.granted_by
+                    && !same_terms(held, grant)
+            })
+        {
+            // Its giver changing their mind: the grant they gave under this id is taken back and
+            // the new one takes its place, one change admitted as both.
+            let mut replaced = self.clone();
+            replaced.apply(
+                actor_person,
+                actor,
+                Change::Revoke(grant.id.clone()),
+                cx,
+                approved,
+            )?;
+            replaced.apply(actor_person, actor, change, cx, approved)?;
+            *self = replaced;
+            return Ok(());
+        }
         let spent = self.admit(actor_person, actor, &change, cx, approved)?;
         self.check_change(actor_person, actor, &change, cx)?;
         if let Change::Grant(grant) = &change
@@ -1512,7 +1533,8 @@ impl WorkspacePolicy {
         }
         if let Some(held) = self.grants.iter().find(|held| held.id == grant.id) {
             // The same grant again converges: a replayed command
-            // leaves the workspace as it was instead of refusing.
+            // leaves the workspace as it was instead of refusing. Its own giver replaces it
+            // ([`Self::apply`]); nobody else writes over it.
             if same_terms(held, grant) {
                 return Ok(());
             }
