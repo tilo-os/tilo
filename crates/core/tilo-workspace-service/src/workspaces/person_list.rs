@@ -260,16 +260,22 @@ impl Workspaces {
     }
 
     /// Apply `changes` to `person`'s own workspace where this device hosts it:
-    /// whether every one landed. A member copy of it keeps what the device that
-    /// hosts it wrote, and adds nothing
-    /// of its own.
+    /// whether every one landed. The list is `person`'s own act, signed by a
+    /// device that keeps their root: a server handed their own workspace holds
+    /// it without that root, and writes nothing here. A copy another device
+    /// serves keeps what that device wrote, and adds nothing of its own.
     async fn write_person_list(
         &self,
         person: &[u8; 32],
         changes: Vec<Invoke<WorkspaceList>>,
     ) -> bool {
         let own = person_workspace_id(person);
-        if self.state(&own).await.is_none() || self.is_member(&own).await.unwrap_or(false) {
+        let cert = self.device_cert();
+        if cert.user_public_key != *person
+            || !cert.capabilities.can_admit_devices
+            || self.state(&own).await.is_none()
+            || self.is_member(&own).await.unwrap_or(false)
+        {
             return false;
         }
         for change in changes {
