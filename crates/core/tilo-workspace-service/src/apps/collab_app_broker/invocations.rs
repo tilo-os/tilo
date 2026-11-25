@@ -266,13 +266,20 @@ impl AppBrokerState {
 
     /// A page of `workspace`'s invocations as a published tree
     /// (`tilo_actions::remote::workspace_invocations::tree_rows`): the invocations newest first,
-    /// read as far as the page reaches. Its revision is how many there are, so a page read on
-    /// from a cursor reads the listing it was cut from.
+    /// read as far as the page reaches, with `waiting`, the calls that wait for their person,
+    /// beside them. Its revision is how many there are, so a page read on from a cursor reads
+    /// the listing it was cut from.
+    ///
+    /// A call that waits is one whether or not the device kept a record of it
+    /// ([`Self::read_invocations`] reads the same): its asked record is what names it, and a
+    /// person answering it reaches it by the id the record gives, so a walk of the workspace's
+    /// invocations finds it too.
     pub fn invocation_page(
         &self,
         workspace: &str,
         caller: &Caller,
         query: &CatalogueQuery,
+        waiting: &[tilo_actions::remote::asked::Waiting],
     ) -> Result<CataloguePage, ActionCallError> {
         let wanted = query
             .offset()
@@ -298,6 +305,9 @@ impl AppBrokerState {
                 _ => break,
             }
         }
+        let kept = listed.len();
+        with_questions(&mut listed, waiting.to_vec(), None);
+        let total = total.saturating_add(listed.len().saturating_sub(kept));
         let rows = tilo_actions::remote::workspace_invocations::tree_rows(&listed);
         Ok(CataloguePage::from_rows(total.to_string(), rows, query))
     }

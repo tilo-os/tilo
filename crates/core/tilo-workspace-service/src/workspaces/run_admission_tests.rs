@@ -237,8 +237,10 @@ impl tilo_actions::remote::asked::AskedDispatch for Handed {
 
 /// The person this device acts for answers what their agent asked through the run the device
 /// admits for them, which is on their own device: their approve hands the call back once.
-/// Another person's device is refused as not theirs, and a foreign device of their own answers
-/// nothing for them.
+/// The answer is the one the workspace's invocations list for the call that waits, which the
+/// device kept no invocation record of; listing it lets no one else answer. Another person's
+/// device and the agent that asked are refused as not theirs, and a foreign device of their own
+/// answers nothing for them.
 #[tokio::test]
 async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_device_does() {
     use tilo_actions::remote::asked::{self, AskedBy, AskedFacts, Named};
@@ -287,13 +289,27 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
             })),
         )
         .expect("the agent's call waits for its person");
+    // The answer as a walk of the workspace's invocations finds it: the call that waits is
+    // listed by the id its asked record names, with its own `resolve`.
+    let mut listed = Vec::new();
+    crate::apps::collab_app_broker::with_questions(&mut listed, store.waiting_in(&workspace), None);
+    let answering = tilo_actions::remote::workspace_invocations::tree_rows(&listed)
+        .into_iter()
+        .find_map(|row| row.action)
+        .expect("the call that waits is listed with its answer")
+        .address;
+    assert_eq!(
+        answering,
+        tilo_actions::ActionAddress::new(at.record.clone(), asked::RESOLVE),
+        "the listed answer is the one its asked record names"
+    );
     let resolve = || {
         let mut approve = serde_json::Map::new();
         approve.insert("resolution".into(), serde_json::json!("approve"));
         InvokeRequest::plain(
             RemoteActionTarget {
                 provider: tilo_actions::remote::workspace_invocations::PROVIDER.into(),
-                address: tilo_actions::ActionAddress::new(at.record.clone(), asked::RESOLVE),
+                address: answering.clone(),
             },
             approve,
         )
@@ -315,6 +331,10 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
     assert!(
         refusal(answer(&another)).contains(asked::NOT_YOURS),
         "another person's device answers nothing"
+    );
+    assert!(
+        refusal(answer(&agent)).contains(asked::NOT_YOURS),
+        "the agent that asked answers nothing for its person"
     );
     let foreign = Caller::authenticated(cert.user_public_key, cert.device_public_key)
         .in_workspace(workspace.clone())

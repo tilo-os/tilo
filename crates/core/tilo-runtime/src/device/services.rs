@@ -6001,10 +6001,20 @@ impl ActionProvider for RuntimeActionProvider {
             {
                 return Pending::ready(Err(refusal.into()));
             }
+            // The calls that wait for their person are listed beside the ones the device kept
+            // a record of: their asked records name them, and their person answers them from
+            // the invocation that record gives, which a walk of this tree finds.
+            let waiting = self
+                .workspaces
+                .copies()
+                .asked_store()
+                .map(|store| store.waiting_in(&self.workspace))
+                .unwrap_or_default();
             return Pending::ready(self.broker.state().invocation_page(
                 &self.workspace,
                 caller,
                 &query,
+                &waiting,
             ));
         }
         if query.provider.as_deref() == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)

@@ -522,7 +522,9 @@ suite("an app the daemon launches", () => {
           resolution: "approve_and_grant",
         });
         expect(await said("webcall first answered ")).toBe("200 hello from the app");
-        expect(said_by_the_service).toStrictEqual([`Bearer ${firstSecret}`]);
+        // The app makes its next call as soon as this one is answered: the first request the
+        // service heard is the allowed one, with the key.
+        expect(said_by_the_service[0]).toBe(`Bearer ${firstSecret}`);
 
         // The grant covers that item: the next call is not asked again.
         expect(await said("webcall again answered ")).toBe("200 hello from the app");
