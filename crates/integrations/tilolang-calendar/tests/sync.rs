@@ -559,3 +559,20 @@ fn a_restarted_connector_asks_from_where_the_last_pull_ended() {
     );
     assert_eq!(rig.events(), before, "and brings in nothing again");
 }
+
+/// A calendar's name is its server's to say, and the calendar shows it as a name: on one line,
+/// whatever breaks and runs of space the server wrote into it, and cut where it is long.
+#[test]
+fn a_calendars_name_is_shown_on_one_line_and_cut_where_it_is_long() {
+    let server = Server::start(ADA, PASSWORD);
+    server.add_calendar("work", "  Work \n calendar\t");
+    server.add_calendar("long", &"x".repeat(200));
+    let rig = rig(&server);
+    let mut names: Vec<String> = rig
+        .calendars()
+        .iter()
+        .map(|calendar| rig.text("Calendar", calendar, "name"))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Work calendar".to_owned(), "x".repeat(80)]);
+}

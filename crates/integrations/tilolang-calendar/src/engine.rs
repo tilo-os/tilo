@@ -667,7 +667,7 @@ impl Engine {
             .map(|found| CalendarRef {
                 account: signed.id.clone(),
                 key: found.href,
-                name: found.name,
+                name: shown_name(&found.name),
                 color: String::new(),
                 writable: !found.read_only && !signed.read_only,
                 token: String::new(),
@@ -1348,6 +1348,21 @@ enum Written {
     /// The server keeps it at this address now.
     Stored(String),
     Removed,
+}
+
+/// The most characters a calendar's name is shown in.
+const MAX_CALENDAR_CHARS: usize = 80;
+
+/// A calendar's name as its server says it, shown as a name: its words on one line, whatever
+/// breaks, tabs and runs of space the server wrote into it, and cut where it is long.
+fn shown_name(name: &str) -> String {
+    name.split(|character: char| character.is_control() || character.is_whitespace())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_CALENDAR_CHARS)
+        .collect()
 }
 
 /// Why a server was not reached at all, as opposed to refusing what it was asked.
