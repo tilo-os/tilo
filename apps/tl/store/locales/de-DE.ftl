@@ -540,27 +540,6 @@ d-zenjiysp = Registry
 
 d-owkrdhjj = Problem
 
-d-l7f77ylc = Auftrag
-    .doc = Wie weit der Auftrag der Engine gekommen ist.
-    .noun = { $count ->
-        [one] Auftrag
-       *[other] Aufträge
-    }
-
-d-mqizmue3 = Zustand
-
-d-ygdo3z6c = Erledigt
-
-d-msrdztlm = Gesamt
-
-d-fatgfp52 = Fehler
-
-d-35ydyeno = Status
-
-d-l7f77ylc-filter-done = Erledigt
-
-d-l7f77ylc-filter-total = Gesamt
-
 d-vtmqhpab = Gelesener Fall
     .doc = Der Moderationsfall einer Registry, wie diese App ihn für eine Aktualisierung behält.
     .noun = { $count ->
@@ -630,17 +609,6 @@ d-n6ivjlst = Seite
 d-4t4usi52-filter-hits_per_page = Treffer pro Seite
 
 d-4t4usi52-filter-page = Seite
-
-d-bqnffizl = Gestartet
-    .doc = Die Antwort der Engine, wenn sie einen Auftrag startet.
-    .noun = { $count ->
-        [one] Gestartetes
-       *[other] Gestartete
-    }
-
-d-omjipbxx = Auftrag
-
-d-haex7z3y = Fehler
 
 d-g5vn7lms = Einzelanfrage
     .doc = Wonach eine App gefragt wird: nach ihrer ID und der Registry ihrer Quelle, wenn ein Bot daraus hinzugefügt wird.
@@ -844,14 +812,6 @@ d-3asz6773 = Ein Paket, das ein Attestor geprüft hat, dem dieser Computer schon
 
 d-2klx4tra = Aktualisieren
     .doc = Liest die Quellen des Arbeitsbereichs erneut: die Registries, Flathub und die Flatpak-Repositories dieses Computers, und was der Arbeitsbereich ausführt.
-
-d-hb6v2zdc = Abfragen
-    .doc = Fragt, wie weit das laufende Lesen oder die laufende Änderung gekommen ist, und legt das Gefundene in den Arbeitsbereich.
-
-d-nurc7hol = Verfolgen
-    .doc = Der Auftrag, der die Änderung einer App ist, soweit die Engine gekommen ist: ihre Zeile sagt, wo es steht, und was er gemacht hat, wird gelesen, sobald er endet.
-
-d-nurc7hol-a = A
 
 d-banfx2pr = Lesen beginnen
     .doc = Ein Auftrag, der den Katalog selbst ändert statt einer App, verfolgt wie das Lesen: sein Ende liest die Quellen erneut, sodass ein neues Repository oder eine Aktualisierung von allem ankommt.

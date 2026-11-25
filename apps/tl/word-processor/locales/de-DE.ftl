@@ -472,3 +472,14 @@ d-uxj74a6l = Neuer Stil~present
 d-vsncv7wx = Stil duplizieren~present
 
 d-2tkh7lu7 = Stil löschen~present
+
+d-s7wzzfd4 = Schriftart
+    .w-serif = Serifen
+    .w-mono = Nichtproportional
+    .w-sans = Serifenlos
+
+d-tj3dkada = Ausrichtung
+    .w-centre = Zentriert
+    .w-right = Rechts
+    .w-justified = Blocksatz
+    .w-left = Links

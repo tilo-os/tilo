@@ -788,9 +788,6 @@ d-vmwnntrw = Jetzt abgleichen
 d-o4ztf7zk = Automatischer Abgleich
     .doc = Gleicht auf dem Zeitgeber mit den freigegebenen Geräten ab, sobald die Person einmal von Hand abgeglichen hat.
 
-d-5b4dhige = Grayjay abfragen
-    .doc = Folgt dem laufenden Grayjay-Vorgang, einmal pro Sekunde, damit sein Ende das Fenster erreicht, ohne dass jemand von Hand nachfragt.
-
 d-aahljsk5 = Kopplung aufnehmen
     .doc = Nimmt das Gerät auf, das eine Kopplung ergab, wartend auf die Freigabe der Person: der Fingerabdruck daneben ist der, den Grayjay auf der anderen Seite zeigt.
 
