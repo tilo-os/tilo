@@ -3504,6 +3504,7 @@ scenario "a press that needs a yes" {
                 invoker,
                 [],
                 [],
+                .some(.undoable),
             ),
         ],
     )
@@ -3537,6 +3538,7 @@ scenario "questions waiting" {
                 invoker,
                 [],
                 [],
+                .none,
             ),
             waiting_record(
                 "home",
@@ -3558,6 +3560,7 @@ scenario "questions waiting" {
                 invoker,
                 [],
                 [],
+                .none,
             ),
             waiting_record(
                 "studio",
@@ -3592,6 +3595,7 @@ scenario "questions waiting" {
                 invoker,
                 [],
                 [],
+                .none,
             ),
         ],
     )
@@ -3634,6 +3638,7 @@ scenario "a call that writes another record" {
                         verb: "keep-uses",
                     ),
                 ],
+                .none,
             ),
             waiting_record(
                 "studio",
@@ -3653,6 +3658,7 @@ scenario "a call that writes another record" {
                 invoker,
                 [],
                 [],
+                .none,
             ),
         ],
     )
@@ -3756,6 +3762,7 @@ scenario "a call that writes ten records" {
                         verb: "note",
                     ),
                 ],
+                .none,
             ),
         ],
     )
@@ -3814,6 +3821,7 @@ scenario "a call to change before approving" {
                     ),
                 ],
                 [],
+                .none,
             ),
         ],
     )
@@ -3840,6 +3848,7 @@ fn waiting_record(
     waiting_for: Actor,
     form: List<invocations.FormField>,
     effects: List<invocations.DeclaredEffect>,
+    effect: Option<invocations.Effect>,
 ) -> invocations.Invocation {
     let names = asked_in == "home"
     return invocations.Invocation(
@@ -3881,6 +3890,7 @@ fn waiting_record(
                 takes: [],
                 many: false,
                 kind: "",
+                effect: effect,
                 form: form,
             ),
         ),

@@ -168,8 +168,9 @@ fn title_of(a: invocations.Asked) -> Text {
 }
 
 /// Whether pressing the control again with Shift down would have skipped `a`: only what Undo
-/// takes back. A call that takes away what Undo does not bring back, or reaches outside the
-/// workspace, always asks.
+/// takes back. A call that takes away what Undo does not bring back, reaches outside the
+/// workspace, or says nothing of what it does always asks, so the hint never promises a skip
+/// the press would not make.
 fn skips_with_shift(a: invocations.Asked) -> Bool {
     if a.destructive {
         return false
@@ -177,7 +178,7 @@ fn skips_with_shift(a: invocations.Asked) -> Bool {
     if let effect = a.effect {
         return effect != .outside
     }
-    return true
+    return false
 }
 
 /// The questions that stand with the banners: the newest two no window here stands for.
