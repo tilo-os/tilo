@@ -201,7 +201,7 @@ fn carry_live(
         .live
         .clone()
         .ok_or("this device runs no live session")?;
-    let stream = tilo_socket::tokio::from_std(handed_stream(connection))
+    let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
         .map_err(|error| format!("the live link cannot be carried: {error}"))?;
     tokio::spawn(live(stream));
     Ok(ShellReply::Vouched)
@@ -239,7 +239,7 @@ fn vouch_for(
             .identity
             .as_ref()
             .ok_or("this device runs no identity service")?;
-        identity(handed_stream(connection));
+        identity(handed_stream(connection)?);
         return Ok(ShellReply::Vouched);
     }
     let handed = match app {
@@ -258,7 +258,7 @@ fn vouch_for(
         }
         None => None,
     };
-    let stream = tilo_socket::tokio::from_std(handed_stream(connection))
+    let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
         .map_err(|error| format!("the app's connection cannot be served: {error}"))?;
     let broker = Rc::clone(&shell.broker);
     let state = Arc::clone(&broker.state);
@@ -279,8 +279,24 @@ fn vouch_for(
 }
 
 /// The connection a shell handed over as a descriptor.
-fn handed_stream(connection: runtime_portal::descriptors::Owned) -> tilo_socket::Stream {
-    tilo_socket::Stream::from(connection)
+#[cfg(unix)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a handle handed on Windows may be no pipe"
+)]
+fn handed_stream(
+    connection: runtime_portal::descriptors::Owned,
+) -> Result<tilo_socket::Stream, String> {
+    Ok(tilo_socket::Stream::from(connection))
+}
+
+/// The connection a shell handed over as a handle: refused when it is no pipe.
+#[cfg(windows)]
+fn handed_stream(
+    connection: runtime_portal::descriptors::Owned,
+) -> Result<tilo_socket::Stream, String> {
+    tilo_socket::Stream::try_from(connection)
+        .map_err(|error| format!("what the shell handed is no connection: {error}"))
 }
 
 /// What a shell's call answers, driven on the broker's local set: a shell holds the broker's
@@ -1067,8 +1083,8 @@ async fn vault(
             person,
             command,
         } => {
-            let reply = Box::pin(workspaces.website_session_ask(&workspace, person, command))
-                .await?;
+            let reply =
+                Box::pin(workspaces.website_session_ask(&workspace, person, command)).await?;
             serde_json::to_string(&reply).map_err(|error| error.to_string())
         }
     }
