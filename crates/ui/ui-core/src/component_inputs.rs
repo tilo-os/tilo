@@ -38,7 +38,7 @@ struct Probe {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Key {
+pub(crate) enum Key {
     Detached,
     Scope(usize),
     #[cfg(feature = "model")]
@@ -60,9 +60,6 @@ thread_local! {
 /// Run `pass` as the pass of the component `owner` names, gathering what it reads outside the
 /// component.
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
-    // The store tells this pass which resources it read.
-    #[cfg(feature = "model")]
-    crate::resource::observe_reads(read_resource);
     let _feeding = crate::wake::FeedsComponent::begin();
     let pass_reading = PassReading::begin(owner);
     let result = pass();
@@ -143,7 +140,7 @@ impl Drop for PassReading {
     }
 }
 
-fn probe(
+pub(crate) fn probe(
     make_key: impl FnOnce() -> Key,
     make: impl FnOnce() -> (Option<u64>, Box<dyn Fn() -> Option<u64>>),
 ) {
@@ -195,60 +192,14 @@ pub(crate) fn read_owned_by(owner: &WakeHandle) {
     }
 }
 
-/// A pass read `document`, record `id` of `store`: the pass reads it again once its frontier moved,
-/// whoever wrote it.
-#[cfg(feature = "model")]
-#[inline(never)]
-fn read_resource(
-    store: &crate::resource::ResourceStore,
-    id: &crate::resource::DocumentId,
-    document: &automerge::AutoCommit,
-) {
-    let key = Key::Record(store.key(), fold(0, id.as_str().as_bytes()));
-    probe(
-        || key,
-        || {
-            let (store, id) = (store.clone(), id.clone());
-            (
-                Some(frontier(document)),
-                Box::new(move || store.read(&id, frontier)),
-            )
-        },
-    );
-}
-
-#[cfg(feature = "model")]
-fn frontier(document: &automerge::AutoCommit) -> u64 {
-    let (heads, pending) = crate::doc::settle_mark(document);
-    heads
-        .iter()
-        .fold(pending as u64, |folded, head| fold(folded, &head.0))
-}
-
 /// `bytes` folded into `folded` (FNV-1a): a key or a frontier as one number,
 /// with no hasher instantiated for each type folded.
-fn fold(folded: u64, bytes: &[u8]) -> u64 {
+pub(crate) fn fold(folded: u64, bytes: &[u8]) -> u64 {
     bytes
         .iter()
         .fold(folded ^ 0xcbf2_9ce4_8422_2325, |folded, byte| {
             (folded ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
         })
-}
-
-/// A pass read the settings document `document`, whose version `version` answers: the pass reads it
-/// again once that version moved.
-#[inline(never)]
-pub(crate) fn read_versioned(
-    document: &crate::storage::SettingsDocument,
-    version: Box<dyn Fn() -> Option<u64>>,
-) {
-    let named = match document {
-        crate::storage::SettingsDocument::Session => 0,
-        crate::storage::SettingsDocument::Profile(root) => {
-            fold(1, root.as_os_str().as_encoded_bytes())
-        }
-    };
-    probe(|| Key::Versioned(named), || (version(), version));
 }
 
 /// Local state `owner` is told of was written.
@@ -414,55 +365,6 @@ impl Reads {
         }
         Ok(())
     }
-}
-
-/// Everything a component's last pass read, as it stood once the pass ended.
-#[cfg(feature = "model")]
-pub(crate) struct Observation {
-    pub(crate) revision: u64,
-    /// Its record's committed heads and what is pending on top of them.
-    pub(crate) document: (Vec<automerge::ChangeHash>, usize),
-    pub(crate) inputs: PassInputs,
-    pub(crate) reads: Reads,
-}
-
-/// What a component's pass reads of its host besides its record: what its permissions mean now and its
-/// record's save status (what its root was last told, in an observation; what the store says, now), as a
-/// frame's quiet check reads them, and the locale.
-#[cfg(feature = "model")]
-#[derive(PartialEq)]
-pub(crate) struct PassInputs {
-    pub(crate) owner: crate::bound_dispatch::OwnerInputs,
-    pub(crate) locale: u64,
-}
-
-#[cfg(feature = "model")]
-impl Observation {
-    /// Why a pass reading `now` would read something else than the pass this observation was taken after,
-    /// or `None` when it would read the same.
-    pub(crate) fn moved(&self, now: &Now) -> Option<&'static str> {
-        if self.document.1 != 0 {
-            return Some("ui.component.loud.uncommitted");
-        }
-        if now.revision != Some(self.revision) {
-            return Some("ui.component.loud.input");
-        }
-        if now.document.as_ref() != Some(&self.document) {
-            return Some("ui.component.loud.document");
-        }
-        if now.inputs != self.inputs {
-            return Some("ui.component.loud.inputs");
-        }
-        self.reads.stand().err()
-    }
-}
-
-/// What a component's observation is compared with: the same readings, now.
-#[cfg(feature = "model")]
-pub(crate) struct Now {
-    pub(crate) revision: Option<u64>,
-    pub(crate) document: Option<(Vec<automerge::ChangeHash>, usize)>,
-    pub(crate) inputs: PassInputs,
 }
 
 #[cfg(test)]

@@ -1845,33 +1845,32 @@ pub(crate) fn discover_cached_bound_resources(
                             (token, Rc::clone(&entry.snapshot.controls), last)
                         },
                     );
-                let (resources, reads) =
-                    crate::component_inputs::reading(&binding.lifetime, || {
-                        binding.read_document(doc, |doc, _| {
-                            let mut resources = Vec::new();
-                            owned(
-                                widget,
-                                doc,
-                                binding,
-                                &mut resources,
-                                &mut Vec::new(),
-                                true,
-                                &mut crate::widget::resources::TakenResources::default(),
-                                true,
-                            );
-                            resources
-                                .iter()
-                                .filter_map(|resource| {
-                                    if let Some(last) = last.as_ref().and_then(|last| {
-                                        last.iter().find(|last| last.id() == resource.id())
-                                    }) {
-                                        inherit_filtered(binding, filter_token, last, resource);
-                                    }
-                                    filter_shared(binding, filter_token, resource)
-                                })
-                                .collect::<Rc<[SharedResource]>>()
-                        })
-                    });
+                let (resources, reads) = crate::resource::reads::reading(&binding.lifetime, || {
+                    binding.read_document(doc, |doc, _| {
+                        let mut resources = Vec::new();
+                        owned(
+                            widget,
+                            doc,
+                            binding,
+                            &mut resources,
+                            &mut Vec::new(),
+                            true,
+                            &mut crate::widget::resources::TakenResources::default(),
+                            true,
+                        );
+                        resources
+                            .iter()
+                            .filter_map(|resource| {
+                                if let Some(last) = last.as_ref().and_then(|last| {
+                                    last.iter().find(|last| last.id() == resource.id())
+                                }) {
+                                    inherit_filtered(binding, filter_token, last, resource);
+                                }
+                                filter_shared(binding, filter_token, resource)
+                            })
+                            .collect::<Rc<[SharedResource]>>()
+                    })
+                });
                 let resources = resources.map_err(|error| format!("{error:?}"))?;
                 let revision = binding.lifetime.revision();
                 if binding.permissions.borrow().directory_observation()? != permissions {

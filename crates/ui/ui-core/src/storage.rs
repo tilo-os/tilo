@@ -107,7 +107,7 @@ impl SettingsDocument {
     fn source(&self) -> Option<std::sync::Arc<dyn crate::settings_source::SettingsSource>> {
         let source = self.located();
         let versioned = self.clone();
-        crate::component_inputs::read_versioned(self, Box::new(move || versioned.version()));
+        read_versioned(self, Box::new(move || versioned.version()));
         source
     }
 
@@ -176,7 +176,7 @@ impl SettingsDocument {
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
         let versioned = self.clone();
-        crate::component_inputs::read_versioned(self, Box::new(move || versioned.version()));
+        read_versioned(self, Box::new(move || versioned.version()));
         SettingsRevision(self.version())
     }
 
@@ -1074,4 +1074,20 @@ mod open_window_tests {
         let again = OpenWindow::open(dir.path()).unwrap();
         assert!(again.close(), "an app opened later is counted afresh");
     }
+}
+
+/// A pass read the settings document `document`, whose version `version` answers: the pass reads it
+/// again once that version moved.
+#[inline(never)]
+fn read_versioned(document: &SettingsDocument, version: Box<dyn Fn() -> Option<u64>>) {
+    let named = match document {
+        SettingsDocument::Session => 0,
+        SettingsDocument::Profile(root) => {
+            crate::component_inputs::fold(1, root.as_os_str().as_encoded_bytes())
+        }
+    };
+    crate::component_inputs::probe(
+        || crate::component_inputs::Key::Versioned(named),
+        || (version(), version),
+    );
 }

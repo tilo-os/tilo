@@ -314,6 +314,51 @@ fn lent_permissions<'a>(
 
 #[cfg(feature = "model")]
 mod component_adapter {
+    /// Everything a component's last pass read, as it stood once the pass ended.
+    pub(crate) struct Observation {
+        pub(crate) revision: u64,
+        /// Its record's committed heads and what is pending on top of them.
+        pub(crate) document: (Vec<automerge::ChangeHash>, usize),
+        pub(crate) inputs: PassInputs,
+        pub(crate) reads: crate::component_inputs::Reads,
+    }
+
+    /// What a component's pass reads of its host besides its record: what its permissions mean now and its
+    /// record's save status (what its root was last told, in an observation; what the store says, now), as a
+    /// frame's quiet check reads them, and the locale.
+    #[derive(PartialEq)]
+    pub(crate) struct PassInputs {
+        pub(crate) owner: crate::bound_dispatch::OwnerInputs,
+        pub(crate) locale: u64,
+    }
+
+    impl Observation {
+        /// Why a pass reading `now` would read something else than the pass this observation was taken after,
+        /// or `None` when it would read the same.
+        pub(crate) fn moved(&self, now: &Now) -> Option<&'static str> {
+            if self.document.1 != 0 {
+                return Some("ui.component.loud.uncommitted");
+            }
+            if now.revision != Some(self.revision) {
+                return Some("ui.component.loud.input");
+            }
+            if now.document.as_ref() != Some(&self.document) {
+                return Some("ui.component.loud.document");
+            }
+            if now.inputs != self.inputs {
+                return Some("ui.component.loud.inputs");
+            }
+            self.reads.stand().err()
+        }
+    }
+
+    /// What a component's observation is compared with: the same readings, now.
+    pub(crate) struct Now {
+        pub(crate) revision: Option<u64>,
+        pub(crate) document: Option<(Vec<automerge::ChangeHash>, usize)>,
+        pub(crate) inputs: PassInputs,
+    }
+
     use super::{AppProcessIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
@@ -336,7 +381,7 @@ mod component_adapter {
         save_status_shown: bool,
         /// What the root's last pass read, as it stood once the pass ended: a pass that would read the same
         /// is skipped ([`crate::component_inputs`]).
-        observation: Option<crate::component_inputs::Observation>,
+        observation: Option<Observation>,
         /// The root asked for its next sync whatever its observation says: it was laid out anew, its update or
         /// a deadline changed it.
         owes_sync: bool,
@@ -370,9 +415,9 @@ mod component_adapter {
 
         /// What the root's next pass would read, now.
         #[inline(never)]
-        fn inputs_now(&self, outer: &AutoCommit) -> crate::component_inputs::Now {
+        fn inputs_now(&self, outer: &AutoCommit) -> Now {
             let binding = self.component.callback_binding();
-            crate::component_inputs::Now {
+            Now {
                 revision: binding.lifetime.revision(),
                 document: binding
                     .read_document(outer, |document, _| crate::doc::settle_mark(document))
@@ -384,8 +429,8 @@ mod component_adapter {
         fn inputs(
             component: &AppComponent,
             binding: &crate::bound_dispatch::CallbackBinding,
-        ) -> crate::component_inputs::PassInputs {
-            crate::component_inputs::PassInputs {
+        ) -> PassInputs {
+            PassInputs {
                 owner: crate::bound_dispatch::OwnerInputs {
                     permissions: binding.permissions.borrow().directory_observation(),
                     save: component.record_save_now().ok_or_else(String::new),
@@ -515,7 +560,7 @@ mod component_adapter {
             let ((before, after), reads) = tilo_actions::profiling::unobserved(|| {
                 let binding = self.component.callback_binding();
                 let before = shown(self);
-                let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
+                let ((), reads) = crate::resource::reads::reading(&binding.lifetime, || {
                     crate::component_inputs::proving(|| self.sync_root(state));
                 });
                 ((before, shown(self)), reads)
@@ -585,10 +630,10 @@ mod component_adapter {
             // so the next pass shows them in the one that stands.
             let locale = now.inputs.locale;
             self.observation = match (now.revision, now.document) {
-                (Some(revision), Some(document)) => Some(crate::component_inputs::Observation {
+                (Some(revision), Some(document)) => Some(Observation {
                     revision,
                     document,
-                    inputs: crate::component_inputs::PassInputs {
+                    inputs: PassInputs {
                         owner: crate::bound_dispatch::OwnerInputs {
                             save: self
                                 .component
@@ -1100,7 +1145,7 @@ mod component_adapter {
             }
             let _profile = tilo_actions::profiling::Phase::start("ui.component.sync");
             let binding = self.component.callback_binding();
-            let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
+            let ((), reads) = crate::resource::reads::reading(&binding.lifetime, || {
                 self.sync_root(state);
             });
             self.owes_sync = false;
@@ -1122,7 +1167,7 @@ mod component_adapter {
                 return;
             }
             let binding = self.component.callback_binding();
-            let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
+            let ((), reads) = crate::resource::reads::reading(&binding.lifetime, || {
                 self.settle_root(edits);
             });
             // What the settle wrote into a document the window keeps beside
@@ -1160,7 +1205,7 @@ mod component_adapter {
                     .unwrap_or(false)
             };
             let component = &mut self.component;
-            let (changed, reads) = crate::component_inputs::reading(&binding.lifetime, || {
+            let (changed, reads) = crate::resource::reads::reading(&binding.lifetime, || {
                 crate::presence::frame::frame(|presence| {
                     presence.with_permissions(permissions.clone(), || update(component))
                 })
