@@ -2495,6 +2495,28 @@ impl Workspaces {
             .or_else(|| tokio::runtime::Handle::try_current().ok())
     }
 
+    /// Carry `work`, this device's write of a record, on the runtime the service named for its
+    /// writes ([`WorkspacesInner::record_writes`]) and answer what it answered. A write waits on
+    /// the key service or a link, and the reactor that asked for it may be the very thread that
+    /// has to run what it awaits — the daemon answering the call this write belongs to: on the
+    /// writes thread the write never needs the thread that asked. Where the service named none,
+    /// its reactor is all there is, and `work` is awaited where it is.
+    ///
+    /// # Errors
+    /// `work`'s refusal, or the service stopping before it answered.
+    pub(crate) async fn carry_write<T: Send + 'static>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+    ) -> Result<T, String> {
+        match self.inner.record_writes.get().cloned().flatten() {
+            Some(runtime) => runtime
+                .spawn(work)
+                .await
+                .map_err(|_| "the workspace service stopped before it answered".to_owned())?,
+            None => work.await,
+        }
+    }
+
     async fn workspace(
         &self,
         workspace: &str,

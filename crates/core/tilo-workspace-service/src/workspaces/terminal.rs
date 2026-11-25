@@ -69,6 +69,9 @@ const MAX_COMMAND_BYTES: usize = 4096;
 /// What an answer carries of a command's output at most: its end, where a build's errors and a
 /// test summary are.
 const ANSWERED_OUTPUT: usize = 32 * 1024;
+/// How long founding a fresh tab's session record is followed before the open refuses, so a
+/// write that waits is answered with why rather than leaving the caller's window to time out.
+const FOUNDING_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 /// What a command's record keeps of its output at most: its end, as much as Terminal keeps of a
 /// command typed at its prompt.
 pub const RECORDED_OUTPUT: usize = 4 * 1024 * 1024;
@@ -174,6 +177,41 @@ impl TerminalService {
         let Opened { stream, session } = shells
             .open(&opening, caller, recorder)
             .map_err(|reason| ActionCallError::Refused { reason })?;
+        // A fresh tab shows its window's default session record, which no device wrote yet: the
+        // host founds it at that id with the genesis every device derives for it, so what the
+        // device writes there later merges with this. A record the workspace holds already is
+        // left as it is. The shell is started first: it is opened on the workspace's reads, and
+        // they must not wait behind the founding. The founding is a record write, so it is
+        // carried on the service's writes thread, not on the reactor answering this open: the
+        // write waits on the key service and the link the caller asked over, and that reactor is
+        // what answers them.
+        if collab_types::document::DocumentId::is_window_record(record)
+            && !collab_types::document::DocumentId::is_window_view(record)
+        {
+            let copies = self.copies.clone();
+            let (founding_workspace, founding_record) = (workspace.to_owned(), record.to_owned());
+            // Boxed: a record's write is a large future, and the answer carries only the shell.
+            let founding: std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+            > = Box::pin(async move {
+                copies
+                    .author_record(
+                        &founding_workspace,
+                        (TERMINAL_APP, SESSION_RESOURCE, founding_record.as_str()),
+                        |_| Ok(()),
+                    )
+                    .await
+            });
+            tokio::time::timeout(FOUNDING_WITHIN, self.copies.carry_write(founding))
+                .await
+                .map_err(|_| ActionCallError::Unavailable {
+                    reason: format!(
+                        "the fresh tab's session record was not founded within {}s",
+                        FOUNDING_WITHIN.as_secs()
+                    ),
+                })?
+                .map_err(|reason| ActionCallError::Unavailable { reason })?;
+        }
         Ok(ActionOutput {
             value: Some(json!({ "stream": stream, "session": session })),
             resources: Vec::new(),
