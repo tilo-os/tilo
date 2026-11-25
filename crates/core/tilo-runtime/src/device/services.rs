@@ -5737,12 +5737,19 @@ impl ActionProvider for RuntimeActionProvider {
         }
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
-            && (Tickets::asks_for_a_person(&request)
+        {
+            let answered = Tickets::asks_for_a_person(&request)
                 || self.is_the_person(caller)
                 // The person's own programs on this computer ask the daemon to seal, prove and
                 // sign with the device key, as their account read the key before the daemon
                 // alone kept it: never an agent that runs elsewhere or for a turn.
                 || (Tickets::uses_the_device_key(&request) && self.is_own_client(caller))
+                // What only the person's root signs, asked by their own programs on this
+                // computer: the device signs it with the root it keeps, and hands the ask to a
+                // device of theirs that keeps it otherwise. A session reaches its daemon as the
+                // person's own agent ([`Self::agent_session`]), so this is the one way their
+                // session was ever to certify a key, take a recovery backup or answer a sign-in.
+                || (Tickets::root_only(&request) && self.is_own_client(caller))
                 || (self
                     .session
                     .as_ref()
@@ -5755,15 +5762,20 @@ impl ActionProvider for RuntimeActionProvider {
                         // issues nothing, and tells which computer took what they let in. A key
                         // naming their device acts as them, and is answered neither.
                         || ((Tickets::adds_a_device(&request) || Tickets::only_waits(&request))
-                            && caller.acting().is_agent()))))
-        {
-            return device_action(
-                (&self.invocations, self.asked.as_ref()),
-                tickets,
-                caller,
-                request,
-                &self.workspace,
-            );
+                            && caller.acting().is_agent())));
+            if answered {
+                return device_action(
+                    (&self.invocations, self.asked.as_ref()),
+                    tickets,
+                    caller,
+                    request,
+                    &self.workspace,
+                );
+            }
+            // This device publishes the action whatever this run may do with one: the answer is
+            // the device's own refusal, never the broker's that its resource offers no such
+            // action.
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         let origin_writes = |caller: &Caller, origin: &Origin| {
             self.broker

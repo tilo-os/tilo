@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    APPROVE, CERTIFY, CertifyInput, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
+    ANSWER_SIGN_IN, APPROVE, CERTIFY, CERTIFY_KEY, CertifyInput, ISSUE, LOG_IN, PROVIDER,
+    RELEASE_HALF, RESOURCE, SCOPE, Ticket,
 };
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -24,7 +25,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 use super::account::Account;
 use super::first_workspace::FirstWorkspace;
-use super::ticket::{RootSource, Tickets};
+use super::ticket::{INFO, RootSource, Tickets};
 
 /// A device `root` certified, and its key.
 pub(super) fn enrol(
@@ -2550,4 +2551,24 @@ async fn a_device_confined_to_one_workspace_issues_no_tickets() {
         refused.contains("confined to one workspace"),
         "it is told why it issues none: {refused}"
     );
+}
+
+/// The device actions only the person's root signs: their own programs on this computer ask
+/// them of their daemon, which signs them with the root it keeps or hands the ask to a device of
+/// theirs that keeps it. Every other device action is not one of those.
+#[test]
+fn only_the_persons_root_signs_these_device_actions() {
+    let none = serde_json::Map::new();
+    for action in [ISSUE, CERTIFY_KEY, RELEASE_HALF, ANSWER_SIGN_IN] {
+        assert!(
+            Tickets::root_only(&a_device_request(action, &none, InvocationId::new())),
+            "{action} is signed by the person's root alone"
+        );
+    }
+    for action in [INFO, LOG_IN] {
+        assert!(
+            !Tickets::root_only(&a_device_request(action, &none, InvocationId::new())),
+            "{action} is not signed by the person's root"
+        );
+    }
 }
