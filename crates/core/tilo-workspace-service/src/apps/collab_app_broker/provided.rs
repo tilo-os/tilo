@@ -36,6 +36,95 @@ struct RegisteredCall {
     approved: bool,
     /// What a step of an agent session does in turn goes through: the session's own api.
     through: Option<Arc<dyn ActionProvider + Send + Sync>>,
+    /// Whose authority decides it, and in which workspace.
+    decided: Decided,
+}
+
+/// What a call of a registered provider is decided as: the caller, the workspace whose policy
+/// decides it, and the original admission it is decided against.
+#[derive(Clone)]
+struct Decided {
+    caller: Caller,
+    workspace: String,
+    origin: Option<super::published_invocation::InvocationCaller>,
+}
+
+/// The workspace a call of `descriptor` on `registered` is decided in, when it is one of the
+/// person's device settings: their own workspace keeps them, and their shell never shows it.
+/// `None` for every other call, which is decided where the caller is confined.
+pub(super) fn device_settings_workspace(
+    caller: &Caller,
+    registered: &Registered,
+    descriptor: &tilo_actions::ActionDescriptor,
+) -> Option<String> {
+    if !caller.acting().is_person() || caller.is_foreign_device() {
+        return None;
+    }
+    let node = tilo_actions::resource_node(
+        &tilo_action_policy::TreePath::root(),
+        &registered.app,
+        &descriptor.resource_kind,
+        descriptor.address.resource.as_str(),
+    );
+    if !tilo_action_policy::roles::is_device_settings(&node) {
+        return None;
+    }
+    let own = caller
+        .acting()
+        .person_id()
+        .and_then(tilo_action_policy::roles::workspace_of_person)?;
+    (caller.workspace() != Some(own.as_str())).then_some(own)
+}
+
+/// [`Decided`] for the call of `descriptor` on `registered`: one of the person's device
+/// settings is the person's own in their own workspace, whichever workspace stands in front;
+/// every other call is decided where the caller is confined.
+fn decided(
+    caller: &Caller,
+    origin: Option<&super::published_invocation::InvocationCaller>,
+    registered: &Registered,
+    descriptor: &tilo_actions::ActionDescriptor,
+    invocation: tilo_actions::InvocationId,
+) -> Decided {
+    let confined = || Decided {
+        caller: caller.clone(),
+        workspace: caller.workspace().unwrap_or_default().to_owned(),
+        origin: origin.cloned(),
+    };
+    let Some(own) = device_settings_workspace(caller, registered, descriptor) else {
+        return confined();
+    };
+    // The certificate the caller was admitted with is the person's device's, and the device is
+    // current for their own workspace too: what the person's own workspace decides is theirs.
+    let kept = origin.and_then(|origin| match origin {
+        super::published_invocation::InvocationCaller::Certified {
+            caller: original, ..
+        } => Some((
+            original.admitted.certificate.clone()?,
+            original.policy_time.clone()?,
+        )),
+        super::published_invocation::InvocationCaller::NativePerson {
+            certificate, time, ..
+        } => Some(((**certificate).clone(), time.clone())),
+        super::published_invocation::InvocationCaller::Local { admitted, time, .. } => {
+            Some((admitted.certificate.clone()?, time.clone()?))
+        }
+    });
+    let Some((certificate, time)) = kept else {
+        return confined();
+    };
+    Decided {
+        caller: caller.clone().in_workspace(own.clone()),
+        origin: Some(
+            super::published_invocation::InvocationCaller::NativePerson {
+                invocation,
+                workspace: own.clone(),
+                certificate: Box::new(certificate),
+                time,
+            },
+        ),
+        workspace: own,
+    }
 }
 
 /// The app whose grants decide a call of `registered`: for a step an invocation's action
@@ -449,7 +538,7 @@ impl AppBrokerState {
                 .recheck()
                 .map_err(|reason| abandon(ActionCallError::Refused { reason }))?;
         }
-        let Some(workspace_id) = caller.workspace() else {
+        let Some(confined) = caller.workspace() else {
             return Err(abandon(ActionCallError::NotPermitted));
         };
         let argument = request.argument.to_slot();
@@ -463,15 +552,20 @@ impl AppBrokerState {
             return Ok(RegisteredAdmission::Undescribed);
         };
         let app_id = deciding_app(registered, serving);
+        let decided = decided(caller, origin, registered, &descriptor, request.invocation);
         let (workspace, policy, now) = self
-            .current_framework_authority(caller, origin, workspace_id)
+            .current_framework_authority(
+                &decided.caller,
+                decided.origin.as_ref(),
+                &decided.workspace,
+            )
             .map_err(abandon)?;
         // One answer covers both checks of this exact invocation.
         let approved = super::approval::approved_by_person(request.confirmation.as_ref());
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
         // agent's outside one.
-        let session = self.agent_session_of(Some(caller), workspace_id);
+        let session = self.agent_session_of(Some(caller), confined);
         if let Some(Err(reason)) = &session {
             return Err(abandon(ActionCallError::Refused {
                 reason: reason.clone(),
@@ -512,6 +606,7 @@ impl AppBrokerState {
             descriptor,
             approved,
             through,
+            decided,
         }))
     }
 
@@ -533,6 +628,7 @@ impl AppBrokerState {
             descriptor,
             approved,
             through,
+            decided,
         } = call;
         let abandon = |error: ActionCallError| {
             if let Ok(mut log) = self.remote_invocations.lock() {
@@ -540,17 +636,17 @@ impl AppBrokerState {
             }
             error
         };
-        let Some(workspace_id) = caller.workspace() else {
+        if caller.workspace().is_none() {
             return Err(abandon(ActionCallError::NotPermitted));
-        };
+        }
         let argument = request.argument.to_slot();
         let app_id = deciding_app(registered, serving.as_ref());
         let admitted = self
             .admit_host_action(
-                caller,
-                origin,
+                &decided.caller,
+                decided.origin.as_ref(),
                 super::host_action_admission::HostActionAdmission {
-                    workspace: workspace_id,
+                    workspace: &decided.workspace,
                     app_id,
                     descriptor: &descriptor,
                     request,
@@ -564,8 +660,11 @@ impl AppBrokerState {
         // Signing and journalling may block. Resolve original ownership and the committed policy
         // again for the effect, not the pre-admission actor.
         self.framework_effect_ready(&admitted, || {
-            let (workspace, policy, now) =
-                self.current_framework_authority(caller, origin, workspace_id)?;
+            let (workspace, policy, now) = self.current_framework_authority(
+                &decided.caller,
+                decided.origin.as_ref(),
+                &decided.workspace,
+            )?;
             if !Self::confirmed_as_asked(
                 &policy,
                 &descriptor,
@@ -603,9 +702,9 @@ impl AppBrokerState {
                 }
             };
             let following = super::live_views::Following {
-                caller: caller.clone(),
-                origin: origin.cloned(),
-                workspace: workspace_id.to_owned(),
+                caller: decided.caller.clone(),
+                origin: decided.origin.clone(),
+                workspace: decided.workspace.clone(),
                 app_id: app_id.to_string(),
                 descriptor,
                 approved,
@@ -1903,8 +2002,8 @@ mod settings_documents_tests {
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
     use tilo_actions::remote::admitted::top_level;
     use tilo_actions::remote::{
-        ActionCallError, ActionProvider, Admitted, Caller, Confirmation, InvokeArgument,
-        InvokeRequest, Outcome, Pending, RemoteActionTarget, settings_resources,
+        ActionCallError, ActionProvider, Admitted, Caller, CatalogueQuery, Confirmation,
+        InvokeArgument, InvokeRequest, Outcome, Pending, RemoteActionTarget, settings_resources,
     };
 
     const APP: &str = tilo_app_id::apps::SETTINGS;
@@ -2015,6 +2114,18 @@ mod settings_documents_tests {
         providers
     }
 
+    /// The settings provider as a device's section arrives from it.
+    fn device_providers(host: Arc<DeviceHost>) -> Providers {
+        let providers = Providers::default();
+        providers.provide(
+            settings_resources::PROVIDER,
+            APP,
+            Reach::ThisDevice,
+            host as Arc<dyn ActionProvider + Send + Sync>,
+        );
+        providers
+    }
+
     fn lock_after(minutes: u32, confirmation: Option<Confirmation>) -> InvokeRequest {
         InvokeRequest {
             on_behalf_of: None,
@@ -2114,5 +2225,117 @@ mod settings_documents_tests {
             );
         }
         assert_eq!(minutes(), 5, "nothing weakened");
+    }
+
+    /// A device's setting, as the service publishes it: its own section address.
+    const DEVICE: &str = "abababababababababababababababababababababababababababababababab";
+
+    fn device_section() -> String {
+        format!("devices/{DEVICE}/settings/power")
+    }
+
+    /// The settings provider as a device's section arrives from it: one setter.
+    struct DeviceHost;
+
+    impl tilo_actions::remote::Admits for DeviceHost {
+        const PROVIDER: &'static str = settings_resources::PROVIDER;
+        const APP: &'static str = APP;
+
+        fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+            top_level(vec![tilo_actions::ActionDescriptor {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new(device_section(), "set-lock-minutes"),
+                resource_kind: "settings.power".into(),
+                resource_label: "Power".into(),
+                action_label: "Lock sooner".into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: tilo_actions::ExecutionLocus::default(),
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Undoable,
+                    ..tilo_actions::ActionContract::default()
+                },
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            }])
+        }
+
+        fn start(
+            &self,
+            _caller: &Caller,
+            _request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
+            Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
+        }
+    }
+
+    /// A workspace its owner governs, with `person` a member: where a person's shell stands.
+    fn studio(person: &str) -> Workspace {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Studio");
+        workspace.policy.set_owner(hex::encode([42; 32]));
+        workspace
+            .policy
+            .add_member(person, tilo_action_policy::Role::Editor);
+        workspace
+    }
+
+    /// The person's own workspace, which keeps their device's sections.
+    fn theirs(person: &str) -> Workspace {
+        let own = tilo_action_policy::roles::workspace_of_person(person)
+            .expect("a person's own workspace");
+        let mut workspace =
+            Workspace::new(WorkspaceId::parse(&own).expect("a workspace id"), "Mine");
+        workspace.policy.set_owner(person.to_owned());
+        workspace
+    }
+
+    /// A device's setting is offered in its person's own workspace, never by the workspace in
+    /// front: the same row is listed once the workspace that keeps it is held here.
+    #[test]
+    fn a_devices_settings_are_listed_where_their_person_keeps_them() {
+        let person = hex::encode([41; 32]);
+        let query = CatalogueQuery {
+            provider: Some(settings_resources::PROVIDER.into()),
+            max_results: 1024,
+            ..CatalogueQuery::default()
+        };
+        let offered = |workspaces: Vec<Workspace>| {
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces = workspaces;
+            let (state, _bridge_rx) = AppBrokerState::test_state(
+                Some(tree.shared().authority()),
+                crate::apps::services::ProcessServices {
+                    providers: Some(device_providers(Arc::new(DeviceHost))),
+                    ..Default::default()
+                },
+            );
+            let caller =
+                Caller::local_person(person.clone()).in_workspace(studio(&person).id().to_string());
+            let page = state
+                .action_query(&caller, &query)
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the catalogue answers")
+                .expect("the catalogue lists the settings");
+            page.rows
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .any(|action| action.address.resource == device_section())
+        };
+        assert!(
+            !offered(vec![studio(&person)]),
+            "the workspace in front cannot offer a device's settings"
+        );
+        assert!(
+            offered(vec![studio(&person), theirs(&person)]),
+            "the person's own workspace offers their device's settings"
+        );
     }
 }

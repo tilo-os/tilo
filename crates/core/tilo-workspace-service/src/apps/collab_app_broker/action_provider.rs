@@ -1350,7 +1350,7 @@ impl AppBrokerState {
                         browsable: true,
                     });
                     if scope.wants(&registered.provider) && scope.wants_app(&registered.app) {
-                        Self::registered_rows(
+                        self.registered_rows(
                             (&workspace, &policy, now),
                             registered,
                             caller,
@@ -1541,43 +1541,51 @@ impl AppBrokerState {
     /// Mark each of `rows` whose action the workspace's grants let `actor` take
     /// only after asking: it asks for confirmation, which the person gives
     /// on their own device.
-    /// The rows of the registered providers `registered` that `actor` is offered in
-    /// `workspace` at `now`, appended to `rows`, each marked where it asks
-    /// first.
+    /// The rows of the registered provider `registered` that `actor` is offered, appended to
+    /// `rows`, each marked where it asks first. One of the person's device settings is decided
+    /// in their own workspace, where it is kept; every other row where the caller stands.
     fn registered_rows(
+        &self,
         (workspace, actor, now): (&Workspace, &BrokerActor, u64),
         registered: &crate::workspaces::providers::Registered,
         caller: &Caller,
         rows: &mut Vec<CatalogueRow>,
     ) {
-        let start = rows.len();
-        rows.extend(
-            super::provided::rows_of(registered, caller)
-                .into_iter()
-                .filter(|row| {
-                    row.action.as_ref().is_some_and(|action| {
-                        Self::offered(
-                            workspace,
-                            actor,
-                            now,
-                            &registered.app,
-                            (
-                                &action.resource_kind,
-                                &action.address.resource,
-                                &action.address.action,
-                            ),
-                            &action.contract,
-                        )
+        for row in super::provided::rows_of(registered, caller) {
+            let Some(action) = row.action.as_ref() else {
+                continue;
+            };
+            let kept = super::provided::device_settings_workspace(caller, registered, action)
+                .and_then(|own| {
+                    let confined = caller.clone().in_workspace(own.clone());
+                    self.decide_for(&confined, &own, |workspace, actor, now| {
+                        (workspace.clone(), actor.clone(), now)
                     })
-                })
-                .map(|row| CatalogueRow {
-                    provider: registered.provider.to_string(),
-                    app_id: registered.app.to_string(),
-                    ..row
-                }),
-        );
-        if let Some(added) = rows.get_mut(start..) {
-            Self::mark_asks(workspace, actor, now, added);
+                });
+            let (here, actor, now) = kept
+                .as_ref()
+                .map_or((workspace, actor, now), |held| (&held.0, &held.1, held.2));
+            if !Self::offered(
+                here,
+                actor,
+                now,
+                &registered.app,
+                (
+                    &action.resource_kind,
+                    &action.address.resource,
+                    &action.address.action,
+                ),
+                &action.contract,
+            ) {
+                continue;
+            }
+            let mut row = CatalogueRow {
+                provider: registered.provider.to_string(),
+                app_id: registered.app.to_string(),
+                ..row
+            };
+            Self::mark_asks(here, actor, now, std::slice::from_mut(&mut row));
+            rows.push(row);
         }
     }
 
