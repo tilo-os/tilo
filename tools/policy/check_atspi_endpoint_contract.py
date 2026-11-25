@@ -147,7 +147,7 @@ def audit(root: Path = ROOT) -> list[str]:
         root / "crates/ui/ui-core/src/app.rs",
         root / "crates/ui/ui-core/src/app/host.rs",
         root / "crates/ui/ui-core/src/app/native_runner.rs",
-        root / "crates/ui/ui-core/src/app/native_runner/part_bar.rs",
+        root / "crates/ui/ui-core/src/app/part_bar.rs",
     ]
     app = "\n".join(
         path.read_text(encoding="utf-8") for path in app_paths if path.is_file()
