@@ -246,32 +246,9 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
         SET
     );
 
-    // Undo takes the person's step back: nothing is applied, and the theme the mode shows is the
-    // one drawn again.
-    session
-        .invoke_with_actor(&common::as_person(PERSON), APPEARANCE, "undo", &json!({}))
-        .expect("the action runs");
-    step(&mut session, 300);
-    assert_eq!(published(&session), Value::Null, "no package is applied");
-    let undone = frame(&mut session);
-    assert!(
-        differing_pixels(&stock, &undone) < differing_pixels(&stock, &applied) / 4,
-        "the previous theme draws again: {} pixels differ from it, where the bundle's {} pixels did",
-        differing_pixels(&stock, &undone),
-        differing_pixels(&stock, &applied)
-    );
-
-    // Applied once more, then the package is taken away: this device falls back to the theme the
-    // mode shows, and the appearance still names the package for the devices that have it.
-    session
-        .invoke_with_actor(
-            &common::as_person(PERSON),
-            APPEARANCE,
-            "apply-theme",
-            &json!({ "package": PACKAGE }),
-        )
-        .expect("the action runs");
-    step(&mut session, 300);
+    // The package is taken away: this device falls back to the theme the mode shows, and the
+    // appearance still names the package for the devices that have it. An undo of the step, and
+    // that it draws the previous theme again, is the section's own test's.
     uninstall_theme_package(&store);
     session
         .invoke(
