@@ -477,6 +477,7 @@ fn backend(app_id: &str) -> Arc<dyn Notifier> {
     }
     #[cfg(not(feature = "host-portals"))]
     {
+        let _ = app_id;
         // An app process inside Tilo, handed no connection, and a build of the SDK that speaks
         // no D-Bus: this host has no notification service to reach, so the app's id names none.
         let _ = app_id;

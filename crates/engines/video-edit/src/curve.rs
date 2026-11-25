@@ -326,7 +326,7 @@ mod tests {
                 // `mix` defaulting to 0.0 would silently bypass every curve written
                 // before the field existed.
                 let back: Curve = serde_json::from_str(r#"{"master":{"points":[]}}"#).expect("parse");
-                assert_eq!(back.mix, 1.0);
+                assert!((back.mix - 1.0).abs() < f64::EPSILON, "{}", back.mix);
             }
         }
     }

@@ -499,16 +499,15 @@ impl SourcePcm {
         if let Some(stamp) = &stamp
             && let Some(at) = self.entries.iter().position(|entry| entry.path == path)
         {
-            if self.entries[at].stamp == *stamp {
-                let pcm = self.entries[at].pcm.clone();
+            let entry = self.entries.remove(at);
+            if entry.stamp == *stamp {
+                let pcm = entry.pcm.clone();
                 // The source just asked for stands last in line to leave.
-                let entry = self.entries.remove(at);
                 self.entries.push(entry);
                 return pcm;
             }
             // The file changed under the cut: what was decoded of it is no longer its samples.
-            let gone = self.entries.remove(at);
-            self.bytes = self.bytes.saturating_sub(bytes_of(gone.pcm.as_ref()));
+            self.bytes = self.bytes.saturating_sub(bytes_of(entry.pcm.as_ref()));
         }
         let pcm = decode(source).map(std::sync::Arc::new);
         let Some(stamp) = stamp else {
