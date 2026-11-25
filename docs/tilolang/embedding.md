@@ -21,8 +21,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tilolang = "0.4"
-tilolang-runtime = "0.4"
+tilolang = "0.5"
+tilolang-runtime = "0.5"
 serde_json = "1"
 ```
 

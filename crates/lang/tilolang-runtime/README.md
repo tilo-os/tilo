@@ -18,7 +18,7 @@ in tilolang never depends on it, and an app written against the Rust SDK does no
 
 ```toml
 [dependencies]
-tilolang-runtime = "0.4"
+tilolang-runtime = "0.5"
 ```
 
 ```rust
