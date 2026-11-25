@@ -591,7 +591,12 @@ type = "String"
             [],
         ))),
         ..tilo_actions::ActionContext::for_resource("fixture", "fixture", "Fixture")
-    };
+    }
+    // Every change names who made it: the smuggled one is Alice's, and it is refused for its
+    // verb, not for naming nobody.
+    .with_invoker(tilo_actions::ActionInvoker::person(
+        tilo_action_policy::PersonId::from_root(laptop.cert.user_public_key),
+    ));
     // Signed by a device that does not check its own changes.
     let smuggled = alice_link
         .read(|peer| {
