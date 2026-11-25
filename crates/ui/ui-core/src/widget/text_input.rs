@@ -36,8 +36,8 @@ use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompleti
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use tilo_resource::TextEdit;
-use tilo_resource::text::splice_between;
+#[cfg(feature = "model")]
+use tilo_resource::{TextEdit, text::splice_between};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::BlendMode;
@@ -394,7 +394,7 @@ pub struct TextInput {
     /// record's own), as an action's text anchor names it ([`Self::set_edits`]).
     edits: Option<(String, String)>,
     adopted: Option<preparation::Adopted>,
-    local_author: Option<::collaboration::permissions::MemberId>,
+    local_author: Option<tilo_action_policy::MemberId>,
     align: TextAlign,
     secret: bool,
     disabled: bool,
@@ -838,7 +838,7 @@ impl TextInput {
         self.align
     }
 
-    pub fn set_local_author(&mut self, author: Option<::collaboration::permissions::MemberId>) {
+    pub fn set_local_author(&mut self, author: Option<tilo_action_policy::MemberId>) {
         self.repaint = true;
         self.local_author = author;
     }
@@ -1556,6 +1556,7 @@ impl TextInput {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn on_text_edit(mut self, binding: tilo_actions::ActionBinding<TextEdit>) -> Self {
         self.action = Some(ActionEmitter::new(binding.map_input(
             |Edited { before, after }: Edited| {
@@ -6010,6 +6011,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         })
     }
 
+    #[cfg(feature = "model")]
     fn presence_payload(&self) -> Option<(PresenceKey, ::collaboration::PresencePayload)> {
         if !self.is_focused || self.holds_secret() {
             return None;
@@ -6042,6 +6044,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         ))
     }
 
+    #[cfg(feature = "model")]
     fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
         self.is_focused
             .then(|| self.shareable_selection())
@@ -6152,9 +6155,7 @@ impl TextInput {
     /// it made of the field asks before keeping it.
 
     fn draw_peers_and_permission_scrim(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        if let Some(scope) = crate::widget::permission::permission_scope(self)
-            && !ctx.env.permits(&scope)
-        {
+        if !ctx.env.permits_widget(self) {
             let r = self.rect;
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,

@@ -144,7 +144,7 @@ fn close(a: Rect, b: Rect) -> bool {
 fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
     let drawn = Rc::new(Cell::new(Rect::ZERO));
     let mut row = strip(2, "second", Rc::clone(&drawn));
-    let peer = ::collaboration::permissions::MemberId::person("claude");
+    let peer = tilo_action_policy::MemberId::person("claude");
     let mut presence = crate::presence::PresenceCtx::empty();
     presence.set_display_name(peer.clone(), "Claude Code");
     presence.set_caret(&Field::key("second"), peer, 0);
@@ -206,7 +206,7 @@ fn a_peers_caret_in_a_panned_window_is_a_node_where_the_window_drew_it() {
         window(200, "second", Rc::clone(&second)),
     ]);
     let mut frame = Driver::for_root(crate::State::new(), row, (390, 844), Theme::default());
-    let peer = ::collaboration::permissions::MemberId::person("claude");
+    let peer = tilo_action_policy::MemberId::person("claude");
     frame
         .presence_mut()
         .set_display_name(peer.clone(), "Claude Code");

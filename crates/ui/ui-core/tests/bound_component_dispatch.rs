@@ -790,10 +790,13 @@ impl Widget for Root {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, renderer, theme, mut env) = ctx.parts();
+        let guarded = tilo_ui::widget::Spacer::new().with_permission_scope(
+            tilo_ui::permissions::PermissionScope::workspace(
+                tilo_ui::permissions::ActionKind::Undoable,
+            ),
+        );
         assert!(
-            env.permits(&tilo_ui::permissions::PermissionScope::workspace(
-                tilo_ui::permissions::ActionKind::Undoable
-            )) == EXPECTED_WRITE.get(),
+            env.permits_widget(&guarded) == EXPECTED_WRITE.get(),
             "draw received outer authority"
         );
         self.mark("draw-permissions");

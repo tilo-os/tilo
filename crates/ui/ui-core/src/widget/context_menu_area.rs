@@ -592,9 +592,12 @@ impl ContextMenuArea {
         // selection, so a question typed into the menu is; elsewhere the app
         // names what is under the pointer, else the window
         // (`shared_selection::pointed_selection`, the one subject rule).
+        #[cfg(feature = "model")]
+        let focused = crate::shared_selection::subtree_selection(self.content.as_ref());
+        #[cfg(not(feature = "model"))]
+        let focused = None;
         menu.set_about(crate::shared_selection::pointed_selection(
-            crate::shared_selection::subtree_selection(self.content.as_ref()),
-            at_pointer,
+            focused, at_pointer,
         ));
         menu.set_interaction_environment(self.environment);
         if let Some(viewport) = self.viewport {

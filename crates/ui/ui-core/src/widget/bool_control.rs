@@ -2,10 +2,11 @@
 //! click or an assistive action flips it, and how it reports itself to presence, permissions and the
 //! action broker.
 
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, AppModel, ControlBindingMetadata, ModelPath};
-use ::collaboration::permissions::PermissionScope;
 use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -93,6 +94,7 @@ pub(super) struct BoolControl {
     /// the click as one of its own.
     pub holds_press: bool,
     pub presence_path: Vec<PathSegment>,
+    #[cfg(feature = "model")]
     pub permission_scope: Option<PermissionScope>,
     pub enabled: bool,
     /// Override for `Widget::test_id()`, which otherwise reports the
@@ -143,6 +145,7 @@ impl BoolControl {
             pressed_into_focus: false,
             holds_press: false,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
             enabled: true,
             id_override: None,
@@ -371,10 +374,8 @@ macro_rules! bool_control_api {
         }
 
         #[must_use]
-        pub fn with_permission_scope(
-            mut self,
-            scope: ::collaboration::permissions::PermissionScope,
-        ) -> Self {
+        #[cfg(feature = "model")]
+        pub fn with_permission_scope(mut self, scope: crate::permissions::PermissionScope) -> Self {
             self.control.permission_scope = Some(scope);
             self
         }
@@ -426,10 +427,13 @@ pub(super) use bool_control_api;
 macro_rules! bool_control_widget_methods {
     ($kind:literal) => {
         fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+            #[cfg(feature = "model")]
+            if request.wants::<dyn crate::widget::permission::PermissionGuarded>() {
+                request.provide::<dyn crate::widget::permission::PermissionGuarded>(self);
+                return;
+            }
             if request.wants::<dyn crate::widget::controls::ActionControls>() {
                 request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::widget::permission::PermissionGuarded>() {
-                request.provide::<dyn crate::widget::permission::PermissionGuarded>(self);
             } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
                 request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
             }
@@ -439,10 +443,13 @@ macro_rules! bool_control_widget_methods {
             &'a mut self,
             request: &mut crate::widget::capability::RequestMut<'a, '_>,
         ) {
+            #[cfg(feature = "model")]
+            if request.wants::<dyn crate::widget::permission::PermissionGuarded>() {
+                request.provide::<dyn crate::widget::permission::PermissionGuarded>(self);
+                return;
+            }
             if request.wants::<dyn crate::widget::controls::ActionControls>() {
                 request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::widget::permission::PermissionGuarded>() {
-                request.provide::<dyn crate::widget::permission::PermissionGuarded>(self);
             } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
                 request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
             }
@@ -504,8 +511,9 @@ macro_rules! bool_control_capabilities {
             }
         }
 
+        #[cfg(feature = "model")]
         impl crate::widget::permission::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<::collaboration::permissions::PermissionScope> {
+            fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
                 self.control.permission_scope.clone()
             }
         }

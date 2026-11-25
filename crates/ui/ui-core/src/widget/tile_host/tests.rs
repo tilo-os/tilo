@@ -408,7 +408,7 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
         label: String::new(),
     });
     host.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-    host.history_lifetime.active.set(false);
+    host.owner_lifetime.active.set(false);
     let mut taffy = TaffyTree::new();
     let mut node_map = std::collections::HashMap::new();
     let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
@@ -1350,7 +1350,7 @@ fn harness(root: Box<dyn Widget>) -> crate::app::driver::Driver {
         (900, 600),
         Theme::dark(),
         crate::font_catalog::fixture_renderer(),
-        ::collaboration::permissions::MemberId::person("reader"),
+        tilo_action_policy::MemberId::person("reader"),
     )
 }
 

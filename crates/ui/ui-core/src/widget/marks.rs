@@ -34,8 +34,8 @@ pub enum Mark {
     ResourceLink(String),
     /// A member named in the text (`@Ada`).
     Mention(tilo_actions::MemberId),
-    /// A record named in the text, by the value its reference is stored as
-    /// ([`tilo_reference::Embed::mark_value`]).
+    /// A record named in the text, by the value its reference is stored as (the
+    /// reference model's mark value).
     Reference(String),
     /// Raised text, as `x²` writes its exponent.
     Superscript,
@@ -134,11 +134,9 @@ impl Mark {
     /// reference to whatever else it names. `None` for an empty value.
     #[must_use]
     pub fn of_reference(value: &str) -> Option<Self> {
-        match tilo_reference::Embed::of_mark(value) {
-            Some(tilo_reference::Embed::Member(member)) => Some(Self::Mention(member)),
-            Some(tilo_reference::Embed::Resource(_)) | None => {
-                (!value.is_empty()).then(|| Self::Reference(value.to_owned()))
-            }
+        match tilo_action_policy::MemberId::of_mark_value(value) {
+            Some(member) => Some(Self::Mention(member)),
+            None => (!value.is_empty()).then(|| Self::Reference(value.to_owned())),
         }
     }
 
@@ -146,9 +144,7 @@ impl Mark {
     #[must_use]
     pub fn reference(&self) -> Option<String> {
         match self {
-            Self::Mention(member) => {
-                Some(tilo_reference::Embed::Member(member.clone()).mark_value())
-            }
+            Self::Mention(member) => Some(member.mark_value()),
             Self::Reference(value) => Some(value.clone()),
             _ => None,
         }

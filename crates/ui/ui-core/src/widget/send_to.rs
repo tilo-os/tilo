@@ -320,6 +320,7 @@ impl SendToBox {
 
     /// Carry `files` besides what the box is about: each a chip of its own after the subjects,
     /// which the person takes off as any other before sending.
+    #[cfg(feature = "model")]
     pub fn carry(&mut self, files: &[tilo_reference::Attached]) {
         let before = self.subjects.len();
         self.subjects

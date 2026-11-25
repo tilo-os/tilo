@@ -26,6 +26,23 @@ pub enum MemberId {
 pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";
 
 impl MemberId {
+    /// The value a text mark naming this member holds, in the one form: the id as JSON
+    /// (`{"person":…}`). A mention in any text is stored as this.
+    #[must_use]
+    pub fn mark_value(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The member a text mark's `value` names ([`Self::mark_value`]); `None` for a value
+    /// naming anything else.
+    #[must_use]
+    pub fn of_mark_value(value: &str) -> Option<Self> {
+        value
+            .starts_with('{')
+            .then(|| serde_json::from_str(value).ok())
+            .flatten()
+    }
+
     /// The id of the one direct conversation with exactly `members`, as every
     /// app that reads or writes conversations spells it: derived from the
     /// set, so two devices that open the same conversation at once make one,

@@ -48,6 +48,7 @@ pub const MAX_REACTIONS: usize = 2000;
 /// The longest emoji, in bytes: a Unicode sequence (a family with skin
 /// tones) or a workspace emoji's `:name:`.
 pub const MAX_EMOJI_BYTES: usize = 64;
+pub use tilo_actions::reaction::{ReactionGroup, Reactor};
 pub use tilo_resource_plain::{MAX_CUSTOM_NAME, custom_emoji_name, valid_custom_emoji_name};
 
 /// Separates the parts of a reaction's key: never part of an emoji or of a
@@ -99,41 +100,6 @@ fn key_of(emoji: &str, by: &MemberId, persona: Option<&str>) -> String {
 /// The emoji part of a stored key.
 fn emoji_of_key(key: &str) -> &str {
     key.split(KEY_SEPARATOR).next().unwrap_or(key)
-}
-
-/// One person (or outside account) among those who reacted with an emoji.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Reactor {
-    /// The member who invoked the reaction.
-    pub by: MemberId,
-    /// The outside account a bot reacted for.
-    pub persona: Option<String>,
-    /// The name that account shows.
-    pub name: Option<String>,
-}
-
-/// Everyone who reacted with one emoji, first reaction first.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReactionGroup {
-    pub emoji: String,
-    pub reactors: Vec<Reactor>,
-    /// When the first of them reacted.
-    pub first_at: i64,
-}
-
-impl ReactionGroup {
-    #[must_use]
-    pub fn count(&self) -> usize {
-        self.reactors.len()
-    }
-
-    /// Whether `member` is among them themselves.
-    #[must_use]
-    pub fn includes(&self, member: &MemberId) -> bool {
-        self.reactors
-            .iter()
-            .any(|reactor| reactor.persona.is_none() && reactor.by == *member)
-    }
 }
 
 /// The reactions to one thing. See the [module docs](self).

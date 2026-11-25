@@ -1,9 +1,10 @@
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::theme::Theme;
 use crate::tokens::SpacingStep;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use ::collaboration::permissions::PermissionScope;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
@@ -30,6 +31,7 @@ pub struct Spacer {
     extent: Extent,
     id: Option<String>,
     presence_path: Vec<PathSegment>,
+    #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
 }
 
@@ -47,6 +49,7 @@ impl Spacer {
             extent: Extent::Flexible,
             id: None,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
         }
     }
@@ -85,6 +88,7 @@ impl Spacer {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -93,6 +97,7 @@ impl Spacer {
 
 impl Widget for Spacer {
     crate::provides!(
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
@@ -174,6 +179,7 @@ impl crate::presence::capability::PublishesPresence for Spacer {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::widget::permission::PermissionGuarded for Spacer {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()

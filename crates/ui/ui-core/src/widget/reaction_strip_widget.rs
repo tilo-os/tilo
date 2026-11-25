@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_resource::{ReactionGroup, Reactor};
+use tilo_actions::reaction::{ReactionGroup, Reactor};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -17,7 +17,7 @@ use crate::widget::{
     ActionEmitter, ControlBindingKind, ControlBindingMetadata, EventCtx, ModelPath, TaffyTreeExt,
     Widget,
 };
-use tilo_resource::MemberId;
+use tilo_action_policy::MemberId;
 
 /// A person reacting with an emoji (`react`), or taking their reaction
 /// back: what a pill or a pick in the picker asks for.

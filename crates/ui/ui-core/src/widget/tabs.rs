@@ -7166,7 +7166,7 @@ mod tests {
                     let mut presence = crate::presence::PresenceCtx::default();
                     if with_peer {
                         presence.register_peer_at(
-                            ::collaboration::permissions::MemberId::person("ada"),
+                            tilo_action_policy::MemberId::person("ada"),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
@@ -7214,7 +7214,7 @@ mod tests {
                     let mut presence = crate::presence::PresenceCtx::default();
                     for peer in ["ada", "bot", "cy", "dee", "eve"] {
                         presence.register_peer_at(
-                            ::collaboration::permissions::MemberId::person(peer),
+                            tilo_action_policy::MemberId::person(peer),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
@@ -7268,7 +7268,7 @@ mod tests {
                 );
                 let mut presence = crate::presence::PresenceCtx::default();
                 presence.register_peer_at(
-                            ::collaboration::permissions::MemberId::person("ada"),
+                            tilo_action_policy::MemberId::person("ada"),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
@@ -7319,7 +7319,7 @@ mod tests {
                 let content = PILL_PAD_X + b.leading_zone(1) + b.shaped_title_width(1) + reserve;
                 let mut presence = crate::presence::PresenceCtx::default();
                 presence.register_peer_at(
-                            ::collaboration::permissions::MemberId::person("ada"),
+                            tilo_action_policy::MemberId::person("ada"),
                             &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },

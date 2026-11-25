@@ -274,6 +274,7 @@ where
         dyn crate::widget::controls::ActionControls,
         dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
+        #[cfg(feature = "model")]
         dyn crate::resource::capability::ResourceScoped,
         dyn crate::view::capability::ViewState
     );
@@ -378,6 +379,7 @@ where
     }
 }
 
+#[cfg(feature = "model")]
 impl<K> crate::resource::capability::ResourceScoped for ModelView<K>
 where
     K: PartialEq + 'static,

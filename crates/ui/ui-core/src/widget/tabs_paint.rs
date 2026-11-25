@@ -302,7 +302,7 @@ impl TabBar {
             }
             return;
         }
-        let _drawn = tilo_resource::profiling::Phase::start("ui.tab_bar.draw");
+        let _drawn = tilo_resource_plain::profiling::Phase::start("ui.tab_bar.draw");
         let mut own = Scene::new();
         let ((), parts) = crate::scene_parts::record(&mut own, |own| {
             self.draw_fresh(&mut crate::draw::DrawCtx::new(

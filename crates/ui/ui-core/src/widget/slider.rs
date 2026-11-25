@@ -1,7 +1,8 @@
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use ::collaboration::permissions::PermissionScope;
 #[path = "slider_component.rs"]
 mod component;
 use crate::widget::TaffyTreeExt;
@@ -141,6 +142,7 @@ pub struct Slider {
     fine_from: Option<(f64, f64)>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
+    #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
     /// When `false` the slider is disabled: skipped by focus, rejects
     /// input (no drag, no value change, no hover feedback) and renders
@@ -225,6 +227,7 @@ impl Slider {
             fine_from: None,
             action: None,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
             enabled: true,
             last_cursor: Point::ZERO,
@@ -554,6 +557,7 @@ impl Slider {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -1089,6 +1093,7 @@ impl Widget for Slider {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
@@ -1482,6 +1487,7 @@ impl crate::presence::capability::PublishesPresence for Slider {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::widget::permission::PermissionGuarded for Slider {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()

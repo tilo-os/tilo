@@ -1,9 +1,10 @@
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use ::collaboration::permissions::PermissionScope;
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::Point;
@@ -16,6 +17,7 @@ pub struct Stack {
     children: Vec<Box<dyn Widget>>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
+    #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
 }
 
@@ -31,6 +33,7 @@ impl Stack {
             children: Vec::new(),
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
         }
     }
@@ -48,6 +51,7 @@ impl Stack {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -56,6 +60,7 @@ impl Stack {
 
 impl Widget for Stack {
     crate::provides!(
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
@@ -142,7 +147,7 @@ impl Widget for Stack {
 
     /// What its children changed.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        if self.permission_scope.is_some() || !self.presence_path.is_empty() {
+        if self.guarded() || !self.presence_path.is_empty() {
             if self.needs_redraw() || self.needs_animation_frame() {
                 regions.push(self.rect);
             }
@@ -203,6 +208,25 @@ impl crate::presence::capability::PublishesPresence for Stack {
     }
 }
 
+impl Stack {
+    /// Whether a permission scope guards this stack, so its denial scrim covers all of it.
+    #[cfg(feature = "model")]
+    fn guarded(&self) -> bool {
+        self.permission_scope.is_some()
+    }
+
+    /// Without Tilo's model no permission scope guards a widget.
+    #[cfg(not(feature = "model"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the model build reads the stack's scope"
+    )]
+    const fn guarded(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "model")]
 impl crate::widget::permission::PermissionGuarded for Stack {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()

@@ -20,6 +20,7 @@ pub enum AppProcessIntent {
         resource_id: String,
         version_id: Option<[u8; 16]>,
         /// A factual app-native event that may not yet be part of the shell's CRDT record index.
+        #[cfg(feature = "model")]
         entry: Option<crate::widget::HistoryEntry>,
     },
     /// Show what an agent's task run did: History, at the run (`group`, its
@@ -33,24 +34,42 @@ pub enum AppProcessIntent {
     },
 }
 
+impl AppProcessIntent {
+    /// The app-native event a [`Self::ShowWorkspaceActivity`] carries.
+    #[cfg(feature = "model")]
+    fn activity_entry(&self) -> Option<&crate::widget::HistoryEntry> {
+        match self {
+            Self::ShowWorkspaceActivity { entry, .. } => entry.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Without Tilo's model an activity carries no app-native event.
+    #[cfg(not(feature = "model"))]
+    #[allow(clippy::unused_self, reason = "the model build reads the event")]
+    const fn activity_entry(&self) -> Option<()> {
+        None
+    }
+}
+
 impl PartialEq for AppProcessIntent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                Self::ShowWorkspaceActivity {
+                left @ Self::ShowWorkspaceActivity {
                     resource_id: left_resource,
                     version_id: left_version,
-                    entry: left_entry,
+                    ..
                 },
-                Self::ShowWorkspaceActivity {
+                right @ Self::ShowWorkspaceActivity {
                     resource_id: right_resource,
                     version_id: right_version,
-                    entry: right_entry,
+                    ..
                 },
             ) => {
                 left_resource == right_resource
                     && left_version == right_version
-                    && left_entry == right_entry
+                    && left.activity_entry() == right.activity_entry()
             }
             (Self::OpenSearch(left), Self::OpenSearch(right)) => left == right,
             (
@@ -130,12 +149,14 @@ pub trait AppWidget: Widget {
     /// Framework-owned durability, delivered only after the record loan ends. Returns whether the
     /// window shows anything new of it (its bar's notice or unsaved mark): a save that lands within
     /// [`crate::save_status::SAVE_STALL`] shows nothing.
+    #[cfg(feature = "model")]
     fn resource_save_status(&mut self, _status: crate::resource::ResourceSaveStatus) -> bool {
         false
     }
 
     /// The workspace refused a change this record made, and the record withdrew it: the action is refused as
     /// one refused on this device is.
+    #[cfg(feature = "model")]
     fn record_refused(&mut self, _refusal: &crate::resource::ResourceRefusal) {}
 
     /// What the app said it did since last asked ("Added Buy milk"), for the record to hold until the
@@ -247,6 +268,30 @@ pub struct WindowPublication {
     pub providers: Vec<Box<dyn crate::search::SearchProvider>>,
 }
 
+/// The draw environment a mounted component's root draws in: the outer one,
+/// lent the component's own authority over its widgets.
+#[cfg(feature = "model")]
+fn lent_permissions<'a>(
+    env: &crate::draw::DrawEnv<'a>,
+    binding: &crate::bound_dispatch::CallbackBinding,
+) -> crate::draw::DrawEnv<'a> {
+    let permissions = binding.permissions.borrow().clone();
+    let mut inner = env.clone();
+    inner.permissions = Some(std::rc::Rc::new(permissions));
+    inner.paint_permissions = crate::permissions::shared_revision();
+    inner
+}
+
+/// Without Tilo's model a component lends no authority of its own: its root
+/// draws in the outer environment.
+#[cfg(not(feature = "model"))]
+fn lent_permissions<'a>(
+    env: &crate::draw::DrawEnv<'a>,
+    _binding: &crate::bound_dispatch::CallbackBinding,
+) -> crate::draw::DrawEnv<'a> {
+    env.clone()
+}
+
 mod component_adapter {
     use super::{AppProcessIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
@@ -254,10 +299,10 @@ mod component_adapter {
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
         AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
-        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
+        CompleteContentWidgetExt, ControlBindingMetadata, FloatingSurfaceProvider,
         FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
-        Instant, NodeId, ObjId, PermissionScope, PresenceKey, ResourceOperationStart, Scene,
-        TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        Instant, NodeId, ObjId, PresenceKey, ResourceOperationStart, Scene, TaffyTree,
+        TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -354,7 +399,7 @@ mod component_adapter {
             drop(_entry);
             let moved = observation.moved(&self.inputs_now(outer));
             if let Some(why) = moved {
-                drop(tilo_resource::profiling::Phase::start(why));
+                drop(tilo_resource_plain::profiling::Phase::start(why));
             }
             moved.is_none()
         }
@@ -446,7 +491,7 @@ mod component_adapter {
             // with is the language it read, so the next pass reads it again.
             let crossed = self.component.callback_binding().lifetime.crossed();
             let locale = crate::i18n::I18nManager::revision();
-            let ((before, after), reads) = tilo_resource::profiling::unobserved(|| {
+            let ((before, after), reads) = tilo_resource_plain::profiling::unobserved(|| {
                 let binding = self.component.callback_binding();
                 let before = shown(self);
                 let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
@@ -589,7 +634,8 @@ mod component_adapter {
         }
     }
 
-    impl Continuable for BoundAppWidget {
+    #[cfg(feature = "model")]
+    impl crate::widget::Continuable for BoundAppWidget {
         fn continuation_metadata(
             &self,
             state: &AutoCommit,
@@ -599,7 +645,7 @@ mod component_adapter {
             binding
                 .read_document(state, |document, resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::widget::capability::capability::<dyn Continuable>(root)?
+                    crate::widget::capability::capability::<dyn crate::widget::Continuable>(root)?
                         .continuation_metadata(document, resource_root)
                 })
                 .unwrap_or(None)
@@ -612,9 +658,9 @@ mod component_adapter {
             _path: &ObjId,
         ) -> bool {
             self.with_root_edits(state, |root, edits, resource_root| {
-                let Some(continuable) =
-                    crate::widget::capability::capability_mut::<dyn Continuable>(&mut *root)
-                else {
+                let Some(continuable) = crate::widget::capability::capability_mut::<
+                    dyn crate::widget::Continuable,
+                >(&mut *root) else {
                     return false;
                 };
                 continuable.restore_continuation_metadata(metadata, edits, resource_root)
@@ -889,10 +935,7 @@ mod component_adapter {
             {
                 return false;
             }
-            let permissions = binding.permissions.borrow().clone();
-            let mut inner = env.clone();
-            inner.permissions = Some(permissions);
-            inner.paint_permissions = ::collaboration::permissions::shared_revision();
+            let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
             root.draw_child(scene, transform, text_renderer, theme, &inner);
             let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
@@ -917,24 +960,30 @@ mod component_adapter {
             dyn crate::AppWidget,
             dyn crate::widget::FullscreenProvider,
             dyn crate::widget::CompleteContentProvider,
+            #[cfg(feature = "model")]
             dyn crate::widget::Continuable,
             dyn crate::widget::FloatingSurfaceProvider,
             dyn crate::widget::AudiencePresentationProvider,
+            #[cfg(feature = "model")]
             dyn crate::widget::presence_topology::Presences,
             dyn crate::undo::CommittedActions,
             dyn crate::undo::UndoControl,
             dyn crate::undo::LocalUndo,
+            #[cfg(feature = "model")]
             dyn crate::history_mode::capability::DocumentHistory,
             dyn crate::widget::controls::ActionControls,
             dyn crate::widget::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
+            #[cfg(feature = "model")]
             dyn crate::widget::permission::PermissionGuarded,
             dyn crate::presence::capability::PublishesPresence,
+            #[cfg(feature = "model")]
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::component_lifecycle::WindowActivation,
             dyn crate::component_lifecycle::WindowTitle,
+            #[cfg(feature = "model")]
             dyn crate::component_lifecycle::HearsElsewhere,
             dyn crate::widget::WindowHistory,
             dyn crate::undo::UndoPoints,
@@ -1027,7 +1076,7 @@ mod component_adapter {
                 self.verify_rest(state);
                 return;
             }
-            let _profile = tilo_resource::profiling::Phase::start("ui.component.sync");
+            let _profile = tilo_resource_plain::profiling::Phase::start("ui.component.sync");
             let binding = self.component.callback_binding();
             let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
                 self.sync_root(state);
@@ -1172,10 +1221,7 @@ mod component_adapter {
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
-            let permissions = binding.permissions.borrow().clone();
-            let mut inner = env.clone();
-            inner.permissions = Some(permissions);
-            inner.paint_permissions = ::collaboration::permissions::shared_revision();
+            let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
             root.draw_child(scene, transform, text_renderer, theme, &inner);
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1765,6 +1811,7 @@ mod component_adapter {
 
     /// What the connection of the component's app heard elsewhere (the app's instance in its own
     /// process) of the people at it: the app's root hands it over.
+    #[cfg(feature = "model")]
     impl crate::component_lifecycle::HearsElsewhere for BoundAppWidget {
         fn take_heard(&mut self) -> Vec<crate::component_lifecycle::Heard> {
             self.in_root_mut(|root| crate::component_lifecycle::take_heard(root))
@@ -1816,6 +1863,7 @@ mod component_adapter {
         }
     }
 
+    #[cfg(feature = "model")]
     impl crate::resource::capability::ResourceScoped for BoundAppWidget {
         fn record_intent(&self) -> Option<crate::resource::DocumentCheckout> {
             self.in_root(|root| crate::resource::capability::record_intent(root))
@@ -1831,14 +1879,16 @@ mod component_adapter {
             self.in_root(|root| crate::presence::capability::presence_key(root))
                 .flatten()
         }
+        #[cfg(feature = "model")]
         fn presence_payload(&self) -> Option<(PresenceKey, ::collaboration::PresencePayload)> {
             self.in_root(|root| crate::presence::capability::presence_payload(root))
                 .flatten()
         }
     }
 
+    #[cfg(feature = "model")]
     impl crate::widget::permission::PermissionGuarded for BoundAppWidget {
-        fn permission_scope(&self) -> Option<PermissionScope> {
+        fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
             self.in_root(|root| crate::widget::permission::permission_scope(root))
                 .flatten()
         }
@@ -2063,6 +2113,7 @@ mod component_adapter {
         }
     }
 
+    #[cfg(feature = "model")]
     impl crate::history_mode::capability::DocumentHistory for BoundAppWidget {
         fn history_registration(
             &self,
@@ -2117,6 +2168,7 @@ mod component_adapter {
         }
     }
 
+    #[cfg(feature = "model")]
     impl crate::widget::presence_topology::Presences for BoundAppWidget {
         fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
             crate::widget::presence_topology::join_presence_in_children(self, presence)

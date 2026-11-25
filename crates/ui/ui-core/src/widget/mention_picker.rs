@@ -10,7 +10,7 @@ use crate::presence::PresenceCtx;
 use crate::text_match::FieldWeight;
 use crate::tokens::PresenceHue;
 use crate::widget::autocomplete::Suggestion;
-use collab_types::{Member, MemberId};
+use tilo_action_policy::MemberId;
 
 /// Someone a field can mention: a member of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,12 +43,13 @@ impl MentionCandidate {
     /// The value a mention of them is stored as.
     #[must_use]
     pub fn reference(&self) -> String {
-        tilo_reference::Embed::Member(self.id.clone()).mark_value()
+        self.id.mark_value()
     }
 }
 
+#[cfg(feature = "model")]
 impl MentionCandidate {
-    fn of(presence: &PresenceCtx, member: Member) -> Self {
+    fn of(presence: &PresenceCtx, member: collab_types::Member) -> Self {
         let id = member.id;
         let name = if id.is_person() {
             member.name
@@ -134,11 +135,16 @@ pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a Ment
 /// id, the roster's answer winning, sorted by name.
 #[must_use]
 pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<MentionCandidate> {
+    // The workspace's people come from its roster; a toolkit without the model has none, and
+    // completes from what its app supplied.
+    #[cfg(feature = "model")]
     let mut out: Vec<MentionCandidate> = presence
         .roster()
         .into_iter()
         .map(|user| MentionCandidate::of(presence, user))
         .collect();
+    #[cfg(not(feature = "model"))]
+    let mut out: Vec<MentionCandidate> = Vec::new();
     for candidate in extra {
         if candidate.name.trim().is_empty() {
             continue;
@@ -233,7 +239,7 @@ mod tests {
             let mut presence = PresenceCtx::empty();
             presence.set_display_name(MemberId::person("u_ada"), "Ada");
             presence.set_presence_hue(MemberId::person("u_ada"), PresenceHue::Violet);
-            let announced = presence.hue_for(&::collaboration::permissions::MemberId::person("u_ada"));
+            let announced = presence.hue_for(&tilo_action_policy::MemberId::person("u_ada"));
             assert_ne!(
                 announced,
                 PresenceHue::of_identity("u_ada"),
@@ -279,7 +285,7 @@ mod tests {
 #[cfg(test)]
 mod roster_tests {
     use super::*;
-    use ::collaboration::permissions::MemberId;
+    use tilo_action_policy::MemberId;
 
     #[test]
     fn the_workspace_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {

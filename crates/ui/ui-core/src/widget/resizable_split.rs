@@ -1103,6 +1103,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     crate::provides!(
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
@@ -1437,6 +1438,7 @@ impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::Publ
 {
 }
 
+#[cfg(feature = "model")]
 impl<L: Widget + 'static, R: Widget + 'static> crate::widget::permission::PermissionGuarded
     for ResizableSplit<L, R>
 {

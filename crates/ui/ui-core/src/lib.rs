@@ -310,11 +310,13 @@ pub mod close_admission;
 /// framework, the shell, the browser runtime, the installer); an app answers operations as a typed
 /// effect vocabulary and never names these (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
+    #[cfg(feature = "model")]
+    pub use crate::widget::resource_operation::OperationTarget;
     pub use crate::widget::resource_operation::{
-        LAY_OUT_FIRST, OperationRequest, OperationTarget, ResourceOperation,
-        ResourceOperationStart, ResourceOperations, asks_to_lay_out_first, host_lays_out_first,
-        lay_out_first, laying_out_first, local_resource_operation_handlers,
-        poll_resource_operation, resource_operation_handlers, start_in_children, start_operation,
+        LAY_OUT_FIRST, OperationRequest, ResourceOperation, ResourceOperationStart,
+        ResourceOperations, asks_to_lay_out_first, host_lays_out_first, lay_out_first,
+        laying_out_first, local_resource_operation_handlers, poll_resource_operation,
+        resource_operation_handlers, start_in_children, start_operation,
     };
 }
 mod app_core;
@@ -553,12 +555,15 @@ pub use widget::{RouteError, RouteHandle, Router};
 pub use history_mode::{
     HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
 };
+pub use widget::HistoryEntryId;
+#[cfg(feature = "model")]
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
+#[cfg(feature = "model")]
 pub use widget::history::{
     AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
-    HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
-    hue_to_rgb,
+    HistoryEntry, HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
 };
+#[cfg(feature = "model")]
 pub use widget::history_group::{
     FOLD_ACTION_FACET, FOLD_ITEM_FACET, GroupNameRequest, GroupingConfig, HistoryGroup,
     MAX_GROUP_DEPTH, NamedRange, OpFamily, group_entries,
@@ -586,6 +591,7 @@ pub use tilo_presence_types::{
     Availability, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
     PresenceVisibility, StatusOrigin, StatusSharing,
 };
+#[cfg(feature = "model")]
 pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
@@ -640,6 +646,7 @@ pub use permissions::{
 pub use permissions::{Acting, ActionKind, Grantee, MemberId};
 pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange, human_label};
 pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
+#[cfg(feature = "model")]
 pub use widget::ViewPresence;
 
 #[cfg(feature = "model")]

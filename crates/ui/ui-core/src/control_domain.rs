@@ -1105,3 +1105,27 @@ mod lifecycle_tests {
         }
     }
 }
+
+/// The life of what owns a control domain (a mounted component, an open record): while it is
+/// active its controls run, and dropping it closes the domain.
+pub(crate) struct ResourceOwnerLifetime {
+    pub(crate) active: std::cell::Cell<bool>,
+    pub(crate) id: uuid::Uuid,
+    pub(crate) control_domain: ControlDomain,
+}
+
+impl ResourceOwnerLifetime {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(Self {
+            active: std::cell::Cell::new(true),
+            id: uuid::Uuid::new_v4(),
+            control_domain: ControlDomain::new(),
+        })
+    }
+}
+
+impl Drop for ResourceOwnerLifetime {
+    fn drop(&mut self) {
+        self.control_domain.close();
+    }
+}

@@ -1,6 +1,6 @@
 //! Drag-to-arrange canvas for the Displays pane.
 
-pub use settings_store::display_placement as placement;
+pub mod placement;
 use tilo_sort::CompactSort as _;
 
 use crate as ui;

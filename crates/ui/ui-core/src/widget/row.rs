@@ -139,6 +139,7 @@ impl Row {
 
 impl Widget for Row {
     crate::provides!(
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );

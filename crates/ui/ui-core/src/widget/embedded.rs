@@ -446,6 +446,7 @@ impl<W: Widget + 'static> Embedded<W> {
 
     /// Where the person is in the child (a caret, a selection), for the owner to publish to
     /// members as its own ([`crate::presence::capability::PublishesPresence`]).
+    #[cfg(feature = "model")]
     pub fn presence_payload(
         &self,
     ) -> Option<(
@@ -457,6 +458,7 @@ impl<W: Widget + 'static> Embedded<W> {
 
     /// What the person has selected in the child, for asking an agent about it
     /// ([`crate::presence::capability::PublishesPresence::shared_selection`]).
+    #[cfg(feature = "model")]
     pub fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
         crate::shared_selection::selection_of(&*self.widget)
     }

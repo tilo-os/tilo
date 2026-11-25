@@ -49,10 +49,10 @@ impl Embed {
         if value.is_empty() {
             return None;
         }
+        if let Some(member) = MemberId::of_mark_value(value) {
+            return Some(Self::Member(member));
+        }
         if value.starts_with('{') {
-            if let Ok(member) = serde_json::from_str(value) {
-                return Some(Self::Member(member));
-            }
             return resource_of_json(value).map(Self::Resource);
         }
         None
@@ -64,7 +64,7 @@ impl Embed {
     #[must_use]
     pub fn mark_value(&self) -> String {
         match self {
-            Self::Member(member) => serde_json::to_string(member).unwrap_or_default(),
+            Self::Member(member) => member.mark_value(),
             Self::Resource(at) => {
                 let mut fields = Map::new();
                 fields.insert("app".into(), at.app.clone().into());

@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use crate::hosted_window::HostedWindow;
+#[cfg(feature = "model")]
 use crate::widget::WindowGroup;
 use crate::window_toolbar::{
     MAX_DECLARED_ACTIONS, ToolbarAction, ToolbarEvent, WindowOffer, WindowToolbar,
@@ -241,6 +242,7 @@ impl WindowParts {
 
     /// Every group shows its tabs' declared parts, and what the person did with them is
     /// queued for the apps.
+    #[cfg(feature = "model")]
     pub fn sync_groups<'a>(&mut self, groups: impl IntoIterator<Item = &'a mut WindowGroup>) {
         let cleared = std::mem::take(&mut self.cleared);
         let offers_cleared = std::mem::take(&mut self.offers_cleared);
@@ -287,6 +289,7 @@ impl WindowParts {
     /// every one of them by tab: show the parts each declared in its tab's bar, with the
     /// notice and reactions its window shows, run its asks to edit its location or open
     /// its search, and hand it what the person did with its parts.
+    #[cfg(feature = "model")]
     pub fn sync_hosted<'a>(
         &mut self,
         windows: &[(TabId, HostedWindow)],

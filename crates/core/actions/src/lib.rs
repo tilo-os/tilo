@@ -320,11 +320,15 @@ pub mod interaction;
 pub mod key;
 pub mod noun;
 pub mod offload;
+pub mod opened_by;
 pub mod outcome;
+pub mod outside_document;
 pub mod params;
 pub mod prefill;
 pub mod protocol;
 pub mod published;
+pub mod reaction;
+mod refusal;
 pub mod registry;
 pub mod remote;
 pub mod resource;
@@ -405,6 +409,7 @@ pub use params::{
     shaped_by_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
+pub use refusal::Refusal;
 pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,

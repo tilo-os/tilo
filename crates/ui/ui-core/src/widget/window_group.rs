@@ -2757,6 +2757,7 @@ impl crate::bound_dispatch::BoundWidget for WindowGroup {
 impl Widget for WindowGroup {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
+        #[cfg(feature = "model")]
         dyn crate::widget::presence_topology::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
@@ -3633,6 +3634,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::widget::presence_topology::CollaborationTopology for WindowGroup {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts

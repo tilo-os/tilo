@@ -193,12 +193,12 @@ pub fn document_action_result(
 
 /// Whether `operation` may be published on `on` by a widget below its component's root: views and
 /// effects may, a document mutation never does.
-pub use tilo_resource::share::admits_outside_document;
+pub use tilo_actions::outside_document::admits_outside_document;
 /// `resource` without document actions, at any depth: what a widget below its component's root may
 /// publish.
-pub use tilo_resource::share::outside_document;
+pub use tilo_actions::outside_document::outside_document;
 /// `resource`, resolved by id below its component's root, without document actions.
-pub use tilo_resource::share::resolved_outside_document;
+pub use tilo_actions::outside_document::resolved_outside_document;
 
 pub fn resources(
     widget: &(impl Widget + ?Sized),

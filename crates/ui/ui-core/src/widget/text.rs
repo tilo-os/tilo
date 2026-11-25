@@ -1,5 +1,7 @@
 use crate::i18n::ArgValue;
 use crate::i18n::widget_text;
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
     FIGURE_TAGS, FontChoice, HangingPunctuation, Hyphenation, NumericStyle, OpenTypeTag,
@@ -11,7 +13,6 @@ use crate::tokens::{TextRole, Typography};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use ::collaboration::permissions::PermissionScope;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point};
@@ -154,6 +155,7 @@ pub struct Text {
     presence_path: Vec<PathSegment>,
     /// The field and the item whose text it shows ([`Self::edits`]).
     edits: Option<(String, String)>,
+    #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
     face: crate::widget::CachedPaint,
     drawn_color: Option<vello::peniko::Color>,
@@ -210,6 +212,7 @@ impl Text {
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             edits: None,
+            #[cfg(feature = "model")]
             permission_scope: None,
             face: crate::widget::CachedPaint::default(),
             drawn_color: None,
@@ -831,6 +834,7 @@ impl Text {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -849,6 +853,7 @@ impl Widget for Text {
     }
 
     crate::provides!(
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
@@ -1239,6 +1244,7 @@ impl crate::presence::capability::PublishesPresence for Text {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::widget::permission::PermissionGuarded for Text {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
@@ -2219,7 +2225,7 @@ mod tests {
                     (700, 300),
                     Theme::dark(),
                     crate::font_catalog::fixture_renderer(),
-                    ::collaboration::permissions::MemberId::person("text-widget-locale-fixture"),
+                    tilo_action_policy::MemberId::person("text-widget-locale-fixture"),
                 );
 
                 let before = driver.inspection();

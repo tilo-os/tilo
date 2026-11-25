@@ -4,12 +4,13 @@ use crate::time::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};
 
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use ::collaboration::permissions::PermissionScope;
 
 #[path = "progress_bar_component.rs"]
 mod component;
@@ -180,6 +181,7 @@ pub struct ProgressBar {
     drawn_step: Option<u64>,
     stepped: bool,
     presence_path: Vec<PathSegment>,
+    #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
     /// Accessible label (e.g. "Uploading").
     label: Option<String>,
@@ -218,6 +220,7 @@ impl ProgressBar {
             drawn_step: None,
             stepped: false,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
             label: None,
             label_shown: false,
@@ -243,6 +246,7 @@ impl ProgressBar {
             drawn_step: None,
             stepped: false,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
             label: None,
             label_shown: false,
@@ -346,6 +350,7 @@ impl ProgressBar {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -376,6 +381,7 @@ impl Widget for ProgressBar {
     crate::described!();
 
     crate::provides!(
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
@@ -559,6 +565,7 @@ impl crate::presence::capability::PublishesPresence for ProgressBar {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::widget::permission::PermissionGuarded for ProgressBar {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()

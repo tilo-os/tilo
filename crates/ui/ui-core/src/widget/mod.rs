@@ -27,7 +27,6 @@ use crate::draw::{DrawCtx, DrawEnv};
 use crate::presence::PresenceKey;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use ::collaboration::permissions::PermissionScope;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -573,9 +572,7 @@ draw_child_of_dyn!(Widget, AppWidget,);
 /// publishes the geometry for them.
 pub fn draw_over(widget: &dyn Widget, ctx: &mut DrawCtx<'_>) {
     let rect = widget.get_rect();
-    if let Some(scope) = crate::widget::permission::permission_scope(widget)
-        && !ctx.env.permits(&scope)
-    {
+    if !ctx.env.permits_widget(widget) {
         ctx.scene.fill(
             vello::peniko::Fill::NonZero,
             ctx.transform,
@@ -1198,6 +1195,7 @@ impl StructureChange {
 /// Optional cross-device continuation capability for an app root, deliberately separate
 /// from [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
 /// [`Widget::provide`] without weakening their UI integration.
+#[cfg(feature = "model")]
 pub trait Continuable {
     fn continuation_metadata(
         &self,
@@ -1217,6 +1215,7 @@ pub trait Continuable {
 
 /// Optional session collaboration capability for widgets that own live broker-backed
 /// activity.
+#[cfg(feature = "model")]
 pub trait Collaborative {
     fn take_collab_requests(&mut self) -> Vec<::collaboration::CollabRequest> {
         Vec::new()
@@ -1654,6 +1653,7 @@ impl EventCtx<'_> {
 /// One remote presence's live presence (caret/selection), published by a multi-
 /// presence widget under that presence's identity.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg(feature = "model")]
 pub struct ViewPresence {
     pub presence: tilo_actions::PresenceId,
     pub label: Option<String>,
@@ -1966,6 +1966,7 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
 }
 
 /// Drain collaboration capabilities throughout a retained widget tree.
+#[cfg(feature = "model")]
 pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaboration::CollabRequest> {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return Vec::new();
@@ -1980,6 +1981,7 @@ pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaborati
 
 /// Deliver one session event to each explicit collaboration capability once.
 /// Bound callback context remains entered for the complete descendant walk.
+#[cfg(feature = "model")]
 pub(crate) fn handle_collab_event(widget: &mut dyn Widget, event: &::collaboration::CollabEvent) {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return;
@@ -2094,14 +2096,18 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+#[cfg(feature = "model")]
 pub mod action_proposal;
+#[cfg(feature = "model")]
 pub use action_proposal::{
     ActionProposal, ActionProposalView, DiffLine, DiffTag, ProposalDecision, ProposalTarget,
 };
 pub mod binding;
 pub mod capability;
 mod content_kind;
+#[cfg(feature = "model")]
 pub mod permission;
+#[cfg(feature = "model")]
 pub mod presence_topology;
 pub mod resources;
 pub mod search_request;
@@ -2465,7 +2471,10 @@ mod data_table_component;
 pub use data_table_component::{
     DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,
 };
+// The shell's window groups and strips, laid out over the desktop model's geometry.
+#[cfg(feature = "model")]
 mod window_group;
+#[cfg(feature = "model")]
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
@@ -2474,12 +2483,16 @@ pub use window_group::{
 pub mod cursor;
 pub mod edge_resize;
 pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
+#[cfg(feature = "model")]
 mod resize_handle;
+#[cfg(feature = "model")]
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
 mod overflow_button;
 pub(crate) use overflow_button::give_way;
 pub use overflow_button::{OverflowButton, plan as plan_overflow};
+#[cfg(feature = "model")]
 mod group_row;
+#[cfg(feature = "model")]
 pub use group_row::{
     CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_MARGIN,
     FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan,
@@ -2502,7 +2515,9 @@ pub mod page_preview;
 pub use page_preview::{PagePreview, PagePreviewProps};
 pub mod spinner;
 pub use spinner::{Spinner, SpinnerProps};
+#[cfg(feature = "model")]
 pub mod program_step;
+#[cfg(feature = "model")]
 pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
@@ -2887,23 +2902,35 @@ pub use screenshot_markup::{
 };
 pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
+// History's views: the timeline of a resource's changes, read from its history.
+#[cfg(feature = "model")]
 pub mod activity_timeline;
+#[cfg(feature = "model")]
 mod activity_timeline_component;
+#[cfg(feature = "model")]
 pub mod history;
+#[cfg(feature = "model")]
 pub mod history_face;
+#[cfg(feature = "model")]
 pub mod history_group;
 pub mod name_field;
+#[cfg(feature = "model")]
 pub use activity_timeline::{ActivityTimeline, RowParts};
+#[cfg(feature = "model")]
 pub use activity_timeline_component::{
     ActivityArtifact, ActivityEntryProps, ActivityTimelineProps, DescribedActivityTimeline,
 };
+#[cfg(feature = "model")]
 pub use collab_types::ArtifactKind;
+#[cfg(feature = "model")]
 pub use history::{
     AuthorRelation, EntryKind, EntryTarget, HistoryAttribution, HistoryAuthor,
-    HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
-    format_relative_time, hue_to_rgb,
+    HistoryClassification, HistoryEntry, HistoryFilter, RedactionDisplay, format_relative_time,
+    hue_to_rgb,
 };
+#[cfg(feature = "model")]
 pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
+pub use tilo_resource_plain::HistoryEntryId;
 
 pub mod qr;
 mod qr_component;

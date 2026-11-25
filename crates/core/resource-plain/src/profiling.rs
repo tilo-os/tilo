@@ -150,7 +150,7 @@ mod recorder {
                 let Some(capture) = records.as_mut() else {
                     return;
                 };
-                let elapsed_ns = start.elapsed().as_nanos();
+                let elapsed_ns = tilo_clock::now().duration_since(start).as_nanos();
                 if let Some(row) = capture.rows.iter_mut().find(|row| row.phase == name) {
                     match (
                         row.elapsed_ns.checked_add(elapsed_ns),

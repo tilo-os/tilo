@@ -63,7 +63,7 @@ tilo_test_env::scenario! {
         let _ = painted(&mut bar, &mut tr, &Theme::light());
         assert_eq!(bar.fresh_draws, drawn + 2, "another theme");
         let mut presence = PresenceCtx::default();
-        presence.register_peer_at(::collaboration::permissions::MemberId::person("peer"), &tab_presence_key(2));
+        presence.register_peer_at(tilo_action_policy::MemberId::person("peer"), &tab_presence_key(2));
         let mut scene = Scene::new();
         bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &Theme::light(), presence.draw_env()));
         assert_eq!(bar.fresh_draws, drawn + 3, "someone came to a tab");
@@ -90,7 +90,7 @@ tilo_test_env::scenario! {
         assert!(!clean(&bar, &presence), "an undrawn bar repaints");
         draw(&mut bar, &mut tr, &presence);
         assert!(clean(&bar, &presence), "a bar that drew is clean");
-        presence.register_peer_at(::collaboration::permissions::MemberId::person("peer"), &tab_presence_key(2));
+        presence.register_peer_at(tilo_action_policy::MemberId::person("peer"), &tab_presence_key(2));
         assert!(!clean(&bar, &presence), "someone came to a tab");
         draw(&mut bar, &mut tr, &presence);
         assert!(clean(&bar, &presence), "and is clean drawn with them");

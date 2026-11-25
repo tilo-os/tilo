@@ -2,6 +2,8 @@ use crate::component::Person;
 use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -13,7 +15,6 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
 use crate::widget::{AppModel, ModelPath, Tone};
-use ::collaboration::permissions::PermissionScope;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -91,6 +92,7 @@ pub struct Button {
     /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
     /// through the published action API.
     presence_path: Vec<PathSegment>,
+    #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
     enabled: bool,
     enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
@@ -196,6 +198,7 @@ impl Button {
             on_click: None,
             action: None,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
             enabled: true,
             enabled_binding: None,
@@ -221,6 +224,7 @@ impl Button {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -2138,6 +2142,7 @@ impl Button {
 impl Widget for Button {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence,
     );
@@ -2702,6 +2707,7 @@ impl crate::presence::capability::PublishesPresence for Button {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::widget::permission::PermissionGuarded for Button {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()

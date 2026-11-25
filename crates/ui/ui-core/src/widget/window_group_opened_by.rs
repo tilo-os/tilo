@@ -114,7 +114,7 @@ impl super::WindowGroup {
     pub fn set_tab_opened_by(
         &mut self,
         id: u64,
-        run: Option<tilo_desktop_model::ownership::OpenedBy>,
+        run: Option<tilo_actions::opened_by::OpenedBy>,
     ) -> bool {
         let changed = self.bar.set_opened_by(id, run);
         // The mark comes or goes as a stop of the keyboard order, which a layout built whole reads.

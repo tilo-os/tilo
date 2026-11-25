@@ -65,7 +65,6 @@ pub mod dictation;
 pub mod display_control;
 pub mod display_identify;
 pub mod display_mode;
-pub mod display_placement;
 pub mod display_scale;
 pub mod display_tools;
 pub mod display_tuning;

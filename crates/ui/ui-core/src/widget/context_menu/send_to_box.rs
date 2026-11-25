@@ -28,7 +28,6 @@ impl ContextMenu {
         anchor: Option<Rect>,
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],
-        carried: &[tilo_reference::Attached],
         viewport: Option<Rect>,
     ) {
         self.set_about(about);
@@ -40,8 +39,19 @@ impl ContextMenu {
         // asker named, else a new agent — so the person's next keystroke is
         // the message's, after the sentence it may carry.
         self.send_to.open(draft, to);
-        self.send_to.carry(carried);
         self.send_to.stand_at_rest();
+        self.send_to.place(anchor, self.viewport);
+        self.dirty = true;
+    }
+
+    /// Carry `files` in the box [`Self::open_window_box`] stood, each a chip
+    /// after what it is about.
+    #[cfg(feature = "model")]
+    pub(crate) fn carry_in_window_box(&mut self, files: &[tilo_reference::Attached]) {
+        let Some(anchor) = self.alone else {
+            return;
+        };
+        self.send_to.carry(files);
         self.send_to.place(anchor, self.viewport);
         self.dirty = true;
     }

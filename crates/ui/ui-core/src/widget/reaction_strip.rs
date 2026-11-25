@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use tilo_resource::{ReactionGroup, Reactor};
+use tilo_actions::reaction::{ReactionGroup, Reactor};
 use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
@@ -17,7 +17,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::{EffectiveMotion, MotionSource, TextRole};
 use crate::widget::ChipStyle;
-use tilo_resource::MemberId;
+use tilo_action_policy::MemberId;
 
 #[path = "reaction_strip_widget.rs"]
 mod retained;

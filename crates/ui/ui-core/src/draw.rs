@@ -3,11 +3,12 @@
 //! workspace: the host paints members' carets, selections and other marks over
 //! the widgets through [`WidgetOverlay`].
 
+use crate::permissions::WidgetAuthority;
 use crate::presence::PresenceKey;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use ::collaboration::permissions::{MemberId, PermissionContext, PermissionScope};
 use std::collections::HashMap;
+use tilo_action_policy::MemberId;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -47,8 +48,8 @@ pub trait WidgetOverlay {
 pub struct DrawEnv<'a> {
     /// The visibility window in scene pixels, for spatial culling.
     pub viewport: Option<Rect>,
-    /// The authority the subtree being drawn holds; `None` checks nothing.
-    pub permissions: Option<PermissionContext>,
+    /// The authority the subtree being drawn answers to; `None` checks nothing.
+    pub permissions: Option<std::rc::Rc<dyn WidgetAuthority>>,
     /// [`crate::permissions::shared_revision`] when that authority was lent: a
     /// retained drawing made under another revision is stale.
     pub paint_permissions: u64,
@@ -93,12 +94,12 @@ impl DrawEnv<'_> {
         self.viewport = previous;
     }
 
-    /// Whether the authority of the subtree being drawn covers `scope`.
-    /// Outside any scoped authority everything is allowed.
-    pub fn permits(&self, scope: &PermissionScope) -> bool {
+    /// Whether the authority of the subtree being drawn lets the person act on what `widget`
+    /// guards. Outside any authority everything is allowed.
+    pub fn permits_widget(&self, widget: &dyn crate::widget::Widget) -> bool {
         self.permissions
             .as_ref()
-            .is_none_or(|permissions| permissions.check(scope))
+            .is_none_or(|authority| authority.permits_widget(widget))
     }
 }
 

@@ -1,9 +1,10 @@
+#[cfg(feature = "model")]
+use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::theme::Theme;
 use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use ::collaboration::permissions::PermissionScope;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -35,6 +36,7 @@ pub struct Container {
     focus_trap: bool,
     fill_height: bool,
     presence_path: Vec<PathSegment>,
+    #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
     no_padding: bool,
     padding_override: Option<f32>,
@@ -83,6 +85,7 @@ impl Container {
             focus_trap: false,
             fill_height: false,
             presence_path: Vec::new(),
+            #[cfg(feature = "model")]
             permission_scope: None,
             no_padding: false,
             padding_override: None,
@@ -398,6 +401,7 @@ impl Container {
     }
 
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -407,6 +411,7 @@ impl Container {
 impl Widget for Container {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
@@ -686,10 +691,7 @@ impl Widget for Container {
         // Bound containers paint their own hover and press surface. Preserve
         // its conservative bounds; a passive layout wrapper only carries
         // damage from its child, including any scrollbar animation.
-        if self.activation.is_bound()
-            || self.permission_scope.is_some()
-            || !self.presence_path.is_empty()
-        {
+        if self.activation.is_bound() || self.guarded() || !self.presence_path.is_empty() {
             if self.needs_redraw() || self.needs_animation_frame() {
                 regions.push(self.rect);
             }
@@ -754,6 +756,25 @@ impl crate::presence::capability::PublishesPresence for Container {
     }
 }
 
+impl Container {
+    /// Whether a permission scope guards this container, so its denial scrim covers all of it.
+    #[cfg(feature = "model")]
+    fn guarded(&self) -> bool {
+        self.permission_scope.is_some()
+    }
+
+    /// Without Tilo's model no permission scope guards a widget.
+    #[cfg(not(feature = "model"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the model build reads the container's scope"
+    )]
+    const fn guarded(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "model")]
 impl crate::widget::permission::PermissionGuarded for Container {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()

@@ -173,6 +173,7 @@ impl Column {
 impl Widget for Column {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
+        #[cfg(feature = "model")]
         dyn crate::widget::permission::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );

@@ -29,7 +29,7 @@ fn press_named(input: &mut TextInput, key: NamedKey) -> bool {
 
 fn ada() -> Vec<MentionCandidate> {
     vec![MentionCandidate::new(
-        ::collaboration::permissions::MemberId::person("u_ada"),
+        tilo_action_policy::MemberId::person("u_ada"),
         "Ada Lovelace",
         crate::tokens::PresenceHue::of_identity("u_ada"),
     )]

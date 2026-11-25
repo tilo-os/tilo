@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use super::Widget;
 use super::capability::{capability, capability_mut};
 use automerge::{AutoCommit, ObjId};
-use tilo_resource::Refusal;
+use tilo_actions::Refusal;
 
 /// Result of admitting an effect/view operation into a widget.
 #[derive(Clone, Debug, PartialEq)]
@@ -87,11 +87,13 @@ pub struct OperationRequest<'a> {
 
 /// Inert routing facts captured from the actual resolved record owner.
 /// These are neither a certificate nor permission to execute a host job.
+#[cfg(feature = "model")]
 #[derive(Clone, Debug)]
 pub struct OperationTarget {
     route: ::collaboration::RouteSpec,
     address: tilo_actions::ActionAddress,
 }
+#[cfg(feature = "model")]
 impl OperationTarget {
     pub(crate) fn new(
         route: ::collaboration::RouteSpec,
@@ -150,6 +152,7 @@ impl OperationTarget {
 #[derive(Clone, Copy)]
 pub struct ResourceOperation<'a> {
     request: OperationRequest<'a>,
+    #[cfg(feature = "model")]
     target: Option<&'a OperationTarget>,
     /// The resource the operation was resolved against: the app's own, a
     /// child, or a live row.
@@ -180,11 +183,13 @@ impl<'a> ResourceOperation<'a> {
                 type_id,
                 payload,
             },
+            #[cfg(feature = "model")]
             target: None,
             resource: None,
         }
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn with_target(mut self, target: Option<&'a OperationTarget>) -> Self {
         self.target = target;
         self
@@ -195,6 +200,7 @@ impl<'a> ResourceOperation<'a> {
         self
     }
 
+    #[cfg(feature = "model")]
     pub fn target(&self) -> Option<&OperationTarget> {
         self.target
     }
@@ -395,6 +401,7 @@ pub(crate) fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) 
         .iter()
         .map(|handler| (*handler).to_string())
         .collect::<HashSet<_>>();
+    #[cfg(feature = "model")]
     handlers.extend(
         crate::semantic_document_read::readers_of(widget)
             .iter()

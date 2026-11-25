@@ -6,14 +6,12 @@ use crate::{
     resource::{DocumentCheckout, ResourceStore},
 };
 use automerge::{AutoCommit, transaction::Transactable};
-use std::{
-    cell::Cell,
-    rc::{Rc, Weak},
-};
+use std::rc::{Rc, Weak};
 
 #[cfg(test)]
 thread_local! {
-    pub(crate) static OWNED_DOCUMENT_CLONES: Cell<usize> = const { Cell::new(0) };
+    pub(crate) static OWNED_DOCUMENT_CLONES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 pub(crate) enum OwnedDocumentPublication {
@@ -29,20 +27,7 @@ pub(crate) enum OwnedDocumentPublication {
     },
 }
 
-pub(crate) struct ResourceOwnerLifetime {
-    pub(crate) active: Cell<bool>,
-    id: uuid::Uuid,
-    pub(crate) control_domain: crate::ControlDomain,
-}
-impl ResourceOwnerLifetime {
-    pub(crate) fn new() -> Rc<Self> {
-        Rc::new(Self {
-            active: Cell::new(true),
-            id: uuid::Uuid::new_v4(),
-            control_domain: crate::control_domain::ControlDomain::new(),
-        })
-    }
-}
+pub(crate) use crate::control_domain::ResourceOwnerLifetime;
 
 /// Captured by the actual mounted owner; callers cannot manufacture ownership.
 #[derive(Clone)]
@@ -545,12 +530,6 @@ impl HistoryRun<'_> {
             Some(self.author.clone()),
             instance,
         ))
-    }
-}
-
-impl Drop for ResourceOwnerLifetime {
-    fn drop(&mut self) {
-        self.control_domain.close();
     }
 }
 

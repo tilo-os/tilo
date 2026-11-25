@@ -296,7 +296,7 @@ fn face_spec(face: &PresenceFaceProps) -> Option<TabFaceSpec> {
         agent: !who
             .identity
             .member_id()
-            .is_some_and(::collaboration::permissions::MemberId::is_person),
+            .is_some_and(tilo_action_policy::MemberId::is_person),
     })
 }
 
