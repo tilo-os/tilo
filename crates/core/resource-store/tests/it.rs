@@ -2702,10 +2702,6 @@ mod store {
     /// write merely naming the verb, one that writes a field of the store's own, one touching
     /// another record, or one naming no verb is refused.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one verb's admission and every write it refuses, told together"
-    )]
     fn a_branch_steps_the_copied_history_and_writes_nothing_else() {
         use automerge::transaction::Transactable as _;
         use tilo_resource_store::{BRANCH_VERB, MOVE_VERB, Refusal};
@@ -2713,8 +2709,8 @@ mod store {
         there.declare(Schema::from_surface(&super::tracker_surface()));
         let anyone = |_: &Proposal<'_>| true;
         // The step the fork's writer commits, read back as the store reads a change.
-        let context = collab_types::document::identity::branch_step("c1", "Comment", "Comment");
-        let message = context.change_message().expect("an entry");
+        let step = collab_types::document::identity::branch_step("c1", "Comment", "Comment");
+        let message = step.change_message().expect("an entry");
         let entered = Stamp::of_message(&message).expect("the branch's step");
         assert_eq!(entered.verb, BRANCH_VERB);
         let empty = || Resource {
@@ -2769,9 +2765,7 @@ mod store {
                     .unwrap();
                 two.put(&held, "k", "Comment").unwrap();
             }
-            two.commit_with(
-                automerge::transaction::CommitOptions::default().with_message(message.clone()),
-            );
+            two.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
             let pair = Written {
                 doc: "*/Comment#7".to_owned(),
                 readers: MEMBERS.to_owned(),
