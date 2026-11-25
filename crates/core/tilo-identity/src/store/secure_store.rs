@@ -306,6 +306,9 @@ impl SealedFileProvider {
     /// # Errors
     /// The directory names no account, or its key cannot be read or made.
     pub fn for_identity_dir(identity_dir: &Path) -> io::Result<Self> {
+        // The account's own sealing secret lives in the directory, which a restore into a fresh
+        // account store reaches before anything else has made it.
+        tilo_files::native::private::directory(identity_dir)?;
         Ok(Self {
             files: BrokerFileProvider::new(identity_dir),
             key: account_seal_key(identity_dir)?,
@@ -371,6 +374,18 @@ pub fn account_dir_uid(identity_dir: &Path) -> Option<u32> {
         return None;
     }
     identity_dir.file_name()?.to_str()?.parse().ok()
+}
+
+/// The provider an identity in `identity_dir` keeps its private share in when this session's
+/// secrets are files: sealed with a key of the account where the directory is kept apart for
+/// one, and its private file alone where it is not.
+pub(crate) fn file_provider(identity_dir: &Path) -> io::Result<Box<dyn SecretProvider>> {
+    if account_dir_uid(identity_dir).is_some() {
+        return Ok(Box::new(SealedFileProvider::for_identity_dir(
+            identity_dir,
+        )?));
+    }
+    Ok(Box::new(BrokerFileProvider::new(identity_dir)))
 }
 
 /// The key the account `identity_dir` belongs to seals its shares with: the account's uid, a

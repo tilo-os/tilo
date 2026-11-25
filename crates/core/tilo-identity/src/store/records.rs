@@ -29,6 +29,7 @@ pub use secure_store::{
     BrokerFileProvider, FILE_SECRETS_ENV, SEALED_FILE_BACKEND, SealedFileProvider, SecretProvider,
     account_dir_uid, file_secrets_requested,
 };
+pub(crate) use secure_store::file_provider;
 pub use tilo_identity_client::PortableBackupInfo;
 
 pub use ondisk::{IdentityRecord, SerializableIdentity};

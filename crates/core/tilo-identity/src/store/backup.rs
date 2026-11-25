@@ -144,7 +144,8 @@ pub fn import_portable_backup_matching(
 }
 
 /// Restore a portable backup through an explicit provider selected by trusted
-/// host code (for example, a hardware-backed identity provider).
+/// host code (for example, a hardware-backed identity provider), only when the
+/// authenticated envelope contains `expected_key`.
 ///
 /// Like [`import_portable_backup`], this never returns decrypted record or key
 /// bytes. The provider is only used after envelope authentication and
@@ -154,6 +155,7 @@ pub fn import_portable_backup_with_provider(
     passphrase: &[u8],
     identity_dir: impl AsRef<Path>,
     id: &str,
+    expected_key: [u8; 32],
     provider: &dyn super::SecretProvider,
 ) -> io::Result<PathBuf> {
     import_portable_backup_inner(
@@ -161,7 +163,7 @@ pub fn import_portable_backup_with_provider(
         passphrase,
         identity_dir.as_ref(),
         id,
-        None,
+        Some(expected_key),
         Some(provider),
     )
 }
@@ -769,7 +771,9 @@ mod tests {
             let backup_dir = tempfile::tempdir().expect("backup dir");
             let backup = backup_dir.path().join("ada.tilo-identity-backup");
             let passphrase = b"a sufficient passphrase";
-            export_portable_backup(&identity, &backup, passphrase).expect("export");
+            let expected = export_portable_backup(&identity, &backup, passphrase)
+                .expect("export")
+                .group_public_key;
 
             let restored = tempfile::tempdir().expect("restore");
             let error = import_portable_backup_with_provider(
@@ -777,6 +781,7 @@ mod tests {
                 passphrase,
                 restored.path(),
                 "restored",
+                expected,
                 &FailingProvider,
             )
             .expect_err("provider failure must abort restore");

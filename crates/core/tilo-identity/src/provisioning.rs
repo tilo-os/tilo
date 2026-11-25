@@ -620,7 +620,7 @@ pub fn restore_from_backup(
     storage: IdentityStorage,
 ) -> io::Result<crate::store::IdentityProfile> {
     let profile = crate::store::IdentityRegistryStore::at(identity_dir)
-        .import_portable(source, passphrase)?;
+        .import_portable(source, passphrase, storage)?;
     let runtime_id = profile
         .record_path
         .file_stem()
@@ -1647,25 +1647,11 @@ fn import_identity_record(
 ) -> io::Result<PathBuf> {
     match storage {
         IdentityStorage::Files => {
-            let provider = file_provider(identity_dir)?;
+            let provider = crate::store::file_provider(identity_dir)?;
             crate::store::import_identity_with_provider(identity_dir, id, bytes, provider.as_ref())
         }
         IdentityStorage::Platform => crate::store::import_identity(identity_dir, id, bytes),
     }
-}
-
-/// The file provider an identity in `identity_dir` keeps its private share in: sealed with a key
-/// of the account where the directory is kept apart for one, and its private file alone where it
-/// is not.
-fn file_provider(identity_dir: &Path) -> io::Result<Box<dyn crate::store::SecretProvider>> {
-    if crate::store::account_dir_uid(identity_dir).is_some() {
-        return Ok(Box::new(
-            crate::store::SealedFileProvider::for_identity_dir(identity_dir)?,
-        ));
-    }
-    Ok(Box::new(crate::store::BrokerFileProvider::new(
-        identity_dir,
-    )))
 }
 
 fn protect_identity_record(identity_dir: &Path, storage: IdentityStorage) -> io::Result<()> {
@@ -1687,7 +1673,7 @@ fn protect_identity_record_at(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "identity has no valid id"))?;
     match storage {
         IdentityStorage::Files => {
-            let provider = file_provider(identity_dir)?;
+            let provider = crate::store::file_provider(identity_dir)?;
             crate::store::secure_identity_with_provider(identity_dir, id, provider.as_ref())?;
         }
         IdentityStorage::Platform => {
@@ -1793,6 +1779,91 @@ mod recovery_words_tests {
         assert!(crate::store::recovery_words_error(&wrong).is_some());
         assert_eq!(read_device_cert(&source_paths.device_cert)?, original);
         Ok(())
+    }
+
+    fn stored_backend(record: &Path) -> Result<String, Box<dyn std::error::Error>> {
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(record)?)?;
+        Ok(value["secret_ref"]["backend"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned())
+    }
+
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the helper asserts what it restored before it returns"
+    )]
+    fn restored_account_store(
+        restore: impl FnOnce(&Path, &IdentityPaths) -> io::Result<crate::store::IdentityProfile>,
+        paths: &IdentityPaths,
+        user: [u8; 32],
+        founded: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use tilo_device_identity::persist::read_device_cert;
+
+        let target = tempfile::tempdir()?;
+        let identity = crate::store::account_identity_dir(&target.path().join("identity"));
+        let profile = restore(&identity, paths)?;
+        assert_eq!(profile.user_public_key, user);
+        // The root opens with the same provider the founded record used.
+        crate::store::load_from_path(profile.record_path.clone())?;
+        assert_eq!(stored_backend(&profile.record_path)?, founded);
+        let cert = read_device_cert(&paths.device_cert)?;
+        assert_eq!(cert.user_public_key, user);
+        let now_ns = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos(),
+        )?;
+        verify_collaboration_identity(&identity, paths, now_ns)?;
+        Ok(())
+    }
+
+    /// The CLI's `tilo login --recovery-key` and the daemon's `devices#restore` both restore into
+    /// the account's store, whose records are sealed with that account's key. The restored record
+    /// must be kept exactly as a founded person's is, so provisioning has nothing to re-secure.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the test asserts what it restored before it returns"
+    )]
+    fn restoring_into_an_account_store_keeps_the_provider_a_founded_person_has()
+    -> Result<(), Box<dyn std::error::Error>> {
+        crate::sources::test_trust::install();
+        let storage = IdentityStorage::Files;
+        // The sealing provider takes the device key the daemon took, from the profile's device
+        // root: keep this test's under one of its own.
+        let device_root = tempfile::tempdir()?;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", device_root.path());
+        let paths = collaboration_identity_paths();
+        let _taken = device_key_taken_as_daemon(&paths)?;
+
+        let source = tempfile::tempdir()?;
+        let founded_identity = crate::store::account_identity_dir(&source.path().join("identity"));
+        let user = create_person(&founded_identity, &paths, "Ada", "Original", storage)?;
+        let record = founded_identity.join(PRIMARY_IDENTITY_FILE);
+        let words = crate::store::recovery_words(&record)?;
+        let backup = source.path().join("ada.tilo-identity-backup");
+        let passphrase = b"correct horse battery staple";
+        crate::store::export_portable_backup(&record, &backup, passphrase)?;
+        let founded = stored_backend(&record)?;
+        assert_eq!(founded, crate::store::SEALED_FILE_BACKEND);
+
+        restored_account_store(
+            |identity, paths| {
+                restore_from_recovery_words(identity, paths, &words, Some("Restored"), storage)
+            },
+            &paths,
+            user,
+            &founded,
+        )?;
+        restored_account_store(
+            |identity, paths| restore_from_backup(identity, paths, &backup, passphrase, storage),
+            &paths,
+            user,
+            &founded,
+        )
     }
 }
 

@@ -412,8 +412,15 @@ impl IdentityRegistryStore {
     ///
     /// Decryption remains inside `tilo_identity::store`; this registry only sees
     /// the public fingerprint and the final secured metadata path. Re-importing
-    /// a backup already present on this login is idempotent.
-    pub fn import_portable(&self, source: &Path, passphrase: &[u8]) -> io::Result<IdentityProfile> {
+    /// a backup already present on this login is idempotent. The record is written
+    /// with the provider `storage` keeps identity secrets in, so provisioning has
+    /// nothing to re-secure it with.
+    pub fn import_portable(
+        &self,
+        source: &Path,
+        passphrase: &[u8],
+        storage: IdentityStorage,
+    ) -> io::Result<IdentityProfile> {
         let info = crate::store::verify_portable_backup(source, passphrase)?;
         let id = hex::encode(info.group_public_key);
         let mut registry = self.load_reconciled()?;
@@ -424,13 +431,26 @@ impl IdentityRegistryStore {
         // Runtime ids are capped at 64 characters and must start with a
         // letter. The full fingerprint remains the registry's stable id.
         let runtime_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
-        let destination = crate::store::import_portable_backup_matching(
-            source,
-            passphrase,
-            &self.identity_dir,
-            &runtime_id,
-            info.group_public_key,
-        )?;
+        let destination = match storage {
+            IdentityStorage::Files => {
+                let provider = crate::store::file_provider(&self.identity_dir)?;
+                crate::store::import_portable_backup_with_provider(
+                    source,
+                    passphrase,
+                    &self.identity_dir,
+                    &runtime_id,
+                    info.group_public_key,
+                    provider.as_ref(),
+                )
+            }
+            IdentityStorage::Platform => crate::store::import_portable_backup_matching(
+                source,
+                passphrase,
+                &self.identity_dir,
+                &runtime_id,
+                info.group_public_key,
+            ),
+        }?;
         let profile = registry.register_record(&destination)?.clone();
         self.select_when_none(&destination)?;
         self.announce();
@@ -467,13 +487,13 @@ impl IdentityRegistryStore {
         let runtime_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
         let destination = match storage {
             IdentityStorage::Files => {
-                let provider = crate::store::BrokerFileProvider::new(&self.identity_dir);
+                let provider = crate::store::file_provider(&self.identity_dir)?;
                 crate::store::import_recovery_words_with_provider(
                     &self.identity_dir,
                     &runtime_id,
                     words,
                     display_name,
-                    &provider,
+                    provider.as_ref(),
                 )
             }
             IdentityStorage::Platform => crate::store::import_recovery_words(
