@@ -438,6 +438,7 @@ pub trait Effect: Sized + 'static {
     ) -> Vec<ActionSpec> {
         target_specs_with(
             check::<Self>,
+            std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
             &|target| target.is_row(kind),
@@ -719,8 +720,8 @@ fn target_specs(
     matches: &dyn Fn(&EffectTarget) -> bool,
     entity: &crate::Id,
 ) -> Vec<ActionSpec> {
-    declarations()
-        .into_iter()
+    declared(key, declarations)
+        .iter()
         .filter_map(|decl| {
             let target = *decl.items.iter().find(|target| matches(target))?;
             let mut refused = None;
@@ -775,13 +776,14 @@ fn target_specs(
 /// the rest asked.
 fn target_specs_with(
     check: Check,
+    key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
     matches: &dyn Fn(&EffectTarget) -> bool,
     bindings: &crate::row::RowBindings,
 ) -> Vec<ActionSpec> {
-    declarations()
-        .into_iter()
+    declared(key, declarations)
+        .iter()
         .filter(|decl| decl.items.iter().any(matches))
         .flat_map(|decl| {
             bindings
@@ -871,6 +873,19 @@ fn target_specs_with(
 /// Where a kept effect type is offered: the vocabulary, the effect, and for
 /// an offered effect the field or row kind whose entities offer it.
 type TypeKey = (std::any::TypeId, &'static str, Option<&'static str>);
+
+/// The declarations of the vocabulary `key`, built once on each thread: its rows are published
+/// far more often than what it declares changes.
+fn declared(
+    key: std::any::TypeId,
+    declarations: fn() -> Vec<EffectDecl>,
+) -> std::rc::Rc<[EffectDecl]> {
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptTypes<std::any::TypeId, std::rc::Rc<[EffectDecl]>>> =
+            std::cell::RefCell::default();
+    }
+    crate::kept::kept_type(&KEPT, key, || declarations().into())
+}
 
 /// The action type `key` names, kept once per thread and generation of app
 /// code, as [`kept_specs`] keeps a vocabulary's specs: what every item
