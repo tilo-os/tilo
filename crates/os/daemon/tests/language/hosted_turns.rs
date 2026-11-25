@@ -312,15 +312,24 @@ async fn chat_provider(host: &Host) -> String {
 /// takes the channel as its record delivers it, so a write that comes before it holds the
 /// channel is asked again.
 pub(crate) async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (String, bool) {
-    let address = chat_rows(host, host.workspace(), host.person())
-        .into_iter()
-        .filter_map(|row| row.action)
-        .map(|action| action.address)
-        .find(|address| address.resource == channel && address.action == "send")
-        .unwrap_or_else(|| panic!("Chat publishes a send on {channel}"));
     let arguments = json!({"body": mentioning(host.person(), words)});
     let deadline = tilo_test_env::hang_deadline();
     loop {
+        // The published action names the channel as the app's record does, `tl:<app>:<path>`;
+        // `channel` is the path the app answered with.
+        let address = chat_rows(host, host.workspace(), host.person())
+            .into_iter()
+            .filter_map(|row| row.action)
+            .map(|action| action.address)
+            .find(|address| address.action == "send" && names_channel(&address.resource, channel));
+        let Some(address) = address else {
+            assert!(
+                Instant::now() < deadline,
+                "Chat publishes a send on {channel}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            continue;
+        };
         let target = tilo_actions::remote::RemoteActionTarget {
             provider: chat_provider(host).await,
             address: address.clone(),
@@ -345,8 +354,15 @@ pub(crate) async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (
     }
 }
 
-/// Link a model on this computer and answer the workspace's calls through `replies`, one per
-/// call: the model its agents answer a turn on.
+/// Whether the published action resource `resource` names `channel`, the path Chat's record
+/// answered with: its actions are addressed as `tl:<app>:<path>`.
+fn names_channel(resource: &str, channel: &str) -> bool {
+    resource == channel
+        || resource
+            .strip_suffix(channel)
+            .is_some_and(|prefix| prefix == format!("tl:{CHAT}:"))
+}
+
 /// Link a model on this computer and answer the workspace's calls through `replies`, one per
 /// call: the model its agents answer a turn on.
 pub(crate) fn scripted(

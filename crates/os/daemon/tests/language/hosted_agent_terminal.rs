@@ -322,7 +322,10 @@ fn an_agents_command_asks_in_the_conversation_and_is_done_once_on_its_persons_an
         // The person answers the question the conversation holds: the command is carried out
         // once, and what it printed is in the conversation's Terminal.
         let answered = allow(host).await;
-        assert_eq!(answered, first, "the person answered the assistant's own command");
+        assert_eq!(
+            answered, first,
+            "the person answered the assistant's own command"
+        );
         assert!(
             terminal_holds_soon(host, "first-echo-42").await,
             "the allowed command ran, and its output is in the conversation's Terminal"
