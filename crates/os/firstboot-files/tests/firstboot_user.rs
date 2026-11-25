@@ -87,14 +87,35 @@ if os.environ.get('FAIL_STAGE') == 'seeds-after':
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// The script with its paths moved into `root`, checking that each original
-/// occurs as often as expected so a renamed path cannot go unnoticed.
-fn script(replacements: &[(&str, String, usize)]) -> String {
+/// Where the script keeps the account's credential, transaction and device key, and the homes
+/// it makes: places on the real system a case must never reach.
+const SYSTEM_PATHS: [&str; 4] = ["/etc/tilo", "/var/lib/tilo", "/var/home", "\"/home/"];
+
+/// The script with its paths moved into `root`. Each original must still be in the script, so a
+/// renamed path fails here, and once they are moved no line of code may name a system path the
+/// fixture did not move: the cases run the production script and must touch only `root`.
+fn script(root: &Path, replacements: &[(&str, String)]) -> String {
     let mut source = read(Path::new(SOURCE));
-    for (original, replacement, count) in replacements {
-        assert_eq!(source.matches(original).count(), *count, "{original}");
+    for (original, replacement) in replacements {
+        assert!(
+            source.contains(original),
+            "the script no longer names {original}"
+        );
         source = source.replace(original, replacement);
     }
+    let root = root.display().to_string();
+    let reached: Vec<&str> = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| {
+            let outside = line.replace(&root, "<fixture>");
+            SYSTEM_PATHS.iter().any(|path| outside.contains(path))
+        })
+        .collect();
+    assert!(
+        reached.is_empty(),
+        "the fixture leaves system paths: {reached:#?}"
+    );
     source
 }
 
@@ -214,26 +235,26 @@ impl Transaction {
             ),
         );
         let display = |path: &str| r.join(path).display().to_string();
-        let source = script(&[
-            ("/etc/tilo", display("etc"), 10),
-            ("/var/lib/tilo", display("state"), 17),
-            ("/var/home", display("home"), 2),
-            (
-                r#""/home/$user""#,
-                format!(r#""{}/home/$user""#, r.display()),
-                2,
-            ),
-            (
-                "seed_helper=/usr/libexec/tilo-firstboot-home-seeds",
-                format!("seed_helper={}", display("attesting-seeds")),
-                1,
-            ),
-            (
-                HELPER_LINE,
-                format!(r#"FILES_HELPER="{}""#, display("files-helper")),
-                1,
-            ),
-        ]);
+        let source = script(
+            r,
+            &[
+                (
+                    "seed_helper=/etc/tilo/firstboot-home-seeds",
+                    format!("seed_helper={}", display("attesting-seeds")),
+                ),
+                ("/etc/tilo", display("etc")),
+                ("/var/lib/tilo", display("state")),
+                ("/var/home", display("home")),
+                (
+                    r#""/home/$user""#,
+                    format!(r#""{}/home/$user""#, r.display()),
+                ),
+                (
+                    HELPER_LINE,
+                    format!(r#"FILES_HELPER="{}""#, display("files-helper")),
+                ),
+            ],
+        );
         fs::write(r.join("firstboot"), source).unwrap();
         fixture
     }
@@ -439,7 +460,14 @@ fn useradd_failure_before_creation_retries() {
     assert!(!t.boot("useradd-before").status.success());
     assert!(!t.path("shadow").exists());
     assert!(t.credential().exists());
-    assert!(t.path("etc/install-user.transaction").exists());
+    let intent = fs::symlink_metadata(t.path("etc/install-user.transaction")).unwrap();
+    assert!(intent.is_file());
+    assert_eq!(
+        intent.mode() & 0o7777,
+        0o600,
+        "the intent holds a lock value"
+    );
+    assert_eq!(intent.uid(), rustix::process::getuid().as_raw());
     assert!(t.boot("").status.success());
 }
 
@@ -493,6 +521,11 @@ fn unseeded_home_is_repaired_after_account_committed() {
     let home = fs::metadata(t.path("home/fixtureuser")).unwrap();
     assert_eq!(home.uid(), rustix::process::getuid().as_raw());
     assert_eq!(home.gid(), rustix::process::getgid().as_raw());
+    assert_eq!(
+        home.mode() & 0o7777,
+        0o700,
+        "a new home is its person's alone"
+    );
 }
 
 #[test]
@@ -555,44 +588,37 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
     }
     fs::create_dir(root.join("skel")).unwrap();
     let r = root.display();
-    let source = script(&[
-        (
-            "CONF=/etc/tilo/install-user.conf",
-            format!("CONF={}", credential.display()),
-            1,
-        ),
-        (
-            "FULL_NAME_CONF=/etc/tilo/install-user-full-name",
-            format!("FULL_NAME_CONF={}", name.display()),
-            1,
-        ),
-        (
-            "TRANSACTION=/etc/tilo/install-user.transaction",
-            format!("TRANSACTION={r}/install-user.transaction"),
-            1,
-        ),
-        (
-            "key=/var/lib/tilo/device-private/keypair.bin",
-            format!("key={r}/absent-device-key"),
-            1,
-        ),
-        (r#""/home/$user""#, format!(r#""{r}/home/$user""#), 2),
-        (
-            r#""/var/home/$user""#,
-            format!(r#""{r}/var-home/$user""#),
-            2,
-        ),
-        (
-            HELPER_LINE,
-            format!(r#"FILES_HELPER="{}""#, helper().display()),
-            1,
-        ),
-        (
-            "seed_helper=/etc/tilo/firstboot-home-seeds",
-            format!("seed_helper={r}/attesting-seeds"),
-            1,
-        ),
-    ]);
+    let source = script(
+        root,
+        &[
+            (
+                "CONF=/etc/tilo/install-user.conf",
+                format!("CONF={}", credential.display()),
+            ),
+            (
+                "FULL_NAME_CONF=/etc/tilo/install-user-full-name",
+                format!("FULL_NAME_CONF={}", name.display()),
+            ),
+            (
+                "TRANSACTION=/etc/tilo/install-user.transaction",
+                format!("TRANSACTION={r}/install-user.transaction"),
+            ),
+            (
+                "key=/var/lib/tilo/device-private/keypair.bin",
+                format!("key={r}/absent-device-key"),
+            ),
+            (r#""/home/$user""#, format!(r#""{r}/home/$user""#)),
+            (r#""/var/home/$user""#, format!(r#""{r}/var-home/$user""#)),
+            (
+                HELPER_LINE,
+                format!(r#"FILES_HELPER="{}""#, helper().display()),
+            ),
+            (
+                "seed_helper=/etc/tilo/firstboot-home-seeds",
+                format!("seed_helper={r}/attesting-seeds"),
+            ),
+        ],
+    );
     fs::write(root.join("firstboot"), source).unwrap();
     attesting_helper(root);
     let tools = root.join("bin");
