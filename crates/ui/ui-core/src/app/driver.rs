@@ -1660,19 +1660,16 @@ impl Driver {
 
     /// Tab through the whole focus order from the top: the accessible `(role, name)` said at each
     /// stop.
+    /// A stop whose control says nothing to a reader is passed over, as a reader passes it.
     pub fn tab_through(&mut self) -> Vec<(crate::a11y::Role, Option<String>)> {
         self.clear_focus();
-        let mut stops = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        while self.tab(false).is_some() {
-            let Some(node) = self.focused_access_node() else {
-                break;
-            };
-            let key = (node.role, node.name.clone());
-            if !seen.insert(format!("{:?}{:?}", self.app.focused_node, key)) {
-                break;
+        let count = self.focus_order().len();
+        let mut stops = Vec::with_capacity(count);
+        for _ in 0..count {
+            self.tab(false);
+            if let Some(node) = self.focused_access_node() {
+                stops.push((node.role, node.name));
             }
-            stops.push(key);
         }
         stops
     }
