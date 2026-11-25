@@ -49,7 +49,7 @@ impl App {
     }
 
     /// Whether input reaches the live app: no History presented over it takes it.
-    pub(super) fn app_live_input(&self) -> bool {
+    pub(crate) fn app_live_input(&self) -> bool {
         #[cfg(feature = "model")]
         let live = self
             .history
@@ -797,6 +797,8 @@ impl App {
         {
             resources.extend(self.history.as_ref().map(|history| history.api_resource()));
         }
+        // Search opens the action palette, Tilo's model's.
+        #[cfg(feature = "model")]
         if self.search_presented {
             resources.push(crate::widget::search_request::search_resource());
         }

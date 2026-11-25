@@ -84,6 +84,25 @@ pub(crate) fn node_binding(
     None
 }
 
+#[cfg(not(feature = "model"))]
+impl Binding {
+    /// Whether `self` and `other` are the same component.
+    pub(crate) fn same_component(&self, _other: &Self) -> bool {
+        match *self {}
+    }
+}
+
+/// Note that input reached node `node`: its component then counts it as the person's.
+#[cfg(feature = "model")]
+pub(crate) fn note_input(bindings: &crate::bound_dispatch::BoundNodeMap, node: taffy::NodeId) {
+    if let Some(binding) = bindings.binding_ref(node) {
+        binding.note_input();
+    }
+}
+
+#[cfg(not(feature = "model"))]
+pub(crate) fn note_input(_bindings: &crate::bound_dispatch::BoundNodeMap, _node: taffy::NodeId) {}
+
 /// One component scope a walk holds across every node it asks, entered again
 /// only when the walk reaches another component.
 #[cfg(feature = "model")]

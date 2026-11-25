@@ -139,7 +139,6 @@ impl App {
         &mut self,
         history_api: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        use crate::profiling::resource_trace::{CacheResult, Stage};
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation APIs.
         // Recheck presence: widget-local changes can add/remove emitters.
@@ -148,6 +147,26 @@ impl App {
             self.actions.last_control_availability = None;
             return;
         }
+        // Without Tilo's model a window publishes no actions: a control bound to one runs
+        // nothing, and shows it can't.
+        #[cfg(not(feature = "model"))]
+        {
+            let _ = history_api;
+            crate::widget::controls::refresh_control_action_availability(
+                self.root_widget.as_mut(),
+                &std::collections::HashSet::new(),
+            );
+        }
+        #[cfg(feature = "model")]
+        self.refresh_published_emitter_availability(history_api);
+    }
+
+    #[cfg(feature = "model")]
+    fn refresh_published_emitter_availability(
+        &mut self,
+        history_api: std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         let cache_key = self.ensure_local_control_cache();
         tilo_startup_metrics::startup_mark("actions-local-cache-done");
         let trace = self.trace_resource_stage(Stage::ControlCache);

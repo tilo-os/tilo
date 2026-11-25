@@ -69,6 +69,20 @@ pub struct SearchProviderDescriptor {
     pub(crate) invocation_domain: crate::widget::ActionDirectoryInvocationDomain,
 }
 
+/// The component whose answers `provider` serves: only Tilo's model hosts one.
+fn provider_owner(provider: &(dyn super::SearchProvider + '_)) -> Option<uuid::Uuid> {
+    #[cfg(feature = "model")]
+    let owner = provider
+        .callback_binding()
+        .map(|binding| binding.lifetime_id);
+    #[cfg(not(feature = "model"))]
+    let owner = {
+        let _ = provider;
+        None
+    };
+    owner
+}
+
 impl SearchProviderDescriptor {
     /// A provider listed as `name` whose content is the build `generation` names (as
     /// [`SearchProvider::action_directory_generation`]), over `invocation_domain` (as
@@ -90,9 +104,7 @@ impl SearchProviderDescriptor {
     pub fn of(provider: &(dyn super::SearchProvider + '_)) -> Self {
         Self {
             name: provider.name().to_owned(),
-            owner: provider
-                .callback_binding()
-                .map(|binding| binding.lifetime_id),
+            owner: provider_owner(provider),
             generation: provider.action_directory_generation(),
             invocation_domain: provider.action_directory_invocation_domain(),
         }

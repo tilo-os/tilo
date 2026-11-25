@@ -7,7 +7,7 @@
 //! (`runtime_portal::launch_hold`): [`connect`] waits for that release, so its
 //! connection is never ahead of the record the broker attests it by.
 
-#[cfg(feature = "broker-transport")]
+#[cfg(all(feature = "broker-transport", feature = "model"))]
 use std::path::Path;
 
 /// The socket the session serves its services on, as a surface app reaches it: what the
@@ -37,7 +37,7 @@ pub fn is_surface() -> bool {
 /// The connection this process holds to its session's services, once it has connected:
 /// kept for the process's life, because what the published resources are read on ends
 /// with it.
-#[cfg(feature = "broker-transport")]
+#[cfg(all(feature = "broker-transport", feature = "model"))]
 static SERVICES: std::sync::Mutex<Option<crate::collaboration::SessionServices>> =
     std::sync::Mutex::new(None);
 
@@ -45,9 +45,9 @@ static SERVICES: std::sync::Mutex<Option<crate::collaboration::SessionServices>>
 /// published resources and the actions on them are reached from here on as any app
 /// reaches them.
 pub fn connect() {
-    #[cfg(not(feature = "broker-transport"))]
+    #[cfg(not(all(feature = "broker-transport", feature = "model")))]
     return;
-    #[cfg(feature = "broker-transport")]
+    #[cfg(all(feature = "broker-transport", feature = "model"))]
     {
         if !is_surface() {
             return;

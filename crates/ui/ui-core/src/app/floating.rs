@@ -1401,12 +1401,13 @@ impl App {
                 FloatingSurfaceHostMessage::ShareSelection {
                     to,
                     pointing,
+                    #[cfg(feature = "model")]
                     carried,
                 } => {
                     // Sending from the window goes through the workspace, Tilo's model's: without it
                     // the shell's ask opens nothing.
                     #[cfg(not(feature = "model"))]
-                    let _ = (to, pointing, carried);
+                    let _ = (to, pointing);
                     #[cfg(feature = "model")]
                     {
                         // The shell asks this window to send from its keyboard,

@@ -617,7 +617,7 @@ impl SemanticTree {
         #[cfg_attr(not(feature = "model"), allow(unused_mut))]
         let mut next_components = Vec::with_capacity(components.len());
         #[cfg_attr(not(feature = "model"), allow(unused_mut))]
-        let mut reused = Vec::with_capacity(components.len());
+        let mut reused: Vec<bool> = Vec::with_capacity(components.len());
         #[cfg_attr(not(feature = "model"), allow(unused_mut))]
         let mut updates = TreeDelta::default();
         #[cfg(any(test, feature = "test-support"))]

@@ -3910,6 +3910,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // The workspace's join the window showed its loading state for is
         // over: save what it holds and leave the loop, keeping the window, so
         // the launch opens the app in it.
+        #[cfg(feature = "model")]
         if !self.handing_over && crate::launch::window_gives_place() {
             self.handing_over = true;
             self.app.autosave_flush();

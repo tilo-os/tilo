@@ -106,7 +106,7 @@ include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
 /// (`ui::component::TOOLKIT`).
 pub static COMPONENTS: ui::component::Set = ui::component::Set {
     entries: generated_entries,
-    parts: &GENERATED_PARTS,
+    parts: GENERATED_PARTS,
     enums: Vec::new,
 };
 

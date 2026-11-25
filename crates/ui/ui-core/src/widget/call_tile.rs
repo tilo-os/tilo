@@ -46,6 +46,7 @@ impl CallSource {
         }
     }
 
+    #[cfg(feature = "model")]
     /// The call's own name for this source.
     #[must_use]
     pub const fn of_call(self) -> crate::native_media::PictureSource {
@@ -55,6 +56,7 @@ impl CallSource {
         }
     }
 
+    #[cfg(feature = "model")]
     /// The tile's own name for one of the call's sources.
     #[must_use]
     pub const fn of_picture(source: crate::native_media::PictureSource) -> Self {

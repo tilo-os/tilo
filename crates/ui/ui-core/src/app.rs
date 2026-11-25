@@ -49,8 +49,11 @@ mod handoff;
 #[cfg(feature = "model")]
 mod held_answers;
 mod host_commands;
+// Pointing at what a report is about: a report goes to people in the workspace, Tilo's model's.
+#[cfg(feature = "model")]
 mod report_point;
 #[cfg(all(feature = "native", test))]
+#[cfg(feature = "model")]
 mod report_point_tests;
 mod window_box;
 
@@ -535,6 +538,7 @@ pub struct App {
     close_admission: crate::close_admission::Admission,
     /// A window asked for the thing a report is about, until the person points
     /// at it or leaves ([`report_point::Pointing`]).
+    #[cfg(feature = "model")]
     report_pointing: Option<report_point::Pointing>,
     /// The send-to box the window stands with no menu around it ([`Self::open_send_box`]).
     window_box: crate::widget::context_menu::ContextMenu,
@@ -1686,6 +1690,7 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     fn ensure_declared_resource_cache(&self) -> ResourceCacheKey {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let key = self.resource_cache_key();
@@ -1716,6 +1721,7 @@ impl App {
         key
     }
 
+    #[cfg(feature = "model")]
     fn ensure_local_control_cache(&self) -> (ResourceCacheKey, u64) {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         fn collect_addresses(
@@ -2227,6 +2233,7 @@ impl App {
     }
 
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
+        #[cfg(feature = "model")]
         if self.report_pointing.is_some() {
             // The window is waiting for the person to point at a thing.
             return Some(CursorIcon::Crosshair);
@@ -2278,6 +2285,19 @@ impl App {
     /// framework host leaves the current view in place.
     #[cfg(feature = "native")]
     pub(crate) fn install_reloaded_view(&mut self, root: DevRoot) -> bool {
+        // Only Tilo's model hosts the framework view.
+        #[cfg(not(feature = "model"))]
+        let installed = {
+            let _ = root;
+            false
+        };
+        #[cfg(feature = "model")]
+        let installed = self.install_reloaded_component_view(root);
+        installed
+    }
+
+    #[cfg(all(feature = "native", feature = "model"))]
+    fn install_reloaded_component_view(&mut self, root: DevRoot) -> bool {
         let Some(bound) = self
             .root_widget
             .as_any_mut()

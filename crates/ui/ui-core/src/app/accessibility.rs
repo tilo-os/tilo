@@ -919,6 +919,7 @@ impl App {
 
     pub(super) fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         self.mark_semantic_tree_stale();
+        #[cfg(feature = "model")]
         self.suspend_history_focus(new_id);
         self.root_widget.focus_requested(new_id, &self.layout.taffy);
         if self.focused_node != new_id {
@@ -1262,10 +1263,9 @@ impl App {
         true
     }
 
-    #[cfg(feature = "model")]
-    /// The local actor's API onto one action: host services first, then an
-    /// action that asks for confirmation through the palette, then the app's
-    /// own. Assistive technology and host chrome both enter here.
+    /// The local actor's API onto one action: host services first (Edit's undo and redo, zoom),
+    /// then, with Tilo's model, an action that asks for confirmation through the palette, then
+    /// the app's own. Assistive technology and host chrome both enter here.
     pub(super) fn invoke_local_address(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -1274,6 +1274,20 @@ impl App {
         if let Some(result) = self.invoke_history_address_local(address, argument) {
             return result.is_ok();
         }
+        // Without Tilo's model a window publishes no actions of its own: nothing else answers.
+        #[cfg(feature = "model")]
+        let accepted = self.invoke_published_address(address, argument);
+        #[cfg(not(feature = "model"))]
+        let accepted = false;
+        accepted
+    }
+
+    #[cfg(feature = "model")]
+    fn invoke_published_address(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> bool {
         let resources = self.collect_declared_resources();
         let confirmation = tilo_actions::api::resolve(&resources, address)
             .map(|spec| spec.confirmation_for_argument(argument))
@@ -1429,11 +1443,12 @@ impl App {
             self.finish_action_palette_input(handled);
             return Ok(None);
         }
-        let framework = self.tree().history_owns(taffy_id);
+        let framework = self.history_owns_node(taffy_id);
         let history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
             &self.framework_input,
             framework || self.bindings.owns_document(taffy_id),
         );
+        #[cfg(feature = "model")]
         if framework {
             self.suspend_history_focus(Some(taffy_id));
         }
@@ -1779,6 +1794,48 @@ impl App {
         }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
+        #[cfg(not(feature = "model"))]
+        let delta = self.refresh_semantic_tree_unhosted(&resources);
+        #[cfg(feature = "model")]
+        let delta = self.refresh_semantic_tree_hosted(&resources);
+        if !delta.is_empty() {
+            self.accessibility.semantic_tree_revision =
+                self.accessibility.semantic_tree_revision.wrapping_add(1);
+        }
+        delta
+    }
+
+    /// The semantic tree of a window that hosts no component: its widgets and the host's own
+    /// resources.
+    #[cfg(not(feature = "model"))]
+    fn refresh_semantic_tree_unhosted(
+        &mut self,
+        resources: &[tilo_actions::ResourceSpec],
+    ) -> crate::a11y_tree::TreeDelta {
+        let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
+        let delta = self
+            .with_native_presentation(|root, nodes, focused, _, names| {
+                tree.refresh_bound(root, nodes, names, focused, resources)
+            })
+            .unwrap_or_else(|_| {
+                tree.refresh_bound(
+                    self.root_widget.as_ref(),
+                    &self.layout.node_map,
+                    &self.bindings.semantic_node_names(&self.layout.node_map),
+                    self.focused_node,
+                    resources,
+                )
+            });
+        self.accessibility.semantic_tree = tree;
+        delta
+    }
+
+    /// The semantic tree with what each hosted component publishes.
+    #[cfg(feature = "model")]
+    fn refresh_semantic_tree_hosted(
+        &mut self,
+        resources: &[tilo_actions::ResourceSpec],
+    ) -> crate::a11y_tree::TreeDelta {
         let components = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -1789,7 +1846,7 @@ impl App {
         let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
         let delta = self
             .with_native_presentation(|root, nodes, focused, _, names| {
-                tree.refresh_components(root, nodes, names, focused, &resources, &components)
+                tree.refresh_components(root, nodes, names, focused, resources, &components)
             })
             .unwrap_or_else(|_| {
                 tree.refresh_components(
@@ -1802,12 +1859,9 @@ impl App {
                 )
             });
         self.accessibility.semantic_tree = tree;
-        if !delta.is_empty() {
-            self.accessibility.semantic_tree_revision =
-                self.accessibility.semantic_tree_revision.wrapping_add(1);
-        }
         delta
     }
+
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
         &self.accessibility.semantic_tree
     }

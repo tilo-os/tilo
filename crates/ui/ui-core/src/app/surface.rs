@@ -644,6 +644,9 @@ impl App {
                     }
                     handled = true;
                 }
+                // Without Tilo's model a window has no search: the key reaches the app.
+                #[cfg(not(feature = "model"))]
+                Some(crate::platform::HostShortcut::Search) => {}
                 Some(crate::platform::HostShortcut::History) => {
                     handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
                 }

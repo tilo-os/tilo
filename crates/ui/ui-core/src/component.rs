@@ -1389,7 +1389,7 @@ pub struct Set {
 /// The toolkit's own described widgets.
 pub static TOOLKIT: Set = Set {
     entries: generated_entries,
-    parts: &GENERATED_PARTS,
+    parts: GENERATED_PARTS,
     enums: toolkit_enums,
 };
 

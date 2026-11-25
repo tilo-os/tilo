@@ -285,6 +285,7 @@ impl Driver {
 /// services between frames.
 #[derive(Default)]
 pub(super) struct OwnerWakes {
+    #[cfg(feature = "model")]
     queue: Option<crate::owner_wake::OwnerWakeQueue>,
 }
 
@@ -358,10 +359,16 @@ impl Driver {
     /// Whether the owner queue holds anything to service.
     #[must_use]
     pub fn has_pending_owner_models(&self) -> bool {
-        self.wakes
+        // Only Tilo's model hosts a component whose owner a worker wakes.
+        #[cfg(feature = "model")]
+        let pending = self
+            .wakes
             .queue
             .as_ref()
-            .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
+            .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending);
+        #[cfg(not(feature = "model"))]
+        let pending = false;
+        pending
     }
 }
 

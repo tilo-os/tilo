@@ -49,6 +49,18 @@ impl App {
         history
     }
 
+    /// Whether `node` is one of the window's History's own.
+    pub(crate) fn history_owns_node(&self, node: NodeId) -> bool {
+        #[cfg(feature = "model")]
+        let owns = self.tree().history_owns(node);
+        #[cfg(not(feature = "model"))]
+        let owns = {
+            let _ = node;
+            false
+        };
+        owns
+    }
+
     /// Whether the window's History is open.
     pub(crate) fn history_open(&self) -> bool {
         #[cfg(feature = "model")]

@@ -169,6 +169,7 @@ impl PresenceCtx {
             }
         }
 
+        #[cfg(feature = "model")]
         if let Some(member) = interaction
             .actor
             .member_id()

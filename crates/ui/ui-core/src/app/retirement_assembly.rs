@@ -91,6 +91,7 @@ pub(super) struct AppAssemblyValues {
     #[cfg(feature = "model")]
     pub component_close_reports: Option<Vec<crate::application::ComponentCloseReport>>,
     pub close_admission: Option<crate::close_admission::Admission>,
+    #[cfg(feature = "model")]
     pub report_pointing: Option<Option<super::report_point::Pointing>>,
     pub window_box: Option<crate::widget::context_menu::ContextMenu>,
     pub needs_sync: Option<bool>,
@@ -197,7 +198,10 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     assembly.values.layout = Some(LayoutRuntime::new());
     assembly.values.bindings = Some(crate::bound_dispatch::BoundNodeMap::new());
     assembly.values.close_admission = Some(crate::close_admission::Admission::default());
-    assembly.values.report_pointing = Some(None);
+    #[cfg(feature = "model")]
+    {
+        assembly.values.report_pointing = Some(None);
+    }
     assembly.values.window_box = Some(crate::widget::context_menu::ContextMenu::new());
     assembly.values.needs_sync = Some(true);
     assembly.values.theme = Some(configured_theme.clone());
@@ -295,7 +299,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         #[cfg(feature = "model")]
             component_close_reports: Some(component_close_reports),
         close_admission: Some(close_admission),
-        report_pointing: Some(report_pointing),
+        #[cfg(feature = "model")]
+            report_pointing: Some(report_pointing),
         window_box: Some(window_box),
         needs_sync: Some(needs_sync),
         theme: Some(theme),
@@ -381,6 +386,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         #[cfg(feature = "model")]
         component_close_reports,
         close_admission,
+        #[cfg(feature = "model")]
         report_pointing,
         window_box,
         needs_sync,

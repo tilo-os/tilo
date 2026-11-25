@@ -1128,7 +1128,10 @@ impl CompositionFocus {
     }
 
     fn same_owner(&self, bindings: &BoundNodeMap, node: NodeId) -> bool {
-        match (&self.binding, bindings.binding_for(node)) {
+        match (
+            &self.binding,
+            crate::widget::component_walk::node_binding(bindings, node),
+        ) {
             (Some(a), Some(b)) => a.same_component(&b),
             (None, None) => true,
             _ => false,
@@ -1150,7 +1153,7 @@ impl CompositionFocus {
                 key: Self::key(widget),
                 semantic_key: None,
                 qualified_semantic: false,
-                binding: bindings.binding_for(node),
+                binding: crate::widget::component_walk::node_binding(bindings, node),
                 state: None,
             })
         }
@@ -1295,7 +1298,7 @@ impl CompositionFocus {
                 semantic_key: None,
                 qualified_semantic: false,
                 state: None,
-                binding: bindings.binding_for(candidate),
+                binding: crate::widget::component_walk::node_binding(bindings, candidate),
             };
             focused.iter().all(|&node| {
                 owner.same_owner(bindings, node)
@@ -1420,9 +1423,7 @@ impl CompositionFocus {
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     if Some(node) != target && widget.is_focused() {
                         widget.set_focus(false);
-                        if let Some(binding) = bindings.binding_ref(node) {
-                            binding.note_input();
-                        }
+                        crate::widget::component_walk::note_input(bindings, node);
                     }
                 })
             };
@@ -1432,9 +1433,7 @@ impl CompositionFocus {
         // must not clear a child after its owner has just focused it.
         if let Some(node) = target {
             let _ = unsafe {
-                if let Some(binding) = bindings.binding_ref(node) {
-                    binding.note_input();
-                }
+                crate::widget::component_walk::note_input(bindings, node);
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     widget.set_focus(true);
                     if let Some(state) = &self.state {

@@ -358,11 +358,17 @@ impl MacChrome {
     }
 }
 
+/// The toolbar's items: search, which opens the action palette, Tilo's model's. Without it the
+/// toolbar offers none.
 fn toolbar_items() -> Retained<NSArray<NSString>> {
-    NSArray::from_retained_slice(&[
+    #[cfg(feature = "model")]
+    let items = NSArray::from_retained_slice(&[
         NSString::from_str("NSToolbarFlexibleSpaceItem"),
         NSString::from_str(SEARCH_ITEM),
-    ])
+    ]);
+    #[cfg(not(feature = "model"))]
+    let items = NSArray::from_retained_slice(&[]);
+    items
 }
 
 fn submenu(mtm: MainThreadMarker, bar: &NSMenu, title: &str) -> Retained<NSMenu> {

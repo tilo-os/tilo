@@ -689,9 +689,7 @@ impl crate::app::App {
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         self.widget_reached();
         let document = self.document();
-        if let Some(binding) = document.bindings.binding_ref(node) {
-            binding.note_input();
-        }
+        crate::widget::component_walk::note_input(document.bindings, node);
         // SAFETY: exclusive host access prevents overlapping target references.
         unsafe {
             crate::bound_dispatch::mutate_bound_node(

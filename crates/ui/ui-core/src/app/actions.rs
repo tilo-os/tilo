@@ -68,6 +68,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     fn ensure_resource_cache(&self) -> ResourceCacheKey {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let key = self.resource_cache_key();
@@ -134,6 +135,16 @@ impl App {
     }
 
     fn collect_declared_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        // Tilo's model is the action layer: without it a window publishes no resources.
+        #[cfg(feature = "model")]
+        let resources = self.declared_resources_cached();
+        #[cfg(not(feature = "model"))]
+        let resources = Vec::new();
+        resources
+    }
+
+    #[cfg(feature = "model")]
+    fn declared_resources_cached(&self) -> Vec<tilo_actions::ResourceSpec> {
         let key = self.ensure_resource_cache();
         self.actions
             .resource_cache
@@ -143,6 +154,7 @@ impl App {
             .map_or_else(Vec::new, |cache| cache.declared.clone())
     }
 
+    #[cfg(feature = "model")]
     fn ensure_local_resource_cache(&self) -> (ResourceCacheKey, u64) {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         // Every full consumer still constructs and validates the combined surface.
@@ -193,6 +205,16 @@ impl App {
     }
 
     fn collect_local_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        // Tilo's model is the action layer: without it a window publishes no resources.
+        #[cfg(feature = "model")]
+        let resources = self.local_resources_cached();
+        #[cfg(not(feature = "model"))]
+        let resources = Vec::new();
+        resources
+    }
+
+    #[cfg(feature = "model")]
+    fn local_resources_cached(&self) -> Vec<tilo_actions::ResourceSpec> {
         let (key, permission_generation) = self.ensure_local_resource_cache();
         let mut resources = self
             .actions
@@ -220,14 +242,21 @@ impl App {
         resources
     }
 
-    /// The complete machine-driveable surface: domain resources declared by
-    /// the app plus ordinary controls projected from its retained semantic
-    /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
     /// The resource this window shows: the first it publishes. What
     /// a question typed into a context menu is about when nothing more
     /// particular is meant.
     #[cfg(feature = "native")]
     pub(super) fn window_resource(&self) -> Option<tilo_actions::ActionResource> {
+        // A window publishes no resources without Tilo's model, so it shows none.
+        #[cfg(feature = "model")]
+        let resource = self.first_published_resource();
+        #[cfg(not(feature = "model"))]
+        let resource = None;
+        resource
+    }
+
+    #[cfg(all(feature = "native", feature = "model"))]
+    fn first_published_resource(&self) -> Option<tilo_actions::ActionResource> {
         let key = self.ensure_resource_cache();
         let cache = self.actions.resource_cache.borrow();
         let first = cache
@@ -243,7 +272,20 @@ impl App {
         })
     }
 
+    /// The complete machine-driveable surface: domain resources declared by
+    /// the app plus ordinary controls projected from its retained semantic
+    /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
     pub fn collect_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        // Tilo's model is the action layer: without it a window publishes no resources.
+        #[cfg(feature = "model")]
+        let resources = self.published_resources_cached();
+        #[cfg(not(feature = "model"))]
+        let resources = Vec::new();
+        resources
+    }
+
+    #[cfg(feature = "model")]
+    fn published_resources_cached(&self) -> Vec<tilo_actions::ResourceSpec> {
         let _entry = self.enter_wake_scope();
         let key = self.ensure_resource_cache();
         let mut resources = self
@@ -3002,6 +3044,7 @@ impl App {
 
 /// The wire bytes for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
+#[cfg(feature = "model")]
 const DIRECTORY_PAGE_WIRE_BYTES: usize = ::collaboration::action_directory::PAGE_WIRE_BYTES;
 
 #[cfg(feature = "model")]

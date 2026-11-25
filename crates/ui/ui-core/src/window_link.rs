@@ -63,7 +63,7 @@ pub(crate) fn window_stops_taking_invocations() {
 /// built from its launch (`spec`, `args`), but with the window's own instance and
 /// connections, opening what the request names (a file opened with the running app) and
 /// nothing its launch named: that was the first window's.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 pub(crate) fn open_window(
     spec: &crate::launch::LaunchSpec,
     args: &crate::launch::LaunchArgs,
@@ -180,7 +180,7 @@ mod transport {
         pub shell_ui: Option<Descriptor>,
         /// The window's record arrives with its workspace's join, waited for off the
         /// window's thread; the window is built once it is over.
-        #[cfg(feature = "native")]
+        #[cfg(all(feature = "native", feature = "model"))]
         pub(crate) arriving: Option<crate::launch::Arriving>,
     }
 
@@ -240,7 +240,7 @@ mod transport {
             request,
             collaboration,
             shell_ui,
-            #[cfg(feature = "native")]
+            #[cfg(all(feature = "native", feature = "model"))]
             arriving: None,
         }
     }
@@ -463,7 +463,7 @@ mod transport {
 
     /// Take back the opening of the window being built, with what it has not given yet
     /// (its shell-ui connection), to build it later: its record arrives with its join.
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "model"))]
     pub(crate) fn keep_building() -> Option<WindowOpening> {
         BUILDING.with(|slot| slot.borrow_mut().take())
     }
@@ -502,7 +502,7 @@ mod transport {
                 },
                 collaboration: connection(),
                 shell_ui: None,
-                #[cfg(feature = "native")]
+                #[cfg(all(feature = "native", feature = "model"))]
                 arriving: None,
             };
             let carried = opening.collaboration.is_some();

@@ -13,7 +13,9 @@
 //! - `impl Widget for X` of a `pub struct X` its top module re-exports: a public widget;
 //! - `#[not_a_component(kind, "why")]` on a public widget: why it is not a component.
 //!
-//! Test code (`#[cfg(test)]` modules, `tests.rs`, `*_tests.rs`) is not read.
+//! Test code (`#[cfg(test)]` modules, `tests.rs`, `*_tests.rs`) is not read. A file whose module is
+//! declared under `#[cfg(..)]` (`#[cfg(feature = "model")] mod history;`), or sits in one that is,
+//! registers its components under the same conditions.
 
 #![allow(
     clippy::string_slice,
@@ -78,6 +80,9 @@ pub struct Scan {
     pub widgets: Vec<PublicWidget>,
     /// Every source file read, for the build script to watch.
     pub files: Vec<PathBuf>,
+    /// The `cfg` conditions each file is compiled under, from the `#[cfg(..)]` on the `mod`
+    /// declarations of its module and those it sits in; a file compiled always has none.
+    pub gates: std::collections::BTreeMap<PathBuf, Vec<String>>,
 }
 
 impl Scan {
@@ -176,11 +181,20 @@ pub fn scan(src: &Path) -> std::io::Result<Scan> {
     let mut pub_mods: Vec<(String, String)> = Vec::new();
     let mut structs: Vec<FoundStruct> = Vec::new();
     let mut widget_impls: Vec<String> = Vec::new();
+    let mut mod_gates: std::collections::BTreeMap<Vec<String>, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut file_modules: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for file in &files {
         let raw = std::fs::read_to_string(file)?;
         let text = without_tests(&without_comments(&raw));
         let rel = file.strip_prefix(src).unwrap_or(file);
         let modules = module_path(rel);
+        for (name, conditions) in gated_mods(&text) {
+            let mut path = modules.clone();
+            path.push(name);
+            mod_gates.insert(path, conditions);
+        }
+        file_modules.push((file.clone(), modules.clone()));
         let top = modules.first().cloned().unwrap_or_default();
         if is_top_module_file(rel) || rel == Path::new("lib.rs") {
             let entry = reexports.entry(top.clone()).or_default();
@@ -218,8 +232,59 @@ pub fn scan(src: &Path) -> std::io::Result<Scan> {
         .sort_by(|a, b| a.name.cmp(&b.name).then(a.file.cmp(&b.file)));
     out.widgets
         .dedup_by(|a, b| a.name == b.name && a.file == b.file);
+    for (file, modules) in file_modules {
+        let conditions: Vec<String> = (1..=modules.len())
+            .filter_map(|depth| mod_gates.get(&modules[..depth]))
+            .flatten()
+            .cloned()
+            .collect();
+        if !conditions.is_empty() {
+            out.gates.insert(file, conditions);
+        }
+    }
     out.files = files;
     Ok(out)
+}
+
+/// Each file module the text declares under `#[cfg(..)]` (`mod name;`), with the conditions of
+/// the `cfg` attributes just above it.
+fn gated_mods(text: &str) -> Vec<(String, Vec<String>)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let line = line.trim();
+        let declared = line
+            .strip_prefix("pub ")
+            .or_else(|| line.strip_prefix("pub(crate) "))
+            .or_else(|| line.strip_prefix("pub(super) "))
+            .unwrap_or(line);
+        let Some(name) = declared
+            .strip_prefix("mod ")
+            .and_then(|rest| rest.strip_suffix(';'))
+        else {
+            continue;
+        };
+        let conditions: Vec<String> = lines[..at]
+            .iter()
+            .rev()
+            .map(|above| above.trim())
+            .take_while(|above| above.starts_with("#["))
+            .filter_map(|above| above.strip_prefix("#[cfg(")?.strip_suffix(")]"))
+            .map(str::to_owned)
+            .collect();
+        if !conditions.is_empty() {
+            out.push((name.trim().to_owned(), conditions));
+        }
+    }
+    out
+}
+
+/// The attribute that compiles a generated line only where the file it names is compiled.
+fn gate_of(scan: &Scan, file: &Path) -> String {
+    scan.gates
+        .get(file)
+        .map(|conditions| format!("#[cfg(all({}))]\n", conditions.join(", ")))
+        .unwrap_or_default()
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -592,6 +657,9 @@ pub fn registry_source(scan: &Scan, toolkit: &str, exports: Exports) -> String {
                 .map(|c| (c.file.clone(), format!("{}::entry()", path("", &c.module)))),
         )
         .collect();
+    let gate = |file: &Path, line: &str| {
+        format!("{}{line}", gate_of(scan, file).replace('\n', "\n        "))
+    };
     entries.sort();
     let parts = scan.parts();
     let mut out = String::from(
@@ -602,23 +670,26 @@ pub fn registry_source(scan: &Scan, toolkit: &str, exports: Exports) -> String {
         out,
         "fn generated_entries() -> Vec<{toolkit}::component::Entry> {{\n    vec!["
     );
-    for (_, entry) in &entries {
+    for (file, entry) in &entries {
         out.push_str("        ");
-        out.push_str(entry);
+        out.push_str(&gate(file, entry));
         out.push_str(",\n");
     }
     out.push_str("    ]\n}\n\n");
     out.push_str("/// The components that stand only in a slot of another, in source order.\n");
     let _ = writeln!(
         out,
-        "const GENERATED_PARTS: [fn() -> {toolkit}::component::Description; {}] = [",
-        parts.len()
+        "const GENERATED_PARTS: &[fn() -> {toolkit}::component::Description] = &["
     );
     for p in parts {
         let _ = writeln!(
             out,
-            "    <{} as {toolkit}::component::Component>::describe,",
-            path(&p.top, &p.name)
+            "    {}{},",
+            gate_of(scan, &p.file).replace('\n', "\n    "),
+            format_args!(
+                "<{} as {toolkit}::component::Component>::describe",
+                path(&p.top, &p.name)
+            )
         );
     }
     out.push_str("];\n");

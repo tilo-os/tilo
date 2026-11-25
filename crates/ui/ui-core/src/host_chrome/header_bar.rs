@@ -104,11 +104,14 @@ impl HeaderBar {
             menu.push(MenuItem::bound(command.label.clone(), press).with_enabled(command.enabled));
         }
 
-        let open_menu = menu_requested.clone();
-        let history_button = control("host-header-history", Icon::History, "host-menu-history")
-            .with_enabled(!history.is_empty())
-            .on_open(move || *open_menu.borrow_mut() = true);
-        let mut row = Row::new().no_wrap().push(Box::new(history_button));
+        let mut row = Row::new().no_wrap();
+        // A window with no History (none has one without Tilo's model) shows no History control.
+        if !history.is_empty() {
+            let open_menu = menu_requested.clone();
+            let history_button = control("host-header-history", Icon::History, "host-menu-history")
+                .on_open(move || *open_menu.borrow_mut() = true);
+            row = row.push(Box::new(history_button));
+        }
         row = row
             .push(Box::new(Spacer::new()))
             .push(Box::new(Text::new(title)))

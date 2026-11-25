@@ -60,9 +60,7 @@ fn pressed_named(event: &WindowEvent) -> Option<NamedKey> {
 impl crate::app::App {
     /// Whether History holds the keyboard.
     pub(crate) fn history_captures_input(&self) -> bool {
-        self.tree()
-            .history
-            .is_some_and(|history| history.captures_input())
+        !self.app_live_input()
     }
 
     /// Move focus to the nearest control in `direction`, or to the first one when nothing holds focus.
@@ -319,13 +317,14 @@ impl crate::app::App {
     }
 
     /// Keys the host answers itself, after Enter and Space and before the shell's tab chords.
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "model"))]
     pub(crate) fn handle_unconsumed_host_key(&mut self, event: &WindowEvent) -> bool {
         self.handle_unconsumed_search_key(event) || self.handle_unconsumed_typed_key(event)
     }
 
-    /// Without the native host there is no search or typed-key answer of its own: the key goes on.
-    #[cfg(not(feature = "native"))]
+    /// Without the native host, or Tilo's model that search and the send-to box belong to, the
+    /// host answers no key of its own: the key goes on.
+    #[cfg(not(all(feature = "native", feature = "model")))]
     pub(crate) fn handle_unconsumed_host_key(&self, _event: &WindowEvent) -> bool {
         false
     }

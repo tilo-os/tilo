@@ -203,6 +203,7 @@ fn draw_frame_content_owning(
         }
         #[cfg(not(feature = "model"))]
         {
+            let mut draw = draw;
             draw();
         }
         crate::draw_cull::unbind();
@@ -281,6 +282,7 @@ fn draw_frame_content_owning(
     painted(scene, "the close dialog", &mut drawn);
     // Pointing at what a report is about covers the whole window, over every
     // layer: it is what the pointer and the keys reach until it is done.
+    #[cfg(feature = "model")]
     if let Some(pointing) = app.report_pointing.as_ref() {
         pointing.draw(
             scene,

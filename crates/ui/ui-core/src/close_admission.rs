@@ -273,8 +273,12 @@ impl Admission {
     /// workspace's answer to the window's last changes.
     #[cfg(feature = "native")]
     pub fn waiting(&self) -> bool {
-        self.save_waiting
-            || (self.checkpointed && (self.settling || self.barrier.pending.is_some()))
+        // Only Tilo's model asks the workspace for a barrier.
+        #[cfg(feature = "model")]
+        let barrier = self.barrier.pending.is_some();
+        #[cfg(not(feature = "model"))]
+        let barrier = false;
+        self.save_waiting || (self.checkpointed && (self.settling || barrier))
     }
 
     /// Retire the current decision before an explicit choice re-evaluates the close request.
