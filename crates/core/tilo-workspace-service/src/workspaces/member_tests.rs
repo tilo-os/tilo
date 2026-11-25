@@ -65,19 +65,12 @@ pub(super) async fn shared_with(
     invited(serving, &serving_cert, name, seed, device).await
 }
 
-/// A service on `state`, serving the member copies of `(key, cert)`.
+/// A service on `state`, serving the member copies of `(key, cert)` from the moment it opens.
 pub(super) async fn member_service(
     state: &std::path::Path,
     (key, cert): (SigningKey, DeviceCert),
 ) -> TestHost {
-    let service = test_host_holding(state, &key, &cert, group_keys()).await;
-    service
-        .workspaces()
-        .set_member_device(Arc::new(MemberDevice {
-            cert: cert.clone(),
-            signer: Arc::new(key),
-        }));
-    service
+    crate::workspaces::fixtures::test_host_holding_as_member(state, &key, &cert, group_keys()).await
 }
 
 /// A device that joins names its person as they asked, among the workspace's people: the serving

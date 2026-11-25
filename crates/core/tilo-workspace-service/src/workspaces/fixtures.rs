@@ -581,6 +581,34 @@ pub async fn test_host_holding(
     .await
 }
 
+/// [`test_host_holding`] opened as the device `key`/`cert` acts as, as every device's service is
+/// opened: the member copies it kept from its last run sync again from the moment it opens.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_holding_as_member(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    keys: Arc<TestGroupKeys>,
+) -> TestHost {
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups { keys, sink: None },
+        None,
+        Some(Arc::new(MemberDevice {
+            cert: cert.clone(),
+            signer: Arc::new(key.clone()),
+        })),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await
+}
+
 /// [`test_host_holding`] whose service opens with the language runtime `tilolang` mounted, as
 /// the daemon's program opens the one it links: the types and verbs of the tilolang apps the
 /// build carries are declared on it, so a member's write of one of their records is judged.
