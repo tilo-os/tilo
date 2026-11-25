@@ -22,7 +22,7 @@ use super::{host_runs, take_work};
 #[cfg(unix)]
 use crate::host;
 use crate::personal_devices::PersonalDevices;
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile};
+use crate::{RuntimeServices, apps, profile};
 use ed25519_dalek::SigningKey;
 use serde_json::{Map, Value, json};
 #[cfg(unix)]

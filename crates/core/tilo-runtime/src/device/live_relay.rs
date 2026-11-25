@@ -1268,7 +1268,7 @@ impl Live {
     /// Carry one link of the person's desktop session, opened on the daemon's socket, until it
     /// ends: into this relay, as this device, or on to the relay at the address it names.
     pub(crate) async fn serve_link(&self, stream: tilo_socket::tokio::Stream) {
-        let (reader, writer) = stream.into_split();
+        let (reader, writer) = tokio::io::split(stream);
         if let Err(error) = link::carry(
             reader,
             writer,

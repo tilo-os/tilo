@@ -93,7 +93,7 @@ pub(crate) fn verify_package(
     )
     .map_err(|error| error.to_string())?;
     // The person's revoked keys are the profile's, read on the platform whose daemon keeps them.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let revoked = tilo_app_package::RevocationList {
             revoked: tilo_control::packages::trust()
@@ -124,7 +124,7 @@ pub(crate) fn verify_package(
 /// # Errors
 ///
 /// Names the first check that failed; the launch is refused.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(super) fn verify_installed(
     catalog: &package_store::Catalog,
     app: &app_catalogue::apps::InstalledApp,

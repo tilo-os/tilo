@@ -1623,22 +1623,22 @@ fn spawn_host(
             .with_extension(std::env::consts::EXE_EXTENSION),
     );
     command.env(runtime_portal::process_link::STORAGE_ENV, storage);
-    let (link, mut launched) =
+    let (link, mut started) =
         super::capabilities::launch_confined(launcher_windows::LaunchRequest {
             package_id: key.app.clone(),
             command,
             read: vec![runtime],
             read_write: vec![storage.to_path_buf()],
         })?;
-    let stderr = launched
+    let stderr = started
         .take_stderr()
         .map(|stderr| Box::new(stderr) as Box<dyn std::io::Read + Send>);
     Ok((
         link,
         Started {
-            pid: launched.pid(),
+            pid: started.pid(),
             stderr,
-            wait: Box::new(move || launched.wait()),
+            wait: Box::new(move || started.wait()),
         },
     ))
 }

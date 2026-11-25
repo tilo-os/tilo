@@ -824,6 +824,10 @@ macro_rules! hear_stop {
 /// `signalled` open until the listeners end: a name a person's stop or their service's stop is
 /// known by.
 #[cfg(unix)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the function owns the sender, so the channel closes when its listeners end"
+)]
 fn listen_for_stops(signalled: tokio::sync::mpsc::Sender<&'static str>) {
     use tokio::signal::unix::{SignalKind, signal};
     for (kind, name) in [
@@ -845,6 +849,10 @@ fn listen_for_stops(signalled: tokio::sync::mpsc::Sender<&'static str>) {
 /// Hear each control event Windows ends a process with: Ctrl-C and Ctrl-Break from the console,
 /// and Ctrl-Close and Ctrl-Shutdown from the system, which a service stop or a logout raises.
 #[cfg(windows)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the function owns the sender, so the channel closes when its listeners end"
+)]
 fn listen_for_stops(signalled: tokio::sync::mpsc::Sender<&'static str>) {
     use tokio::signal::windows;
     macro_rules! hear_one {
