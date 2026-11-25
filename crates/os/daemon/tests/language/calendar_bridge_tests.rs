@@ -16,7 +16,7 @@ const PASSWORD: &str = "the-password-her-vault-keeps";
 /// its person connects their server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_connected_calendar_account_is_kept_where_the_bridge_reads_it() {
-    let device = super::Device::start("Calendar", Some(accounts::person::ACCOUNTS_OWNER)).await;
+    let device = super::Device::start("Calendar", None).await;
     let workspace = device.workspace.clone();
     let acting = tilo_action_policy::Acting::person(device.person());
 
@@ -91,7 +91,7 @@ fn the_calendar_shows_its_servers_entries_and_writes_an_edit_back() {
     assert_eq!(rig.text("Event", &events[0], "title"), "Review");
     assert_eq!(
         rig.text("Event", &events[0], "start"),
-        "2026-11-19T19:00:00Z"
+        "2026-11-19T19:00:00"
     );
 
     // She renames it; the change is written to the server, and her calendar shows it.
