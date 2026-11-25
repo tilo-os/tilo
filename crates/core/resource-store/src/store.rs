@@ -312,20 +312,31 @@ impl Store {
         scope: &crate::wire::DraftScope,
         command: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let (index, filled) = if scope.undo {
-            (self.index.clone(), self.filled.clone())
+        let (index, filled, nested_in) = if scope.undo {
+            // A step through history reads every document a resource is nested in: what it
+            // takes back is in theirs, not only in the document of what it names.
+            (
+                self.index.clone(),
+                self.filled.clone(),
+                self.nested_in.clone(),
+            )
         } else {
             let filled = scope
                 .placements
                 .iter()
                 .filter_map(|key| self.filled.get(key).map(|filled| (key.clone(), *filled)))
                 .collect();
-            (self.index.selected(&scope.resources), filled)
+            (
+                self.index.selected(&scope.resources),
+                filled,
+                HashMap::new(),
+            )
         };
         let mut staged = Self {
             docs: self.docs.clone(),
             filled,
             index,
+            nested_in,
             source: self.source.take(),
             // What a write is judged by: the types every app declared, the reader rules, and
             // the workspace's read decision.

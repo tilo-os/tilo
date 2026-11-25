@@ -136,6 +136,72 @@ fn undo_named_from_a_view_takes_back_that_step() {
     );
 }
 
+/// The person names the version their tasks stand at, adds another task, and goes back to it:
+/// by its name, and by a review of what differs. Each restore brings the tasks back as they
+/// stood and the person's undo brings the added task back with it.
+#[test]
+fn a_person_restores_a_named_version_and_undoes_the_restore() {
+    let mut window = Session::tasks();
+    let root = root(&mut window);
+    let add = action(&window, &root, "new_task");
+    let record = tilolang_tilo::publish::package_resource_id(TASKS);
+    window
+        .invoke(None, None, &root, &add, &titled("Call the landlord"))
+        .unwrap();
+    let mut named = serde_json::Map::new();
+    named.insert("name".to_owned(), "Before the move".into());
+    window
+        .invoke(None, None, &record, "checkpoint", &named)
+        .unwrap();
+    window
+        .invoke(None, None, &root, &add, &titled("Pack the boxes"))
+        .unwrap();
+    assert_eq!(titles(&mut window), ["Call the landlord", "Pack the boxes"]);
+
+    // By its name: everything goes back to the version, one task added after it gone.
+    let mut restore = serde_json::Map::new();
+    restore.insert("version".to_owned(), "Before the move".into());
+    window
+        .invoke(None, None, &record, "restore", &restore)
+        .unwrap();
+    assert_eq!(titles(&mut window), ["Call the landlord"]);
+    let mut one = serde_json::Map::new();
+    one.insert("steps".to_owned(), 1.into());
+    window.invoke(None, None, &record, "undo", &one).unwrap();
+    assert_eq!(
+        titles(&mut window),
+        ["Call the landlord", "Pack the boxes"],
+        "the undo brings the task the restore took back"
+    );
+
+    // By a review of what differs: the task alone goes back, and its undo returns it.
+    let checkpoint = history(&mut window, &record)
+        .into_iter()
+        .find(|version| version["action"] == "checkpoint")
+        .expect("history lists the checkpoint")["change"]
+        .as_str()
+        .expect("the checkpoint names its change")
+        .to_owned();
+    let packing =
+        tilolang_tilo::publish::resource_id(TASKS, &task(&window, "Pack the boxes").id_string());
+    let mut asked = serde_json::Map::new();
+    asked.insert("version".to_owned(), checkpoint.into());
+    asked.insert("paths".to_owned(), serde_json::json!([packing]));
+    let review = window
+        .invoke(None, None, &record, "review-restore", &asked)
+        .expect("the review")
+        .value
+        .expect("the review answers");
+    let mut reviewed = serde_json::Map::new();
+    reviewed.insert("review".to_owned(), review["review"].clone());
+    window
+        .invoke(None, None, &record, "restore-reviewed", &reviewed)
+        .unwrap();
+    assert_eq!(titles(&mut window), ["Call the landlord"]);
+    window.invoke(None, None, &record, "undo", &one).unwrap();
+    assert_eq!(titles(&mut window), ["Call the landlord", "Pack the boxes"]);
+}
+
 /// The versions the app's history lists, oldest first, as the `history` verb answers them.
 fn history(session: &mut Session, record: &str) -> Vec<serde_json::Value> {
     let answered = session

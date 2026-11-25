@@ -2349,6 +2349,125 @@ mod store {
         ));
     }
 
+    /// A checkpoint of `a`, then a resource nested in it: the document of what was named stands
+    /// as it did, and what was made after it is in the document its nesting placed it in.
+    fn checkpointed_then_nested() -> (Store, String) {
+        let at = stamp_at;
+        let mut store = issues();
+        store
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Draft", "open"),
+                &at("make", "i1", 1),
+            )
+            .unwrap();
+        let checkpoint = store
+            .checkpoint(ISSUE, "a", "Drafted", &at("checkpoint", "i2", 2))
+            .unwrap();
+        store
+            .put(
+                ISSUE,
+                "b",
+                resource("a", "b0", "Part", "open"),
+                &at("make", "i3", 3),
+            )
+            .unwrap();
+        (store, checkpoint.change.hash().to_string())
+    }
+
+    /// A restore is drafted on a private copy of the store before it is written: the copy sees
+    /// the documents the live store sees, so what is nested in what it restores goes back too,
+    /// and a review of the live store is not stale when the write is drafted.
+    #[test]
+    fn a_drafted_restore_sees_the_resources_nested_in_what_it_restores() {
+        use collab_types::store::wire::Command;
+
+        let all = |_: &str| true;
+        let (mut store, version) = checkpointed_then_nested();
+        let resources = [(ISSUE.to_owned(), "a".to_owned())];
+        let review = store.review_restore(&resources, &version).unwrap();
+        assert_eq!(review.differing, ["b"]);
+
+        // By its name: the resource made after the checkpoint is in a document of its own, and
+        // the draft that judges the write takes it back with the one it names.
+        let by_name = Command::Restore {
+            resources: resources.to_vec(),
+            change: "Drafted".to_owned(),
+            only: None,
+            live: None,
+            stamp: stamp_at("restore", "i4", 4),
+        };
+        let drafted = tilo_resource_store::wire::draft(&mut store, by_name)
+            .expect("the restore by name is drafted");
+        assert!(
+            !drafted.is_empty(),
+            "the drafted restore takes the nested resource back"
+        );
+
+        // Reviewed: the live store's review is not stale when the write is drafted.
+        let by_review = Command::Restore {
+            resources: resources.to_vec(),
+            change: version,
+            only: None,
+            live: Some(review.live.clone()),
+            stamp: stamp_at("restore", "i5", 5),
+        };
+        tilo_resource_store::wire::draft(&mut store, by_review)
+            .expect("the reviewed restore is drafted");
+        assert!(
+            store.get(ISSUE, "b", &all).is_some(),
+            "a drafted write leaves the live store as it was"
+        );
+    }
+
+    /// A drafted restore still refuses a review the store moved after, and still answers that
+    /// what it was asked to restore already stands: seeing the nested documents widens what a
+    /// restore can take back, never what it accepts.
+    #[test]
+    fn a_drafted_restore_refuses_a_stale_review_and_answers_one_that_already_stands() {
+        use collab_types::store::wire::Command;
+
+        let (mut store, version) = checkpointed_then_nested();
+        let resources = [(ISSUE.to_owned(), "a".to_owned())];
+        let review = store.review_restore(&resources, &version).unwrap();
+        // A change after the review makes it stale, though the change before the nesting is
+        // what the restore would take back.
+        store
+            .put(
+                ISSUE,
+                "b",
+                resource("a", "b0", "Part", "done"),
+                &stamp_at("edit", "i4", 4),
+            )
+            .unwrap();
+        let stale = Command::Restore {
+            resources: resources.to_vec(),
+            change: version,
+            only: None,
+            live: Some(review.live.clone()),
+            stamp: stamp_at("restore", "i5", 5),
+        };
+        let refused = tilo_resource_store::wire::draft(&mut store, stale).unwrap_err();
+        assert!(
+            refused.error.to_string().contains("review it again"),
+            "{refused}"
+        );
+        // Only `a` is asked for, and it stands where the checkpoint named it: nothing to write.
+        let stands = Command::Restore {
+            resources: resources.to_vec(),
+            change: "Drafted".to_owned(),
+            only: Some(vec!["a".to_owned()]),
+            live: None,
+            stamp: stamp_at("restore", "i6", 6),
+        };
+        let refused = tilo_resource_store::wire::draft(&mut store, stands).unwrap_err();
+        assert!(
+            refused.error.to_string().contains("already stands"),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn a_refused_change_has_no_effect_and_neither_has_one_built_on_it() {
         use tilo_resource_store::Refusal;

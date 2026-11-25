@@ -3992,9 +3992,12 @@ impl ResourceStore {
         let named = (stamp.verb == Stamp::CHECKPOINT_VERB)
             .then(|| stamp.args.first()?.as_str().map(str::to_owned))
             .flatten();
-        // A step that took changes back is History's, not an action's.
+        // A step that took changes back is History's, not an action's; a restore keeps the
+        // name history says it by, which no `$` names to the app.
         let action = if stamp.undoes.is_some() {
             tilolang_runtime::store::STEP_ACTION.to_owned()
+        } else if stamp.verb == Stamp::RESTORE_VERB {
+            "restore".to_owned()
         } else {
             stamp.verb
         };
