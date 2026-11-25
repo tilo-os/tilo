@@ -883,7 +883,25 @@ fn splice_resolved_required_runtimes(
         mounts.push(mount.display().to_string());
     }
     splice_runtime_node_path(argv, manifest, bundles)?;
+    splice_runtime_trust(argv, manifest)?;
     Ok(mounts)
+}
+
+/// Whether a script's runtime trusts the system's certificate authorities, as bun and Node name it.
+const SYSTEM_CA_ENV: &str = "NODE_USE_SYSTEM_CA";
+
+/// A script's runtime trusts the certificate authorities this device trusts, the ones the
+/// sandbox shows it (`/etc/pki`) and the daemon's own connections are checked against, rather
+/// than the list its interpreter was built with: an authority the device's owner added is the
+/// app's too, and one they removed is not. A compiled entrypoint reads its own.
+fn splice_runtime_trust(
+    argv: &mut Vec<String>,
+    manifest: &ManifestView,
+) -> Result<(), LaunchError> {
+    if manifest.entrypoint.script.is_none() {
+        return Ok(());
+    }
+    splice_cli_setenv(argv, Some((SYSTEM_CA_ENV.to_string(), "1".to_string())))
 }
 
 /// `NODE_PATH` names the module directories bun resolves a bare import from.

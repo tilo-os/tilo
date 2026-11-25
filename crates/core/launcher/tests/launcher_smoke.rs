@@ -585,6 +585,11 @@ tilo_test_env::scenario! {
                 ]),
             "a script entrypoint resolves packages from its runtime: {argv:?}"
         );
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--setenv", "NODE_USE_SYSTEM_CA", "1"]),
+            "a script's runtime trusts the device's certificate authorities: {argv:?}"
+        );
         assert_eq!(argv.last().map(String::as_str), Some("entry"));
 
         // A compiled entrypoint imports no package: nothing names a module directory for it.
@@ -594,6 +599,7 @@ tilo_test_env::scenario! {
             !argv.iter().any(|arg| arg == "NODE_PATH"),
             "a binary entrypoint gets no module path: {argv:?}"
         );
+        assert!(!argv.iter().any(|arg| arg == "NODE_USE_SYSTEM_CA"));
     }
 
     phase bundle_signatures_check_the_runtime_mount;
