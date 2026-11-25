@@ -1102,6 +1102,25 @@ impl Daemon {
     ///
     /// # Errors
     /// The dispatch's socket does not take the connection.
+    /// Found the person's workspace behind the answer that asked for their shell: a sign-in is
+    /// answered at once, and a workspace the daemon is still founding never holds the caller.
+    pub(crate) fn found_workspace_behind(&self) {
+        if self.first.get().is_some() {
+            return;
+        }
+        let first = Arc::clone(&self.first);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-person-workspace".into())
+            .spawn(move || {
+                if let Err(error) = first.found_blocking() {
+                    tracing::warn!(%error, "the person who signed in has no workspace here");
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "the person's workspace is not founded");
+        }
+    }
+
     pub fn shell_link(&self) -> io::Result<tilo_socket::Stream> {
         use runtime_collab::wire::shell::SHELL_MAGIC;
         use std::io::Write as _;

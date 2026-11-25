@@ -971,8 +971,10 @@ impl PersonShells {
 impl crate::seats::Shells for PersonShells {
     fn arrived(&self, importing: bool) -> io::Result<Stream> {
         let daemon = self.daemon()?;
-        if !importing && let Err(error) = daemon.workspace() {
-            tracing::warn!(%error, "the person who signed in has no workspace here yet");
+        if !importing {
+            // Founded behind the answer, never in front of it: the sign-in is answered at once,
+            // and a person's workspace the daemon is still founding does not hold the caller.
+            daemon.found_workspace_behind();
         }
         daemon.shell_link()
     }
