@@ -959,6 +959,7 @@ impl Account {
                 answer: answer_for(&grant, op, args),
                 attended: false,
                 outside: false,
+                answered_in_advance: false,
                 resource: None,
             },
             Asker {
