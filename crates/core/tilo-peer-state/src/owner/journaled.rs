@@ -735,6 +735,7 @@ mod tests {
     use crate::owner::stored::StoredWorkspace;
     use crate::owner::{Change, NativeAuthorityStorage};
     use ed25519_dalek::SigningKey;
+    use serde::Serialize;
     use std::sync::Mutex;
 
     /// Parts kept in memory, and what was appended to them.
@@ -760,12 +761,17 @@ mod tests {
         }
 
         fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-            {
+            let failed = {
                 let mut fail = self.fail.lock().map_err(|error| error.to_string())?;
                 if fail.as_deref() == Some(name) {
                     *fail = None;
-                    return Err(format!("{name} is not written"));
+                    true
+                } else {
+                    false
                 }
+            };
+            if failed {
+                return Err(format!("{name} is not written"));
             }
             self.replaced
                 .lock()
@@ -1070,38 +1076,43 @@ mod tests {
         Ok(())
     }
 
-    /// A record a version 10 build kept: its snapshot, holding the ownership a build before it
-    /// kept, and an entry that build appended beside it. This build opens it with the entry's
-    /// change, the ownership gone, and its next publication writes a snapshot of its own layout.
-    #[test]
-    fn a_record_the_build_before_kept_opens_with_its_journal()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use serde::Serialize;
-        /// One run of an entry's bytes, as a version 10 build framed it.
-        #[derive(Serialize)]
-        enum Run {
-            Copy { from: u64, len: u64 },
-            Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
-        }
-        /// A stretch of ownership's writes the snapshot held.
-        #[derive(Serialize)]
-        enum KeptWrites {
-            Kept { from: u32, len: u32 },
-        }
-        /// An entry in that build's layout. Its answers and the writes its server had not taken
-        /// are units here: an entry that carries one is what the last case refuses.
-        #[derive(Serialize)]
-        struct Appended {
-            revision: u64,
-            fields: Vec<Run>,
-            answered: Vec<()>,
-            unanswered: Vec<()>,
-            writes: [Vec<KeptWrites>; 3],
-            frames: Vec<()>,
-            head: Vec<Run>,
-            documents: Vec<()>,
-            tail: Vec<Run>,
-        }
+    /// One run of an entry's bytes, as a version 10 build framed it.
+    #[derive(Serialize)]
+    enum Run {
+        Copy { from: u64, len: u64 },
+        Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
+    }
+    /// A stretch of ownership's writes the snapshot held.
+    #[derive(Serialize)]
+    enum KeptWrites {
+        Kept { from: u32, len: u32 },
+    }
+    /// An entry in that build's layout. Its answers and the writes its server had not taken are
+    /// units here: an entry that carries one is what [`earlier_record`] can make.
+    #[derive(Serialize)]
+    struct Appended {
+        revision: u64,
+        fields: Vec<Run>,
+        answered: Vec<()>,
+        unanswered: Vec<()>,
+        writes: [Vec<KeptWrites>; 3],
+        frames: Vec<()>,
+        head: Vec<Run>,
+        documents: Vec<()>,
+        tail: Vec<Run>,
+    }
+
+    /// A record a version 10 build kept: its snapshot, holding the ownership a build before it kept,
+    /// and an entry that build appended beside it.
+    struct EarlierRecord {
+        parts: Memory,
+        workspace: WorkspaceId,
+        /// The replica the snapshot held, which the entry leaves as it was.
+        peer: Vec<u8>,
+    }
+
+    /// [`EarlierRecord`], its entry carrying an answer when `answered` says so.
+    fn earlier_record(answered: bool) -> Result<EarlierRecord, Box<dyn std::error::Error>> {
         let framed = |entry: &Appended| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             let payload = postcard::to_allocvec(entry)?;
             let mut framed = u32::try_from(payload.len())?.to_le_bytes().to_vec();
@@ -1116,8 +1127,6 @@ mod tests {
         let workspace = WorkspaceId::parse("40267648-f762-4c8d-89ad-c5ab27aa13b8")
             .ok_or("the golden entry's workspace")?;
         let parts = Memory::default();
-        // The same record without a journal, for the replica the journal's entry leaves as it was.
-        let alone_parts = Memory::default();
         let mut held = serde_json::Map::new();
         held.insert(workspace.to_string(), 1.into());
         let index = serde_json::to_vec(&serde_json::json!({
@@ -1125,15 +1134,9 @@ mod tests {
             "revision": 1,
             "held": held
         }))?;
-        for parts in [&parts, &alone_parts] {
-            parts.write_part(INDEX_NAME, &index)?;
-            parts.write_part(&snapshot_name(workspace, 1), &golden)?;
-        }
-        let alone = Journaled::open(&alone_parts)?
-            .ok_or("the record is not kept")?
-            .1;
-        let held = alone.stored(workspace).ok_or("the snapshot's workspace")?;
-        check(held.generation == 1, "the golden entry is of generation 1")?;
+        parts.write_part(INDEX_NAME, &index)?;
+        parts.write_part(&snapshot_name(workspace, 1), &golden)?;
+        let held: StoredWorkspace = serde_json::from_slice(&golden)?;
         let layout = held.peer.layout();
         let length =
             |parts: &[std::sync::Arc<[u8]>]| -> usize { parts.iter().map(|part| part.len()).sum() };
@@ -1159,7 +1162,7 @@ mod tests {
             .position(|window| window == b"\"generation\":1,")
             .ok_or("the split names its generation")?
             + b"\"generation\":".len();
-        let entry = |answered: Vec<()>| Appended {
+        let entry = Appended {
             revision: 2,
             fields: vec![
                 Run::Copy {
@@ -1172,7 +1175,7 @@ mod tests {
                     len: wide(split.len() - at - 1),
                 },
             ],
-            answered,
+            answered: if answered { vec![()] } else { Vec::new() },
             unanswered: Vec::new(),
             writes: [
                 vec![KeptWrites::Kept { from: 0, len: 0 }],
@@ -1184,35 +1187,26 @@ mod tests {
             documents: Vec::new(),
             tail: kept(length(&layout.tail)),
         };
-        parts.write_part(&journal_name(workspace, 1), &framed(&entry(Vec::new()))?)?;
-        // A store that stopped after writing the pair it brings the workspace up with, before the
-        // index named it, opens again from the pair the earlier build wrote, the entry read.
-        parts
-            .fail
-            .lock()
-            .map_err(|error| error.to_string())?
-            .replace(INDEX_NAME.to_owned());
-        check(
-            Journaled::open(&parts).is_err(),
-            "the open stops where the index is written",
-        )?;
-        {
-            let kept = parts.parts.lock().map_err(|error| error.to_string())?;
-            check(
-                kept.get(&snapshot_name(workspace, 2))
-                    .is_some_and(|snapshot| !snapshot.is_empty())
-                    && kept
-                        .get(&journal_name(workspace, 2))
-                        .is_some_and(Vec::is_empty),
-                "the brought-up pair is written before the index",
-            )?;
-            let index: Index =
-                serde_json::from_slice(kept.get(INDEX_NAME).ok_or("the index is kept")?)?;
-            check(
-                index.held.get(&workspace) == Some(&1),
-                "the index still names the pair the earlier build wrote",
-            )?;
-        }
+        parts.write_part(&journal_name(workspace, 1), &framed(&entry)?)?;
+        let peer = held.peer.to_vec();
+        Ok(EarlierRecord {
+            parts,
+            workspace,
+            peer,
+        })
+    }
+
+    /// A record a version 10 build kept opens with the entry that build appended beside it: this
+    /// build reads the change, the ownership gone, and its next publication writes a snapshot of
+    /// its own layout.
+    #[test]
+    fn a_record_the_build_before_kept_opens_with_its_journal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let EarlierRecord {
+            parts,
+            workspace,
+            peer,
+        } = earlier_record(false)?;
         let (mut journaled, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
         let stored = read.stored(workspace).ok_or("the journal's workspace")?;
         check(stored.generation == 7, "the entry's change is read")?;
@@ -1221,7 +1215,7 @@ mod tests {
             "the record reads as this build's",
         )?;
         check(
-            peer_of(&read, workspace)? == peer_of(&alone, workspace)?,
+            peer_of(&read, workspace)? == peer,
             "the replica is the snapshot's",
         )?;
 
@@ -1255,13 +1249,56 @@ mod tests {
         )?;
 
         // An entry of that build that carries an answer is refused, never read past.
-        let parts_with_answer = Memory::default();
-        parts_with_answer.write_part(INDEX_NAME, &index)?;
-        parts_with_answer.write_part(&snapshot_name(workspace, 1), &golden)?;
-        parts_with_answer.write_part(&journal_name(workspace, 1), &framed(&entry(vec![()]))?)?;
+        let parts_with_answer = earlier_record(true)?.parts;
         check(
             Journaled::open(&parts_with_answer).is_err(),
             "an entry carrying ownership's answer is refused",
+        )?;
+        Ok(())
+    }
+
+    /// A store that stopped after writing the pair it brings a workspace up with, before the index
+    /// named it, opens again from the pair the earlier build wrote, the entry that build appended
+    /// read: no acknowledged write is lost to an update.
+    #[test]
+    fn an_open_that_stops_before_naming_the_brought_up_pair_reads_the_journal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let EarlierRecord {
+            parts, workspace, ..
+        } = earlier_record(false)?;
+        parts
+            .fail
+            .lock()
+            .map_err(|error| error.to_string())?
+            .replace(INDEX_NAME.to_owned());
+        check(
+            Journaled::open(&parts).is_err(),
+            "the open stops where the index is written",
+        )?;
+        let (pair_written, index_names_earlier) = {
+            let kept = parts.parts.lock().map_err(|error| error.to_string())?;
+            let pair_written = kept
+                .get(&snapshot_name(workspace, 2))
+                .is_some_and(|snapshot| !snapshot.is_empty())
+                && kept
+                    .get(&journal_name(workspace, 2))
+                    .is_some_and(Vec::is_empty);
+            let index: Index =
+                serde_json::from_slice(kept.get(INDEX_NAME).ok_or("the index is kept")?)?;
+            (pair_written, index.held.get(&workspace) == Some(&1))
+        };
+        check(
+            pair_written,
+            "the brought-up pair is written before the index",
+        )?;
+        check(
+            index_names_earlier,
+            "the index still names the pair the earlier build wrote",
+        )?;
+        let (_, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
+        check(
+            read.stored(workspace).map(|stored| stored.generation) == Some(7),
+            "the entry's change reads on",
         )?;
         Ok(())
     }
