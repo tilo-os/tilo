@@ -928,6 +928,57 @@ async fn serving_shortcuts(host: &TestHost, workspace: &str) -> Vec<String> {
         .collect()
 }
 
+/// A change saved before this device restarted, with no link made yet, reaches the device
+/// serving the workspace once the reopened copy makes its link: the frame waits in the device
+/// store, not only in the queue a process keeps.
+#[tokio::test]
+async fn a_change_saved_before_a_restart_reaches_the_serving_device() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) =
+        shared(serving_state.path(), "Restarted", 50).await;
+    let workspace = created.workspace.clone();
+    let held = device.clone();
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let _link = copies
+        .take_member_link(workspace_id)
+        .expect("the copy has a link to take out");
+    let shortcut = crate::workspaces::fixtures::on_issue_change();
+    let id = shortcut.id.clone();
+    copies
+        .change_own_shortcuts(
+            &workspace,
+            tilo_automation::ShortcutChange::Save(Box::new(shortcut)),
+        )
+        .await
+        .expect("the person saves their shortcut while no link is made");
+    assert!(
+        !serving_shortcuts(&serving, &workspace).await.contains(&id),
+        "the serving device holds a shortcut this copy has not sent"
+    );
+    drop(copies);
+    member.shutdown().await;
+
+    // The device starts again on what it kept, without the link it had taken out.
+    let member = member_service(member_state.path(), held).await;
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    while !serving_shortcuts(&serving, &workspace).await.contains(&id) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the serving device never took the shortcut this copy saved before it restarted"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
 /// A write made while this device is still taking a workspace in (it joins, or opens the
 /// workspace as it starts) waits rather than being refused: the person hears nothing, and the same
 /// write, made again once the device holds the workspace, is kept and reaches its serving device.
