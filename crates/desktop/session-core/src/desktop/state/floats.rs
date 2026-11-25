@@ -385,7 +385,14 @@ impl super::DesktopHandle {
             .filter(|shown| shown.floated)
             .filter_map(|shown| {
                 let (_, area) = super::shown::section_holding(&shared, shown.group)?;
-                Some((shown.group, shown.window - area.origin().to_vec2()))
+                let (left, top, window) = (area.x0, area.y0, shown.window);
+                let on_display = Rect::new(
+                    window.x0 - left,
+                    window.y0 - top,
+                    window.x1 - left,
+                    window.y1 - top,
+                );
+                Some((shown.group, on_display))
             })
             .collect()
     }
