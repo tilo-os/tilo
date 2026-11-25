@@ -1019,14 +1019,14 @@ impl PeerGovernanceMut<'_> {
     }
     /// Atomically records a verified single-use invitation redemption, its
     /// independent root-certified device, and its workspace role, written by
-    /// `key`: the device of any member who may invite. The invitation is
-    /// checked on its own ([`crate::workspace::membership::invitation_admits`]),
-    /// as every receiver checks it.
+    /// `key`: the redeeming device itself. The invitation is checked on its
+    /// own ([`crate::workspace::membership::invitation_admits`]), as every
+    /// receiver checks it.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not a member's device that may invite,
-    /// the invitation does not admit the redemption, it conflicts with
+    /// Returns an error if `key` is not the redeeming device's own, the
+    /// invitation does not admit the redemption, it conflicts with
     /// recorded governance, or governance cannot be updated.
     pub fn admit_invited_member(
         self,
@@ -1062,11 +1062,10 @@ impl PeerGovernanceMut<'_> {
             return Err("invitation is not for this workspace".into());
         }
         // The redeeming device writes its own redemption, the invitation its
-        // authority, or a member who may invite writes it: every receiver
-        // checks the invitation itself.
+        // authority: every receiver checks the invitation itself.
         let cert = redemption.certificate();
         if key.device_public_key() != cert.device_public_key {
-            self.peer.require_inviter(key, now)?;
+            return Err("a device redeems only its own invitation".into());
         }
         if self.peer.core.revocations.refuses(cert) {
             return Err("device revoked".into());
@@ -1104,54 +1103,25 @@ impl PeerGovernanceMut<'_> {
             }
         }
     }
-    /// Write `row` under `known` as this admission's governance change, as
-    /// `key`'s device, and take it in as every member will.
-    fn write_identity_row(
-        self,
-        mut doc: crate::cached_document::CachedDocument,
-        known: &str,
-        row: &GovernedIdentity,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let identities = doc
-            .get(ROOT, "peer_identities_v1")
-            .map_err(err)?
-            .ok_or("governed identities missing")?
-            .1;
-        let before = doc.get_heads();
-        doc.set_actor(self.peer.workspace_actor_of(key));
-        doc.put(
-            &identities,
-            known,
-            automerge::ScalarValue::Bytes(row.encode().map_err(err)?),
-        )
-        .map_err(err)?;
-        self.peer.write_governance(doc, &before, key, now)
-    }
-
     /// Admit `device`, a device certified by the root of someone already a
     /// member, as that member's: it needs no invitation, and `key` is that
-    /// very device, writing its own row when it first asks, or a current
-    /// member's device. Whether the workspace changed.
+    /// very device, writing its own row. No device writes another's row.
+    /// Whether the workspace changed.
     ///
     /// A device the workspace already holds is admitted again under the same
     /// certificate, and a later certificate of it replaces the held one
     /// ([`PeerGovernanceMut::renew_member_certificate`]): a device is its key,
     /// whatever certificate of its person's root it comes back with. A device
-    /// the workspace removed, whose row it kept marked, is admitted afresh
-    /// here, by the workspace's own deliberate admission: the mark goes, the
-    /// row keeps the admission, delegation and revocation it carries, and the
-    /// join exchange and the entry refuse the device before reaching this
+    /// the workspace took off its member list stays off it: only an
+    /// invitation it redeems brings it back
     /// ([`PeerGovernance::removed_from_member_list`]).
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is neither `device` itself nor a current
-    /// member's device, `device`
-    /// does not verify, is revoked or names another device than the one the
-    /// workspace holds, its person is not a member, or governance cannot be
-    /// updated.
+    /// Returns an error if `key` is not `device`'s own, `device` does not
+    /// verify, is revoked, was taken off the member list or names another
+    /// device than the one the workspace holds, its person is not a member,
+    /// or governance cannot be updated.
     pub fn admit_member_device(
         self,
         device: &DeviceCert,
@@ -1159,7 +1129,7 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         if key.device_public_key() != device.device_public_key {
-            self.peer.require_member_writer(key, now)?;
+            return Err("a device writes only its own row".into());
         }
         tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
         if self.peer.core.revocations.refuses(device) {
@@ -1176,20 +1146,8 @@ impl PeerGovernanceMut<'_> {
             .identities()
             .get(&known)
             .and_then(|row| row.as_ref().ok().cloned());
-        // A device the workspace removed comes back by this admission, the
-        // workspace's own: the mark goes and the row keeps the admission,
-        // delegation and revocation it carries. A later certificate of it
-        // replaces the one the row keeps.
-        if let Some(row) = held.as_ref().filter(|row| row.removed) {
-            let mut row = row.clone();
-            if row.device_cert != *device {
-                if !super::supersedes(&row.device_cert, device) {
-                    return Err("certificate conflict".into());
-                }
-                row.device_cert = device.clone();
-            }
-            row.removed = false;
-            return self.write_identity_row(doc, &known, &row, key, now);
+        if held.as_ref().is_some_and(|row| row.removed) {
+            return Err("the workspace took this device off its member list".into());
         }
         // What the workspace's own record of the device decides, before the
         // fresh row an admission of a device it never met writes.

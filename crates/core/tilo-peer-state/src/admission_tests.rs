@@ -1142,7 +1142,7 @@ pub(crate) fn add_member_with(
             .unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, authority, now)
+            .admit_invited_member(&redemption, &device, now)
             .unwrap()
     );
     (device, cert, root.verifying_key().to_bytes())
@@ -1326,15 +1326,23 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
 
     assert!(
-        peer.governance_mut()
+        peer.clone()
+            .governance_mut()
             .admit_invited_member(&redemption, &other_owner_device, now)
+            .unwrap_err()
+            .contains("only its own"),
+        "no other device writes the guest's redemption, the owner's neither"
+    );
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &guest_key, now)
             .unwrap(),
-        "any of the owner's devices admits, not only the one that issued"
+        "the guest's device redeems its own invitation"
     );
     assert!(
         !peer
             .governance_mut()
-            .admit_invited_member(&redemption, &authority_key, now)
+            .admit_invited_member(&redemption, &guest_key, now)
             .unwrap()
     );
     assert_eq!(
@@ -1361,7 +1369,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         !peer
             .governance_mut()
-            .admit_invited_member(&redemption, &authority_key, now)
+            .admit_invited_member(&redemption, &guest_key, now)
             .unwrap()
     );
     let mut second_grant = redemption.join().grant().clone();
@@ -1394,13 +1402,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&second_redemption, &authority_key, now)
+            .admit_invited_member(&second_redemption, &guest_key, now)
             .unwrap()
     );
     assert!(
         !peer
             .governance_mut()
-            .admit_invited_member(&redemption, &authority_key, now)
+            .admit_invited_member(&redemption, &guest_key, now)
             .unwrap(),
         "a later invite for the same device must not overwrite the first receipt"
     );
@@ -1417,13 +1425,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         !restored
             .governance_mut()
-            .admit_invited_member(&redemption, &authority_key, now)
+            .admit_invited_member(&redemption, &guest_key, now)
             .unwrap()
     );
     assert!(
         !restored
             .governance_mut()
-            .admit_invited_member(&second_redemption, &authority_key, now)
+            .admit_invited_member(&second_redemption, &guest_key, now)
             .unwrap()
     );
     let replay_key = SigningKey::from_bytes(&[54; 32]);
@@ -1466,7 +1474,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         restored
             .governance_mut()
-            .admit_invited_member(&replay_redemption, &authority_key, now)
+            .admit_invited_member(&replay_redemption, &replay_key, now)
             .unwrap_err()
             .contains("already redeemed"),
         "invite A remains spent after invite B updates the same original device"
@@ -1542,7 +1550,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         !restored
             .governance_mut()
-            .admit_invited_member(&redemption, &authority_key, now)
+            .admit_invited_member(&redemption, &guest_key, now)
             .unwrap()
     );
     let access = restored.governance().governed_access(now).unwrap();
@@ -1578,13 +1586,13 @@ tilo_test_env::scenario! {
         let mut right = base.clone();
         assert!(
             left.governance_mut()
-                .admit_invited_member(&first, &authority_key, now)
+                .admit_invited_member(&first, &SigningKey::from_bytes(&[72; 32]), now)
                 .unwrap()
         );
         assert!(
             right
                 .governance_mut()
-                .admit_invited_member(&second, &authority_key, now)
+                .admit_invited_member(&second, &SigningKey::from_bytes(&[76; 32]), now)
                 .unwrap()
         );
 
@@ -1626,13 +1634,21 @@ tilo_test_env::scenario! {
         let mut right = base.clone();
         assert!(
             left.governance_mut()
-                .admit_invited_member(&redemption(&signed, (98, 99), (100, 101), now), &authority_key, now)
+                .admit_invited_member(
+                    &redemption(&signed, (98, 99), (100, 101), now),
+                    &SigningKey::from_bytes(&[99; 32]),
+                    now,
+                )
                 .unwrap()
         );
         assert!(
             right
                 .governance_mut()
-                .admit_invited_member(&redemption(&signed, (98, 102), (103, 104), now), &authority_key, now)
+                .admit_invited_member(
+                    &redemption(&signed, (98, 102), (103, 104), now),
+                    &SigningKey::from_bytes(&[102; 32]),
+                    now,
+                )
                 .unwrap()
         );
         let invite_id = hex::encode(blake3::hash(&signed).as_bytes());
@@ -1713,12 +1729,15 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A device redeems two invitations from different issuers, one after the
+/// other on its own replica: it writes only its own row, so the two spends
+/// come from it in turn, and the workspace that takes them keeps both.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one end-to-end scenario: its setup and assertions stay together"
 )]
-fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore() {
+fn distinct_invitations_one_device_redeems_keep_both_spends_after_restore() {
     use crate::join::{
         InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
         sign_join_proof, verify_join_proof,
@@ -1788,13 +1807,13 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     let redemption_a = redeem(&signed_a, 85, 86, &guest, &guest_key);
     let redemption_b = redeem(&signed_b, 87, 88, &guest, &guest_key);
     let mut left = base.clone();
-    let mut right = base.clone();
     left.governance_mut()
-        .admit_invited_member(&redemption_a, &authority_key, now)
+        .admit_invited_member(&redemption_a, &guest_key, now)
         .unwrap();
+    let mut right = left.clone();
     right
         .governance_mut()
-        .admit_invited_member(&redemption_b, &delegate_key, now)
+        .admit_invited_member(&redemption_b, &guest_key, now)
         .unwrap();
 
     let authority = base.owner_certificates()[0].device_public_key;
@@ -1830,11 +1849,11 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     sign_device_cert(&mut replay, &guest_root).unwrap();
     let replay_a = redeem(&signed_a, 90, 91, &replay, &replay_key);
     let replay_b = redeem(&signed_b, 92, 93, &replay, &replay_key);
-    for (redemption, issuer) in [(&replay_a, &authority_key), (&replay_b, &delegate_key)] {
+    for redemption in [&replay_a, &replay_b] {
         assert!(
             restored
                 .governance_mut()
-                .admit_invited_member(redemption, issuer, now)
+                .admit_invited_member(redemption, &replay_key, now)
                 .unwrap_err()
                 .contains("already redeemed")
         );
@@ -1985,8 +2004,8 @@ tilo_test_env::scenario! {
         assert_eq!(before, governor.durable().unwrap());
         let rows = governor.rows();
         let floors = governor.replay_floors();
-        assert!(governor.governance_mut().admit_member_device(&cert, &a, now).unwrap());
-        assert!(!governor.governance_mut().admit_member_device(&cert, &a, now).unwrap());
+        assert!(governor.governance_mut().admit_member_device(&cert, &new_key, now).unwrap());
+        assert!(!governor.governance_mut().admit_member_device(&cert, &new_key, now).unwrap());
         assert_eq!(rows, governor.rows());
         assert_eq!(floors, governor.replay_floors());
         let outcome = existing
@@ -2038,7 +2057,7 @@ tilo_test_env::scenario! {
         let other_root = SigningKey::from_bytes(&[9; 32]);
         cert.user_public_key = other_root.verifying_key().to_bytes();
         sign_device_cert(&mut cert, &other_root).unwrap();
-        assert!(governor.governance_mut().admit_member_device(&cert, &a, now).is_err());
+        assert!(governor.governance_mut().admit_member_device(&cert, &new_key, now).is_err());
     }
 
     phase a_members_further_device_is_admitted_and_a_strangers_is_not;
@@ -2047,7 +2066,12 @@ tilo_test_env::scenario! {
         let (_, mut cert, _) = add_member_with(&mut governor, &a, now, 0x45, 0x46);
         cert.device_public_key = SigningKey::from_bytes(&[0x47; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut cert, &SigningKey::from_bytes(&[0x45; 32])).unwrap();
-        assert!(governor.governance_mut().admit_member_device(&cert, &a, now).unwrap());
+        assert!(
+            governor
+                .governance_mut()
+                .admit_member_device(&cert, &SigningKey::from_bytes(&[0x47; 32]), now)
+                .unwrap()
+        );
         assert!(governor.permissions(cert.device_public_key, now).is_ok());
 
         let stranger = SigningKey::from_bytes(&[0x48; 32]);
@@ -2056,7 +2080,10 @@ tilo_test_env::scenario! {
             .verifying_key()
             .to_bytes();
         sign_device_cert(&mut cert, &stranger).unwrap();
-        let refused = governor.governance_mut().admit_member_device(&cert, &a, now).unwrap_err();
+        let refused = governor
+            .governance_mut()
+            .admit_member_device(&cert, &SigningKey::from_bytes(&[0x49; 32]), now)
+            .unwrap_err();
         assert!(refused.contains("not a member"), "{refused}");
         assert!(governor.permissions(cert.device_public_key, now).is_err());
     }
@@ -2076,7 +2103,10 @@ tilo_test_env::scenario! {
                 .unwrap(),
         );
         sign_device_cert(&mut cert, &root).unwrap();
-        governor.governance_mut().admit_member_device(&cert, &a, now).unwrap();
+        governor
+            .governance_mut()
+            .admit_member_device(&cert, &SigningKey::from_bytes(&[8; 32]), now)
+            .unwrap();
         let mut existing = governor.clone();
         assert!(existing.permissions(cert.device_public_key, now).is_ok());
         let later = now + Duration::from_secs(2);
@@ -2096,7 +2126,12 @@ tilo_test_env::scenario! {
             .unwrap();
         next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut next, &root).unwrap();
-        assert!(governor.governance_mut().admit_member_device(&next, &a, later).unwrap());
+        assert!(
+            governor
+                .governance_mut()
+                .admit_member_device(&next, &SigningKey::from_bytes(&[9; 32]), later)
+                .unwrap()
+        );
         assert!(
             existing
                 .receive(
@@ -2279,7 +2314,10 @@ tilo_test_env::scenario! {
         let mut valid = source.owner_certificates()[0].clone();
         valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut valid, &root).unwrap();
-        source.governance_mut().admit_member_device(&valid, &a, now).unwrap();
+        source
+            .governance_mut()
+            .admit_member_device(&valid, &SigningKey::from_bytes(&[8; 32]), now)
+            .unwrap();
         let NeighbourMsg::SyncResp { changes, workspace } = source.workspace_message() else {
             panic!("unexpected fixture shape")
         };
@@ -2841,7 +2879,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&first, &authority_key, now)
+            .admit_invited_member(&first, &guest_key, now)
             .unwrap()
     );
     let owner = hex::encode(peer.owner());
@@ -2861,7 +2899,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     );
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&unused, &authority_key, now)
+            .admit_invited_member(&unused, &guest_key, now)
             .is_err(),
         "an invitation issued before the ban does not let them back"
     );
@@ -2872,7 +2910,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     );
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&unused, &authority_key, now)
+            .admit_invited_member(&unused, &guest_key, now)
             .unwrap()
     );
     assert_eq!(
@@ -2962,7 +3000,7 @@ fn admitted_guest(
         verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, authority_key, now)
+            .admit_invited_member(&redemption, &key, now)
             .unwrap()
     );
     (key, cert)

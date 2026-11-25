@@ -142,7 +142,7 @@ fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
             .unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, &owner_key, now())
+            .admit_invited_member(&redemption, &guest_key, now())
             .unwrap()
     );
     (peer, owner_person, guest_key, guest)

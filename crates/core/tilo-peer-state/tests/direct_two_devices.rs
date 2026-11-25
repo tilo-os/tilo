@@ -196,12 +196,12 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     )
     .unwrap();
 
-    // B is the same person's second device. Its root certifies it, so A writes
-    // it in as that member's device: no invitation, and A is the only device
-    // that has to be there.
+    // B is the same person's second device. Its root certifies it, so B lists
+    // itself as that member's device on A's copy: no invitation, and A is the
+    // only device that has to be there.
     assert!(
         a.governance_mut()
-            .admit_member_device(&b_cert, &a_key, now)
+            .admit_member_device(&b_cert, &b_key, now)
             .unwrap()
     );
     let roster = a.certificates();

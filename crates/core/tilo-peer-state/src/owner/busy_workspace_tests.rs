@@ -226,7 +226,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
             redemption(&governor, &governor_key, &hint, (&cert, &key), author, now);
         assert!(
             peer.governance_mut()
-                .admit_invited_member(&redeemed, &governor_key, now)
+                .admit_invited_member(&redeemed, &key, now)
                 .unwrap()
         );
         bootstrap.push(peer.workspace_message());
@@ -241,7 +241,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     );
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redeemed, &governor_key, now)
+            .admit_invited_member(&redeemed, &device_key, now)
             .unwrap()
     );
     bootstrap.push(peer.workspace_message());

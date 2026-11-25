@@ -29,7 +29,10 @@ async fn a_host_answers_each_governed_workspace_by_its_own_id() {
             .create(&format!("Applicant {index}"))
             .await
             .unwrap();
-        admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
+        workspaces
+            .enter(&created.workspace, (&member, &member_key))
+            .await
+            .expect("the person's further device lists itself");
         made.push(created);
     }
     for created in &made {

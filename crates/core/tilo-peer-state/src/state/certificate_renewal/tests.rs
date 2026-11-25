@@ -81,7 +81,7 @@ fn admit(
             .unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, authority, at)
+            .admit_invited_member(&redemption, device, at)
             .unwrap()
     );
 }

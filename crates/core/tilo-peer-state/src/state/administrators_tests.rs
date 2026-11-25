@@ -636,7 +636,7 @@ mod made_and_invited {
             let invited = administrator_redemption(&peer, (&host_key, &host), owner, &guest, 42, now);
             assert!(
                 peer.governance_mut()
-                    .admit_invited_member(&invited, &owner_key, now)
+                    .admit_invited_member(&invited, &guest.0, now)
                     .unwrap()
             );
             assert!(is_administrator(&peer, guest.1.user_public_key, now));
@@ -647,24 +647,22 @@ mod made_and_invited {
             assert_eq!(replica.role_of(&guest_person), Some(Role::Editor));
 
             // Escalated: the host signs one for Eve, an Editor who may not make
-            // administrators. No member admits it, whoever writes it.
+            // administrators. It admits nobody.
             let escalated = device(43, 44);
             let refused = administrator_redemption(&peer, (&host_key, &host), eve, &escalated, 45, now);
-            for writer in [&host_key, &owner_key] {
-                let error = peer
-                    .clone()
-                    .governance_mut()
-                    .admit_invited_member(&refused, writer, now)
-                    .unwrap_err();
-                assert!(error.contains("may not make"), "{error}");
-            }
+            let error = peer
+                .clone()
+                .governance_mut()
+                .admit_invited_member(&refused, &escalated.0, now)
+                .unwrap_err();
+            assert!(error.contains("may not make"), "{error}");
             // Forged: Eve's own device signs one. It admits nobody either.
             let forged = device(46, 47);
             let by_eve = administrator_redemption(&peer, (&eve_key, &eve_cert), eve, &forged, 48, now);
             assert!(
                 peer.clone()
                     .governance_mut()
-                    .admit_invited_member(&by_eve, &host_key, now)
+                    .admit_invited_member(&by_eve, &forged.0, now)
                     .is_err()
             );
             assert!(peer.permissions(forged.1.device_public_key, now).is_err());

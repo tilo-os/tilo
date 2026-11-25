@@ -478,7 +478,7 @@ tilo_test_env::scenario! {
         // Nor does admitting its certificate as an ordinary device.
         assert!(
             !governor
-                .governance_mut().admit_member_device(&cert, &authority, withdrawn)
+                .governance_mut().admit_member_device(&cert, &key, withdrawn)
                 .unwrap()
         );
         assert!(governor.permissions(device, withdrawn).is_err());
@@ -499,10 +499,10 @@ tilo_test_env::scenario! {
             )
         };
         // A person's ordinary device, admitted as one, never becomes an agent.
-        let (_, plain) = agent(&person, 12);
+        let (plain_key, plain) = agent(&person, 12);
         assert!(
             governor
-                .governance_mut().admit_member_device(&plain, &authority, now)
+                .governance_mut().admit_member_device(&plain, &plain_key, now)
                 .unwrap()
         );
         assert!(

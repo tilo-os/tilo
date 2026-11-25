@@ -184,47 +184,6 @@ fn a_joining_device_signs_its_own_admission_and_a_holder_carries_it() {
     );
 }
 
-/// A member's device admits someone while a server of another person keeps
-/// the workspace: the server takes the member's change in under the member's
-/// device and carries it on unchanged, so every other device reads the
-/// member's operation, written by that device.
-#[test]
-fn a_members_admission_reaches_everyone_through_a_holder_unchanged() {
-    let (mut peer, authority_key, _, _, now) = seeded();
-    let (holder_key, holder) = device_of(91, 92, "Holder");
-    holding(&mut peer, &authority_key, (&holder_key, &holder));
-    let (_, guest) = device_of(93, 94, "Guest");
-    let redemption = invited(&peer, &authority_key, &guest, now);
-    let heads = peer.workspace_heads().unwrap();
-    let mut phone = peer.clone();
-    assert!(
-        phone
-            .governance_mut()
-            .admit_invited_member(&redemption, &authority_key, now)
-            .unwrap()
-    );
-    let signed = phone.workspace_changes_since(&heads);
-    let phone_key = authority_key.verifying_key().to_bytes();
-
-    let mut held = peer.clone();
-    from_author(&mut held, phone_key, signed.clone(), now).unwrap();
-    assert_eq!(
-        carried_since(&held, &heads),
-        signed.iter().cloned().collect()
-    );
-    let mut member = peer.clone();
-    from_author(
-        &mut member,
-        phone_key,
-        carried_since(&held, &heads).into_iter().collect(),
-        now,
-    )
-    .unwrap();
-    assert!(member.role(&guest.device_public_key, now).is_ok());
-    assert_eq!(new_authors(&peer, &member), vec![phone_key]);
-    assert!(held.role(&holder.device_public_key, now).is_err());
-}
-
 /// A member's further device and a key minted for the workspace each sign
 /// their own row, admissible because their certificates chain to a root the
 /// list names; a server of another person carries the row on, and every

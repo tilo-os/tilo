@@ -118,7 +118,7 @@ async fn a_members_windows_the_link_admitted_outlive_a_restart() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
     let workspace = created.workspace.clone();
-    let (member, salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let (member, salt) = admitted_member(&workspaces, &workspace, &cert, 3).await;
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let opened = terminals_opened(&workspaces, &workspace, &member, salt).await;
     let (pairing, link) = linked(&workspaces, created.workspace_id, member_key.clone()).await;
@@ -262,7 +262,7 @@ async fn a_members_device_is_admitted_on_the_link_it_dials() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
-    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
+    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &cert, 3).await;
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let endpoint_key = member_key.verifying_key().to_bytes();
     let (endpoint, link, dialed) = dialed(
@@ -303,7 +303,7 @@ async fn a_page_keyed_by_another_endpoint_is_admitted_as_its_device() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
-    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
+    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &cert, 3).await;
     let member_key = SigningKey::from_bytes(&[3; 32]);
     // The endpoint this page speaks as is no device's key.
     let page = SigningKey::from_bytes(&[0x91; 32]);
@@ -345,8 +345,8 @@ async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
-    let (revoked, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
-    let (kept, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 4).await;
+    let (revoked, _salt) = admitted_member(&workspaces, &created.workspace, &cert, 3).await;
+    let (kept, _salt) = admitted_member(&workspaces, &created.workspace, &cert, 4).await;
     let revoked_key = SigningKey::from_bytes(&[3; 32]);
     let kept_key = SigningKey::from_bytes(&[4; 32]);
     let (revoked_endpoint, revoked_link) = dialled_and_running(
@@ -574,12 +574,15 @@ async fn an_agent_outside_its_grant_is_refused() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
     let other = WorkspaceId::from_u128(u128::MAX - 7);
-    let (_agent_key, agent) = device_cert(
+    let (agent_key, agent) = device_cert(
         &SigningKey::from_bytes(&[1; 32]),
         "agent",
         DeviceCapabilities::member(),
     );
-    admit_view_reader(&workspaces, &created.workspace, &key, &agent).await;
+    workspaces
+        .enter(&created.workspace, (&agent, &agent_key))
+        .await
+        .expect("the agent's device lists itself");
     workspaces.inner.host.agents.write().unwrap().insert(
         agent.device_public_key,
         Some(Delegation {

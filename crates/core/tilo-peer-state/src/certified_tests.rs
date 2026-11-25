@@ -131,7 +131,7 @@ fn actual_redemption_at(
     .unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, &governor_key, now)
+            .admit_invited_member(&redemption, &device_key, now)
             .unwrap()
     );
     let bootstrap = JoinBootstrap {
