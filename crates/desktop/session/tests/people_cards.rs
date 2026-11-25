@@ -318,9 +318,11 @@ fn an_agents_card_says_what_it_is_at_and_offers_what_can_be_asked_of_it() {
             "Editing the launch note",
         )],
     );
-    // Who is here, where the agent has its row, and a press on the row opens its card.
+    // Who is here, where the agent has its row, and a press on the row opens its card. The row is
+    // pressed by the name a reader hears for it, which is the row and nothing else: its title alone
+    // names the text, whose place in a row carrying software's mark is not the row's.
     open_who_is_here(&mut session);
-    press(&mut session, "Fieldwork");
+    press(&mut session, "Agent Fieldwork");
     // What it is at, as its live line, and what can be asked of it: Stop, Undo run, Take over and
     // Revoke, each carried out by its card in Console.
     says(&mut session, "Editing the launch note");
@@ -349,7 +351,7 @@ fn an_agents_card_says_what_it_is_at_and_offers_what_can_be_asked_of_it() {
         session.shell_control("Stop").is_none().then_some(())
     });
     assert!(
-        !session.shell_says("Who is here"),
+        !session.shell_says("People here now"),
         "who is here left with the card: {:?}",
         session.accessible_labels()
     );
