@@ -22,11 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.music@7417b198334861f3";
-
-/** The arguments of `remove_offline`. */
-export interface RemoveOfflineArgs {
-}
+export const SURFACE = "so.tilo.music@c33b0cfbfc80e1c4";
 
 /** The arguments of `play_album`. */
 export interface PlayAlbumArgs {
@@ -142,13 +138,11 @@ export interface Track extends tilo.Resource {
   keep_offline(): Promise<void>;
   /** Takes the kept copy away; the song still plays from the catalogue. */
   remove_offline(): Promise<void>;
-  /** Runs `remove_offline` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  remove_offlineMany(items: RemoveOfflineArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Track` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TRACK_ACTIONS = ["play_song", "play_rec", "like", "keep_offline", "remove_offline", "remove_offlineMany"] as const;
+export const TRACK_ACTIONS = ["play_song", "play_rec", "like", "keep_offline", "remove_offline"] as const;
 
 /** The `tl.so.tilo.music.Track` kind at `path`. */
 export function track(ws: tilo.Workspace, path: string): Track {

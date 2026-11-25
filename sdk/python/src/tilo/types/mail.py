@@ -32,20 +32,12 @@ __all__ = [
     "Mail",
     "TiloMail",
     "SetSignatureArgs",
-    "MarkAllReadArgs",
-    "ArchiveArgs",
-    "ToInboxArgs",
-    "MoveToArgs",
-    "DeleteArgs",
-    "JunkArgs",
-    "FlagArgs",
     "SnoozeArgs",
     "SnoozeAnHourArgs",
     "SnoozeUntilTomorrowArgs",
     "UnsnoozeArgs",
     "LabelArgs",
     "MuteArgs",
-    "MarkReadArgs",
     "AnnounceArgs",
     "ShowPicturesArgs",
     "AttachArgs",
@@ -64,36 +56,6 @@ SetSignatureArgs = TypedDict("SetSignatureArgs", {
     "signature": "str",
 })
 """The arguments of `set_signature`."""
-
-MarkAllReadArgs = TypedDict("MarkAllReadArgs", {
-})
-"""The arguments of `mark_all_read`."""
-
-ArchiveArgs = TypedDict("ArchiveArgs", {
-})
-"""The arguments of `archive`."""
-
-ToInboxArgs = TypedDict("ToInboxArgs", {
-})
-"""The arguments of `to_inbox`."""
-
-MoveToArgs = TypedDict("MoveToArgs", {
-    "to": "Mailbox",
-})
-"""The arguments of `move_to`."""
-
-DeleteArgs = TypedDict("DeleteArgs", {
-})
-"""The arguments of `delete`."""
-
-JunkArgs = TypedDict("JunkArgs", {
-})
-"""The arguments of `junk`."""
-
-FlagArgs = TypedDict("FlagArgs", {
-    "flagged": NotRequired["bool | None"],
-})
-"""The arguments of `flag`."""
 
 SnoozeArgs = TypedDict("SnoozeArgs", {
     "until": "str",
@@ -122,11 +84,6 @@ MuteArgs = TypedDict("MuteArgs", {
     "muted": NotRequired["bool | None"],
 })
 """The arguments of `mute`."""
-
-MarkReadArgs = TypedDict("MarkReadArgs", {
-    "unread": NotRequired["bool | None"],
-})
-"""The arguments of `mark_read`."""
 
 AnnounceArgs = TypedDict("AnnounceArgs", {
 })
@@ -189,7 +146,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -250,7 +207,7 @@ class Notice(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -305,18 +262,14 @@ class Account(Resource):
         """Marks every conversation of the account read."""
         return self.action("mark_all_read")
 
-    def mark_all_read_many(self, items: list[MarkAllReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark_all_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("mark_all_read", items)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_signature", "set_signature_many", "check_now", "search_server", "new_message", "empty_trash", "mark_all_read", "mark_all_read_many"})
+    __actions__ = frozenset({"set_signature", "set_signature_many", "check_now", "search_server", "new_message", "empty_trash", "mark_all_read"})
 
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -335,7 +288,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -382,41 +335,21 @@ class Thread(Resource):
         """Archives the conversation: its messages leave the inbox."""
         return self.action("archive")
 
-    def archive_many(self, items: list[ArchiveArgs]) -> list[dict[str, Any]]:
-        """Runs `archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("archive", items)
-
     def to_inbox(self) -> None:
         """Moves the conversation back to the inbox, and unmutes it: what a person brings back is what they want to see again."""
         return self.action("to_inbox")
-
-    def to_inbox_many(self, items: list[ToInboxArgs]) -> list[dict[str, Any]]:
-        """Runs `to_inbox` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("to_inbox", items)
 
     def move_to(self, *, to: Mailbox) -> None:
         """Moves the conversation to another mailbox of its account."""
         return self.action("move_to", to=to)
 
-    def move_to_many(self, items: list[MoveToArgs]) -> list[dict[str, Any]]:
-        """Runs `move_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_to", items)
-
     def delete(self) -> None:
         """Deletes the conversation: its messages go to the trash."""
         return self.action("delete")
 
-    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete", items)
-
     def junk(self) -> None:
         """Marks the conversation as junk: its messages leave the inbox for the account's junk mailbox, and what comes of it again stays there."""
         return self.action("junk")
-
-    def junk_many(self, items: list[JunkArgs]) -> list[dict[str, Any]]:
-        """Runs `junk` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("junk", items)
 
     def purge(self) -> None:
         """Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and this app's record of it leaves once the server says it is."""
@@ -431,10 +364,6 @@ class Thread(Resource):
         if flagged is not None:
             args["flagged"] = flagged
         return self.action("flag", **args)
-
-    def flag_many(self, items: list[FlagArgs]) -> list[dict[str, Any]]:
-        """Runs `flag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("flag", items)
 
     def snooze(self, *, until: str) -> None:
         """Puts the conversation away until a moment: it leaves the inbox, and comes back once that moment has come, with no window open. The moment is a field, so it survives closing and reopening, and an agent snoozes the same way."""
@@ -508,10 +437,6 @@ class Thread(Resource):
             args["unread"] = unread
         return self.action("mark_read", **args)
 
-    def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("mark_read", items)
-
     def announce(self) -> None:
         """Tells everyone who reads the conversation that mail came to it: who wrote, what it is called, and which account it came to while the workspace reads several of them, opening the conversation. It is run once for each arrival, on the device that governs the workspace, so each person is told once however many of their devices are open."""
         return self.action("announce")
@@ -526,18 +451,18 @@ class Thread(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "archive_many", "to_inbox", "to_inbox_many", "move_to", "move_to_many", "delete", "delete_many", "junk", "junk_many", "purge", "flag", "flag_many", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "mark_read_many", "announce", "announce_many", "answer"})
+    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "to_inbox", "move_to", "delete", "junk", "purge", "flag", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "announce", "announce_many", "answer"})
 
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -632,7 +557,7 @@ class Message(Resource):
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.mail.Picture`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     gb5hqtag: str  # source
     @property
     def _7hhcy4ay(self) -> Any:
@@ -646,7 +571,7 @@ class Picture(Resource):
 
 class TrustedSender(Resource):
     """TrustedSender — `tl.so.tilo.mail.TrustedSender`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     @property
     def _5eoon66w(self) -> str:
         """address (`5eoon66w` on the wire)."""
@@ -659,7 +584,7 @@ class TrustedSender(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -747,7 +672,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -916,5 +841,5 @@ class Mail(Resource):
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@374de8982cd026ad"
+    __surface__ = "so.tilo.mail@68fb0d6c850c3f0d"
 

@@ -60,29 +60,14 @@ __all__ = [
     "Accounts",
     "VoicePair",
     "Preview",
-    "OpenSetupArgs",
-    "CloseSetupArgs",
-    "ClearProblemArgs",
-    "AskTokenArgs",
-    "KeepTokenArgs",
-    "FindServersArgs",
-    "FoundServersArgs",
-    "ChooseServerArgs",
     "FoundChannelsArgs",
     "ChooseChannelArgs",
     "BackToServersArgs",
-    "SetupFailedArgs",
-    "BridgeServerArgs",
-    "ConnectArgs",
-    "ObserveLayoutArgs",
     "MapArgs",
     "UnmapArgs",
-    "ConnectAccountArgs",
-    "StartSignInArgs",
     "OfferLinkArgs",
     "OfferSignInArgs",
     "CompleteLinkArgs",
-    "SetSignInArgs",
     "RenameLinkArgs",
     "SetLinkPhotoArgs",
     "UnlinkArgs",
@@ -91,8 +76,6 @@ __all__ = [
     "UnblockPersonaArgs",
     "RememberAvatarArgs",
     "FinishImportArgs",
-    "SettleEmojiArgs",
-    "ReportVoiceArgs",
 ]
 
 ChannelKind = Literal["text", "voice", "category", "thread"]
@@ -110,43 +93,6 @@ Ownership = Literal["importing", "adopted"]
 OverwriteTarget = Literal["role", "member"]
 """Whose permission overwrite an op sets."""
 
-OpenSetupArgs = TypedDict("OpenSetupArgs", {
-})
-"""The arguments of `open_setup`."""
-
-CloseSetupArgs = TypedDict("CloseSetupArgs", {
-})
-"""The arguments of `close_setup`."""
-
-ClearProblemArgs = TypedDict("ClearProblemArgs", {
-})
-"""The arguments of `clear_problem`."""
-
-AskTokenArgs = TypedDict("AskTokenArgs", {
-})
-"""The arguments of `ask_token`."""
-
-KeepTokenArgs = TypedDict("KeepTokenArgs", {
-    "ask": "str",
-    "item": "str",
-})
-"""The arguments of `keep_token`."""
-
-FindServersArgs = TypedDict("FindServersArgs", {
-})
-"""The arguments of `find_servers`."""
-
-FoundServersArgs = TypedDict("FoundServersArgs", {
-    "ask": "str",
-    "servers": "list[ServerChoice]",
-})
-"""The arguments of `found_servers`."""
-
-ChooseServerArgs = TypedDict("ChooseServerArgs", {
-    "s": "ServerChoice",
-})
-"""The arguments of `choose_server`."""
-
 FoundChannelsArgs = TypedDict("FoundChannelsArgs", {
     "ask": "str",
     "channels": "list[DChannel]",
@@ -161,33 +107,6 @@ ChooseChannelArgs = TypedDict("ChooseChannelArgs", {
 BackToServersArgs = TypedDict("BackToServersArgs", {
 })
 """The arguments of `back_to_servers`."""
-
-SetupFailedArgs = TypedDict("SetupFailedArgs", {
-    "ask": "str",
-    "problem": "str",
-})
-"""The arguments of `setup_failed`."""
-
-BridgeServerArgs = TypedDict("BridgeServerArgs", {
-})
-"""The arguments of `bridge_server`."""
-
-ConnectArgs = TypedDict("ConnectArgs", {
-    "guild_id": "str",
-    "name": "str",
-    "only_channel": NotRequired["str | None"],
-    "mirror_channels": NotRequired["bool | None"],
-    "map_roles": NotRequired["bool | None"],
-})
-"""The arguments of `connect`."""
-
-ObserveLayoutArgs = TypedDict("ObserveLayoutArgs", {
-    "bot_user": "str",
-    "channels": "list[DChannel]",
-    "roles": "list[DRole]",
-    "emojis": "list[DEmoji]",
-})
-"""The arguments of `observe_layout`."""
 
 MapArgs = TypedDict("MapArgs", {
     "kind": "MappedKind",
@@ -205,17 +124,6 @@ UnmapArgs = TypedDict("UnmapArgs", {
     "keep_apart": NotRequired["bool | None"],
 })
 """The arguments of `unmap`."""
-
-ConnectAccountArgs = TypedDict("ConnectAccountArgs", {
-})
-"""The arguments of `connect_account`."""
-
-StartSignInArgs = TypedDict("StartSignInArgs", {
-    "ask": "str",
-    "url": "str",
-    "sha256": "str",
-})
-"""The arguments of `start_sign_in`."""
 
 OfferLinkArgs = TypedDict("OfferLinkArgs", {
     "check": "str",
@@ -241,11 +149,6 @@ CompleteLinkArgs = TypedDict("CompleteLinkArgs", {
     "proof": "str",
 })
 """The arguments of `complete_link`."""
-
-SetSignInArgs = TypedDict("SetSignInArgs", {
-    "page": "str",
-})
-"""The arguments of `set_sign_in`."""
 
 RenameLinkArgs = TypedDict("RenameLinkArgs", {
     "discord_user": "str",
@@ -292,24 +195,9 @@ FinishImportArgs = TypedDict("FinishImportArgs", {
 })
 """The arguments of `finish_import`."""
 
-SettleEmojiArgs = TypedDict("SettleEmojiArgs", {
-    "tilo": "str",
-    "emoji_id": NotRequired["str | None"],
-    "problem": NotRequired["str | None"],
-    "picture": NotRequired["str | None"],
-    "was": NotRequired["str | None"],
-    "deleted": NotRequired["bool | None"],
-})
-"""The arguments of `settle_emoji`."""
-
-ReportVoiceArgs = TypedDict("ReportVoiceArgs", {
-    "problem": "str",
-})
-"""The arguments of `report_voice`."""
-
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -370,7 +258,7 @@ class Notice(Resource):
 
 class Discord(Resource):
     """Discord — `tl.so.tilo.discord.preview.Discord`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     sclfytrh: str  # name
     lex22ami: str  # guild_id
     @property
@@ -450,33 +338,17 @@ class Discord(Resource):
         """Runs the app's action."""
         return self.action("open_setup")
 
-    def open_setup_many(self, items: list[OpenSetupArgs]) -> list[dict[str, Any]]:
-        """Runs `open_setup` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("open_setup", items)
-
     def close_setup(self) -> None:
         """Closes it."""
         return self.action("close_setup")
-
-    def close_setup_many(self, items: list[CloseSetupArgs]) -> list[dict[str, Any]]:
-        """Runs `close_setup` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("close_setup", items)
 
     def clear_problem(self) -> None:
         """Forgets what the setup last said went wrong."""
         return self.action("clear_problem")
 
-    def clear_problem_many(self, items: list[ClearProblemArgs]) -> list[dict[str, Any]]:
-        """Runs `clear_problem` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("clear_problem", items)
-
     def ask_token(self) -> None:
         """Asks the bridge's program to have the bot's token put in the person's vault: the person types it once on the system's own card, and the vault keeps it. This account keeps the item's address, never the token."""
         return self.action("ask_token")
-
-    def ask_token_many(self, items: list[AskTokenArgs]) -> list[dict[str, Any]]:
-        """Runs `ask_token` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("ask_token", items)
 
     def keep_token(self,
         *,
@@ -486,17 +358,9 @@ class Discord(Resource):
         """Keeps the vault item the person's token was put in: the program's answer to `ask_token`. The item's address is all this record keeps."""
         return self.action("keep_token", ask=ask, item=item)
 
-    def keep_token_many(self, items: list[KeepTokenArgs]) -> list[dict[str, Any]]:
-        """Runs `keep_token` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("keep_token", items)
-
     def find_servers(self) -> None:
         """Finds the servers the bot is in, so one can be chosen: the bridge's program asks Discord with the token the vault keeps."""
         return self.action("find_servers")
-
-    def find_servers_many(self, items: list[FindServersArgs]) -> list[dict[str, Any]]:
-        """Runs `find_servers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("find_servers", items)
 
     def found_servers(self,
         *,
@@ -506,17 +370,9 @@ class Discord(Resource):
         """The servers finding the bot's servers answered: the program's answer to `find_servers`."""
         return self.action("found_servers", ask=ask, servers=servers)
 
-    def found_servers_many(self, items: list[FoundServersArgs]) -> list[dict[str, Any]]:
-        """Runs `found_servers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("found_servers", items)
-
     def choose_server(self, *, s: ServerChoice) -> None:
         """The server the person chose to bring in: the program reads its channels so one of them can be brought in alone."""
         return self.action("choose_server", s=s)
-
-    def choose_server_many(self, items: list[ChooseServerArgs]) -> list[dict[str, Any]]:
-        """Runs `choose_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("choose_server", items)
 
     def found_channels(self,
         *,
@@ -554,17 +410,9 @@ class Discord(Resource):
         """Why the setup step `ask` did not work: the program's answer, in words the person reads."""
         return self.action("setup_failed", ask=ask, problem=problem)
 
-    def setup_failed_many(self, items: list[SetupFailedArgs]) -> list[dict[str, Any]]:
-        """Runs `setup_failed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("setup_failed", items)
-
     def bridge_server(self) -> None:
         """Binds this account to the server and channels the setup chose. The server's layout stays Discord's until the import ran."""
         return self.action("bridge_server")
-
-    def bridge_server_many(self, items: list[BridgeServerArgs]) -> list[dict[str, Any]]:
-        """Runs `bridge_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("bridge_server", items)
 
     def connect(self,
         *,
@@ -586,10 +434,6 @@ class Discord(Resource):
             args["map_roles"] = map_roles
         return self.action("connect", **args)
 
-    def connect_many(self, items: list[ConnectArgs]) -> list[dict[str, Any]]:
-        """Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("connect", items)
-
     def observe_layout(self,
         *,
         bot_user: str,
@@ -599,10 +443,6 @@ class Discord(Resource):
     ) -> None:
         """Records Discord's layout as the latest event reported it: channels and roles the layout no longer lists go, the ones it lists are brought up to date, and new ones come in."""
         return self.action("observe_layout", bot_user=bot_user, channels=channels, roles=roles, emojis=emojis)
-
-    def observe_layout_many(self, items: list[ObserveLayoutArgs]) -> list[dict[str, Any]]:
-        """Runs `observe_layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("observe_layout", items)
 
     def map(self,
         *,
@@ -652,10 +492,6 @@ class Discord(Resource):
         """Starts signing in with Discord, as the person looking: the bridge's program builds the consent page and the state that binds what comes back to them."""
         return self.action("connect_account")
 
-    def connect_account_many(self, items: list[ConnectAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `connect_account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("connect_account", items)
-
     def start_sign_in(self,
         *,
         ask: str,
@@ -664,10 +500,6 @@ class Discord(Resource):
     ) -> None:
         """Where the person goes to sign in with Discord, and the digest of the state that binds what comes back to them: the program's answer to `connect_account`."""
         return self.action("start_sign_in", ask=ask, url=url, sha256=sha256)
-
-    def start_sign_in_many(self, items: list[StartSignInArgs]) -> list[dict[str, Any]]:
-        """Runs `start_sign_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("start_sign_in", items)
 
     def offer_link(self,
         *,
@@ -731,10 +563,6 @@ class Discord(Resource):
     def set_sign_in(self, *, page: str) -> None:
         """Offers signing in with Discord: this device's consent page, without its state; empty for none."""
         return self.action("set_sign_in", page=page)
-
-    def set_sign_in_many(self, items: list[SetSignInArgs]) -> list[dict[str, Any]]:
-        """Runs `set_sign_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set_sign_in", items)
 
     def answer_interaction(self, *, op: AnswerInteractionOp) -> None:
         """Edits a slash command's reply to what came of it."""
@@ -938,17 +766,9 @@ class Discord(Resource):
             args["deleted"] = deleted
         return self.action("settle_emoji", **args)
 
-    def settle_emoji_many(self, items: list[SettleEmojiArgs]) -> list[dict[str, Any]]:
-        """Runs `settle_emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("settle_emoji", items)
-
     def report_voice(self, *, problem: str) -> None:
         """Says why the bridge cannot carry voice now, or that it can again."""
         return self.action("report_voice", problem=problem)
-
-    def report_voice_many(self, items: list[ReportVoiceArgs]) -> list[dict[str, Any]]:
-        """Runs `report_voice` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("report_voice", items)
 
     def pump(self) -> None:
         """A value nothing reads, for the trigger's frame that does nothing itself: the origin polls Discord's events and the conversations here in its own loop."""
@@ -956,12 +776,12 @@ class Discord(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"open_setup", "open_setup_many", "close_setup", "close_setup_many", "clear_problem", "clear_problem_many", "ask_token", "ask_token_many", "keep_token", "keep_token_many", "find_servers", "find_servers_many", "found_servers", "found_servers_many", "choose_server", "choose_server_many", "found_channels", "found_channels_many", "choose_channel", "choose_channel_many", "back_to_servers", "back_to_servers_many", "setup_failed", "setup_failed_many", "bridge_server", "bridge_server_many", "connect", "connect_many", "observe_layout", "observe_layout_many", "map", "map_many", "unmap", "unmap_many", "connect_account", "connect_account_many", "start_sign_in", "start_sign_in_many", "offer_link", "offer_link_many", "offer_sign_in", "offer_sign_in_many", "complete_link", "complete_link_many", "set_sign_in", "set_sign_in_many", "answer_interaction", "rename_link", "rename_link_many", "set_link_photo", "set_link_photo_many", "unlink", "unlink_many", "unlink_mine", "unlink_mine_many", "block_persona", "block_persona_many", "unblock_persona", "unblock_persona_many", "remember_avatar", "remember_avatar_many", "finish_import", "finish_import_many", "send_there", "edit_there", "delete_there", "react_there", "unreact_there", "start_thread_there", "create_webhook", "apply_channel", "delete_channel_there", "arrange_channels", "may_mirror", "may_change", "apply_role", "delete_role", "set_member_roles", "kick", "ban", "unban", "set_overwrite", "fetch_asset", "apply_emoji", "delete_emoji", "settle_emoji", "settle_emoji_many", "report_voice", "report_voice_many", "pump"})
+    __actions__ = frozenset({"open_setup", "close_setup", "clear_problem", "ask_token", "keep_token", "find_servers", "found_servers", "choose_server", "found_channels", "found_channels_many", "choose_channel", "choose_channel_many", "back_to_servers", "back_to_servers_many", "setup_failed", "bridge_server", "connect", "observe_layout", "map", "map_many", "unmap", "unmap_many", "connect_account", "start_sign_in", "offer_link", "offer_link_many", "offer_sign_in", "offer_sign_in_many", "complete_link", "complete_link_many", "set_sign_in", "answer_interaction", "rename_link", "rename_link_many", "set_link_photo", "set_link_photo_many", "unlink", "unlink_many", "unlink_mine", "unlink_mine_many", "block_persona", "block_persona_many", "unblock_persona", "unblock_persona_many", "remember_avatar", "remember_avatar_many", "finish_import", "finish_import_many", "send_there", "edit_there", "delete_there", "react_there", "unreact_there", "start_thread_there", "create_webhook", "apply_channel", "delete_channel_there", "arrange_channels", "may_mirror", "may_change", "apply_role", "delete_role", "set_member_roles", "kick", "ban", "unban", "set_overwrite", "fetch_asset", "apply_emoji", "delete_emoji", "settle_emoji", "report_voice", "pump"})
 
 
 class DChannel(Resource):
     """DChannel — `tl.so.tilo.discord.preview.DChannel`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     @property
     def _7p2rou2g(self) -> str:
         """id (`7p2rou2g` on the wire)."""
@@ -994,7 +814,7 @@ class DChannel(Resource):
 
 class Overwrite(Resource):
     """Overwrite — `tl.so.tilo.discord.preview.Overwrite`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     x427uoge: str  # id
     @property
     def _76fajf53(self) -> int:
@@ -1017,7 +837,7 @@ class Overwrite(Resource):
 
 class DRole(Resource):
     """DRole — `tl.so.tilo.discord.preview.DRole`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     xom5hhqp: str  # id
     aceuzwtj: str  # name
     wxuu6jgi: str  # permissions
@@ -1028,7 +848,7 @@ class DRole(Resource):
 
 class DEmoji(Resource):
     """DEmoji — `tl.so.tilo.discord.preview.DEmoji`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     oaaqbeyg: str  # id
     @property
     def _5vadig7h(self) -> str:
@@ -1043,7 +863,7 @@ class DEmoji(Resource):
 
 class Mapping(Resource):
     """Mapping — `tl.so.tilo.discord.preview.Mapping`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     ymr43fiv: MappedKind  # kind
     qt55olnf: str  # tilo
     vzp2s2xi: str  # discord
@@ -1064,7 +884,7 @@ class Mapping(Resource):
 
 class Link(Resource):
     """Link — `tl.so.tilo.discord.preview.Link`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     shknzkt7: str  # discord_user
     lvaegbi4: str  # person
     o4oyz2pi: str  # linked_at
@@ -1078,7 +898,7 @@ class Link(Resource):
 
 class LinkOffer(Resource):
     """LinkOffer — `tl.so.tilo.discord.preview.LinkOffer`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     q4uc376y: str  # check
     @property
     def _6xuuyuym(self) -> str:
@@ -1105,7 +925,7 @@ class LinkOffer(Resource):
 
 class Connect(Resource):
     """Connect — `tl.so.tilo.discord.preview.Connect`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     @property
     def _3eaw5xx6(self) -> str:
         """person (`3eaw5xx6` on the wire)."""
@@ -1120,14 +940,14 @@ class Connect(Resource):
 
 class ServerChoice(Resource):
     """ServerChoice — `tl.so.tilo.discord.preview.ServerChoice`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     ymsxjog2: str  # id
     tafgiv6q: str  # name
 
 
 class SendOp(Resource):
     """SendOp — `tl.so.tilo.discord.preview.SendOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     @property
     def _7lcsdnr4(self) -> str:
         """op (`7lcsdnr4` on the wire)."""
@@ -1157,7 +977,7 @@ class SendOp(Resource):
 
 class OutAttachment(Resource):
     """OutAttachment — `tl.so.tilo.discord.preview.OutAttachment`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     u7emqycf: str  # blob
     zs5m5uxa: str  # name
     aeq3264s: int  # size
@@ -1165,7 +985,7 @@ class OutAttachment(Resource):
 
 class EditOp(Resource):
     """EditOp — `tl.so.tilo.discord.preview.EditOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     @property
     def _2ksixnn3(self) -> str:
         """op (`2ksixnn3` on the wire)."""
@@ -1190,7 +1010,7 @@ class EditOp(Resource):
 
 class DeleteOp(Resource):
     """DeleteOp — `tl.so.tilo.discord.preview.DeleteOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     n5ulezfg: str  # op
     n2yclrmw: str  # channel
     liw2ay3q: str | None  # webhook
@@ -1200,7 +1020,7 @@ class DeleteOp(Resource):
 
 class ReactOp(Resource):
     """ReactOp — `tl.so.tilo.discord.preview.ReactOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     juyzi4a5: str  # op
     me76z7t7: str  # channel
     orzlvcjf: str  # message
@@ -1209,7 +1029,7 @@ class ReactOp(Resource):
 
 class StartThreadOp(Resource):
     """StartThreadOp — `tl.so.tilo.discord.preview.StartThreadOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     eqdu4s5n: str  # op
     qxyl2yhx: str  # channel
     @property
@@ -1240,7 +1060,7 @@ class StartThreadOp(Resource):
 
 class CreateWebhookOp(Resource):
     """CreateWebhookOp — `tl.so.tilo.discord.preview.CreateWebhookOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     p3acbhsm: str  # op
     gu2hv6zx: str  # channel
     ijnwz6yd: str  # tilo
@@ -1248,7 +1068,7 @@ class CreateWebhookOp(Resource):
 
 class ChannelSpec(Resource):
     """ChannelSpec — `tl.so.tilo.discord.preview.ChannelSpec`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     aid6dwih: str  # op
     nyneqhtp: str | None  # id
     @property
@@ -1275,21 +1095,21 @@ class ChannelSpec(Resource):
 
 class ChannelDeletion(Resource):
     """ChannelDeletion — `tl.so.tilo.discord.preview.ChannelDeletion`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     fvyrqodk: str  # op
     rhmxfpcn: str  # channel
 
 
 class CategoryPlace(Resource):
     """CategoryPlace — `tl.so.tilo.discord.preview.CategoryPlace`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     n3kocqem: str  # category
     tjug6eo2: int  # position
 
 
 class ChannelPlace(Resource):
     """ChannelPlace — `tl.so.tilo.discord.preview.ChannelPlace`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     pposs7uz: str  # channel
     w7v7vvgk: str | None  # parent
     rmnsxntg: int  # position
@@ -1297,7 +1117,7 @@ class ChannelPlace(Resource):
 
 class ArrangeOp(Resource):
     """ArrangeOp — `tl.so.tilo.discord.preview.ArrangeOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     @property
     def _4ebcu3vj(self) -> str:
         """op (`4ebcu3vj` on the wire)."""
@@ -1319,7 +1139,7 @@ class ArrangeOp(Resource):
 
 class RoleSpec(Resource):
     """RoleSpec — `tl.so.tilo.discord.preview.RoleSpec`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     oad2kmtd: str  # op
     @property
     def _6khaatsw(self) -> str | None:
@@ -1344,7 +1164,7 @@ class RoleSpec(Resource):
 
 class DeleteRoleOp(Resource):
     """DeleteRoleOp — `tl.so.tilo.discord.preview.DeleteRoleOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     wxxprqy5: str  # op
     @property
     def _43gurfsq(self) -> str:
@@ -1358,7 +1178,7 @@ class DeleteRoleOp(Resource):
 
 class MemberRolesOp(Resource):
     """MemberRolesOp — `tl.so.tilo.discord.preview.MemberRolesOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     kudwdhlw: str  # op
     auupacru: str  # user
     n3pur4nd: list[str]  # add
@@ -1367,7 +1187,7 @@ class MemberRolesOp(Resource):
 
 class MemberOp(Resource):
     """MemberOp — `tl.so.tilo.discord.preview.MemberOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     vpb4svn2: str  # op
     w6fejnzs: str  # user
     lwbm7m7g: str  # reason
@@ -1375,7 +1195,7 @@ class MemberOp(Resource):
 
 class OverwriteOp(Resource):
     """OverwriteOp — `tl.so.tilo.discord.preview.OverwriteOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     hoy7opkc: str  # op
     @property
     def _5bwuxkgk(self) -> str:
@@ -1393,7 +1213,7 @@ class OverwriteOp(Resource):
 
 class FetchAssetOp(Resource):
     """FetchAssetOp — `tl.so.tilo.discord.preview.FetchAssetOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     n5gkbaj7: str  # op
     dymgc2vl: str  # url
     grilu5ek: int  # max_bytes
@@ -1409,7 +1229,7 @@ class FetchAssetOp(Resource):
 
 class AnswerInteractionOp(Resource):
     """AnswerInteractionOp — `tl.so.tilo.discord.preview.AnswerInteractionOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     noppx5yi: str  # op
     ecw6352r: str  # interaction
     ehjwcbzo: str  # content
@@ -1417,7 +1237,7 @@ class AnswerInteractionOp(Resource):
 
 class EmojiSpec(Resource):
     """EmojiSpec — `tl.so.tilo.discord.preview.EmojiSpec`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     ty6f2nw2: str  # op
     ttzu4a2l: str | None  # id
     bunzoexc: str  # name
@@ -1434,7 +1254,7 @@ class EmojiSpec(Resource):
 
 class DeleteEmojiOp(Resource):
     """DeleteEmojiOp — `tl.so.tilo.discord.preview.DeleteEmojiOp`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     w7bai4fx: str  # op
     h2uwhtax: str  # emoji
     @property
@@ -1449,7 +1269,7 @@ class DeleteEmojiOp(Resource):
 
 class Accounts(Resource):
     """Accounts — `tl.so.tilo.discord.preview.Accounts`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     z7et5ezu: list[Entry[Discord]]  # accounts
 
     def begin_setup(self) -> Discord:
@@ -1463,7 +1283,7 @@ class Accounts(Resource):
 
 class VoicePair(Resource):
     """VoicePair — `tl.so.tilo.discord.preview.VoicePair`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
     @property
     def _5xed4gep(self) -> str:
         """discord (`5xed4gep` on the wire)."""
@@ -1484,5 +1304,5 @@ class VoicePair(Resource):
 
 class Preview(Resource):
     """Discord — `tl.so.tilo.discord.preview`."""
-    __surface__ = "so.tilo.discord.preview@6190e08540b4b69b"
+    __surface__ = "so.tilo.discord.preview@49dcf54a8fdff878"
 

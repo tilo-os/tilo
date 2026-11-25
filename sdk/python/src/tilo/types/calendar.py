@@ -49,51 +49,9 @@ __all__ = [
     "EventEditBlockArgs",
     "EventInsertBlockArgs",
     "EventDeleteBlockArgs",
-    "DroppedArgs",
-    "EndedArgs",
     "FileEventArgs",
-    "SetEventColorArgs",
-    "ClearEventColorArgs",
-    "SetCategoriesArgs",
-    "SetZoneArgs",
-    "AddCategoryArgs",
-    "RemoveCategoryArgs",
-    "OrganizeArgs",
-    "RemindAtStartArgs",
-    "RemindBeforeArgs",
-    "RemindOffArgs",
-    "RepeatRuleArgs",
-    "RepeatWeekdaysArgs",
-    "ToggleWeekdayArgs",
-    "RepeatOffArgs",
-    "SkipDateArgs",
-    "RestoreDateArgs",
-    "MoveOccurrenceArgs",
-    "CancelOccurrenceArgs",
-    "RestoreOccurrenceArgs",
-    "MoveFollowingArgs",
-    "MoveToDayArgs",
-    "ChangeDayArgs",
-    "ChangeStartArgs",
-    "ChangeEndArgs",
-    "MoveEndDayArgs",
-    "EndOnDayArgs",
-    "RepeatArgs",
-    "RepeatEveryArgs",
-    "RepeatUntilArgs",
-    "RepeatUntilAtArgs",
-    "RepeatCountArgs",
-    "FileInArgs",
-    "AnswerArgs",
-    "UninviteArgs",
     "InviteByMailArgs",
-    "RingDueArgs",
-    "RemindNowArgs",
     "GoToArgs",
-    "RepeatEveryTextArgs",
-    "RepeatCountTextArgs",
-    "SetCalendarColorArgs",
-    "RenameCalendarArgs",
     "RemoveTaskArgs",
     "MoveProjectArgs",
     "RemoveProjectArgs",
@@ -101,7 +59,6 @@ __all__ = [
     "PreviousDayArgs",
     "NextDayArgs",
     "ThisDayArgs",
-    "DiscardDraftArgs",
     "PreviousWeekArgs",
     "NextWeekArgs",
     "PreviousMonthArgs",
@@ -198,233 +155,19 @@ EventDeleteBlockArgs = TypedDict("EventDeleteBlockArgs", {
 })
 """The arguments of `delete-block`."""
 
-DroppedArgs = TypedDict("DroppedArgs", {
-    "start": "str",
-    "place": "str",
-})
-"""The arguments of `dropped`."""
-
-EndedArgs = TypedDict("EndedArgs", {
-    "end_at": "str",
-})
-"""The arguments of `ended`."""
-
 FileEventArgs = TypedDict("FileEventArgs", {
     "p": NotRequired["Project | None"],
 })
 """The arguments of `file_event`."""
-
-SetEventColorArgs = TypedDict("SetEventColorArgs", {
-    "color": "Color",
-})
-"""The arguments of `set_event_color`."""
-
-ClearEventColorArgs = TypedDict("ClearEventColorArgs", {
-})
-"""The arguments of `clear_event_color`."""
-
-SetCategoriesArgs = TypedDict("SetCategoriesArgs", {
-    "categories": "list[str]",
-})
-"""The arguments of `set_categories`."""
-
-SetZoneArgs = TypedDict("SetZoneArgs", {
-    "zone": "str",
-})
-"""The arguments of `set_zone`."""
-
-AddCategoryArgs = TypedDict("AddCategoryArgs", {
-    "category": "str",
-})
-"""The arguments of `add_category`."""
-
-RemoveCategoryArgs = TypedDict("RemoveCategoryArgs", {
-    "category": "str",
-})
-"""The arguments of `remove_category`."""
-
-OrganizeArgs = TypedDict("OrganizeArgs", {
-    "who": "str",
-})
-"""The arguments of `organize`."""
-
-RemindAtStartArgs = TypedDict("RemindAtStartArgs", {
-})
-"""The arguments of `remind_at_start`."""
-
-RemindBeforeArgs = TypedDict("RemindBeforeArgs", {
-    "minutes": "int",
-})
-"""The arguments of `remind_before`."""
-
-RemindOffArgs = TypedDict("RemindOffArgs", {
-})
-"""The arguments of `remind_off`."""
-
-RepeatRuleArgs = TypedDict("RepeatRuleArgs", {
-    "how": "Repeat",
-    "every": NotRequired["int | None"],
-    "weekdays": NotRequired["list[str] | None"],
-    "until": NotRequired["str | None"],
-    "count": NotRequired["int | None"],
-})
-"""The arguments of `repeat_rule`."""
-
-RepeatWeekdaysArgs = TypedDict("RepeatWeekdaysArgs", {
-    "days": "list[str]",
-})
-"""The arguments of `repeat_weekdays`."""
-
-ToggleWeekdayArgs = TypedDict("ToggleWeekdayArgs", {
-    "day": "str",
-})
-"""The arguments of `toggle_weekday`."""
-
-RepeatOffArgs = TypedDict("RepeatOffArgs", {
-})
-"""The arguments of `repeat_off`."""
-
-SkipDateArgs = TypedDict("SkipDateArgs", {
-    "day": "str",
-})
-"""The arguments of `skip_date`."""
-
-RestoreDateArgs = TypedDict("RestoreDateArgs", {
-    "day": "str",
-})
-"""The arguments of `restore_date`."""
-
-MoveOccurrenceArgs = TypedDict("MoveOccurrenceArgs", {
-    "at": "str",
-    "start": "str",
-    "end": "str",
-})
-"""The arguments of `move_occurrence`."""
-
-CancelOccurrenceArgs = TypedDict("CancelOccurrenceArgs", {
-    "at": "str",
-})
-"""The arguments of `cancel_occurrence`."""
-
-RestoreOccurrenceArgs = TypedDict("RestoreOccurrenceArgs", {
-    "at": "str",
-})
-"""The arguments of `restore_occurrence`."""
-
-MoveFollowingArgs = TypedDict("MoveFollowingArgs", {
-    "at": "str",
-    "start": "str",
-    "end": "str",
-})
-"""The arguments of `move_following`."""
-
-MoveToDayArgs = TypedDict("MoveToDayArgs", {
-    "day": "str",
-})
-"""The arguments of `move_to_day`."""
-
-ChangeDayArgs = TypedDict("ChangeDayArgs", {
-    "at": "str",
-})
-"""The arguments of `change_day`."""
-
-ChangeStartArgs = TypedDict("ChangeStartArgs", {
-    "at": "str",
-})
-"""The arguments of `change_start`."""
-
-ChangeEndArgs = TypedDict("ChangeEndArgs", {
-    "at": "str",
-})
-"""The arguments of `change_end`."""
-
-MoveEndDayArgs = TypedDict("MoveEndDayArgs", {
-    "at": "str",
-})
-"""The arguments of `move_end_day`."""
-
-EndOnDayArgs = TypedDict("EndOnDayArgs", {
-    "end_day": "str",
-})
-"""The arguments of `end_on_day`."""
-
-RepeatArgs = TypedDict("RepeatArgs", {
-    "how": "Repeat",
-})
-"""The arguments of `repeat`."""
-
-RepeatEveryArgs = TypedDict("RepeatEveryArgs", {
-    "every": "int",
-})
-"""The arguments of `repeat_every`."""
-
-RepeatUntilArgs = TypedDict("RepeatUntilArgs", {
-    "until": NotRequired["str | None"],
-})
-"""The arguments of `repeat_until`."""
-
-RepeatUntilAtArgs = TypedDict("RepeatUntilAtArgs", {
-    "at": "str",
-})
-"""The arguments of `repeat_until_at`."""
-
-RepeatCountArgs = TypedDict("RepeatCountArgs", {
-    "count": NotRequired["int | None"],
-})
-"""The arguments of `repeat_count`."""
-
-FileInArgs = TypedDict("FileInArgs", {
-    "k": "Calendar",
-})
-"""The arguments of `file_in`."""
-
-AnswerArgs = TypedDict("AnswerArgs", {
-    "g": "Attendee",
-    "status": "str",
-})
-"""The arguments of `answer`."""
-
-UninviteArgs = TypedDict("UninviteArgs", {
-    "g": "Attendee",
-})
-"""The arguments of `uninvite`."""
 
 InviteByMailArgs = TypedDict("InviteByMailArgs", {
     "g": "Attendee",
 })
 """The arguments of `invite_by_mail`."""
 
-RingDueArgs = TypedDict("RingDueArgs", {
-})
-"""The arguments of `ring_due`."""
-
-RemindNowArgs = TypedDict("RemindNowArgs", {
-})
-"""The arguments of `remind_now`."""
-
 GoToArgs = TypedDict("GoToArgs", {
 })
 """The arguments of `go_to`."""
-
-RepeatEveryTextArgs = TypedDict("RepeatEveryTextArgs", {
-    "typed": "str",
-})
-"""The arguments of `repeat_every_text`."""
-
-RepeatCountTextArgs = TypedDict("RepeatCountTextArgs", {
-    "typed": "str",
-})
-"""The arguments of `repeat_count_text`."""
-
-SetCalendarColorArgs = TypedDict("SetCalendarColorArgs", {
-    "color": "Color",
-})
-"""The arguments of `set_calendar_color`."""
-
-RenameCalendarArgs = TypedDict("RenameCalendarArgs", {
-    "name": "str",
-})
-"""The arguments of `rename_calendar`."""
 
 RemoveTaskArgs = TypedDict("RemoveTaskArgs", {
     "t": "Task",
@@ -459,11 +202,6 @@ ThisDayArgs = TypedDict("ThisDayArgs", {
 })
 """The arguments of `this_day`."""
 
-DiscardDraftArgs = TypedDict("DiscardDraftArgs", {
-    "e": "Event",
-})
-"""The arguments of `discard_draft`."""
-
 PreviousWeekArgs = TypedDict("PreviousWeekArgs", {
 })
 """The arguments of `previous_week`."""
@@ -486,7 +224,7 @@ ThisWeekArgs = TypedDict("ThisWeekArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -547,7 +285,7 @@ class Notice(Resource):
 
 class Attendee(Resource):
     """Attendee — `tl.so.tilo.calendar.Attendee`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     oiolhfhy: str  # name
     zr5l6sfu: str  # email
     wyfwksgq: str  # status
@@ -556,7 +294,7 @@ class Attendee(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.calendar.Account`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     f44j5f26: str  # key
     gxn236ef: str  # address
     rfeeyuff: str  # name
@@ -585,7 +323,7 @@ class Account(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.calendar.Project`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     iivr4dfm: str  # name
     @property
     def _5kprlx3s(self) -> Color:
@@ -620,7 +358,7 @@ class Project(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.calendar.Task`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     r2vx64eh: str  # title
     s6raiajy: bool  # done
     kibl2yut: str | None  # due
@@ -758,7 +496,7 @@ class Task(Resource):
 
 class Event(Resource):
     """Event — `tl.so.tilo.calendar.Event`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     qqkexjof: str  # key
     yclpjnie: str  # href
     lpmkddba: str  # etag
@@ -866,17 +604,9 @@ class Event(Resource):
         """Moves an event where it was dropped: a day chip moves to that day keeping its time of day, and an hour moves to the hour it was dropped at. A repeating event waits for its own answer."""
         return self.action("dropped", start=start, place=place)
 
-    def dropped_many(self, items: list[DroppedArgs]) -> list[dict[str, Any]]:
-        """Runs `dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("dropped", items)
-
     def ended(self, *, end_at: str) -> None:
         """Ends an event where its edge was dropped. A repeating event waits for its own answer."""
         return self.action("ended", end_at=end_at)
-
-    def ended_many(self, items: list[EndedArgs]) -> list[dict[str, Any]]:
-        """Runs `ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("ended", items)
 
     def file_event(self,
         *,
@@ -896,81 +626,41 @@ class Event(Resource):
         """Sets the colour an event is drawn in."""
         return self.action("set_event_color", color=color)
 
-    def set_event_color_many(self, items: list[SetEventColorArgs]) -> list[dict[str, Any]]:
-        """Runs `set_event_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set_event_color", items)
-
     def clear_event_color(self) -> None:
         """Takes an event's own colour off: it is drawn in its calendar's."""
         return self.action("clear_event_color")
-
-    def clear_event_color_many(self, items: list[ClearEventColorArgs]) -> list[dict[str, Any]]:
-        """Runs `clear_event_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("clear_event_color", items)
 
     def set_categories(self, *, categories: list[str]) -> None:
         """Sets the categories an event is filed under in its person's words."""
         return self.action("set_categories", categories=categories)
 
-    def set_categories_many(self, items: list[SetCategoriesArgs]) -> list[dict[str, Any]]:
-        """Runs `set_categories` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set_categories", items)
-
     def set_zone(self, *, zone: str) -> None:
         """Sets the zone an event's wall times are read in: `Europe/Berlin`, `UTC`, or `floating` for the same time of day everywhere."""
         return self.action("set_zone", zone=zone)
-
-    def set_zone_many(self, items: list[SetZoneArgs]) -> list[dict[str, Any]]:
-        """Runs `set_zone` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set_zone", items)
 
     def add_category(self, *, category: str) -> None:
         """Files an event under one more category."""
         return self.action("add_category", category=category)
 
-    def add_category_many(self, items: list[AddCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `add_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("add_category", items)
-
     def remove_category(self, *, category: str) -> None:
         """Takes a category off an event."""
         return self.action("remove_category", category=category)
-
-    def remove_category_many(self, items: list[RemoveCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `remove_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove_category", items)
 
     def organize(self, *, who: str) -> None:
         """Makes someone the organiser of an event."""
         return self.action("organize", who=who)
 
-    def organize_many(self, items: list[OrganizeArgs]) -> list[dict[str, Any]]:
-        """Runs `organize` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("organize", items)
-
     def remind_at_start(self) -> None:
         """Reminds the people coming when the event starts."""
         return self.action("remind_at_start")
-
-    def remind_at_start_many(self, items: list[RemindAtStartArgs]) -> list[dict[str, Any]]:
-        """Runs `remind_at_start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remind_at_start", items)
 
     def remind_before(self, *, minutes: int) -> None:
         """Reminds them a given number of minutes before it starts."""
         return self.action("remind_before", minutes=minutes)
 
-    def remind_before_many(self, items: list[RemindBeforeArgs]) -> list[dict[str, Any]]:
-        """Runs `remind_before` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remind_before", items)
-
     def remind_off(self) -> None:
         """Tells nobody, once more."""
         return self.action("remind_off")
-
-    def remind_off_many(self, items: list[RemindOffArgs]) -> list[dict[str, Any]]:
-        """Runs `remind_off` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remind_off", items)
 
     def repeat_rule(self,
         *,
@@ -993,49 +683,25 @@ class Event(Resource):
             args["count"] = count
         return self.action("repeat_rule", **args)
 
-    def repeat_rule_many(self, items: list[RepeatRuleArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_rule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_rule", items)
-
     def repeat_weekdays(self, *, days: list[str]) -> None:
         """Repeats an event on chosen days of the week from the day it stands on."""
         return self.action("repeat_weekdays", days=days)
-
-    def repeat_weekdays_many(self, items: list[RepeatWeekdaysArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_weekdays` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_weekdays", items)
 
     def toggle_weekday(self, *, day: str) -> None:
         """Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`, and the repeat keeps the day it ends on, if it ends on one."""
         return self.action("toggle_weekday", day=day)
 
-    def toggle_weekday_many(self, items: list[ToggleWeekdayArgs]) -> list[dict[str, Any]]:
-        """Runs `toggle_weekday` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("toggle_weekday", items)
-
     def repeat_off(self) -> None:
         """Stops an event repeating from the day it stands on."""
         return self.action("repeat_off")
-
-    def repeat_off_many(self, items: list[RepeatOffArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_off` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_off", items)
 
     def skip_date(self, *, day: str) -> None:
         """Skips one date of a repeating event."""
         return self.action("skip_date", day=day)
 
-    def skip_date_many(self, items: list[SkipDateArgs]) -> list[dict[str, Any]]:
-        """Runs `skip_date` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("skip_date", items)
-
     def restore_date(self, *, day: str) -> None:
         """Gives a skipped date of a repeating event back."""
         return self.action("restore_date", day=day)
-
-    def restore_date_many(self, items: list[RestoreDateArgs]) -> list[dict[str, Any]]:
-        """Runs `restore_date` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("restore_date", items)
 
     def move_occurrence(self,
         *,
@@ -1046,25 +712,13 @@ class Event(Resource):
         """Moves one date of a repeating event: an event of its own stands in its place and the series keeps every other date."""
         return self.action("move_occurrence", at=at, start=start, end=end)
 
-    def move_occurrence_many(self, items: list[MoveOccurrenceArgs]) -> list[dict[str, Any]]:
-        """Runs `move_occurrence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_occurrence", items)
-
     def cancel_occurrence(self, *, at: str) -> None:
         """Cancels one date of a repeating event."""
         return self.action("cancel_occurrence", at=at)
 
-    def cancel_occurrence_many(self, items: list[CancelOccurrenceArgs]) -> list[dict[str, Any]]:
-        """Runs `cancel_occurrence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("cancel_occurrence", items)
-
     def restore_occurrence(self, *, at: str) -> None:
         """Gives a cancelled or moved date of a series back."""
         return self.action("restore_occurrence", at=at)
-
-    def restore_occurrence_many(self, items: list[RestoreOccurrenceArgs]) -> list[dict[str, Any]]:
-        """Runs `restore_occurrence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("restore_occurrence", items)
 
     def move_following(self,
         *,
@@ -1075,73 +729,37 @@ class Event(Resource):
         """Moves a repeating event from one date on: the series ends the day before, and a new one begins where it was moved to, with every date after it."""
         return self.action("move_following", at=at, start=start, end=end)
 
-    def move_following_many(self, items: list[MoveFollowingArgs]) -> list[dict[str, Any]]:
-        """Runs `move_following` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_following", items)
-
     def move_to_day(self, *, day: str) -> None:
         """Moves an event to a day, keeping the time of day it starts and how long it lasts, and its reminder at the same distance from its start."""
         return self.action("move_to_day", day=day)
-
-    def move_to_day_many(self, items: list[MoveToDayArgs]) -> list[dict[str, Any]]:
-        """Runs `move_to_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_to_day", items)
 
     def change_day(self, *, at: str) -> None:
         """Moves an event to the day a moment names, keeping the time of day it starts."""
         return self.action("change_day", at=at)
 
-    def change_day_many(self, items: list[ChangeDayArgs]) -> list[dict[str, Any]]:
-        """Runs `change_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("change_day", items)
-
     def change_start(self, *, at: str) -> None:
         """Sets the time of day an event starts, its end keeping how long it lasts. A day the moment names is the day it moves to."""
         return self.action("change_start", at=at)
-
-    def change_start_many(self, items: list[ChangeStartArgs]) -> list[dict[str, Any]]:
-        """Runs `change_start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("change_start", items)
 
     def change_end(self, *, at: str) -> None:
         """Sets when an event ends."""
         return self.action("change_end", at=at)
 
-    def change_end_many(self, items: list[ChangeEndArgs]) -> list[dict[str, Any]]:
-        """Runs `change_end` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("change_end", items)
-
     def move_end_day(self, *, at: str) -> None:
         """Ends an event on the day a moment names, keeping the time of day it ends at: a day after the one it starts on makes it run through every day between, and a whole-day event ends at the midnight after its last day, which is the day it shows on."""
         return self.action("move_end_day", at=at)
-
-    def move_end_day_many(self, items: list[MoveEndDayArgs]) -> list[dict[str, Any]]:
-        """Runs `move_end_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_end_day", items)
 
     def end_on_day(self, *, end_day: str) -> None:
         """Ends an event on a day, keeping the time of day it ends at, as `move_end_day` does with the day a moment names."""
         return self.action("end_on_day", end_day=end_day)
 
-    def end_on_day_many(self, items: list[EndOnDayArgs]) -> list[dict[str, Any]]:
-        """Runs `end_on_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("end_on_day", items)
-
     def repeat(self, *, how: Repeat) -> None:
         """Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before."""
         return self.action("repeat", how=how)
 
-    def repeat_many(self, items: list[RepeatArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat", items)
-
     def repeat_every(self, *, every: int) -> None:
         """How often it repeats, in the unit it repeats in: every two weeks is 2."""
         return self.action("repeat_every", every=every)
-
-    def repeat_every_many(self, items: list[RepeatEveryArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_every` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_every", items)
 
     def repeat_until(self,
         *,
@@ -1153,17 +771,9 @@ class Event(Resource):
             args["until"] = until
         return self.action("repeat_until", **args)
 
-    def repeat_until_many(self, items: list[RepeatUntilArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_until` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_until", items)
-
     def repeat_until_at(self, *, at: str) -> None:
         """The last day it repeats by, as the day a moment names."""
         return self.action("repeat_until_at", at=at)
-
-    def repeat_until_at_many(self, items: list[RepeatUntilAtArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_until_at` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_until_at", items)
 
     def repeat_count(self,
         *,
@@ -1175,17 +785,9 @@ class Event(Resource):
             args["count"] = count
         return self.action("repeat_count", **args)
 
-    def repeat_count_many(self, items: list[RepeatCountArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_count` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_count", items)
-
     def file_in(self, *, k: Calendar) -> None:
         """Files an event under a calendar the person picks."""
         return self.action("file_in", k=k)
-
-    def file_in_many(self, items: list[FileInArgs]) -> list[dict[str, Any]]:
-        """Runs `file_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("file_in", items)
 
     def invite(self,
         *,
@@ -1203,10 +805,6 @@ class Event(Resource):
         """Records someone's answer to an invitation: `accepted`, `declined` or `tentative`."""
         return self.action("answer", g=g, status=status)
 
-    def answer_many(self, items: list[AnswerArgs]) -> list[dict[str, Any]]:
-        """Runs `answer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("answer", items)
-
     def answer_and_tell(self,
         *,
         g: Attendee,
@@ -1218,10 +816,6 @@ class Event(Resource):
     def uninvite(self, *, g: Attendee) -> None:
         """Takes someone off an event's guests: nothing is sent to them."""
         return self.action("uninvite", g=g)
-
-    def uninvite_many(self, items: list[UninviteArgs]) -> list[dict[str, Any]]:
-        """Runs `uninvite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("uninvite", items)
 
     def invite_by_mail(self, *, g: Attendee) -> None:
         """Starts a message inviting a guest, the event's calendar invitation carried beside it: what Mail shows the person, to read and send. Nothing is sent by this."""
@@ -1235,17 +829,9 @@ class Event(Resource):
         """Rings an event's reminder when its moment comes, and nothing for an event that has none."""
         return self.action("ring_due")
 
-    def ring_due_many(self, items: list[RingDueArgs]) -> list[dict[str, Any]]:
-        """Runs `ring_due` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("ring_due", items)
-
     def remind_now(self) -> None:
         """Tells the people coming that an event starts, once, and clears its reminder."""
         return self.action("remind_now")
-
-    def remind_now_many(self, items: list[RemindNowArgs]) -> list[dict[str, Any]]:
-        """Runs `remind_now` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remind_now", items)
 
     def go_to(self) -> None:
         """Goes to the week an event is on."""
@@ -1259,26 +845,18 @@ class Event(Resource):
         """Repeats an event how often the person typed, in the unit it repeats in: 2 for every other."""
         return self.action("repeat_every_text", typed=typed)
 
-    def repeat_every_text_many(self, items: list[RepeatEveryTextArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_every_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_every_text", items)
-
     def repeat_count_text(self, *, typed: str) -> None:
         """Repeats an event as many times as the person typed."""
         return self.action("repeat_count_text", typed=typed)
 
-    def repeat_count_text_many(self, items: list[RepeatCountTextArgs]) -> list[dict[str, Any]]:
-        """Runs `repeat_count_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("repeat_count_text", items)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "dropped", "dropped_many", "ended", "ended_many", "file_event", "file_event_many", "set_event_color", "set_event_color_many", "clear_event_color", "clear_event_color_many", "set_categories", "set_categories_many", "set_zone", "set_zone_many", "add_category", "add_category_many", "remove_category", "remove_category_many", "organize", "organize_many", "remind_at_start", "remind_at_start_many", "remind_before", "remind_before_many", "remind_off", "remind_off_many", "repeat_rule", "repeat_rule_many", "repeat_weekdays", "repeat_weekdays_many", "toggle_weekday", "toggle_weekday_many", "repeat_off", "repeat_off_many", "skip_date", "skip_date_many", "restore_date", "restore_date_many", "move_occurrence", "move_occurrence_many", "cancel_occurrence", "cancel_occurrence_many", "restore_occurrence", "restore_occurrence_many", "move_following", "move_following_many", "move_to_day", "move_to_day_many", "change_day", "change_day_many", "change_start", "change_start_many", "change_end", "change_end_many", "move_end_day", "move_end_day_many", "end_on_day", "end_on_day_many", "repeat", "repeat_many", "repeat_every", "repeat_every_many", "repeat_until", "repeat_until_many", "repeat_until_at", "repeat_until_at_many", "repeat_count", "repeat_count_many", "file_in", "file_in_many", "invite", "answer", "answer_many", "answer_and_tell", "uninvite", "uninvite_many", "invite_by_mail", "invite_by_mail_many", "ring_due", "ring_due_many", "remind_now", "remind_now_many", "go_to", "go_to_many", "repeat_every_text", "repeat_every_text_many", "repeat_count_text", "repeat_count_text_many"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "dropped", "ended", "file_event", "file_event_many", "set_event_color", "clear_event_color", "set_categories", "set_zone", "add_category", "remove_category", "organize", "remind_at_start", "remind_before", "remind_off", "repeat_rule", "repeat_weekdays", "toggle_weekday", "repeat_off", "skip_date", "restore_date", "move_occurrence", "cancel_occurrence", "restore_occurrence", "move_following", "move_to_day", "change_day", "change_start", "change_end", "move_end_day", "end_on_day", "repeat", "repeat_every", "repeat_until", "repeat_until_at", "repeat_count", "file_in", "invite", "answer", "answer_and_tell", "uninvite", "invite_by_mail", "invite_by_mail_many", "ring_due", "remind_now", "go_to", "go_to_many", "repeat_every_text", "repeat_count_text"})
 
 
 class Calendar(Resource):
     """Calendar — `tl.so.tilo.calendar.Calendar`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     gzrwihvd: str  # key
     pwrd7qqx: str  # account
     dn3prfqt: str  # sync_token
@@ -1290,26 +868,18 @@ class Calendar(Resource):
         """Sets the colour a calendar is drawn in."""
         return self.action("set_calendar_color", color=color)
 
-    def set_calendar_color_many(self, items: list[SetCalendarColorArgs]) -> list[dict[str, Any]]:
-        """Runs `set_calendar_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set_calendar_color", items)
-
     def rename_calendar(self, *, name: str) -> None:
         """Renames a calendar."""
         return self.action("rename_calendar", name=name)
 
-    def rename_calendar_many(self, items: list[RenameCalendarArgs]) -> list[dict[str, Any]]:
-        """Runs `rename_calendar` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("rename_calendar", items)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_calendar_color", "set_calendar_color_many", "rename_calendar", "rename_calendar_many"})
+    __actions__ = frozenset({"set_calendar_color", "rename_calendar"})
 
 
 class Calendars(Resource):
     """Calendars — `tl.so.tilo.calendar.Calendars`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     g3gq3jmz: list[Entry[Event]]  # events
     ozulkrgt: list[Entry[Calendar]]  # calendars
     lubytvuv: list[Entry[Account]]  # accounts
@@ -1445,10 +1015,6 @@ class Calendars(Resource):
         """Throws away an event nothing was written in yet: what a person's New event leaves when they decide against it."""
         return self.action("discard_draft", e=e)
 
-    def discard_draft_many(self, items: list[DiscardDraftArgs]) -> list[dict[str, Any]]:
-        """Runs `discard_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("discard_draft", items)
-
     def previous_week(self) -> None:
         """The window shows the week before."""
         return self.action("previous_week")
@@ -1509,12 +1075,12 @@ class Calendars(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_event", "new_between", "new_task", "add_step", "remove_task", "remove_task_many", "new_project", "move_project", "move_project_many", "remove_project", "remove_project_many", "go_to_day", "go_to_day_many", "previous_day", "previous_day_many", "next_day", "next_day_many", "this_day", "this_day_many", "sync", "new_calendar", "discard_draft", "discard_draft_many", "previous_week", "previous_week_many", "next_week", "next_week_many", "previous_month", "previous_month_many", "next_month", "next_month_many", "this_week", "this_week_many", "export_calendar", "take_invitation", "import_ics"})
+    __actions__ = frozenset({"new_event", "new_between", "new_task", "add_step", "remove_task", "remove_task_many", "new_project", "move_project", "move_project_many", "remove_project", "remove_project_many", "go_to_day", "go_to_day_many", "previous_day", "previous_day_many", "next_day", "next_day_many", "this_day", "this_day_many", "sync", "new_calendar", "discard_draft", "previous_week", "previous_week_many", "next_week", "next_week_many", "previous_month", "previous_month_many", "next_month", "next_month_many", "this_week", "this_week_many", "export_calendar", "take_invitation", "import_ics"})
 
 
 class Moment(Resource):
     """Moment — `tl.so.tilo.calendar.Moment`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
     kd3noj7y: Event  # event
     ejfozpye: str  # at
     @property
@@ -1529,5 +1095,5 @@ class Moment(Resource):
 
 class TiloCalendar(Resource):
     """Calendar — `tl.so.tilo.calendar`."""
-    __surface__ = "so.tilo.calendar@8278162ef0695da9"
+    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
 

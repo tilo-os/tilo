@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@8278162ef0695da9";
+export const SURFACE = "so.tilo.calendar@d74fb1f7da382914";
 
 /** The colours a calendar, an event or a project can take, each a place in the theme. One of "indigo", "emerald", "amber", "red", "blue", "violet", "slate". */
 export type Color = "indigo" | "emerald" | "amber" | "red" | "blue" | "violet" | "slate";
@@ -113,195 +113,9 @@ export interface EventDeleteBlockArgs {
   block: string;
 }
 
-/** The arguments of `dropped`. */
-export interface DroppedArgs {
-  start: string;
-  place: string;
-}
-
-/** The arguments of `ended`. */
-export interface EndedArgs {
-  end_at: string;
-}
-
 /** The arguments of `file_event`. */
 export interface FileEventArgs {
   p?: Project;
-}
-
-/** The arguments of `set_event_color`. */
-export interface SetEventColorArgs {
-  color: Color;
-}
-
-/** The arguments of `clear_event_color`. */
-export interface ClearEventColorArgs {
-}
-
-/** The arguments of `set_categories`. */
-export interface SetCategoriesArgs {
-  categories: string[];
-}
-
-/** The arguments of `set_zone`. */
-export interface SetZoneArgs {
-  zone: string;
-}
-
-/** The arguments of `add_category`. */
-export interface AddCategoryArgs {
-  category: string;
-}
-
-/** The arguments of `remove_category`. */
-export interface RemoveCategoryArgs {
-  category: string;
-}
-
-/** The arguments of `organize`. */
-export interface OrganizeArgs {
-  who: string;
-}
-
-/** The arguments of `remind_at_start`. */
-export interface RemindAtStartArgs {
-}
-
-/** The arguments of `remind_before`. */
-export interface RemindBeforeArgs {
-  minutes: number;
-}
-
-/** The arguments of `remind_off`. */
-export interface RemindOffArgs {
-}
-
-/** The arguments of `repeat_rule`. */
-export interface RepeatRuleArgs {
-  how: Repeat;
-  every?: number;
-  weekdays?: string[];
-  until?: string;
-  count?: number;
-}
-
-/** The arguments of `repeat_weekdays`. */
-export interface RepeatWeekdaysArgs {
-  days: string[];
-}
-
-/** The arguments of `toggle_weekday`. */
-export interface ToggleWeekdayArgs {
-  day: string;
-}
-
-/** The arguments of `repeat_off`. */
-export interface RepeatOffArgs {
-}
-
-/** The arguments of `skip_date`. */
-export interface SkipDateArgs {
-  day: string;
-}
-
-/** The arguments of `restore_date`. */
-export interface RestoreDateArgs {
-  day: string;
-}
-
-/** The arguments of `move_occurrence`. */
-export interface MoveOccurrenceArgs {
-  at: string;
-  start: string;
-  end: string;
-}
-
-/** The arguments of `cancel_occurrence`. */
-export interface CancelOccurrenceArgs {
-  at: string;
-}
-
-/** The arguments of `restore_occurrence`. */
-export interface RestoreOccurrenceArgs {
-  at: string;
-}
-
-/** The arguments of `move_following`. */
-export interface MoveFollowingArgs {
-  at: string;
-  start: string;
-  end: string;
-}
-
-/** The arguments of `move_to_day`. */
-export interface MoveToDayArgs {
-  day: string;
-}
-
-/** The arguments of `change_day`. */
-export interface ChangeDayArgs {
-  at: string;
-}
-
-/** The arguments of `change_start`. */
-export interface ChangeStartArgs {
-  at: string;
-}
-
-/** The arguments of `change_end`. */
-export interface ChangeEndArgs {
-  at: string;
-}
-
-/** The arguments of `move_end_day`. */
-export interface MoveEndDayArgs {
-  at: string;
-}
-
-/** The arguments of `end_on_day`. */
-export interface EndOnDayArgs {
-  end_day: string;
-}
-
-/** The arguments of `repeat`. */
-export interface RepeatArgs {
-  how: Repeat;
-}
-
-/** The arguments of `repeat_every`. */
-export interface RepeatEveryArgs {
-  every: number;
-}
-
-/** The arguments of `repeat_until`. */
-export interface RepeatUntilArgs {
-  until?: string;
-}
-
-/** The arguments of `repeat_until_at`. */
-export interface RepeatUntilAtArgs {
-  at: string;
-}
-
-/** The arguments of `repeat_count`. */
-export interface RepeatCountArgs {
-  count?: number;
-}
-
-/** The arguments of `file_in`. */
-export interface FileInArgs {
-  k: Calendar;
-}
-
-/** The arguments of `answer`. */
-export interface AnswerArgs {
-  g: Attendee;
-  status: string;
-}
-
-/** The arguments of `uninvite`. */
-export interface UninviteArgs {
-  g: Attendee;
 }
 
 /** The arguments of `invite_by_mail`. */
@@ -309,36 +123,8 @@ export interface InviteByMailArgs {
   g: Attendee;
 }
 
-/** The arguments of `ring_due`. */
-export interface RingDueArgs {
-}
-
-/** The arguments of `remind_now`. */
-export interface RemindNowArgs {
-}
-
 /** The arguments of `go_to`. */
 export interface GoToArgs {
-}
-
-/** The arguments of `repeat_every_text`. */
-export interface RepeatEveryTextArgs {
-  typed: string;
-}
-
-/** The arguments of `repeat_count_text`. */
-export interface RepeatCountTextArgs {
-  typed: string;
-}
-
-/** The arguments of `set_calendar_color`. */
-export interface SetCalendarColorArgs {
-  color: Color;
-}
-
-/** The arguments of `rename_calendar`. */
-export interface RenameCalendarArgs {
-  name: string;
 }
 
 /** The arguments of `remove_task`. */
@@ -372,11 +158,6 @@ export interface NextDayArgs {
 
 /** The arguments of `this_day`. */
 export interface ThisDayArgs {
-}
-
-/** The arguments of `discard_draft`. */
-export interface DiscardDraftArgs {
-  e: Event;
 }
 
 /** The arguments of `previous_week`. */
@@ -627,14 +408,10 @@ export interface Event extends tilo.Resource {
     start: string;
     place: string;
   }): Promise<void>;
-  /** Runs `dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  droppedMany(items: DroppedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Ends an event where its edge was dropped. A repeating event waits for its own answer. */
   ended(args: {
     end_at: string;
   }): Promise<void>;
-  /** Runs `ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  endedMany(items: EndedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Files an event under a project, or files it under none. */
   file_event(args?: {
     p?: Project;
@@ -645,56 +422,36 @@ export interface Event extends tilo.Resource {
   set_event_color(args: {
     color: Color;
   }): Promise<void>;
-  /** Runs `set_event_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  set_event_colorMany(items: SetEventColorArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Takes an event's own colour off: it is drawn in its calendar's. */
   clear_event_color(): Promise<void>;
-  /** Runs `clear_event_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  clear_event_colorMany(items: ClearEventColorArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets the categories an event is filed under in its person's words. */
   set_categories(args: {
     categories: string[];
   }): Promise<void>;
-  /** Runs `set_categories` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  set_categoriesMany(items: SetCategoriesArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets the zone an event's wall times are read in: `Europe/Berlin`, `UTC`, or `floating` for the same time of day everywhere. */
   set_zone(args: {
     zone: string;
   }): Promise<void>;
-  /** Runs `set_zone` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  set_zoneMany(items: SetZoneArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Files an event under one more category. */
   add_category(args: {
     category: string;
   }): Promise<void>;
-  /** Runs `add_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  add_categoryMany(items: AddCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Takes a category off an event. */
   remove_category(args: {
     category: string;
   }): Promise<void>;
-  /** Runs `remove_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  remove_categoryMany(items: RemoveCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Makes someone the organiser of an event. */
   organize(args: {
     who: string;
   }): Promise<void>;
-  /** Runs `organize` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  organizeMany(items: OrganizeArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Reminds the people coming when the event starts. */
   remind_at_start(): Promise<void>;
-  /** Runs `remind_at_start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  remind_at_startMany(items: RemindAtStartArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Reminds them a given number of minutes before it starts. */
   remind_before(args: {
     minutes: number;
   }): Promise<void>;
-  /** Runs `remind_before` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  remind_beforeMany(items: RemindBeforeArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Tells nobody, once more. */
   remind_off(): Promise<void>;
-  /** Runs `remind_off` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  remind_offMany(items: RemindOffArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Repeats an event, its rule in iCalendar's words, how often, and where it ends. */
   repeat_rule(args: {
     how: Repeat;
@@ -703,136 +460,92 @@ export interface Event extends tilo.Resource {
     until?: string;
     count?: number;
   }): Promise<void>;
-  /** Runs `repeat_rule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_ruleMany(items: RepeatRuleArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Repeats an event on chosen days of the week from the day it stands on. */
   repeat_weekdays(args: {
     days: string[];
   }): Promise<void>;
-  /** Runs `repeat_weekdays` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_weekdaysMany(items: RepeatWeekdaysArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`, and the repeat keeps the day it ends on, if it ends on one. */
   toggle_weekday(args: {
     day: string;
   }): Promise<void>;
-  /** Runs `toggle_weekday` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  toggle_weekdayMany(items: ToggleWeekdayArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Stops an event repeating from the day it stands on. */
   repeat_off(): Promise<void>;
-  /** Runs `repeat_off` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_offMany(items: RepeatOffArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Skips one date of a repeating event. */
   skip_date(args: {
     day: string;
   }): Promise<void>;
-  /** Runs `skip_date` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  skip_dateMany(items: SkipDateArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Gives a skipped date of a repeating event back. */
   restore_date(args: {
     day: string;
   }): Promise<void>;
-  /** Runs `restore_date` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  restore_dateMany(items: RestoreDateArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves one date of a repeating event: an event of its own stands in its place and the series keeps every other date. */
   move_occurrence(args: {
     at: string;
     start: string;
     end: string;
   }): Promise<void>;
-  /** Runs `move_occurrence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  move_occurrenceMany(items: MoveOccurrenceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Cancels one date of a repeating event. */
   cancel_occurrence(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `cancel_occurrence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  cancel_occurrenceMany(items: CancelOccurrenceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Gives a cancelled or moved date of a series back. */
   restore_occurrence(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `restore_occurrence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  restore_occurrenceMany(items: RestoreOccurrenceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves a repeating event from one date on: the series ends the day before, and a new one begins where it was moved to, with every date after it. */
   move_following(args: {
     at: string;
     start: string;
     end: string;
   }): Promise<void>;
-  /** Runs `move_following` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  move_followingMany(items: MoveFollowingArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves an event to a day, keeping the time of day it starts and how long it lasts, and its reminder at the same distance from its start. */
   move_to_day(args: {
     day: string;
   }): Promise<void>;
-  /** Runs `move_to_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  move_to_dayMany(items: MoveToDayArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves an event to the day a moment names, keeping the time of day it starts. */
   change_day(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `change_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  change_dayMany(items: ChangeDayArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets the time of day an event starts, its end keeping how long it lasts. A day the moment names is the day it moves to. */
   change_start(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `change_start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  change_startMany(items: ChangeStartArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets when an event ends. */
   change_end(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `change_end` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  change_endMany(items: ChangeEndArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Ends an event on the day a moment names, keeping the time of day it ends at: a day after the one it starts on makes it run through every day between, and a whole-day event ends at the midnight after its last day, which is the day it shows on. */
   move_end_day(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `move_end_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  move_end_dayMany(items: MoveEndDayArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Ends an event on a day, keeping the time of day it ends at, as `move_end_day` does with the day a moment names. */
   end_on_day(args: {
     end_day: string;
   }): Promise<void>;
-  /** Runs `end_on_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  end_on_dayMany(items: EndOnDayArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before. */
   repeat(args: {
     how: Repeat;
   }): Promise<void>;
-  /** Runs `repeat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeatMany(items: RepeatArgs[]): Promise<tilo.ActionAnswer[]>;
   /** How often it repeats, in the unit it repeats in: every two weeks is 2. */
   repeat_every(args: {
     every: number;
   }): Promise<void>;
-  /** Runs `repeat_every` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_everyMany(items: RepeatEveryArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The last day it repeats by, or none for a series that does not end. */
   repeat_until(args?: {
     until?: string;
   }): Promise<void>;
-  /** Runs `repeat_until` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_untilMany(items: RepeatUntilArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The last day it repeats by, as the day a moment names. */
   repeat_until_at(args: {
     at: string;
   }): Promise<void>;
-  /** Runs `repeat_until_at` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_until_atMany(items: RepeatUntilAtArgs[]): Promise<tilo.ActionAnswer[]>;
   /** How many times it repeats in all, or none for a series that does not end. */
   repeat_count(args?: {
     count?: number;
   }): Promise<void>;
-  /** Runs `repeat_count` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_countMany(items: RepeatCountArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Files an event under a calendar the person picks. */
   file_in(args: {
     k: Calendar;
   }): Promise<void>;
-  /** Runs `file_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  file_inMany(items: FileInArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Invites someone to an event, by the name and address the person gives. */
   invite(args: {
     name: string;
@@ -843,8 +556,6 @@ export interface Event extends tilo.Resource {
     g: Attendee;
     status: string;
   }): Promise<void>;
-  /** Runs `answer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  answerMany(items: AnswerArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Answers the person's own invitation to an account's event, telling the organiser through the account's server: what settles the RSVP the invitation asked for. */
   answer_and_tell(args: {
     g: Attendee;
@@ -854,8 +565,6 @@ export interface Event extends tilo.Resource {
   uninvite(args: {
     g: Attendee;
   }): Promise<void>;
-  /** Runs `uninvite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  uninviteMany(items: UninviteArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Starts a message inviting a guest, the event's calendar invitation carried beside it: what Mail shows the person, to read and send. Nothing is sent by this. */
   invite_by_mail(args: {
     g: Attendee;
@@ -864,12 +573,8 @@ export interface Event extends tilo.Resource {
   invite_by_mailMany(items: InviteByMailArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Rings an event's reminder when its moment comes, and nothing for an event that has none. */
   ring_due(): Promise<void>;
-  /** Runs `ring_due` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  ring_dueMany(items: RingDueArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Tells the people coming that an event starts, once, and clears its reminder. */
   remind_now(): Promise<void>;
-  /** Runs `remind_now` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  remind_nowMany(items: RemindNowArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Goes to the week an event is on. */
   go_to(): Promise<void>;
   /** Runs `go_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -878,19 +583,15 @@ export interface Event extends tilo.Resource {
   repeat_every_text(args: {
     typed: string;
   }): Promise<void>;
-  /** Runs `repeat_every_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_every_textMany(items: RepeatEveryTextArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Repeats an event as many times as the person typed. */
   repeat_count_text(args: {
     typed: string;
   }): Promise<void>;
-  /** Runs `repeat_count_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  repeat_count_textMany(items: RepeatCountTextArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Event` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const EVENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "dropped", "droppedMany", "ended", "endedMany", "file_event", "file_eventMany", "set_event_color", "set_event_colorMany", "clear_event_color", "clear_event_colorMany", "set_categories", "set_categoriesMany", "set_zone", "set_zoneMany", "add_category", "add_categoryMany", "remove_category", "remove_categoryMany", "organize", "organizeMany", "remind_at_start", "remind_at_startMany", "remind_before", "remind_beforeMany", "remind_off", "remind_offMany", "repeat_rule", "repeat_ruleMany", "repeat_weekdays", "repeat_weekdaysMany", "toggle_weekday", "toggle_weekdayMany", "repeat_off", "repeat_offMany", "skip_date", "skip_dateMany", "restore_date", "restore_dateMany", "move_occurrence", "move_occurrenceMany", "cancel_occurrence", "cancel_occurrenceMany", "restore_occurrence", "restore_occurrenceMany", "move_following", "move_followingMany", "move_to_day", "move_to_dayMany", "change_day", "change_dayMany", "change_start", "change_startMany", "change_end", "change_endMany", "move_end_day", "move_end_dayMany", "end_on_day", "end_on_dayMany", "repeat", "repeatMany", "repeat_every", "repeat_everyMany", "repeat_until", "repeat_untilMany", "repeat_until_at", "repeat_until_atMany", "repeat_count", "repeat_countMany", "file_in", "file_inMany", "invite", "answer", "answerMany", "answer_and_tell", "uninvite", "uninviteMany", "invite_by_mail", "invite_by_mailMany", "ring_due", "ring_dueMany", "remind_now", "remind_nowMany", "go_to", "go_toMany", "repeat_every_text", "repeat_every_textMany", "repeat_count_text", "repeat_count_textMany"] as const;
+export const EVENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "dropped", "ended", "file_event", "file_eventMany", "set_event_color", "clear_event_color", "set_categories", "set_zone", "add_category", "remove_category", "organize", "remind_at_start", "remind_before", "remind_off", "repeat_rule", "repeat_weekdays", "toggle_weekday", "repeat_off", "skip_date", "restore_date", "move_occurrence", "cancel_occurrence", "restore_occurrence", "move_following", "move_to_day", "change_day", "change_start", "change_end", "move_end_day", "end_on_day", "repeat", "repeat_every", "repeat_until", "repeat_until_at", "repeat_count", "file_in", "invite", "answer", "answer_and_tell", "uninvite", "invite_by_mail", "invite_by_mailMany", "ring_due", "remind_now", "go_to", "go_toMany", "repeat_every_text", "repeat_count_text"] as const;
 
 /** The `tl.so.tilo.calendar.Event` kind at `path`. */
 export function calendarEvent(ws: tilo.Workspace, path: string): Event {
@@ -909,19 +610,15 @@ export interface Calendar extends tilo.Resource {
   set_calendar_color(args: {
     color: Color;
   }): Promise<void>;
-  /** Runs `set_calendar_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  set_calendar_colorMany(items: SetCalendarColorArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Renames a calendar. */
   rename_calendar(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `rename_calendar` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  rename_calendarMany(items: RenameCalendarArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Calendar` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CALENDAR_ACTIONS = ["set_calendar_color", "set_calendar_colorMany", "rename_calendar", "rename_calendarMany"] as const;
+export const CALENDAR_ACTIONS = ["set_calendar_color", "rename_calendar"] as const;
 
 /** The `tl.so.tilo.calendar.Calendar` kind at `path`. */
 export function calendar(ws: tilo.Workspace, path: string): Calendar {
@@ -1007,8 +704,6 @@ export interface Calendars extends tilo.Resource {
   discard_draft(args: {
     e: Event;
   }): Promise<void>;
-  /** Runs `discard_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  discard_draftMany(items: DiscardDraftArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The window shows the week before. */
   previous_week(): Promise<void>;
   /** Runs `previous_week` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -1045,7 +740,7 @@ export interface Calendars extends tilo.Resource {
 
 /** The actions `Calendars` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "discard_draft", "discard_draftMany", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "export_calendar", "take_invitation", "import_ics"] as const;
+export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "discard_draft", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "export_calendar", "take_invitation", "import_ics"] as const;
 
 /** The `tl.so.tilo.calendar.Calendars` kind at `path`. */
 export function calendars(ws: tilo.Workspace, path: string): Calendars {

@@ -22,41 +22,11 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@374de8982cd026ad";
+export const SURFACE = "so.tilo.mail@68fb0d6c850c3f0d";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
   signature: string;
-}
-
-/** The arguments of `mark_all_read`. */
-export interface MarkAllReadArgs {
-}
-
-/** The arguments of `archive`. */
-export interface ArchiveArgs {
-}
-
-/** The arguments of `to_inbox`. */
-export interface ToInboxArgs {
-}
-
-/** The arguments of `move_to`. */
-export interface MoveToArgs {
-  to: Mailbox;
-}
-
-/** The arguments of `delete`. */
-export interface DeleteArgs {
-}
-
-/** The arguments of `junk`. */
-export interface JunkArgs {
-}
-
-/** The arguments of `flag`. */
-export interface FlagArgs {
-  flagged?: boolean;
 }
 
 /** The arguments of `snooze`. */
@@ -85,11 +55,6 @@ export interface LabelArgs {
 /** The arguments of `mute`. */
 export interface MuteArgs {
   muted?: boolean;
-}
-
-/** The arguments of `mark_read`. */
-export interface MarkReadArgs {
-  unread?: boolean;
 }
 
 /** The arguments of `announce`. */
@@ -202,13 +167,11 @@ export interface Account extends tilo.Resource {
   empty_trash(): Promise<void>;
   /** Marks every conversation of the account read. */
   mark_all_read(): Promise<void>;
-  /** Runs `mark_all_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  mark_all_readMany(items: MarkAllReadArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Account` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ACCOUNT_ACTIONS = ["set_signature", "set_signatureMany", "check_now", "search_server", "new_message", "empty_trash", "mark_all_read", "mark_all_readMany"] as const;
+export const ACCOUNT_ACTIONS = ["set_signature", "set_signatureMany", "check_now", "search_server", "new_message", "empty_trash", "mark_all_read"] as const;
 
 /** The `tl.so.tilo.mail.Account` kind at `path`. */
 export function account(ws: tilo.Workspace, path: string): Account {
@@ -261,34 +224,22 @@ export interface Thread extends tilo.Resource {
   forward(): Promise<Draft>;
   /** Archives the conversation: its messages leave the inbox. */
   archive(): Promise<void>;
-  /** Runs `archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  archiveMany(items: ArchiveArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves the conversation back to the inbox, and unmutes it: what a person brings back is what they want to see again. */
   to_inbox(): Promise<void>;
-  /** Runs `to_inbox` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  to_inboxMany(items: ToInboxArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves the conversation to another mailbox of its account. */
   move_to(args: {
     to: Mailbox;
   }): Promise<void>;
-  /** Runs `move_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  move_toMany(items: MoveToArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Deletes the conversation: its messages go to the trash. */
   delete(): Promise<void>;
-  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Marks the conversation as junk: its messages leave the inbox for the account's junk mailbox, and what comes of it again stays there. */
   junk(): Promise<void>;
-  /** Runs `junk` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  junkMany(items: JunkArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and this app's record of it leaves once the server says it is. */
   purge(): Promise<void>;
   /** Flags or unflags the conversation. */
   flag(args?: {
     flagged?: boolean;
   }): Promise<void>;
-  /** Runs `flag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  flagMany(items: FlagArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Puts the conversation away until a moment: it leaves the inbox, and comes back once that moment has come, with no window open. The moment is a field, so it survives closing and reopening, and an agent snoozes the same way. */
   snooze(args: {
     until: string;
@@ -324,8 +275,6 @@ export interface Thread extends tilo.Resource {
   mark_read(args?: {
     unread?: boolean;
   }): Promise<void>;
-  /** Runs `mark_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  mark_readMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Tells everyone who reads the conversation that mail came to it: who wrote, what it is called, and which account it came to while the workspace reads several of them, opening the conversation. It is run once for each arrival, on the device that governs the workspace, so each person is told once however many of their devices are open. */
   announce(): Promise<void>;
   /** Runs `announce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -338,7 +287,7 @@ export interface Thread extends tilo.Resource {
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "archiveMany", "to_inbox", "to_inboxMany", "move_to", "move_toMany", "delete", "deleteMany", "junk", "junkMany", "purge", "flag", "flagMany", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "mark_readMany", "announce", "announceMany", "answer"] as const;
+export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "to_inbox", "move_to", "delete", "junk", "purge", "flag", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "announce", "announceMany", "answer"] as const;
 
 /** The `tl.so.tilo.mail.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {
