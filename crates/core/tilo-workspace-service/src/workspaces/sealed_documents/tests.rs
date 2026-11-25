@@ -985,10 +985,10 @@ async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     server.shutdown().await;
 }
 
-/// A record whose sealed writes do not all merge is named with why, and the
-/// workspace's other records are read all the same: what a reader that
-/// places content by what records name needs from a workspace with one
-/// broken record.
+/// A record held back for a write it lacks leaves the workspace's other records read: what a
+/// reader that places content by what records name needs from a workspace where one record
+/// waits. The held record never reads with the lost write left out, and reads whole once that
+/// write arrives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
     let lounge = Box::new(lounge().await);
@@ -999,21 +999,24 @@ async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
         })
         .await
         .unwrap();
-    // A write the node never gets: the member's next one waits on it.
-    let _never_sent = lounge.member.seal(workspace, |document| {
+    // A write the node does not get yet: the member's next one waits on it.
+    let ((), lost) = lounge.member.seal(workspace, |document| {
         document.put(ROOT, "title", "Lost").unwrap();
         document.commit_edit("fixture", "title", &lounge.member.person());
     });
     set_title(&lounge.member, workspaces, workspace, "After").await;
 
     let read = workspaces.whole_documents(workspace, None).await.unwrap();
-    assert!(!read.is_whole());
-    let unread: Vec<_> = read.unread.iter().map(|(route, _)| route.clone()).collect();
-    assert_eq!(unread, [(APP.to_owned(), RESOURCE.to_owned())]);
+    let held = |read: &crate::workspaces::WholeDocuments| {
+        read.documents
+            .iter()
+            .find(|(route, _)| *route == (APP.to_owned(), RESOURCE.to_owned()))
+            .and_then(|(_, bytes)| title(bytes))
+    };
+    let before = held(&read);
     assert!(
-        read.unread[0].1.contains("do not merge"),
-        "why it is unread: {}",
-        read.unread[0].1
+        !matches!(before.as_deref(), Some("Lost" | "After")),
+        "the write after the lost one is held back, not read without it: {before:?}"
     );
     assert!(
         read.documents
@@ -1021,6 +1024,19 @@ async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
             .any(|(route, _)| *route == (APP.to_owned(), "other".to_owned())),
         "the other record is read"
     );
+
+    // The lost write arrives: the held one is taken after it, and the record reads whole.
+    workspaces
+        .absorb(
+            workspace,
+            lounge.member_key.verifying_key().to_bytes(),
+            &postcard::to_stdvec(&lost).unwrap(),
+        )
+        .await
+        .unwrap();
+    let read = workspaces.whole_documents(workspace, None).await.unwrap();
+    assert!(read.is_whole(), "unread: {:?}", read.unread);
+    assert_eq!(held(&read).as_deref(), Some("After"));
     lounge.server.shutdown().await;
 }
 
@@ -1096,6 +1112,8 @@ impl Peer {
 
 /// `key`'s device, already admitted, linked to `workspace_id`'s link and caught
 /// up: the link it reads the workspace over, its reader, and the pairing task.
+/// The device starts as a device that joined does, from the workspace's roster
+/// alone: everything else it holds the link brings it.
 async fn linked(
     workspaces: &Workspaces,
     workspace_id: WorkspaceId,
@@ -1110,7 +1128,18 @@ async fn linked(
         .direct()
         .link(workspace_id)
         .expect("the node serves the workspace over a direct link");
-    let mut link = tilo_peer_state::direct::DirectSync::new(host.read(Clone::clone), key);
+    let joined = host
+        .read(|peer| {
+            tilo_peer_state::StatePeer::from_join(
+                &workspace_id.to_string(),
+                workspaces.device_cert().clone(),
+                peer.certificates(),
+                &peer.revocations(),
+                tilo_clock::wall(),
+            )
+        })
+        .unwrap();
+    let mut link = tilo_peer_state::direct::DirectSync::new(joined, key);
     if capacity > 0 {
         link = link.with_heard_capacity(capacity);
     }

@@ -1476,7 +1476,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
 /// A device that joins a workspace reads the resources written there before it arrived, though
 /// their writes reach its copy before the group's keys reach the device: once the keys do, the
 /// copy opens what it kept, with nothing written since. A resource sealed to its author alone
-/// reaches the copy too, and stays shut: no member's keys open it.
+/// never reaches the device, as no write of a record a device does not read does.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1590,14 +1590,11 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
                 })
         }
     };
-    tilo_test_env::within(
-        "the copy keeps the issue and the draft it cannot open yet",
-        async {
-            while !(kept(true).await && kept(false).await) {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        },
-    )
+    tilo_test_env::within("the copy keeps the issue it cannot open yet", async {
+        while !kept(true).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
     .await;
     assert_eq!(
         title(member.workspaces(), &workspace, "i-1").await,
@@ -1615,8 +1612,11 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         }
     })
     .await;
-    // The member's device holds the owner's draft, sealed, and opens none of it.
-    assert!(kept(false).await, "the copy keeps the sealed draft");
+    // The owner's draft never reaches the member's device: it is not one of its readers.
+    assert!(
+        !kept(false).await,
+        "a device that does not read the draft keeps none of it"
+    );
     assert!(
         holds(owner.workspaces(), &workspace, "draft-1").await,
         "the owner reads their draft"

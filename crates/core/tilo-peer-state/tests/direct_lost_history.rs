@@ -45,6 +45,9 @@ struct Linked {
     /// The keys the workspace's members seal its records under.
     keys: key_group::ContentKeys,
     b: DirectSync,
+    b_key: SigningKey,
+    /// The workspace as `b` held it when it joined, before the link brought it anything.
+    joined: StatePeer,
     link: tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
     router: iroh::protocol::Router,
     host_endpoint: iroh::Endpoint,
@@ -87,6 +90,7 @@ impl Linked {
         write_sealed(&a, &keys, &a_key, (APP, RECORD), |record| {
             set(record, "first", &a_cert.user_public_key);
         });
+        let joined = b.clone();
         let b = DirectSync::new(b, b_key.clone());
         let host_endpoint = localhost_endpoint(&a_key).await;
         let router = iroh::protocol::Router::builder(host_endpoint.clone())
@@ -106,6 +110,8 @@ impl Linked {
             a_key,
             keys,
             b,
+            b_key,
+            joined,
             link,
             router,
             host_endpoint,
@@ -241,5 +247,54 @@ async fn a_write_made_while_the_other_device_was_away_reaches_it_when_it_links_a
     until(&linked.b, |b| opened_heads(b, keys, (APP, RECORD)) == heads).await;
     assert_eq!(linked.b.read(|b| value(b, keys)), "while away");
     again.abort();
+    linked.stop().await;
+}
+
+/// A device that lost its store gets its records back from the host that keeps them: a member
+/// writes a record, the host keeps the write, and the member's store is deleted. Started again
+/// from nothing but the workspace it joined, the member catches up from the host and reads the
+/// record's value again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_lost_its_store_gets_its_records_back_from_a_host() {
+    let linked = Box::pin(Linked::start()).await;
+    let (keys, b_key) = (&linked.keys, &linked.b_key);
+    linked.link.abort();
+    let member_dir = tempfile::tempdir().unwrap();
+    let store_dir = member_dir.path().join("store");
+    let start = |joined: StatePeer| {
+        let store = Arc::new(Store::open(&store_dir, Appetite::StoreAll).unwrap());
+        let member = DirectSync::new(joined, b_key.clone()).with_store(store);
+        let link = tokio::spawn({
+            let member = member.clone();
+            let b_endpoint = linked.b_endpoint.clone();
+            let host = addr(&linked.host_endpoint);
+            async move { member.connect(&b_endpoint, host).await }
+        });
+        (member, link)
+    };
+
+    // The member, keeping a store of its own, writes the record; the host keeps the write.
+    let (member, link) = start(linked.joined.clone());
+    until(&member, |member| {
+        opened(member, keys, (APP, RECORD)).is_some()
+    })
+    .await;
+    let person = member.read(StatePeer::owner);
+    write_sealed(&member, keys, b_key, (APP, RECORD), |record| {
+        set(record, "the member's", &person);
+    });
+    until(&linked.a, |host| value(host, keys) == "the member's").await;
+
+    // The member's store is gone, and the member starts again from what it joined with.
+    link.abort();
+    drop(member);
+    std::fs::remove_dir_all(&store_dir).unwrap();
+    let (member, link) = start(linked.joined.clone());
+    until(&member, |member| {
+        opened(member, keys, (APP, RECORD)).is_some_and(|_| value(member, keys) == "the member's")
+    })
+    .await;
+    assert_eq!(member.read(|member| value(member, keys)), "the member's");
+    link.abort();
     linked.stop().await;
 }

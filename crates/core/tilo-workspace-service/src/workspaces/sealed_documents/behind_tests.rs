@@ -61,10 +61,19 @@ fn kept_untold(lounge: &Lounge, message: &NeighbourMsg) {
         .unwrap();
 }
 
+/// The envelope a sealed write carries.
+fn envelope_of(message: NeighbourMsg) -> SignedOp {
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        panic!("a sealed write is a document write");
+    };
+    *envelope
+}
+
 /// A member writes "one", "two" and "three"; the server keeps all three, and its governor's
-/// copy is told only of the first and the third. Answers the governed workspace, the second
-/// write, and the member's compaction of the three, which the copy refuses.
-async fn a_copy_without_the_second_write(
+/// copy is told of the third and never of the second. The copy holds the third back for the
+/// second: it never reads the record with the second left out. Answers the governed workspace,
+/// the second write, and the member's compaction of the three.
+async fn a_copy_told_of_the_third_write_before_the_second(
     lounge: &Lounge,
     session: &Session,
 ) -> (
@@ -88,12 +97,7 @@ async fn a_copy_without_the_second_write(
         .into_iter()
         .filter(|op| op.encryption.is_some())
         .collect();
-    let NeighbourMsg::AppDocument {
-        envelope: second, ..
-    } = second
-    else {
-        panic!("a document write");
-    };
+    let second = envelope_of(second);
     assert!(
         history.contains(&second),
         "the server keeps the second write"
@@ -104,46 +108,98 @@ async fn a_copy_without_the_second_write(
         .workspace(&lounge.workspace)
         .await
         .unwrap();
-    tilo_test_env::within("the copy takes the third write", async {
-        while !state
-            .lock()
+    {
+        let governed = state.lock().await;
+        let held = |op: &SignedOp| {
+            governed
+                .peer()
+                .publication()
+                .holds_sealed(APP, DOCUMENT, op)
+        };
+        assert!(
+            !held(&second) && !held(&third),
+            "the copy holds the third write back for the second, and reads no record without it"
+        );
+    }
+    let compaction = lounge
+        .member
+        .compacts(&lounge.workspaces, &lounge.workspace, history)
+        .await;
+    (state, second, compaction)
+}
+
+/// A member writes "one", "two" and "three", and the second never reaches the server. The
+/// governor's copy holds the third back for the second: the server has nothing to answer its
+/// ask with, so the copy takes neither. Answers the governed workspace, the second write, and
+/// the member's compaction of the three, the only place the second is found from then on.
+async fn a_copy_that_never_gets_the_second_write(
+    lounge: &Lounge,
+    session: &Session,
+) -> (
+    std::sync::Arc<tokio::sync::Mutex<crate::workspaces::GovernedWorkspace>>,
+    SignedOp,
+    NeighbourMsg,
+) {
+    let mut history = titles(lounge, session, &["one"]).await;
+    let ((), second) = lounge.member.seal(&lounge.workspace, |doc| {
+        doc.put(ROOT, "title", "two").unwrap();
+        doc.put(ROOT, "second", "kept").unwrap();
+        doc.commit_edit("fixture", "title", &lounge.member.person());
+    });
+    let ((), third) = lounge.member.seal(&lounge.workspace, |doc| {
+        doc.put(ROOT, "title", "three").unwrap();
+        doc.commit_edit("fixture", "title", &lounge.member.person());
+    });
+    session.send(third.clone());
+    let (second, third) = (envelope_of(second), envelope_of(third));
+    tilo_test_env::within("the server keeps the third write", async {
+        while !retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
             .await
-            .peer()
-            .publication()
-            .holds_sealed(APP, DOCUMENT, &third)
+            .contains(&third)
         {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
+    let state = lounge
+        .workspaces
+        .workspace(&lounge.workspace)
+        .await
+        .unwrap();
+    let held = |op: &SignedOp| {
+        let op = op.clone();
+        let state = std::sync::Arc::clone(&state);
+        async move {
+            state
+                .lock()
+                .await
+                .peer()
+                .publication()
+                .holds_sealed(APP, DOCUMENT, &op)
+        }
+    };
     assert!(
-        !state
-            .lock()
-            .await
-            .peer()
-            .publication()
-            .holds_sealed(APP, DOCUMENT, &second),
-        "the copy passed the second write over"
+        !held(&second).await && !held(&third).await,
+        "the copy holds the third write back for the second it lacks, and reads no record \
+         without it"
     );
+    history.extend([second.clone(), third]);
     let compaction = lounge
         .member
         .compacts(&lounge.workspaces, &lounge.workspace, history)
         .await;
-    let author = lounge.member_key.verifying_key().to_bytes();
-    assert!(
-        state.lock().await.refuses(author, &compaction).is_some(),
-        "a copy without the second write refuses the member's compaction"
-    );
-    (state, *second, compaction)
+    (state, second, compaction)
 }
 
-/// A node told of a member's writes out of order passed the earlier one over for good, and
-/// refused every compaction the member made of the document. Loading the workspace takes the
-/// write the server keeps in again, and the member's compaction is taken.
+/// A node told of a member's later write and not of the earlier one the server keeps holds the
+/// later one back, so it never passes a write over. Loading the workspace replays what the
+/// server keeps: the copy takes both writes, reads the record whole, and takes the member's
+/// compaction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_that_passed_a_write_over_takes_it_in_again_on_load() {
     let (lounge, session) = lounge_with_link().await;
-    let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &session).await;
+    let (state, second, compaction) =
+        a_copy_told_of_the_third_write_before_the_second(&lounge, &session).await;
 
     lounge
         .workspaces
@@ -158,6 +214,13 @@ async fn a_copy_that_passed_a_write_over_takes_it_in_again_on_load() {
             .publication()
             .holds_sealed(APP, DOCUMENT, &second),
         "the second write is taken in again"
+    );
+    assert_eq!(
+        readable(&lounge.workspaces, &lounge.workspace)
+            .await
+            .as_deref(),
+        Some("three"),
+        "the third write, held for the second, is taken after it"
     );
     let author = lounge.member_key.verifying_key().to_bytes();
     assert_eq!(state.lock().await.refuses(author, &compaction), None);
@@ -174,7 +237,8 @@ async fn a_copy_that_passed_a_write_over_takes_it_in_again_on_load() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
     let (lounge, session) = lounge_with_link().await;
-    let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &session).await;
+    let (state, second, compaction) =
+        a_copy_told_of_the_third_write_before_the_second(&lounge, &session).await;
     kept_untold(&lounge, &compaction);
     let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
         panic!("a compaction is a document write");
@@ -401,7 +465,8 @@ async fn field(lounge: &Lounge, name: &str) -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_takes_a_compaction_that_arrives_live_over_a_write_it_lacks() {
     let (lounge, session) = lounge_with_link().await;
-    let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &session).await;
+    let (state, second, compaction) =
+        a_copy_that_never_gets_the_second_write(&lounge, &session).await;
     let author = lounge.member_key.verifying_key().to_bytes();
     assert!(
         !state
@@ -411,10 +476,6 @@ async fn a_copy_takes_a_compaction_that_arrives_live_over_a_write_it_lacks() {
             .publication()
             .holds_sealed(APP, DOCUMENT, &second),
         "the copy lacks the second write"
-    );
-    assert!(
-        state.lock().await.refuses(author, &compaction).is_some(),
-        "a copy without the second write refuses the member's compaction"
     );
 
     // The member's compaction reaches the copy as a live write, not through a load.
@@ -551,7 +612,8 @@ async fn a_copy_takes_a_compaction_that_arrives_before_any_of_its_writes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_takes_a_compaction_a_device_sends_over_a_write_it_lacks() {
     let (lounge, session) = lounge_with_link().await;
-    let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &session).await;
+    let (state, second, compaction) =
+        a_copy_that_never_gets_the_second_write(&lounge, &session).await;
     assert!(
         !state
             .lock()
@@ -613,8 +675,10 @@ async fn a_copy_takes_a_compaction_it_kept_before_its_keys_after_a_restart() {
         0,
     ))
     .await;
-    // A copy that holds the first and third of the member's writes, and not the second.
-    let (state, _second, compaction) = a_copy_without_the_second_write(&lounge, &session).await;
+    // A copy that holds the first of the member's writes and holds the third back for the
+    // second, which never reached the server.
+    let (state, _second, compaction) =
+        a_copy_that_never_gets_the_second_write(&lounge, &session).await;
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: APP.to_owned(),
         cluster_id: lounge.workspace.clone(),
