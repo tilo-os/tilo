@@ -236,80 +236,97 @@ async fn the_agents_record_changes_only_through_admitted_actions() {
     server.shutdown().await;
 }
 
-/// How long a change of the workspace's agents may take, from its call to its Completed receipt:
-/// the roster check, the record's grants, the record read and changed, and the write.
-const AGENTS_CHANGE_BUDGET: std::time::Duration = std::time::Duration::from_millis(20);
+/// How long the roster and grants checks of a change of the workspace's agents may take.
+const AGENTS_ADMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// How many times each change is asked: the fastest counts, so a busy machine that holds up a
-/// few of them does not fail the test, and a change that always waits does.
-const AGENTS_CHANGE_RUNS: usize = 8;
-
-/// Listing a computer's agent and renaming it each complete within [`AGENTS_CHANGE_BUDGET`],
-/// asked over this device's dispatch as the person's computer asks them when its agent's client
-/// connects.
+/// The roster and grants checks of a change of the workspace's agents read the workspace as it
+/// stands, never waiting on its lock: while a writer holds it, with the owner's rename in flight
+/// behind it, a viewer's rename is refused by the record's grants within [`AGENTS_ADMIT_BUDGET`],
+/// and the owner's lands once the writer lets go.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agents_change_completes_within_its_budget() {
+async fn an_agents_change_is_admitted_while_a_writer_holds_the_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Studio").await.unwrap().workspace;
-    let mut made = Vec::new();
-    let mut creates = Vec::new();
-    for run in 0..AGENTS_CHANGE_RUNS {
-        let started = std::time::Instant::now();
-        let answered = ask(
-            workspaces,
+    let viewer = admit(workspaces, &workspace, &owner, 7).await;
+    workspaces
+        .set_member_role(
             &workspace,
             &owner,
-            (
-                WORKSPACE_AGENT_CREATE,
-                json!({ "name": format!("Scout {run}"), "mcp_client": "Claude Code" }),
-            ),
+            SetMemberRoleRequest {
+                request_id: [31; 32],
+                user_public_key: viewer.user_public_key,
+                role: Role::Viewer,
+            },
         )
         .await
-        .expect("the owner makes an agent");
-        creates.push(started.elapsed());
-        made.push(
-            answered["agent"]
-                .as_str()
-                .expect("the agent's id")
-                .to_owned(),
-        );
-    }
-    let mut renames = Vec::new();
-    for (run, agent) in made.iter().enumerate() {
+        .unwrap();
+    let made = ask(
+        workspaces,
+        &workspace,
+        &owner,
+        (
+            WORKSPACE_AGENT_CREATE,
+            json!({ "name": "Scout", "mcp_client": "Claude Code" }),
+        ),
+    )
+    .await
+    .expect("the owner makes an agent");
+    let scout = made["agent"].as_str().expect("the agent's id").to_owned();
+    let rename = |name: &str| {
+        (
+            WORKSPACE_AGENT_UPDATE,
+            json!({
+                "action": WorkspaceAgents::RENAME_AGENT.id,
+                "arguments": { "agent": scout, "name": name },
+            }),
+        )
+    };
+
+    // A writer holds the workspace, and the owner's rename waits behind it to write.
+    let held = workspaces.workspace(&workspace).await.unwrap();
+    let writer = held.lock().await;
+    let in_flight = tokio::spawn({
+        let (workspaces, workspace, owner) = (workspaces.clone(), workspace.clone(), owner.clone());
+        let renamed = rename("Ranger");
+        async move { ask(&workspaces, &workspace, &owner, renamed).await }
+    });
+    let mut took = Vec::new();
+    for _ in 0..8 {
         let started = std::time::Instant::now();
-        ask(
-            workspaces,
-            &workspace,
-            &owner,
-            (
-                WORKSPACE_AGENT_UPDATE,
-                json!({
-                    "action": WorkspaceAgents::RENAME_AGENT.id,
-                    "arguments": { "agent": agent, "name": format!("Ranger {run}") },
-                }),
-            ),
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            ask(workspaces, &workspace, &viewer, rename("Mole")),
         )
         .await
-        .expect("the owner renames it");
-        renames.push(started.elapsed());
-    }
-    let listed = agents(workspaces, &workspace).await;
-    for (run, agent) in made.iter().enumerate() {
+        .expect("the viewer's change is decided while the writer holds the workspace");
+        took.push(started.elapsed());
         assert!(
-            listed.contains(&(agent.clone(), format!("Ranger {run}"), true)),
-            "every change landed: {listed:?}"
+            matches!(refused, Err(ActionCallError::NotPermitted)),
+            "{refused:?}"
         );
     }
-    for (change, took) in [("making an agent", creates), ("renaming one", renames)] {
-        let fastest = took.iter().min().copied().unwrap();
-        assert!(
-            fastest <= AGENTS_CHANGE_BUDGET,
-            "{change} takes {fastest:?} at its fastest, over {AGENTS_CHANGE_BUDGET:?}: {took:?}"
-        );
-    }
+    let fastest = took.iter().min().copied().unwrap();
+    assert!(
+        fastest <= AGENTS_ADMIT_BUDGET,
+        "deciding a change takes {fastest:?} at its fastest, over {AGENTS_ADMIT_BUDGET:?}: {took:?}"
+    );
+    assert!(
+        !in_flight.is_finished(),
+        "the owner's write waits for the writer"
+    );
+    drop(writer);
+    in_flight
+        .await
+        .unwrap()
+        .expect("the owner's rename lands once the writer lets go");
+    assert!(agents(workspaces, &workspace).await.contains(&(
+        scout.clone(),
+        "Ranger".to_owned(),
+        true
+    )));
     server.shutdown().await;
 }
 
