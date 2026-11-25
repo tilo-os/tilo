@@ -2592,6 +2592,9 @@ fn spec_commands() -> Vec<&'static str> {
         "Stop…",
         "Share with…",
         "Task",
+        // The system's own, which close every resource's menu.
+        "Export…",
+        "Copy link",
     ]
 }
 
@@ -2638,6 +2641,8 @@ fn page_spec_commands() -> Vec<&'static str> {
         "Delete",
         "Share with…",
         "Task",
+        "Export…",
+        "Copy link",
     ]
 }
 
@@ -2800,13 +2805,9 @@ tilo_test_env::scenario! {
         assert!(
             commands[placed.len()..]
                 .iter()
+                .filter(|command| !["Export…", "Copy link"].contains(&command.label.as_str()))
                 .all(|command| command.group.is_some()),
             "every command the row places after its own stands in a run of the app's: {commands:?}"
-        );
-        assert_eq!(
-            commands.last().map(|command| command.group.as_deref()),
-            Some(Some("More")),
-            "and the declarations the view places nowhere end behind its \"More\": {commands:?}"
         );
         let at = |label: &str| {
             commands
@@ -2814,6 +2815,11 @@ tilo_test_env::scenario! {
                 .position(|command| command.label == label)
                 .unwrap_or_else(|| panic!("the menu offers {label}"))
         };
+        assert_eq!(
+            commands[at("Task")].group.as_deref(),
+            Some("More"),
+            "and the declarations the view places nowhere end behind its \"More\": {commands:?}"
+        );
         assert!(
             !commands[at("No date")].enabled
                 && commands[at("No date")].reason.as_deref() == Some("It has no date"),
