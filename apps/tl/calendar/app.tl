@@ -1163,13 +1163,13 @@ fn rule_of(e: Event) -> Text {
     } else {
         let parts: List<Text> = [
             freq,
-            if e.recurrence_every > 1 { "INTERVAL:{e.recurrence_every}" } else { "" },
-            if let u = e.recurrence_until { "UNTIL:{stamp_day(u)}" } else { "" },
-            if let n = e.recurrence_count { "COUNT:{n}" } else { "" },
+            if e.recurrence_every > 1 { "INTERVAL={e.recurrence_every}" } else { "" },
+            if let u = e.recurrence_until { "UNTIL={stamp_day(u)}" } else { "" },
+            if let n = e.recurrence_count { "COUNT={n}" } else { "" },
             if e.recurrence_weekdays.is_empty() {
                 ""
             } else {
-                "BYDAY:{e.recurrence_weekdays.sort_by(d -> d).join(",")}"
+                "BYDAY={e.recurrence_weekdays.sort_by(d -> d).join(",")}"
             },
         ]
         parts.filter(x -> x != "").join(";")
