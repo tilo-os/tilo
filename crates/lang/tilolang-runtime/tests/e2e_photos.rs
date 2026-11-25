@@ -1495,8 +1495,11 @@ mod cases {
             };
             assert!(!thumb.is_empty(), "the import kept a thumbnail");
             let drawn = match card.props.get("picture") {
-                Some(Value::Text(picture)) => Some(picture.clone()),
-                Some(Value::Opt(Some(inner))) => inner.as_text().map(str::to_owned),
+                Some(Value::Picture(picture) | Value::Text(picture)) => Some(picture.clone()),
+                Some(Value::Opt(Some(inner))) => match &**inner {
+                    Value::Picture(picture) | Value::Text(picture) => Some(picture.clone()),
+                    other => panic!("the card's picture reads {other:?}"),
+                },
                 other => panic!("the card's picture reads {other:?}"),
             };
             assert_eq!(
