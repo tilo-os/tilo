@@ -24,7 +24,9 @@ use tilo_actions::remote::{
     Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_device_identity::login::{CERTIFY_KEY, ENROL_DECLINED, NO_ROOT_DEVICE, PROVIDER, RESOURCE};
+use tilo_device_identity::login::{
+    CERTIFY_KEY, ENROL_DECLINED, NO_ROOT_DEVICE, PROVIDER, RESOURCE,
+};
 use tilo_unlock_protocol::published::{AutoApproval, UnlockEnrolment, UnlockFabricState};
 use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, EnrolRequest, EnrolResponse, HALF_LEN, Half, SiblingContact,
@@ -84,20 +86,31 @@ impl BootEnrolment {
         if !super::services::holds_root_for_person(person) {
             self.reach_a_root_device(&record, &person, this).await?;
         }
-        let approval = request
-            .unattended_chain
-            .map(|chain| AutoApproval::unsigned(person, this, vec![chain], tilo_clock::unix_now_ns()));
-        let mut certify = json!({
-            "key": hex::encode(request.boot_public_key),
-            "for": "boot",
-            "request": hex::encode(postcard::to_allocvec(&request).map_err(|error| failed(error.to_string()))?),
-            "device": hex::encode(this),
-            "computer": computer,
+        let approval = request.unattended_chain.map(|chain| {
+            AutoApproval::unsigned(person, this, vec![chain], tilo_clock::unix_now_ns())
         });
+        let mut certify = serde_json::Map::new();
+        certify.insert(
+            "key".to_owned(),
+            json!(hex::encode(request.boot_public_key)),
+        );
+        certify.insert("for".to_owned(), json!("boot"));
+        certify.insert(
+            "request".to_owned(),
+            json!(hex::encode(
+                postcard::to_allocvec(&request).map_err(|error| failed(error.to_string()))?
+            )),
+        );
+        certify.insert("device".to_owned(), json!(hex::encode(this)));
+        certify.insert("computer".to_owned(), json!(computer));
         if let Some(digest) = approval.as_ref().map(AutoApproval::digest) {
             let digest = digest.ok_or_else(|| failed("the unlock policy could not be encoded"))?;
-            certify["approval_digest"] = Value::String(hex::encode(digest));
+            certify.insert(
+                "approval_digest".to_owned(),
+                Value::String(hex::encode(digest)),
+            );
         }
+        let certify = Value::Object(certify);
         let answer = self.certify(&cert, certify).await?;
         let enrolled = enrolment_of(&answer, &request, &half, this, approval)?;
         self.publish(&cert, &enrolled).await?;
@@ -169,7 +182,10 @@ impl BootEnrolment {
             ReceiptStatus::Completed { output } => return Ok(output.value.unwrap_or(Value::Null)),
             ReceiptStatus::Failed { error } => return Err(failed(error.message)),
             ReceiptStatus::Rejected { error } => return Err(failed(error.to_string())),
-            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled { invocation, message },
+            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+                invocation,
+                message,
+            },
             ReceiptStatus::Accepted => self.followed(&caller, invocation).await?,
         };
         match ended {
@@ -180,9 +196,11 @@ impl BootEnrolment {
                     message: crate::i18n::t("boot-enrol-declined"),
                 })
             }
-            InvocationUpdate::Cancelled { message, .. } => Err(failed(
-                message.unwrap_or_else(|| "the certificate was stopped".to_owned()),
-            )),
+            InvocationUpdate::Cancelled { message, .. } => {
+                Err(failed(message.unwrap_or_else(|| {
+                    "the certificate was stopped".to_owned()
+                })))
+            }
             InvocationUpdate::Failed { error, .. } => Err(failed(error.message)),
             other => Err(failed(format!("the certificate ended as {other:?}"))),
         }
@@ -194,9 +212,11 @@ impl BootEnrolment {
         caller: &Caller,
         invocation: InvocationId,
     ) -> Result<InvocationUpdate, Refusal> {
+        let bound =
+            Duration::from_nanos(APPROVAL_TIMEOUT_NS).saturating_add(Duration::from_secs(60));
         let deadline = tokio::time::Instant::now()
-            + Duration::from_nanos(APPROVAL_TIMEOUT_NS)
-            + Duration::from_secs(60);
+            .checked_add(bound)
+            .ok_or_else(|| failed("the wait for the certificate's answer is out of range"))?;
         loop {
             let state = self
                 .invocations
@@ -206,7 +226,9 @@ impl BootEnrolment {
                 return Ok(state.update);
             }
             let Some(change) = self.invocations.next_change(caller, &invocation) else {
-                return Err(failed("the person's certificate is no longer followed here"));
+                return Err(failed(
+                    "the person's certificate is no longer followed here",
+                ));
             };
             if tokio::time::timeout_at(deadline, change).await.is_err() {
                 // Nobody answered in the time a person has: nothing waits for them any more.
@@ -253,7 +275,8 @@ impl BootEnrolment {
         state
             .validate(&cert.device_public_key)
             .map_err(|error| failed(format!("the enrolment: {error}")))?;
-        let value = hex::encode(postcard::to_allocvec(&state).map_err(|error| failed(error.to_string()))?);
+        let value =
+            hex::encode(postcard::to_allocvec(&state).map_err(|error| failed(error.to_string()))?);
         devices::keep_own_fact(self.workspaces.copies(), cert, UNLOCK_FACT, &value)
             .await
             .map_err(|error| failed(format!("the enrolment is not kept: {error}")))
@@ -299,7 +322,10 @@ pub(crate) fn asked_facts(request: &InvokeRequest) -> Option<AskedFacts> {
             id: device,
             name: computer.clone(),
         }),
-        words: crate::i18n::t_args("boot-enrol-asked", &[("computer", computer.as_str().into())]),
+        words: crate::i18n::t_args(
+            "boot-enrol-asked",
+            &[("computer", computer.as_str().into())],
+        ),
         facts,
         destructive: unattended,
         ..AskedFacts::default()

@@ -281,10 +281,6 @@ pub fn certify_key(
 /// # Errors
 /// This daemon keeps no root, the request does not read, the key is not the one it proves, or it
 /// could not sign.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one boot key's certificate, the key its half is sealed to and the devices that carry it"
-)]
 fn certify_boot_key(
     workspaces: Option<&Arc<ServiceWorkspaces>>,
     args: &Value,

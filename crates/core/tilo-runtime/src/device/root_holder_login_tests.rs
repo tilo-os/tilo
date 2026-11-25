@@ -170,49 +170,81 @@ async fn a_computer_holding_the_root_logs_in_at_a_server_by_its_line_and_is_aske
     let laptop_key = SigningKey::from_bytes(&[8; 32]);
     let laptop_cert = certified(&alice, &laptop_key, "Alice's laptop", true);
 
+    let login = the_laptop_logs_in(
+        (&laptop_key, &laptop_cert),
+        (&line, &company.workspace),
+        workspaces,
+    )
+    .await;
+
+    the_daemon_enters_and_the_servers_asks_reach_the_laptop(
+        (&laptop_key, &laptop_cert),
+        &login,
+        (&company.workspace, company.workspace_id),
+        workspaces,
+    )
+    .await;
+}
+
+/// Alice's laptop logs in at the site's server with nothing but the server's own line: her root
+/// certified the laptop already, the login is live, and the workspace's roster names it as the
+/// server's sync with its copy admits it.
+async fn the_laptop_logs_in(
+    (laptop_key, laptop_cert): (&SigningKey, &DeviceCert),
+    (line, workspace): (&str, &str),
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+) -> tilo_device_identity::login::Device {
     let login = tilo_test_env::within(
         "the laptop logs in at the server",
         tilo_api::daemon::enter::log_in_at(
-            &laptop_key,
-            &laptop_cert,
-            serde_json::from_str(&line).unwrap(),
+            laptop_key,
+            laptop_cert,
+            serde_json::from_str(line).unwrap(),
             None,
         ),
     )
     .await
     .expect("the root's own device logs in with the server's line alone");
     assert!(login.reaches_a_server(), "the login is live: {login:?}");
-    assert_eq!(login.workspace, company.workspace);
+    assert_eq!(login.workspace, workspace);
     assert_eq!(login.workspace_name.as_deref(), Some("Company"));
     assert_eq!(
-        login.cert, laptop_cert,
+        login.cert, *laptop_cert,
         "the root's own certificate, no other"
     );
-    // The workspace's roster names the laptop: the server's sync with its copy admits it.
     assert!(
         workspaces
-            .state(&company.workspace)
+            .state(workspace)
             .await
             .unwrap()
             .certificates()
-            .contains(&laptop_cert),
+            .contains(laptop_cert),
         "the login put the laptop in the workspace's roster"
     );
+    login
+}
 
-    // The daemon enters as it enters every login's workspace, through the device's own service,
-    // which keeps the workspace's member copy, and is let in.
+/// The daemon enters the login's workspace as it enters every one, through the laptop's own
+/// service, which keeps the workspace's member copy, and then the server's asks for content it
+/// lacks reach the laptop.
+async fn the_daemon_enters_and_the_servers_asks_reach_the_laptop(
+    (laptop_key, laptop_cert): (&SigningKey, &DeviceCert),
+    login: &tilo_device_identity::login::Device,
+    (workspace, workspace_id): (&str, tilo_server_protocol::WorkspaceId),
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+) {
     let state = tempfile::tempdir().unwrap();
     let own = super::workspaces::ServiceWorkspaces::open_for_test(
         &state.path().join("laptop"),
-        &laptop_key,
-        &laptop_cert,
-        &tilo_api::daemon::enter::server_of(&login).await.unwrap(),
+        laptop_key,
+        laptop_cert,
+        &tilo_api::daemon::enter::server_of(login).await.unwrap(),
     )
     .await
     .expect("the laptop's own service opens");
     let entered = tilo_test_env::within(
         "the daemon's entry",
-        tilo_api::daemon::enter::connect(&laptop_key, &login, Some(own.lent())),
+        tilo_api::daemon::enter::connect(laptop_key, login, Some(own.lent())),
     )
     .await
     .expect("the server lets the root's own device in");
@@ -221,17 +253,16 @@ async fn a_computer_holding_the_root_logs_in_at_a_server_by_its_line_and_is_aske
         own.hold(&entered),
     )
     .await;
-    assert!(entered.admitted(company.workspace_id).await);
+    assert!(entered.admitted(workspace_id).await);
 
-    // The server's ask for content it lacks reaches the laptop now.
     tilo_test_env::within("the server's ask reaches the laptop", async {
         // Each ask names content of its own: one asked lately is not asked again.
         let mut asked = 0_u64;
         loop {
-            asked += 1;
+            asked = asked.saturating_add(1);
             let hash = format!("{asked:064x}");
             if workspaces
-                .ask_surface(&company.workspace, "so.tilo.notes", &hash)
+                .ask_surface(workspace, "so.tilo.notes", &hash)
                 .await
                 > 0
             {

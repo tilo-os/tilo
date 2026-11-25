@@ -14,10 +14,12 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::asked::{Asked, AskedKeeping, AskedRecords as _, AskedStore, Offer, Resolve};
+use tilo_actions::InvocationId;
+use tilo_actions::remote::asked::{
+    Asked, AskedKeeping, AskedRecords as _, AskedStore, Offer, Resolve,
+};
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_actions::InvocationId;
 use tilo_device_identity::login::{
     ENROL_DECLINED, NO_ROOT_DEVICE, PROVIDER, RELEASE_HALF, RESOURCE,
 };
@@ -123,7 +125,7 @@ async fn released(
         "ephemeral": hex::encode(ephemeral.public_key().unwrap().to_bytes()),
     });
     let Value::Object(argument) = args else {
-        unreachable!()
+        panic!("a JSON object literal is an object")
     };
     let invocation = InvocationId::new();
     let request = InvokeRequest {
@@ -150,10 +152,9 @@ async fn released(
         tilo_actions::remote::ReceiptStatus::Completed { output } => output.value,
         other => panic!("the release did not end at once: {other:?}"),
     };
-    let release: Release = postcard::from_bytes(
-        &hex::decode(output.unwrap()["release"].as_str().unwrap()).unwrap(),
-    )
-    .unwrap();
+    let release: Release =
+        postcard::from_bytes(&hex::decode(output.unwrap()["release"].as_str().unwrap()).unwrap())
+            .unwrap();
     *tilo_unlock_protocol::open_release(&ephemeral, &digest, &release)
         .expect("the boot opens the release")
         .expose()
@@ -295,7 +296,10 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
         );
         assert!(
             shown.iter().any(|(label, value)| *label == "Boot key"
-                && value.replace(' ', "") == fingerprint[..16]),
+                && value.replace(' ', "")
+                    == fingerprint
+                        .get(..16)
+                        .expect("a boot key is 64 hex digits, so its first 16 are there")),
             "the ask names the boot key: {shown:?}"
         );
         home.env().set("XDG_CONFIG_HOME", &laptop_store);
@@ -365,13 +369,9 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
         "the declined boot is not published: {:?}",
         state.enrolments
     );
-    assert!(
-        state
-            .enrolments
-            .iter()
-            .all(|enrolment| enrolment.cert.device_public_key
-                != refused.key.verifying_key().to_bytes()),
-    );
+    assert!(state.enrolments.iter().all(
+        |enrolment| enrolment.cert.device_public_key != refused.key.verifying_key().to_bytes()
+    ),);
 
     // The laptop goes away: with no device of theirs that keeps the root to ask, the desk is told
     // so at once, and nothing waits for an answer nobody can give.

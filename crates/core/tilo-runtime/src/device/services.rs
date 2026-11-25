@@ -1769,19 +1769,18 @@ impl Daemon {
         // The identity signs with the device's key, which only the process that took it reads: a
         // daemon whose start locked nothing takes it first, before anything here opens the
         // identity: a server's enrolment, the owner root a deployment hands it, its person.
-        let lock = match locked {
-            Some(_) => None,
-            None => {
-                stage("locking the device");
-                let lock = super::serve::lock_device(&place)?;
-                // As a computer's first start: the key is made here when its system made none.
-                let keys = tilo_api::calls::device_keys();
-                tilo_device_identity::persist::load_or_create_device_key(&keys).map_err(
-                    |error| io::Error::other(format!("this computer's device key: {error}")),
-                )?;
-                let key = super::unclaimed::take(&keys)?;
-                Some((key, lock))
-            }
+        let lock = if locked.is_none() {
+            stage("locking the device");
+            let lock = super::serve::lock_device(&place)?;
+            // As a computer's first start: the key is made here when its system made none.
+            let keys = tilo_api::calls::device_keys();
+            tilo_device_identity::persist::load_or_create_device_key(&keys).map_err(|error| {
+                io::Error::other(format!("this computer's device key: {error}"))
+            })?;
+            let key = super::unclaimed::take(&keys)?;
+            Some((key, lock))
+        } else {
+            None
         };
         // A server keeps the workspaces placed on it: it takes no other server's work. A node
         // whose unit points at an install token waits for its page to install its certificate
@@ -2145,7 +2144,7 @@ impl Daemon {
         // on: the tickets, the endpoint they name and what serves it are up, and nothing the
         // rest of the part opens is needed to issue one. The founder waits for a start, not for
         // every service of it.
-        let founding_for_enrolment = founding.clone();
+        let founding_for_enrolment = founding;
         if let Some(founding) = founding {
             founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
         }
@@ -5597,20 +5596,7 @@ impl RuntimeActionProvider {
         if let Some(asked) = &self.asked
             && session.agent.is_none()
         {
-            let run = super::asked::Run::Own {
-                workspace: self.workspace.clone(),
-                pressed: session.pressed.as_ref().map(|pressed| {
-                    let device = self.workspaces.device_cert();
-                    tilo_actions::remote::asked::Pressed {
-                        device: hex::encode(device.device_public_key),
-                        app: tilo_actions::remote::resource_parts(&request.target.provider)
-                            .map_or_else(String::new, |(app, _)| app.to_owned()),
-                        instance: pressed.instance.clone(),
-                        resource: pressed.resource.clone(),
-                        at: pressed.at,
-                    }
-                }),
-            };
+            let run = self.own_run(session, &request);
             let route = (Arc::clone(&session.provider), session.acting().clone());
             return asked.send(run, caller, route, request);
         }
@@ -5656,6 +5642,29 @@ impl RuntimeActionProvider {
                 }
                 result
             })
+    }
+
+    /// The run the person's own call waits on as its asked record: the press it came from,
+    /// where a view pressed it.
+    fn own_run(
+        &self,
+        session: &AdmittedRuntimeSession,
+        request: &InvokeRequest,
+    ) -> super::asked::Run {
+        super::asked::Run::Own {
+            workspace: self.workspace.clone(),
+            pressed: session.pressed.as_ref().map(|pressed| {
+                let device = self.workspaces.device_cert();
+                tilo_actions::remote::asked::Pressed {
+                    device: hex::encode(device.device_public_key),
+                    app: tilo_actions::remote::resource_parts(&request.target.provider)
+                        .map_or_else(String::new, |(app, _)| app.to_owned()),
+                    instance: pressed.instance.clone(),
+                    resource: pressed.resource.clone(),
+                    at: pressed.at,
+                }
+            }),
+        }
     }
 
     /// Whether the person stopped the session `caller` acts in: it is ended for good, and what
