@@ -54,7 +54,7 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
 }
 
 tilo_test_env::scenario! {
-    fn what_the_outbox_holds_leaves_once;
+    fn what_the_effects_hold_leaves_once;
 
     phase two_replicas_approving_the_same_suggestion_deliver_the_letter_once;
     {
@@ -75,12 +75,12 @@ tilo_test_env::scenario! {
         ada.sync_with(&grace);
         // Each carries out what it owns: the entry has one owner, whichever device's approval won.
         for replica in [&mut ada, &mut grace] {
-            replica.host.settle_outbox().unwrap();
+            replica.host.settle_effects().unwrap();
             replica.commit();
         }
         ada.sync_with(&grace);
         for replica in [&mut ada, &mut grace] {
-            replica.host.settle_outbox().unwrap();
+            replica.host.settle_effects().unwrap();
             replica.commit();
         }
         let delivered = sent_by_ada.delivered().len() + sent_by_grace.delivered().len();
@@ -92,8 +92,8 @@ tilo_test_env::scenario! {
             sent_by_grace.delivered()
         );
         // Settled in the document: no device has anything left to carry out.
-        assert_eq!(ada.host.store().outbox_pending().len(), 0);
-        assert_eq!(grace.host.store().outbox_pending().len(), 0);
+        assert_eq!(ada.host.store().pending_effects().len(), 0);
+        assert_eq!(grace.host.store().pending_effects().len(), 0);
     }
 
     phase approving_one_suggestion_twice_on_one_replica_queues_it_once;
@@ -112,19 +112,19 @@ tilo_test_env::scenario! {
         // Decided already: a second approval is refused, and nothing is queued twice.
         assert!(approve(&ada).is_err());
         ada.commit();
-        assert_eq!(ada.host.store().outbox_pending().len(), 1);
+        assert_eq!(ada.host.store().pending_effects().len(), 1);
         // Marked as being handed over first, a change of its own; handed over once that is in.
-        ada.host.settle_outbox().unwrap();
+        ada.host.settle_effects().unwrap();
         ada.commit();
         assert!(sink.delivered().is_empty());
-        ada.host.settle_outbox().unwrap();
+        ada.host.settle_effects().unwrap();
         ada.commit();
         assert_eq!(sink.delivered().len(), 1);
     }
 
     phase a_letter_another_process_was_handing_over_is_outcome_unknown_and_never_sent_twice;
     {
-        use tilolang_runtime::store::{ChangeNote, OutboxState, Store as _};
+        use tilolang_runtime::store::{ChangeNote, EffectState, Store as _};
         let (ada, invocation) = suggested_workspace();
         let sink = MemorySink::new();
         ada.host.runtime().set_sink(sink.clone());
@@ -134,22 +134,22 @@ tilo_test_env::scenario! {
             .unwrap();
         ada.commit();
         // Another process of this device marked it as being handed over, and stopped.
-        let entry = ada.host.runtime().pending_outbox().remove(0);
+        let entry = ada.host.runtime().pending_effects().remove(0);
         let mut store = ada.host.store().clone();
-        let gone = OutboxState::Sending {
+        let gone = EffectState::Sending {
             by: "a process that stopped".to_owned(),
         };
         store
-            .outbox_mark(&entry, &gone, &ChangeNote::default())
+            .mark_effect(&entry, &gone, &ChangeNote::default())
             .unwrap();
         ada.commit();
-        ada.host.settle_outbox().unwrap();
+        ada.host.settle_effects().unwrap();
         ada.commit();
-        ada.host.settle_outbox().unwrap();
+        ada.host.settle_effects().unwrap();
         ada.commit();
         assert!(sink.delivered().is_empty(), "never handed over twice");
-        assert_eq!(ada.host.store().outbox_pending().len(), 0);
-        let states = ada.host.store().outbox_states();
+        assert_eq!(ada.host.store().pending_effects().len(), 0);
+        let states = ada.host.store().effect_states();
         let (_, state) = states.iter().find(|(doc, _)| *doc == entry.doc).unwrap();
         assert_eq!(state.state, "unknown");
     }
@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
         let (fresh, _) = Replica::new("ada", Workspace::new(), &[(LETTERS, LETTERS_IDS)]);
         fresh.host.root_of("test.letters").unwrap();
         assert!(
-            fresh.host.store().outbox_pending().is_empty(),
+            fresh.host.store().pending_effects().is_empty(),
             "creating the root queues no outside effect"
         );
         // Approving the send queues the letter: carrying it out reaches outside the document.
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
             .unwrap();
         ada.commit();
         assert!(
-            !ada.host.store().outbox_pending().is_empty(),
+            !ada.host.store().pending_effects().is_empty(),
             "the send waits for a device to carry it outside"
         );
     }

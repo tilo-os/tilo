@@ -37,19 +37,19 @@ mod cases {
                 matches!(send(), InvokeOutcome::Asked(_)),
                 "outside effects ask by default"
             );
-            assert!(w.rt.pending_outbox().is_empty());
+            assert!(w.rt.pending_effects().is_empty());
 
             w.auth.grant_outside("send");
             assert!(matches!(send(), InvokeOutcome::Done(_)));
 
-            let pending = w.rt.pending_outbox();
+            let pending = w.rt.pending_effects();
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].capability, "post");
             assert_eq!(pending[0].payload, json!("alice@example.org"));
             let change = w.rt.history(&m.doc).unwrap();
             assert!(
                 change.iter().any(|n| n.action == "send"),
-                "the outbox entry travels in the action's own change: {change:?}"
+                "the effect entry travels in the action's own change: {change:?}"
             );
 
             let sink = MemorySink::new();
@@ -61,7 +61,7 @@ mod cases {
                 sink.delivered().is_empty(),
                 "nothing leaves before the mark"
             );
-            assert_eq!(w.rt.pending_outbox().len(), 1);
+            assert_eq!(w.rt.pending_effects().len(), 1);
             let report = w.rt.settle().unwrap();
             assert_eq!(report.delivered, 1);
             assert!(report.failed.is_empty());
@@ -69,7 +69,7 @@ mod cases {
                 sink.delivered(),
                 vec![("post".to_owned(), json!("alice@example.org"))]
             );
-            assert!(w.rt.pending_outbox().is_empty());
+            assert!(w.rt.pending_effects().is_empty());
             assert_eq!(w.rt.settle().unwrap().delivered, 0, "settled once");
         }
 
@@ -111,7 +111,7 @@ mod cases {
                 report.failed,
                 vec![(report.failed[0].0.clone(), "mailbox unavailable".to_owned())]
             );
-            assert!(w.rt.pending_outbox().is_empty(), "a refusal is final");
+            assert!(w.rt.pending_effects().is_empty(), "a refusal is final");
             assert_eq!(
                 w.rt.settle().unwrap(),
                 tilolang_runtime::SettleReport::default()
@@ -126,7 +126,7 @@ mod cases {
                 w.rt.invoke_action(&w.me, ("send_bad", vec![Value::resource(&m)]))
                     .unwrap_err();
             assert!(err.to_string().contains("rolled back"), "{err}");
-            assert!(w.rt.pending_outbox().is_empty());
+            assert!(w.rt.pending_effects().is_empty());
         }
 
         phase only_an_action_classed_outside_may_call_outside;
@@ -136,7 +136,7 @@ mod cases {
                 w.rt.invoke_action(&w.me, ("sneak", vec![Value::resource(&m)]))
                     .unwrap_err();
             assert!(err.to_string().contains("not classed outside"), "{err}");
-            assert!(w.rt.pending_outbox().is_empty());
+            assert!(w.rt.pending_effects().is_empty());
         }
 
         phase an_effect_held_until_a_moment_waits_for_it;
@@ -162,7 +162,7 @@ mod cases {
             h.rt.settle().unwrap();
             h.rt.settle().unwrap();
             assert_eq!(sink.delivered().len(), 1);
-            assert!(h.rt.pending_outbox().is_empty());
+            assert!(h.rt.pending_effects().is_empty());
         }
 
         phase a_held_effect_taken_back_never_goes;
@@ -181,7 +181,7 @@ mod cases {
                 (h.take_back.as_str(), vec![Value::resource(&h.draft)]),
             )
             .unwrap();
-            assert!(h.rt.pending_outbox().is_empty(), "it is taken back");
+            assert!(h.rt.pending_effects().is_empty(), "it is taken back");
             *clock.borrow_mut() = "2026-06-30T13:45:00Z".to_owned();
             h.rt.settle().unwrap();
             h.rt.settle().unwrap();
@@ -198,7 +198,7 @@ mod cases {
             w.rt.invoke_action(&w.me, ("send", vec![Value::resource(&m)]))
                 .unwrap();
             assert!(w.rt.settle().is_err());
-            assert_eq!(w.rt.pending_outbox().len(), 1);
+            assert_eq!(w.rt.pending_effects().len(), 1);
         }
     }
 
@@ -280,7 +280,7 @@ action answer(d: Draft, to: Text, body: Text) {
                 ],
                 "the person reads the message the answer drafted, before it goes, and never the secret"
             );
-            assert!(w.rt.pending_outbox().is_empty(), "nothing went before the yes");
+            assert!(w.rt.pending_effects().is_empty(), "nothing went before the yes");
 
             decline(&w.rt, &run);
             for field in ["to", "subject", "body"] {
@@ -290,7 +290,7 @@ action answer(d: Draft, to: Text, body: Text) {
                     "declining takes back what the answer wrote: {field}"
                 );
             }
-            assert!(w.rt.pending_outbox().is_empty(), "nothing goes");
+            assert!(w.rt.pending_effects().is_empty(), "nothing goes");
         }
 
         phase a_call_the_dispatch_admitted_runs_without_asking_again;
@@ -316,7 +316,7 @@ action answer(d: Draft, to: Text, body: Text) {
             assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
             assert_eq!(w.dispatch.len(), calls, "nobody is asked again");
             assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
-            assert_eq!(w.rt.pending_outbox().len(), 1, "it goes once");
+            assert_eq!(w.rt.pending_effects().len(), 1, "it goes once");
 
             // The yes was for that call: the next call of the same action asks again.
             let again = w
@@ -327,7 +327,7 @@ action answer(d: Draft, to: Text, body: Text) {
                 matches!(again, InvokeOutcome::Asked(_)),
                 "a new call asks again: {again:?}"
             );
-            assert_eq!(w.rt.pending_outbox().len(), 1, "nothing else went");
+            assert_eq!(w.rt.pending_effects().len(), 1, "nothing else went");
 
             // Nor does another device over the same records carry it: a replica running the
             // action asks.

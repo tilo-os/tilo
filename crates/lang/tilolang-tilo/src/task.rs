@@ -46,7 +46,7 @@ use tilolang_runtime::meta::{Meta, PackageMeta};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::run::Journal;
 use tilolang_runtime::store::{
-    Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewResource, OutboxEntry,
+    Applied, ChangeNote, ChangeSummary, EffectEntry, FieldSpec, FieldValue, Mutation, NewResource,
     Store, StoreError, SubId, Txn, Version, field_json, field_of,
 };
 use tilolang_runtime::value::{ResourceRef, Value};
@@ -1012,37 +1012,42 @@ impl Store for TaskStore {
 
     fn unsubscribe(&mut self, _: SubId) {}
 
-    fn outbox_pending(&self) -> Vec<OutboxEntry> {
+    fn pending_effects(&self) -> Vec<EffectEntry> {
         Vec::new()
     }
 
-    fn outbox_next_held(&self) -> Option<String> {
+    fn next_held_effect(&self) -> Option<String> {
         None
     }
 
-    fn outbox_withdraw(&mut self, _: &DocId, _: &str, _: &ChangeNote) -> Result<usize, StoreError> {
+    fn withdraw_effects(
+        &mut self,
+        _: &DocId,
+        _: &str,
+        _: &ChangeNote,
+    ) -> Result<usize, StoreError> {
         Err(StoreError::Invalid(WRITES_NOTHING.into()))
     }
 
-    fn outbox_mark(
+    fn mark_effect(
         &mut self,
-        _: &OutboxEntry,
-        _: &tilolang_runtime::store::OutboxState,
+        _: &EffectEntry,
+        _: &tilolang_runtime::store::EffectState,
         _: &ChangeNote,
     ) -> Result<(), StoreError> {
         Err(StoreError::Invalid(WRITES_NOTHING.into()))
     }
 
-    fn outbox_settle(
+    fn settle_effect(
         &mut self,
-        _: &OutboxEntry,
+        _: &EffectEntry,
         _: &tilolang_runtime::store::Settled,
         _: &ChangeNote,
     ) -> Result<(), StoreError> {
         Err(StoreError::Invalid(WRITES_NOTHING.into()))
     }
 
-    fn outbox_states(&self) -> Vec<(DocId, tilolang_runtime::store::DeliveryState)> {
+    fn effect_states(&self) -> Vec<(DocId, tilolang_runtime::store::DeliveryState)> {
         Vec::new()
     }
 

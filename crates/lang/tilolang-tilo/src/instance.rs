@@ -1714,7 +1714,7 @@ impl Instance {
         true
     }
 
-    fn settle_outbox(&mut self) -> bool {
+    fn settle_effects(&mut self) -> bool {
         // What waits in the document is settled once the instance reads the document.
         if !std::mem::take(&mut self.settle_due) || self.mode != Mode::Live {
             return false;
@@ -1722,7 +1722,7 @@ impl Instance {
         let Some(host) = self.host() else {
             return false;
         };
-        match host.settle_outbox() {
+        match host.settle_effects() {
             Ok(settled) => {
                 // What was marked as being handed over is handed over by the next settle,
                 // which nothing else would ask for.
@@ -2857,15 +2857,15 @@ impl Instance {
     }
 
     /// Whether a frame has work the window has not seen: a change no sync has sent it yet
-    /// (`moved`), a write the outbox owes ([`Self::settle_owed`]), or work under way off the
+    /// (`moved`), a write the declared effects owe ([`Self::settle_owed`]), or work under way off the
     /// frame ([`Self::pending`]). A window that owes one syncs before it rests.
     #[must_use]
     pub fn owes_a_frame(&self) -> bool {
         self.moved || self.settle_owed() || self.pending()
     }
 
-    /// Whether the document's outbox owes a settlement a frame would take in: only a live window
-    /// settles it, only once it reads the document, and only while the outbox holds an effect (a
+    /// Whether the declared effects owe a settlement a frame would take in: only a live window
+    /// settles it, only once it reads the document, and only while an effect waits (a
     /// window that commits after every frame, and committed nothing, rests).
     fn settle_owed(&self) -> bool {
         self.settle_due && self.mode == Mode::Live
@@ -2892,7 +2892,7 @@ impl Instance {
         };
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
-        let settled = self.settle_outbox();
+        let settled = self.settle_effects();
         // The person's environment — their language, their formats, what the member list calls
         // someone — changed: the boundaries that show what only the window knows run again, and
         // no other.

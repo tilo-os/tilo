@@ -208,8 +208,8 @@ impl Rig {
         let polled = self.origin.borrow_mut().poll(&cx);
         let settled = self
             .host
-            .settle_outbox()
-            .unwrap_or_else(|error| panic!("the outbox settles: {error}"));
+            .settle_effects()
+            .unwrap_or_else(|error| panic!("the effects settle: {error}"));
         polled.wrote || polled.settle || settled.written > 0 || settled.owes_settle
     }
 

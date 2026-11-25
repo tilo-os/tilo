@@ -60,11 +60,12 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 ## Outside effects
 
-- **The outbox is in the workspace document.** `outside("post", ..)` queues an entry in `$outbox` of the
-  resource it acts on (`DynEdit::OutboxPush`): capability, payload, and the `owner`, the device
-  whose store queued it. The owning device alone settles it (`Host::settle_outbox`): it delivers to
-  the runtime's sink and records the outcome (`DynEdit::OutboxSettle`). The sink of the app is a
-  log, one JSON line per effect, under `$XDG_STATE_HOME/tilolang-dev/outside.log`.
+- **The effects an action declares are in the workspace document.** `outside("post", ..)` queues an
+  entry in `$effects` of the resource it acts on (a `Mutation::EffectPush`): capability, payload,
+  and the `owner`, the device whose store queued it. The owning device alone settles them
+  (`Host::settle_effects`): it delivers to the runtime's sink and records the outcome. The sink
+  of the app is a log, one JSON line per effect, under
+  `$XDG_STATE_HOME/tilolang-dev/outside.log`.
 - **Approving the same suggestion twice queues it once.** An approval of a recorded `Invocation`
   keys the entry by that invocation (`ExecCtx::origin`), so two devices approving concurrently
   write one key; after the document converges one entry has one owner and it is delivered once.
@@ -183,8 +184,8 @@ Each entry is the closest working design to `docs/designs/app-language`.
   only while it is `due` (the service answered and woke the window, or people changed what the
   service is told), so nothing runs while nothing changed. What it writes is one change by the
   origin (`Runtime::apply_origin`, invoker `origin:<name>`), handed to the API as every commit
-  is. The outbox delivers each capability an origin `serves` to it (`RoutingSink`); `Err` keeps
-  the entry queued with the reason.
+  is. The declared effects deliver each capability an origin `serves` to it (`RoutingSink`);
+  `Err` keeps the entry queued with the reason.
 - **Today an origin runs while a window of its package is open**, in that window's process. A
   connector the system runs without a window (sync, push and sends with Mail closed), a broker
   that hands it credentials, and the connector compiled to wasm are the platform's next steps.

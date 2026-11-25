@@ -9,7 +9,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **`AmStore` is a handle.** Clones share the documents (`Rc<RefCell>`), so a runtime and a test
   both hold one, and `sync_with` syncs the union of both stores' documents.
 - **Structural fields exist from creation.** Counters, text, collections (`$order`), sets, maps
-  and the `$outbox` are created with the document or item, so concurrent first writes merge.
+  and the `$effects` are created with the document or item, so concurrent first writes merge.
 - **Registers.** Int, Float, Bool and Text registers are native scalars; every other runtime value
   (option, list, tuple, reference) is JSON bytes. A float counter is an Automerge counter in
   millionths.
@@ -40,7 +40,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   original invoker and chain, plus `approved_by`.
 - **Edits.** `ViewInstance::edit` goes through `Authority` as a pseudo action `$edit` (own when
   the view's module declares the resource's type) and returns `NeedsApproval` on Ask.
-- **Outbox.** `outside` queues an entry on the document of the action's first resource argument;
+- **Effects.** `outside` queues an entry on the document of the action's first resource argument;
   only the `"post"` capability exists, and only an action classed `outside` may call it.
 - **Reactivity.** Commits and syncs notify with the exact fields that changed (a `FieldKey` is
   the resource, an item path included, and the field id); a notification with no fields means

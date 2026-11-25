@@ -4139,7 +4139,7 @@ mod outside_effects {
     };
 
     const ITEM: &str = "tl.so.example.Item";
-    const OUTBOX: &str = "tilolang.outbox";
+    const EFFECT: &str = "tilolang.effect";
 
     fn text(name: &str) -> Field {
         Field {
@@ -4173,7 +4173,7 @@ mod outside_effects {
                     origin: None,
                 },
                 Type {
-                    name: OUTBOX.to_owned(),
+                    name: EFFECT.to_owned(),
                     fields: vec![
                         text("doc"),
                         text("entry"),
@@ -4208,7 +4208,7 @@ mod outside_effects {
                     .collect(),
                 ..Verb::default()
             }],
-            readers: BTreeMap::from([(OUTBOX.to_owned(), ReaderRule::Author { until: None })]),
+            readers: BTreeMap::from([(EFFECT.to_owned(), ReaderRule::Author { until: None })]),
         }
     }
 
@@ -4247,7 +4247,7 @@ mod outside_effects {
     fn entry(store: &mut Store, app: &str, capability: &str) -> Vec<Written> {
         store
             .put(
-                OUTBOX,
+                EFFECT,
                 "e",
                 Resource {
                     readers: "ada".to_owned(),

@@ -582,7 +582,7 @@ tilo_test_env::scenario! {
         for stranger in [Actor::from(MemberId::person("zed")), Actor::from(MemberId::agent("assistant", "zed"))] {
             assert!(read(&stranger).is_err(), "{stranger:?} reads nothing of the workspace's calendars");
         }
-        assert!(ada.replica.host.runtime().pending_outbox().is_empty(), "a read tells her server nothing");
+        assert!(ada.replica.host.runtime().pending_effects().is_empty(), "a read tells her server nothing");
         assert_eq!(ada.asks.count(), 0, "and asks nobody");
     }
 
@@ -620,7 +620,7 @@ tilo_test_env::scenario! {
         let agents = week(&Actor::from(MemberId::agent("assistant", "zed")));
         assert!(matches!(agents, Ok(InvokeOutcome::Denied)), "nor does their agent: {agents:?}");
         assert_eq!(ada.asks.count(), 0, "a read asks nobody");
-        assert!(ada.replica.host.runtime().pending_outbox().is_empty(), "and tells her server nothing");
+        assert!(ada.replica.host.runtime().pending_effects().is_empty(), "and tells her server nothing");
     }
 
     phase an_invitation_her_assistant_did_not_put_in_is_not_its_to_change;

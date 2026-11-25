@@ -748,7 +748,7 @@ mod cases {
                 "the proposal view shows the letter: {}",
                 dump(inv)
             );
-            assert!(w.rt.pending_outbox().is_empty(), "asking sends nothing");
+            assert!(w.rt.pending_effects().is_empty(), "asking sends nothing");
 
             // A re-render shows the same proposal rather than making another.
             post(&w, &apps, &conv, &person("ada"), "Looks right", "");
@@ -777,7 +777,7 @@ mod cases {
                 "a decided proposal no longer shows its view"
             );
 
-            let pending = w.rt.pending_outbox();
+            let pending = w.rt.pending_effects();
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].capability, "post");
             assert_eq!(
@@ -796,7 +796,7 @@ mod cases {
                 )]
             );
             view.poll_patches().unwrap();
-            assert!(w.rt.pending_outbox().is_empty());
+            assert!(w.rt.pending_effects().is_empty());
         }
     }
 
@@ -846,7 +846,7 @@ mod cases {
             text_prop(of_kind(view.tree(), "invocation")[0], "state"),
             "declined"
         );
-        assert!(w.rt.pending_outbox().is_empty());
+        assert!(w.rt.pending_effects().is_empty());
     }
 
     #[test]
@@ -1100,7 +1100,7 @@ mod cases {
             .unwrap_err();
         assert!(matches!(err, RuntimeError::Denied(_)), "{err}");
         assert_eq!(wb.rt.read_invocation(&record).unwrap().state, "asked");
-        assert!(wb.rt.pending_outbox().is_empty());
+        assert!(wb.rt.pending_effects().is_empty());
 
         // Someone with authority confirms on B: it runs there, once.
         assert_eq!(
@@ -1110,9 +1110,9 @@ mod cases {
             "done"
         );
         assert_eq!(wb.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
-        assert_eq!(wb.rt.pending_outbox().len(), 1);
+        assert_eq!(wb.rt.pending_effects().len(), 1);
         assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "asked");
-        assert!(wa.rt.pending_outbox().is_empty(), "A has not heard yet");
+        assert!(wa.rt.pending_effects().is_empty(), "A has not heard yet");
 
         a.sync_with(&mut b).unwrap();
         assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "done");
@@ -1127,7 +1127,11 @@ mod cases {
             "done"
         );
         for w in [&wa, &wb] {
-            assert_eq!(w.rt.pending_outbox().len(), 1, "the letter was queued once");
+            assert_eq!(
+                w.rt.pending_effects().len(),
+                1,
+                "the letter was queued once"
+            );
             let sends =
                 w.rt.history(&draft.doc)
                     .unwrap()

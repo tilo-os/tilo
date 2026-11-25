@@ -1042,7 +1042,7 @@ fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once
         "approving again changes nothing: the suggestion is decided"
     );
     assert!(
-        tilolang_tilo::runtime::store::Store::outbox_pending(session.instance_host().store())
+        tilolang_tilo::runtime::store::Store::pending_effects(session.instance_host().store())
             .is_empty(),
         "nothing waits to leave again"
     );
@@ -1080,7 +1080,7 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
     assert!(sent(&mut session, &draft), "the letter went");
     session.settle();
     assert!(
-        tilolang_tilo::runtime::store::Store::outbox_pending(session.instance_host().store())
+        tilolang_tilo::runtime::store::Store::pending_effects(session.instance_host().store())
             .is_empty(),
         "the document says it was delivered, so no device queues it again"
     );

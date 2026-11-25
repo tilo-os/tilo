@@ -37,9 +37,9 @@ use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{Actor, DocId, FieldId, ItemId, RunId, TypeId};
 use tilolang_runtime::meta::{FieldKind, Meta, Ty};
 use tilolang_runtime::store::{
-    ANY_FIELD, Applied, ChangeNote, ChangeSummary, ClockField, DeliveryState, FieldKey, FieldRead,
-    FieldSpec, FieldValue, Link, LinkHow, Listing, Lit, Mutation, NewResource, NextChange,
-    OutboxEntry, OutboxState, PagedItems, Pred, RecordReach, Scalar, Settled, Store, StoreError,
+    ANY_FIELD, Applied, ChangeNote, ChangeSummary, ClockField, DeliveryState, EffectEntry,
+    EffectState, FieldKey, FieldRead, FieldSpec, FieldValue, Link, LinkHow, Listing, Lit, Mutation,
+    NewResource, NextChange, PagedItems, Pred, RecordReach, Scalar, Settled, Store, StoreError,
     SubId, Txn, Version, VersionKind, doc_of, field_json, field_of, ordered_cmp,
 };
 use tilolang_runtime::value::ResourceRef;
@@ -73,7 +73,7 @@ const STANDS_IN: &str = "$in";
 /// nested in the resource whose action queued it so it leaves with that resource, and read by
 /// its author alone so what it carries (a message's words, an address) reaches no other member.
 /// Its fields are the `OUT_*` names below.
-pub const OUTBOX: &str = "tilolang.outbox";
+pub const EFFECT: &str = "tilolang.effect";
 pub(crate) const OUT_DOC: &str = "doc";
 pub(crate) const OUT_ENTRY: &str = "entry";
 /// The app whose package queued the effect, stamped by the writer: what carry-out checks holds
@@ -92,8 +92,8 @@ pub(crate) const OUT_SETTLED: &str = "settled";
 pub(crate) const OUT_OUTCOME: &str = "outcome";
 pub(crate) const OUT_REASON: &str = "reason";
 
-/// The id the outbox entry `entry` of the document `doc` is kept under.
-fn outbox_id(doc: &str, entry: &str) -> String {
+/// The id the effect entry `entry` of the document `doc` is kept under.
+fn effect_id(doc: &str, entry: &str) -> String {
     format!("{doc}!{entry}")
 }
 
@@ -105,16 +105,16 @@ fn text_field(fields: &BTreeMap<String, Cell>, name: &str) -> String {
     }
 }
 
-/// How an outbox entry settled: the word for it and why.
+/// How an effect entry settled: the word for it and why.
 type Outcome = (String, String);
 
-/// The outbox entry `fields` hold, and how it settled when it did: its outcome and reason.
-fn outbox_entry(fields: &BTreeMap<String, Cell>) -> (OutboxEntry, Option<Outcome>) {
+/// The effect entry `fields` hold, and how it settled when it did: its outcome and reason.
+fn effect_entry(fields: &BTreeMap<String, Cell>) -> (EffectEntry, Option<Outcome>) {
     let detail = text_field(fields, OUT_DETAIL);
     let state = match text_field(fields, OUT_STATE).as_str() {
-        "sending" => OutboxState::Sending { by: detail },
-        "waiting" => OutboxState::Waiting { reason: detail },
-        _ => OutboxState::Queued,
+        "sending" => EffectState::Sending { by: detail },
+        "waiting" => EffectState::Waiting { reason: detail },
+        _ => EffectState::Queued,
     };
     let settled =
         matches!(fields.get(OUT_SETTLED), Some(Cell::One(Value::Bool(true)))).then(|| {
@@ -125,13 +125,13 @@ fn outbox_entry(fields: &BTreeMap<String, Cell>) -> (OutboxEntry, Option<Outcome
         });
     let held_until = text_field(fields, OUT_HELD_UNTIL);
     (
-        OutboxEntry {
+        EffectEntry {
             doc: text_field(fields, OUT_DOC),
             id: text_field(fields, OUT_ENTRY),
             app: text_field(fields, OUT_APP),
             capability: text_field(fields, OUT_CAPABILITY),
             payload: tilo_failure::ignored!(
-                "an outbox entry written with no payload carries none",
+                "an effect entry written with no payload carries none",
                 serde_json::from_str(&text_field(fields, OUT_PAYLOAD))
             )
             .unwrap_or(Json::Null),
@@ -323,7 +323,7 @@ struct Inner {
     subs: RefCell<Vec<Subscription>>,
     next_sub: StdCell<u64>,
     journals: RefCell<HashMap<String, Journal>>,
-    /// The device whose outside effects this store carries out: an entry of the outbox is
+    /// The device whose outside effects this store carries out: an entry of the effects is
     /// carried out by the device that queued it, and of two that queued it at once, by the one
     /// whose write the workspace kept.
     device: RefCell<String>,
@@ -3155,9 +3155,9 @@ impl ResourceStore {
         held_until: Option<&str>,
         key: Option<&str>,
     ) -> Result<(), StoreError> {
-        let entry = key.map_or_else(|| self.fresh("out-"), str::to_owned);
-        let id = outbox_id(&at.doc, &entry);
-        if self.held(OUTBOX, &id)?.is_some() {
+        let entry = key.map_or_else(|| self.fresh("effect-"), str::to_owned);
+        let id = effect_id(&at.doc, &entry);
+        if self.held(EFFECT, &id)?.is_some() {
             return Ok(());
         }
         let text = |value: &str| Cell::One(Value::Text(value.to_owned()));
@@ -3173,7 +3173,7 @@ impl ResourceStore {
         fields.insert(OUT_OWNER.to_owned(), text(&self.inner.device.borrow()));
         fields.insert(OUT_SETTLED.to_owned(), Cell::One(Value::Bool(false)));
         let held = Held {
-            kind: OUTBOX.to_owned(),
+            kind: EFFECT.to_owned(),
             parent: Some(at.doc.clone()),
             order: None,
             fields,
@@ -3341,7 +3341,7 @@ impl ResourceStore {
         Ok(())
     }
 
-    /// [`Store::apply`] of a mutation of a collection or an outbox: `None` for a write of a
+    /// [`Store::apply`] of a mutation of a collection or an effect entry: `None` for a write of a
     /// field.
     fn apply_structure(
         &self,
@@ -3399,7 +3399,7 @@ impl ResourceStore {
                 }
                 Ok(Some(Applied::Done))
             }
-            Mutation::OutboxPush {
+            Mutation::EffectPush {
                 app,
                 capability,
                 payload,
@@ -3417,7 +3417,7 @@ impl ResourceStore {
                 )?;
                 Ok(Some(Applied::Done))
             }
-            Mutation::OutboxWithdraw => {
+            Mutation::EffectWithdraw => {
                 self.withdraw_in(txn, &at.doc, "")?;
                 self.touch_effects(txn, &at.doc)?;
                 Ok(Some(Applied::Done))
@@ -3527,9 +3527,9 @@ impl ResourceStore {
         Ok(Applied::Done)
     }
 
-    /// The outbox entries the store holds that hold to `filters`, by id.
+    /// The effect entries the store holds that hold to `filters`, by id.
     fn effect_rows(&self, filters: Vec<Filter>) -> Vec<(String, BTreeMap<String, Cell>)> {
-        let mut query = Query::of(OUTBOX, PAGE);
+        let mut query = Query::of(EFFECT, PAGE);
         query.filters = filters;
         let mut rows = Vec::new();
         while let Ok(Reply::Page(page)) = self.command(Command::Query(query.clone())) {
@@ -3553,14 +3553,14 @@ impl ResourceStore {
     fn touch_effects(&self, txn: Txn, doc: &str) -> Result<(), StoreError> {
         let key = FieldKey {
             resource: doc.to_owned(),
-            field: OUTBOX.to_owned(),
+            field: EFFECT.to_owned(),
         };
         self.txn_mut(txn, |state| {
             state.touched.entry(doc.to_owned()).or_default().insert(key);
         })
     }
 
-    /// Settles every outbox entry of the document `doc` not settled yet as withdrawn, for
+    /// Settles every effect entry of the document `doc` not settled yet as withdrawn, for
     /// `reason`, in the open transaction. How many it settled.
     fn withdraw_in(&self, txn: Txn, doc: &str, reason: &str) -> Result<usize, StoreError> {
         let rows = self.effect_rows(vec![
@@ -3569,7 +3569,7 @@ impl ResourceStore {
         ]);
         let mut withdrawn = 0_usize;
         for (id, _) in rows {
-            let Some(mut held) = self.held(OUTBOX, &id)? else {
+            let Some(mut held) = self.held(EFFECT, &id)? else {
                 continue;
             };
             if matches!(
@@ -3585,17 +3585,17 @@ impl ResourceStore {
         Ok(withdrawn)
     }
 
-    /// Writes what `change` makes of the outbox entry `entry`'s fields, as the change `note`.
+    /// Writes what `change` makes of the effect entry `entry`'s fields, as the change `note`.
     fn effect_write(
         &self,
-        entry: &OutboxEntry,
+        entry: &EffectEntry,
         note: &ChangeNote,
         change: impl FnOnce(&mut BTreeMap<String, Cell>),
     ) -> Result<(), StoreError> {
-        let id = outbox_id(&entry.doc, &entry.id);
+        let id = effect_id(&entry.doc, &entry.id);
         let mut store = self.clone();
         let txn = store.begin()?;
-        let written = match self.held(OUTBOX, &id) {
+        let written = match self.held(EFFECT, &id) {
             Ok(Some(mut held)) => {
                 change(&mut held.fields);
                 self.write(txn, &id, Some(held), |dirty| dirty.put = true)
@@ -4709,7 +4709,7 @@ fn minute(at: i64) -> i64 {
         .saturating_add(if at.rem_euclid(60) == 0 { 0 } else { 60 })
 }
 
-/// Sets `fields` of an outbox entry to what settling it as `outcome` leaves.
+/// Sets `fields` of an effect entry to what settling it as `outcome` leaves.
 fn settle_fields(fields: &mut BTreeMap<String, Cell>, outcome: &Settled) {
     fields.insert(OUT_SETTLED.to_owned(), Cell::One(Value::Bool(true)));
     fields.insert(
@@ -6027,28 +6027,28 @@ impl Store for ResourceStore {
         self.inner.subs.borrow_mut().retain(|held| held.id != sub);
     }
 
-    fn outbox_pending(&self) -> Vec<OutboxEntry> {
+    fn pending_effects(&self) -> Vec<EffectEntry> {
         let device = self.inner.device.borrow().clone();
         self.effect_rows(vec![
             Filter::Is(OUT_SETTLED.to_owned(), Value::Bool(false)),
             Filter::Is(OUT_OWNER.to_owned(), Value::Text(device)),
         ])
         .into_iter()
-        .map(|(_, fields)| outbox_entry(&fields).0)
+        .map(|(_, fields)| effect_entry(&fields).0)
         .collect()
     }
 
-    fn outbox_next_held(&self) -> Option<String> {
+    fn next_held_effect(&self) -> Option<String> {
         // Only an entry still waiting for its moment is held: one handed over or waiting to go
         // online had its moment, and nothing comes due when it passes.
-        self.outbox_pending()
+        self.pending_effects()
             .into_iter()
-            .filter(|entry| entry.state == OutboxState::Queued)
+            .filter(|entry| entry.state == EffectState::Queued)
             .filter_map(|entry| entry.held_until)
             .min()
     }
 
-    fn outbox_withdraw(
+    fn withdraw_effects(
         &mut self,
         doc: &DocId,
         reason: &str,
@@ -6073,16 +6073,16 @@ impl Store for ResourceStore {
         }
     }
 
-    fn outbox_mark(
+    fn mark_effect(
         &mut self,
-        entry: &OutboxEntry,
-        state: &OutboxState,
+        entry: &EffectEntry,
+        state: &EffectState,
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
         let (word, detail) = match state {
-            OutboxState::Queued => ("", ""),
-            OutboxState::Sending { by } => ("sending", by.as_str()),
-            OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+            EffectState::Queued => ("", ""),
+            EffectState::Sending { by } => ("sending", by.as_str()),
+            EffectState::Waiting { reason } => ("waiting", reason.as_str()),
         };
         self.effect_write(entry, note, |fields| {
             fields.insert(
@@ -6096,9 +6096,9 @@ impl Store for ResourceStore {
         })
     }
 
-    fn outbox_settle(
+    fn settle_effect(
         &mut self,
-        entry: &OutboxEntry,
+        entry: &EffectEntry,
         outcome: &Settled,
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
@@ -6137,10 +6137,10 @@ impl Store for ResourceStore {
         known
     }
 
-    fn outbox_states(&self) -> Vec<(DocId, DeliveryState)> {
-        let mut by_doc: BTreeMap<DocId, Vec<(OutboxEntry, Option<Outcome>)>> = BTreeMap::new();
+    fn effect_states(&self) -> Vec<(DocId, DeliveryState)> {
+        let mut by_doc: BTreeMap<DocId, Vec<(EffectEntry, Option<Outcome>)>> = BTreeMap::new();
         for (_, fields) in self.effect_rows(Vec::new()) {
-            let (entry, settled) = outbox_entry(&fields);
+            let (entry, settled) = effect_entry(&fields);
             by_doc
                 .entry(entry.doc.clone())
                 .or_default()
@@ -6179,7 +6179,7 @@ impl Store for ResourceStore {
     }
 }
 
-/// The field the mutation `m` writes; `None` for one of a collection or an outbox.
+/// The field the mutation `m` writes; `None` for one of a collection or an effect entry.
 fn field_written(m: &Mutation) -> Option<String> {
     match m {
         Mutation::SetRegister { field, .. }

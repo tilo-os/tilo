@@ -263,13 +263,13 @@ fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_session_its_noti
 fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     let (mut part, link) = part();
     click(&mut part, "Notifications");
-    let outbox = part
+    let effects = part
         .instance
         .host()
-        .map(|host| host.store().outbox_pending().len());
+        .map(|host| host.store().pending_effects().len());
     assert!(
         link.has_asks(),
-        "the press reached the session: outbox {outbox:?}, {:?}, refusals {:?}",
+        "the press reached the session: effects {effects:?}, {:?}, refusals {:?}",
         part.work(),
         part.refusals()
     );

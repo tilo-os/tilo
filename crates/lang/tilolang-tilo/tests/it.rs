@@ -52,6 +52,7 @@ mod discussion;
 mod disks;
 mod document_search;
 mod done_days;
+mod effects;
 mod engines;
 #[path = "support/export_probe.rs"]
 mod export_probe;
@@ -94,7 +95,6 @@ mod notes_export;
 mod notice;
 mod opened;
 mod opens_page;
-mod outbox;
 mod outcomes;
 mod passwords_vault;
 mod policy;

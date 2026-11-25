@@ -514,9 +514,9 @@ fn outside_declared(verb: &crate::schema::Verb, app: &str, capability: &str) -> 
 const HOST_NOTICE_KIND: &str = "tl.tilo.host.Notice";
 
 /// The kind an outside effect waits as, which a package's action queues one of
-/// (`tilolang.outbox`). Its entry names the app that queued it and the capability it carries
+/// (`tilolang.effect`). Its entry names the app that queued it and the capability it carries
 /// out.
-const QUEUED_EFFECT_KIND: &str = "tilolang.outbox";
+const QUEUED_EFFECT_KIND: &str = "tilolang.effect";
 
 /// The field of a queued effect naming the app whose package queued it.
 const QUEUED_EFFECT_APP: &str = "app";

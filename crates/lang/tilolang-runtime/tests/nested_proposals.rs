@@ -184,7 +184,7 @@ default view letters for Box
                 p.app.action("reply"),
                 "the dispatch is asked about the reply itself"
             );
-            assert!(p.rt.pending_outbox().is_empty(), "asking sends nothing");
+            assert!(p.rt.pending_effects().is_empty(), "asking sends nothing");
             assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(false));
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
         }
@@ -216,8 +216,8 @@ default view letters for Box
                 matches!(out, RunOutcome::Done(_)),
                 "the one answer covers the send the reply makes: {out:?}"
             );
-            let pending = p.rt.pending_outbox();
-            assert_eq!(pending.len(), 1, "the letter waits in the outbox");
+            let pending = p.rt.pending_effects();
+            assert_eq!(pending.len(), 1, "the letter waits as a declared effect");
             assert_eq!(pending[0].capability, "post");
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
             assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
@@ -242,7 +242,7 @@ default view letters for Box
                 matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
                 "{error}"
             );
-            assert!(p.rt.pending_outbox().is_empty(), "nothing leaves");
+            assert!(p.rt.pending_effects().is_empty(), "nothing leaves");
             assert_eq!(
                 field(&p.rt, &p.letter, "answered"),
                 Value::Bool(false),
@@ -268,11 +268,11 @@ default view letters for Box
                 panic!("the send inside the delivered reply asks");
             };
             assert_eq!(p.dispatch.asked().0, p.app.action("send"));
-            assert!(p.rt.pending_outbox().is_empty(), "nothing left before the yes");
+            assert!(p.rt.pending_effects().is_empty(), "nothing left before the yes");
             p.auth.grant_outside(&p.app.action("send"));
             let out = p.dispatch.allow(&p.rt, &run);
             assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
-            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter goes once, on the yes");
+            assert_eq!(p.rt.pending_effects().len(), 1, "the letter goes once, on the yes");
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
 
@@ -292,7 +292,7 @@ default view letters for Box
                 .unwrap();
             assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
             assert_eq!(p.dispatch.len(), 0, "nobody is asked again");
-            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter goes once");
+            assert_eq!(p.rt.pending_effects().len(), 1, "the letter goes once");
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
 
@@ -310,7 +310,7 @@ default view letters for Box
                 .unwrap();
             assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
             assert_eq!(p.dispatch.len(), 0, "no call needed a person");
-            assert_eq!(p.rt.pending_outbox().len(), 1);
+            assert_eq!(p.rt.pending_effects().len(), 1);
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
     }
@@ -326,7 +326,7 @@ default view letters for Box
             let out = press_reply(&view);
             assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
             assert_eq!(p.dispatch.len(), 0, "nobody is asked about their own press");
-            let pending = p.rt.pending_outbox();
+            let pending = p.rt.pending_effects();
             assert_eq!(pending.len(), 1, "the letter goes once");
             assert_eq!(pending[0].capability, "post");
             assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
@@ -343,11 +343,11 @@ default view letters for Box
                 panic!("the send the rule asks about waits for the person's yes");
             };
             assert_eq!(p.dispatch.asked().0, p.app.action("send"), "the send is asked");
-            assert!(p.rt.pending_outbox().is_empty(), "nothing left before the yes");
+            assert!(p.rt.pending_effects().is_empty(), "nothing left before the yes");
             assert_eq!(note(&mut view), "unanswered", "what follows the reply waits");
             let out = p.dispatch.confirm(&p.rt, &run);
             assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
-            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter goes once, on the yes");
+            assert_eq!(p.rt.pending_effects().len(), 1, "the letter goes once, on the yes");
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
             assert!(view.woken(), "the reply's end wakes the view");
             assert_eq!(note(&mut view), "answered");
@@ -361,7 +361,7 @@ default view letters for Box
             let InvokeOutcome::Waits { run, .. } = press(&view, true) else {
                 panic!("a letter that leaves asks, Shift or not");
             };
-            assert!(p.rt.pending_outbox().is_empty());
+            assert!(p.rt.pending_effects().is_empty());
             let error = decline(&p.rt, &run);
             assert!(
                 matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
@@ -411,7 +411,7 @@ default view letters for Box
             assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
             assert!(view.woken(), "the reply's end wakes the view");
             assert_eq!(note(&mut view), "answered", "what followed the reply ran");
-            assert_eq!(p.rt.pending_outbox().len(), 1);
+            assert_eq!(p.rt.pending_effects().len(), 1);
         }
 
         phase a_declined_step_runs_nothing_after_it;
@@ -424,7 +424,7 @@ default view letters for Box
             };
             decline(&p.rt, &run);
             assert_eq!(note(&mut view), "unanswered", "a refused reply is not followed");
-            assert!(p.rt.pending_outbox().is_empty());
+            assert!(p.rt.pending_effects().is_empty());
         }
     }
 
@@ -500,7 +500,7 @@ default view letters for Box
                 "it says how many there are: {refused}"
             );
             assert_eq!(p.dispatch.len(), 0, "nobody is asked about it");
-            assert!(p.rt.pending_outbox().is_empty(), "nothing leaves");
+            assert!(p.rt.pending_effects().is_empty(), "nothing leaves");
         }
 
         phase what_the_question_cannot_show_it_says;

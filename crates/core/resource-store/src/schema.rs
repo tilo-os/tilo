@@ -132,7 +132,7 @@ pub struct Verb {
     pub branches: bool,
     /// The outside capabilities its code can queue (`smtp.send`), by the kind of the surface it
     /// was declared on (`tl.<app>` or `tl.<app>.<Type>`): a change writing an entry of the
-    /// queued-effect kind (`tilolang.outbox`) is admitted only for a capability declared by the
+    /// queued-effect kind (`tilolang.effect`) is admitted only for a capability declared by the
     /// surface of the app the entry names.
     pub outside: BTreeMap<String, BTreeSet<String>>,
     /// It tells a person something (`notify(...)`): a change writing a notice of the host's

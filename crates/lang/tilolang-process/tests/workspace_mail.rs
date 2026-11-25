@@ -326,7 +326,7 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
 fn sent_reply() -> (Rc<Bus>, String) {
     use collab_types::store::Query;
     use collab_types::store::wire::{Command, Reply};
-    use tilolang_tilo::resources::OUTBOX;
+    use tilolang_tilo::resources::EFFECT;
 
     let bundle = Arc::new(mail());
     let workspace = uuid::Uuid::new_v4();
@@ -366,13 +366,13 @@ fn sent_reply() -> (Rc<Bus>, String) {
         "Ada sends the reply: {}",
         ada.answer(1)
     );
-    // It waits in her outbox, holding what it says and where it goes.
+    // It waits as an effect she declared, holding what it says and where it goes.
     let store = bus.workspace();
     let listed = store
-        .command(Command::Query(Query::of(OUTBOX, 10)), ADA)
-        .expect("the outbox is read");
+        .command(Command::Query(Query::of(EFFECT, 10)), ADA)
+        .expect("the effects are read");
     let Reply::Page(page) = listed else {
-        panic!("the outbox reads as a page: {listed:?}");
+        panic!("the effects read as a page: {listed:?}");
     };
     let (id, entry) = page
         .resources
@@ -393,14 +393,14 @@ fn sent_reply() -> (Rc<Bus>, String) {
 fn another_member_reads_nothing_of_a_queued_effect() {
     use collab_types::store::Query;
     use collab_types::store::wire::{Command, Reply};
-    use tilolang_tilo::resources::OUTBOX;
+    use tilolang_tilo::resources::EFFECT;
 
     let (bus, id) = sent_reply();
     let store = bus.workspace();
     let get = store
         .command(
             Command::Get {
-                kind: OUTBOX.to_owned(),
+                kind: EFFECT.to_owned(),
                 id,
             },
             BO,
@@ -411,20 +411,20 @@ fn another_member_reads_nothing_of_a_queued_effect() {
         "Bo reads no entry of Ada's: {get:?}"
     );
     let listed = store
-        .command(Command::Query(Query::of(OUTBOX, 10)), BO)
+        .command(Command::Query(Query::of(EFFECT, 10)), BO)
         .expect("the list is answered");
     let Reply::Page(page) = listed else {
-        panic!("the outbox lists as a page: {listed:?}");
+        panic!("the effects list as a page: {listed:?}");
     };
     assert!(
         page.resources.is_empty(),
-        "Bo lists none of Ada's outbox: {:?}",
+        "Bo lists none of Ada's effects: {:?}",
         page.resources
     );
     let counted = store
         .command(
             Command::Count {
-                kind: OUTBOX.to_owned(),
+                kind: EFFECT.to_owned(),
                 filters: Vec::new(),
             },
             BO,
@@ -432,7 +432,7 @@ fn another_member_reads_nothing_of_a_queued_effect() {
         .expect("the count is answered");
     assert!(
         matches!(counted, Reply::Count(0)),
-        "Bo counts none of Ada's outbox: {counted:?}"
+        "Bo counts none of Ada's effects: {counted:?}"
     );
 }
 
@@ -441,14 +441,14 @@ fn another_member_reads_nothing_of_a_queued_effect() {
 fn another_members_search_finds_nothing_of_a_queued_effect() {
     use collab_types::store::Query;
     use collab_types::store::wire::{Command, Reply};
-    use tilolang_tilo::resources::OUTBOX;
+    use tilolang_tilo::resources::EFFECT;
 
     let (bus, _) = sent_reply();
     let searched = bus
         .workspace()
         .command(
             Command::Fields {
-                query: Query::of(OUTBOX, 10),
+                query: Query::of(EFFECT, 10),
                 fields: vec!["payload".to_owned(), "capability".to_owned()],
             },
             BO,
@@ -459,7 +459,7 @@ fn another_members_search_finds_nothing_of_a_queued_effect() {
     };
     assert!(
         page.resources.is_empty(),
-        "Bo finds nothing of Ada's outbox: {:?}",
+        "Bo finds nothing of Ada's effects: {:?}",
         page.resources
     );
 }
@@ -470,14 +470,14 @@ fn another_members_search_finds_nothing_of_a_queued_effect() {
 fn a_queued_effect_names_the_app_that_queued_it() {
     use collab_types::store::wire::{Command, Reply};
     use collab_types::store::{Cell, Value};
-    use tilolang_tilo::resources::OUTBOX;
+    use tilolang_tilo::resources::EFFECT;
 
     let (bus, id) = sent_reply();
     let read = bus
         .workspace()
         .command(
             Command::Get {
-                kind: OUTBOX.to_owned(),
+                kind: EFFECT.to_owned(),
                 id,
             },
             ADA,

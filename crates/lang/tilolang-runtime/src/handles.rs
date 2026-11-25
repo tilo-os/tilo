@@ -30,7 +30,7 @@ pub struct Retained(pub u64);
 pub struct ActionState {
     pub txn: Txn,
     pub action: String,
-    /// The first resource passed in; the home of the action's outbox entries.
+    /// The first resource passed in; the home of the effects the action declares.
     pub primary: Option<ResourceRef>,
     /// The actor the runtime authenticated for this invocation: what `invoker` reads.
     pub invoker: Actor,

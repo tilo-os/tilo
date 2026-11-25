@@ -1,7 +1,8 @@
 //! Mail against a mail server, as a session runs it: the package's instance in a tilolang host,
 //! kept in step with a test IMAP server through the mail connector it reaches over a socket, and
-//! sending through a test SMTP server from the outbox. What people do goes through the API, as
-//! a block the person runs, the way an agent or the person's own tool runs one.
+//! sending through a test SMTP server from the effects a send declares. What people do goes
+//! through the API, as a block the person runs, the way an agent or the person's own tool runs
+//! one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -447,7 +448,7 @@ impl Session {
     fn delivery_of(&self, draft: &ResourceRef) -> Option<(String, String)> {
         self.instance_host()
             .store()
-            .outbox_states()
+            .effect_states()
             .into_iter()
             .find(|(doc, _)| *doc == draft.doc)
             .map(|(_, state)| (state.state, state.reason))
@@ -1265,7 +1266,7 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
 }
 
 #[test]
-fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
+fn a_reply_goes_out_once_the_server_takes_the_effect() {
     let servers = servers();
     let (_connector, mut session) = window_of(account(&servers));
     synced(&mut session);
@@ -1283,8 +1284,8 @@ fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     session.until("the server to take the reply", |_| {
         servers.smtp.sent().len() == 1
     });
-    session.until("the outbox to settle", |session| {
-        session.instance_host().store().outbox_pending().is_empty()
+    session.until("the effects to settle", |session| {
+        session.instance_host().store().pending_effects().is_empty()
     });
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
     assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
@@ -1329,8 +1330,8 @@ fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
     let plan = session.thread("Launch plan");
     let draft = session.made("reply", &plan, &json!({}));
     session.call("send", &draft, &json!({}));
-    session.until("the outbox to settle", |session| {
-        session.instance_host().store().outbox_pending().is_empty()
+    session.until("the effects to settle", |session| {
+        session.instance_host().store().pending_effects().is_empty()
     });
     assert!(
         servers.smtp.sent().is_empty(),
@@ -1361,18 +1362,22 @@ fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
     let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
     // The person turned `smtp.send` off on Mail's page, and another capability with it: only
     // `smtp.send` decides what the reply queued.
-    policy.grants.push(tilo_action_policy::roles::outside_capability_denial(
-        &workspace,
-        APP,
-        "smtp.send",
-        Grantee::person("ada"),
-    ));
-    policy.grants.push(tilo_action_policy::roles::outside_capability_denial(
-        &workspace,
-        APP,
-        "imap.search",
-        Grantee::person("ada"),
-    ));
+    policy
+        .grants
+        .push(tilo_action_policy::roles::outside_capability_denial(
+            &workspace,
+            APP,
+            "smtp.send",
+            Grantee::person("ada"),
+        ));
+    policy
+        .grants
+        .push(tilo_action_policy::roles::outside_capability_denial(
+            &workspace,
+            APP,
+            "imap.search",
+            Grantee::person("ada"),
+        ));
     let spec = Spec::new(APP, workspace, 1, "ada")
         .in_language("en-US")
         .access(MemberAccess::person(policy, "ada"));
@@ -1384,7 +1389,7 @@ fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
     let draft = session.made("reply", &plan, &json!({}));
     session.call("send", &draft, &json!({}));
     session.until("the queued effect to settle", |session| {
-        session.instance_host().store().outbox_pending().is_empty()
+        session.instance_host().store().pending_effects().is_empty()
     });
     assert!(
         servers.smtp.sent().is_empty(),
@@ -1413,12 +1418,14 @@ fn a_send_goes_while_another_capability_is_the_one_denied() {
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
     let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
-    policy.grants.push(tilo_action_policy::roles::outside_capability_denial(
-        &workspace,
-        APP,
-        "imap.search",
-        Grantee::person("ada"),
-    ));
+    policy
+        .grants
+        .push(tilo_action_policy::roles::outside_capability_denial(
+            &workspace,
+            APP,
+            "imap.search",
+            Grantee::person("ada"),
+        ));
     let spec = Spec::new(APP, workspace, 1, "ada")
         .in_language("en-US")
         .access(MemberAccess::person(policy, "ada"));
@@ -1433,7 +1440,7 @@ fn a_send_goes_while_another_capability_is_the_one_denied() {
         servers.smtp.sent().len() == 1
     });
     session.until("the queued effect to settle", |session| {
-        session.instance_host().store().outbox_pending().is_empty()
+        session.instance_host().store().pending_effects().is_empty()
     });
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
     assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
@@ -1453,8 +1460,8 @@ fn an_answer_typed_under_a_conversation_goes_out_once_allowed() {
     session.until("the server to take the answer", |_| {
         servers.smtp.sent().len() == 1
     });
-    session.until("the outbox to settle", |session| {
-        session.instance_host().store().outbox_pending().is_empty()
+    session.until("the effects to settle", |session| {
+        session.instance_host().store().pending_effects().is_empty()
     });
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
     assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
@@ -1547,8 +1554,8 @@ fn a_reply_pressed_on_the_reply_bar_goes_without_asking_and_the_bar_clears() {
     session.until("the bar to be emptied for the next reply", |session| {
         typed(session) == Some(tilo_app_window::Value::text(""))
     });
-    session.until("the outbox to settle", |session| {
-        session.instance_host().store().outbox_pending().is_empty()
+    session.until("the effects to settle", |session| {
+        session.instance_host().store().pending_effects().is_empty()
     });
     session.settle();
     assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
@@ -1665,7 +1672,7 @@ fn a_sent_message_waits_for_the_persons_hold_before_it_goes() {
     session.hold_for(600);
     let draft = session.sent_reply("Launch plan");
     session.settle();
-    // It is held: nothing went, it waits in the outbox, and it says how it stands.
+    // It is held: nothing went, it waits as a declared effect, and it says how it stands.
     assert!(
         !session.flag(&draft, "sent"),
         "a held message has not left, so it is its author's alone"
@@ -1721,8 +1728,8 @@ fn a_message_that_went_cannot_be_taken_back() {
     session.until("the server to take the message", |_| {
         servers.smtp.sent().len() == 1
     });
-    session.until("the outbox to settle", |session| {
-        session.instance_host().store().outbox_pending().is_empty()
+    session.until("the effects to settle", |session| {
+        session.instance_host().store().pending_effects().is_empty()
     });
     let refused = session.try_call("undo_send", &draft, &json!({}));
     assert!(
@@ -2165,7 +2172,7 @@ fn a_message_sent_later_waits_for_its_moment_and_is_cancelled_before_it() {
         assert_eq!(
             session.moment(&draft, "leaves_at").as_deref(),
             Some("2026-06-30T18:00:00Z"),
-            "it waits in the outbox for its moment"
+            "it waits as a declared effect for its moment"
         );
         assert_eq!(
             session.text(&draft, "send_at"),

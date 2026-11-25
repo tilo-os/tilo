@@ -369,7 +369,7 @@ fn a_playback_that_fails_says_why_and_try_again_asks_again() {
         "the address stays the service's to write: only it writes a video's `stream`"
     );
     assert!(
-        !ada.host.store().outbox_pending().is_empty(),
+        !ada.host.store().pending_effects().is_empty(),
         "and the service is asked for the address again"
     );
 }
@@ -747,9 +747,9 @@ use tilolang_youtube::{
 /// Hand the app's effects over to the device that carries them out, as a window's frames do: an
 /// effect is marked as being handed over before it goes, so it takes two settlements.
 fn settled(replica: &Replica) {
-    replica.host.settle_outbox().unwrap();
+    replica.host.settle_effects().unwrap();
     replica.commit();
-    replica.host.settle_outbox().unwrap();
+    replica.host.settle_effects().unwrap();
     replica.commit();
 }
 

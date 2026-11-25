@@ -124,7 +124,7 @@ mod cases {
         /// The payloads the app asked the catalogue for through `capability`, in order.
         fn asked_for(&self, capability: &str) -> Vec<serde_json::Value> {
             self.rt
-                .pending_outbox()
+                .pending_effects()
                 .into_iter()
                 .filter(|entry| entry.capability == capability)
                 .map(|entry| entry.payload)
@@ -563,7 +563,7 @@ mod spotify_cases {
         /// The payloads the app queued for `capability`, in order.
         fn asked_for(&self, capability: &str) -> Vec<serde_json::Value> {
             self.rt
-                .pending_outbox()
+                .pending_effects()
                 .into_iter()
                 .filter(|entry| entry.capability == capability)
                 .map(|entry| entry.payload)

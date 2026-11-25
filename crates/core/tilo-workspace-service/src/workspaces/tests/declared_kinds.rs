@@ -22,7 +22,7 @@ use tilo_resource_store::{Schema, Stamp, Store, reference, wire};
 
 /// The kind of the record an app's action queues when it reaches outside the workspace, which
 /// every app's surface declares.
-const OUTBOX: &str = "tilolang.outbox";
+const EFFECT: &str = "tilolang.effect";
 
 /// A record kind and the app that keeps it, as its write site names them.
 struct Record {
@@ -129,13 +129,13 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
 
     // The platform's own writes on a record that store declares: a queued outside effect handed
     // over, and each verb no app declares, which every schema has as it has the move.
-    let outbox = surfaces
+    let effect = surfaces
         .resources()
         .into_iter()
         .map(|(_, surface)| surface)
-        .find(|surface| surface.kind == OUTBOX)
+        .find(|surface| surface.kind == EFFECT)
         .expect("every app's surface declares the record an outside effect waits in");
-    let field = outbox
+    let field = effect
         .fields
         .iter()
         .find(|field| matches!(&field.ty, FieldType::Text) && !field.path.contains('.'))
@@ -147,7 +147,7 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
         let written = wire::draft(
             store,
             Command::Put {
-                kind: OUTBOX.to_owned(),
+                kind: EFFECT.to_owned(),
                 id: id.clone(),
                 resource: Resource {
                     readers: String::new(),

@@ -1,7 +1,7 @@
 //! `AmStore`: the reference [`Store`], one Automerge document per resource. Tests and the
 //! command line use it; the platform's store is `tilolang_tilo::store`.
 //!
-//! Document layout. The root holds `$type`, `$app`, `$outbox`, every field but a collection,
+//! Document layout. The root holds `$type`, `$app`, `$effects`, every field but a collection,
 //! keyed by its field id, and the document's items flat under `$items`, each a map holding
 //! `$type`, its placement `$at` and its fields ([`crate::place`]):
 //!
@@ -35,8 +35,8 @@ use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
 use crate::registry::{FieldInfo, TypeInfo};
 use crate::run::Journal;
 use crate::store::{
-    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, LinkHow,
-    ListingChange, Mutation, NewResource, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store,
+    Applied, ChangeNote, ChangeSummary, EffectEntry, EffectState, FieldKey, FieldSpec, FieldValue,
+    Link, LinkHow, ListingChange, Mutation, NewResource, Scalar, Settled, Splice, Store,
     StoreError, SubId, Txn, Version,
 };
 use crate::textdiff;
@@ -44,7 +44,7 @@ use crate::value::ResourceRef;
 
 const TYPE_KEY: &str = "$type";
 const APP_KEY: &str = "$app";
-const OUTBOX_KEY: &str = "$outbox";
+const EFFECTS_KEY: &str = "$effects";
 /// The most rounds one sync of one document may take before it is reported as stuck.
 const MAX_SYNC_ROUNDS: usize = 10_000;
 
@@ -551,7 +551,7 @@ fn field_of(m: &Mutation) -> Option<&FieldId> {
         | Mutation::SetRemove { field, .. }
         | Mutation::MapPut { field, .. }
         | Mutation::MapRemove { field, .. } => Some(field),
-        Mutation::OutboxPush { .. } | Mutation::OutboxWithdraw => None,
+        Mutation::EffectPush { .. } | Mutation::EffectWithdraw => None,
     }
 }
 
@@ -679,9 +679,9 @@ impl Inner {
     }
 
     fn apply_mutation(&mut self, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError> {
-        let outbox_id = match m {
-            Mutation::OutboxPush { key, .. } => {
-                Some(key.clone().unwrap_or_else(|| self.fresh("o")))
+        let effect_id = match m {
+            Mutation::EffectPush { key, .. } => {
+                Some(key.clone().unwrap_or_else(|| self.fresh("e")))
             }
             _ => None,
         };
@@ -735,21 +735,21 @@ impl Inner {
                 doc.put(&map, key.as_str(), to_am(value)?)
                     .map_err(backend)?;
             }
-            Mutation::OutboxPush {
+            Mutation::EffectPush {
                 app,
                 capability,
                 payload,
                 held_until,
                 ..
             } => {
-                let id = outbox_id.unwrap_or_default();
-                let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
+                let id = effect_id.unwrap_or_default();
+                let effects = require_child(doc, &ROOT, EFFECTS_KEY)?;
                 // The same entry queued again is the same entry: it keeps what became of it.
-                if let Ok(Some(_)) = doc.get(&outbox, id.as_str()) {
+                if let Ok(Some(_)) = doc.get(&effects, id.as_str()) {
                     return Ok(Applied::Done);
                 }
                 let entry = doc
-                    .put_object(&outbox, id.as_str(), ObjType::Map)
+                    .put_object(&effects, id.as_str(), ObjType::Map)
                     .map_err(backend)?;
                 doc.put(&entry, "app", app.as_str()).map_err(backend)?;
                 doc.put(&entry, "capability", capability.as_str())
@@ -766,7 +766,7 @@ impl Inner {
             Mutation::CollInsert { .. }
             | Mutation::CollRemove { .. }
             | Mutation::CollMove { .. }
-            | Mutation::OutboxWithdraw => {}
+            | Mutation::EffectWithdraw => {}
         }
         Ok(Applied::Done)
     }
@@ -796,7 +796,7 @@ fn new_doc(made: &NewResource) -> Result<AutoCommit, StoreError> {
         .map_err(backend)?;
     doc.put(&ROOT, APP_KEY, made.app.as_str())
         .map_err(backend)?;
-    doc.put_object(&ROOT, OUTBOX_KEY, ObjType::Map)
+    doc.put_object(&ROOT, EFFECTS_KEY, ObjType::Map)
         .map_err(backend)?;
     doc.put_object(&ROOT, ITEMS_KEY, ObjType::Map)
         .map_err(backend)?;
@@ -1302,15 +1302,15 @@ impl Store for AmStore {
         self.inner.borrow_mut().subs.retain(|s| s.id != sub);
     }
 
-    fn outbox_pending(&self) -> Vec<OutboxEntry> {
+    fn pending_effects(&self) -> Vec<EffectEntry> {
         let inner = self.inner.borrow();
         let mut out = Vec::new();
         for (doc_id, doc) in &inner.docs {
-            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+            let Ok(Some(effects)) = child_obj(doc, &ROOT, EFFECTS_KEY) else {
                 continue;
             };
-            for id in doc.keys(&outbox) {
-                if let Some((entry, None)) = read_outbox_entry(doc, &outbox, doc_id, &id) {
+            for id in doc.keys(&effects) {
+                if let Some((entry, None)) = read_effect_entry(doc, &effects, doc_id, &id) {
                     out.push(entry);
                 }
             }
@@ -1318,15 +1318,15 @@ impl Store for AmStore {
         out
     }
 
-    fn outbox_next_held(&self) -> Option<String> {
+    fn next_held_effect(&self) -> Option<String> {
         let inner = self.inner.borrow();
         let mut earliest: Option<String> = None;
         for (doc_id, doc) in &inner.docs {
-            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+            let Ok(Some(effects)) = child_obj(doc, &ROOT, EFFECTS_KEY) else {
                 continue;
             };
-            for id in doc.keys(&outbox) {
-                if let Some((entry, None)) = read_outbox_entry(doc, &outbox, doc_id, &id)
+            for id in doc.keys(&effects) {
+                if let Some((entry, None)) = read_effect_entry(doc, &effects, doc_id, &id)
                     && let Some(at) = &entry.held_until
                     && earliest.as_ref().is_none_or(|soonest| at < soonest)
                 {
@@ -1337,7 +1337,7 @@ impl Store for AmStore {
         earliest
     }
 
-    fn outbox_withdraw(
+    fn withdraw_effects(
         &mut self,
         doc_id: &DocId,
         reason: &str,
@@ -1349,35 +1349,35 @@ impl Store for AmStore {
                 .docs
                 .get(doc_id)
                 .ok_or_else(|| not_found(format!("document {doc_id}")))?;
-            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+            let Ok(Some(effects)) = child_obj(doc, &ROOT, EFFECTS_KEY) else {
                 return Ok(0);
             };
-            doc.keys(&outbox)
+            doc.keys(&effects)
                 .filter(|id| {
-                    read_outbox_entry(doc, &outbox, doc_id, id)
+                    read_effect_entry(doc, &effects, doc_id, id)
                         .is_some_and(|(_, settled)| settled.is_none())
                 })
                 .collect()
         };
         for id in &pending {
-            let entry = OutboxEntry {
+            let entry = EffectEntry {
                 doc: doc_id.clone(),
                 id: id.clone(),
                 app: String::new(),
                 capability: String::new(),
                 payload: Json::Null,
                 held_until: None,
-                state: OutboxState::Queued,
+                state: EffectState::Queued,
             };
-            self.outbox_settle(&entry, &Settled::Withdrawn(reason.to_owned()), note)?;
+            self.settle_effect(&entry, &Settled::Withdrawn(reason.to_owned()), note)?;
         }
         Ok(pending.len())
     }
 
-    fn outbox_mark(
+    fn mark_effect(
         &mut self,
-        entry: &OutboxEntry,
-        state: &OutboxState,
+        entry: &EffectEntry,
+        state: &EffectState,
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
         let mut inner = self.inner.borrow_mut();
@@ -1385,21 +1385,21 @@ impl Store for AmStore {
             .docs
             .get_mut(&entry.doc)
             .ok_or_else(|| not_found(format!("document {}", entry.doc)))?;
-        let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
-        let obj = require_child(doc, &outbox, &entry.id)?;
+        let effects = require_child(doc, &ROOT, EFFECTS_KEY)?;
+        let obj = require_child(doc, &effects, &entry.id)?;
         let (word, detail) = match state {
-            OutboxState::Queued => ("queued", ""),
-            OutboxState::Sending { by } => ("sending", by.as_str()),
-            OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+            EffectState::Queued => ("queued", ""),
+            EffectState::Sending { by } => ("sending", by.as_str()),
+            EffectState::Waiting { reason } => ("waiting", reason.as_str()),
         };
         doc.put(&obj, "state", word).map_err(backend)?;
         doc.put(&obj, "detail", detail).map_err(backend)?;
         commit_with_note(doc, note)
     }
 
-    fn outbox_settle(
+    fn settle_effect(
         &mut self,
-        entry: &OutboxEntry,
+        entry: &EffectEntry,
         outcome: &Settled,
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
@@ -1408,27 +1408,27 @@ impl Store for AmStore {
             .docs
             .get_mut(&entry.doc)
             .ok_or_else(|| not_found(format!("document {}", entry.doc)))?;
-        let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
-        let obj = require_child(doc, &outbox, &entry.id)?;
+        let effects = require_child(doc, &ROOT, EFFECTS_KEY)?;
+        let obj = require_child(doc, &effects, &entry.id)?;
         doc.put(&obj, "settled", true).map_err(backend)?;
         doc.put(&obj, "outcome", outcome.word()).map_err(backend)?;
         doc.put(&obj, "reason", outcome.reason()).map_err(backend)?;
         commit_with_note(doc, note)
     }
 
-    fn outbox_states(&self) -> Vec<(String, crate::store::DeliveryState)> {
+    fn effect_states(&self) -> Vec<(String, crate::store::DeliveryState)> {
         let inner = self.inner.borrow();
         let mut out = Vec::new();
         for (doc_id, doc) in &inner.docs {
-            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+            let Ok(Some(effects)) = child_obj(doc, &ROOT, EFFECTS_KEY) else {
                 continue;
             };
-            let mut keys: Vec<String> = doc.keys(&outbox).collect();
+            let mut keys: Vec<String> = doc.keys(&effects).collect();
             keys.sort();
             // The one not settled when there is one, else the last.
             let entries: Vec<_> = keys
                 .iter()
-                .filter_map(|id| read_outbox_entry(doc, &outbox, doc_id, id))
+                .filter_map(|id| read_effect_entry(doc, &effects, doc_id, id))
                 .collect();
             let last = entries
                 .iter()
@@ -1466,13 +1466,13 @@ impl Store for AmStore {
 }
 
 /// The entry `id`, and how it was settled (its outcome and reason) once it was.
-fn read_outbox_entry(
+fn read_effect_entry(
     doc: &AutoCommit,
-    outbox: &ObjId,
+    effects: &ObjId,
     doc_id: &str,
     id: &str,
-) -> Option<(OutboxEntry, Option<(String, String)>)> {
-    let obj = child_obj(doc, outbox, id).ok()??;
+) -> Option<(EffectEntry, Option<(String, String)>)> {
+    let obj = child_obj(doc, effects, id).ok()??;
     let settled = matches!(
         doc.get(&obj, "settled"),
         Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), ScalarValue::Boolean(true))
@@ -1489,12 +1489,12 @@ fn read_outbox_entry(
     };
     let detail = str_at(doc, &obj, "detail").unwrap_or_default();
     let state = match str_at(doc, &obj, "state").as_deref() {
-        Some("sending") => OutboxState::Sending { by: detail },
-        Some("waiting") => OutboxState::Waiting { reason: detail },
-        _ => OutboxState::Queued,
+        Some("sending") => EffectState::Sending { by: detail },
+        Some("waiting") => EffectState::Waiting { reason: detail },
+        _ => EffectState::Queued,
     };
     Some((
-        OutboxEntry {
+        EffectEntry {
             doc: doc_id.to_owned(),
             id: id.to_owned(),
             app: str_at(doc, &obj, "app").unwrap_or_default(),

@@ -325,7 +325,7 @@ pub enum Mutation {
         key: String,
     },
     /// Queue an outside effect in the change, on the document of this resource.
-    OutboxPush {
+    EffectPush {
         /// The app whose package queued it: the writer's stamp, which carry-out checks the
         /// capability's grant for.
         app: String,
@@ -341,7 +341,7 @@ pub enum Mutation {
     /// Take back the outside effects queued on the document of this resource that were not
     /// settled yet, each as one change, and settle them as withdrawn: what they would have
     /// done never happens.
-    OutboxWithdraw,
+    EffectWithdraw,
 }
 
 /// What a mutation produced.
@@ -1356,7 +1356,7 @@ pub struct SubId(pub u64);
 
 /// An outside effect waiting to be settled.
 #[derive(Clone, Debug, PartialEq)]
-pub struct OutboxEntry {
+pub struct EffectEntry {
     pub doc: DocId,
     pub id: String,
     /// The app whose package queued the effect, as the writer stamped it: what carry-out checks
@@ -1367,12 +1367,12 @@ pub struct OutboxEntry {
     /// Held back until this moment, ISO-8601 UTC text, when the action said
     /// (`outside(capability, payload, at: ...)`); `None` carries out as soon as it is read.
     pub held_until: Option<String>,
-    pub state: OutboxState,
+    pub state: EffectState,
 }
 
 /// Where an outside effect that is not settled yet is on its way out.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum OutboxState {
+pub enum EffectState {
     /// Queued: nothing was tried yet.
     #[default]
     Queued,
@@ -1474,7 +1474,7 @@ impl DeliveryState {
     /// How an entry stands: settled with `settled`'s outcome word and reason, else by `state`.
     /// An entry not settled that is held back until a moment still reads `held`.
     #[must_use]
-    pub fn of(state: &OutboxState, settled: Option<(&str, &str)>) -> Self {
+    pub fn of(state: &EffectState, settled: Option<(&str, &str)>) -> Self {
         Self::of_entry(state, settled, None)
     }
 
@@ -1482,7 +1482,7 @@ impl DeliveryState {
     /// reached it, it reads `held`, and the moment says when.
     #[must_use]
     pub fn of_entry(
-        state: &OutboxState,
+        state: &EffectState,
         settled: Option<(&str, &str)>,
         held_until: Option<&str>,
     ) -> Self {
@@ -1494,10 +1494,10 @@ impl DeliveryState {
             Some(("withdrawn", reason)) => ("withdrawn", reason),
             Some((_, reason)) => ("rejected", reason),
             None => match (state, held_until) {
-                (OutboxState::Queued, Some(at)) => ("held", at),
-                (OutboxState::Queued, None) => ("waiting", ""),
-                (OutboxState::Sending { .. }, _) => ("sending", ""),
-                (OutboxState::Waiting { reason }, _) => ("waiting", reason.as_str()),
+                (EffectState::Queued, Some(at)) => ("held", at),
+                (EffectState::Queued, None) => ("waiting", ""),
+                (EffectState::Sending { .. }, _) => ("sending", ""),
+                (EffectState::Waiting { reason }, _) => ("waiting", reason.as_str()),
             },
         };
         Self {
@@ -2125,11 +2125,11 @@ pub trait Store {
 
     /// Outside effects queued and not yet settled, each with the moment it is held until when
     /// the action held it back.
-    fn outbox_pending(&self) -> Vec<OutboxEntry>;
+    fn pending_effects(&self) -> Vec<EffectEntry>;
 
     /// The earliest moment an unsettled outside effect is held until, ISO-8601 UTC text:
     /// nothing carries it out before then.
-    fn outbox_next_held(&self) -> Option<String>;
+    fn next_held_effect(&self) -> Option<String>;
 
     /// Take back the outside effects queued on `doc` that were not settled yet, settling each
     /// as withdrawn for `reason`, each as a change of its own.
@@ -2137,7 +2137,7 @@ pub trait Store {
     /// # Errors
     ///
     /// `NotFound` when the document is gone.
-    fn outbox_withdraw(
+    fn withdraw_effects(
         &mut self,
         doc: &DocId,
         reason: &str,
@@ -2150,10 +2150,10 @@ pub trait Store {
     /// # Errors
     ///
     /// `NotFound` when the entry is gone.
-    fn outbox_mark(
+    fn mark_effect(
         &mut self,
-        entry: &OutboxEntry,
-        state: &OutboxState,
+        entry: &EffectEntry,
+        state: &EffectState,
         note: &ChangeNote,
     ) -> Result<(), StoreError>;
 
@@ -2162,16 +2162,16 @@ pub trait Store {
     /// # Errors
     ///
     /// `NotFound` when the entry is gone.
-    fn outbox_settle(
+    fn settle_effect(
         &mut self,
-        entry: &OutboxEntry,
+        entry: &EffectEntry,
         outcome: &Settled,
         note: &ChangeNote,
     ) -> Result<(), StoreError>;
 
     /// How the outside effect each resource's actions queued last stands, by document: what
     /// `delivery(r)` reads.
-    fn outbox_states(&self) -> Vec<(DocId, DeliveryState)>;
+    fn effect_states(&self) -> Vec<(DocId, DeliveryState)>;
 
     /// This device's changes of the record `doc` that no other device keeping the workspace has
     /// taken in yet, and those the workspace refused: what `reach(r)` reads. The device's sync

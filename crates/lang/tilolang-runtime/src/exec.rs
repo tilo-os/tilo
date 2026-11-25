@@ -15,7 +15,7 @@
 //!
 //! An action's arguments left out are completed from their defaults, on the invoker's state,
 //! before it is decided, journaled or run. An action's `outside` call doesn't reach outside
-//! while the action runs: it is queued in the action's change as an outbox entry, which the
+//! while the action runs: it is queued in the action's change as an effect entry, which the
 //! device that holds the capability settles.
 
 use std::rc::Rc;
@@ -86,9 +86,7 @@ fn reads_plainly(named: &str) -> bool {
     .unwrap_or(named);
     !address.is_empty()
         && address.chars().count() <= MOST_SHOWN_ADDRESS_CHARS
-        && address
-            .chars()
-            .all(|c| c.is_ascii_graphic() && c != '"')
+        && address.chars().all(|c| c.is_ascii_graphic() && c != '"')
 }
 
 /// Who an invocation runs for, and through which code.
@@ -3145,7 +3143,7 @@ impl Core {
         self.journaled_apply(
             txn,
             &primary,
-            &Mutation::OutboxPush {
+            &Mutation::EffectPush {
                 app,
                 capability,
                 payload,
@@ -3178,7 +3176,7 @@ impl Core {
         };
         self.store
             .borrow_mut()
-            .outbox_withdraw(&primary.target.doc, &reason, &note)
+            .withdraw_effects(&primary.target.doc, &reason, &note)
             .map_err(|e| HostFail::Trap(e.to_string()))?;
         self.ret_h(Value::Unit)
     }

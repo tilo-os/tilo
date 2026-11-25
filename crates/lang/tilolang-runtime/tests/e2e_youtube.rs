@@ -142,7 +142,7 @@ mod cases {
         /// The payloads the app asked the service for through `capability`, in order.
         fn asked(&self, capability: &str) -> Vec<serde_json::Value> {
             self.rt
-                .pending_outbox()
+                .pending_effects()
                 .into_iter()
                 .filter(|entry| entry.capability == capability)
                 .map(|entry| entry.payload)

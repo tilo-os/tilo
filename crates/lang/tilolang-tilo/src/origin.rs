@@ -7,8 +7,8 @@
 //! instance polls it: it writes what the service said into the resources that hold its kinds
 //! (one change by the origin, through [`tilolang_runtime::Runtime::apply_origin`]) and tells
 //! the service what people changed in the fields people change. The outside effects package
-//! code hands its capabilities (`outside("smtp.send", ...)`) are delivered to it from the
-//! outbox, as every outside effect is.
+//! code hands its capabilities (`outside("smtp.send", ...)`) are delivered to it from what the
+//! action declared, as every outside effect is.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -28,7 +28,7 @@ use crate::host::Host;
 pub struct Polled {
     /// It wrote into the workspace: the instance hands the change to the API.
     pub wrote: bool,
-    /// An effect it was handed has an outcome now: the outbox is settled again.
+    /// An effect it was handed has an outcome now: the effects are settled again.
     pub settle: bool,
 }
 

@@ -1,5 +1,5 @@
 //! A mailbox the native Mail app wrote, opened by the tilolang Mail: its migration carries every
-//! draft it was writing and every message still waiting in its outbox over once, each a draft
+//! draft it was writing and every message still waiting as a declared effect over once, each a draft
 //! from the same account and identity, to the same people (the blind ones too), with the same
 //! subject, body and invitation, answering what it answered. What a draft held that the
 //! tilolang Mail has no place for (its attachments, its private notes) is kept on it in words,
@@ -10,7 +10,7 @@
 //! `legacy/rust_mail.hex` is what the native Mail's own actions wrote: Ada's composer draft
 //! (a chosen sender, a blind copy, a body being written, an attachment, an invitation and notes),
 //! a reply and an empty draft of hers, a draft Leo wrote in the same mailbox, one an agent drafted
-//! for Ada, and two messages she sent, one waiting in the outbox and one that went.
+//! for Ada, and two messages she sent, one waiting as a declared effect and one that went.
 
 use automerge::AutoCommit;
 use tilo_actions::policy::Role;

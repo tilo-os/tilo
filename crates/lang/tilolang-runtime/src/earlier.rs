@@ -484,7 +484,7 @@ fn read_field_at(
     match value {
         AmValue::Scalar(s) => {
             if let Some(said) = scalar_words(s) {
-                // A record a native app kept as JSON in one field (an outbox entry's message)
+                // A record a native app kept as JSON in one field (an effect entry's message)
                 // reads as that record's fields too, each under the field's name and its own
                 // (`value.draft.to`).
                 if said.starts_with('{')

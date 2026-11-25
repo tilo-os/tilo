@@ -852,15 +852,15 @@ pub fn personal_surface() -> Surface {
 }
 
 /// The surface of an outside effect waiting in the workspace: the record any app's action
-/// queues when it reaches beyond it ([`crate::resources::OUTBOX`]), read by its author alone
+/// queues when it reaches beyond it ([`crate::resources::EFFECT`]), read by its author alone
 /// because it carries what the effect sends, and the verbs the device that owns it writes under.
 /// Every app's surface declares it, as it declares the host's notice, so every holder judges an
 /// effect alike.
 #[must_use]
 pub fn queued_effect_surface() -> Surface {
     use crate::resources::{
-        OUT_APP, OUT_CAPABILITY, OUT_DETAIL, OUT_DOC, OUT_ENTRY, OUT_HELD_UNTIL, OUT_OUTCOME,
-        OUT_OWNER, OUT_PAYLOAD, OUT_REASON, OUT_SETTLED, OUT_STATE, OUTBOX,
+        EFFECT, OUT_APP, OUT_CAPABILITY, OUT_DETAIL, OUT_DOC, OUT_ENTRY, OUT_HELD_UNTIL,
+        OUT_OUTCOME, OUT_OWNER, OUT_PAYLOAD, OUT_REASON, OUT_SETTLED, OUT_STATE,
     };
     let text = |name: &str, optional: bool| FieldSurface {
         path: name.to_owned(),
@@ -916,7 +916,7 @@ pub fn queued_effect_surface() -> Surface {
         origin: None,
     };
     Surface {
-        kind: OUTBOX.to_owned(),
+        kind: EFFECT.to_owned(),
         label: "A queued effect".to_owned(),
         version: VERSION,
         person: false,

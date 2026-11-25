@@ -375,7 +375,7 @@ impl ResourceService {
         // The outside effects a package's action queued, handed to the origin that carries
         // them out: an effect queued since the last pass goes now, whether or not any origin is
         // already due (an origin is due once something is handed to it).
-        match self.host.settle_outbox() {
+        match self.host.settle_effects() {
             Ok(settled) if settled.written > 0 => wrote = true,
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "outside effects could not be settled"),
@@ -1319,7 +1319,7 @@ impl Service for ResourceService {
         // What the app handed outside waits in the store it is leaving: it goes to the origin it
         // reached before the records move, so an action's effect is not lost with them.
         if !self.origins.borrow().is_empty() {
-            self.host.settle_outbox()?;
+            self.host.settle_effects()?;
         }
         self.install(host);
         self.in_workspace = true;

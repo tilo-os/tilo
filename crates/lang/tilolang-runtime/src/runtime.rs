@@ -16,7 +16,7 @@ use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
 use crate::run::Resolution;
 use crate::settle::{AgentBlock, InvocationEntry};
-use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
+use crate::store::{ChangeNote, EffectEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
 use tilolang::{BlockKind, Compiled, CompiledBlock};
@@ -99,7 +99,7 @@ pub struct LineRun {
     pub failed: bool,
 }
 
-/// What settling the outbox did.
+/// What settling the declared effects did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettleReport {
     pub delivered: usize,
@@ -116,7 +116,7 @@ pub struct SettleReport {
     pub held: usize,
 }
 
-/// This process's token, which an outbox entry it marks as being handed over carries: an
+/// This process's token, which an effect entry it marks as being handed over carries: an
 /// entry marked by another token was being handed over by a process that stopped (the record
 /// has one writer on a device).
 fn process_token() -> &'static str {
@@ -2157,8 +2157,8 @@ impl Runtime {
     }
 
     /// Outside effects queued and not yet settled.
-    pub fn pending_outbox(&self) -> Vec<OutboxEntry> {
-        self.core.store.borrow().outbox_pending()
+    pub fn pending_effects(&self) -> Vec<EffectEntry> {
+        self.core.store.borrow().pending_effects()
     }
 
     /// The network came back: entries waiting to go online are tried again on the next settle.
@@ -2171,7 +2171,7 @@ impl Runtime {
     /// it. `None` when none is held back.
     #[must_use]
     pub fn next_held(&self) -> Option<String> {
-        self.core.store.borrow().outbox_next_held()
+        self.core.store.borrow().next_held_effect()
     }
 
     /// How long from the clock now until the earliest moment an outside effect is held until:
@@ -2203,8 +2203,8 @@ impl Runtime {
     )]
     pub fn settle(&self) -> Result<SettleReport, RuntimeError> {
         use crate::core::Delivery;
-        use crate::store::{OutboxState, Settled};
-        let note = |entry: &OutboxEntry, action: &str| ChangeNote {
+        use crate::store::{EffectState, Settled};
+        let note = |entry: &EffectEntry, action: &str| ChangeNote {
             action: action.into(),
             args: Json::String(entry.id.clone()),
             invoker: None,
@@ -2217,7 +2217,7 @@ impl Runtime {
         let retry = self.core.retry_waiting.replace(false);
         let token = process_token();
         let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
-        let pending = self.pending_outbox();
+        let pending = self.pending_effects();
         if !pending.is_empty() && self.core.sink.borrow().is_none() {
             // Nothing can go, but what `delivery(r)` reads still follows the document.
             self.refresh_deliveries();
@@ -2231,7 +2231,7 @@ impl Runtime {
                     "this workspace does not let {} use {}, so nothing went out",
                     entry.app, entry.capability
                 );
-                self.core.store.borrow_mut().outbox_settle(
+                self.core.store.borrow_mut().settle_effect(
                     &entry,
                     &Settled::Rejected(reason.clone()),
                     &note(&entry, "$settle"),
@@ -2240,9 +2240,9 @@ impl Runtime {
                 continue;
             }
             match &entry.state {
-                OutboxState::Sending { by } if by != token => {
+                EffectState::Sending { by } if by != token => {
                     let settle = note(&entry, "$settle");
-                    self.core.store.borrow_mut().outbox_settle(
+                    self.core.store.borrow_mut().settle_effect(
                         &entry,
                         &Settled::Unknown,
                         &settle,
@@ -2251,7 +2251,7 @@ impl Runtime {
                 }
                 // This process's: handed over, or asked again what became of it. The sink
                 // answers for one it already has rather than carrying it out twice.
-                OutboxState::Sending { .. } => {
+                EffectState::Sending { .. } => {
                     let delivered = match self.core.sink.borrow_mut().as_mut() {
                         Some(sink) => sink.deliver(&entry.capability, &entry.payload),
                         None => return Err(RuntimeError::Package("no outside sink is set".into())),
@@ -2262,7 +2262,7 @@ impl Runtime {
                         // (`Delivery::Pending`).
                         Delivery::Pending => {}
                         Delivery::Delivered => {
-                            store.outbox_settle(
+                            store.settle_effect(
                                 &entry,
                                 &Settled::Done,
                                 &note(&entry, "$settle"),
@@ -2270,7 +2270,7 @@ impl Runtime {
                             report.delivered = report.delivered.saturating_add(1);
                         }
                         Delivery::DeliveredWith(reason) => {
-                            store.outbox_settle(
+                            store.settle_effect(
                                 &entry,
                                 &Settled::DoneWith(reason),
                                 &note(&entry, "$settle"),
@@ -2279,22 +2279,22 @@ impl Runtime {
                         }
                         Delivery::Rejected(reason) => {
                             let outcome = Settled::Rejected(reason.clone());
-                            store.outbox_settle(&entry, &outcome, &note(&entry, "$settle"))?;
+                            store.settle_effect(&entry, &outcome, &note(&entry, "$settle"))?;
                             report.failed.push((entry.id.clone(), reason));
                         }
                         Delivery::Offline(reason) => {
-                            let waiting = OutboxState::Waiting { reason };
-                            store.outbox_mark(&entry, &waiting, &note(&entry, "$wait"))?;
+                            let waiting = EffectState::Waiting { reason };
+                            store.mark_effect(&entry, &waiting, &note(&entry, "$wait"))?;
                             report.waiting = report.waiting.saturating_add(1);
                         }
                     }
                 }
                 // Resolved by `retry_waiting`, which the origin calls when its service is
                 // reachable again.
-                OutboxState::Waiting { .. } if !retry => {}
+                EffectState::Waiting { .. } if !retry => {}
                 // Held back until a moment the person's action named (undo send): the device
                 // carries it out only once the clock reaches it.
-                OutboxState::Queued | OutboxState::Waiting { .. }
+                EffectState::Queued | EffectState::Waiting { .. }
                     if entry
                         .held_until
                         .as_deref()
@@ -2303,11 +2303,11 @@ impl Runtime {
                 {
                     report.held = report.held.saturating_add(1);
                 }
-                OutboxState::Queued | OutboxState::Waiting { .. } => {
-                    let sending = OutboxState::Sending {
+                EffectState::Queued | EffectState::Waiting { .. } => {
+                    let sending = EffectState::Sending {
                         by: token.to_owned(),
                     };
-                    self.core.store.borrow_mut().outbox_mark(
+                    self.core.store.borrow_mut().mark_effect(
                         &entry,
                         &sending,
                         &note(&entry, "$send"),
@@ -2320,10 +2320,10 @@ impl Runtime {
         Ok(report)
     }
 
-    /// Bring what `delivery(r)` reads up to date with the outbox: views showing a resource
+    /// Bring what `delivery(r)` reads up to date with the declared effects: views showing a resource
     /// whose outside effect moved run again.
     pub fn refresh_deliveries(&self) {
-        let states = self.core.store.borrow().outbox_states();
+        let states = self.core.store.borrow().effect_states();
         let mut held = self.core.view_states.borrow_mut();
         for (doc, state) in states {
             let key = crate::platform::delivery_key(&doc);

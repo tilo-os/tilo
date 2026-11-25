@@ -980,7 +980,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/passwords_vault.rs",
   "crates/lang/tilolang-tilo/tests/notes.rs",
   "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
-  "crates/lang/tilolang-tilo/tests/outbox.rs",
+  "crates/lang/tilolang-tilo/tests/effects.rs",
   "crates/lang/tilolang-tilo/tests/policy.rs",
   "crates/lang/tilolang-tilo/tests/print_centre.rs",
   "crates/lang/tilolang-tilo/tests/removed.rs",

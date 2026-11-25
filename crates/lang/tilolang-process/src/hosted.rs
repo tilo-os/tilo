@@ -3309,8 +3309,8 @@ impl Hosted {
             }
         };
         // The action's writes reached the store as it ran: what it queued outside the workspace
-        // waits in the outbox, and the instance settles it on its next frame, as it does what a
-        // person's own action queues.
+        // waits as a declared effect, and the instance settles it on its next frame, as it does
+        // what a person's own action queues.
         self.instance.commit_planned();
         if let Some(answer) = answer {
             self.answer_invocation(id, answer);
@@ -4401,9 +4401,9 @@ impl Hosted {
             Ok(Ran::Waits { call, run, .. }) => self.waiting(call, run, None, None, None),
             Err(refused) => self.instance.failed(refused.message),
         }
-        // What the press queued outside the workspace waits in the outbox, and the instance
-        // settles it on its next frame, as it does a delivered invocation's: a press that only
-        // reaches outside (Check now) writes nothing else that would wake it.
+        // What the press queued outside the workspace waits as a declared effect, and the
+        // instance settles it on its next frame, as it does a delivered invocation's: a press
+        // that only reaches outside (Check now) writes nothing else that would wake it.
         self.instance.commit_planned();
         // The press ran: once it is in the document this frame sends what it opened, then tells
         // the window it ran, so what the person typed after it goes there.

@@ -156,9 +156,9 @@ impl Package {
     }
 }
 
-/// What one settle of the outbox did ([`Host::settle_outbox`]).
+/// What one settle of the declared effects did ([`Host::settle_effects`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct OutboxSettled {
+pub struct EffectsSettled {
     /// How many changes it wrote, each queued for the API.
     pub written: usize,
     /// It marked an effect as being handed over, which the next settle hands over: whoever
@@ -1351,10 +1351,10 @@ impl Host {
         self.inner.suspended.borrow_mut().pop_front()
     }
 
-    /// Whether the outbox holds an outside effect this device has yet to carry out.
+    /// Whether an outside effect this device has yet to carry out waits.
     #[must_use]
-    pub fn outbox_waits(&self) -> bool {
-        !self.inner.store.outbox_pending().is_empty()
+    pub fn effects_wait(&self) -> bool {
+        !self.inner.store.pending_effects().is_empty()
     }
 
     /// Carry out the outside effects of this device that wait in the document
@@ -1364,15 +1364,15 @@ impl Host {
     ///
     /// # Errors
     /// No sink is set, or the store failed.
-    pub fn settle_outbox(&self) -> Result<OutboxSettled, String> {
-        if !self.outbox_waits() {
+    pub fn settle_effects(&self) -> Result<EffectsSettled, String> {
+        if !self.effects_wait() {
             self.inner.runtime.refresh_deliveries();
-            return Ok(OutboxSettled::default());
+            return Ok(EffectsSettled::default());
         }
         self.inner
             .runtime
             .settle()
-            .map(|report| OutboxSettled {
+            .map(|report| EffectsSettled {
                 written: [
                     report.failed.len(),
                     report.marked,
