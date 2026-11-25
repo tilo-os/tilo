@@ -608,8 +608,8 @@ done <<<"$catalog"
 # RUNTIME_VERSION), when the build staged one (nested-session-build.sh).
 # Before the packages handed in with --install-tapp: the tilolang Browser among
 # them pins this runtime, and its install is refused while the device lacks it.
-# The catalogue's installs above name no engine; collection keeps a runtime no
-# package names yet for its grace period, which the Browser's install ends.
+# The catalogue's installs above name no engine, and collection removes a runtime
+# that nothing names and nothing pinned.
 engine_tree=$build_out/chromium-engine
 if [[ -x $engine_tree/tilo-chromium-host ]]; then
     engine_version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' \
@@ -630,6 +630,10 @@ if [[ -x $engine_tree/tilo-chromium-host ]]; then
         rm -rf "$state/work/engine"
         printf '%s\n' "$engine_key" > "$runtimes/.engine-key"
     fi
+    # Built here from no package, as a runtime built on a device is: pinned, so the
+    # collection after each install below keeps it until the Browser that names it
+    # is installed.
+    "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" runtime pin "$engine_version" >/dev/null
 fi
 
 for tapp in "${install_tapps[@]}"; do
