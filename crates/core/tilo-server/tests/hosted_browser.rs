@@ -1875,9 +1875,8 @@ async fn workspace_seed(fixture: &Fixture) -> tilo_peer_state::StatePeer {
     peer
 }
 
-/// A write `device` signs to `record` of `app` over the record as `linked` reads it, sealed under
-/// the members' keys as a page that escaped its browser signs one: no copy checks it, and
-/// `linked` has every dependency of it, so taking it in is decided by admission alone.
+/// `device`'s first write to `record` of `app`, over the record as `linked` reads it and signed by
+/// hand as a page that escaped its browser signs one: taking it in is decided by admission alone.
 fn forged_in(
     linked: &Linked,
     device: &TestDevice,
@@ -1900,7 +1899,6 @@ fn forged_in(
         Some(_) => collab_types::DocumentMutation::Incremental(document.save_after(&heads)),
         None => collab_types::DocumentMutation::Snapshot(document.save()),
     };
-    // The device's first write: it wrote nothing before it was placed.
     crate::common::signed_by_hand(&device.sk, (&workspace, app, record), &mutation, 1, None)
 }
 

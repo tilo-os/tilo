@@ -3569,7 +3569,14 @@ impl Task {
                 Some(Ok(()))
             }
             Err(tilo_peer_state::owner::WriteRefusal::HistoryFull { .. }) => {
-                self.history_full(route)
+                tracing::warn!(app = %route.app_id, record = %route.document,
+                    "writes wait for their record's history to be compacted");
+                self.keep_for(route, crate::Waits::History);
+                self.fail(
+                    RECORD_FULL,
+                    "This record is too large to share your latest changes. They are kept on this device.",
+                );
+                None
             }
             Err(tilo_peer_state::owner::WriteRefusal::Unsigned(error)) => {
                 tracing::warn!(%error, "writes wait for this device to sign them");
@@ -3593,21 +3600,6 @@ impl Task {
                 | tilo_peer_state::owner::WriteRefusal::ChangeRefused(_)),
             ) => Some(self.refused_write(route, &refusal)),
         }
-    }
-
-    fn history_full(&mut self, route: &DocumentRoute) -> Option<Result<(), String>> {
-        self.keep_for(route, crate::Waits::History);
-        self.note_history(route);
-        None
-    }
-
-    fn note_history(&self, route: &DocumentRoute) {
-        tracing::warn!(app = %route.app_id, record = %route.document,
-            "writes wait for their record's history to be compacted");
-        self.fail(
-            RECORD_FULL,
-            "This record is too large to share your latest changes. They are kept on this device.",
-        );
     }
 
     /// Say that the workspace refused this device's write to `route` for good.
