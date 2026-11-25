@@ -1558,7 +1558,7 @@ impl Native {
                 let native = Arc::clone(self);
                 std::thread::Builder::new()
                     .name("tilo-native-open".into())
-                    .spawn(move || native.open_with_person(person, stream, slot, seated))
+                    .spawn(move || native.open_with_person(&person, stream, slot, seated))
                     .map(drop)
             }
             None if !self.answers.claimed() => self.device_only(stream, slot, seated),
@@ -1577,7 +1577,7 @@ impl Native {
     /// never waits on its first line.
     fn open_with_person(
         self: &Arc<Self>,
-        person: Arc<Take>,
+        person: &Arc<Take>,
         stream: Stream,
         slot: ConnectionSlot,
         seated: Seated,
