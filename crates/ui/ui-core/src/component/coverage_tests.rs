@@ -10,7 +10,8 @@ use tilo_component_scan as component_scan;
 use vello::kurbo::{Point, Rect};
 
 use super::tests::{given, given_with_views, sample};
-use super::{Registry, TOOLKIT, Value};
+use super::{Registry, Value};
+use crate::component_catalogue::TOOLKIT;
 use crate::headless::Driver;
 use crate::profiling::layout_counts::asking_for_layout;
 use crate::theme::Theme;
@@ -115,7 +116,7 @@ tilo_test_env::scenario! {
             );
         }
         assert!(scan.is_described("Button"));
-        let catalogue = super::Registry::of(&[&super::TOOLKIT]).catalogue();
+        let catalogue = crate::component::Registry::of(&[&TOOLKIT]).catalogue();
         let mut generated: Vec<&str> = catalogue.names();
         generated.sort_unstable();
         let mut declared: Vec<String> = scan
@@ -140,7 +141,7 @@ tilo_test_env::scenario! {
     phase the_gallery_shows_every_described_component;
     {
         let sources = gallery_sources();
-        let catalogue = super::Registry::of(&[&super::TOOLKIT]).catalogue();
+        let catalogue = crate::component::Registry::of(&[&TOOLKIT]).catalogue();
         let coverage = super::gallery::coverage(&catalogue, &sources);
         let problems = coverage.problems();
         assert!(problems.is_empty(), "{}", problems.join("\n"));

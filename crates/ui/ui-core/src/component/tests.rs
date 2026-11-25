@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::component_catalogue::TOOLKIT;
 use crate::widget::ListRowProps;
 
 /// The toolkit's own described widgets, as a window that builds only them composes them.
