@@ -2006,7 +2006,7 @@ impl Workspaces {
     /// `workspace` ([`crate::work::Turn::Once`]); with `done`, keep that it ran and let the turn
     /// go. Asking again while this device runs it renews its claim.
     #[cfg(feature = "apps")]
-    async fn once_turn(
+    pub(crate) async fn once_turn(
         &self,
         workspace: &str,
         app: &str,
@@ -2157,6 +2157,12 @@ impl Workspaces {
 /// The action `writes`, `device`'s for `app`, are when they change more than one document: one
 /// part per document, naming the changes of it no other change of the batch builds on. `None`
 /// for writes to one document, which its own history keeps whole.
+///
+/// A write that founds its document is no part: it is drafted as the document's first snapshot,
+/// which claims no change, so a reader holding the record sealed could never find it taken in,
+/// and every record the action names would wait for it for good. A document nobody holds yet
+/// has nothing another record's write could land out of step with, and it is kept in its place
+/// in the batch all the same.
 #[cfg(feature = "apps")]
 fn action_of(
     governed: &GovernedWorkspace,
@@ -2165,7 +2171,9 @@ fn action_of(
     writes: &[tilo_resource_store::Written],
 ) -> Option<collab_types::WorkspaceCommit> {
     let mut parts: Vec<collab_types::CommitPart> = Vec::new();
-    for write in writes {
+    for write in writes.iter().filter(|write| {
+        !(write.change.deps().is_empty() && !governed.peer().holds_document(app, &write.doc))
+    }) {
         let hash = write.change.hash().0;
         match parts.iter_mut().find(|part| part.document == write.doc) {
             Some(part) => part.heads.push(hash),
