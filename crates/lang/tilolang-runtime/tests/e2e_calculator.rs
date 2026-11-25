@@ -100,12 +100,19 @@ mod cases {
             ))
         }
 
-        /// The app's mode, as a person picks it from the window's modes.
+        /// The app's mode, as a person picks it from the window's modes: the tab that chooses it,
+        /// which its key answers too.
         fn choose_mode(&self, mode: i64) {
+            let label = ["Calculator", "Convert", "2D graph", "3D graph"]
+                [usize::try_from(mode).unwrap_or(0)];
             let mut view = self.window();
-            let tabs = of_kind(view.tree(), "ui.ViewTabs")[0].key.clone();
-            view.fire_with(&tabs, "change", Some(&Value::Int(mode)))
-                .unwrap();
+            let segment = of_kind(view.tree(), "ui.Segment")
+                .into_iter()
+                .find(|s| s.props.get("label").and_then(Value::as_text) == Some(label))
+                .unwrap_or_else(|| panic!("no `{label}` tab:\n{}", dump(view.tree())))
+                .key
+                .clone();
+            view.fire(&segment, "press").unwrap();
             view.poll_patches().unwrap();
         }
 
@@ -314,6 +321,139 @@ mod cases {
             assert!(fields.iter().any(|f| f.props.get("placeholder").and_then(Value::as_text) == Some("Result")));
         }
 
+        phase the_window_answers_its_own_keys;
+        {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+
+            /// What a copy leaves on the person's selection, as the device answers it.
+            type Held = Option<(String, Vec<u8>)>;
+
+            /// The person's selection.
+            #[derive(Clone, Default)]
+            struct Selection(Rc<RefCell<Held>>);
+
+            impl tilolang_runtime::clipboard::ClipboardHost for Selection {
+                fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
+                    *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
+                    true
+                }
+
+                fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
+                    self.0.borrow().clone()
+                }
+            }
+
+            /// The keypad control showing `label`.
+            fn button_key(view: &ViewInstance, label: &str) -> String {
+                of_kind(view.tree(), "ui.Button")
+                    .into_iter()
+                    .find(|b| b.props.get("label").and_then(Value::as_text) == Some(label))
+                    .unwrap_or_else(|| panic!("no `{label}` key:\n{}", dump(view.tree())))
+                    .key
+                    .clone()
+            }
+
+            /// The control showing `label`, and the key the window answers it on.
+            fn keyed(view: &ViewInstance, kind: &str, label: &str) -> (String, String) {
+                let node = of_kind(view.tree(), kind)
+                    .into_iter()
+                    .find(|n| n.props.get("label").and_then(Value::as_text) == Some(label))
+                    .unwrap_or_else(|| panic!("no `{label}` {kind}:\n{}", dump(view.tree())));
+                let key = node
+                    .props
+                    .get("key")
+                    .and_then(Value::as_text)
+                    .unwrap_or_else(|| panic!("`{label}` shows no key:\n{}", dump(view.tree())));
+                (node.key.clone(), key.to_owned())
+            }
+
+            let c = Calc::new();
+            let selection = Selection::default();
+            c.rt.set_clipboard(selection.clone());
+            // Every mode is a key on the tab that chooses it.
+            let view = c.window();
+            for (label, key) in [
+                ("Calculator", "Ctrl+1"),
+                ("Convert", "Ctrl+2"),
+                ("2D graph", "Ctrl+3"),
+                ("3D graph", "Ctrl+4"),
+            ] {
+                assert_eq!(
+                    keyed(&view, "ui.Segment", label).1,
+                    key,
+                    "the {label} tab answers {key}"
+                );
+            }
+            // Pressing the 2D tab, as its key does, draws the graph; the calculator's tab is back.
+            let mut view = c.window();
+            let (two_d, _) = keyed(&view, "ui.Segment", "2D graph");
+            view.fire(&two_d, "press").unwrap();
+            view.poll_patches().unwrap();
+            let graph = c.window();
+            assert_eq!(drawn(graph.tree()).len(), 1, "the 2D tab opens the graph");
+            let mut back = c.window();
+            let (calculator, _) = keyed(&back, "ui.Segment", "Calculator");
+            back.fire(&calculator, "press").unwrap();
+            back.poll_patches().unwrap();
+            let calc = c.window();
+            assert!(
+                buttons(calc.tree()).iter().any(|b| b == "7"),
+                "the calculator's tab is the calculator:\n{}",
+                dump(calc.tree())
+            );
+            // A person types 7*3 on the keypad: the copy controls answer Ctrl+C and
+            // Ctrl+Shift+C, and AC answers Escape.
+            let mut view = c.window();
+            for label in ["7", "×", "3"] {
+                let key = button_key(&view, label);
+                view.fire(&key, "press").unwrap();
+                view.poll_patches().unwrap();
+            }
+            assert!(
+                of_kind(view.tree(), "ui.TextInput")
+                    .iter()
+                    .any(|f| f.props.get("text").and_then(Value::as_text) == Some("21")),
+                "the display works the expression out:\n{}",
+                dump(view.tree())
+            );
+            let (copy_result, result_key) = keyed(&view, "ui.Button", "Copy result");
+            assert_eq!(result_key, "Ctrl+c");
+            view.fire(&copy_result, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(
+                selection.0.borrow().clone(),
+                Some(("text/plain".to_owned(), b"21".to_vec())),
+                "the result's control copies the result"
+            );
+            *selection.0.borrow_mut() = None;
+            let (copy_expression, expression_key) =
+                keyed(&view, "ui.Button", "Copy expression");
+            assert_eq!(expression_key, "Ctrl+Shift+c");
+            view.fire(&copy_expression, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(
+                selection.0.borrow().clone(),
+                Some(("text/plain".to_owned(), b"7*3".to_vec())),
+                "the expression's control copies the expression"
+            );
+            let (clear, clear_key) = keyed(&view, "ui.Button", "AC");
+            assert_eq!(clear_key, "escape", "AC answers Escape");
+            view.fire(&clear, "press").unwrap();
+            view.poll_patches().unwrap();
+            let cleared = c.window();
+            assert!(
+                of_kind(cleared.tree(), "ui.TextInput")
+                    .iter()
+                    .all(|f| !matches!(
+                        f.props.get("text").and_then(Value::as_text),
+                        Some("21" | "7*3")
+                    )),
+                "AC clears the display:\n{}",
+                dump(cleared.tree())
+            );
+        }
+
         phase the_window_offers_every_mode;
         {
             let c = Calc::new();
@@ -425,10 +565,7 @@ mod cases {
         {
             let c = Calc::new();
             // A person chooses Convert from the window's modes.
-            let mut view = c.window();
-            let tabs = of_kind(view.tree(), "ui.ViewTabs")[0].key.clone();
-            view.fire_with(&tabs, "change", Some(&Value::Int(1))).unwrap();
-            view.poll_patches().unwrap();
+            c.choose_mode(1);
             let view = c.window();
             // Each quantity starts at a pair of its own: a metre to feet, and then mass's own.
             assert!(
@@ -538,10 +675,9 @@ mod cases {
                 view.poll_patches().unwrap();
                 let result = of_kind(view.tree(), "ui.TextInput")
                     .into_iter()
-                    .filter(|input| {
+                    .find(|input| {
                         input.props.get("placeholder").and_then(Value::as_text) == Some("Result")
                     })
-                    .next()
                     .expect("the result field");
                 assert_eq!(
                     result.props.get("text").and_then(Value::as_text),
@@ -555,10 +691,8 @@ mod cases {
         phase the_graph_pans_up_and_zooms_each_axis_on_its_own;
         {
             let c = Calc::new();
+            c.choose_mode(2);
             let mut view = c.window();
-            let tabs = of_kind(view.tree(), "ui.ViewTabs")[0].key.clone();
-            view.fire_with(&tabs, "change", Some(&Value::Int(2))).unwrap();
-            view.poll_patches().unwrap();
             let drawing = of_kind(view.tree(), "ui.Drawing")[0].key.clone();
             // The grid is read against ten either way, each axis on its own.
             assert_eq!(

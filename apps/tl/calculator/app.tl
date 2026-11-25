@@ -263,12 +263,20 @@ view window(
         header: {
             unit(deg)
         }
+        // Each mode is a key away, as the controls show: Ctrl+1..4 stand on the tabs themselves.
         ui.ViewTabs(selected: mode, label: "Mode") {
-            ui.Segment("Calculator")
-            ui.Segment("Convert")
-            ui.Segment("2D graph")
-            ui.Segment("3D graph")
-            on change(chosen): set(mode, chosen)
+            ui.Segment("Calculator", key: "Ctrl+1") {
+                on press: set(mode, 0)
+            }
+            ui.Segment("Convert", key: "Ctrl+2") {
+                on press: set(mode, 1)
+            }
+            ui.Segment("2D graph", key: "Ctrl+3") {
+                on press: set(mode, 2)
+            }
+            ui.Segment("3D graph", key: "Ctrl+4") {
+                on press: set(mode, 3)
+            }
         }
         if mode == 0 {
             calculator_face(c, expr, answer, memory, deg, fresh)
@@ -374,11 +382,25 @@ view display(
     // of it met, as the calculator that read it does.
     ui.TextInput(text: if valid { out } else { why }, read_only: true, placeholder: "Result")
     row(gap: .tight) {
-        ui.Button("Copy expression", icon: .copy, icon_only: true, role: .secondary, size: .small) {
+        ui.Button(
+            "Copy expression",
+            icon: .copy,
+            icon_only: true,
+            key: "Ctrl+Shift+C",
+            role: .secondary,
+            size: .small,
+        ) {
             on press: copy_text(typed)
         }
         if valid {
-            ui.Button("Copy result", icon: .copy, icon_only: true, role: .secondary, size: .small) {
+            ui.Button(
+                "Copy result",
+                icon: .copy,
+                icon_only: true,
+                key: "Ctrl+C",
+                role: .secondary,
+                size: .small,
+            ) {
                 on press: copy_text(out)
             }
         }
@@ -428,7 +450,7 @@ view keys(
         }
     }
     grid(columns: 6, gap: .tight) {
-        ui.Button("AC", role: .secondary) {
+        ui.Button("AC", key: "Escape", role: .secondary) {
             on press: set(expr, "").then(set(fresh, false))
         }
         ui.Button("Delete", icon: .delete, icon_only: true, role: .secondary) {
