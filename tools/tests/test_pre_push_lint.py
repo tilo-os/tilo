@@ -171,6 +171,12 @@ exclude = ["fixture-web", "wasm-bindgen"]
 name = "test"
 tool = "nextest"
 unify = "workspace-unify"
+
+# The gate over the generated fleet, which declares the fix that writes it back.
+[[check]]
+name = "app-surfaces"
+run = "fixture"
+fix = "fixture"
 """
 ARCH = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(), platform.machine().lower())
 # The toolchain's installed targets, which say whether the page build can be linted here.
@@ -689,6 +695,40 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("policy/wasm-workspace-hack", self.calls()[0].split())
 
+    def test_a_push_of_an_app_surface_alone_runs_the_freshness_checks(self):
+        # No crate changes, so the lint would otherwise say there is nothing to lint, and the
+        # generated fleet lands stale for the next person's push to refuse.
+        self.with_t()
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        self.commit("feat: an app's surface file")
+        result = self.push(t_scope="app-surfaces sdk-policy sdk-types", t_scope_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["t test app-surfaces sdk-policy sdk-types --json"])
+
+    def test_a_crate_change_does_not_run_the_fleet_gate(self):
+        # The fleet gate builds a compiler and an app collection; a crate change moves the SDK's
+        # types without it, though t's read sets name both for any change.
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=33))
+        self.commit("feat: answer 33")
+        result = self.push(t_scope="app-surfaces sdk-types", t_scope_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        checks = self.calls()[0].split()
+        self.assertIn("sdk-types", checks)
+        self.assertNotIn("app-surfaces", checks)
+
+    def test_a_stale_fleet_refuses_the_push_and_names_its_fix(self):
+        self.with_t()
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        self.commit("feat: an app's surface file")
+        result = self.push(t_scope="app-surfaces sdk-policy sdk-types", t_scope_status=0,
+                           t_outcome="fail",
+                           t_excerpt="crates/desktop/app-fleet/src/generated.rs is stale")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("app-surfaces: fail", result.stderr)
+        self.assertIn("write the generated files back with: t fix app-surfaces", result.stderr)
+        self.assertIn("refusing the push", result.stderr)
+
     def test_without_a_cargo_t_names_the_packages_and_lints_them(self):
         self.with_t(cargo=False)
         self.write("native/src/lib.rs", LIB.format(answer=16))
@@ -1100,6 +1140,40 @@ class PolicyGateTests(unittest.TestCase):
         self.assertEqual([run.command for run in runs if run.t], [
             [module.T_CARGO[0], "test", "clippy/fixture-native",
              "policy/wasm-workspace-hack", "--json"]])
+
+
+class SurfaceGateTests(unittest.TestCase):
+    """A push that changes an app's published surface names t's generated-file checks."""
+
+    def names(self, named, *files: str) -> list[str]:
+        module = pre_push_lint()
+        return module.surface_checks(module.Push(set(files), [], [], []), named)
+
+    def test_an_app_source_names_the_fleet_and_sdk_checks(self):
+        self.assertEqual(self.names({"app-surfaces", "sdk-policy", "sdk-types"},
+                                    "apps/tl/shell/asking.tl"),
+                         ["app-surfaces", "sdk-policy", "sdk-types"])
+
+    def test_a_tilolang_source_under_a_crate_names_them_too(self):
+        self.assertEqual(self.names({"app-surfaces", "sdk-policy", "sdk-types"},
+                                    "crates/lang/tilolang/std/std.tl"),
+                         ["app-surfaces", "sdk-policy", "sdk-types"])
+
+    def test_a_surface_file_names_them(self):
+        self.assertEqual(self.names({"app-surfaces"}, "apps/discord/surface.json"),
+                         ["app-surfaces"])
+
+    def test_a_crate_change_outside_a_surface_does_not_name_the_fleet_gate(self):
+        # sdk-types follows every crate's actions and records; the fleet gate builds a compiler
+        # and an app collection, so only an app's published surface asks for it.
+        self.assertEqual(self.names({"app-surfaces", "sdk-types"},
+                                    "crates/core/tilo-actions/src/lib.rs"),
+                         ["sdk-types"])
+
+    def test_without_ts_answer_a_surface_change_names_the_checks(self):
+        self.assertEqual(self.names(None, "apps/tl/shell/asking.tl"),
+                         ["app-surfaces", "sdk-policy", "sdk-types"])
+        self.assertEqual(self.names(None, "crates/core/tilo-actions/src/lib.rs"), [])
 
 
 if __name__ == "__main__":

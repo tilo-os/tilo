@@ -27,6 +27,10 @@ family names is also linted for wasm32, a target the host lint cannot see. A pus
 a Cargo manifest or the lockfile runs the policy step that keeps the page's wasm32 builds off
 the workspace-hack: an ungated dependency there compiles the native feature set into every page
 build, and only the page clippy job surfaced it, after the push's own lint passed.
+A push that changes only an app's published surface - its sources, its surface file, the
+catalogue the desktop reads - has no package to lint, and runs t's checks over the generated
+fleet and the SDK's types on their own: they are committed, and an app change that does not
+regenerate them lands stale for the next person to fix.
 The crates that only unify features are neither a source nor a dependant: their
 dependency lists name members they hold no code for. Only the direct dependants are
 named; what a change reaches through them, and the packages as they ship, is t's
@@ -737,21 +741,38 @@ def scoped_checks(root: Path, push: Push) -> set[str] | None:
     return set(scoped.stdout.split())
 
 
+# What an app publishes as its surface: its sources, the surface file written from them, and the
+# catalogue the desktop reads the fleet from. The fleet and the SDK's types are generated from
+# these and committed, so a change to one leaves them stale until they are regenerated.
+SURFACE_PREFIXES = ("apps/", "crates/desktop/app-fleet/")
+SURFACE_NAMES = ("surface.json",)
+SURFACE_SUFFIXES = (".tl",)
+# t's checks that judge what an app publishes: its catalogue and generated types, and whether the
+# committed fleet is what the apps declare.
+SURFACE_CHECKS = ("app-surfaces", "sdk-policy", "sdk-types")
+
+
+def surface_change(files: set[str]) -> bool:
+    """Whether the push changes what an app publishes, which its generated files follow."""
+    return any(path.startswith(SURFACE_PREFIXES) or path.endswith(SURFACE_SUFFIXES)
+               or Path(path).name in SURFACE_NAMES for path in files)
+
+
 def surface_checks(push: Push, named: set[str] | None) -> list[str]:
-    """t's checks over what a surface or an action or record type writes, when the push reaches them.
+    """t's checks over what an app publishes, when the push reaches them.
 
     The app-fleet catalogue and the SDK's generated types are written from the apps' surfaces
     and from the action and record types of every crate, so the list of what moves them is
     t's own: `t scope` names the checks a commit's change touches. A push that reaches one
-    and does not regenerate refuses here, not on main.
+    and does not regenerate refuses here, not on main. The fleet's own gate builds a compiler
+    and an app collection, so it is asked only when the push changes an app's published
+    surface; a manifest or a crate elsewhere moves the SDK's types without it.
     """
-    wanted = ("sdk-policy", "sdk-types")
+    wanted = list(SURFACE_CHECKS) if surface_change(push.files) else ["sdk-policy", "sdk-types"]
     if named is not None:
         return [name for name in wanted if name in named]
     # t could not tell: an app's surface alone still moves the generated catalogue and types.
-    if any(path.startswith(("apps/", "crates/desktop/app-fleet/")) for path in push.files):
-        return list(wanted)
-    return []
+    return wanted if surface_change(push.files) else []
 
 
 # A dependency line is written in a manifest and versioned in the lockfile: a push that changes
@@ -970,7 +991,20 @@ def say_t_results(output: str) -> None:
             say(f"pre-push: {result['check']} passed in {result.get('duration_ms', 0) / 1000:.0f}s")
 
 
-def say_t_failure(output: str) -> bool:
+def t_fixes(root: Path) -> set[str]:
+    """The t checks that declare a `fix` in t.toml, by name.
+
+    `t fix <check>` runs it. A check that compares a generated file is worth naming its fix
+    for: the person pushing writes the file back rather than working out which generator does.
+    """
+    try:
+        project = tomllib.loads((root / T_TOML).read_text())
+    except (OSError, ValueError):
+        return set()
+    return {check["name"] for check in project.get("check", ()) if check.get("fix")}
+
+
+def say_t_failure(output: str, fixes: set[str]) -> bool:
     """Each failed check of t's with its diagnostics and the command that prints its whole log;
     False when t's output names none."""
     finished, errors = t_outcomes(output)
@@ -978,6 +1012,8 @@ def say_t_failure(output: str) -> bool:
     for result in failed:
         say(f"  {result['check']}: {result.get('outcome')} - whole log: t log {result.get('log')}")
         say_lines(str(result.get("excerpt") or "").strip().splitlines())
+        if result["check"] in fixes:
+            say(f"  write the generated files back with: t fix {result['check']}")
     for error in errors:
         say(f"  t: {error.get('message')}")
         if error.get("hint"):
@@ -985,7 +1021,8 @@ def say_t_failure(output: str) -> bool:
     return bool(failed or errors)
 
 
-def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -> int:
+def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,
+           fixes: set[str]) -> int:
     for run, status, output in results:
         if run.t and status == 0:
             say_t_results(output)
@@ -996,7 +1033,7 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -
     for run, output in failed:
         command = [part for part in run.command if part != "--json"] if run.t else run.command
         say(f"pre-push: {run.label} failed - rerun: {shlex.join(command)}")
-        if run.t and say_t_failure(output):
+        if run.t and say_t_failure(output, fixes):
             continue
         say_lines([line for line in output.strip().splitlines()
                    if not any(remark in line for remark in CARGO_REMARKS)
@@ -1078,6 +1115,67 @@ def formatting_run(root: Path, push: Push) -> list[str]:
     return ["bash", str(TOOLS / "ci/check-changed-rustfmt.sh"), base, head]
 
 
+def earlier_pass(root: Path, push: Push, runs: list[Lint],
+                 options: argparse.Namespace, what: str) -> tuple[str | None, bool]:
+    """The key to remember this lint under, and whether the push stands on a pass already.
+
+    A pass is remembered by the push's own patch and the runs it makes; a rebase that resolves
+    nothing keeps both. A worktree with uncommitted changes is not the pushed commit's tree and
+    speaks for no change to stand on later.
+    """
+    dirty = bool(git(root, "status", "--porcelain").stdout.strip())
+    if dirty:
+        say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, "
+            "which is not quite the pushed commit")
+    if options.range or dirty:
+        return None, False
+    naming = own_key(root, push, runs)
+    if naming is None:
+        return None, False
+    key, patches = naming
+    passed = passed_before(root, key)
+    if passed is None:
+        return key, False
+    head, when = passed
+    since = f" from {when}" if when else ""
+    say(f"pre-push: reusing the {what} pass for patch {patches}{since}"
+        + (f" (passed at {head[:12]})" if head else "")
+        + ": this is the same change replayed onto newer commits. t's checks judge it with "
+        "main's changes on main")
+    return None, True
+
+
+def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
+    """Lint a push that changes an app's published surface and nothing Rust or Cargo.
+
+    An app's sources and surface file move the generated fleet and the SDK's types without a
+    crate of the workspace changing, so the lint has no package to lint and would otherwise say
+    there is nothing to do. The checks that judge the generated files are t's; without t there
+    is none to run, as no other check of this lint runs without a cargo.
+    """
+    checks = surface_checks(push, scoped_checks(root, push))
+    if options.plan:
+        catalogue_plan(push)
+        if checks:
+            print(f"t: {' '.join(checks)}")
+        return 0
+    if not checks:
+        say("pre-push: t names no check for what this push changes; nothing to lint")
+        return 0
+    say(f"pre-push: linting the app surface's generated files through t ({' '.join(checks)})")
+    formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
+    runs = lint_runs(root, Selection([], {}), formatting, checks)
+    key, reused = earlier_pass(root, push, runs, options, "surface")
+    if reused:
+        return 0
+    results, elapsed = run_together(root, runs, options.keep_logs)
+    status = report(results, elapsed, f"the app surface's generated files ({' '.join(checks)})",
+                    t_fixes(root))
+    if status == 0 and key is not None:
+        remember_pass(root, key, push.tips[0])
+    return status
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("remote", nargs="?", default="origin", help="the remote being pushed to")
@@ -1116,6 +1214,12 @@ def main(argv: list[str]) -> int:
         return 1
     files = rust_changes(push.files)
     if not files:
+        if surface_change(push.files) and lints_through_t():
+            if tip := unchecked_tree(root, push):
+                say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads "
+                    "the files on disk: check it out and push again")
+                return 1
+            return surface_only(root, push, options)
         if options.plan:
             catalogue_plan(push)
         if push.comparisons:
@@ -1143,6 +1247,10 @@ def main(argv: list[str]) -> int:
             say("pre-push: none of the packages asked for is one this range reaches; nothing to lint")
             return 0
     if not selection.native:
+        # Running the surface checks needs no package of the workspace, and a .tl source can
+        # belong to none while still moving the generated fleet.
+        if surface_change(push.files) and lints_through_t():
+            return surface_only(root, push, options)
         say("pre-push: the changed Rust files belong to no workspace package; CI builds them outside it")
         return 0
     if options.plan:
@@ -1153,7 +1261,8 @@ def main(argv: list[str]) -> int:
             members = set(package_maps(selection.metadata, root)[0])
             named = t_checks(root, selection.linted, members)[0]
             scoped = scoped_checks(root, push)
-            extra = [*catalogue_checks(push), *policy_checks(root, push, scoped)]
+            extra = [*surface_checks(push, scoped), *catalogue_checks(push),
+                     *policy_checks(root, push, scoped)]
             named += [name for name in extra if name not in named]
             print(f"t: {' '.join(named)}")
         catalogue_plan(push)
@@ -1176,24 +1285,13 @@ def main(argv: list[str]) -> int:
     elif shutil.which(cargo_command()[0]) is None:
         say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint cannot run")
         return 1
-    dirty = bool(git(root, "status", "--porcelain").stdout.strip())
-    if dirty:
-        say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, which "
-            "is not quite the pushed commit")
     # A machine without rustfmt of its own formats through t, whose `fmt` check runs the
     # pinned toolchain; one with a rustfmt must hold the pinned version (the run below).
     formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
     runs = lint_runs(root, selection, formatting, checks)
     # A lint of files that are not the pushed commit's speaks for no change to stand on later.
-    naming = None if options.range or dirty else own_key(root, push, runs)
-    key, patches = naming if naming is not None else (None, "")
-    if key is not None and (passed := passed_before(root, key)):
-        head, when = passed
-        since = f" from {when}" if when else ""
-        say(f"pre-push: reusing the clippy pass for patch {patches}{since}"
-            + (f" (passed at {head[:12]})" if head else "")
-            + ": this is the same change replayed onto newer commits. t's clippy families lint "
-            "it with main's changes on main")
+    key, reused = earlier_pass(root, push, runs, options, "clippy")
+    if reused:
         return 0
     say(f"pre-push: linting {packages(len(selection.linted))}"
         + (f" and compiling {len(selection.dependants)} direct dependant(s) of what changed"
@@ -1204,7 +1302,7 @@ def main(argv: list[str]) -> int:
                + (f", a compile of {packages(len(selection.dependants))} built on them"
                   if selection.dependants else ""))
     results, elapsed = run_together(root, runs, options.keep_logs)
-    status = report(results, elapsed, checked)
+    status = report(results, elapsed, checked, t_fixes(root) if lints_through_t() else set())
     if status == 0 and key is not None:
         remember_pass(root, key, push.tips[0])
     return status
