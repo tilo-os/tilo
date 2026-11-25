@@ -765,8 +765,12 @@ fn a_day_aways_catch_up_says_each_step_in_historys_words() {
         })
         .collect();
     let joined = lines.join(" | ");
-    // Checking a task off moves it with the status action, whose own words history says.
-    assert!(joined.contains("moved"), "{joined}");
+    // Checking a task off moves it with the status action, whose own words history says: the
+    // status it went to, and the flag the status keeps in step with it.
+    assert!(
+        joined.contains("marked it done and set status to Done"),
+        "{joined}"
+    );
     assert!(joined.contains("assigned it to you"), "{joined}");
     assert!(
         !joined.contains("this"),
