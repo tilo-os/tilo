@@ -10,9 +10,9 @@
 use crate::StatePeer;
 use crate::join::WorkspaceId;
 use crate::join::{
-    JoinBootstrap, JoinChallengeResponse, JoinCompleteRequest, JoinInspection,
-    JoinTransportRequest, JoinTransportResponse, MembershipChallengeResponse,
-    MembershipCompleteRequest,
+    JoinBootstrap, JoinChallengeRequest, JoinChallengeResponse, JoinCompleteRequest,
+    JoinInspection, JoinTransportRequest, JoinTransportResponse, MembershipChallengeRequest,
+    MembershipChallengeResponse, MembershipCompleteRequest,
 };
 use crate::join_log::{
     Governed, JoinError, JoinLog, Redeeming, invitation_workspace, request_digest,
@@ -233,7 +233,6 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         now: u64,
     ) -> Result<JoinTransportResponse, JoinError> {
         let workspace = requested_workspace(&request, now)?.to_string();
-        let store = &self.0;
         Ok(match request {
             JoinTransportRequest::ResolveInvitation {
                 reference,
@@ -243,119 +242,171 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                     .await?
             }
             JoinTransportRequest::Inspect { signed_invitation } => {
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        let join = workspace.log().inspect(
-                            &workspace.governed(),
-                            &signed_invitation,
-                            now,
-                        )?;
-                        Ok(JoinTransportResponse::Inspection(JoinInspection {
-                            invite_id: join.invite_id(),
-                            grant: join.grant().clone(),
-                        }))
-                    })
+                self.answer_inspect(&workspace, &signed_invitation, now)
                     .await?
             }
             JoinTransportRequest::Challenge(request) => {
-                let nonce = store.nonce()?;
-                store
-                    .readmit_invited(
-                        &workspace,
-                        &request.device_cert,
-                        &request.signed_invitation,
-                        now,
-                    )
-                    .await?;
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        let mut log = workspace.log().clone();
-                        let governed = workspace.governed();
-                        // A device the workspace removed is invited back only by a device that
-                        // keeps its person's root, which took it back above.
-                        if governed
-                            .peer
-                            .governance()
-                            .removed_from_member_list(&request.device_cert)
-                        {
-                            return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
-                        }
-                        // The challenge is issued only once the invitation
-                        // verified for the device at the authenticated
-                        // endpoint: only then is it given the governance it
-                        // writes its own admission on.
-                        let challenge =
-                            log.challenge(&governed, remote_endpoint, request, nonce, now)?;
-                        let governance = governed.governance()?;
-                        drop(governed);
-                        workspace.stage_log(log);
-                        Ok(JoinTransportResponse::Challenge(JoinChallengeResponse {
-                            challenge,
-                            governance,
-                        }))
-                    })
+                self.answer_challenge(&workspace, remote_endpoint, request, now)
                     .await?
             }
             JoinTransportRequest::Complete(request) => {
-                // A store that admits through its own action does so in one change of
-                // its own; the exchange decides it here only for a store that does not.
-                if let Some(admitted) = store.admit_completed(remote_endpoint, &request, now).await
-                {
-                    JoinTransportResponse::Complete(admitted?)
-                } else {
-                    store
-                        .with_workspace(&workspace, |workspace| {
-                            complete(workspace, remote_endpoint, &request, now)
-                                .map(JoinTransportResponse::Complete)
-                        })
-                        .await?
-                }
+                self.answer_complete(&workspace, remote_endpoint, &request, now)
+                    .await?
             }
             JoinTransportRequest::MembershipChallenge(request) => {
-                let nonce = store.nonce()?;
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        // A further device of someone the workspace has in it
-                        // needs no invitation: it is challenged as that
-                        // member's device, given the governance it writes its
-                        // own row on, and sends that row with its proof.
-                        let mut log = workspace.log().clone();
-                        let governed = workspace.governed();
-                        if governed
-                            .peer
-                            .governance()
-                            .removed_from_member_list(&request.device_cert)
-                        {
-                            return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
-                        }
-                        let challenge = log.membership_challenge(
-                            &governed,
-                            remote_endpoint,
-                            request,
-                            nonce,
-                            now,
-                        )?;
-                        let governance = governed.governance()?;
-                        drop(governed);
-                        workspace.stage_log(log);
-                        Ok(JoinTransportResponse::MembershipChallenge(
-                            MembershipChallengeResponse {
-                                challenge,
-                                governance,
-                            },
-                        ))
-                    })
+                self.answer_membership_challenge(&workspace, remote_endpoint, request, now)
                     .await?
             }
             JoinTransportRequest::MembershipComplete(request) => {
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        membership_complete(workspace, remote_endpoint, &request, now)
-                            .map(JoinTransportResponse::MembershipComplete)
-                    })
+                self.answer_membership_complete(&workspace, remote_endpoint, &request, now)
                     .await?
             }
         })
+    }
+
+    /// The invitation `signed_invitation` inspected as this device reads it.
+    async fn answer_inspect(
+        &self,
+        workspace: &str,
+        signed_invitation: &[u8],
+        now: u64,
+    ) -> Result<JoinTransportResponse, JoinError> {
+        self.0
+            .with_workspace(workspace, |workspace| {
+                let join =
+                    workspace
+                        .log()
+                        .inspect(&workspace.governed(), signed_invitation, now)?;
+                Ok(JoinTransportResponse::Inspection(JoinInspection {
+                    invite_id: join.invite_id(),
+                    grant: join.grant().clone(),
+                }))
+            })
+            .await
+    }
+
+    /// The challenge this device issues for `request`, once the invitation verified for the
+    /// device at `remote_endpoint`.
+    async fn answer_challenge(
+        &self,
+        workspace: &str,
+        remote_endpoint: [u8; 32],
+        request: JoinChallengeRequest,
+        now: u64,
+    ) -> Result<JoinTransportResponse, JoinError> {
+        let nonce = self.0.nonce()?;
+        self.0
+            .readmit_invited(
+                workspace,
+                &request.device_cert,
+                &request.signed_invitation,
+                now,
+            )
+            .await?;
+        self.0
+            .with_workspace(workspace, |workspace| {
+                let mut log = workspace.log().clone();
+                let governed = workspace.governed();
+                // A device the workspace removed is invited back only by a device that
+                // keeps its person's root, which took it back above.
+                if governed
+                    .peer
+                    .governance()
+                    .removed_from_member_list(&request.device_cert)
+                {
+                    return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
+                }
+                // The challenge is issued only once the invitation
+                // verified for the device at the authenticated
+                // endpoint: only then is it given the governance it
+                // writes its own admission on.
+                let challenge = log.challenge(&governed, remote_endpoint, request, nonce, now)?;
+                let governance = governed.governance()?;
+                drop(governed);
+                workspace.stage_log(log);
+                Ok(JoinTransportResponse::Challenge(JoinChallengeResponse {
+                    challenge,
+                    governance,
+                }))
+            })
+            .await
+    }
+
+    /// The admission of the device at `remote_endpoint`, which proved `request`.
+    async fn answer_complete(
+        &self,
+        workspace: &str,
+        remote_endpoint: [u8; 32],
+        request: &JoinCompleteRequest,
+        now: u64,
+    ) -> Result<JoinTransportResponse, JoinError> {
+        // A store that admits through its own action does so in one change of
+        // its own; the exchange decides it here only for a store that does not.
+        if let Some(admitted) = self.0.admit_completed(remote_endpoint, request, now).await {
+            return admitted.map(JoinTransportResponse::Complete);
+        }
+        self.0
+            .with_workspace(workspace, |workspace| {
+                complete(workspace, remote_endpoint, request, now)
+                    .map(JoinTransportResponse::Complete)
+            })
+            .await
+    }
+
+    /// The challenge this device issues for a further device of a member,
+    /// which needs no invitation.
+    async fn answer_membership_challenge(
+        &self,
+        workspace: &str,
+        remote_endpoint: [u8; 32],
+        request: MembershipChallengeRequest,
+        now: u64,
+    ) -> Result<JoinTransportResponse, JoinError> {
+        let nonce = self.0.nonce()?;
+        self.0
+            .with_workspace(workspace, |workspace| {
+                // A further device of someone the workspace has in it
+                // needs no invitation: it is challenged as that
+                // member's device, given the governance it writes its
+                // own row on, and sends that row with its proof.
+                let mut log = workspace.log().clone();
+                let governed = workspace.governed();
+                if governed
+                    .peer
+                    .governance()
+                    .removed_from_member_list(&request.device_cert)
+                {
+                    return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
+                }
+                let challenge =
+                    log.membership_challenge(&governed, remote_endpoint, request, nonce, now)?;
+                let governance = governed.governance()?;
+                drop(governed);
+                workspace.stage_log(log);
+                Ok(JoinTransportResponse::MembershipChallenge(
+                    MembershipChallengeResponse {
+                        challenge,
+                        governance,
+                    },
+                ))
+            })
+            .await
+    }
+
+    /// The member row of the device at `remote_endpoint`, which proved `request`.
+    async fn answer_membership_complete(
+        &self,
+        workspace: &str,
+        remote_endpoint: [u8; 32],
+        request: &MembershipCompleteRequest,
+        now: u64,
+    ) -> Result<JoinTransportResponse, JoinError> {
+        self.0
+            .with_workspace(workspace, |workspace| {
+                membership_complete(workspace, remote_endpoint, request, now)
+                    .map(JoinTransportResponse::MembershipComplete)
+            })
+            .await
     }
 }
 
