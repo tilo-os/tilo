@@ -1124,6 +1124,19 @@ else
   ./os/dev/vm.sh this-boot | tail -40 >&2 || true
   die 'the disk opened by itself, but nothing recorded the TPM keyslot as what opened it'
 fi
+# The machine went down by a power cut (vm.sh stop), right after the registry stage
+# staged an update: what bootc wrote to the ESP for it has to be on the disk, or
+# every later `bootc status`, and the updates and fallbacks reading it, fail.
+refuse 'the boot entries written before a power cut are whole after it' '
+set -eu
+bootc status --format json >/dev/null
+for unit in tilo-boot-entries.service tilo-boot-fallback.service; do
+  if systemctl is-failed --quiet "$unit"; then
+    journalctl -b --no-pager -u "$unit" | tail -20
+    echo "$unit failed on this boot"; exit 1
+  fi
+done
+'
 as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
 machine_sealed=1
 }

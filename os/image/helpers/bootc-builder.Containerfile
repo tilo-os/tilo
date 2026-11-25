@@ -17,6 +17,10 @@
 # installer writes the image to the disk once.
 # And the install labels the composefs repository's objects with one label
 # lookup and several threads (0008), not a lookup and a write per object in turn.
+# And the boot entries, UKIs and grub configurations bootc writes are on the disk
+# when it returns (0009): it synced their directory, which on the ESP's FAT left
+# an entry's contents in memory for half a minute, and a power cut in that time
+# left an empty entry that every later `bootc status` failed on.
 # It builds in the OS builder (the base's own libraries, Fedora's Rust), with
 # the ostree, zstd and OpenSSL headers it links against from the frozen RPM snapshot: the CI
 # builder image is an older Fedora, whose installed libraries the snapshot's
@@ -43,7 +47,8 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0005-export-uncompressed-layers.patch \
     os/external-assets/bootc-runtime/0006-merge-etc-at-every-finalize.patch \
     os/external-assets/bootc-runtime/0007-install-the-booted-image.patch \
-    os/external-assets/bootc-runtime/0008-label-a-composefs-repositorys-objects-at-once.patch /patches/
+    os/external-assets/bootc-runtime/0008-label-a-composefs-repositorys-objects-at-once.patch \
+    os/external-assets/bootc-runtime/0009-boot-entries-survive-a-power-cut.patch /patches/
 # composefs-rs's own patches: a layer's objects are stored in parallel (0001), and
 # a copy between two repositories on one machine, as the install from the booted
 # repository is, takes the layers as their stored objects (0002), without writing
