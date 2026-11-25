@@ -696,3 +696,124 @@ fn a_widget_with_no_picture_shows_the_words_it_says() {
         "{html}"
     );
 }
+
+/// A menu button's menu, drawn over the window from the button's own draw, stands on the page as
+/// a layer of its own: opening it puts the menu in and changes the button alone, so the window
+/// keeps every element it had (its scroll, the button's focus), and the menu grows from the
+/// button. A press on one of its rows, on the page, runs the row's action.
+#[test]
+fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
+    use crate::icons::Icon;
+    use crate::widget::{Button, Column, MenuItem, Text};
+    let pinned = std::rc::Rc::new(std::cell::Cell::new(false));
+    let pin = std::rc::Rc::clone(&pinned);
+    let tree = Column::new()
+        .push(Box::new(Text::new("Sunday lunch")))
+        .push(Box::new(Button::new("more", "More").with_menu(vec![
+            MenuItem::icon_action(Icon::Copy, "Copy link", || {}),
+            MenuItem::icon_action(Icon::Pin, "Pin to the top", move || pin.set(true)),
+        ])))
+        .push(Box::new(Text::new("The boiler man comes at ten")));
+    let mut driver =
+        crate::app::driver::Driver::new(crate::State::new(), Box::new(tree), (480, 320));
+    driver.relayout();
+    let mut page = Page::new();
+    let closed = driver.composition();
+    let html = page.render(&closed);
+    let button = numbers(&html)
+        .into_iter()
+        .find(|&id| {
+            page.path(id)
+                .is_some_and(|path| path.ends_with("MenuButton[0]"))
+        })
+        .expect("the page numbers the button");
+    let path = page.path(button).expect("its path").to_owned();
+    page.act(&mut driver, button, None, PageAction::Activate)
+        .expect("a press on More is taken");
+    driver.relayout();
+    driver.settle();
+
+    let open = driver.composition();
+    let [menu] = open.layers.as_slice() else {
+        panic!("the open menu is a layer of its own: {:?}", open.layers);
+    };
+    assert_eq!(menu.path, format!("{path}#ContextMenu"));
+    let [x, y, width, height] = closed
+        .root
+        .children
+        .iter()
+        .find(|node| node.path == path)
+        .expect("the button")
+        .rect;
+    assert_eq!(
+        menu.appears_from,
+        Some([x + width / 2.0, y + height / 2.0]),
+        "it grows from the button"
+    );
+    let patches = page.patch(&open);
+    let inserted: Vec<&str> = patches
+        .iter()
+        .filter_map(|patch| match patch {
+            Patch::Insert { html, .. } => Some(html.as_str()),
+            _ => None,
+        })
+        .collect();
+    let [layer] = inserted.as_slice() else {
+        panic!("the menu alone is put in: {patches:?}");
+    };
+    assert!(
+        layer.contains("data-layer")
+            && layer.contains("--tilo-appear-from:")
+            && layer.contains("Pin to the top"),
+        "{layer}"
+    );
+    for patch in &patches {
+        if let Patch::Replace { id, html } = patch {
+            assert_eq!(
+                page.path(*id),
+                Some(path.as_str()),
+                "only the button changes, never the window: {html}"
+            );
+            assert!(
+                !html.contains("Pin to the top"),
+                "the menu is not in the button: {html}"
+            );
+        }
+    }
+
+    let shown = page.render(&open);
+    let row = numbers(&shown).into_iter().find(|&id| {
+        page.path(id)
+            .is_some_and(|row| row.starts_with(&format!("{path}#ContextMenu#")))
+            && element_start(&shown, id).is_some_and(|rest| {
+                rest.split("data-p=\"")
+                    .nth(1)
+                    .unwrap_or(rest)
+                    .contains("Pin to the top")
+            })
+    });
+    let row = row.unwrap_or_else(|| panic!("the page numbers Pin to the top: {shown}"));
+    let target = opening_tag(&shown, row)
+        .and_then(|tag| tag.split("data-t=\"").nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .map(str::to_owned);
+    page.act(&mut driver, row, target.as_deref(), PageAction::Activate)
+        .expect("a press on the row is taken");
+    driver.settle();
+    assert!(pinned.get(), "the row's action ran");
+}
+
+/// `html` from the element numbered `id` on.
+fn element_start(html: &str, id: u32) -> Option<&str> {
+    let at = html.find(&format!("data-p=\"{id}\""))?;
+    html.get(at..)
+}
+
+/// The opening tag of the element numbered `id` in `html`.
+fn opening_tag(html: &str, id: u32) -> Option<&str> {
+    let marker = format!("data-p=\"{id}\"");
+    let at = html.find(&marker)?;
+    let start = html[..at].rfind('<')?;
+    let end = at + html[at..].find('>')?;
+    html.get(start..=end)
+}

@@ -268,6 +268,10 @@ impl crate::widget::Decorator for MenuButton {
         self.menu.is_open() || Widget::needs_redraw(&self.button)
     }
 
+    fn overlay_surface(&self) -> Option<&dyn Widget> {
+        self.menu.is_open().then_some(&self.menu as &dyn Widget)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let mut node = Widget::accessibility(&self.button)?;
         node.state.expanded = Some(self.menu.is_open());

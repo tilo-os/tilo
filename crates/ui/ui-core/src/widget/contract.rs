@@ -338,6 +338,15 @@ pub trait Widget {
         None
     }
 
+    /// The surface this widget has open over the window that the window's layout does not hold
+    /// (a menu button's menu, drawn over everything from the button's own draw): what a host that
+    /// renders with elements of its own shows as a layer of its own, over the window, arriving
+    /// from its control, never as a part of the widget that opened it. `None` while it is closed,
+    /// and for a widget that opens nothing.
+    fn overlay_surface(&self) -> Option<&dyn Widget> {
+        None
+    }
+
     /// The words this widget shows as the heading of the page it belongs to, when it is the page's own
     /// title: a large-title text the content edits or sets at the top of a document.
     fn own_page_title(&self) -> Option<String> {
