@@ -11,6 +11,14 @@ mod cases {
 
     const SOURCE: &str = include_str!("../../../../apps/tl/calculator/app.tl");
 
+    /// The calculator, compiled once for every phase: each phase starts from a fresh runtime, not
+    /// a fresh compile. `built` caches a directory's compile but reads the apps beside it, and the
+    /// platform's packages, on every call; compiling the one source here is cheaper.
+    fn calculator() -> App {
+        static COMPILED: std::sync::OnceLock<App> = std::sync::OnceLock::new();
+        COMPILED.get_or_init(|| App::compile(SOURCE, &[])).clone()
+    }
+
     struct Calc {
         rt: Runtime,
         app: App,
@@ -19,7 +27,7 @@ mod cases {
 
     impl Calc {
         fn new() -> Self {
-            let app = App::compile(SOURCE, &[]);
+            let app = calculator();
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             authority.trust(&app.load(&rt));
