@@ -137,11 +137,16 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     let apps = record_written_as(workspaces, &admin).await;
     assert!(!apps.is_empty(), "the changes reach the record's history");
     assert!(apps.iter().all(|app| app == SERVERS.0), "{apps:?}");
-    let attached = applied::reconcile(workspaces).await.unwrap();
-    assert!(
-        attached.held.contains(&workspace.workspace),
-        "the governor hands it the planned workspace: {attached:?}"
-    );
+    // Whichever pass of the document hands it over: this one, or the one its change started.
+    applied::reconcile(workspaces).await.unwrap();
+    let held = workspaces
+        .keeping_devices(&workspace.workspace)
+        .await
+        .unwrap();
+    let named = held
+        .iter()
+        .any(|kept| kept.device == hex::encode(nas.device_pubkey()));
+    assert!(named, "the governor hands it the planned workspace");
     tilo_test_env::within("the server to hold the workspace", async {
         while retained().await.is_none() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
