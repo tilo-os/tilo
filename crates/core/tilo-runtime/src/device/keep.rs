@@ -408,24 +408,42 @@ fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> tilo_server::web::WebCo
     WebConfig {
         listen,
         tls,
-        // A deployment's browser origins: a page served from another origin calls the host
-        // cross-origin, and names the origins it allows there.
-        allowed_origins: std::env::var("TILO_SERVER_ALLOWED_ORIGINS")
-            .map(|origins| {
-                origins
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|origin| !origin.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
+        allowed_origins: allowed_origins(
+            cfg.web_entry.as_deref(),
+            std::env::var(ALLOWED_ORIGINS_ENV).ok().as_deref(),
+        ),
         plain_listen: None,
         public_origin: None,
         fetch_proxy: None,
         link: None,
         site: cfg.web_entry.clone(),
     }
+}
+
+/// The further browser origins a deployment's pages come from, comma-separated.
+const ALLOWED_ORIGINS_ENV: &str = "TILO_SERVER_ALLOWED_ORIGINS";
+
+/// The origins whose pages call this server cross-origin: the site its web entry is served
+/// from, whose pages sign in and set up through it, and whatever else the deployment names
+/// (a second domain of the same site).
+fn allowed_origins(web_entry: Option<&str>, named: Option<&str>) -> Vec<String> {
+    let entry = web_entry.and_then(|entry| {
+        let (scheme, rest) = entry.split_once("://")?;
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        (!host.is_empty()).then(|| format!("{scheme}://{host}"))
+    });
+    let mut origins: Vec<String> = entry.into_iter().collect();
+    for origin in named
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+    {
+        if !origins.iter().any(|known| known == origin) {
+            origins.push(origin.to_owned());
+        }
+    }
+    origins
 }
 
 /// The names a development certificate answers to: this machine's own name and loopback,
@@ -539,6 +557,33 @@ impl Drop for Kept {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The site a server's web entry names calls it from its pages: its sign-in and setup
+    /// screens ask this server for their codes, cross-origin, with nothing else configured.
+    #[test]
+    fn the_web_entrys_site_calls_its_server_from_the_browser() {
+        let cfg = ServerConfig {
+            web_entry: Some("http://tilo.localhost:23420/".into()),
+            ..ServerConfig::default()
+        };
+        let web = web_config(&cfg, "127.0.0.1:0".parse().unwrap());
+        assert!(
+            web.allowed_origins
+                .iter()
+                .any(|origin| origin == "http://tilo.localhost:23420"),
+            "the entry's own site is allowed: {:?}",
+            web.allowed_origins
+        );
+        assert_eq!(
+            allowed_origins(
+                Some("https://tilo.sh/app/"),
+                Some(" https://tilo.so , https://tilo.sh,")
+            ),
+            ["https://tilo.sh", "https://tilo.so"],
+            "a deployment's second domain joins its entry's site, once each"
+        );
+        assert!(allowed_origins(None, None).is_empty());
+    }
 
     /// The entry a deployment names is the one its founder settles: who the
     /// workspace's entry lets in, at which role, and what a directory says of it —
