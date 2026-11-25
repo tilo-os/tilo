@@ -820,26 +820,44 @@ fn one_window_layout() -> LayoutReading {
 }
 
 /// Where the menu of the window the part shows as `name` stands, when it shows one. The strips
-/// say a window's name twice: its frame is named for it, and so is the window's own menu in its
-/// bar, which lists the commands of the place the window shows. The frame is the largest control
-/// of that name, and the menu the smallest of the others whose centre the frame holds: an icon
-/// in the window's bar. A window named by its frame alone has none.
+/// say a window's name three times: its frame is named for it, and so is the bar it is lifted
+/// and aimed at by, both of them groups, and so is the window's own menu in that bar, which lists
+/// the commands of the place the window shows. The menu is the control of that name, not a group,
+/// whose centre the frame (the largest of them) holds. A window named by its frame alone has none.
 fn window_menu(part: &mut ShellPart, name: &str) -> Option<(f64, f64, f64, f64)> {
-    let named = part.control_bounds_all(name);
+    let (ox, oy) = part.widgets.placement().origin;
+    let host = part.widgets.host_mut();
+    let ids: std::collections::HashSet<_> = host.a11y_nodes_named(name).into_iter().collect();
+    let named: Vec<_> = host
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(id, _)| ids.contains(id))
+        .filter_map(|(_, node)| {
+            let rect = node.bounds()?;
+            let bounds = (
+                f64::from(ox) + rect.x0,
+                f64::from(oy) + rect.y0,
+                rect.width(),
+                rect.height(),
+            );
+            Some((node.role() == ui::accesskit::Role::Group, bounds))
+        })
+        .collect();
     let frame = named
         .iter()
-        .copied()
+        .map(|&(_, bounds)| bounds)
         .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))?;
     named
         .into_iter()
-        .filter(|&(x, y, w, h)| {
+        .filter(|&(group, (x, y, w, h))| {
             let (across, down) = (x + w / 2.0, y + h / 2.0);
-            w * h < frame.2 * frame.3
+            !group
                 && across >= frame.0
                 && across <= frame.0 + frame.2
                 && down >= frame.1
                 && down <= frame.1 + frame.3
         })
+        .map(|(_, bounds)| bounds)
         .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
 }
 
