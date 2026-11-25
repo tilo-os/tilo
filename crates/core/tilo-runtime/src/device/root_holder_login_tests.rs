@@ -53,32 +53,32 @@ fn addr(endpoint: &Endpoint) -> EndpointAddr {
     )))
 }
 
-/// A server of a site that keeps people's own workspaces, serving on its endpoint: the host,
-/// its certificate and endpoint, and what must live as long as it does.
-async fn site_server() -> (
-    Arc<WorkspaceService>,
-    DeviceCert,
-    Endpoint,
-    (Router, tempfile::TempDir),
-) {
+/// The server of a site, its endpoint bound before it serves: its key, certificate and endpoint.
+async fn site_endpoint() -> (SigningKey, DeviceCert, Endpoint) {
     let site = SigningKey::from_bytes(&[41; 32]);
     let server_key = SigningKey::from_bytes(&[42; 32]);
     let server_cert = certified(&site, &server_key, "laptop stack", false);
     let server_endpoint = endpoint(&server_key).await;
+    (server_key, server_cert, server_endpoint)
+}
+
+/// The site's server serving on `server_endpoint`, taking the work `work` names from others: the
+/// host, and what must live as long as it does.
+async fn site_server(
+    (server_key, server_cert, server_endpoint): (SigningKey, DeviceCert, Endpoint),
+    work: tilo_server_protocol::WorkSetting,
+) -> (Arc<WorkspaceService>, (Router, tempfile::TempDir)) {
     let state = tempfile::tempdir().unwrap();
     let host = Arc::new(
         WorkspaceService::open(
             ServiceConfig {
                 reaching: tilo_workspace_service::Reaching::OnItsOwn,
-                ..ServiceConfig::new(
-                    state.path().join("server"),
-                    tilo_server_protocol::WorkSetting::own_person(),
-                )
+                ..ServiceConfig::new(state.path().join("server"), work)
             },
             ServiceIdentity {
-                user_public_key: site.verifying_key().to_bytes(),
-                device_signing_key: server_key.clone(),
-                device_cert: server_cert.clone(),
+                user_public_key: server_cert.user_public_key,
+                device_signing_key: server_key,
+                device_cert: server_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             server_endpoint.clone(),
@@ -91,37 +91,16 @@ async fn site_server() -> (
         .protocols()
         .into_iter()
         .fold(
-            Router::builder(server_endpoint.clone()),
+            Router::builder(server_endpoint),
             |router, (alpn, handler)| router.accept(alpn, handler),
         )
         .spawn();
-    (host, server_cert, server_endpoint, (router, state))
+    (host, (router, state))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_computer_holding_the_root_logs_in_at_a_server_by_its_line_and_is_asked_for_content() {
-    let (host, server_cert, server_endpoint, _serving) = site_server().await;
-    // A workspace on it whose owner is Alice.
-    let alice = SigningKey::from_bytes(&[7; 32]);
-    let workspaces = host.workspaces();
-    // It keeps people's own workspaces, as a site's server does: what lets it answer a person's
-    // list of theirs.
-    assert!(
-        workspaces
-            .offer_own_workspaces(tilo_workspace_service::workspaces::OwnWorkspaceOffer::free(
-                "site.test"
-            ))
-            .unwrap()
-    );
-    let company = workspaces.create("Company").await.unwrap();
-    workspaces
-        .declare_owner(&company.workspace, alice.verifying_key().to_bytes(), None)
-        .await
-        .unwrap();
-
-    // Alice's laptop, which holds her root: its own device, certified by it.
-    let laptop_key = SigningKey::from_bytes(&[8; 32]);
-    let laptop_cert = certified(&alice, &laptop_key, "Alice's laptop", true);
+    let (server_key, server_cert, server_endpoint) = site_endpoint().await;
     // The server's line, as its `web-host.json` keeps it.
     let line = serde_json::to_string(&PageHost {
         server_cert: server_cert.clone(),
@@ -133,6 +112,63 @@ async fn a_computer_holding_the_root_logs_in_at_a_server_by_its_line_and_is_aske
         origin: None,
     })
     .unwrap();
+    let address = tilo_server_client::ServerAddress::at(addr(&server_endpoint));
+
+    // Alice founds "Company" on her desktop, a device her root certified, under her own root.
+    let alice = SigningKey::from_bytes(&[7; 32]);
+    let desktop_key = SigningKey::from_bytes(&[9; 32]);
+    let desktop_cert = certified(&alice, &desktop_key, "Alice's desktop", true);
+    let desktop_state = tempfile::tempdir().unwrap();
+    let desktop = super::workspaces::ServiceWorkspaces::open_for_test(
+        &desktop_state.path().join("desktop"),
+        &desktop_key,
+        &desktop_cert,
+        &address,
+    )
+    .await
+    .expect("the desktop's own service opens");
+    let company = desktop
+        .service()
+        .workspaces()
+        .create("Company")
+        .await
+        .expect("Alice's device founds her workspace");
+
+    // The site's operator has its server keep Alice's workspace, and it keeps people's own
+    // workspaces, as a site's server does: what lets it answer a person's list of theirs.
+    let (host, _serving) = site_server(
+        (server_key, server_cert.clone(), server_endpoint.clone()),
+        tilo_server_protocol::WorkSetting {
+            from: tilo_server_protocol::WorkFrom::Workspaces([company.workspace_id].into()),
+            ..tilo_server_protocol::WorkSetting::own_person()
+        },
+    )
+    .await;
+    let workspaces = host.workspaces();
+    assert!(
+        workspaces
+            .offer_own_workspaces(tilo_workspace_service::workspaces::OwnWorkspaceOffer::free(
+                "site.test"
+            ))
+            .unwrap()
+    );
+    // Her desktop hands the workspace to the site's server by its line, as `servers add` does,
+    // and then stops: what the server asks for later, only the laptop answers.
+    desktop
+        .service()
+        .workspaces()
+        .add_server(
+            &company.workspace,
+            &line,
+            tilo_peer_state::CopyRole::KeyHolder,
+        )
+        .await
+        .expect("the desktop hands the workspace to the site's server");
+    desktop.shutdown().await;
+
+    // Alice's laptop, which holds her root: its own device, certified by it.
+    let laptop_key = SigningKey::from_bytes(&[8; 32]);
+    let laptop_cert = certified(&alice, &laptop_key, "Alice's laptop", true);
 
     let login = tilo_test_env::within(
         "the laptop logs in at the server",
