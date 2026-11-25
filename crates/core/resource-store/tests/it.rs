@@ -2651,6 +2651,52 @@ mod store {
         assert!(there.get("Comment", "c2", &all).is_none());
     }
 
+    /// An app's record opened empty is founded as created, a verb every schema has and no app
+    /// declares: it makes the record and writes nothing in it. A creation that writes is refused,
+    /// and a founding that names no verb stays refused.
+    #[test]
+    fn an_empty_record_is_founded_as_created_and_a_founding_naming_no_verb_is_refused() {
+        use tilo_resource_store::{CREATE_VERB, Refusal};
+        let mut there = issues();
+        there.declare(Schema::from_surface(&super::tracker_surface()));
+        let anyone = |_: &Proposal<'_>| true;
+        let founding = |stamp: Stamp, id: &str, text: Option<&str>| {
+            let mut fields = BTreeMap::new();
+            if let Some(text) = text {
+                fields.insert("text".to_owned(), Cell::One(text.into()));
+            }
+            let resource = Resource {
+                readers: MEMBERS.to_owned(),
+                parent: None,
+                order: None,
+                fields,
+            };
+            // Each from a device of its own, so none is built on another's refusal.
+            issues().put("Comment", id, resource, &stamp).unwrap()
+        };
+        assert_eq!(
+            deliver(
+                &founding(stamp(CREATE_VERB, "c1"), "c1", None),
+                &mut there,
+                &anyone
+            ),
+            []
+        );
+        assert!(matches!(
+            deliver(&founding(stamp(CREATE_VERB, "c2"), "c2", Some("Smuggled")), &mut there, &anyone)
+                .as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("only founds")
+        ));
+        assert!(matches!(
+            deliver(&founding(Stamp::default(), "c3", None), &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("verb")
+        ));
+        let all = |_: &str| true;
+        assert!(there.get("Comment", "c1", &all).is_some());
+        assert!(there.get("Comment", "c2", &all).is_none());
+        assert!(there.get("Comment", "c3", &all).is_none());
+    }
+
     /// A checkpoint, a description and a link are verbs every schema has: a change that writes
     /// nothing, by someone who may write the document, saying little. One that writes, says too
     /// much, comes from someone who may not write, or names a verb nobody declared is refused.
@@ -2906,8 +2952,7 @@ mod store {
                 .map(|kind| ((*kind).to_owned(), Writes::default()))
                 .collect(),
             nested: BTreeSet::new(),
-            marks: false,
-            moves: false,
+            ..Verb::default()
         };
         let schema = Schema {
             types: vec![ty(ISSUE), ty("Comment")],

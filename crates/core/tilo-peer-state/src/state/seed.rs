@@ -174,29 +174,3 @@ fn founding_rows(
     }
     Ok(())
 }
-
-#[cfg(any(test, feature = "test-support"))]
-impl super::StatePeer {
-    /// Name this copy's person, not a device, in its founder row: a copy of a
-    /// Servers workspace as an earlier build founded it alike on each of its
-    /// person's devices, which a test has founded again under one device.
-    ///
-    /// # Panics
-    ///
-    /// The copy holds no governance yet.
-    #[expect(
-        clippy::expect_used,
-        reason = "a governed copy always holds its governance; one that does not is a programming error, as the doc says"
-    )]
-    pub fn name_person_as_founder(&mut self) {
-        let mut doc = (**self
-            .core
-            .workspace_doc
-            .as_ref()
-            .expect("a governed copy holds its governance"))
-        .clone();
-        doc.put(ROOT, FOUNDER, hex::encode(self.core.owner))
-            .expect("the founder row is a string");
-        self.core.workspace_doc = Some(doc.into());
-    }
-}

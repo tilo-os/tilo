@@ -55,11 +55,6 @@ pub async fn run(workspaces: Workspaces, stores: Arc<WorkspaceStores>) {
             .checked_sub(GRACE)
             .unwrap_or(SystemTime::UNIX_EPOCH);
         for summary in workspaces.list().await {
-            if let Err(error) =
-                super::migrate_files::migrate(&workspaces, &stores, &summary.workspace).await
-            {
-                tracing::warn!(workspace = %summary.workspace, %error, "legacy Files encryption will retry");
-            }
             collect(&workspaces, &stores, &summary.workspace, before).await;
         }
     }
@@ -91,28 +86,15 @@ async fn collect_after(
     // Read with no hold on the workspace: it takes writes all the while.
     let mut read = whole_documents(workspaces, workspace, None).await?;
     let mut live = names(workspace, &read.documents).await?;
-    let mut retired = if read.private.is_empty() {
-        super::migrate_files::retired_sources(
-            workspaces,
-            stores,
-            workspace,
-            &read.documents,
-            before,
-        )
-        .await
-        .unwrap_or_default()
-    } else {
-        BTreeSet::new()
-    };
     scanned.await;
     for _ in 0..ATTEMPTS {
-        let mut named = live.difference(&retired).cloned().collect();
+        let mut named = live.clone();
         made_of(&|hash| store.read(hash), &mut named);
         // Removed with the workspace held, and only if no record changed
         // since it was read: a write that names an item now keeps it. The
         // store spares what was written within the grace on its own.
         let removed = workspaces
-            .while_unwritten(workspace, &read, !retired.is_empty(), || {
+            .while_unwritten(workspace, &read, || {
                 stores.collect(workspace, &named, before)
             })
             .await;
@@ -139,8 +121,6 @@ async fn collect_after(
             Ok(Err(changed)) => changed,
         };
         // Rechecking includes any references that appeared in the meantime.
-        // Leave removal of replaced Files payloads to a new complete scan.
-        retired.clear();
         let newer = whole_documents(workspaces, workspace, Some(&changed)).await?;
         live.extend(names(workspace, &newer.documents).await?);
         read.extend(newer);
@@ -391,13 +371,10 @@ fn made_of(read: &impl Fn(&str) -> Option<Vec<u8>>, live: &mut BTreeSet<String>)
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT};
 
     use super::*;
-    use tilo_automerge::ApplyIncoming as _;
 
     tilo_test_env::scenario! {
         fn a_record_names_only_the_whole_addresses_it_holds;
@@ -444,6 +421,29 @@ mod tests {
         }
     }
 
+    /// Write `fields` into `app`'s record `record` of `workspace`, as this host's own write of
+    /// it ([`tilo_workspace_service::workspaces::fixtures::write_record`]).
+    async fn write_record(
+        workspaces: &tilo_workspace_service::workspaces::Workspaces,
+        workspace: &str,
+        route: (&str, &str),
+        fields: &[(&str, &str)],
+    ) -> Result<(), String> {
+        tilo_workspace_service::workspaces::fixtures::write_record(
+            workspaces,
+            workspace,
+            route,
+            |doc| {
+                for (field, value) in fields {
+                    doc.put(automerge::ROOT, *field, *value)
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            },
+        )
+        .await
+    }
+
     /// A workspace host as tilo.sh runs one, under `state`.
     async fn serving_workspace(state: &std::path::Path) -> crate::daemon::Server {
         let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
@@ -477,102 +477,6 @@ mod tests {
         .unwrap()
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn encrypted_legacy_files_are_published_in_the_same_workspace() {
-        use fs_protocol::tree::{FILES_APP, TreeChunks, chunk_document_id};
-        let state = tempfile::tempdir().unwrap();
-        let server = serving_workspace(state.path()).await;
-        let workspaces = server.workspaces().unwrap();
-        let workspace = workspaces.create("Old Files").await.unwrap().workspace;
-        let governor = workspaces.device_cert();
-        let stores = server.content();
-        let store = stores.get(&workspace).unwrap();
-        let clear = b"legacy file kept by this workspace";
-        let hash = store.put_public(clear).unwrap();
-        let mut namespace = tilo_fs::Namespace::new("old files").unwrap();
-        namespace
-            .create_file(
-                tilo_fs::ROOT_INO,
-                "legacy.txt",
-                Some(&hash.parse().unwrap()),
-                clear.len() as u64,
-                1,
-            )
-            .unwrap();
-        let attachment = b"these bytes are also used in Notes";
-        let shared = store.put_public(attachment).unwrap();
-        namespace
-            .create_file(
-                tilo_fs::ROOT_INO,
-                "attachment.txt",
-                Some(&shared.parse().unwrap()),
-                attachment.len() as u64,
-                1,
-            )
-            .unwrap();
-        workspaces
-            .author_workspace_document(&workspace, governor, ("so.tilo.notes", ""), |doc| {
-                doc.put(ROOT, "attachment", shared.as_str())
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .unwrap();
-        for write in namespace.document_writes(&BTreeMap::new()) {
-            workspaces
-                .author_workspace_document(
-                    &workspace,
-                    governor,
-                    (FILES_APP, &chunk_document_id(write.chunk)),
-                    |doc| {
-                        doc.load_incoming(&write.changes)
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
-                    },
-                )
-                .await
-                .unwrap();
-        }
-        let before_migration = SystemTime::now();
-        assert!(stores.written_before(&workspace, &hash, before_migration));
-        super::super::migrate_files::migrate(workspaces, &stores, &workspace)
-            .await
-            .unwrap();
-        let snapshot = workspaces.whole_documents(&workspace, None).await.unwrap();
-        assert!(snapshot.is_whole());
-        let mut tree = TreeChunks::default();
-        for ((app, doc), bytes) in snapshot.documents {
-            if app == FILES_APP {
-                tree.read_resource(&doc, &bytes).unwrap();
-            }
-        }
-        let sealed = tree.file_hash(&hash);
-        assert_ne!(
-            sealed, hash,
-            "the published Files index redirects the old version"
-        );
-        assert!(
-            Manifest::decode(&store.read(sealed).unwrap())
-                .unwrap()
-                .sealed()
-                .is_some()
-        );
-        let sealed = sealed.to_owned();
-        let collected = collect(workspaces, &stores, &workspace, before_migration)
-            .await
-            .unwrap();
-        assert!(!collected.hashes.contains(&hash));
-        assert_eq!(store.read(&hash).unwrap(), clear);
-        let long_after = SystemTime::now() + Duration::from_secs(60);
-        let collected = collect(workspaces, &stores, &workspace, long_after)
-            .await
-            .unwrap();
-        assert!(collected.hashes.contains(&hash));
-        assert!(!store.has(&hash));
-        assert!(store.has(&sealed));
-        assert_eq!(store.read(&shared).unwrap(), attachment);
-        drop(server);
-    }
-
     /// A pass that has read a workspace's records holds nothing of it while
     /// it looks them over: an edit then lands at once, and content the edit
     /// names stays, though the records the pass read named none of it.
@@ -586,7 +490,6 @@ mod tests {
         let server = serving_workspace(state.path()).await;
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Notes").await.unwrap().workspace;
-        let governor = workspaces.device_cert().clone();
         let stores = server.content();
         let store = stores.get(&workspace).unwrap();
         let picture = store.put(b"a picture written long ago").unwrap();
@@ -612,14 +515,11 @@ mod tests {
         // The pass has read every record and holds the workspace no longer.
         let edited = tokio::time::timeout(
             Duration::from_secs(5),
-            workspaces.author_workspace_document(
+            write_record(
+                &workspaces,
                 &workspace,
-                &governor,
-                ("so.tilo.notes", ""),
-                |doc| {
-                    doc.put(automerge::ROOT, "picture", picture.as_str())
-                        .map_err(|error| error.to_string())
-                },
+                ("so.tilo.notes", "note"),
+                &[("picture", picture.as_str())],
             ),
         )
         .await;
@@ -725,16 +625,14 @@ mod tests {
 
         // Days later the draft is sent: the conversation's record names the
         // attachment, and the message the host reads carries it.
-        workspaces
-            .author_workspace_document(&workspace, &governor, (APP, "c_general"), |doc| {
-                doc.put(automerge::ROOT, "body", "look at this")
-                    .map_err(|error| error.to_string())?;
-                doc.put(automerge::ROOT, "attachment", hash.as_str())
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            })
-            .await
-            .unwrap();
+        write_record(
+            &workspaces,
+            &workspace,
+            (APP, "c_general"),
+            &[("body", "look at this"), ("attachment", hash.as_str())],
+        )
+        .await
+        .unwrap();
         let records = workspaces.whole_documents(&workspace, None).await.unwrap();
         assert!(records.is_whole(), "{:?}", records.unread);
         let sent = records

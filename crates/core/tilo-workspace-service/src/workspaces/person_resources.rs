@@ -29,6 +29,8 @@ pub type Answer<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// A change made to a document of the person's workspace: what it is founded on when it holds none
 /// yet, and the edit itself.
 pub struct Authoring {
+    /// The kind of the resource, when it is a typed one: the store writes it as its kind.
+    pub kind: Option<&'static str>,
     /// The document a resource starts as, where the workspace holds none of it yet.
     pub genesis: Option<Box<automerge::AutoCommit>>,
     /// The change, made on the document as it stands.
@@ -143,6 +145,7 @@ impl PersonResources {
                         app.to_owned(),
                         name.to_owned(),
                         Authoring {
+                            kind: Some(R::KIND),
                             genesis: Some(genesis),
                             edit: Box::new(move |doc| {
                                 person_workspace::invoke(doc, &cert, app, invoke)
@@ -194,6 +197,7 @@ impl PersonResources {
                         app,
                         name,
                         Authoring {
+                            kind: None,
                             genesis: None,
                             edit: Box::new(move |document| edit.as_ref()(document)),
                         },
@@ -397,6 +401,10 @@ impl PersonStore for Workspaces {
     ) -> Answer<'_, Result<(), String>> {
         Box::pin(async move {
             let workspace = person_workspace::workspace_id(self);
+            if let Some(kind) = authoring.kind {
+                let edit = authoring.edit;
+                return Box::pin(self.author_record(&workspace, (&app, kind, &name), edit)).await;
+            }
             if self.is_member(&workspace).await? {
                 return person_workspace::edit_as_member(
                     self,

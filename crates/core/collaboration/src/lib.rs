@@ -892,7 +892,7 @@ impl CollaborationManager {
     /// change.
     pub fn for_resource(checkout: &collab_types::document::DocumentCheckout) -> Self {
         Self::new_scoped(
-            Some(checkout.id.as_str().to_string()),
+            checkout.id.route_record(),
             Some(checkout.kind.as_str().to_string()),
         )
     }
@@ -1029,7 +1029,7 @@ impl CollaborationManager {
             .requested_primary_route()
             .cloned()
             .ok_or("native primary route unavailable")?;
-        let record = (!checkout.id.is_package_primary()).then(|| checkout.id.as_str().to_owned());
+        let record = checkout.id.route_record();
         if pending.document == record {
             return Ok(());
         }

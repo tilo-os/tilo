@@ -214,15 +214,13 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
 
     // The note named one picture, then another: both versions are the
     // record's history.
-    let governor = workspaces.device_cert().clone();
     for picture in [earlier.clone(), format!("tilo.content:{current}")] {
-        workspaces
-            .author_workspace_document(&hosted.workspace, &governor, (OPENED, ""), |doc| {
-                doc.put(ROOT, "picture", picture.as_str())
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .unwrap();
+        crate::common::write_record(&workspaces, &hosted.workspace, (OPENED, "note"), |doc| {
+            doc.put(ROOT, "picture", picture.as_str())
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
     }
 
     let collected = tilo_server::content::collection::collect(

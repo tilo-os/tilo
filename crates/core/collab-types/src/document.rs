@@ -88,6 +88,13 @@ impl DocumentId {
         }
     }
 
+    /// The record a route's hello names to join this document: none for the
+    /// [package primary](Self::package_primary), whose route is the app's own.
+    #[must_use]
+    pub fn route_record(&self) -> Option<String> {
+        (!self.is_package_primary()).then(|| self.0.clone())
+    }
+
     /// The document id this document travels under on the collaboration wire,
     /// what [`Self::from_route`] reads back.
     #[must_use]
@@ -189,6 +196,16 @@ impl DocumentId {
         default
             .strip_prefix("derived:default@tab:")
             .is_some_and(|tab| tab.len() == 16 && tab.bytes().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// The view the device `device` (its id as the app's windows name it) keeps of window
+    /// `instance`: what its windows read and write a saved view in ([`Self::is_window_view`]).
+    #[must_use]
+    pub fn window_view(device: &str, instance: u64) -> Self {
+        Self::derived(
+            &format!("view.d{}", hex::encode(device.as_bytes())),
+            &Self::window_default(instance),
+        )
     }
 
     /// Whether `record` is the view a device keeps of a window's default document

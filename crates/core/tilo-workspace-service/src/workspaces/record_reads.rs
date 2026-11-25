@@ -1078,7 +1078,14 @@ impl RecordReads {
         wake_at(
             &runtime,
             writes,
-            move |write| write.workspace == workspace && write.app == app && write.record == record,
+            // A record the store keeps is written as its content document.
+            move |write| {
+                write.workspace == workspace
+                    && write.app == app
+                    && (write.record == record
+                        || tilo_resource_store::content_resource(&write.record)
+                            .is_some_and(|(_, id)| id == record))
+            },
             wake,
         );
         Ok(())

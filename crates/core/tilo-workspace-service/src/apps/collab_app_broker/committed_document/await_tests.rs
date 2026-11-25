@@ -627,7 +627,7 @@ async fn an_idle_held_read_body() {
     const RECORD: &str = "note-1";
     use crate::apps::route::CrdtRoute;
     use crate::apps::test_support::{Workspace, WorkspaceTree};
-    use crate::workspaces::fixtures::{governor, test_host};
+    use crate::workspaces::fixtures::{governor, test_host, write_record};
     use std::time::Instant;
 
     let scratch = tempfile::tempdir().unwrap();
@@ -635,14 +635,12 @@ async fn an_idle_held_read_body() {
     let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Held").await.unwrap();
     let workspace = created.workspace;
-    server
-        .workspaces()
-        .author_workspace_document(&workspace, &cert, (APP, RECORD), |doc| {
-            doc.put(automerge::ROOT, "text", "idle")
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
+    write_record(server.workspaces(), &workspace, (APP, RECORD), |doc| {
+        doc.put(automerge::ROOT, "text", "idle")
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .unwrap();
 
     let checks = Arc::new(AtomicUsize::new(0));
     let reads = Arc::new(CountedReads {

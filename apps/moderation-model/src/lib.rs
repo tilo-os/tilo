@@ -3,9 +3,7 @@
 
 pub mod model;
 
-pub use model::{
-    Decision, Moderation, Outcome, Report, Reverted, Ruling, earlier_chat_history, moderation,
-};
+pub use model::{Decision, Moderation, Outcome, Report, Reverted, Ruling, moderation};
 
 pub use tilo_actions::policy::roles::WORKSPACE_MODERATION_DOCUMENT as DOCUMENT;
 

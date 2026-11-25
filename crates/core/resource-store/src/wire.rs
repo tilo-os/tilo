@@ -12,9 +12,10 @@ use automerge::transaction::{Transactable as _, Transaction};
 use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValue};
 use serde_json::Value as Json;
 
-use collab_types::store::Query;
 use collab_types::store::wire::{Command, Edit, PastChildren, Reach, Reply};
+use collab_types::store::{Query, Resource};
 
+use crate::Stamp;
 use crate::store::{Store, StoreError, Written};
 
 /// A write the store refused partway: a store written directly ([`write`]) holds what the batch
@@ -71,6 +72,51 @@ pub fn draft(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Re
     let mut scope = DraftScope::default();
     scope.add(&command);
     store.stage(&scope, |staged| write_placed(staged, command))
+}
+
+/// The writes that found the resource `id` of `kind`, read by `readers`, under `stamp`, holding
+/// `content`: its placement, then each change of its content, in order. The store applies none of
+/// them; kept as one batch, they found the resource whole or not at all.
+///
+/// # Errors
+/// The store refuses the placement.
+pub fn found(
+    store: &mut Store,
+    (kind, id): (&str, &str),
+    readers: &str,
+    stamp: Stamp,
+    content: Vec<automerge::Change>,
+) -> Result<Vec<Written>, Box<Refused>> {
+    // Placed first: readers its type's rule names stand for the empty set a caller passes, and
+    // its content is read by the same people as its placement.
+    let placed = placed_by_rules(
+        store,
+        Command::Put {
+            kind: kind.to_owned(),
+            id: id.to_owned(),
+            resource: Resource {
+                readers: readers.to_owned(),
+                parent: None,
+                order: None,
+                fields: std::collections::BTreeMap::new(),
+            },
+            stamp,
+        },
+    )?;
+    let readers = match &placed {
+        Command::Put { resource, .. } => resource.readers.clone(),
+        _ => readers.to_owned(),
+    };
+    let mut scope = DraftScope::default();
+    scope.add(&placed);
+    let mut writes = store.stage(&scope, |staged| write_placed(staged, placed))?;
+    let doc = crate::store::content_id(&readers, kind, id);
+    writes.extend(content.into_iter().map(|change| Written {
+        doc: doc.clone(),
+        readers: readers.clone(),
+        change,
+    }));
+    Ok(writes)
 }
 
 /// The live index rows and placement counters a command may consult while staging.

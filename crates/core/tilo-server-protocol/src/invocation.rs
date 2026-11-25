@@ -523,9 +523,12 @@ pub fn verify_carried(
     let declared = keeper.is_some()
         && if verbs.is_empty() {
             // A store's change claims only the kinds of the records it writes: what a receiver
-            // without the key reads of a declared undo. Every device that opens it checks that it
-            // is that undo ([`verify_recorded`]), and reads the record without it otherwise.
-            claim_edits_records(claim) && declares_undo(&statement.target, record.app)
+            // without the key reads of a declared step is that the call declares one in each of
+            // them, or an undo of the app's records. Every device that opens it checks the verb
+            // its stamp names ([`verify_recorded`]), and reads the record without it otherwise.
+            claim_edits_records(claim)
+                && (declares_undo(&statement.target, record.app)
+                    || declares_kinds(&statement.target, record.app, claim))
         } else {
             verbs
                 .iter()
@@ -609,6 +612,24 @@ fn claim_edits_records(claim: &collab_types::claim::ChangeClaim) -> bool {
         .all(|member| matches!(member, collab_types::claim::ClaimedAction::Edit { .. }))
 }
 
+/// Whether the action `target` names declares a step in records of `app` of every kind the
+/// store's change `claim` edits.
+fn declares_kinds(
+    target: &tilo_actions::remote::RemoteActionTarget,
+    app: &str,
+    claim: &collab_types::claim::ChangeClaim,
+) -> bool {
+    let effects = tilo_actions::remote::declared_effects(target);
+    let members = claim.action.members();
+    !members.is_empty()
+        && members.into_iter().all(|member| match member {
+            collab_types::claim::ClaimedAction::Edit { kind, .. } => effects
+                .iter()
+                .any(|effect| effect.app == app && !kind.is_empty() && effect.kind == *kind),
+            _ => false,
+        })
+}
+
 /// Whether the claim names `kind` as the resource kind of one of its actions.
 fn claim_names_kind(claim: &collab_types::claim::ChangeClaim, kind: &str) -> bool {
     claim
@@ -622,63 +643,27 @@ fn claim_names_kind(claim: &collab_types::claim::ChangeClaim, kind: &str) -> boo
         })
 }
 
-/// Check the invocation a resource store's change keeps in its stamp, as a peer reading the
-/// change in `workspace` does, and return the certificate of the caller who asked. `Ok(None)` for
-/// a change that keeps none: the host made it of its own accord.
+/// The history entry a resource store's change keeps in its stamp, read as [`verify_recorded`]
+/// checks it: one rule for a call a change keeps, whichever form the change was written in. `None`
+/// for a stamp that keeps no call: the host made the change of its own accord.
 ///
-/// The change stays inside what the call named: it is the `app` whose page the caller acted on,
-/// and its invocation is the one signed.
+/// A stamp that says no more than its verb (a page's act) names no resource of its own, so it is
+/// inside its call only when the call names the `app` the change is in.
 ///
 /// # Errors
 ///
-/// The first check that fails, as [`InvocationError`].
-pub fn verify_stamp(
+/// [`StatementMismatch::Target`] for such a stamp whose call names another app.
+pub fn stamped_context(
     stamp: &collab_types::Stamp,
-    workspace: &str,
     app: &str,
-    revocations: &RevocationList,
-) -> Result<Option<DeviceCert>, InvocationError> {
+) -> Result<Option<tilo_actions::ActionContext>, InvocationError> {
     let Some(call) = stamp.signed.as_deref() else {
         return Ok(None);
     };
-    let signed = &call.signed;
-    check_signature(signed)?;
-    let statement = signed.statement();
-    if statement.workspace != workspace {
-        return Err(StatementMismatch::Workspace.into());
-    }
-    if stamp.invocation != statement.invocation.0.to_string() {
-        return Err(StatementMismatch::Invocation.into());
-    }
-    // The page's call names the app whose page it is: the change must be that app's.
-    if statement.target.address.resource != app {
+    if stamp.context.is_none() && call.signed.statement().target.address.resource != app {
         return Err(StatementMismatch::Target.into());
     }
-    if call.argument_signed() == Some(false) {
-        return Err(StatementMismatch::Arguments.into());
-    }
-    let cert = signer_of(
-        signed,
-        workspace,
-        revocations,
-        (statement.issued_at_ns, None),
-    )?;
-    let person = hex::encode(cert.user_public_key);
-    // The stamp names the signer as its invoker, or — for an agent acting for
-    // them — as the person it acted for.
-    let named = stamp
-        .invoked_by()
-        .and_then(|actor| {
-            actor
-                .member_id()
-                .and_then(|member| member.person_id())
-                .map(str::to_owned)
-        })
-        .or_else(|| stamp.acted_for.clone());
-    if named.as_deref() != Some(person.as_str()) {
-        return Err(InvocationError::NotInvoker);
-    }
-    Ok(Some(cert))
+    Ok(Some(stamp.action_context()))
 }
 
 /// Check the call a page's reader signed for what they did on the page of `app` in `workspace`,
@@ -686,7 +671,7 @@ pub fn verify_stamp(
 /// signature, that it names this workspace and this app, that its arguments are the act `asked`
 /// (`{id, target, action}`, as the page sent it), its freshness at `now_ns`, and the
 /// certificate's chain, validity and revocation. Every holder of the change checks it again
-/// ([`verify_stamp`]).
+/// ([`stamped_context`]).
 ///
 /// # Errors
 ///

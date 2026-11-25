@@ -9,7 +9,7 @@
 //! workspace does, since it is a member of every channel of the workspaces it
 //! governs:
 //!
-//! 1. Every record of the source is read whole, with its history, but what stays
+//! 1. Every record of the source's store is read whole, but what stays
 //!    behind ([`tilo_desktop_model::branch::stays`]: the conversations in Chat,
 //!    each person's place in the tilolang apps, Terminal's environments, the
 //!    desktop's layout of everyone's), records whose owner is unknown, and
@@ -18,10 +18,8 @@
 //! 2. The branch is made as any workspace of the person's own is: governed here,
 //!    its governance new, the person its only member and its administrator, its
 //!    channels with keys of their own the first time a record of it is sealed.
-//! 3. Each record is forked into it (`collaboration::resource::transfer::branch`: its whole
-//!    history under a writer of its own, one change naming the branch) and founded
-//!    there as the governor founds a record again (`sealed_documents::refound`):
-//!    sealed under the branch's own keys where its records are sealed.
+//! 3. Each record is founded in the branch's store as it reads now, its history left with the
+//!    source ([`Workspaces::found_record`]).
 //! 4. The content those records name is copied into the branch's content by what
 //!    keeps it ([`BranchContent`]).
 //! 5. The source's Linux machine is copied into the branch's by what runs the
@@ -123,17 +121,20 @@ impl Workspaces {
 
 #[cfg(feature = "agents")]
 mod copy {
-    use std::collections::BTreeSet;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use automerge::AutoCommit;
 
     use super::{BranchFileKeys, Branched, Workspaces};
-    use crate::workspaces::{CollaborationError, WorkspaceSummary, sealed_documents};
+    use crate::workspaces::WorkspaceSummary;
     use tilo_lock::RwLockRecover as _;
 
     /// A record by its app and id.
     type Route = (String, String);
+
+    /// The records a branch takes, each saved, with the kind of each.
+    type Forked = (Vec<(Route, Vec<u8>)>, BTreeMap<Route, String>);
 
     /// What a branch could not take: the part of its source, in words the
     /// person reads, and why, which the host's log keeps.
@@ -188,7 +189,7 @@ mod copy {
                     .await
                     .map_err(NotMade::of("the new workspace"))?;
             }
-            let forked = self.forked(source, branch).await?;
+            let forked = self.forked(source).await?;
             // Marked before anything of it is made, and unmarked only once it
             // is its person's: until then a host that stops opens none of it.
             self.begin_branch(branch)
@@ -232,53 +233,32 @@ mod copy {
             }
         }
 
-        /// Every record of `source` that comes along, read whole and forked into
-        /// `branch`, saved.
-        async fn forked(
-            &self,
-            source: &str,
-            branch: &str,
-        ) -> Result<Vec<(Route, Vec<u8>)>, NotMade> {
-            let peer = self.state(source).await.ok_or_else(|| {
-                NotMade::of("the workspace")("it is not governed here".to_owned())
-            })?;
-            let comes: BTreeSet<Route> = peer
-                .plaintext_routes()
-                .into_iter()
-                .chain(peer.sealed_routes())
-                .filter(|(app, record)| {
-                    !tilo_desktop_model::branch::stays(app, record)
-                        && !tilo_action_policy::roles::is_private_record(app, record)
-                })
-                .collect();
-            drop(peer);
-            let read = self
-                .whole_documents(source, Some(&comes))
+        /// Every record of `source`'s store that comes along, read whole and saved, with the
+        /// kind of each.
+        async fn forked(&self, source: &str) -> Result<Forked, NotMade> {
+            let state = self
+                .workspace(source)
                 .await
-                .map_err(|error| NotMade::of("its records")(error.to_string()))?;
-            if let Some(((app, record), why)) = read.unread.first() {
-                return Err(NotMade::record(app, record)(format!(
-                    "it does not read whole here: {why}"
-                )));
+                .map_err(|error| NotMade::of("the workspace")(error.to_string()))?;
+            let mut governed = state.lock().await;
+            let stored = self.stored_documents(&mut governed, None, true);
+            drop(governed);
+            let (mut documents, mut kinds) = (Vec::new(), BTreeMap::new());
+            for ((app, record), kind, read) in stored {
+                // A record whose app this device knows nothing of stays behind with it.
+                if app.is_empty()
+                    || tilo_desktop_model::branch::stays(&app, &record)
+                    || tilo_action_policy::roles::is_private_record(&app, &record)
+                {
+                    continue;
+                }
+                let (_, bytes) = read.map_err(|why| {
+                    NotMade::record(&app, &record)(format!("it does not read whole here: {why}"))
+                })?;
+                kinds.insert((app.clone(), record.clone()), kind);
+                documents.push(((app, record), bytes));
             }
-            let branch = branch.to_owned();
-            // Forking a record's whole history is work for a thread that may block.
-            tokio::task::spawn_blocking(move || {
-                read.documents
-                    .into_iter()
-                    .map(|((app, record), bytes)| {
-                        let source = AutoCommit::load(&bytes)
-                            .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
-                        let mut forked = collaboration::resource::transfer::branch(
-                            &source, &branch,
-                        )
-                        .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
-                        Ok(((app, record), forked.save()))
-                    })
-                    .collect::<Result<Vec<_>, NotMade>>()
-            })
-            .await
-            .map_err(|error| NotMade::of("its records")(error.to_string()))?
+            Ok((documents, kinds))
         }
 
         async fn copy_branch_content(
@@ -354,7 +334,7 @@ mod copy {
             &self,
             source: &str,
             branch: &str,
-            forked: Vec<(Route, Vec<u8>)>,
+            (forked, kinds): Forked,
             person: [u8; 32],
         ) -> Result<(), NotMade> {
             let mut forked = self.copy_branch_content(source, branch, forked).await?;
@@ -364,9 +344,14 @@ mod copy {
                     .map_err(NotMade::record(app, record))?;
             }
             for ((app, record), document) in &forked {
-                self.found_branched(branch, (app, record), document)
-                    .await
+                let kind = kinds
+                    .get(&(app.clone(), record.clone()))
+                    .ok_or_else(|| NotMade::record(app, record)("it has no kind".to_owned()))?;
+                let held = AutoCommit::load(document)
                     .map_err(|error| NotMade::record(app, record)(error.to_string()))?;
+                self.found_record(branch, (app, kind, record), (&held, false))
+                    .await
+                    .map_err(NotMade::record(app, record))?;
             }
             self.branch_machine(source, branch)
                 .await
@@ -388,59 +373,6 @@ mod copy {
             self.give_ownership(&mut held, person, None)
                 .await
                 .map_err(ownership())
-        }
-
-        /// Found `record` of `app` in `branch` as `document`, the source's
-        /// record forked into it: as the governor founds a record again, the whole
-        /// record as the branch's checkpoint of it, sealed under the branch's own
-        /// keys where its records are sealed. A record the branch made of its own
-        /// meanwhile (one an app makes from its kind alone) is taken in too.
-        #[expect(
-            clippy::significant_drop_tightening,
-            reason = "the branch stays locked through durable signed publication"
-        )]
-        async fn found_branched(
-            &self,
-            branch: &str,
-            (app, record): (&str, &str),
-            document: &[u8],
-        ) -> Result<(), CollaborationError> {
-            let state = self.workspace(branch).await?;
-            let mut governed = state.lock().await;
-            let keys = self
-                .sealing_keys(&governed, app, record)
-                .await
-                .map_err(CollaborationError::new)?;
-            let mut whole = AutoCommit::load(document)
-                .map_err(|error| CollaborationError::new(error.to_string()))?;
-            if let Some(made) = governed
-                .readable_document(app, record)
-                .await
-                .map_err(CollaborationError::new)?
-            {
-                let mut made = AutoCommit::load(&made)
-                    .map_err(|error| CollaborationError::new(error.to_string()))?;
-                tilo_automerge::ApplyIncoming::merge_incoming(&mut whole, &mut made)
-                    .map_err(|error| CollaborationError::new(error.to_string()))?;
-            }
-            let now = tilo_clock::wall();
-            let key = &self.inner.host.key;
-            let mut candidate = governed.peer().clone();
-            let written = sealed_documents::refound(
-                &mut candidate,
-                sealed_documents::sealed_with(keys.as_ref()).map_err(CollaborationError::new)?,
-                (app, record),
-                whole.save(),
-                key,
-                now,
-            )
-            .map_err(CollaborationError::new)?;
-            governed.keep(candidate, key, now, |record, _| {
-                Ok(record.collaboration.clone())
-            })?;
-            self.settle(&mut governed).await?;
-            self.carry_written(governed.workspace_id(), &[written])?;
-            Ok(())
         }
     }
 }

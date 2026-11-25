@@ -5,7 +5,6 @@
 //! process holds no key and signs nothing; the broker decided the caller's read already.
 
 use automerge::{Change as AmChange, ChangeHash};
-use collab_types::store::Resource;
 use collab_types::store::wire::{Bytes, Command, Reply};
 use tilo_resource_store::Stamp;
 
@@ -31,15 +30,21 @@ fn kind_of(
 
 /// `action`, an app's write of several of its records, as the store keeps it: each part names
 /// the document the record's content is written to, and the device that signs it as its author.
-/// The write of `record` (of `kind`) is one of them.
+/// The write of `record` (of `kind`) is one of them, kept as `writes`: a record they found is
+/// founded with the action, its placement held with its content. A part's record is the one the
+/// store holds, else one a write held for an action founds, else one of the app's one kind that
+/// a later write of the action founds.
 ///
 /// # Errors
 /// The action names another app's record, or one this store holds none of, or none of `record`.
 fn stored_action(
     surfaces: &collab_types::app_surface::Surfaces,
-    store: &tilo_resource_store::Store,
+    (store, held): (&tilo_resource_store::Store, &[String]),
     (app, record, kind): (&str, &str, &str),
-    action: &collab_types::WorkspaceCommit,
+    (action, writes): (
+        &collab_types::WorkspaceCommit,
+        &[tilo_resource_store::Written],
+    ),
     device: [u8; 32],
 ) -> Result<collab_types::WorkspaceCommit, String> {
     if !action.covers(app, record) {
@@ -47,6 +52,35 @@ fn stored_action(
             "the action the changes of {record} are part of names none of them"
         ));
     }
+    let kinds = surfaces.kinds_of(app);
+    let content_of = |id: &str| {
+        let founded =
+            |doc: &&str| tilo_resource_store::content_resource(doc).is_some_and(|(_, of)| of == id);
+        if id == record {
+            return writes
+                .iter()
+                .map(|write| write.doc.as_str())
+                .find(founded)
+                .map(str::to_owned);
+        }
+        kind_of(surfaces, store, app, None, id)
+            .and_then(|kind| store.content_doc(&kind, id))
+            .or_else(|| {
+                held.iter()
+                    .map(String::as_str)
+                    .find(founded)
+                    .map(str::to_owned)
+            })
+            .or_else(|| match kinds.as_slice() {
+                [only] => Some(tilo_resource_store::content_id(
+                    collab_types::EVERY_MEMBER,
+                    only,
+                    id,
+                )),
+                _ => None,
+            })
+    };
+    let _ = kind;
     let mut stored = action.clone();
     stored.author.device = device;
     for part in &mut stored.parts {
@@ -56,17 +90,7 @@ fn stored_action(
                 part.app
             ));
         }
-        let kind = if part.document == record {
-            kind.to_owned()
-        } else {
-            kind_of(surfaces, store, app, None, &part.document).ok_or_else(|| {
-                format!(
-                    "the action writes {}, which this workspace holds none of",
-                    part.document
-                )
-            })?
-        };
-        part.document = store.content_doc(&kind, &part.document).ok_or_else(|| {
+        part.document = content_of(&part.document).ok_or_else(|| {
             format!(
                 "the action writes {}, which this workspace holds none of",
                 part.document
@@ -216,7 +240,7 @@ impl Workspaces {
         })
     }
 
-    async fn stored_record_in(
+    pub(in crate::workspaces) async fn stored_record_in(
         &self,
         workspace: &str,
         app: &str,
@@ -268,7 +292,25 @@ impl Workspaces {
                 ));
             }
         }
-        let device = self.member_identity()?;
+        self.keep_record_change(
+            (workspace, self.member_identity()?),
+            (app, kind, record),
+            (parsed, action),
+            founding_refusal,
+        )
+        .await
+    }
+
+    /// Keep `parsed`, changes of `app`'s record `record` (of `kind`, which a new record names),
+    /// as `device`'s write in `workspace`: founding the record when the store holds none of it,
+    /// as part of `action` when they are one write of an app's action.
+    async fn keep_record_change(
+        &self,
+        (workspace, device): (&str, std::sync::Arc<super::super::MemberDevice>),
+        (app, kind, record): (&str, Option<&str>, &str),
+        (parsed, action): (Vec<AmChange>, Option<&collab_types::WorkspaceCommit>),
+        founding_refusal: Option<&str>,
+    ) -> Result<(), String> {
         let state = self
             .workspace(workspace)
             .await
@@ -281,8 +323,8 @@ impl Workspaces {
             kind,
             record,
         );
-        let kind = match (held, kind) {
-            (Some(held), _) => held,
+        let (kind, founding) = match (held, kind) {
+            (Some(held), _) => (held, false),
             (None, None) => return Err(format!("{app} named no kind for a new record")),
             (None, Some(kind)) => {
                 // A device that keeps the workspace for its owner admits no new record of its
@@ -292,46 +334,52 @@ impl Workspaces {
                 {
                     return Err(refusal.to_owned());
                 }
+                (kind.to_owned(), true)
+            }
+        };
+        let held = governed.held_action_documents();
+        let (writes, action) = {
+            let mut store = self.store_of(&mut governed);
+            // A new record is founded by the writes that hold its first changes: in an action,
+            // it is founded with the action, or not at all.
+            let writes = if founding {
                 // Founded under the verb of the first change that names one: a record's derived
-                // founding names none.
+                // founding names none, and a record opened empty is founded as created.
                 let mut stamp = parsed
                     .iter()
                     .filter_map(Stamp::of)
                     .find(|stamp| !stamp.verb.is_empty())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| Stamp {
+                        verb: tilo_resource_store::CREATE_VERB.to_owned(),
+                        ..Stamp::default()
+                    });
                 stamp.device = hex::encode(device.device());
                 stamp.device_name.clone_from(&device.cert.device_label);
-                let founding = Command::Put {
-                    kind: kind.to_owned(),
-                    id: record.to_owned(),
-                    resource: Resource {
-                        readers: collab_types::EVERY_MEMBER.to_owned(),
-                        parent: None,
-                        order: None,
-                        fields: std::collections::BTreeMap::new(),
-                    },
-                    stamp,
+                // Read by whom its type names, when it names anyone; else by every member.
+                let readers = if store.reads_by_rule(&kind) {
+                    ""
+                } else {
+                    collab_types::EVERY_MEMBER
                 };
-                let writes =
-                    tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
-                        .map_err(|refused| refused.error.to_string())?;
-                self.keep_writes(governed, std::sync::Arc::clone(&device), app, writes, None)
-                    .await?;
-                governed = std::sync::Arc::clone(&state).lock_owned().await;
-                kind.to_owned()
-            }
-        };
-        let (writes, action) = {
-            let store = self.store_of(&mut governed);
-            let writes = store
-                .content_writes(&kind, record, parsed)
-                .map_err(|error| error.to_string())?;
+                tilo_resource_store::wire::found(
+                    &mut store,
+                    (&kind, record),
+                    readers,
+                    stamp,
+                    parsed,
+                )
+                .map_err(|refused| refused.error.to_string())?
+            } else {
+                store
+                    .content_writes(&kind, record, parsed)
+                    .map_err(|error| error.to_string())?
+            };
             let action = match action.filter(|action| action.parts.len() > 1) {
                 Some(action) => Some(stored_action(
                     &self.inner.host.surfaces,
-                    &store,
+                    (&store, &held),
                     (app, record, &kind),
-                    action,
+                    (action, &writes),
                     device.device(),
                 )?),
                 None => None,
@@ -339,7 +387,38 @@ impl Workspaces {
             drop(store);
             (writes, action)
         };
-        self.keep_writes(governed, device, app, writes, action)
+        match action {
+            Some(action) => self
+                .keep_writes(governed, device, app, writes, Some(action))
+                .await
+                .map(drop),
+            None => self.keep_founded(governed, (device, app), writes).await,
+        }
+    }
+
+    /// Keep `writes`, a record's placement (when they found it) and then its content, as
+    /// `device`'s writes for `app`: the placement first, so the content is kept on a record the
+    /// store holds.
+    async fn keep_founded(
+        &self,
+        governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        (device, app): (std::sync::Arc<super::super::MemberDevice>, &str),
+        mut writes: Vec<tilo_resource_store::Written>,
+    ) -> Result<(), String> {
+        let placed = writes
+            .iter()
+            .take_while(|write| tilo_resource_store::content_resource(&write.doc).is_none())
+            .count();
+        let content = writes.split_off(placed);
+        let state = std::sync::Arc::clone(tokio::sync::OwnedMutexGuard::mutex(&governed));
+        let governed = if writes.is_empty() {
+            governed
+        } else {
+            self.keep_writes(governed, std::sync::Arc::clone(&device), app, writes, None)
+                .await?;
+            state.lock_owned().await
+        };
+        self.keep_writes(governed, device, app, content, None)
             .await
             .map(drop)
     }
@@ -413,75 +492,166 @@ impl Workspaces {
             .workspace(to)
             .await
             .map_err(|error| error.to_string())?;
-        // Both sides admit their change: keep the arrival, then the departure.
-        self.keep_arrival(
-            std::sync::Arc::clone(&destination).lock_owned().await,
-            (caller, author),
-            (app, &kind),
-            (target, to),
-            (stamp, std::sync::Arc::clone(&device)),
-        )
-        .await?;
-        self.keep_filling(
-            std::sync::Arc::clone(&destination).lock_owned().await,
-            (app, &kind),
-            (target, std::sync::Arc::clone(&device)),
+        let mut governed = std::sync::Arc::clone(&destination).lock_owned().await;
+        let founding = tilo_resource_store::wire::found(
+            &mut self.store_of(&mut governed),
+            (&kind, target),
+            collab_types::EVERY_MEMBER,
+            stamp,
             content,
         )
-        .await?;
-        let departing = std::sync::Arc::clone(&source).lock_owned().await;
-        self.keep_writes(departing, device, app, removal, None)
-            .await
-            .map(drop)
-    }
-
-    /// Keep the record `kind` of `app` arriving in `to` as `target`, in `governed`'s
-    /// destination: drafted there, then kept as `device`'s write once `to` admits it.
-    async fn keep_arrival(
-        &self,
-        mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
-        (caller, author): (&tilo_actions::remote::Caller, [u8; 32]),
-        (app, kind): (&str, &str),
-        (target, to): (&str, &str),
-        (stamp, device): (Stamp, std::sync::Arc<crate::workspaces::MemberDevice>),
-    ) -> Result<(), String> {
-        let founding = Command::Put {
-            kind: kind.to_owned(),
-            id: target.to_owned(),
-            resource: Resource {
-                readers: collab_types::EVERY_MEMBER.to_owned(),
-                parent: None,
-                order: None,
-                fields: std::collections::BTreeMap::new(),
-            },
-            stamp,
-        };
-        let founding =
-            tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
-                .map_err(|refused| refused.error.to_string())?;
-        self.would_keep(&mut governed, (caller, author), (app, kind), &founding)
+        .map_err(|refused| refused.error.to_string())?;
+        self.would_keep(&mut governed, (caller, author), (app, &kind), &founding)
             .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
-        self.keep_writes(governed, device, app, founding, None)
+
+        // Both sides admit their change: keep the arrival, then the departure.
+        self.keep_founded(governed, (std::sync::Arc::clone(&device), app), founding)
+            .await?;
+        let governed = std::sync::Arc::clone(&source).lock_owned().await;
+        self.keep_writes(governed, device, app, removal, None)
             .await
             .map(drop)
     }
 
-    /// Keep `content`, what the record holds now, in `destination` at `target` as `app`'s
-    /// write of `device`.
-    async fn keep_filling(
+    /// Found `app`'s record `id` of `kind` in `workspace`'s store as this device's person moving
+    /// it in, read by every member or, when `private`, by that person alone, holding what `held`
+    /// holds: founded and filled as one write, under the move verb,
+    /// its history left where it was. Whether it went in: a record the store holds already is
+    /// left as it is.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or its store refuses the record.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::workspaces) async fn found_record(
         &self,
-        mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
-        (app, kind): (&str, &str),
-        (target, device): (&str, std::sync::Arc<crate::workspaces::MemberDevice>),
-        content: Vec<AmChange>,
-    ) -> Result<(), String> {
-        let filled = self
-            .store_of(&mut governed)
-            .content_writes(kind, target, content)
-            .map_err(|error| error.to_string())?;
-        self.keep_writes(governed, device, app, filled, None)
+        workspace: &str,
+        (app, kind, id): (&str, &str, &str),
+        (held, private): (&automerge::AutoCommit, bool),
+    ) -> Result<bool, String> {
+        let device = self.signing_device();
+        let state = self
+            .workspace(workspace)
             .await
-            .map(drop)
+            .map_err(|error| error.to_string())?;
+        let mut governed = std::sync::Arc::clone(&state).lock_owned().await;
+        if kind_of(
+            &self.inner.host.surfaces,
+            &self.store_of(&mut governed),
+            app,
+            None,
+            id,
+        )
+        .is_some()
+        {
+            return Ok(false);
+        }
+        let person = tilo_actions::remote::Caller::authenticated(
+            device.cert.user_public_key,
+            device.device(),
+        );
+        let stamp = Stamp {
+            verb: tilo_resource_store::MOVE_VERB.to_owned(),
+            invoker: Stamp::by(&person.acting().by),
+            invocation: uuid::Uuid::new_v4().to_string(),
+            device: hex::encode(device.device()),
+            device_name: device.cert.device_label.clone(),
+            ..Stamp::default()
+        };
+        // Read by whom its type names, when it names anyone; else as the move asks.
+        let readers = if self.store_of(&mut governed).reads_by_rule(kind) {
+            String::new()
+        } else if private {
+            collab_types::Readers::people([device.cert.user_public_key])
+                .ok_or("the person names no reader set")?
+                .text()
+        } else {
+            collab_types::EVERY_MEMBER.to_owned()
+        };
+        let mut moved = automerge::AutoCommit::new();
+        tilo_resource::evolution::copy_into(held, &mut moved).map_err(|error| error.to_string())?;
+        moved.commit_with(
+            automerge::transaction::CommitOptions::default().with_message(stamp.message()),
+        );
+        let content = moved.get_changes(&[]).into_iter().collect();
+        let writes = tilo_resource_store::wire::found(
+            &mut self.store_of(&mut governed),
+            (kind, id),
+            &readers,
+            stamp,
+            content,
+        )
+        .map_err(|refused| refused.error.to_string())?;
+        self.keep_founded(governed, (device, app), writes)
+            .await
+            .map(|()| true)
+    }
+
+    /// Change `app`'s record `record` of `kind` in `workspace`'s store as this device writes it:
+    /// `change` is given the record as the store holds it, or as its kind founds it where the
+    /// store holds none, and what it changed is kept as this device's write, founding the record
+    /// with it. Answers what `change` answered.
+    ///
+    /// # Errors
+    /// The workspace is not held here, `change` failed (and nothing was written), or the store
+    /// refuses the change.
+    pub async fn author_record<R>(
+        &self,
+        workspace: &str,
+        (app, kind, record): (&str, &str, &str),
+        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let (mut doc, heads) = {
+            let state = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut governed = state.lock().await;
+            let mut store = self.store_of(&mut governed);
+            let held = match store.index().get(kind, record) {
+                Some(_) => store
+                    .content_document(kind, record)
+                    .map_err(|error| error.to_string())?
+                    .map(automerge::Automerge::save),
+                None => None,
+            };
+            match held {
+                Some(bytes) => {
+                    let mut doc =
+                        automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                    let heads = doc.get_heads();
+                    (doc, heads)
+                }
+                None => {
+                    let mut doc = automerge::AutoCommit::new();
+                    if let Some(founding) = store.founding(kind, record) {
+                        doc.apply_changes([founding])
+                            .map_err(|error| error.to_string())?;
+                    }
+                    (doc, Vec::new())
+                }
+            }
+        };
+        let result = change(&mut doc)?;
+        if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            );
+        }
+        if doc.get_heads() == heads {
+            return Ok(result);
+        }
+        let changes = doc.get_changes(&heads);
+        self.keep_record_change(
+            (workspace, self.signing_device()),
+            (app, Some(kind), record),
+            (changes, None),
+            None,
+        )
+        .await?;
+        // Whoever follows the record hears of it by its id, as of a member's write.
+        self.wrote(workspace, app, record);
+        Ok(result)
     }
 
     /// Whether `writes` of a move of `app`'s record of `kind`, drafted against `governed`'s
@@ -503,11 +673,10 @@ impl Workspaces {
         let now = tilo_clock::wall();
         for write in writes {
             governed.may_start(author, (app, &write.doc), now)?;
-            self.store_of(governed)
-                .check_write(write, author)
-                .map_err(|refusal| format!("{refusal:?}"))?;
         }
-        Ok(())
+        self.store_of(governed)
+            .check_writes(writes, author)
+            .map_err(|refusal| format!("{refusal:?}"))
     }
 }
 
@@ -1029,6 +1198,79 @@ mod tests {
         assert_eq!(
             title_in(workspaces, &workspace, "list").await.as_deref(),
             Some("List")
+        );
+    }
+
+    /// A record an action founds is part of the action: one whose other record is refused leaves
+    /// no such record, and one whose other record is kept founds it with that change.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_record_an_action_founds_is_founded_with_the_rest_or_not_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let someone_else = Actor::Member(MemberId::person("someone-else"));
+        let mut plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
+        let founded = |title: &str| {
+            let mut fresh = automerge::AutoCommit::new();
+            fresh.put(automerge::ROOT, "title", title).unwrap();
+            commit(&mut fresh, &typed_by(&me));
+            let heads = fresh.get_heads().iter().map(|head| head.0).collect();
+            (fresh.save(), heads)
+        };
+
+        // Founding one record while retitling another, which is refused.
+        let (fresh, fresh_at) = founded("Fresh");
+        let (plan_b, plan_at) = retitled(&mut plan.clone(), "Plan B", &someone_else);
+        let refused = action(&workspace, [("fresh", fresh_at), ("plan", plan_at)]);
+        write_part(&workspaces, &workspace, "fresh", fresh, Some(&refused))
+            .await
+            .expect("the store keeps the founding part");
+        assert!(
+            write_part(&workspaces, &workspace, "plan", plan_b, Some(&refused))
+                .await
+                .is_err()
+        );
+        assert_eq!(title_in(&workspaces, &workspace, "fresh").await, None);
+        assert!(heads(&workspaces, &workspace, "fresh").await.is_empty());
+        assert_eq!(
+            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            Some("Plan")
+        );
+
+        // Founding one while retitling another, both kept.
+        let (later, later_at) = founded("Later");
+        let (plan_b, plan_at) = retitled(&mut plan, "Plan B", &me);
+        let whole = action(&workspace, [("later", later_at), ("plan", plan_at)]);
+        write_part(&workspaces, &workspace, "later", later, Some(&whole))
+            .await
+            .expect("the store keeps the founding part");
+        assert_eq!(
+            title_in(&workspaces, &workspace, "later").await,
+            None,
+            "the founded record waits for the action's other record"
+        );
+        write_part(&workspaces, &workspace, "plan", plan_b, Some(&whole))
+            .await
+            .expect("the store keeps the other part");
+        assert_eq!(
+            title_in(&workspaces, &workspace, "later").await.as_deref(),
+            Some("Later")
+        );
+        assert_eq!(
+            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            Some("Plan B")
+        );
+
+        // A plain write after it, to the record the action did not found: the action is whole
+        // where the founded record's first write is all it wrote there.
+        let (plan_c, _) = retitled(&mut plan, "Plan C", &me);
+        write_part(&workspaces, &workspace, "plan", plan_c, None)
+            .await
+            .expect("a write after a whole action is kept");
+        assert_eq!(
+            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            Some("Plan C")
         );
     }
 

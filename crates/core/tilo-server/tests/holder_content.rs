@@ -10,7 +10,7 @@
 //! workspace's copy status until it lacks none.
 use std::time::Duration;
 
-use automerge::{ROOT, transaction::Transactable as _};
+use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use tilo_peer_state::{CopyRole, Missing, Shortfall};
 use tilo_server::daemon::ServerIdentity;
 use tilo_server::{Server, ServerConfig};
@@ -133,14 +133,17 @@ async fn a_holder_added_to_a_workspace_fetches_the_content_its_records_name() {
         .unwrap()
         .put(&picture)
         .unwrap();
-    a.workspaces()
-        .unwrap()
-        .author_workspace_document(&workspace.workspace, &first.cert, (PHOTOS, ""), |doc| {
+    crate::common::write_record(
+        a.workspaces().unwrap(),
+        &workspace.workspace,
+        (PHOTOS, "album"),
+        |doc| {
             doc.put(ROOT, "photo", format!("blake3:{hash}:{}", picture.len()))
                 .map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     // B is added: A hands it the workspace as one of its holders.
     a.workspaces()
@@ -217,14 +220,17 @@ async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
         .unwrap()
         .put(&picture)
         .unwrap();
-    a.workspaces()
-        .unwrap()
-        .author_workspace_document(&workspace.workspace, &first.cert, (PHOTOS, ""), |doc| {
+    crate::common::write_record(
+        a.workspaces().unwrap(),
+        &workspace.workspace,
+        (PHOTOS, "album"),
+        |doc| {
             doc.put(ROOT, "photo", format!("blake3:{hash}:{}", picture.len()))
                 .map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
     a.workspaces()
         .unwrap()
         .attach_server(
@@ -310,14 +316,17 @@ async fn a_holder_says_how_much_content_it_lacks_until_it_keeps_it() {
         .take(1024 * 1024 + 7)
         .collect();
     let hash = blake3::hash(&picture).to_hex().to_string();
-    a.workspaces()
-        .unwrap()
-        .author_workspace_document(&workspace.workspace, &first.cert, (PHOTOS, ""), |doc| {
+    crate::common::write_record(
+        a.workspaces().unwrap(),
+        &workspace.workspace,
+        (PHOTOS, "album"),
+        |doc| {
             doc.put(ROOT, "photo", format!("blake3:{hash}:{}", picture.len()))
                 .map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
     a.workspaces()
         .unwrap()
         .attach_server(
@@ -438,23 +447,32 @@ async fn a_workspace_whose_records_name_more_content_than_a_frame_lists_is_hande
 
     // Pictures no server keeps, each named by reference alone.
     for write in 0..NOWHERE_KEPT / PER_WRITE {
-        a.workspaces()
-            .unwrap()
-            .author_workspace_document(&workspace.workspace, &first.cert, (PHOTOS, ""), |doc| {
+        crate::common::write_record(
+            a.workspaces().unwrap(),
+            &workspace.workspace,
+            (PHOTOS, "album"),
+            |doc| {
+                let photos = match doc.get(ROOT, "photos").map_err(|error| error.to_string())? {
+                    Some((automerge::Value::Object(automerge::ObjType::Map), photos)) => photos,
+                    _ => doc
+                        .put_object(ROOT, "photos", automerge::ObjType::Map)
+                        .map_err(|error| error.to_string())?,
+                };
                 for picture in 0..PER_WRITE {
                     let named = write * PER_WRITE + picture;
                     let hash = blake3::hash(format!("picture {named}").as_bytes()).to_hex();
                     doc.put(
-                        ROOT,
+                        &photos,
                         format!("photo-{named}"),
                         format!("blake3:{hash}:4096"),
                     )
                     .map_err(|error| error.to_string())?;
                 }
                 Ok(())
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
     }
 
     let hint = a

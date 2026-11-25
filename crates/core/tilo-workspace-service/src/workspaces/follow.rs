@@ -203,9 +203,6 @@ impl GovernedWorkspace {
                 "{app} record written by a device that may not edit"
             ));
         }
-        if self.moderation_history_pending(app, document) {
-            return Err("the workspace's moderation history is still arriving".into());
-        }
         Ok(())
     }
 
@@ -455,58 +452,6 @@ impl GovernedWorkspace {
             })
     }
 
-    /// The verdict taking `message`, `author`'s write, into the governor's
-    /// copy would give, without keeping it: why the workspace refuses the
-    /// write, or `None` when it takes it. A test asks it of a write the
-    /// workspace's link would have admitted, so nothing is decided for a
-    /// change that never reaches a copy. The tests that ask are the sealed
-    /// documents', which are built with the agents.
-    #[cfg(all(test, feature = "agents"))]
-    pub(super) fn refuses(
-        &self,
-        author: [u8; 32],
-        message: &neighbour_wire::NeighbourMsg,
-    ) -> Option<String> {
-        let neighbour_wire::NeighbourMsg::AppDocument {
-            app_id,
-            document_id,
-            envelope,
-            ..
-        } = message
-        else {
-            return None;
-        };
-        // A write too large for one frame travels in segments, and is decided
-        // a segment at a time: no segment is a record write on its own, so
-        // the workspace has no verdict to give on one. Its last segment is the
-        // whole write, and that is refused or taken as this one would be.
-        if matches!(
-            collab_types::DocumentFrame::decode(&envelope.payload),
-            Ok(collab_types::DocumentFrame::Segment(_))
-        ) {
-            return None;
-        }
-        let mut decided = {
-            let peer = self.peer();
-            if !peer.holds_document(app_id, document_id) {
-                return None;
-            }
-            peer.clone()
-        };
-        let error = decided
-            .receive_from(
-                tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
-                message.clone(),
-                tilo_clock::wall(),
-            )
-            .err()?;
-        if error.is_device_failure() {
-            tracing::warn!(%error, "this device could not decide a member's write; nothing is refused");
-            return None;
-        }
-        Some(error.to_string())
-    }
-
     /// File this device's verdict on the write admission refused as
     /// `refusal` says, in the governor's copy, for [`Self::keep_followed`] to write
     /// through: the write's author reads why it is not here.
@@ -543,65 +488,6 @@ impl GovernedWorkspace {
 }
 
 impl Workspaces {
-    /// Why taking `body`, `author`'s write, into `workspace` would refuse it;
-    /// `None` when it takes the write. A test asks it of a write the
-    /// workspace's link would have admitted.
-    ///
-    /// A sealed compaction the copy is behind in is not refused: it is taken
-    /// as the record's base under the record's keys, and one whose keys are
-    /// not here yet is taken once they are. The tests that ask are the sealed
-    /// documents', which are built with the agents.
-    #[cfg(all(test, feature = "agents"))]
-    pub(crate) async fn refuses_write(
-        &self,
-        workspace: &str,
-        author: [u8; 32],
-        body: &[u8],
-    ) -> Option<String> {
-        // This device's own writes reach its copy as its own: nothing a
-        // member's write is decided by decides them.
-        if author == self.inner.host.cert.device_public_key {
-            return None;
-        }
-        // A body that is not a message is reported where the governor takes
-        // it in; and one that is no record write is decided elsewhere.
-        let message = neighbour_wire::NeighbourMsg::decode(body).ok()?;
-        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
-            return None;
-        }
-        let state = self.workspace(workspace).await.ok()?;
-        let mut governed = state.lock().await;
-        let refusal = governed.refuses(author, &message)?;
-        let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = &message else {
-            return Some(refusal);
-        };
-        if envelope.kind != collab_types::OpKind::Compaction {
-            return Some(refusal);
-        }
-        let followed = self
-            .follow_kept_checked(&mut governed, author, message.clone())
-            .await;
-        // A compaction this copy cannot open yet is kept, not refused: the
-        // link keeps it like any sealed frame it cannot read, and a replay
-        // takes it once the keys are here.
-        if followed.behind == Some(BehindRefusal::Keys) {
-            drop(governed);
-            return None;
-        }
-        if let Some(refused) = followed.refused {
-            drop(governed);
-            return Some(refused.to_string());
-        }
-        // The change is this copy's now: what it took is kept, and a verdict
-        // filed against it before is cleared.
-        if followed.changed {
-            self.landed(&governed, &message);
-            self.keep_soon(&mut governed);
-        }
-        drop(governed);
-        None
-    }
-
     /// Replay what the server retains for `workspace` into the governor's copy
     /// ([`Self::recall_retained`]), apart from whatever asked for it. The
     /// server's copy is read once every write the governor was handed is
@@ -669,28 +555,9 @@ impl Workspaces {
             self.inner.host.key.clone(),
         )
         .with_store(Arc::clone(&self.inner.store));
-        #[cfg(test)]
-        let link = match self
-            .inner
-            .link_heard_capacity
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            0 => link,
-            capacity => link.with_heard_capacity(capacity),
-        };
         self.inner.direct.serve(link.clone())?;
         self.follow_link(workspace, &link);
         Ok(())
-    }
-
-    /// Give the links of the workspaces served from now on workspace for only
-    /// `capacity` frames heard and not read yet: what a test that makes the
-    /// host's reader of a link fall behind sets.
-    #[cfg(all(test, feature = "agents"))]
-    pub(crate) fn bound_link_readers(&self, capacity: usize) {
-        self.inner
-            .link_heard_capacity
-            .store(capacity, std::sync::atomic::Ordering::Release);
     }
 
     /// Take in what `workspace`'s link admits and answer what its members ask

@@ -62,15 +62,6 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
         return Ok(Attached::default());
     }
     let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
-    // A copy founded in the person's name waits to be founded again
-    // ([`super::refound`]): what this pass wrote there would not be carried.
-    if workspaces
-        .state(&admin)
-        .await
-        .is_some_and(|state| state.governance().founder() == Some(state.owner()))
-    {
-        return Ok(Attached::default());
-    }
     let servers = read(workspaces).await?;
     let own = workspaces.device_cert().device_public_key;
     let mut governed = workspaces
@@ -188,9 +179,6 @@ impl Workspaces {
                     return;
                 };
                 let this = Self { inner };
-                if let Err(error) = super::refound::refound(&this).await {
-                    tracing::warn!(%error, "the Servers workspace was not founded again under this device");
-                }
                 match attach_named(&this).await {
                     Ok(attached) => {
                         failed = Duration::ZERO;

@@ -1918,11 +1918,7 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
     host.shutdown().await;
 }
 
-/// The inputs a shortcut declares that its host binds are filled on every firing: the
-/// workspace it runs in with each member's role and the public address of their picture, the
-/// workspace's own emoji, and what fired it.
-/// The workspace's own emoji, as Chat's record holds them: a `party`, founded from the same
-/// genesis every reader of the workspace's records checks.
+/// The workspace's own emoji, as Chat's record holds them in the workspace's store: a `party`.
 async fn found_party_emoji(
     workspaces: &Workspaces,
     workspace: &str,
@@ -1930,23 +1926,14 @@ async fn found_party_emoji(
     png: &[u8],
 ) {
     let record = collab_types::workspace_document_id(tilo_workspace_emoji::KIND);
-    let kind = tilo_resource::ResourceKind::of::<tilo_workspace_emoji::WorkspaceEmoji>();
-    let mut founded = automerge::AutoCommit::new();
-    collaboration::resource::genesis(
-        &mut founded,
-        &collaboration::resource::DocumentCheckout::new(
-            collaboration::resource::DocumentId::parse(&record).unwrap(),
-            collaboration::resource::ResourceType::new(kind.kind()),
-        ),
-        workspace,
-        |doc| kind.initialize(doc).map_err(|error| error.to_string()),
-    )
-    .unwrap();
     workspaces
-        .author_workspace_document_from(
-            (workspace, cert),
-            (tilo_workspace_emoji::OWNER, &record),
-            Some(Box::new(founded)),
+        .author_record(
+            workspace,
+            (
+                tilo_workspace_emoji::OWNER,
+                tilo_workspace_emoji::KIND,
+                &record,
+            ),
             |doc| {
                 let emoji = doc
                     .put_object(automerge::ROOT, "emoji", automerge::ObjType::Map)
@@ -1970,6 +1957,9 @@ async fn found_party_emoji(
         .unwrap();
 }
 
+/// The inputs a shortcut declares that its host binds are filled on every firing: the
+/// workspace it runs in with each member's role and the public address of their picture, the
+/// workspace's own emoji, and what fired it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares() {
     struct ChatProfile {

@@ -255,12 +255,6 @@ impl PeerParts {
 }
 
 impl PartFiles {
-    /// The files, held as a write holds them: a test's slow disk.
-    #[cfg(all(test, feature = "agents"))]
-    pub(super) fn busy(&self) -> impl Drop + '_ {
-        self.held()
-    }
-
     fn held(&self) -> std::sync::MutexGuard<'_, OnDisk> {
         self.on_disk.lock_recover()
     }

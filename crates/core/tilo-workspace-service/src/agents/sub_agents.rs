@@ -178,38 +178,31 @@ impl ServerAgents {
     /// as its turn's are: as one more actor in its starter's chain, which bounds it.
     async fn stands(&self, scope: &super::TurnScope, agent: &Agent, stands: Stands, line: &str) {
         let workspace = scope.workspace.as_str();
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let chain = scope.agent.acting().clone();
         let item = tilo_resource::Id::from_raw(agent.id.0.clone());
         let line = cut(line.trim(), sub::MAX_LINE.saturating_mul(2)).to_owned();
         let written = self
             .workspaces
-            .author_application(
-                workspace,
-                self.workspaces.device_cert(),
-                tilo_workspace_agent::OWNER,
-                &document,
-                |doc| {
-                    let mut saying =
-                        tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_acting(chain.clone())
-                            .in_app(tilo_workspace_agent::OWNER, "Workspace");
-                    // A replica stamps what it writes with a fixed day of its own unless told the time.
-                    saying.set_now_ms(tilo_clock::unix_now_ms_i64());
-                    let applied = saying
-                        .apply(WorkspaceAgents::SUB_AGENT_STANDS.with(
-                            tilo_workspace_agent::workspace_agents::SubAgentStands {
-                                agent: item,
-                                stands,
-                                line: (!line.is_empty()).then_some(line),
-                            },
-                        ))
-                        .map(drop)
-                        .map_err(|error| error.to_string());
-                    std::mem::swap(doc, saying.doc_mut());
-                    applied
-                },
-            )
+            .author_agents(workspace, |doc| {
+                let mut saying =
+                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                        .as_acting(chain.clone())
+                        .in_app(tilo_workspace_agent::OWNER, "Workspace");
+                // A replica stamps what it writes with a fixed day of its own unless told the time.
+                saying.set_now_ms(tilo_clock::unix_now_ms_i64());
+                let applied = saying
+                    .apply(WorkspaceAgents::SUB_AGENT_STANDS.with(
+                        tilo_workspace_agent::workspace_agents::SubAgentStands {
+                            agent: item,
+                            stands,
+                            line: (!line.is_empty()).then_some(line),
+                        },
+                    ))
+                    .map(drop)
+                    .map_err(|error| error.to_string());
+                std::mem::swap(doc, saying.doc_mut());
+                applied
+            })
             .await;
         if let Err(error) = written {
             tracing::warn!(%workspace, agent = %agent.id.0, %error, "how a sub-agent stands was not written");

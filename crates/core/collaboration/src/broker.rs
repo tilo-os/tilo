@@ -2069,7 +2069,7 @@ impl CollaborationManager {
             .ok_or("native primary route unavailable")?
             .route
             .clone();
-        let record = (!checkout.id.is_package_primary()).then(|| checkout.id.as_str().to_owned());
+        let record = checkout.id.route_record();
         if primary.document == record {
             return Ok(());
         }

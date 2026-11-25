@@ -15,6 +15,12 @@ pub struct WorkspaceDocument {
 
 /// The records apps keep for their whole workspace.
 pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
+    // What a workspace's VM session keeps for its next one, its settings by name: the one
+    // record its device writes besides its window's (`tilo-workspace-service::environment`).
+    WorkspaceDocument {
+        app: "so.tilo.browser",
+        kind: "browser.environment",
+    },
     // The workspace's own emoji, which any view draws for `:name:`
     // (`tilo-workspace-emoji`).
     WorkspaceDocument {
@@ -82,6 +88,12 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     WorkspaceDocument {
         app: "so.tilo.browser",
         kind: "browser.page-record",
+    },
+    // The workspace's vault: its sealed entries and who may use each, which Passwords keeps and
+    // every device's vault actions write (`tilo-workspace-service`'s `vault_entries`).
+    WorkspaceDocument {
+        app: "so.tilo.passwords",
+        kind: "passwords.workspace-vault",
     },
 ];
 

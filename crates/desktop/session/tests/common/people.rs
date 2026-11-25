@@ -1751,6 +1751,37 @@ impl Device {
             .unwrap_or_default()
     }
 
+    /// Wait until this device reads `workspace`'s records as its person: the listing the session
+    /// keeps there, which a device that holds the workspace reads. A read the workspace refuses is
+    /// the reason its records never fill in, so the wait names it and what the device logged.
+    pub fn wait_reading(&self, workspace: &str) {
+        let deadline = Instant::now()
+            .checked_add(joined_within())
+            .expect("the wait's bound fits in an Instant");
+        let mut pause = Duration::from_millis(10);
+        loop {
+            match self.read(
+                workspace,
+                (tilo_actions::remote::workspace_invocations::PROVIDER, ""),
+                None,
+                None,
+            ) {
+                Ok(_) => return,
+                Err(error) => {
+                    let now = Instant::now();
+                    assert!(
+                        now < deadline,
+                        "{} never read {workspace} as its person: {error}:\n{}",
+                        self.label,
+                        self.log(),
+                    );
+                    std::thread::sleep(pause.min(deadline.saturating_duration_since(now)));
+                    pause = pause.saturating_mul(2).min(Duration::from_millis(500));
+                }
+            }
+        }
+    }
+
     /// Wait until this device keeps the workspace `workspace` , failing with what its session
     /// logged if it never does.
     pub fn wait_holding(&self, workspace: &str) {

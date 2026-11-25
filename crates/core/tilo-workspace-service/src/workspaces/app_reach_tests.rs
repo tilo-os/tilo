@@ -219,24 +219,33 @@ fn an_app_reaches_the_persons_workspace_only_for_the_records_it_declares() {
 }
 
 /// Messages opens its own primary record in the person's workspace, as in any workspace it is
-/// installed in, and reads the people Contacts keeps there, which it declares it reads, changing
-/// them only through Contacts' actions. Another app's record it declares no read of, and a record
-/// of the person's it declares no kind of, stay refused.
+/// installed in, and reads the people Contacts keeps there, a workspace record of Contacts' its
+/// surface need not list, because it declares that it reads them; it changes them only through
+/// Contacts' actions. An app that declares no such read, another app's record it declares no read
+/// of, and a record of the person's it declares no kind of, stay refused.
 #[test]
 fn an_app_opens_its_own_records_and_reads_those_it_declares_in_the_persons_workspace() {
     static CONTACTS: &[u8] =
-        b"{\"resources\":[{\"kind\":\"tilo.contacts.identities\",\"label\":\"People\",\"version\":1}]}";
+        b"{\"resources\":[{\"kind\":\"tl.so.tilo.contacts.Card\",\"label\":\"Card\",\"version\":1}]}";
     static MESSAGES: &[u8] = b"{\"reads\":[\"tilo.contacts.identities\"],\"resources\":[{\"kind\":\"tilo.messages\",\"label\":\"Messages\",\"version\":1}]}";
+    static UNDECLARED: &[u8] =
+        b"{\"resources\":[{\"kind\":\"test.undeclared.Note\",\"label\":\"Note\",\"version\":1}]}";
     collab_types::app_surface::register_package("so.tilo.contacts", CONTACTS);
     let messages = "so.tilo.messages";
     collab_types::app_surface::register_package(messages, MESSAGES);
+    collab_types::app_surface::register_package("test.undeclared", UNDECLARED);
+    let people = person_record("so.tilo.contacts", "");
+    assert!(
+        app_reach("test.undeclared", &people, true).is_err(),
+        "an app that declares no read of Contacts' people"
+    );
     let primary = collab_types::document::DocumentId::package_primary();
     assert_eq!(
         app_reach(messages, &person_record(messages, primary.as_str()), true),
         Ok(AppReach::Changes)
     );
     assert_eq!(
-        app_reach(messages, &person_record("so.tilo.contacts", ""), true),
+        app_reach(messages, &people, true),
         Ok(AppReach::Reads),
         "Contacts' people, read, never changed"
     );

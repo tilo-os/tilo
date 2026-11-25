@@ -247,6 +247,21 @@ fn verb_admits(
             .map(drop)
             .ok_or_else(|| format!("no type `{kind}` is declared"));
     }
+    // A creation founds a resource of a declared kind and writes nothing in it.
+    if verb.creates {
+        schema
+            .get(kind)
+            .ok_or_else(|| format!("no type `{kind}` is declared"))?;
+        let writes = touch.removed
+            || touch.content
+            || touch.retyped_from.is_some()
+            || touch.fields.iter().any(|field| !field.starts_with('$'));
+        return if touch.made && !writes {
+            Ok(())
+        } else {
+            Err(format!("`{}` only founds an empty `{id}`", verb.name))
+        };
+    }
     let Some(writes) = verb.writes.get(kind) else {
         // A record's verb writes the kinds its type nests that another surface declares, and
         // their fields are the ones that surface declares: a tilolang package publishes a

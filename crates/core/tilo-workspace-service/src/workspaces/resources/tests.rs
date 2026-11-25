@@ -80,3 +80,43 @@ fn a_store_a_hard_stop_left_answers_from_its_index() {
         "the start took {opened:?}"
     );
 }
+
+/// A document whose id is longer than a file system names one file is kept, and read again by
+/// the next start, as any other is.
+#[test]
+fn a_document_with_a_long_id_is_kept_across_a_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = tilo_server_protocol::WorkspaceId::new();
+    let file = dir.path().join("workspace.workspace");
+    let kind = "so.tilo.example.a-kind-with-a-long-name.".repeat(8);
+    let mut resources = super::Resources::open(&file, id);
+    let doc = {
+        let mut store = resources.store();
+        let resource = Resource {
+            readers: "*".into(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::from([(
+                "title".to_owned(),
+                Cell::One(Value::Text("Long named".into())),
+            )]),
+        };
+        store.put(&kind, "p1", resource, &Stamp::default()).unwrap();
+        store.index().get(&kind, "p1").unwrap().doc.clone()
+    };
+    assert!(
+        hex::encode(&doc).len() > 255,
+        "the id is longer than a name"
+    );
+    resources.kept(&doc, &[]).unwrap();
+    std::mem::forget(resources);
+
+    let reopened = super::Resources::open(&file, id);
+    let store = reopened.store();
+    assert!(
+        store
+            .get(&kind, "p1", &|_| true)
+            .is_some_and(|held| held.scalar("title") == Value::Text("Long named".into())),
+        "the resource reads again after the start"
+    );
+}

@@ -217,6 +217,7 @@ mod tests {
                     app.to_owned(),
                     name.to_owned(),
                     Authoring {
+                        kind: None,
                         genesis: None,
                         edit: Box::new(|document| {
                             document

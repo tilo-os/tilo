@@ -149,6 +149,7 @@ passwords-workspace-vault-keep-sealed = Save encrypted vault entry
 passwords-workspace-vault-import-sealed = Import encrypted vault entry
 passwords-workspace-vault-remove-sealed = Delete encrypted vault entry
 passwords-workspace-vault-keep-uses = Record where an entry was used
+browser-environment = Workspace computer settings
 
 ## App Store
 store-catalog = Store catalogue
@@ -158,3 +159,8 @@ store-catalog-record-moderation-case = Record moderation case
 # The vault package's own actions, which a code generator app calls by address.
 so-tilo-vault-keep = Keep a seed
 so-tilo-vault-forget = Forget a seed
+tilo-servers-floor = Rollback floor
+tilo-servers-floor-set-floor-key = Set the floor key
+tilo-servers-floor-request-floor-advance = Ask to raise the floor
+tilo-servers-floor-approve-floor-advance = Approve raising the floor
+tilo-servers-floor-refuse-floor-advance = Refuse raising the floor

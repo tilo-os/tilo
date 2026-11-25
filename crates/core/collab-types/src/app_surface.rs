@@ -17,6 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_actions::surface::Surface;
 use tilo_lock::MutexRecover as _;
 
 /// The variable naming the path of the app's `surface.toml`.
@@ -59,6 +60,10 @@ impl Named {
 #[derive(Default)]
 pub struct Surfaces {
     named: Mutex<BTreeMap<String, Named>>,
+    /// The workspace records the system keeps for apps ([`crate::WORKSPACE_DOCUMENTS`]), by the
+    /// app that keeps each: declared from their types as the device starts
+    /// ([`Self::declare_system`]), whether or not the app is installed here.
+    system: Mutex<BTreeMap<String, Vec<Surface>>>,
     /// Counts the surfaces named so far ([`Self::registered`]).
     count: std::sync::atomic::AtomicU64,
 }
@@ -108,6 +113,10 @@ impl Surfaces {
     /// Name `bytes`, the compiled surface (`surface.json`) the signed package `app_id` ships, as
     /// the one it runs with, replacing any held before (an update of the app). Bytes that are not
     /// the canonical compiled form name none.
+    ///
+    /// A package that declares a record the system keeps ([`Self::declare_system`]) names none:
+    /// its type is the system's on every device, and a package's copy of it would judge that
+    /// record's writes by another.
     pub fn register_package(&self, app_id: &str, bytes: &[u8]) {
         let file = match crate::surface::SurfaceFile::compiled(bytes) {
             Ok(file) => file,
@@ -120,6 +129,18 @@ impl Surfaces {
                 return;
             }
         };
+        if let Some(kept) = file
+            .resources
+            .iter()
+            .find(|resource| self.keeps_system(&resource.kind))
+        {
+            tracing::warn!(
+                app = app_id,
+                kind = kept.kind,
+                "the package declares a record the system keeps; its surface is refused"
+            );
+            return;
+        }
         let hash = *blake3::hash(bytes).as_bytes();
         if self
             .named
@@ -166,32 +187,93 @@ impl Surfaces {
             .map(|named| named.bytes)
     }
 
-    /// Every resource kind `app_id`'s surface declares: the kinds of the records it keeps. Empty
-    /// when no surface of it is known here.
-    #[must_use]
-    pub fn kinds_of(&self, app_id: &str) -> Vec<String> {
-        self.surface_of(app_id).map_or_else(Vec::new, |surface| {
-            surface
-                .resources
+    /// Declare `resource`, the type of a workspace record the system keeps for `app`
+    /// ([`crate::WORKSPACE_DOCUMENTS`]), on this device: every device keeps and judges that
+    /// record's writes by it, whether or not the app is installed here.
+    ///
+    /// # Panics
+    /// The table names no such record of `app`: a kind the system keeps is listed there first.
+    pub fn declare_system(&self, app: &str, resource: Surface) {
+        assert!(
+            crate::WORKSPACE_DOCUMENTS
                 .iter()
-                .map(|resource| resource.kind.clone())
-                .collect()
-        })
+                .any(|kept| kept.app == app && kept.kind == resource.kind),
+            "{app}'s {} is no workspace record the system keeps",
+            resource.kind
+        );
+        let mut system = self.system.lock_recover();
+        let kept = system.entry(app.to_owned()).or_default();
+        kept.retain(|known| known.kind != resource.kind);
+        kept.push(resource);
+        drop(system);
+        self.arrived();
     }
 
-    /// Every resource kind a surface known here declares, by the app it is of.
+    /// Whether `kind` is a workspace record the system keeps ([`Self::declare_system`]).
     #[must_use]
-    pub fn kinds(&self) -> Vec<(String, String)> {
-        self.named
+    pub fn keeps_system(&self, kind: &str) -> bool {
+        self.system
+            .lock_recover()
+            .values()
+            .flatten()
+            .any(|resource| resource.kind == kind)
+    }
+
+    /// Every resource `app_id` keeps whose type this device knows: those its surface declares,
+    /// and the records the system keeps for it ([`Self::declare_system`]). What the kinds of an
+    /// app, the store's types and the reads of another app's records all read.
+    #[must_use]
+    pub fn resources_of(&self, app_id: &str) -> Vec<Surface> {
+        let mut resources = self
+            .surface_of(app_id)
+            .map_or_else(Vec::new, |surface| surface.resources.clone());
+        resources.extend(
+            self.system
+                .lock_recover()
+                .get(app_id)
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        resources
+    }
+
+    /// Every resource known here ([`Self::resources_of`]), by the app it is of.
+    #[must_use]
+    pub fn resources(&self) -> Vec<(String, Surface)> {
+        let mut apps: std::collections::BTreeSet<String> = self
+            .named
             .lock_recover()
             .iter()
-            .filter_map(|(app, named)| Some((app, named.file.as_ref()?)))
-            .flat_map(|(app, file)| {
-                file.resources
-                    .iter()
-                    .map(|resource| (app.clone(), resource.kind.clone()))
-                    .collect::<Vec<_>>()
+            .filter(|(_, named)| named.file.is_some())
+            .map(|(app, _)| app.clone())
+            .collect();
+        apps.extend(self.system.lock_recover().keys().cloned());
+        apps.into_iter()
+            .flat_map(|app| {
+                self.resources_of(&app)
+                    .into_iter()
+                    .map(move |resource| (app.clone(), resource))
             })
+            .collect()
+    }
+
+    /// Every resource kind `app_id` keeps whose type this device knows
+    /// ([`Self::resources_of`]): the kinds of the records it keeps.
+    #[must_use]
+    pub fn kinds_of(&self, app_id: &str) -> Vec<String> {
+        self.resources_of(app_id)
+            .into_iter()
+            .map(|resource| resource.kind)
+            .collect()
+    }
+
+    /// Every resource kind known here ([`Self::resources`]), by the app it is of.
+    #[must_use]
+    pub fn kinds(&self) -> Vec<(String, String)> {
+        self.resources()
+            .into_iter()
+            .map(|(app, resource)| (app, resource.kind))
             .collect()
     }
 
@@ -332,13 +414,12 @@ fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
 /// What the surface of the app that declares `kind` says of it, when this process knows that
 /// surface.
 #[must_use]
-pub fn resource_surface(kind: &str) -> Option<tilo_actions::surface::Surface> {
-    every().iter().find_map(|file| {
-        file.resources
-            .iter()
-            .find(|resource| resource.kind == kind)
-            .cloned()
-    })
+pub fn resource_surface(kind: &str) -> Option<Surface> {
+    Surfaces::process()
+        .resources()
+        .into_iter()
+        .map(|(_, resource)| resource)
+        .find(|resource| resource.kind == kind)
 }
 
 /// The kind of `app_id`'s own record of a workspace, the first its surface declares: the resource
@@ -390,13 +471,21 @@ pub fn keeps_person_resource(app_id: &str, kind: &str) -> bool {
 
 /// Whether `reader`'s surface declares that it reads a resource kind of
 /// `owner`'s (its `reads`): the read-only join to `owner`'s records an app
-/// may hold. False when this process holds either surface not.
+/// may hold. `owner`'s kinds are its surface's resources and the workspace
+/// records it keeps ([`crate::WORKSPACE_DOCUMENTS`]). False when this process
+/// holds no surface of `reader`.
 #[must_use]
 pub fn reads_app(reader: &str, owner: &str) -> bool {
-    match (surface_of(reader), surface_of(owner)) {
-        (Some(reader), Some(owner)) => reader.reads_any_of(&owner),
-        _ => false,
-    }
+    let Some(reader) = surface_of(reader) else {
+        return false;
+    };
+    let kinds = Surfaces::process().kinds_of(owner);
+    reader.reads.iter().any(|read| {
+        kinds.contains(read)
+            || crate::WORKSPACE_DOCUMENTS
+                .iter()
+                .any(|kept| kept.app == owner && kept.kind == read)
+    })
 }
 
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.

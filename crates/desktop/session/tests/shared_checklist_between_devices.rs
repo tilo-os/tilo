@@ -296,6 +296,11 @@ fn an_edit_on_one_members_checklist_reaches_the_other_with_its_caret_and_history
         two_people_at_a_site_carrying(&[], |device| device.install_shared_checklist());
     show(&first, &site);
     show(&second, &site);
+    // Both devices read the workspace they joined as their person: a refused read is why the
+    // checklist its app draws never fills in, and nothing can be typed into either window.
+    for device in [&first, &second] {
+        device.wait_reading(&site.workspace);
+    }
     open_the_checklist(&first, &second);
 
     // The checklist starts empty on both devices: nobody has put anything on it yet.

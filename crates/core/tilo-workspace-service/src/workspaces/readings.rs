@@ -23,8 +23,6 @@ pub(super) struct Reading {
     /// The keys a sealed document is opened with; a build that opens none
     /// reads only what is in the clear.
     pub(super) device: Option<DeviceKeys>,
-    /// What the last reads of its sealed documents opened ([`super::sealed_documents::readable_now`]).
-    pub(super) opened: std::sync::Arc<super::sealed_documents::MergedDocuments>,
     /// The invitations the workspace honours, as its last write left them.
     pub(super) invitations: Invitations,
     /// Whether the workspace is a member copy, read as this device's member.
@@ -32,30 +30,6 @@ pub(super) struct Reading {
     /// The workspace's one store, read a command at a time: what a record's reads answer from
     /// while the workspace's lock is held by a write waiting on a key or a link.
     pub(super) store: std::sync::Arc<std::sync::Mutex<tilo_resource_store::Store>>,
-    /// Whether this device has read the workspace's legacy Chat reports and decisions into its
-    /// moderation record yet ([`super::moderation_history`]).
-    pub(super) moderation_history_checked: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl Reading {
-    /// Whether the workspace's legacy Chat reports and decisions have not been read into its
-    /// moderation record yet, so a read of that record waits for them.
-    pub(super) fn moderation_pending(&self, app: &str, resource: &str) -> bool {
-        if (app, resource) != (tilo_app_id::apps::CHAT, moderation_model::DOCUMENT)
-            || self.member
-            || self
-                .moderation_history_checked
-                .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return false;
-        }
-        // What the workspace kept before its moderation record: Chat's one record of the
-        // workspace, which holds the reports and decisions until they are moved.
-        self.replica.read(|peer| {
-            peer.holds_document(tilo_app_id::apps::CHAT, "")
-                || peer.checkpoint_pending(tilo_app_id::apps::CHAT, "")
-        })
-    }
 }
 
 /// What a workspace's join log and entry say of the invitations it issued,
@@ -243,11 +217,9 @@ impl GovernedWorkspace {
             replica: self.peer.clone(),
             workspace: self.workspace().to_owned(),
             device: self.device.clone(),
-            opened: std::sync::Arc::default(),
             invitations: self.invitations.clone(),
             member: self.member.is_some(),
             store: self.resources.shared(),
-            moderation_history_checked: self.moderation_history_checked.clone(),
         }
     }
 }

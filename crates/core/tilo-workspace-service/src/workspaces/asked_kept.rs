@@ -1,8 +1,8 @@
 //! The asked records that wait, kept in each workspace as its `tilo.invocations` record
-//! ([`RECORD`]): every call that waits for its person's yes, by its invocation, with what
-//! admitting it again needs. The record syncs and is sealed as every record of the workspace
-//! is, so a call that waits stays suspended in it across the host's restarts, and the host
-//! reads the calls back from it when it starts.
+//! ([`RECORD`]), a resource of the workspace's store of the kind [`KIND`]: every call that waits
+//! for its person's yes, by its invocation, with what admitting it again needs. The record syncs
+//! as every resource of the workspace does, so a call that waits stays suspended in it across the
+//! host's restarts, and the host reads the calls back from it when it starts.
 //!
 //! A call only the person's root signs is kept there by the device that keeps no root, for one
 //! that does ([`tilo_actions::remote::asked::AT_ROOT`]): every device follows the record
@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
-use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
+use automerge::{ObjType, ROOT, ReadDoc as _, Value};
 use tilo_actions::remote::asked::{AT_ROOT, AskedKeeping, KeptAsk, RecordRef};
 use tilo_actions::remote::workspace_invocations::PROVIDER;
 
@@ -21,6 +21,25 @@ use super::{WeakWorkspaces, Workspaces};
 /// The record of a workspace's invocations that keeps those waiting for their person's yes:
 /// a map from each one's id to the call as it was asked ([`KeptAsk`]).
 const RECORD: &str = "asked";
+/// The kind the record is, as [`SURFACE`] declares it.
+const KIND: &str = "tilo.invocations.asked";
+/// Where the record keeps the calls: each one's id to the call as it was asked, as JSON.
+const CALLS: &str = "calls";
+/// What [`PROVIDER`] declares its records are, so every holder's store keeps them.
+pub(crate) const SURFACE: &str = r#"format = 2
+
+[[resources]]
+kind = "tilo.invocations.asked"
+label = "Asked calls"
+version = 1
+fields = [
+  { path = "calls", type = { map = "text" } },
+]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+"#;
 
 /// One change to a workspace's record of the calls that wait.
 enum Change {
@@ -63,30 +82,39 @@ impl AskedKeeping for KeptInRecords {
 
 /// Write `change` into its workspace's record, as this host.
 async fn write(workspaces: &Workspaces, change: Change) -> Result<(), String> {
-    let host = workspaces.device_cert().clone();
     let workspace = change.workspace().to_owned();
     workspaces
-        .author_workspace_document(&workspace, &host, (PROVIDER, RECORD), |doc| {
+        .author_record(&workspace, (PROVIDER, KIND, RECORD), |doc| {
+            let calls = match doc.get(ROOT, CALLS).map_err(|error| error.to_string())? {
+                Some((Value::Object(ObjType::Map), calls)) => calls,
+                _ => doc
+                    .put_object(ROOT, CALLS, ObjType::Map)
+                    .map_err(|error| error.to_string())?,
+            };
             match &change {
                 Change::Keep(ask) => {
                     let text = serde_json::to_string(ask).map_err(|error| error.to_string())?;
-                    doc.put(automerge::ROOT, ask.at.record.as_str(), text)
+                    doc.put(&calls, ask.at.record.as_str(), text)
                 }
-                Change::Forget(at) => doc.delete(automerge::ROOT, at.record.as_str()),
+                Change::Forget(at) => doc.delete(&calls, at.record.as_str()),
             }
             .map_err(|error| error.to_string())
         })
         .await
-        .map_err(|error| error.to_string())
 }
 
 /// The calls `bytes`, a workspace's record of them, keeps.
 fn read(bytes: &[u8]) -> Result<Vec<KeptAsk>, String> {
     let doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+    let Some((Value::Object(ObjType::Map), calls)) =
+        doc.get(ROOT, CALLS).map_err(|error| error.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
     let mut kept = Vec::new();
-    for key in doc.keys(automerge::ROOT) {
-        let Some((automerge::Value::Scalar(value), _)) = doc
-            .get(automerge::ROOT, key.as_str())
+    for key in doc.keys(&calls) {
+        let Some((Value::Scalar(value), _)) = doc
+            .get(&calls, key.as_str())
             .map_err(|error| error.to_string())?
         else {
             return Err(format!("{key} is no kept call"));

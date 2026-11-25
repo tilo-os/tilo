@@ -304,9 +304,6 @@ impl Workspaces {
         workspace: &str,
     ) -> Result<Option<Vec<u8>>, String> {
         let document = accounts_document();
-        if !self.holds_resource(workspace, accounts::person::ACCOUNTS_OWNER, &document) {
-            return Ok(None);
-        }
         let read = self
             .own_read(
                 workspace,
@@ -401,11 +398,13 @@ impl Workspaces {
         (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
         account: &accounts::Account,
     ) -> Result<(), String> {
-        Box::pin(self.change_workspace_accounts((workspace, by, call), |held| {
-            let edit = (held.account(account.id.as_str()).as_ref() != Some(account))
-                .then(|| AccountList::saving(account));
-            Ok((edit.into_iter().collect(), ()))
-        }))
+        Box::pin(
+            self.change_workspace_accounts((workspace, by, call), |held| {
+                let edit = (held.account(account.id.as_str()).as_ref() != Some(account))
+                    .then(|| AccountList::saving(account));
+                Ok((edit.into_iter().collect(), ()))
+            }),
+        )
         .await
     }
 
@@ -421,23 +420,25 @@ impl Workspaces {
         keep: &[accounts::Account],
         remove: &[&str],
     ) -> Result<(), String> {
-        Box::pin(self.change_workspace_accounts((workspace, by, call), |held| {
-            let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
-            for id in remove {
-                if held.account(id).is_some() {
-                    edits.push(
-                        AccountList::REMOVE_ACCOUNT
-                            .with(tilo_resource::Id::from_raw((*id).to_owned())),
-                    );
+        Box::pin(
+            self.change_workspace_accounts((workspace, by, call), |held| {
+                let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
+                for id in remove {
+                    if held.account(id).is_some() {
+                        edits.push(
+                            AccountList::REMOVE_ACCOUNT
+                                .with(tilo_resource::Id::from_raw((*id).to_owned())),
+                        );
+                    }
                 }
-            }
-            for account in keep {
-                if held.account(account.id.as_str()).as_ref() != Some(account) {
-                    edits.push(AccountList::saving(account));
+                for account in keep {
+                    if held.account(account.id.as_str()).as_ref() != Some(account) {
+                        edits.push(AccountList::saving(account));
+                    }
                 }
-            }
-            Ok((edits, ()))
-        }))
+                Ok((edits, ()))
+            }),
+        )
         .await
     }
 

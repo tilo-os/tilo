@@ -180,20 +180,19 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
     // The members' messages are one record, written once: each names its file,
     // and the writer's device is the one that keeps it until the host does.
     let posted = [&ada_one, &ada_two, &bo_one, &big, &cy_one, &cy_two];
-    workspaces
-        .author_workspace_document(
-            &workspace,
-            &host_cert,
-            (CHAT, ""),
-            |doc| -> Result<(), String> {
-                for bytes in posted {
-                    post_into(doc, blake3::hash(bytes).to_hex().as_str());
-                }
-                Ok(())
-            },
-        )
-        .await
-        .expect("the messages reach the workspace");
+    crate::common::write_record(
+        &workspaces,
+        &workspace,
+        (CHAT, "c_general"),
+        |doc| -> Result<(), String> {
+            for bytes in posted {
+                post_into(doc, blake3::hash(bytes).to_hex().as_str());
+            }
+            Ok(())
+        },
+    )
+    .await
+    .expect("the messages reach the workspace");
 
     // The host keeps what the workspace's records name: the same keeper its
     // daemon runs.
@@ -480,20 +479,19 @@ async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals(
     let two = vec![2_u8; 800];
     let three = vec![3_u8; 800];
     let posted = [&one, &two, &three];
-    workspaces
-        .author_workspace_document(
-            &workspace,
-            &host_cert,
-            (CHAT, ""),
-            |doc| -> Result<(), String> {
-                for bytes in posted {
-                    post_into(doc, blake3::hash(bytes).to_hex().as_str());
-                }
-                Ok(())
-            },
-        )
-        .await
-        .expect("the messages reach the workspace");
+    crate::common::write_record(
+        &workspaces,
+        &workspace,
+        (CHAT, "c_general"),
+        |doc| -> Result<(), String> {
+            for bytes in posted {
+                post_into(doc, blake3::hash(bytes).to_hex().as_str());
+            }
+            Ok(())
+        },
+    )
+    .await
+    .expect("the messages reach the workspace");
 
     let content = tilo_server::content::stores(scratch.path());
     let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
@@ -693,20 +691,19 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
         let hash = blake3::hash(&bytes).to_hex().to_string();
         folder.push(hash);
     }
-    workspaces
-        .author_workspace_document(
-            &workspace,
-            &host_cert,
-            (CHAT, ""),
-            |doc| -> Result<(), String> {
-                for hash in &folder {
-                    post_into(doc, hash);
-                }
-                Ok(())
-            },
-        )
-        .await
-        .expect("the folder's messages reach the workspace");
+    crate::common::write_record(
+        &workspaces,
+        &workspace,
+        (CHAT, "c_general"),
+        |doc| -> Result<(), String> {
+            for hash in &folder {
+                post_into(doc, hash);
+            }
+            Ok(())
+        },
+    )
+    .await
+    .expect("the folder's messages reach the workspace");
 
     let content = tilo_server::content::stores(scratch.path());
     workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
@@ -876,20 +873,19 @@ async fn a_three_gib_folder_reaches_its_own_server_whole() {
     .await
     .expect("the folder's addresses are computed");
 
-    workspaces
-        .author_workspace_document(
-            &workspace,
-            &host_cert,
-            (CHAT, ""),
-            |doc| -> Result<(), String> {
-                for hash in &folder {
-                    post_into(doc, hash);
-                }
-                Ok(())
-            },
-        )
-        .await
-        .expect("the folder's messages reach the workspace");
+    crate::common::write_record(
+        &workspaces,
+        &workspace,
+        (CHAT, "c_general"),
+        |doc| -> Result<(), String> {
+            for hash in &folder {
+                post_into(doc, hash);
+            }
+            Ok(())
+        },
+    )
+    .await
+    .expect("the folder's messages reach the workspace");
 
     let content = tilo_server::content::stores(scratch.path());
     workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(

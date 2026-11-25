@@ -22,9 +22,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
-#[cfg(any(feature = "apps", feature = "agents"))]
-use tilo_resource_store::Schema;
-use tilo_resource_store::{Admit, Received, Refusal, Store};
+use tilo_resource_store::{Admit, Received, Refusal, Schema, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -46,21 +44,53 @@ const INDEX: &str = "index";
 /// How long a document nobody wrote stays in memory.
 const IDLE: Duration = Duration::from_secs(300);
 
-/// The file a document is kept in: its id, hex-encoded, since an id holds `/`.
-fn file_name(doc: &str) -> String {
-    hex::encode(doc.as_bytes())
+/// The longest name a file system gives one entry, less room for a partial write's suffix.
+const NAME: usize = 240;
+
+/// The file a document is kept in: its id, hex-encoded, since an id holds `/`. An id longer
+/// than one name holds (a view its person alone reads names them, its kind and its window) is
+/// kept below directories, each holding the next part of it and named with a `-`, which no
+/// document's own name has.
+fn file_name(doc: &str) -> PathBuf {
+    let hex = hex::encode(doc.as_bytes());
+    let mut parts: Vec<&str> = (0..hex.len())
+        .step_by(NAME)
+        .map(|at| &hex[at..hex.len().min(at.saturating_add(NAME))])
+        .collect();
+    let file = parts.pop().unwrap_or_default();
+    let mut path: PathBuf = parts.iter().map(|part| format!("{part}-")).collect();
+    path.push(file);
+    path
+}
+
+/// Every document kept below `dir`, by its id, with its file: what [`file_name`] named.
+fn kept_docs(dir: &Path, named: &str, docs: &mut Vec<(String, PathBuf)>) {
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some(part) = name.strip_suffix('-') {
+            kept_docs(&entry.path(), &format!("{named}{part}"), docs);
+        } else if let Some(doc) = doc_of(&format!("{named}{name}")) {
+            docs.push((doc, entry.path()));
+        }
+    }
 }
 
 /// The document a file keeps.
-fn doc_of(file: &std::ffi::OsStr) -> Option<String> {
+fn doc_of(file: &str) -> Option<String> {
     tilo_failure::ignored!(
         "a file not named for a document, as one an interrupted write left, is no document",
-        String::from_utf8(hex::decode(file.to_str()?).ok()?).ok()
+        String::from_utf8(hex::decode(file).ok()?).ok()
     )
 }
 
 /// Writes `bytes` to `path` whole or not at all.
 fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let partial = path.with_extension("partial");
     fs::write(&partial, bytes)?;
     fs::rename(&partial, path)
@@ -80,14 +110,11 @@ pub(super) struct Resources {
     unsnapshotted: BTreeSet<String>,
     /// How many surfaces the device had named when the store last declared them
     /// ([`collab_types::app_surface::Surfaces::registered`]).
-    #[cfg(any(feature = "apps", feature = "agents"))]
     declared: u64,
     /// Whom a resource's people field names reads it as, by the workspace's policy as this
     /// device last read it: the store places reader sets by it.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     readers: Option<std::sync::Arc<PolicyReaders>>,
     /// The queries apps hold open, by the store's watch of their kind.
-    #[cfg(feature = "apps")]
     opened: BTreeMap<u64, Opened>,
     /// The workspace, by its id spelled out.
     workspace: String,
@@ -117,10 +144,8 @@ struct ActionWrite {
 /// The workspace's one read decision, for the store of the workspace: a person reads as
 /// themselves, an agent as the person it acts for where its preset, narrowed to their reach,
 /// reads the resource, and anyone else reads none of it.
-#[cfg(any(feature = "apps", feature = "agents"))]
 struct PolicyReaders(std::sync::RwLock<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>);
 
-#[cfg(any(feature = "apps", feature = "agents"))]
 impl PolicyReaders {
     fn follow(&self, policy: std::sync::Arc<tilo_action_policy::WorkspacePolicy>) {
         *self
@@ -130,7 +155,6 @@ impl PolicyReaders {
     }
 }
 
-#[cfg(any(feature = "apps", feature = "agents"))]
 impl tilo_resource_store::RecordReader for PolicyReaders {
     fn reader_of(
         &self,
@@ -183,7 +207,6 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
 
 /// A query an app holds open: whenever a change makes what its page shows different, the page
 /// is sent again, as the person it is read for may read it.
-#[cfg(feature = "apps")]
 struct Opened {
     query: collab_types::store::Query,
     reader: String,
@@ -212,11 +235,7 @@ impl Resources {
         // documents of its resources, and one read after another made a start wait for all
         // of them.
         let mut files = Vec::new();
-        for entry in fs::read_dir(&docs).into_iter().flatten().flatten() {
-            if let Some(doc) = doc_of(&entry.file_name()) {
-                files.push((doc, entry.path()));
-            }
-        }
+        kept_docs(&docs, "", &mut files);
         let kept = read_snapshots(&root, &files);
         for ((doc, path), snapshot) in files.into_iter().zip(kept) {
             let restored =
@@ -244,11 +263,8 @@ impl Resources {
             root,
             used,
             unsnapshotted,
-            #[cfg(any(feature = "apps", feature = "agents"))]
             declared: 0,
-            #[cfg(any(feature = "apps", feature = "agents"))]
             readers: None,
-            #[cfg(feature = "apps")]
             opened: BTreeMap::new(),
             workspace: id.to_string(),
             live: None,
@@ -264,7 +280,6 @@ impl Resources {
         self.store.lock_recover().get(kind, id, &|_| true).is_some()
     }
 
-    #[cfg(any(feature = "apps", feature = "agents"))]
     /// Show this workspace's live resources in `rows`, as `reader` (a person's key in hex) may read
     /// them, from now on.
     pub(super) fn show_live(&mut self, rows: &crate::live::LiveRows, reader: String) {
@@ -325,7 +340,6 @@ impl Resources {
 
     /// Place the reader sets the store writes by `policy` from now on: an agent a resource's
     /// people field names reads it as its person, where the policy lets it read the resource.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     fn follow_policy(&mut self, policy: std::sync::Arc<tilo_action_policy::WorkspacePolicy>) {
         if let Some(readers) = &self.readers {
             readers.follow(policy);
@@ -353,7 +367,6 @@ impl Resources {
 
     /// The kinds of the records `write`, staged against the store, writes: what the sealed op
     /// that carries it claims.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(super) fn written_kinds(&self, write: &tilo_resource_store::Written) -> BTreeSet<String> {
         use tilo_lock::MutexRecover as _;
         self.store.lock_recover().written_kinds(write)
@@ -454,7 +467,6 @@ impl Resources {
             }
         }
         self.evict_idle();
-        #[cfg(feature = "apps")]
         self.tell_opened();
         self.publish_live();
         Ok(())
@@ -462,7 +474,6 @@ impl Resources {
 
     /// Holds `query` open as `reader` may read it: its first page now, then each page a change
     /// makes different, until the receiver is dropped.
-    #[cfg(feature = "apps")]
     fn open_query(
         &mut self,
         query: collab_types::store::Query,
@@ -495,7 +506,6 @@ impl Resources {
 
     /// Sends each open query whose kind a change touched its page again, when what it shows
     /// changed, and lets go of every query whose app no longer holds it.
-    #[cfg(feature = "apps")]
     fn tell_opened(&mut self) {
         use tilo_lock::MutexRecover as _;
         if self.opened.is_empty() {
@@ -749,7 +759,6 @@ impl GovernedWorkspace {
 
     /// The workspace's store, with the types and verbs of every app surface the device knows
     /// (`surfaces`) declared: what this device's writes and the members' are judged by.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     fn store_with_surfaces<'a>(
         &'a mut self,
         surfaces: &collab_types::app_surface::Surfaces,
@@ -771,10 +780,8 @@ impl GovernedWorkspace {
             self.resources.declared = named;
             {
                 let mut store = self.resources.store_mut();
-                for file in surfaces.every() {
-                    for surface in &file.resources {
-                        store.declare(Schema::from_surface(surface));
-                    }
+                for (_, surface) in surfaces.resources() {
+                    store.declare(Schema::from_surface(&surface));
                 }
             }
             // A type that says when it is live lists what the store held before it said so.
@@ -903,6 +910,16 @@ impl GovernedWorkspace {
         Ok(applied)
     }
 
+    /// The documents of the writes held for actions whose other writes are not here yet.
+    pub(super) fn held_action_documents(&self) -> Vec<String> {
+        self.resources
+            .actions
+            .values()
+            .flatten()
+            .map(|write| write.doc.clone())
+            .collect()
+    }
+
     /// Whether every write of `action`, `id`, is here: held for it, or in the store already.
     fn action_here(&self, action: &collab_types::WorkspaceCommit, id: &[u8; 32]) -> bool {
         use tilo_lock::MutexRecover as _;
@@ -966,7 +983,6 @@ impl GovernedWorkspace {
         Ok(applied)
     }
 
-    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn draft_resource_document(
         &self,
         peer: &tilo_peer_state::StatePeer,
@@ -984,7 +1000,12 @@ impl GovernedWorkspace {
             let workspace =
                 collab_types::WorkspaceId::parse(self.workspace()).ok_or("invalid workspace id")?;
             neighbour_wire::KeyScope::document(workspace, app, &write.doc, named)
-                .ok_or("the document has an invalid reader set")?
+                .ok_or_else(|| {
+                    format!(
+                        "{app}'s document {} names a reader set other than its readers {}",
+                        write.doc, write.readers
+                    )
+                })?
                 .to_string()
         } else {
             self.workspace().to_owned()
@@ -1078,7 +1099,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The workspace is not held here, or `command` writes.
-    #[cfg(all(any(test, feature = "test-support"), feature = "apps"))]
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn read_store_as(
         &self,
         workspace: &str,
@@ -1104,7 +1125,7 @@ impl Workspaces {
     /// Take `documents` (each whole, by its id) into the store of `workspace`, as a member's
     /// device's writes reach it by sync: what the tests of the agents' work on an app's
     /// resources stand on, the app running where it runs, on a device.
-    #[cfg(all(any(test, feature = "test-support"), feature = "apps"))]
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
         let state = super::fixtures::needed(
             self.workspace(workspace).await,
@@ -1128,7 +1149,7 @@ impl Workspaces {
 ///
 /// A test outside this package reads a member's write back through these, as it reads any other
 /// answer of the service: the store's own lock and projection stay here.
-#[cfg(all(feature = "test-support", feature = "apps"))]
+#[cfg(feature = "test-support")]
 impl Workspaces {
     /// How many of `workspace`'s documents the store read into memory: what a start that read
     /// the index's snapshots leaves at none.
@@ -1276,7 +1297,6 @@ impl Workspaces {
         {
             return false;
         }
-        #[cfg(any(feature = "apps", feature = "agents"))]
         drop(self.store_of(&mut *governed));
         if let Err(error) = governed
             .take_resources(
@@ -1351,7 +1371,6 @@ impl Workspaces {
         // The store judges the change by the types and verbs of the app surfaces this device
         // knows, so they are declared before the change reaches it, as a restored write finds
         // them ([`Self::replay_resource_write`]): a store that declared none admits none.
-        #[cfg(any(feature = "apps", feature = "agents"))]
         drop(self.store_of(&mut governed));
         if governed
             .take_resources(
@@ -1378,7 +1397,6 @@ impl Workspaces {
 
     /// Commit an existing, staged resource update while the workspace remains held.
     /// Check the same store and peer admissions that will take the retained frame.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn commit_resource_update(
         &self,
         governed: &mut GovernedWorkspace,
@@ -1410,7 +1428,6 @@ impl Workspaces {
             .await
     }
 
-    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn admit_resource_write(
         &self,
         governed: &GovernedWorkspace,
@@ -1511,7 +1528,6 @@ impl Workspaces {
         Ok(envelopes)
     }
 
-    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn keep_resource_write(
         &self,
         governed: &mut GovernedWorkspace,
@@ -1523,9 +1539,12 @@ impl Workspaces {
     ) -> Result<(), String> {
         let author = device.device();
         let document = &write.doc;
-        self.store_of(&mut *governed)
-            .check_write(write, author)
-            .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
+        // A write the store takes later, with the rest of its action, was checked with them.
+        if whole {
+            self.store_of(&mut *governed)
+                .check_write(write, author)
+                .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
+        }
         let named = (collab_types::is_store_document(document)
             && write.readers != collab_types::EVERY_MEMBER)
             .then_some(write.readers.as_str());
@@ -1575,7 +1594,6 @@ impl Workspaces {
 
     /// Answer a read of `workspace`'s store, `command`, as `context`'s reader reads it: what an
     /// app's window, or the agent engine, reads of the store it writes in.
-    #[cfg(feature = "apps")]
     async fn read_store(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
@@ -1593,7 +1611,6 @@ impl Workspaces {
     ///
     /// # Errors
     /// The workspace is not held here, or the store cannot read it.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(crate) async fn resource_read(
         &self,
         workspace: &str,
@@ -1617,7 +1634,6 @@ impl Workspaces {
     /// is read through yet, and the read waits for the workspace once
     /// ([`Self::resource_read`]). A record's reads answer here: no reactor, and no thread of its
     /// own.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(crate) fn read_record_now(
         &self,
         workspace: &str,
@@ -1634,7 +1650,6 @@ impl Workspaces {
     /// what search reads of one document at a time, from the store the workspace is read
     /// through, without its lock. `None` when this server does not know what the workspace is
     /// read through yet.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(crate) fn held_resources(
         &self,
         workspace: &str,
@@ -1655,7 +1670,6 @@ impl Workspaces {
 
 /// Answer a read `command` of an app's record from `reading`'s store, with only what `reader`
 /// may read: the one store the workspace holds, without the workspace's lock.
-#[cfg(any(feature = "apps", feature = "agents"))]
 fn read_from(
     reading: &super::readings::Reading,
     reader: &str,
@@ -1719,7 +1733,6 @@ fn read_from(
 impl Workspaces {
     /// Commit `command` as an update of the fields of a resource every member reads that stays
     /// where it is, when it is one: `false` for any other command, which is drafted whole.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn put_in_place(
         &self,
         governed: &mut GovernedWorkspace,
@@ -1775,7 +1788,6 @@ impl Workspaces {
     /// # Errors
     /// The workspace is not held here, the store refused the write, or the workspace refused a
     /// document's write.
-    #[cfg(feature = "apps")]
     pub async fn resource_command(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
@@ -1931,7 +1943,6 @@ impl Workspaces {
     /// # Errors
     /// [`RecordFailure::Refused`] when the store or the workspace refused a write, with why;
     /// [`RecordFailure::Failed`] when the workspace is not held here.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     pub async fn record_command(
         &self,
         workspace: &str,
@@ -1965,7 +1976,6 @@ impl Workspaces {
     /// workspace has taken in yet, and those the workspace refused, as this device's sync keeps
     /// them ([`tilo_peer_state::reach`]): what the app's views read as `reach(r)`. An app asks
     /// only of its own records.
-    #[cfg(feature = "apps")]
     fn record_reach(
         &self,
         workspace: &str,
@@ -2002,7 +2012,6 @@ impl Workspaces {
     /// Whether this device runs `app`'s action `address` on `inputs`, which runs once in
     /// `workspace` ([`crate::work::Turn::Once`]); with `done`, keep that it ran and let the turn
     /// go. Asking again while this device runs it renews its claim.
-    #[cfg(feature = "apps")]
     pub(crate) async fn once_turn(
         &self,
         workspace: &str,
@@ -2042,7 +2051,6 @@ impl Workspaces {
 
     /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
     /// holding the workspace until the last of its frames is kept.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn write_resources(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
@@ -2081,7 +2089,6 @@ impl Workspaces {
     /// none. `action` is the action they are part of when its other writes come apart (an app's
     /// write of several records, one record at a time): the store takes these once the others
     /// are here.
-    #[cfg(feature = "apps")]
     async fn keep_writes(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
@@ -2113,6 +2120,13 @@ impl Workspaces {
                 self.recall(&mut governed).await?;
             }
             candidate = governed.peer().clone();
+        }
+        // Writes the store takes later, with the rest of their action, are checked now as the
+        // batch's earlier writes leave their documents: none of them is in the store yet.
+        if !whole {
+            self.store_of(&mut governed)
+                .check_writes(&writes, device.device())
+                .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         }
         let mut requests = Vec::with_capacity(writes.len());
         for write in &writes {
@@ -2170,7 +2184,6 @@ impl Workspaces {
 /// and every record the action names would wait for it for good. A document nobody holds yet
 /// has nothing another record's write could land out of step with, and it is kept in its place
 /// in the batch all the same.
-#[cfg(feature = "apps")]
 fn action_of(
     governed: &GovernedWorkspace,
     device: &super::MemberDevice,
@@ -2232,8 +2245,7 @@ impl Workspaces {
     /// `governed`'s store with every app surface this device knows declared
     /// ([`GovernedWorkspace::store_with_surfaces`]), its live resources shown where this service
     /// shows them ([`Self::show_live`]).
-    #[cfg(any(feature = "apps", feature = "agents"))]
-    fn store_of<'a>(
+    pub(super) fn store_of<'a>(
         &self,
         governed: &'a mut GovernedWorkspace,
     ) -> std::sync::MutexGuard<'a, Store> {
@@ -2257,7 +2269,6 @@ impl Workspaces {
     /// Show the live resources of every workspace held here in `rows` from now on, as this
     /// device's person may read them: what the shell shows in the bar, quick settings and on the
     /// lock screen. Each workspace's store says what of it is live as it opens.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     pub async fn show_live(&self, rows: crate::live::LiveRows) {
         if self.inner.live.set(rows).is_err() {
             return;
@@ -2280,7 +2291,6 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::resource_command`], or this service serves no device.
-    #[cfg(feature = "apps")]
     pub async fn own_resource_command(
         &self,
         workspace: &str,
@@ -2297,7 +2307,6 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::own_resource_command`].
-    #[cfg(feature = "apps")]
     pub async fn own_kind_command(
         &self,
         workspace: &str,
@@ -2338,7 +2347,6 @@ impl Workspaces {
     ///
     /// # Errors
     /// The workspace is not held here, or this service serves no device.
-    #[cfg(feature = "apps")]
     pub(crate) async fn open_resources(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
@@ -2557,7 +2565,6 @@ pub fn person_reading(caller: &tilo_actions::remote::Caller) -> String {
 /// Refuse the writes `unserved` (each a resource type and the verb the app named it by) that the
 /// caller `viewer`, whom the device opened this view of `app` for, may not make: a view runs
 /// with its viewer's permissions, never the device's.
-#[cfg(feature = "apps")]
 fn may_write_as_viewer(
     governed: &GovernedWorkspace,
     viewer: &tilo_actions::remote::Caller,
@@ -2570,7 +2577,6 @@ fn may_write_as_viewer(
 
 /// Refuse the writes `unserved` (each a resource type and verb of `app`) that `viewer` may not
 /// make in `governed`'s workspace, as its grants decide: the verb refused.
-#[cfg(feature = "apps")]
 fn caller_may(
     governed: &GovernedWorkspace,
     viewer: &tilo_actions::remote::Caller,
@@ -2608,7 +2614,6 @@ fn may_read(reader: String) -> impl Fn(&str) -> bool {
 
 #[cfg(any(feature = "apps", feature = "agents"))]
 mod app_records;
-#[cfg(feature = "apps")]
 mod record_changes;
 
 // The tests write and read a device's resources through the store (`apps`) and

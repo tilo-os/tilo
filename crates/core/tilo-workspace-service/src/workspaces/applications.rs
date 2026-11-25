@@ -3,11 +3,9 @@
 //! A record is the app's primary (`""`, for an app that keeps one record per workspace) or a
 //! named record of the workspace: any app's, under an id the caller chooses, such as the
 //! workspace's default record every member's first window of the app opens. The app's own
-//! process opens a record or founds it at the id a call names; what this host authors is the
-//! change it is asked to publish.
+//! process opens a record or founds it at the id a call names.
 
-use super::{CollaborationError, Workspaces, system_time};
-use tilo_user_identity::DeviceCert;
+use super::{CollaborationError, Workspaces};
 
 /// One of an app's actions on one of its records, as the host runs it for a caller.
 pub(crate) struct RecordAction<'a> {
@@ -37,111 +35,6 @@ impl Workspaces {
             .await
             .governs_applications(&self.inner.host.cert);
         Ok(governs)
-    }
-
-    /// Author an existing native record (`""` for the primary) as its exact
-    /// current governor. The registry and synchronous change come from
-    /// trusted host code. This host-local API accepts no incoming member
-    /// snapshot or factory. It keeps the existing graph and publishes only
-    /// its admitted incremental changes, sealed for a record members write
-    /// sealed (`super::sealed_documents`).
-    ///
-    /// # Errors
-    /// Refuses other certificates, stale ownership, undeclared apps, a primary
-    /// of an app without one, missing records, sealed records whose channel
-    /// this server does not take part in, failed changes or oversized
-    /// publication.
-    pub async fn author_application<R>(
-        &self,
-        workspace: &str,
-        governor: &DeviceCert,
-        app: &str,
-        record: &str,
-        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
-    ) -> Result<R, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        if governor != &self.inner.host.cert {
-            return Err(CollaborationError::new(
-                "application authoring requires exact governor ownership",
-            ));
-        }
-        let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        if !governed.governs_applications(governor) {
-            return Err(CollaborationError::new(
-                "application governor differs from current workspace authority",
-            ));
-        }
-        governed
-            .peer()
-            .workspace()
-            .check_workspace_administration(governor.device_public_key, system_time(now))?;
-        governed.peer().check_document_read(
-            governor.device_public_key,
-            app,
-            record,
-            system_time(now),
-        )?;
-        // A record members write sealed is read through its channel's keys
-        // and written sealed; any other must be complete plaintext.
-        let keys = self
-            .sealing_keys(&governed, app, record)
-            .await
-            .map_err(CollaborationError::new)?;
-        let bytes = governed
-            .readable_document(app, record)
-            .await
-            .map_err(CollaborationError::new)?
-            .ok_or_else(|| CollaborationError::new("native record is not prepared"))?;
-        let mut document = automerge::AutoCommit::load(&bytes)
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        let heads = match &keys {
-            Some(_) => document.get_heads(),
-            None => governed
-                .peer()
-                .plaintext_complete_heads(app, record)
-                .ok_or_else(|| {
-                    CollaborationError::new("native record is not complete plaintext")
-                })?,
-        };
-        let result = change(&mut document)?;
-        // The governor writes the record directly: an edit of the whole
-        // record, named as such.
-        if automerge::transaction::Transactable::pending_ops(&document) != 0 {
-            document.commit_with(
-                automerge::transaction::CommitOptions::default()
-                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-            );
-        }
-        let changes = document.save_after(&heads);
-        if changes.len() > 64 * 1024 {
-            return Err(CollaborationError::new(
-                "native authoring exceeds publication limit",
-            ));
-        }
-        if document.get_heads() == heads {
-            return Ok(result);
-        }
-        let mut candidate = governed.peer().clone();
-        let written = super::sealed_documents::seal_changes(
-            &mut candidate,
-            super::sealed_documents::sealed_with(keys.as_ref())?,
-            (app, record),
-            changes,
-            &self.inner.host.key,
-            system_time(now),
-        )?;
-        let collaboration = governed.collaboration().clone();
-        governed.keep(candidate, &self.inner.host.key, system_time(now), |_, _| {
-            Ok(collaboration)
-        })?;
-        self.settle(&mut governed).await?;
-        self.carry_written(governed.workspace_id(), &[written])?;
-        drop(governed);
-        // What this device wrote itself reaches whoever follows the record, as a member's write
-        // does.
-        self.wrote(workspace, app, record);
-        Ok(result)
     }
 
     /// Run one of an app's actions on `record` as `caller`: the invocation the workspace's own

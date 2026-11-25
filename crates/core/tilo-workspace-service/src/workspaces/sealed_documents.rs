@@ -18,7 +18,6 @@ use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
-use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 use tilo_user_identity::DeviceCert;
 
@@ -44,12 +43,8 @@ pub(crate) use crate::documents::sealed::{
 };
 
 impl DocumentKeys {
-    pub(super) fn same_write_key(&self, keys: &ContentKeys) -> bool {
-        self.keys.same_write_key(keys)
-    }
-
     /// Seal content of the record under the channel's current epoch.
-    fn seal(
+    pub(super) fn seal(
         &self,
         retention: ContentRetention,
     ) -> impl FnMut(&[u8]) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + '_ {
@@ -260,153 +255,6 @@ impl GovernedWorkspace {
         .await
         .map(Some)
     }
-
-    /// `record` of `app` as the governor reads it, saved: the record itself,
-    /// or for a sealed one its history opened with the channel's keys.
-    /// A sealed write that does not open, or waits for a change the record
-    /// lacks, is left out and named in the log: the workspace reads the rest,
-    /// and the write stays in the history for when what it waits for comes.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::document_keys`], or the history's changes are malformed.
-    pub(super) async fn readable_document(
-        &self,
-        app: &str,
-        record: &str,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let keys = self.document_keys(app, record).await?;
-        opened_readable(&self.peer(), keys.as_ref(), self.workspace(), (app, record))
-    }
-}
-
-/// [`GovernedWorkspace::readable_document`] as the workspace `reading` reads
-/// holds it now, without the workspace's lock: the device's key service can
-/// take long to answer (it settles a newcomer's access first), and every other
-/// read and every member's write waited for it while a read held the workspace.
-///
-/// # Errors
-///
-/// As [`GovernedWorkspace::readable_document`].
-pub(super) async fn readable_now(
-    reading: &super::readings::Reading,
-    (app, resource): (&str, &str),
-) -> Result<Option<Vec<u8>>, String> {
-    let (sealed, scoped) = reading.replica.read(|peer| {
-        let publication = peer.publication();
-        (
-            publication.is_sealed_document(app, resource),
-            publication.has_document_keys(app, resource),
-        )
-    });
-    if !sealed {
-        return Ok(reading.replica.read(|peer| peer.document(app, resource)));
-    }
-    let device = reading
-        .device
-        .as_ref()
-        .ok_or_else(|| String::from("this device holds no group keys"))?;
-    let keys =
-        read_document_keys(device, &reading.workspace, (app, resource), scoped, false).await?;
-    // The document is taken as it stands and opened once the replica is let go: opening it
-    // decrypts and merges every write of its history, which grows with what it holds, and every
-    // policy read and commit of the workspace waited on it while a read held the replica.
-    let Some(held) = reading
-        .replica
-        .read(|peer| peer.publication().held_document(app, resource))
-    else {
-        return Ok(None);
-    };
-    // Opened over what its last read merged: a document nobody wrote since reads as that read
-    // made it, and one being written merges only the writes it took since.
-    let route = (app.to_owned(), resource.to_owned());
-    let prior = if scoped {
-        None
-    } else {
-        reading.opened.take(&route)
-    };
-    let (opened, next) = match held.opened_over(&mut keys.open(), prior) {
-        Ok(opened) => opened,
-        // The writes the record's checkpoint stands in for are still on their way: the record is
-        // not whole yet, as a record whose writes are still arriving reads elsewhere, and no
-        // refusal of the reader.
-        Err(tilo_peer_state::OpenSealedError::Incomplete) => return Ok(None),
-        Err(tilo_peer_state::OpenSealedError::Failed(why)) => return Err(why),
-    };
-    if !scoped && let Some(next) = next {
-        reading.opened.keep(route, next);
-    }
-    Ok(Some(merged_or_named(
-        opened,
-        &reading.workspace,
-        (app, resource),
-    )))
-}
-
-/// The sealed documents of a workspace as their last reads opened them, so the next read of each
-/// opens only the writes it took since ([`tilo_peer_state::HeldDocument::opened_over`]).
-///
-/// What each read is kept; the merged document a later write is merged into is kept only for the
-/// documents read most lately, as it is far larger: a document being written is read again and
-/// again, one at rest is read as it was saved.
-#[derive(Default)]
-pub(super) struct MergedDocuments(std::sync::Mutex<OpenedState>);
-
-#[derive(Default)]
-struct OpenedState {
-    documents: std::collections::HashMap<(String, String), (u64, tilo_peer_state::MergedDocument)>,
-    reads: u64,
-}
-
-impl MergedDocuments {
-    /// Documents whose merged state is kept.
-    const MERGED: usize = 8;
-
-    /// Documents whose read is kept at all: past it, the read longest ago goes.
-    const READS: usize = 4096;
-
-    /// What the last read of `route` left, taken out: a read beside it opens the document whole.
-    fn take(&self, route: &(String, String)) -> Option<tilo_peer_state::MergedDocument> {
-        let mut state = self.0.lock_recover();
-        state.documents.remove(route).map(|(_, opened)| opened)
-    }
-
-    /// Keep what a read of `route` left, for the next one.
-    fn keep(&self, route: (String, String), opened: tilo_peer_state::MergedDocument) {
-        let mut state = self.0.lock_recover();
-        state.reads = state.reads.saturating_add(1);
-        let at = state.reads;
-        state.documents.insert(route, (at, opened));
-        let mut merged: Vec<(u64, (String, String))> = state
-            .documents
-            .iter()
-            .filter(|(_, (_, opened))| opened.holds_merged())
-            .map(|(route, (at, _))| (*at, route.clone()))
-            .collect();
-        if merged.len() > Self::MERGED {
-            merged.sort_unstable();
-            for (_, route) in merged
-                .iter()
-                .take(merged.len().saturating_sub(Self::MERGED))
-            {
-                if let Some((_, opened)) = state.documents.get_mut(route) {
-                    opened.lighten();
-                }
-            }
-        }
-        if state.documents.len() > Self::READS {
-            let mut by_age: Vec<(u64, (String, String))> = state
-                .documents
-                .iter()
-                .map(|(route, (at, _))| (*at, route.clone()))
-                .collect();
-            by_age.sort_unstable();
-            let over = state.documents.len().saturating_sub(Self::READS);
-            for (_, route) in by_age.into_iter().take(over) {
-                state.documents.remove(&route);
-            }
-        }
-    }
 }
 
 /// `resource` of `app` as `peer` holds it, its sealed history opened with `keys` where it has
@@ -558,7 +406,7 @@ pub(super) fn seal_changes(
 /// Write `record` of `app` as this host's own sealed checkpoint of it, from
 /// `document`, the record as its key holder reads it, sealed with `keys`. This
 /// is what founds a route again after its retained history lost the base its
-/// deltas were written over ([`Workspaces::refound_document`]): the checkpoint
+/// deltas were written over: the checkpoint
 /// is the whole record, so a device that joins afterwards reads it and the
 /// writes after it.
 ///
@@ -1055,14 +903,3 @@ impl Workspaces {
             .map_err(|error| error.to_string())
     }
 }
-
-#[cfg(all(test, feature = "agents"))]
-mod behind_tests;
-#[cfg(all(test, feature = "agents", feature = "apps"))]
-mod chain_head_tests;
-#[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
-pub mod fixtures;
-#[cfg(all(test, feature = "agents"))]
-mod folded_tests;
-#[cfg(all(test, feature = "agents"))]
-pub(crate) mod tests;

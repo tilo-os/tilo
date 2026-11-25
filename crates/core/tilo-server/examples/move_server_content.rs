@@ -597,14 +597,37 @@ mod tests {
                 let workspaces = server.workspaces().unwrap().clone();
                 let lounge = workspaces.create("Lounge").await.unwrap().workspace;
                 let other = workspaces.create("Elsewhere").await.unwrap().workspace;
-                let governor = workspaces.device_cert().clone();
+                // A note that names a picture and an avatar, of a kind the host declares
+                // only while it writes it: what a record names is read without it.
+                workspaces.declare_package_surface(
+                    "so.tilo.notes",
+                    br#"format = 2
+
+[[resources]]
+kind = "test.notes.note"
+label = "Note"
+version = 1
+fields = [
+  { path = "picture", type = "text" },
+  { path = "avatar", type = "text" },
+]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+"#,
+                );
                 workspaces
-                    .author_workspace_document(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
-                        doc.put(automerge::ROOT, "picture", picture)
-                            .map_err(|error| error.to_string())?;
-                        doc.put(automerge::ROOT, "avatar", earlier)
-                            .map_err(|error| error.to_string())
-                    })
+                    .author_record(
+                        &lounge,
+                        ("so.tilo.notes", "test.notes.note", "note"),
+                        |doc| {
+                            doc.put(automerge::ROOT, "picture", picture)
+                                .map_err(|error| error.to_string())?;
+                            doc.put(automerge::ROOT, "avatar", earlier)
+                                .map_err(|error| error.to_string())
+                        },
+                    )
                     .await
                     .unwrap();
                 server.shutdown().await;

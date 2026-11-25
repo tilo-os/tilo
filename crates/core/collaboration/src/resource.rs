@@ -173,7 +173,8 @@ fn scope_primary(doc: &mut AutoCommit, workspace: &str) -> bool {
 
 /// Make `doc` an app's record as it is created: its derived founding, the containers its kind
 /// keeps its items in ([`collab_types::document::founding`]), which every member creating the same
-/// record makes alike, then what the app's `initialize` writes, as any change of the writer's.
+/// record makes alike and the store derives for the record its route names, then what the app's
+/// `initialize` writes, as any change of the writer's.
 /// Nothing of who the record is goes in: the workspace's store keeps that.
 ///
 /// # Errors
@@ -189,7 +190,7 @@ pub fn content_genesis(
         .unwrap_or_default();
     let mut made = AutoCommit::new().with_actor(doc.get_actor().clone());
     if let Some(founding) =
-        collab_types::document::founding::structure(kind, checkout.id.as_str(), &containers)
+        collab_types::document::founding::structure(kind, checkout.id.route(), &containers)
     {
         ApplyIncoming::apply_incoming(&mut made, vec![founding])
             .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
@@ -271,6 +272,34 @@ mod tests {
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
     const KIND: &str = "files.tree";
+
+    /// An app's own record founds on the change the store derives for the record its route
+    /// names, the empty one: the store refuses any other founding of it.
+    #[test]
+    fn an_apps_own_record_founds_as_the_store_derives_it_for_its_route() {
+        const SURFACE: &[u8] = br#"format = 2
+
+[[resources]]
+kind = "test.founding.board"
+label = "Board"
+version = 1
+fields = [{ path = "items", type = { list = "text" } }]
+"#;
+        collab_types::app_surface::register_package("test.founding", SURFACE);
+        let kind = ResourceType::new("test.founding.board");
+        let mut made = AutoCommit::new();
+        content_genesis(&mut made, &DocumentCheckout::package_primary(kind), |_| {
+            Ok(())
+        })
+        .expect("the record is founded");
+        let derived = collab_types::document::founding::structure(
+            "test.founding.board",
+            "",
+            &[("items".to_owned(), ObjType::List)],
+        )
+        .expect("the board keeps its items in a list");
+        assert_eq!(made.get_heads(), [derived.hash()]);
+    }
 
     fn tree() -> (DocumentId, ResourceType) {
         (

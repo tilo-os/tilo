@@ -1,14 +1,12 @@
 //! The resources of the workspaces a service holds, as the broker's [`NativeDocumentReads`].
 //!
 //! An app's Open of a resource the workspace holds, and a session's own reads of one, are answered
-//! from the service's copy: the workspace's governor holds each document whole, sealed writes
-//! opened with the content keys the device the service is on holds. Every read is decided at the
-//! resource's node for the certificate that asks, as a member's read is, and again before every
-//! chunk the broker hands out.
+//! from the workspace's store, with what the person whose certificate asks may read of it. Every
+//! read is decided at the resource's node for that certificate, as a member's read is, and again
+//! before every chunk the broker hands out.
 //!
 //! The service keeps every resource of the workspaces it serves: one it holds nothing of is new
-//! here, and nothing is waited for. A chain's head names whichever of the chain's parts is the
-//! newest and holds no document of its own: what the service holds of the chain says which.
+//! here, and nothing is waited for.
 
 use tilo_peer_state::PeerDocumentReadError;
 
@@ -84,22 +82,12 @@ impl NativeDocumentReads for ServiceReads {
     }
 
     fn chain_head_answer(&self, context: &NativeDocumentReadContext) -> Option<ChainHeadAnswer> {
-        let route = context.route();
-        if !matches!(
-            neighbour_wire::document_sync(&route.document_id),
+        // A store keeps a record whole, in no parts: a chain's head names none here.
+        matches!(
+            neighbour_wire::document_sync(&context.route().document_id),
             neighbour_wire::DocumentSync::ChainHead { .. }
-        ) {
-            return None;
-        }
-        let workspaces = self.workspaces()?;
-        Some(
-            if workspaces.chain_head_has_part(&route.cluster_id, &route.app_id, &route.document_id)
-            {
-                ChainHeadAnswer::NewestPartOnItsWay
-            } else {
-                ChainHeadAnswer::NoPart
-            },
         )
+        .then_some(ChainHeadAnswer::NoPart)
     }
 
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
@@ -161,7 +149,7 @@ impl ServiceReads {
     ) -> Result<NativeDocumentRead, String> {
         context.revalidate_read().await?;
         let route = context.route();
-        let reader = context.certificate().device_public_key;
+        let reader = hex::encode(context.certificate().user_public_key);
         let workspaces = self
             .workspaces()
             .ok_or("this device's workspace service holds no workspaces")?;
@@ -174,35 +162,30 @@ impl ServiceReads {
             if !workspaces.holds_resource(workspace, app, resource) {
                 return Ok::<NativeDocumentRead, String>(NativeDocumentRead::Absent);
             }
+            // Decided at the resource's node for the certificate that asks, as every read is.
+            workspaces.authorizes_resource_read(workspace, context.certificate(), app, resource)?;
             // One read of one record's document, whether it answers the whole record, the part
             // past the revision the reader held, or that nothing changed since it.
             self.metrics.inc_documents_read();
             // A reader that holds a revision reads again only what changed: the capture below
             // says which, cheaper than saving the whole document.
             if let Some(known) = known_revision
-                && let Ok(Some(revision)) = workspaces
-                    .resource_revision(workspace, (app, resource), reader)
-                    .await
+                && let Ok(Some(revision)) =
+                    workspaces.resource_revision(workspace, (app, resource), &reader)
                 && revision == known
             {
                 return Ok(NativeDocumentRead::Unchanged(revision));
             }
-            if workspaces.resource_arriving(workspace, app, resource) {
-                return Ok(NativeDocumentRead::Pending);
-            }
-            // On its way (sealed under keys this device has not taken yet, or missing a write
-            // it knows of): it reads once that arrives, which wakes the reader.
             let Some(capture) = workspaces
-                .capture_resource(workspace, (app, resource), reader, maximum)
-                .await
+                .capture_resource(workspace, (app, resource), &reader, maximum)
                 .map_err(refusal)?
             else {
-                return Ok(NativeDocumentRead::Pending);
+                return Ok(NativeDocumentRead::Absent);
             };
             Ok(NativeDocumentRead::Captured {
-                revision: capture.revision(),
-                heads: capture.heads().iter().map(|head| head.0).collect(),
-                body: Box::new(Captured(capture.into_bytes())),
+                revision: capture.revision,
+                heads: capture.heads.iter().map(|head| head.0).collect(),
+                body: Box::new(Captured(capture.bytes)),
             })
         }
         .await?;
@@ -218,7 +201,7 @@ impl ServiceReads {
     ) -> Result<Option<bool>, String> {
         context.revalidate_read().await?;
         let route = context.route();
-        let reader = context.certificate().device_public_key;
+        let reader = hex::encode(context.certificate().user_public_key);
         let Some(workspaces) = self.workspaces() else {
             return Ok(None);
         };
@@ -226,13 +209,17 @@ impl ServiceReads {
             // A resource the service holds nothing of is new here: the broker captures.
             return Ok(None);
         }
-        let revision = workspaces
-            .resource_revision(
-                &route.cluster_id,
-                (&route.app_id, &route.document_id),
-                reader,
-            )
-            .await;
+        workspaces.authorizes_resource_read(
+            &route.cluster_id,
+            context.certificate(),
+            &route.app_id,
+            &route.document_id,
+        )?;
+        let revision = workspaces.resource_revision(
+            &route.cluster_id,
+            (&route.app_id, &route.document_id),
+            &reader,
+        );
         match revision {
             Ok(revision) => Ok(revision.map(|revision| Some(revision) == known_revision)),
             // A read the service cannot decide without capturing: the broker captures instead.

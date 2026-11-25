@@ -145,47 +145,91 @@ pub async fn apply_on<R: Resource>(
     action: Invoke<R>,
 ) -> Result<(), String> {
     let cert = workspaces.device_cert().clone();
-    let start = Box::new(genesis::<R>(workspace)?);
-    edit_on(workspaces, workspace, resource, start, |doc| {
-        invoke(doc, &cert, resource.0, action)
-    })
+    let (app, name) = resource;
+    // Boxed: committing a write can apply a change of the person's own workspace in turn.
+    Box::pin(
+        workspaces.author_record(workspace, (app, R::KIND, name), |doc| {
+            invoke(doc, &cert, app, action)
+        }),
+    )
     .await
 }
 
-/// [`apply_on`] for any edit a resource of the person's own workspace `workspace` takes, typed or
-/// not: `edit` changes `doc`, the record `(app, name)` as the workspace holds it, from `genesis`
-/// where it holds none yet. On the device keeping the workspace it is written on that copy, under
-/// the workspace's lock; on another of the person's devices it is this device's own write,
-/// carried to the device keeping the workspace and decided there as any member's write is.
-///
-/// # Errors
-/// As [`apply`], or what `edit` refused.
-pub async fn edit_on<F>(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, name): (&str, &str),
-    genesis: Box<automerge::AutoCommit>,
-    edit: F,
-) -> Result<(), String>
-where
-    F: FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
-{
-    if workspaces.is_member(workspace).await? {
-        return edit_as_member(workspaces, workspace, (app, name), Some(genesis), edit).await;
+/// The kinds of the person's own records and of what a workspace's owner alone keeps of it,
+/// declared under the apps that keep them: every holder's store keeps them as the resources of
+/// those apps, founded and judged by their types.
+pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) {
+    use tilo_resource::surface::surface_of;
+    declare(
+        surfaces,
+        devices::DEVICES.0,
+        vec![surface_of::<devices::Devices>()],
+    );
+    declare(
+        surfaces,
+        super::blocked::BLOCKED.0,
+        vec![surface_of::<super::blocked::Blocked>()],
+    );
+    declare(
+        surfaces,
+        super::region::REGION.0,
+        vec![surface_of::<super::region::Region>()],
+    );
+    declare(
+        surfaces,
+        super::servers::SERVERS.0,
+        vec![
+            surface_of::<super::servers::Servers>(),
+            surface_of::<super::servers::floor::Floor>(),
+        ],
+    );
+    declare(
+        surfaces,
+        super::membership::OWNERSHIP.0,
+        vec![surface_of::<super::membership::Ownership>()],
+    );
+    declare(
+        surfaces,
+        tilo_user_identity::workspace_list::APP,
+        vec![surface_of::<
+            tilo_user_identity::workspace_list::WorkspaceList,
+        >()],
+    );
+    // The workspace records the system keeps for apps, whether or not the app is installed here.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        system::<super::vault_entries::WorkspaceVaultEntries>(surfaces, super::vault::APP);
+        system::<tilo_workspace_emoji::WorkspaceEmoji>(surfaces, tilo_workspace_emoji::OWNER);
+        system::<tilo_contact_directory::ContactDirectory>(surfaces, tilo_app_id::apps::CONTACTS);
+        system::<crate::environment::VmEnvironment>(surfaces, crate::environment::VM_APP);
     }
-    let cert = workspaces.device_cert().clone();
-    let applied = Box::pin(workspaces.author_workspace_document_from(
-        (workspace, &cert),
-        (app, name),
-        Some(genesis),
-        edit,
-    ))
-    .await
-    .map_err(|error| error.to_string());
-    if applied.is_ok() {
-        workspaces.wrote(workspace, app, name);
+}
+
+/// Declare `R`, a workspace record the system keeps for `app`, from its type.
+#[cfg(not(target_arch = "wasm32"))]
+fn system<R: Resource>(surfaces: &collab_types::app_surface::Surfaces, app: &str) {
+    let file = serde_json::json!({ "resources": [tilo_resource::surface::surface_of::<R>()] });
+    let file =
+        collab_types::surface::SurfaceFile::from_json(&collab_types::surface::canonical(&file))
+            .expect("a type's surface reads as a surface");
+    for resource in file.resources {
+        surfaces.declare_system(app, resource);
     }
-    applied
+}
+
+/// Declare `resources` as every kind `app` keeps, where this device's stores judge its records.
+fn declare(
+    surfaces: &collab_types::app_surface::Surfaces,
+    app: &str,
+    resources: Vec<tilo_resource::surface::Surface>,
+) {
+    let resources: Vec<serde_json::Value> = resources
+        .into_iter()
+        .map(|surface| serde_json::to_value(surface).expect("a surface writes as JSON"))
+        .collect();
+    let file = tilo_resource::surface::file::render("", &resources, &[])
+        .expect("a surface writes as TOML");
+    super::keep_surface(surfaces, app, file.as_bytes());
 }
 
 /// [`edit_on`] where this device holds `workspace` as a member copy another of the person's
@@ -361,48 +405,4 @@ pub async fn document_on(
         .resource_document(workspace, app, name)
         .await
         .map_err(|error| error.to_string())
-}
-
-/// Edit the document `(app, name)` of this device's person's workspace, as this
-/// device: [`document`]'s counterpart.
-///
-/// # Errors
-/// This device holds no copy of the workspace, the edit was refused, or the
-/// document could not be written.
-pub async fn edit_document<F>(
-    workspaces: &Workspaces,
-    resource: (&str, &str),
-    edit: F,
-) -> Result<(), String>
-where
-    F: FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
-{
-    edit_document_on(workspaces, &workspace_id(workspaces), resource, edit).await
-}
-
-/// [`edit_document`] on `workspace`, which is this device's person's workspace.
-///
-/// # Errors
-/// As [`edit_document`].
-pub async fn edit_document_on<F>(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, name): (&str, &str),
-    edit: F,
-) -> Result<(), String>
-where
-    F: FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
-{
-    if workspaces.is_member(workspace).await? {
-        return edit_as_member(workspaces, workspace, (app, name), None, edit).await;
-    }
-    let cert = workspaces.device_cert().clone();
-    let applied = workspaces
-        .author_workspace_document_from((workspace, &cert), (app, name), None, edit)
-        .await
-        .map_err(|error| error.to_string());
-    if applied.is_ok() {
-        workspaces.wrote(workspace, app, name);
-    }
-    applied
 }

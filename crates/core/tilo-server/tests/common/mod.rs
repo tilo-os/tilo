@@ -1400,3 +1400,4 @@ pub async fn reaches_host(hosted: &Hosted, workspace: WorkspaceId, record: &str,
     })
     .await;
 }
+pub use tilo_workspace_service::workspaces::fixtures::write_record;

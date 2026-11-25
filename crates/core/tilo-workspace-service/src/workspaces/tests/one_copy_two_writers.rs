@@ -64,16 +64,18 @@ async fn a_write_authored_and_one_the_link_takes_in_at_one_moment_both_land() {
         };
         let authored = {
             let workspaces = workspaces.clone();
-            let cert = cert.clone();
             let workspace = workspace.clone();
             tokio::spawn(async move {
-                workspaces
-                    .author_workspace_document(&workspace, &cert, (APP, RECORD), |doc| {
+                crate::workspaces::fixtures::write_record(
+                    &workspaces,
+                    &workspace,
+                    (APP, RECORD),
+                    |doc| {
                         doc.put(automerge::ROOT, "round", i64::from(round))
-                            .map(drop)
                             .map_err(|error| error.to_string())
-                    })
-                    .await
+                    },
+                )
+                .await
             })
         };
         let (_, kept) = admitted.await.unwrap();

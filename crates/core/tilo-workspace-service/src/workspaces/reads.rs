@@ -7,9 +7,6 @@
 //! device whose certificate asks.
 
 #[cfg(feature = "apps")]
-#[cfg(feature = "apps")]
-use tilo_peer_state::PeerDocumentCapture;
-#[cfg(feature = "apps")]
 use tilo_peer_state::PeerDocumentReadError;
 use tilo_peer_state::StatePeer;
 #[cfg(feature = "apps")]
@@ -35,17 +32,13 @@ impl Workspaces {
         since: &[[u8; 32]],
         maximum: usize,
     ) -> Result<DocumentRead, String> {
-        let moderation_pending = self.moderation_history_pending(workspace, app, resource);
+        if let Some(read) = self.stored_read(workspace, (app, resource), since, maximum)? {
+            return Ok(read);
+        }
         let (peer, device) = self
             .replica(workspace)
             .ok_or("this service does not hold the workspace")?;
         let reader = self.own_reader();
-        if moderation_pending {
-            // The read is decided as any other is, and waits for the history rather than
-            // answering with a record the workspace has but this device has not read whole.
-            peer.check_document_read(reader, app, resource, tilo_clock::wall())?;
-            return Ok(DocumentRead::Pending);
-        }
         let prepared =
             crate::documents::prepare(&peer, device.as_ref(), workspace, (app, resource), reader)
                 .await?;
@@ -75,6 +68,101 @@ impl Workspaces {
         read
     }
 
+    /// `app`'s record `resource` of `workspace` as this service's person reads it from the
+    /// workspace's store, as [`Self::own_read`] answers: `None` for a record the store holds none
+    /// of, which is a document of the workspace's own.
+    ///
+    /// # Errors
+    /// The person may not read the record, its document does not read, or it exceeds `maximum`.
+    fn stored_read(
+        &self,
+        workspace: &str,
+        (app, resource): (&str, &str),
+        since: &[[u8; 32]],
+        maximum: usize,
+    ) -> Result<Option<DocumentRead>, String> {
+        let Some(held) = self.inner.readings.held(workspace) else {
+            return Ok(None);
+        };
+        let reader = hex::encode(self.device_cert().user_public_key);
+        let may_read = tilo_resource_store::wire::reads_as(&reader);
+        let mut store = held.store.lock_recover();
+        let Some(kind) = self
+            .inner
+            .host
+            .surfaces
+            .kinds_of(app)
+            .into_iter()
+            .find(|kind| store.index().get(kind, resource).is_some())
+        else {
+            return Ok(None);
+        };
+        if store.get(&kind, resource, &may_read).is_none() {
+            return Err(format!(
+                "this device's person may not read {resource} of {app}"
+            ));
+        }
+        let Some(document) = store
+            .content_document(&kind, resource)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(Some(DocumentRead::Absent));
+        };
+        let at = document.get_heads();
+        let revision = record_revision(&at);
+        let heads: Vec<[u8; 32]> = at.iter().map(|head| head.0).collect();
+        let fits = |bytes: Vec<u8>| {
+            if bytes.len() > maximum {
+                Err(format!("{resource} of {app} is larger than one read takes"))
+            } else {
+                Ok(bytes)
+            }
+        };
+        if !since.is_empty() {
+            let (mut now, mut held) = (heads.clone(), since.to_vec());
+            now.sort_unstable();
+            held.sort_unstable();
+            if now == held {
+                return Ok(Some(DocumentRead::Unchanged(revision)));
+            }
+            let held: Vec<automerge::ChangeHash> = since
+                .iter()
+                .map(|head| automerge::ChangeHash(*head))
+                .collect();
+            if held.iter().all(|head| document.has_change(head)) {
+                let bytes = fits(document.save_after(&held))?;
+                return Ok(Some(DocumentRead::Changes {
+                    revision,
+                    heads,
+                    bytes,
+                }));
+            }
+        }
+        let bytes = fits(document.save())?;
+        Ok(Some(DocumentRead::Whole {
+            revision,
+            heads,
+            bytes,
+            hint: None,
+        }))
+    }
+
+    /// The records `workspace`'s store holds, by their app and id, for its listings.
+    fn stored_routes(&self, workspace: &str) -> Vec<(String, String)> {
+        let Some(held) = self.inner.readings.held(workspace) else {
+            return Vec::new();
+        };
+        let store = held.store.lock_recover();
+        let index = store.index();
+        let mut routes = Vec::new();
+        for (app, kind) in self.inner.host.surfaces.kinds() {
+            for id in index.ids_of(&kind) {
+                routes.push((app.clone(), id.to_owned()));
+            }
+        }
+        routes
+    }
+
     /// Whether `app`'s `resource` of `workspace` reads for this service's own device now, decided
     /// as [`Self::own_read`] decides it before it opens anything: held here, its checkpoint and
     /// its keys arrived, and the sealed writes held cover its history. One this device may not
@@ -86,8 +174,11 @@ impl Workspaces {
         workspace: &str,
         (app, resource): (&str, &str),
     ) -> bool {
-        if self.moderation_history_pending(workspace, app, resource) {
-            return false;
+        if self
+            .stored_read(workspace, (app, resource), &[], usize::MAX)
+            .is_ok_and(|read| read.is_some())
+        {
+            return true;
         }
         let Some((peer, device)) = self.replica(workspace) else {
             return false;
@@ -130,8 +221,14 @@ impl Workspaces {
             .readings
             .held(workspace)
             .ok_or("this service does not hold the workspace")?;
+        let stored = self.stored_routes(workspace);
         Ok(held.replica.read(|peer| {
-            let mut listed = crate::documents::listing(peer);
+            // The documents of the workspace's store are listed by the records they hold.
+            let mut listed: Vec<(String, String)> = crate::documents::listing(peer)
+                .into_iter()
+                .filter(|(_, document)| !collab_types::is_store_document(document))
+                .collect();
+            listed.extend(stored);
             listed.push((PRESENCE.to_owned(), String::new()));
             listed.extend(
                 peer.governance()
@@ -155,7 +252,14 @@ impl Workspaces {
             .readings
             .held(workspace)
             .ok_or("this service does not hold the workspace")?;
-        Ok(held.replica.read(crate::documents::listing))
+        let mut listed: Vec<(String, String)> = held
+            .replica
+            .read(crate::documents::listing)
+            .into_iter()
+            .filter(|(_, document)| !collab_types::is_store_document(document))
+            .collect();
+        listed.extend(self.stored_routes(workspace));
+        Ok(listed)
     }
 
     /// Every change of `workspace`'s members its governance names, oldest first, the actions
@@ -204,77 +308,36 @@ impl Workspaces {
             .is_some_and(|held| held.device.is_some())
     }
 
-    /// Whether this service holds anything of `app`'s `resource` in `workspace`, committed or
-    /// sealed alike.
+    /// Whether `workspace`'s store holds `app`'s record `resource`, whoever may read it.
     pub(crate) fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
         self.inner.readings.held(workspace).is_some_and(|held| {
-            held.moderation_pending(app, resource)
-                || held
-                    .replica
-                    .read(|peer| crate::documents::holds(peer, app, resource))
+            let store = held.store.lock_recover();
+            self.inner
+                .host
+                .surfaces
+                .kinds_of(app)
+                .iter()
+                .any(|kind| store.index().get(kind, resource).is_some())
         })
     }
 
-    /// The revision `app`'s `resource` of `workspace` stands at for the device `reader`: decided
-    /// as a read is, handing nothing out. `None` while a checkpoint is arriving, which only a
-    /// capture answers.
+    /// The revision `app`'s record `resource` of `workspace` stands at for the person `reader`
+    /// (their key, hex), handing nothing out: `None` for a record the store holds none of that
+    /// they may read.
     ///
     /// # Errors
-    ///
-    /// The reader may not read it, the service holds no copy, or it is sealed and this device
-    /// holds no keys of it.
+    /// The service holds no copy of the workspace.
     #[cfg(feature = "apps")]
-    pub(crate) async fn resource_revision(
+    pub(crate) fn resource_revision(
         &self,
         workspace: &str,
         (app, resource): (&str, &str),
-        reader: [u8; 32],
+        reader: &str,
     ) -> Result<Option<[u8; 32]>, String> {
-        if self.moderation_history_pending(workspace, app, resource) {
-            return Ok(None);
-        }
-        let (peer, device) = self
-            .replica(workspace)
-            .ok_or("this service does not hold the workspace")?;
-        crate::documents::revision(
-            &peer,
-            device.as_ref(),
-            workspace,
-            (app, resource),
-            reader,
-            tilo_clock::wall(),
-        )
-        .await
-    }
-
-    /// Whether `app`'s `resource` of `workspace` is still arriving: its governed checkpoint is
-    /// cut in flight, so it reads once that body is admitted.
-    #[cfg(feature = "apps")]
-    pub(crate) fn resource_arriving(&self, workspace: &str, app: &str, resource: &str) -> bool {
-        self.inner.readings.held(workspace).is_some_and(|held| {
-            held.moderation_pending(app, resource)
-                || held
-                    .replica
-                    .read(|peer| peer.checkpoint_pending(app, resource))
-        })
-    }
-
-    /// Whether the workspace's legacy Chat reports and decisions have not been read into its
-    /// moderation record yet: a read of that record waits for them rather than answering with
-    /// what this device has not imported.
-    pub(super) fn moderation_history_pending(
-        &self,
-        workspace: &str,
-        app: &str,
-        resource: &str,
-    ) -> bool {
-        if (app, resource) != (tilo_app_id::apps::CHAT, moderation_model::DOCUMENT) {
-            return false;
-        }
-        self.inner
-            .readings
-            .held(workspace)
-            .is_some_and(|held| held.moderation_pending(app, resource))
+        Ok(self
+            .stored_capture(workspace, (app, resource), reader, None)
+            .map_err(|error| error.to_string())?
+            .map(|capture| capture.revision))
     }
 
     /// Whether `certificate`'s device may read `app`'s `resource` of `workspace` now: a device the
@@ -311,53 +374,71 @@ impl Workspaces {
         checked
     }
 
-    /// `app`'s `resource` of `workspace` as the device `reader` reads it now: at most `maximum`
-    /// bytes of it, its sealed writes opened with the service's content keys. `None` while it is
-    /// on its way: sealed under keys this device is due and has not taken yet, or missing a write
-    /// this device knows of. It reads once those arrive.
+    /// `app`'s record `resource` of `workspace` as the person `reader` (their key, hex) reads it
+    /// now from the workspace's store: at most `maximum` bytes of it, with all of its history.
+    /// `None` for a record the store holds none of that they may read.
     ///
     /// # Errors
-    ///
-    /// The reader may not read it, the service holds no copy, it is sealed for a group this device
-    /// takes no part in, its history does not open, or it exceeds `maximum`.
+    /// The service holds no copy, the record's document does not read, or it exceeds `maximum`.
     #[cfg(feature = "apps")]
-    pub(crate) async fn capture_resource(
+    pub(crate) fn capture_resource(
         &self,
         workspace: &str,
         (app, resource): (&str, &str),
-        reader: [u8; 32],
+        reader: &str,
         maximum: usize,
-    ) -> Result<Option<PeerDocumentCapture>, PeerDocumentReadError> {
-        let (peer, device) = self
-            .replica(workspace)
-            .ok_or(PeerDocumentReadError::Missing)?;
-        crate::documents::capture(
-            &peer,
-            device.as_ref(),
-            workspace,
-            (app, resource),
-            reader,
-            tilo_clock::wall(),
-            maximum,
-        )
-        .await
+    ) -> Result<Option<StoredCapture>, PeerDocumentReadError> {
+        self.stored_capture(workspace, (app, resource), reader, Some(maximum))
     }
 
-    /// Whether a part of the chain `app`'s `resource` names is held here: the answer an Open of a
-    /// chain's head is decided by.
+    /// [`Self::capture_resource`], saving the record only when `maximum` asks for its bytes.
     #[cfg(feature = "apps")]
-    pub(crate) fn chain_head_has_part(&self, workspace: &str, app: &str, resource: &str) -> bool {
-        let Ok(routes) = self.own_listing(workspace) else {
-            return false;
+    fn stored_capture(
+        &self,
+        workspace: &str,
+        (app, resource): (&str, &str),
+        reader: &str,
+        maximum: Option<usize>,
+    ) -> Result<Option<StoredCapture>, PeerDocumentReadError> {
+        let held = self
+            .inner
+            .readings
+            .held(workspace)
+            .ok_or(PeerDocumentReadError::Missing)?;
+        let may_read = tilo_resource_store::wire::reads_as(reader);
+        let mut store = held.store.lock_recover();
+        let Some(kind) = self
+            .inner
+            .host
+            .surfaces
+            .kinds_of(app)
+            .into_iter()
+            .find(|kind| store.get(kind, resource, &may_read).is_some())
+        else {
+            return Ok(None);
         };
-        routes.into_iter().any(|(other_app, other)| {
-            other_app == app
-                && matches!(
-                    neighbour_wire::document_sync(&other),
-                    neighbour_wire::DocumentSync::Part { base, .. }
-                        if part_of(resource) == Some(base)
-                )
-        })
+        let Some(document) = store
+            .content_document(&kind, resource)
+            .map_err(|error| PeerDocumentReadError::Opening(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let heads = document.get_heads();
+        let bytes = match maximum {
+            Some(maximum) => {
+                let bytes = document.save();
+                if bytes.len() > maximum {
+                    return Err(PeerDocumentReadError::Capacity);
+                }
+                bytes
+            }
+            None => Vec::new(),
+        };
+        Ok(Some(StoredCapture {
+            revision: record_revision(&heads),
+            heads,
+            bytes,
+        }))
     }
 
     /// The replica of `workspace` and the content keys its device holds, taken in a moment: the
@@ -368,13 +449,26 @@ impl Workspaces {
     }
 }
 
-/// The chain `resource`, a chain's head, belongs to; `None` for any other resource.
+/// A record of a workspace's store as one read of it captured it.
 #[cfg(feature = "apps")]
-fn part_of(resource: &str) -> Option<&str> {
-    match neighbour_wire::document_sync(resource) {
-        neighbour_wire::DocumentSync::ChainHead { base } => Some(base),
-        _ => None,
+pub(crate) struct StoredCapture {
+    /// What the record stands at: equal revisions at two moments mean it took no write between.
+    pub(crate) revision: [u8; 32],
+    /// Its heads.
+    pub(crate) heads: Vec<automerge::ChangeHash>,
+    /// The record saved with all of its history.
+    pub(crate) bytes: Vec<u8>,
+}
+
+/// The revision a record whose document stands at `heads` is at: any write to it moves it.
+pub(crate) fn record_revision(heads: &[automerge::ChangeHash]) -> [u8; 32] {
+    let mut heads = heads.to_vec();
+    heads.sort();
+    let mut hasher = blake3::Hasher::new_derive_key("tilo record revision v1");
+    for head in &heads {
+        hasher.update(&head.0);
     }
+    *hasher.finalize().as_bytes()
 }
 
 /// Sealed resources as this service's own device last opened them ([`crate::documents::Opened`]).

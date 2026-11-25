@@ -6,8 +6,8 @@
 //! (`tilo-actions/1`) like any other call: make an agent ([`WORKSPACE_AGENT_CREATE`]), change one
 //! ([`WORKSPACE_AGENT_UPDATE`]), retire one ([`WORKSPACE_AGENT_DELETE`]). Each is the record's own
 //! action, admitted by the workspace's ordinary grants for whoever acts (a person, or an agent
-//! for its person) on the record's node, applied as them, and written as this device's member
-//! write, signed, sealed and published as any member's write is.
+//! for its person) on the record's node, applied as them, and kept in the workspace's store as
+//! this device's write, as any record of a kind its app declares is.
 
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Acting, Answer, MemberAccess, TreePath};
@@ -125,73 +125,6 @@ fn declared(id: &str) -> Result<ActionDecl<WorkspaceAgents>, ActionCallError> {
         })
 }
 
-/// What `invoke` changes of `workspace`'s record stored as `stored` (none yet: the record it
-/// founds, whole), applied as `acting`.
-fn applied(
-    workspace: &str,
-    stored: Option<&[u8]>,
-    (acting, served): (
-        &Acting,
-        Option<(tilo_actions::InvocationId, tilo_actions::remote::SignedCall)>,
-    ),
-    invoke: Invoke<WorkspaceAgents>,
-) -> Result<Vec<u8>, ActionCallError> {
-    let record = if let Some(bytes) = stored {
-        Replica::<WorkspaceAgents>::load(bytes).map_err(unavailable)?
-    } else {
-        let mut founded = Replica::from_doc(founding_document(workspace)?);
-        // The genesis is the founding actor's change: what follows it is this service's own.
-        founded.doc_mut().set_actor(automerge::ActorId::random());
-        founded
-    };
-    // The change is the workspace's own app's action: the record is the one it keeps for the
-    // whole workspace, and every device decides the change against that app's surface. A
-    // change naming no app would have one guessed from the kind's id, and the record's app
-    // publishes no action of a guessed name.
-    let mut record = record.as_acting(acting.clone()).in_app(OWNER, "Workspace");
-    if let Some((invocation, signed)) = served {
-        record = record.serving(invocation, signed);
-    }
-    let before = record.heads();
-    record
-        .apply(invoke)
-        .map_err(|error| ActionCallError::Refused {
-            reason: error.to_string(),
-        })?;
-    Ok(if stored.is_none() {
-        record.save()
-    } else {
-        record.doc_mut().save_after(&before)
-    })
-}
-
-/// The record's genesis in `workspace`: the same change every device opening it makes, so a record
-/// this service founds and the one a member's Settings opened before it are one document.
-#[cfg(any(feature = "agents", feature = "apps"))]
-fn founding_document(workspace: &str) -> Result<automerge::AutoCommit, ActionCallError> {
-    let id = collab_types::document::DocumentId::parse(&record_id())
-        .ok_or_else(|| unavailable("the agents record's id is no document's"))?;
-    let kind = collab_types::document::ResourceType::new(KIND);
-    let mut doc = automerge::AutoCommit::new();
-    collaboration::resource::genesis(
-        &mut doc,
-        &collab_types::document::DocumentCheckout::new(id, kind),
-        workspace,
-        |doc| WorkspaceAgents::initialize(doc).map_err(|error| error.to_string()),
-    )
-    .map_err(unavailable)?;
-    Ok(doc)
-}
-
-/// Where this service is built without the resources' genesis, the record is founded by the first
-/// member's Settings.
-#[cfg(not(any(feature = "agents", feature = "apps")))]
-fn founding_document(_workspace: &str) -> Result<automerge::AutoCommit, ActionCallError> {
-    Err(unavailable(
-        "the workspace's agents are first set up in Settings on a member's device",
-    ))
-}
-
 #[expect(
     clippy::needless_pass_by_value,
     reason = "`map_err` hands each error over by value"
@@ -261,11 +194,11 @@ impl Workspaces {
         let acting = caller.acting();
         let mut arguments = object(&request.argument)?;
         match operation {
-            WORKSPACE_AGENT_CREATE => Box::pin(
-                self.create_agent((workspace, acting, request), arguments),
-            )
-            .await
-            .map(|agent| json!({ "agent": agent })),
+            WORKSPACE_AGENT_CREATE => {
+                Box::pin(self.create_agent((workspace, acting, request), arguments))
+                    .await
+                    .map(|agent| json!({ "agent": agent }))
+            }
             WORKSPACE_AGENT_UPDATE => {
                 let Some(Value::String(action)) = arguments.remove("action") else {
                     return Err(ActionCallError::InvalidRequest {
@@ -600,40 +533,41 @@ impl Workspaces {
         {
             return Err(ActionCallError::NotPermitted);
         }
-        let stored = self.agents_record(workspace).await?;
-        let founding = stored.is_none();
         let served = match call {
             Some(call) if self.holds_own_copy(workspace).await => {
                 tilo_actions::remote::SignedCall::of(call).map(|signed| (call.invocation, signed))
             }
             _ => None,
         };
-        let changes = applied(workspace, stored.as_deref(), (acting, served), invoke)?;
-        if changes.is_empty() {
-            return Ok(());
+        // The change is the workspace's own app's action: the record is the one it keeps for the
+        // whole workspace, and every device decides the change against that app's surface.
+        #[cfg(feature = "apps")]
+        return self
+            .author_record(workspace, (OWNER, KIND, &record_id()), |doc| {
+                let mut record = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                    .as_acting(acting.clone())
+                    .in_app(OWNER, "Workspace");
+                if let Some((invocation, signed)) = served {
+                    record = record.serving(invocation, signed);
+                }
+                let applied =
+                    record
+                        .apply(invoke)
+                        .map(drop)
+                        .map_err(|error| ActionCallError::Refused {
+                            reason: error.to_string(),
+                        });
+                std::mem::swap(doc, record.doc_mut());
+                Ok(applied)
+            })
+            .await
+            .map_err(unavailable)?;
+        // A device that serves no apps keeps no store records.
+        #[cfg(not(feature = "apps"))]
+        {
+            drop((served, invoke));
+            Err(unavailable("this device keeps no records of the workspace"))
         }
-        let route = tilo_peer_state::document_frame::DocumentRoute {
-            app_id: OWNER.to_owned(),
-            cluster_id: workspace.to_owned(),
-            document: record_id(),
-        };
-        let sealed = match self.own_route_keys(&route, true).await {
-            Some(Ok(keys)) => Some(keys),
-            Some(Err(reason)) => return Err(unavailable(reason)),
-            None => None,
-        };
-        Box::pin(self.own_write(
-            workspace,
-            (OWNER, &route.document),
-            None,
-            &changes,
-            founding,
-            founding,
-            sealed.as_ref(),
-        ))
-        .await
-        .map(|_| ())
-        .map_err(unavailable)
     }
 
     /// Whether the workspace's grants let `acting` take the record's action `verb`: decided on

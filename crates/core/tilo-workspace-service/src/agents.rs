@@ -1652,36 +1652,28 @@ pub async fn count_spend(
     cost: u64,
 ) -> Result<(), String> {
     let keeper = agent.acts_for.clone();
-    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let (id, day) = (agent.id.0.clone(), day.to_owned());
     workspaces
-        .author_application(
-            workspace,
-            workspaces.device_cert(),
-            AGENTS_OWNER,
-            &record,
-            |doc| {
-                let mut counting =
-                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                        .in_app("so.tilo.model", "Model")
-                        .as_author(&keeper)
-                        .in_app(AGENTS_OWNER, "Workspace");
-                let applied = counting
-                    .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
-                        tilo_workspace_agent::workspace_agents::RecordAgentSpend {
-                            agent: tilo_resource::Id::from_raw(id),
-                            day,
-                            cost_micros: cost,
-                        },
-                    ))
-                    .map(drop)
-                    .map_err(|error| error.to_string());
-                std::mem::swap(doc, counting.doc_mut());
-                applied
-            },
-        )
+        .author_agents(workspace, |doc| {
+            let mut counting =
+                tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                    .in_app("so.tilo.model", "Model")
+                    .as_author(&keeper)
+                    .in_app(AGENTS_OWNER, "Workspace");
+            let applied = counting
+                .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
+                    tilo_workspace_agent::workspace_agents::RecordAgentSpend {
+                        agent: tilo_resource::Id::from_raw(id),
+                        day,
+                        cost_micros: cost,
+                    },
+                ))
+                .map(drop)
+                .map_err(|error| error.to_string());
+            std::mem::swap(doc, counting.doc_mut());
+            applied
+        })
         .await
-        .map_err(|error| error.to_string())
 }
 
 /// A turn's model calls, asked of the model the workspace linked, with its own key.

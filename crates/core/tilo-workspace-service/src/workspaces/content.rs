@@ -383,14 +383,7 @@ impl Workspaces {
             .chain(peer.sealed_routes())
             .filter(|route| only.is_none_or(|only| only.contains(route)))
             .collect();
-        let mut read = WholeDocuments {
-            files_security_basis: routes
-                .iter()
-                .any(|(app, _)| app == tilo_app_id::apps::FILE_EXPLORER)
-                .then(|| files_security_basis(&peer))
-                .flatten(),
-            ..WholeDocuments::default()
-        };
+        let mut read = WholeDocuments::default();
         for (app, record) in routes {
             let document = super::sealed_documents::whole_document(
                 &peer,
@@ -432,92 +425,75 @@ impl Workspaces {
                 }
             }
         }
+        // The records the workspace's store keeps, each with all of its history.
+        let mut governed = state.lock().await;
+        for (route, _, document) in self.stored_documents(&mut governed, only, true) {
+            match document {
+                Ok((revision, saved)) => {
+                    read.revisions.insert(route.clone(), revision);
+                    read.documents.push((route, saved));
+                }
+                Err(why) => read.unread.push((route, why)),
+            }
+        }
         Ok(read)
     }
 
-    /// Publish a replacement Files index from a snapshot, only while its
-    /// revision, access policy and encryption epoch still match the copy.
-    /// Returns false when a newer state must be scanned again.
-    ///
-    /// # Errors
-    /// The governor cannot read the key or publish the change.
-    pub async fn publish_files_migration(
+    /// Every record `governed`'s store keeps (or of `only` among them), by its app and id, with
+    /// its kind, the revision it is at and, when `saved`, the record saved with all of its
+    /// history.
+    pub(super) fn stored_documents(
         &self,
-        workspace: &str,
-        snapshot: &WholeDocuments,
-        keys: &key_group::ContentKeys,
-        changes: Vec<u8>,
-    ) -> Result<bool, CollaborationError> {
-        if changes.len() > 64 * 1024 {
-            return Err(CollaborationError::new(
-                "Files migration exceeds publication limit",
-            ));
-        }
-        let app = tilo_app_id::apps::FILE_EXPLORER;
-        let index = collab_types::person_document_id(collab_types::FILES_TREE_KIND);
-        let Some(revision) = snapshot.revisions.get(&(app.to_owned(), index.clone())) else {
-            return Ok(false);
-        };
-        let Some(basis) = snapshot.files_security_basis.as_ref() else {
-            return Ok(false);
-        };
-        let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        let device = governed
-            .device
-            .as_ref()
-            .ok_or_else(|| CollaborationError::new("this device has no workspace keys"))?;
-        let now = tilo_clock::wall();
-        let scoped = governed.peer().requires_document_keys(app, &index, now)?;
-        let writing = super::sealed_documents::read_document_keys(
-            device,
-            workspace,
-            (app, &index),
-            scoped,
-            true,
-        )
-        .await?;
-        if !writing.same_write_key(keys) {
-            return Ok(false);
-        }
-        let written = {
-            let shared = governed.peer.shared();
-            let mut replica = shared.lock();
-            if replica.document_revision(app, &index).as_ref() != Some(revision)
-                || files_security_basis(&replica).as_ref() != Some(basis)
-            {
-                return Ok(false);
+        governed: &mut super::GovernedWorkspace,
+        only: Option<&BTreeSet<(String, String)>>,
+        saved: bool,
+    ) -> Vec<StoredDocument> {
+        let apps: BTreeMap<String, String> = self
+            .inner
+            .host
+            .surfaces
+            .kinds()
+            .into_iter()
+            .map(|(app, kind)| (kind, app))
+            .collect();
+        let mut store = self.store_of(governed);
+        // Every record the store holds, whether or not an app this device knows declares its
+        // kind: a record of an app not installed here names content all the same.
+        let index = store.index();
+        let held: BTreeSet<(String, String)> = index
+            .documents()
+            .flat_map(|doc| index.held(doc))
+            .map(|(kind, id)| (kind.to_owned(), id.to_owned()))
+            .collect();
+        let mut documents = Vec::new();
+        for (kind, id) in held {
+            let app = apps
+                .get(&kind)
+                .cloned()
+                .or_else(|| collab_types::app_surface::app_of_kind(&kind))
+                .unwrap_or_default();
+            let route = (app, id);
+            if only.is_some_and(|only| !only.contains(&route)) {
+                continue;
             }
-            replica
-                .workspace()
-                .check_workspace_administration(self.device_cert().device_public_key, now)?;
-            let mut candidate = replica.clone();
-            let signer = &self.inner.host.key;
-            let written = super::sealed_documents::seal_changes(
-                &mut candidate,
-                &writing,
-                (app, &index),
-                changes,
-                signer,
-                now,
-            )?;
-            governed.keep_held(&mut replica, candidate, (signer, now), |entry, _| {
-                Ok(entry.collaboration.clone())
-            })?;
-            drop(replica);
-            written
-        };
-        self.settle(&mut governed).await?;
-        self.carry_written(governed.workspace_id(), &[written])?;
-        drop(governed);
-        Ok(true)
+            let document = match store.content_document(&kind, &route.1) {
+                Ok(Some(document)) => {
+                    let bytes = if saved { document.save() } else { Vec::new() };
+                    Ok((super::reads::record_revision(&document.get_heads()), bytes))
+                }
+                Ok(None) => continue,
+                Err(error) => Err(error.to_string()),
+            };
+            documents.push((route, kind, document));
+        }
+        documents
     }
 
     /// Run `act` while `workspace` takes no write, if none of the records
     /// `read` read has changed since and none was added: `Ok(Ok(_))` with
     /// what it answered, or `Ok(Err(_))` with the records that changed or
     /// appeared, for the caller to read again. The workspace waits only as
-    /// long as `act` takes. Retiring legacy payloads also checks Files access policy.
+    /// long as `act` takes.
     ///
     /// # Errors
     ///
@@ -526,22 +502,22 @@ impl Workspaces {
         &self,
         workspace: &str,
         read: &WholeDocuments,
-        guard_files_policy: bool,
         act: impl FnOnce() -> R,
     ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let governed = state.lock().await;
+        let mut governed = state.lock().await;
+        // A record of the store that changed since it was read.
+        let stored: Vec<(String, String)> = self
+            .stored_documents(&mut governed, None, false)
+            .into_iter()
+            .filter(|(route, _, document)| {
+                document.as_ref().ok().map(|(revision, _)| revision) != read.revisions.get(route)
+            })
+            .map(|(route, _, _)| route)
+            .collect();
         // Members' writes are taken into the replica under its own lock: held
         // too, nothing lands while `act` runs.
         let peer = governed.peer();
-        if guard_files_policy
-            && (read.files_security_basis.is_none()
-                || files_security_basis(&peer) != read.files_security_basis)
-        {
-            return Err(CollaborationError::new(
-                "Files access changed during collection",
-            ));
-        }
         let changed: BTreeSet<(String, String)> = peer
             .plaintext_routes()
             .into_iter()
@@ -550,6 +526,7 @@ impl Workspaces {
                 read.revisions.get(&(app.clone(), record.clone()))
                     != peer.document_revision(app, record).as_ref()
             })
+            .chain(stored)
             .collect();
         let answer = if changed.is_empty() {
             Ok(act())
@@ -998,19 +975,15 @@ pub struct WholeDocuments {
     /// not the host's to read, and no part of what it reads whole.
     pub private: Vec<(String, String)>,
     revisions: BTreeMap<(String, String), [u8; 32]>,
-    files_security_basis: Option<FilesSecurityBasis>,
 }
 
-// The governance heads include custom-role assignments. The security digest
-// also includes certified revocations received outside the governance history.
-type FilesSecurityBasis = (Vec<automerge::ChangeHash>, [u8; 32]);
-
-fn files_security_basis(peer: &tilo_peer_state::StatePeer) -> Option<FilesSecurityBasis> {
-    Some((
-        peer.admitted_workspace()?.clone().get_heads(),
-        peer.security_basis()?.ok()?,
-    ))
-}
+/// A record of a workspace's store, by its app and id, with its kind, and the revision it is at
+/// with the record saved, or why it does not read ([`Workspaces::stored_documents`]).
+pub(super) type StoredDocument = (
+    (String, String),
+    String,
+    Result<([u8; 32], Vec<u8>), String>,
+);
 
 impl WholeDocuments {
     /// Every record the host is to read read whole: what they name is all the

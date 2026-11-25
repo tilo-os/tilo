@@ -5038,6 +5038,33 @@ mod tests {
         );
     }
 
+    /// A link this side accepted passes another device's frame only while its own device keeps
+    /// the workspace, read as each frame comes: a device that keeps none of it (a hosted
+    /// environment) passes its own frames alone, and one named a keeper passes the others' too.
+    #[test]
+    fn a_link_passes_others_frames_only_while_its_device_keeps_the_workspace() {
+        let remote = [3; 32];
+        let other = [4; 32];
+        let accepted = LinkAdmit {
+            carries: Carries::OthersWhileKept,
+            ..LinkAdmit::dialling()
+        };
+        let own = want(remote, remote, "own");
+        let theirs = want(remote, other, "theirs");
+        assert!(
+            accepted.permits(remote, &own, || false),
+            "its own frame passes"
+        );
+        assert!(
+            !accepted.permits(remote, &theirs, || false),
+            "another device's frame from a device that keeps nothing is refused"
+        );
+        assert!(
+            accepted.permits(remote, &theirs, || true),
+            "a device that keeps the workspace passes the others' frames on"
+        );
+    }
+
     /// A member's word that it lacks `hash`, from `from` as `responder`, to the
     /// ask `requester` made.
     fn lacks(from: [u8; 32], responder: [u8; 32], requester: [u8; 32], hash: &str) -> Authored {

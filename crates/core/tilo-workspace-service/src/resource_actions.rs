@@ -8,10 +8,8 @@
 //! member is them (the settings', the identity's and the devices'). Any app's record also moves
 //! to another workspace by the system's `move` ([`Workspaces::move_record`]). The workspace's
 //! grants on the owner's node decide the call, as a window of the app decides a click. What the
-//! action changed is written into the workspace as this device's write, signed and sealed as the
-//! device, so every app of the workspace and the person's other devices take it as any other; in
-//! the person's own workspace, as each of its records is written
-//! ([`person_workspace::edit_on`]).
+//! action changed is this device's write of the record in the workspace's store, so every app of
+//! the workspace and the person's other devices take it as any other.
 //!
 //! It is registered once on every device's providers ([`register`]) under the resource provider
 //! itself: a call made on this device reaches it ([`crate::workspaces::providers::Providers::invoke`]),
@@ -27,15 +25,10 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, RESOURCE_PROVIDER, ReceiptStatus,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, LocalTransport};
-use tilo_peer_state::workspace_documents::{DeviceWrites as _, DocumentWriting};
 use tilo_server_protocol::WorkspaceId;
 
-use crate::device_documents::ServiceWrites;
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_workspace::{
-    self,
-    devices::{DEVICES, Devices},
-};
+use crate::workspaces::person_workspace::devices::{DEVICES, Devices};
 use crate::workspaces::providers::Reach;
 
 /// Apply the typed actions of the resources [`Declared`] names on this device from now on, for
@@ -46,7 +39,6 @@ pub fn register(workspaces: &Workspaces) {
         RESOURCE_PROVIDER,
         Reach::Devices,
         Arc::new(ResourceActions {
-            writes: ServiceWrites::of(workspaces.clone()),
             workspaces: workspaces.clone(),
             declared: Arc::from(Declared::all()),
         }),
@@ -57,28 +49,16 @@ pub fn register(workspaces: &Workspaces) {
 #[derive(Clone)]
 struct ResourceActions {
     workspaces: Workspaces,
-    writes: ServiceWrites,
     declared: Arc<[Declared]>,
 }
 
-/// A resource its owner declares by the app it is of and its id, with the type its actions are.
+/// A resource its owner declares by the app it is of and its id, with the type its actions are:
+/// a kind every device declares, so the record is the workspace store's.
 struct Declared {
     /// The app it is of; `None` for every app's.
     app: Option<&'static str>,
     id: String,
     kind: tilo_resource::ResourceKind,
-    /// How it is made when nothing wrote it yet.
-    founding: Founding,
-}
-
-/// How a declared resource is made the first time an action changes it: byte for byte as every
-/// other device makes it, so two first writes merge into one.
-#[derive(Clone, Copy)]
-enum Founding {
-    /// A workspace resource of the app, with its identity.
-    Identified,
-    /// The person's own, made from its type alone.
-    Typed,
 }
 
 impl Declared {
@@ -87,7 +67,6 @@ impl Declared {
             app: Some(app),
             id: collab_types::workspace_document_id(kind.kind()),
             kind,
-            founding: Founding::Identified,
         };
         vec![
             workspace(
@@ -109,7 +88,6 @@ impl Declared {
                 app: Some(tilo_user_identity::workspace_list::APP),
                 id: tilo_user_identity::workspace_list::RESOURCE.to_owned(),
                 kind: tilo_user_identity::workspace_list::kind(),
-                founding: Founding::Typed,
             },
             // The record of the person's devices: what each of their devices says of itself (its
             // screens, its session, how it wakes), kept by that device's shell.
@@ -117,43 +95,12 @@ impl Declared {
                 app: Some(DEVICES.0),
                 id: DEVICES.1.to_owned(),
                 kind: tilo_resource::ResourceKind::of::<Devices>().hosted_by(DEVICES.0, "Devices"),
-                founding: Founding::Typed,
             },
         ]
     }
 
     fn names(&self, app: &str, id: &str) -> bool {
         self.app.is_none_or(|declared| declared == app) && self.id == id
-    }
-
-    /// The resource as it is made, in `workspace`.
-    fn found(&self, workspace: &str) -> Result<automerge::AutoCommit, String> {
-        use collaboration::resource::{DocumentCheckout, DocumentId, ResourceType};
-        let initialize = |doc: &mut automerge::AutoCommit| {
-            self.kind.initialize(doc).map_err(|error| error.to_string())
-        };
-        match self.founding {
-            Founding::Typed => {
-                let mut doc = automerge::AutoCommit::new().with_actor(
-                    tilo_resource::genesis::actor("", self.kind.kind(), workspace),
-                );
-                initialize(&mut doc)?;
-                doc.commit_with(
-                    automerge::transaction::CommitOptions::default()
-                        .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
-                        .with_time(0),
-                );
-                Ok(doc)
-            }
-            Founding::Identified => {
-                let id = DocumentId::parse(&self.id).ok_or("the resource has no id")?;
-                let checkout = DocumentCheckout::new(id, ResourceType::new(self.kind.kind()));
-                let mut doc = automerge::AutoCommit::new();
-                collaboration::resource::genesis(&mut doc, &checkout, workspace, initialize)
-                    .map_err(|error| error.to_string())?;
-                Ok(doc)
-            }
-        }
     }
 }
 
@@ -374,18 +321,16 @@ impl ResourceActions {
             .map_err(|error| tilo_agent_session::record_actions::api_status(&error))
             .map_err(Box::new)
         };
-        let genesis = declared
-            .found(&workspace)
-            .map_err(|error| failed("not_founded", error))?;
-        // The person's own workspace is written as its every record is: on the copy this device
-        // keeps of it, or carried to the device of theirs that keeps it.
-        if workspace == person_workspace::workspace_id(&self.workspaces) {
-            return self
-                .write_person_workspace(&workspace, (app, id), genesis, change)
-                .await;
-        }
-        self.write_record(&workspace, (app, id), genesis, change)
+        // The action is this device's write of the record in the workspace's store, founding it
+        // as its kind does where the store holds none yet.
+        self.workspaces
+            .author_record(&workspace, (app, declared.kind.kind(), id), |doc| {
+                Ok(change(doc))
+            })
             .await
+            .map_err(|error| failed("not_written", error))?
+            .map(|()| ActionOutput::default())
+            .map_err(|status| *status)
     }
 
     /// `caller`'s move of the record (`app`, `id`) to the workspace `request` names, judged by
@@ -417,89 +362,6 @@ impl ResourceActions {
             .move_record((workspace, &to), (app, id, &target), caller)
             .await
             .map_err(|error| failed("refused", error))?;
-        Ok(ActionOutput::default())
-    }
-
-    /// Write the record (`app`, `id`) into the caller's own workspace: on the copy this device
-    /// keeps of it, or carried to the device of theirs that keeps it.
-    async fn write_person_workspace(
-        &self,
-        workspace: &str,
-        (app, id): (&str, &str),
-        genesis: automerge::AutoCommit,
-        change: impl Fn(&mut automerge::AutoCommit) -> Result<(), Box<ReceiptStatus>> + Send + Sync,
-    ) -> Result<ActionOutput, ReceiptStatus> {
-        let device = self.workspaces.device_cert().device_public_key;
-        let mut refused = None;
-        let written = person_workspace::edit_on(
-            &self.workspaces,
-            workspace,
-            (app, id),
-            Box::new(genesis),
-            |doc| {
-                // This device's own actor: the genesis is one actor's change already, and two
-                // devices continuing it under that actor would make one sequence of two
-                // different changes.
-                doc.set_actor(automerge::ActorId::from(device.to_vec()));
-                change(doc).map_err(|status| {
-                    refused = Some(*status);
-                    "the record's action was refused".to_owned()
-                })
-            },
-        )
-        .await;
-        match (written, refused) {
-            (Ok(()), _) => Ok(ActionOutput::default()),
-            (Err(_), Some(status)) => Err(status),
-            (Err(error), None) => Err(failed("not_written", error)),
-        }
-    }
-
-    /// Write the record (`app`, `id`) on the copy this device keeps of it.
-    async fn write_record(
-        &self,
-        workspace: &str,
-        (app, id): (&str, &str),
-        genesis: automerge::AutoCommit,
-        change: impl Fn(&mut automerge::AutoCommit) -> Result<(), Box<ReceiptStatus>> + Send + Sync,
-    ) -> Result<ActionOutput, ReceiptStatus> {
-        let kept = self
-            .workspaces
-            .resource_document(workspace, app, id)
-            .await
-            .map_err(|error| failed("not_read", error.to_string()))?;
-        let (mut doc, founding) = match kept {
-            Some(bytes) => (
-                automerge::AutoCommit::load(&bytes)
-                    .map_err(|error| failed("unreadable", error.to_string()))?,
-                false,
-            ),
-            None => (genesis, true),
-        };
-        let heads = doc.get_heads();
-        change(&mut doc).map_err(|status| *status)?;
-        let changes = if founding {
-            doc.save()
-        } else {
-            doc.save_after(&heads)
-        };
-        if !changes.is_empty() {
-            self.writes
-                .write(
-                    workspace,
-                    &changes,
-                    DocumentWriting {
-                        app,
-                        document: id,
-                        readers: None,
-                        founding,
-                        snapshot: founding,
-                        sealed: None,
-                    },
-                )
-                .await
-                .map_err(|refusal| failed("not_written", refusal.to_string()))?;
-        }
         Ok(ActionOutput::default())
     }
 }

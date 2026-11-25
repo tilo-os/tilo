@@ -4,8 +4,8 @@
 use automerge::ObjId;
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    self, ActionCx, Fields, Id, Identified, JsonSchema, Keyed, MemberId, Model, ModelError,
-    NonBlank, Refusal, resource,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, ModelError, NonBlank,
+    Refusal, resource,
 };
 
 pub const MAX_REASON_CHARS: usize = 500;
@@ -182,19 +182,6 @@ pub fn upgrade_decisions(
         tilo_resource::evolution::retype_json::<Vec<Reverted>>(doc, &decision, "reverted")?;
     }
     Ok(())
-}
-
-/// The moderation history still held in a Chat document written before the split.
-/// The earlier document's signed history and original actors are kept there.
-///
-/// # Errors
-/// The old record could not be decoded or brought up to the current shape.
-pub fn earlier_chat_history(doc: &mut tilo_resource::Doc) -> Result<Moderation, ModelError> {
-    let Some(old) = tilo_resource::evolution::map_at(doc, &automerge::ROOT, "moderation")? else {
-        return Ok(Moderation::default());
-    };
-    upgrade_decisions(doc, &old)?;
-    Moderation::read_fields(doc, &old)
 }
 
 impl Moderation {

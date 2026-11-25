@@ -68,8 +68,21 @@ pub const VM_APP: &str = tilo_app_id::apps::BROWSER;
 pub const VM_RECORD: &str = "browser";
 /// The record of [`VM_APP`] a workspace's VM session keeps its own state in, each setting under
 /// `settings` by its name: what it shows and its wallpaper. The VM's disk keeps nothing a restart
-/// needs, and the session never writes its person's own settings.
-pub const ENVIRONMENT_RECORD: &str = "environment";
+/// needs, and the session never writes its person's own settings. The workspace's one record of
+/// its kind ([`VmEnvironment`]), named as every such record is
+/// ([`collab_types::workspace_document_id`]).
+pub const ENVIRONMENT_RECORD: &str = "derived:browser.environment@tab:0000000000000000";
+
+/// What a workspace's VM session keeps for its next one ([`ENVIRONMENT_RECORD`]): each of its
+/// settings by name, as the session writes it.
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+pub struct VmEnvironment {
+    /// Each setting, by its name ([`SETTINGS`]).
+    pub settings: serde_json::Value,
+}
+
+#[tilo_resource::resource(kind = "browser.environment", read_content = tilo_resource::read::fields)]
+impl VmEnvironment {}
 
 /// The records a workspace's VM device is placed for in `workspace`, as its certificate names
 /// them: its Browser record ([`VM_RECORD`]) and its environment record ([`ENVIRONMENT_RECORD`]).
@@ -133,21 +146,25 @@ pub async fn keep_setting(
         .get("value")
         .ok_or_else(|| invalid("the setting's value is needed"))?;
     let person = *placed.person();
-    crate::workspaces::person_workspace::edit_document_on(
-        workspaces,
-        workspace,
-        (VM_APP, ENVIRONMENT_RECORD),
-        |document| {
-            let settings = tilo_automerge::json::map_at(document, &automerge::ROOT, SETTINGS)
-                .map_err(|error| error.to_string())?;
-            tilo_automerge::json::write(document, &settings, name, value)
-                .map_err(|error| error.to_string())?;
-            document.commit_edit(ENVIRONMENT_RECORD, SETTINGS, &person);
-            Ok(())
-        },
-    )
-    .await
-    .map_err(|reason| ActionCallError::Unavailable { reason })?;
+    workspaces
+        .author_record(
+            workspace,
+            (
+                VM_APP,
+                <VmEnvironment as tilo_resource::Resource>::KIND,
+                ENVIRONMENT_RECORD,
+            ),
+            |document| {
+                let settings = tilo_automerge::json::map_at(document, &automerge::ROOT, SETTINGS)
+                    .map_err(|error| error.to_string())?;
+                tilo_automerge::json::write(document, &settings, name, value)
+                    .map_err(|error| error.to_string())?;
+                document.commit_edit(ENVIRONMENT_RECORD, SETTINGS, &person);
+                Ok(())
+            },
+        )
+        .await
+        .map_err(|reason| ActionCallError::Unavailable { reason })?;
     Ok(serde_json::json!({ "name": name }))
 }
 
@@ -800,6 +817,22 @@ mod tests {
 
     fn workspace() -> tilo_server_protocol::WorkspaceId {
         tilo_server_protocol::WorkspaceId::from_u128(7)
+    }
+
+    /// The environment record is the workspace's one record of its kind, under the name every
+    /// such record has, kept by the app the system keeps it for.
+    #[test]
+    fn the_environment_record_is_its_kinds_workspace_record() {
+        let kind = <VmEnvironment as tilo_resource::Resource>::KIND;
+        assert_eq!(
+            ENVIRONMENT_RECORD,
+            collab_types::workspace_document_id(kind)
+        );
+        assert!(
+            collab_types::WORKSPACE_DOCUMENTS
+                .iter()
+                .any(|kept| kept.app == VM_APP && kept.kind == kind)
+        );
     }
 
     fn scope() -> EnvironmentScope {

@@ -81,7 +81,9 @@ pub const UPDATED: &str = "$updated";
 /// was made ([`CREATED`]) stands for it.
 pub const CHANGED: &str = "$changed.";
 
-fn content_id(readers: &str, kind: &str, id: &str) -> String {
+/// The document that holds the content of the resource `id` of `kind`, read by `readers`.
+#[must_use]
+pub fn content_id(readers: &str, kind: &str, id: &str) -> String {
     format!("{}/{kind}/{id}~0", collab_types::reader_set_name(readers))
 }
 
@@ -370,6 +372,43 @@ impl Store {
             None,
             &|_: &Proposal<'_>| true,
         )
+    }
+
+    /// Check `writes`, a batch staged against this store, each as [`Self::check_write`] does,
+    /// against the documents as the batch's earlier writes leave them: none of them is applied.
+    ///
+    /// # Errors
+    /// A write has no base among the store's changes and the batch's earlier ones, or the
+    /// resource schema refuses it.
+    pub fn check_writes(&mut self, writes: &[Written], author: [u8; 32]) -> Result<(), Refusal> {
+        let mut live: HashMap<String, Arc<Automerge>> = HashMap::new();
+        let mut checked = Ok(());
+        for write in writes {
+            if !live.contains_key(&write.doc) {
+                if self.doc(&write.doc).is_err() {
+                    checked = Err(Refusal::Unplaced);
+                    break;
+                }
+                if let Some(doc) = self.docs.get(&write.doc) {
+                    live.insert(write.doc.clone(), Arc::clone(doc));
+                }
+            }
+            checked = self.check_write(write, author);
+            if checked.is_err() {
+                break;
+            }
+            // The live document is kept aside: this copy alone takes the change.
+            if let Ok(doc) = self.doc(&write.doc)
+                && doc.apply_changes([write.change.clone()]).is_err()
+            {
+                checked = Err(Refusal::Unplaced);
+                break;
+            }
+        }
+        for (doc, held) in live {
+            self.docs.insert(doc, held);
+        }
+        checked
     }
 
     /// The kinds of the records `write`, staged against this store, writes, as each holder that
@@ -1277,6 +1316,23 @@ impl Store {
             })?;
         let readers = self.index.readers(&held.doc).unwrap_or_default().to_owned();
         Ok((content_id(&readers, kind, id), readers))
+    }
+
+    /// Whether `kind`'s type names who reads a resource of it: a write founding one names no
+    /// readers, and the store places it by the type's rule.
+    #[must_use]
+    pub fn reads_by_rule(&self, kind: &str) -> bool {
+        self.rules.contains_key(kind)
+    }
+
+    /// The change every holder makes alike to found the content of the resource `id` of `kind`:
+    /// the containers its type declares ([`collab_types::document::founding`]). `None` for a kind
+    /// that declares none.
+    #[must_use]
+    pub fn founding(&self, kind: &str, id: &str) -> Option<AmChange> {
+        self.schema
+            .get(kind)
+            .and_then(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
     }
 
     /// The content of the resource `id` of `kind`: the document it is in and the map at its

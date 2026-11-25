@@ -341,10 +341,7 @@ impl InstanceViewStore {
 
     /// The document `instance`'s view is kept in.
     fn document_id(&self, instance: u64) -> DocumentId {
-        DocumentId::derived(
-            &format!("view.d{}", hex::encode(self.device_id.as_bytes())),
-            &DocumentId::window_default(instance),
-        )
+        DocumentId::window_view(&self.device_id, instance)
     }
 
     fn validate(&self, instance: &SavedInstanceView, key: u64) -> Result<(), ThawError> {

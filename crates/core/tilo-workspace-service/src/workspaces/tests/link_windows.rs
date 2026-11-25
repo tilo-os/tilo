@@ -538,8 +538,14 @@ async fn a_hosted_environments_link_reads_its_one_record() {
         Some(vec![scope.channel]),
         "the environment's device reads its own record and no other"
     );
+    // The link reads for each frame whether its device keeps the workspace, and passes another
+    // device's frame only from one that does: the environment's device is none of them.
     assert!(
-        reached.own_frames_only,
+        !link.replica().read(|peer| peer
+            .governance()
+            .keeping_devices()
+            .iter()
+            .any(|keeping| keeping.host.device_public_key == browser.device_public_key)),
         "an environment's device passes no other device's frames"
     );
     drop(workspaces);

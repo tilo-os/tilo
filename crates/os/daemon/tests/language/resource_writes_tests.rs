@@ -26,8 +26,8 @@ use tilo_actions::remote::CatalogueQuery;
 use tilo_workspace_service::apps::services::ResourceRequestContext;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, TestHost, declare_app, governor_with, guest_device, invitation_text,
+    member_device,
 };
-use tilo_workspace_service::workspaces::sealed_fixtures::member_device;
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
 
 /// A host whose service opened with the language runtime mounted, as the daemon's opens: the

@@ -24,6 +24,11 @@ pub const HISTORY_VERBS: [&str; 3] = ["checkpoint", "describe", "link"];
 /// schema has it, as it has the verbs of history.
 pub const MOVE_VERB: &str = "move";
 
+/// The verb that founds an empty resource of a declared kind: an app's record its first write
+/// names no verb of, which the app opens empty. It writes nothing in it. Every schema has it, as
+/// it has the move, and no app declares it.
+pub const CREATE_VERB: &str = "create";
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
@@ -35,11 +40,18 @@ static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
             marks: true,
             ..Verb::default()
         })
-        .chain(std::iter::once(Verb {
-            name: MOVE_VERB.to_owned(),
-            moves: true,
-            ..Verb::default()
-        }))
+        .chain([
+            Verb {
+                name: MOVE_VERB.to_owned(),
+                moves: true,
+                ..Verb::default()
+            },
+            Verb {
+                name: CREATE_VERB.to_owned(),
+                creates: true,
+                ..Verb::default()
+            },
+        ])
         .collect()
 });
 
@@ -67,6 +79,8 @@ pub struct Verb {
     pub marks: bool,
     /// The move ([`MOVE_VERB`]): it founds, fills and removes a resource of any declared kind.
     pub moves: bool,
+    /// The creation ([`CREATE_VERB`]): it founds an empty resource of any declared kind.
+    pub creates: bool,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -299,8 +313,8 @@ impl Schema {
     /// Every declared verb that names `name`: the verb of that name, and each family of verbs
     /// declared by a prefix ending in `*` (`set-*`, a typed setter per field of a kind whose
     /// fields another table lists) that `name` starts with.
-    /// The verbs of history ([`HISTORY_VERBS`]) and the move ([`MOVE_VERB`]) are declared in
-    /// every schema.
+    /// The verbs of history ([`HISTORY_VERBS`]), the move ([`MOVE_VERB`]) and the creation
+    /// ([`CREATE_VERB`]) are declared in every schema.
     pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
         self.verbs.iter().chain(HISTORY.iter()).filter(move |verb| {
             verb.name == name

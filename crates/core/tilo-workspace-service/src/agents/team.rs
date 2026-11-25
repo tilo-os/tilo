@@ -260,31 +260,23 @@ impl TurnTeam {
         invoke: Invoke<WorkspaceAgents>,
         caller: &Caller,
     ) -> Result<(), String> {
-        let document = collab_types::workspace_document_id(KIND);
         let acting = caller.acting().clone();
         self.workspaces
-            .author_application(
-                &self.workspace,
-                self.workspaces.device_cert(),
-                tilo_workspace_agent::OWNER,
-                &document,
-                |doc| {
-                    let mut list =
-                        tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_acting(acting)
-                            .in_app(tilo_workspace_agent::OWNER, "Workspace");
-                    // A replica stamps what it writes with a fixed day of its own unless told the time.
-                    list.set_now_ms(tilo_clock::unix_now_ms_i64());
-                    let applied = list
-                        .apply(invoke)
-                        .map(drop)
-                        .map_err(|error| error.to_string());
-                    std::mem::swap(doc, list.doc_mut());
-                    applied
-                },
-            )
+            .author_agents(&self.workspace, |doc| {
+                let mut list =
+                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                        .as_acting(acting)
+                        .in_app(tilo_workspace_agent::OWNER, "Workspace");
+                // A replica stamps what it writes with a fixed day of its own unless told the time.
+                list.set_now_ms(tilo_clock::unix_now_ms_i64());
+                let applied = list
+                    .apply(invoke)
+                    .map(drop)
+                    .map_err(|error| error.to_string());
+                std::mem::swap(doc, list.doc_mut());
+                applied
+            })
             .await
-            .map_err(|error| error.to_string())
     }
 
     /// What the turn's agent reads of the sub-agent `id` of its team, as the list holds it

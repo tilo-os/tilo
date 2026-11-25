@@ -66,6 +66,11 @@ fn a_seat_taken_on_either_device_is_taken_in_the_others_open_window() {
         two_people_at_a_site_carrying(&[], |device| device.install_poker());
     show(&first, &site);
     show(&second, &site);
+    // Both devices read the workspace they joined as their person: a refused read is why the
+    // table its app draws never fills in, and either device's window offers no seat.
+    for device in [&first, &second] {
+        device.wait_reading(&site.workspace);
+    }
     for device in [&first, &second] {
         device.open(POKER);
         device.wait_for_window(POKER);

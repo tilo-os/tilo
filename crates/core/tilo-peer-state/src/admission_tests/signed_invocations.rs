@@ -206,6 +206,28 @@ fn agents_written(
     document_message_at((app, &record), envelope)
 }
 
+/// [`agents_written`], as a resource store writes it: the history entry kept in the change's
+/// stamp.
+fn agents_stamped(
+    copy: &StatePeer,
+    signer: &SigningKey,
+    context: &ActionContext,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let stamp = collab_types::Stamp::of_message(&context.change_message().unwrap()).unwrap();
+    let (app, record) = agents();
+    let mut envelope = unsigned_commit_at(
+        copy,
+        (app, &record),
+        signer,
+        &stamp.message(),
+        "stamped",
+        now,
+    );
+    collab_types::sign_op(&mut envelope, signer).unwrap();
+    document_message_at((app, &record), envelope)
+}
+
 /// The write of `context` by `signer`'s device, as a peer sends it.
 fn written(
     copy: &StatePeer,
@@ -582,6 +604,16 @@ tilo_test_env::scenario! {
         let message = agents_written(&receiver, &b, &retiring, now);
         let refused = take(&mut receiver, message, now).unwrap_err();
         assert!(refused.reason.contains("another action"), "{}", refused.reason);
+        // A resource store keeps the call in the change's stamp, and the change is held to the
+        // same declaration: from the device that keeps the record, a step `create` does not
+        // declare is refused, and the one it declares is admitted.
+        let retiring = agents_step(&cert, &key, "retire-agent", now);
+        let message = agents_stamped(&receiver, &b, &retiring, now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("another action"), "{}", refused.reason);
+        let making = agents_step(&cert, &key, "create-agent", now);
+        let message = agents_stamped(&receiver, &b, &making, now);
+        take(&mut receiver, message, now).expect("the step the called action declares");
     }
 
     phase an_undo_outside_what_its_call_declares_is_refused;

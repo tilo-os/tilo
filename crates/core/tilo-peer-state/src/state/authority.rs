@@ -1724,45 +1724,26 @@ impl StatePeer {
         Ok(caller)
     }
 
-    /// The certificate the invocation a resource store's change keeps was made for, when the
-    /// change carries one that checks: none when it carries no signed invocation.
-    fn stamped_certificate(
-        &self,
+    /// The history entry a resource store's change keeps in its stamp, when the stamp keeps the
+    /// call its caller signed: checked from there as every change's kept invocation is.
+    fn stamped_context(
         app_id: &str,
         route: &Route,
         source: &[u8; 32],
         envelope: &SignedOp,
         change: &automerge::Change,
-    ) -> Result<Option<DeviceCert>, AuthorizeRefusal> {
+    ) -> Result<Option<tilo_actions::ActionContext>, AuthorizeRefusal> {
         let Some(stamp) = change.message().and_then(collab_types::Stamp::of_message) else {
             return Ok(None);
         };
-        if stamp.signed.is_none() {
-            return Ok(None);
-        }
-        let verified = tilo_server_protocol::invocation::verify_stamp(
-            &stamp,
-            &self.core.workspace,
-            app_id,
-            &self.core.revocations,
-        )
-        .map_err(|error| {
+        tilo_server_protocol::invocation::stamped_context(&stamp, app_id).map_err(|error| {
             refused_invocation(
                 route,
                 source,
                 envelope,
                 &format!("the invocation a change made for a caller does not check: {error}"),
             )
-        })?;
-        match verified {
-            Some(certificate) => Ok(Some(certificate)),
-            None => Err(refused_invocation(
-                route,
-                source,
-                envelope,
-                "a change made for a caller carries no invocation that caller signed",
-            )),
-        }
+        })
     }
 
     /// What `change` of `envelope`, signed by `source` for the record `route`, names: the caller
@@ -1782,20 +1763,16 @@ impl StatePeer {
         authorization_time: SystemTime,
     ) -> Result<NamedCall, AuthorizeRefusal> {
         let app_id = route.app.as_str();
-        let Some(context) = change
+        let entry = change
             .message()
-            .and_then(tilo_actions::ActionContext::from_change_message)
-        else {
-            // A resource store's change keeps the invocation its caller signed in its stamp,
-            // where its history entry is the verb it ran.
-            if let Some(certificate) =
-                self.stamped_certificate(app_id, route, source, envelope, change)?
-            {
-                return Ok(NamedCall::For {
-                    person: hex::encode(certificate.user_public_key),
-                    effect: false,
-                });
-            }
+            .and_then(tilo_actions::ActionContext::from_change_message);
+        // A resource store's change keeps the invocation its caller signed in its stamp, where
+        // its history entry is the verb it ran: it is checked as an entry is.
+        let stamped = match entry {
+            Some(_) => None,
+            None => Self::stamped_context(app_id, route, source, envelope, change)?,
+        };
+        let Some(context) = entry.or(stamped) else {
             // A change with no history entry names its maker in its own message, or is one every
             // holder derives alike; one that names no one is refused, unless an import step
             // holds the write as the person's.

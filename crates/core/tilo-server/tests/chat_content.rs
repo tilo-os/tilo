@@ -22,8 +22,7 @@ const CHAT: &str = "so.tilo.chat";
 /// The record one of Chat's messages and a filed report are in: the app's
 /// own document, where a message names its attachments and a rich text names
 /// its pictures.
-fn posted(notes: &str, picture: &str) -> Vec<u8> {
-    let mut doc = AutoCommit::new();
+fn post(doc: &mut AutoCommit, notes: &str, picture: &str) {
     // A message's attachment: the address its file's bytes read at.
     let attachments = doc.put_object(ROOT, "attachments", ObjType::Map).unwrap();
     let attached = doc.put_object(&attachments, "notes", ObjType::Map).unwrap();
@@ -39,7 +38,6 @@ fn posted(notes: &str, picture: &str) -> Vec<u8> {
     let attrs = doc.put_object(&paragraph, "attrs", ObjType::Map).unwrap();
     doc.put(&attrs, tilo_automerge::rich_text::ATTR_BLOB, picture)
         .unwrap();
-    doc.save()
 }
 
 /// What device `asker` asks the workspace for.
@@ -147,19 +145,17 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
     {
         panic!("the record's channel is not founded here: {error}");
     }
-    workspaces
-        .author_workspace_document(
-            &workspace,
-            &host_cert,
-            (CHAT, ""),
-            |doc| -> Result<(), String> {
-                *doc = AutoCommit::load(&posted(&notes_hash, &picture_hash))
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            },
-        )
-        .await
-        .expect("the message and the report reach the workspace");
+    crate::common::write_record(
+        &workspaces,
+        &workspace,
+        (CHAT, "c_general"),
+        |doc| -> Result<(), String> {
+            post(doc, &notes_hash, &picture_hash);
+            Ok(())
+        },
+    )
+    .await
+    .expect("the message and the report reach the workspace");
 
     // The host asks the workspace for both files, and the poster's device
     // answers: the only copy from then on is the host's.
@@ -280,12 +276,11 @@ async fn each_file_a_member_posts_is_asked_for_as_its_message_is_written() {
     for index in 0..5_u8 {
         let file = vec![index; 2_000];
         let hash = blake3::hash(&file).to_hex().to_string();
-        workspaces
-            .author_workspace_document(&workspace, &host_cert, (CHAT, ""), |doc| {
-                attach(doc, &format!("file-{index}"), &hash)
-            })
-            .await
-            .expect("the message reaches the workspace");
+        crate::common::write_record(&workspaces, &workspace, (CHAT, "c_general"), |doc| {
+            attach(doc, &format!("file-{index}"), &hash)
+        })
+        .await
+        .expect("the message reaches the workspace");
         tilo_test_env::within("the host keeps the file the message names", async {
             loop {
                 workspaces.content_for_host(

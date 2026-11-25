@@ -24,7 +24,6 @@ mod link_windows;
 mod lookup;
 mod naming;
 mod one_copy_two_writers;
-mod restart_parts;
 
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
@@ -696,86 +695,6 @@ fn a_workspace_name_must_be_printable_and_short() {
 }
 
 /// The workspace's copy of `record` of `app`, when it has one.
-#[cfg(feature = "agents")]
-async fn workspace_resource(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, record): (&str, &str),
-) -> Option<automerge::AutoCommit> {
-    let bytes = workspaces
-        .resource_document(workspace, app, record)
-        .await
-        .unwrap();
-    bytes.map(|bytes| automerge::AutoCommit::load(&bytes).unwrap())
-}
-
-/// The host starts a workspace record no app factory makes, such as the
-/// shared desktop, then changes it in place: the record keeps its graph, an
-/// unchanged pass publishes nothing, and another certificate is refused.
-#[cfg(feature = "agents")]
-#[tokio::test]
-async fn the_host_authors_a_workspace_record_no_factory_makes() {
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = test_host(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces();
-    let created = workspaces.create("Shared desktop").await.unwrap();
-    let workspace = created.workspace.as_str();
-    let read = || workspace_resource(workspaces, workspace, DESKTOP);
-    let text = |doc: &automerge::AutoCommit| {
-        doc.get(ROOT, "desktop")
-            .unwrap()
-            .unwrap()
-            .0
-            .into_string()
-            .unwrap()
-    };
-    // The workspace holds its shared desktop from the start, empty.
-    assert!(
-        read()
-            .await
-            .is_none_or(|doc| doc.get(ROOT, "desktop").unwrap().is_none())
-    );
-    workspaces
-        .author_workspace_document(workspace, &cert, DESKTOP, |doc| {
-            doc.put(ROOT, "desktop", "first").map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-    let mut first = read().await.expect("the record was started");
-    assert_eq!(text(&first), "first");
-    workspaces
-        .author_workspace_document(workspace, &cert, DESKTOP, |_| Ok(()))
-        .await
-        .unwrap();
-    assert_eq!(read().await.unwrap().get_heads(), first.get_heads());
-    workspaces
-        .author_workspace_document(workspace, &cert, DESKTOP, |doc| {
-            doc.put(ROOT, "desktop", "second")
-                .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-    let second = read().await.unwrap();
-    assert_eq!(text(&second), "second");
-    let first_head = first.get_heads()[0];
-    assert!(second.has_change(&first_head), "the record keeps its graph");
-    let mut different = cert.clone();
-    different.device_label = "different current certificate".into();
-    sign_device_cert(&mut different, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    assert!(
-        workspaces
-            .author_workspace_document::<()>(workspace, &different, DESKTOP, |_| {
-                panic!("another certificate must never reach the change")
-            })
-            .await
-            .is_err()
-    );
-    server.shutdown().await;
-}
-
 pub(crate) async fn is_banned(
     workspaces: &Workspaces,
     workspace: &str,

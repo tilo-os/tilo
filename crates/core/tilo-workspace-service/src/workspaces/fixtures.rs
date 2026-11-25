@@ -36,6 +36,26 @@ pub fn needed<T, E: std::fmt::Display>(result: Result<T, E>, what: &str) -> T {
     result.unwrap_or_else(|error| panic!("{what}: {error}"))
 }
 
+/// Another device of the person whose root (`[1; 32]`) certified the fixture's governor
+/// `cert`, admitted to `workspace`.
+pub async fn member_device(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    seed: u8,
+) -> (SigningKey, DeviceCert) {
+    let member_key = SigningKey::from_bytes(&[seed; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    workspaces
+        .enter(workspace, (&member, &member_key))
+        .await
+        .expect("the person's further device lists itself");
+    (member_key, member)
+}
+
 /// A holder certified only to keep workspaces: it governs them without taking part in
 /// their channels.
 #[must_use]
@@ -381,6 +401,52 @@ pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -
     test_host_with_grants(state_root, key, cert, None).await
 }
 
+/// The kind of `app`'s record [`write_record`] writes: one whose fields the tests write
+/// anything into.
+#[must_use]
+pub fn record_kind(app: &str) -> String {
+    format!("test.{app}.record")
+}
+
+/// Change `app`'s record `record` of `workspace` with `edit`, as this service's own write of it
+/// in the workspace's store, its kind ([`record_kind`]) declared first.
+///
+/// # Errors
+/// The workspace is not held here, or its store refused the write.
+pub async fn write_record(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, record): (&str, &str),
+    edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
+) -> Result<(), String> {
+    let kind = record_kind(app);
+    let fields: String = [
+        "attachment",
+        "attachments",
+        "body",
+        "edge",
+        "more",
+        "part",
+        "photo",
+        "photos",
+        "picture",
+        "round",
+        "text",
+        "title",
+    ]
+    .iter()
+    .map(|field| format!("  {{ path = \"{field}\", type = \"any\" }},\n"))
+    .collect();
+    let surface = format!(
+        "format = 2\n\n[[resources]]\nkind = \"{kind}\"\nlabel = \"Record\"\nversion = 1\n\
+         fields = [\n{fields}]\n\n[[resources.verbs]]\nid = \"type\"\nkind = \"undoable\"\n"
+    );
+    workspaces.declare_package_surface(app, surface.as_bytes());
+    workspaces
+        .author_record(workspace, (app, &kind, record), edit)
+        .await
+}
+
 /// Name `app`'s `surface`, the `surface.toml` its package ships, on `host`, as running that
 /// package does: the types and verbs its workspaces judge their resource writes by. A test whose
 /// app is a package this build carries declares its own surface ([`declare_built_in_app`]); one
@@ -525,6 +591,7 @@ pub async fn test_host_with_grants(
         },
         grants,
         None,
+        Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )
@@ -550,6 +617,7 @@ pub async fn test_host_in_the_clear(
         None,
         None,
         None,
+        Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )
@@ -576,6 +644,36 @@ pub async fn test_host_holding(
         DeviceKeyGroups { keys, sink: None },
         None,
         None,
+        Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await
+}
+
+/// [`test_host`] whose device's native apps kept their files below `homes`
+/// ([`crate::service::ServiceConfig::app_files`]).
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_with_app_files(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    homes: Vec<std::path::PathBuf>,
+) -> TestHost {
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups {
+            keys: Arc::<TestGroupKeys>::default(),
+            sink: None,
+        },
+        None,
+        None,
+        homes,
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )
@@ -604,6 +702,7 @@ pub async fn test_host_holding_as_member(
             cert: cert.clone(),
             signer: Arc::new(key.clone()),
         })),
+        Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )
@@ -632,6 +731,7 @@ pub async fn test_host_holding_mounting(
         DeviceKeyGroups { keys, sink: None },
         None,
         None,
+        Vec::new(),
         Some(tilolang),
     )
     .await
@@ -662,6 +762,7 @@ pub async fn test_host_holding_mounting_as_member(
             cert: cert.clone(),
             signer: Arc::new(key.clone()),
         })),
+        Vec::new(),
         Some(tilolang),
     )
     .await
@@ -697,6 +798,7 @@ pub async fn test_host_keyed(
         keys.groups(),
         None,
         None,
+        Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )
@@ -713,6 +815,7 @@ async fn host_on(
     channels: impl Into<Option<DeviceKeyGroups>>,
     grants: Option<usize>,
     member: Option<Arc<MemberDevice>>,
+    app_files: Vec<std::path::PathBuf>,
     #[cfg(not(target_arch = "wasm32"))] tilolang: Option<crate::tl_records::Tilolang>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -729,6 +832,7 @@ async fn host_on(
             ServiceConfig {
                 max_workspace_grants: grants,
                 member,
+                app_files,
                 #[cfg(not(target_arch = "wasm32"))]
                 tilolang,
                 // Each device knows only the app surfaces named to it: tests run side by side in one
@@ -1143,21 +1247,6 @@ impl Workspaces {
             key,
             tilo_clock::wall(),
         )
-    }
-
-    /// Name `workspace`'s person, not a device, as the founder of the copy
-    /// held here: the copy of a Servers workspace an earlier build founded
-    /// alike on each of its person's devices.
-    ///
-    /// # Panics
-    ///
-    /// `workspace` is not held here.
-    pub async fn name_person_as_founder(&self, workspace: &str) {
-        let governed = self
-            .workspace(workspace)
-            .await
-            .expect("the workspace is held here");
-        governed.lock().await.peer.lock().name_person_as_founder();
     }
 }
 

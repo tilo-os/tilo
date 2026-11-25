@@ -26,9 +26,6 @@ use automerge::ReadDoc as _;
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_peer_state::{KeptDocument, PeerDocumentReadError, StatePeer};
 
-#[cfg(feature = "apps")]
-use tilo_peer_state::PeerDocumentCapture;
-
 use sealed::DocumentKeys;
 use tilo_lock::MutexRecover as _;
 use web_time::SystemTime;
@@ -482,86 +479,6 @@ pub(crate) async fn content_keys(
             (app, resource),
         )))),
     }
-}
-
-/// `app`'s `resource` of `workspace` for the device `reader` at `now`, as a capture answers it.
-#[cfg(feature = "apps")]
-pub(crate) async fn capture(
-    peer: &StatePeer,
-    device: Option<&DeviceKeys>,
-    workspace: &str,
-    (app, resource): (&str, &str),
-    reader: [u8; 32],
-    now: SystemTime,
-    maximum: usize,
-) -> Result<Option<PeerDocumentCapture>, PeerDocumentReadError> {
-    let keys = match content_keys(peer, device, workspace, (app, resource)).await? {
-        Sealing::Due => return Ok(None),
-        Sealing::Clear => None,
-        Sealing::Sealed(keys) => Some(keys),
-    };
-    let mut opened = keys.as_deref().map(DocumentKeys::open);
-    match peer.capture_document(
-        reader,
-        (app, resource),
-        now,
-        maximum,
-        opened
-            .as_mut()
-            .map(|open| open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>),
-    ) {
-        Ok(capture) => Ok(Some(capture)),
-        // A write this copy knows of has not reached it yet: it is on its way, and its landing
-        // wakes the reader.
-        Err(PeerDocumentReadError::Incomplete) => Ok(None),
-        Err(refused) => Err(refused),
-    }
-}
-
-/// The revision `app`'s `resource` of `workspace` stands at for the device `reader` at `now`,
-/// decided as a read is; `None` while a checkpoint is arriving.
-#[cfg(feature = "apps")]
-pub(crate) async fn revision(
-    peer: &StatePeer,
-    device: Option<&DeviceKeys>,
-    workspace: &str,
-    (app, resource): (&str, &str),
-    reader: [u8; 32],
-    now: SystemTime,
-) -> Result<Option<[u8; 32]>, String> {
-    peer.check_document_read(reader, app, resource, now)?;
-    if peer.checkpoint_pending(app, resource) {
-        return Ok(None);
-    }
-    let keys = match content_keys(peer, device, workspace, (app, resource))
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        Sealing::Due => return Ok(None),
-        Sealing::Clear => None,
-        Sealing::Sealed(keys) => Some(keys),
-    };
-    let mut opened = keys.as_deref().map(DocumentKeys::open);
-    let mut kept = KeptDocument::default();
-    let document = peer.open_document(
-        reader,
-        (app, resource),
-        now,
-        usize::MAX,
-        opened
-            .as_mut()
-            .map(|open| open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>),
-        &mut kept,
-    );
-    let document = match document {
-        Ok(document) => document,
-        // Missing a write it knows of: undecided until that lands, as the capture answers.
-        Err(PeerDocumentReadError::Incomplete) => return Ok(None),
-        Err(refused) => return Err(refused.to_string()),
-    };
-    Ok(Some(tilo_peer_state::committed_document_revision(
-        &document.get_heads(),
-    )))
 }
 
 #[cfg(test)]

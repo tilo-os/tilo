@@ -13,7 +13,7 @@ use automerge::{AutoCommit, ObjType, ROOT};
 use tilo_actions::surface::{FieldType, Surface};
 
 /// The containers at the root of `surface`'s record that its top-level fields keep their items
-/// in, by field name: a collection or map in a map, a list or set in a list, a record of its own
+/// in, by field name: a collection, map or set in a map, a list in a list, a record of its own
 /// in a map: what [`structure`] makes.
 #[must_use]
 pub fn containers(surface: &Surface) -> Vec<(String, ObjType)> {
@@ -23,8 +23,9 @@ pub fn containers(surface: &Surface) -> Vec<(String, ObjType)> {
         .filter(|field| !field.path.contains('.'))
         .filter_map(|field| {
             let container = match &field.ty {
-                FieldType::Collection(_) | FieldType::Map(_) => ObjType::Map,
-                FieldType::List(_) | FieldType::Set(_) => ObjType::List,
+                // A set is a map whose keys are its members, as the resource types keep one.
+                FieldType::Collection(_) | FieldType::Map(_) | FieldType::Set(_) => ObjType::Map,
+                FieldType::List(_) => ObjType::List,
                 FieldType::Named(_) if field.stored == "record" => ObjType::Map,
                 _ => return None,
             };

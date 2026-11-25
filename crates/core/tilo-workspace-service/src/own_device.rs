@@ -80,6 +80,7 @@ pub async fn open(
             cert: device.cert.clone(),
             signer: Arc::clone(device.signer),
         })),
+        app_files: app_files(),
         ..ServiceConfig::new(store, tilo_server_protocol::WorkSetting::none())
     });
     WorkspaceService::open(config, identity, endpoint, Some(groups)).await
@@ -145,6 +146,18 @@ pub async fn open_in(
     )
     .await?;
     Ok(Opened { service, keys })
+}
+
+/// Where the device's native apps kept files of their own, which its workspaces take in.
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+fn app_files() -> Vec<PathBuf> {
+    crate::workspaces::profile_import::homes()
+}
+
+/// A device that runs no apps kept no app files.
+#[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
+fn app_files() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// Keys a workspace's host handed this device for what every member reads, by workspace: a

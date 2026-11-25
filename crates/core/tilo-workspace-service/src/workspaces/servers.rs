@@ -56,14 +56,14 @@ use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
 use super::Workspaces;
-use super::person_workspace::{NAME as PERSON_WORKSPACE_NAME, holds_person_workspace};
+use super::person_workspace::holds_person_workspace;
 
 pub mod attach;
 pub mod device;
+pub mod floor;
 pub mod keeping;
 pub mod machine;
 pub mod plan;
-mod refound;
 
 /// The Servers workspace's document of the person's servers.
 pub const SERVERS: (&str, &str) = ("so.tilo.servers", "servers");

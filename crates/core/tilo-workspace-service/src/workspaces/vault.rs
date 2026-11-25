@@ -30,7 +30,7 @@ use accounts::{SecretId, SecretItem};
 use tilo_action_policy::Acting;
 use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
 use tilo_actions::remote::{CallAllowed, InvokeRequest, SignedCall};
-use tilo_resource::{AppNamed, Id, Replica};
+use tilo_resource::{AppNamed, Id, Replica, Resource as _};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
@@ -55,6 +55,7 @@ pub(crate) struct OpenVault {
     workspace: String,
     keys: key_group::ContentKeys,
     /// The document as it was read: `None` where nobody has made it yet.
+    #[cfg(test)]
     document: Option<Vec<u8>>,
     entries: Vec<(SecretItem, Vec<UseRecord>)>,
 }
@@ -200,6 +201,7 @@ impl Workspaces {
         Ok(OpenVault {
             workspace: workspace.to_owned(),
             keys,
+            #[cfg(test)]
             document,
             entries,
         })
@@ -318,74 +320,51 @@ impl Workspaces {
         if changes.is_empty() {
             return Ok(());
         }
-        if self.holds_own_copy(&opened.workspace).await {
-            // The workspace's own copy is this service's: it writes the document as its
-            // governor, onto the copy it holds now, as every other document it authors.
-            let served = match call {
-                Some(request) => {
-                    let used: Vec<&str> = changes
-                        .iter()
-                        .filter_map(|change| match change {
-                            VaultChange::Uses(SecretId(id), _) => Some(id.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    self.carried_call(&opened.workspace, request, acting, &used)
-                        .await?
-                }
-                None => None,
-            };
-            // A caller whose call the write keeps is named as they asked; without it, the
-            // write names whom this device may write for.
-            let acting = match (&served, acting) {
-                (Some(_), Some(acting)) => acting.clone(),
-                _ => self.acting_or_own(acting),
-            };
-            let cert = self.inner.host.cert.clone();
-            let start = match opened.document {
-                Some(_) => None,
-                None => Some(Box::new(founding_document(&opened.workspace)?)),
-            };
-            let keys = &opened.keys;
-            return Box::pin(self.author_workspace_document_from(
-                (&opened.workspace, &cert),
-                (APP, WORKSPACE_VAULT_DOCUMENT),
-                start,
-                |doc| {
-                    let mut replica = in_passwords(Replica::from_doc(std::mem::take(doc)))
-                        .as_invoker_acting(acting.clone());
-                    if let Some((invocation, signed)) = served.clone() {
-                        replica = replica.serving(invocation, signed);
-                    }
-                    replica
-                        .doc_mut()
-                        .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
-                    let applied = apply_changes(&mut replica, keys, changes);
-                    std::mem::swap(doc, replica.doc_mut());
-                    applied
-                },
-            ))
-            .await
-            .map_err(|error| error.to_string());
-        }
-        // A member's device writes its own person's change: it keeps no record for anyone else,
-        // so no call it was asked by goes with it.
-        let acting = self.acting_or_own(acting);
-        let founding = opened.document.is_none();
+        // The workspace's own copy is this service's: it writes the record for a caller who
+        // asked, keeping their call. A member's device writes its own person's change: it keeps
+        // no record for anyone else, so no call it was asked by goes with it.
+        let served = match call {
+            Some(request) if self.holds_own_copy(&opened.workspace).await => {
+                let used: Vec<&str> = changes
+                    .iter()
+                    .filter_map(|change| match change {
+                        VaultChange::Uses(SecretId(id), _) => Some(id.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                self.carried_call(&opened.workspace, request, acting, &used)
+                    .await?
+            }
+            _ => None,
+        };
+        // A caller whose call the write keeps is named as they asked; without it, the write
+        // names whom this device may write for.
+        let acting = match (&served, acting) {
+            (Some(_), Some(acting)) => acting.clone(),
+            _ => self.acting_or_own(acting),
+        };
+        let device = self.signing_device().device();
         let keys = &opened.keys;
-        let changes = vault_changes(opened, &self.signing_device().device(), changes, &acting)?;
-        Box::pin(self.own_write(
+        Box::pin(self.author_record(
             &opened.workspace,
-            (APP, WORKSPACE_VAULT_DOCUMENT),
-            None,
-            &changes,
-            founding,
-            founding,
-            Some(keys),
+            (APP, WorkspaceVaultEntries::KIND, WORKSPACE_VAULT_DOCUMENT),
+            |doc| {
+                let mut replica = in_passwords(Replica::from_doc(std::mem::take(doc)))
+                    .as_invoker_acting(acting.clone());
+                if let Some((invocation, signed)) = served.clone() {
+                    replica = replica.serving(invocation, signed);
+                }
+                // This device's own actor: two devices continuing the record under one actor
+                // would make one sequence with two different changes.
+                replica
+                    .doc_mut()
+                    .set_actor(automerge::ActorId::from(device.to_vec()));
+                let applied = apply_changes(&mut replica, keys, changes);
+                std::mem::swap(doc, replica.doc_mut());
+                applied
+            },
         ))
         .await
-        .map(|_| ())
-        .map_err(|refusal| refusal.to_string())
     }
 
     /// What a vault write keeps of `request`, the call it answers for `acting`: the call as its
@@ -841,64 +820,6 @@ impl Workspaces {
     }
 }
 
-/// The vault's genesis in `workspace`: the same change Passwords makes it with on any device,
-/// so a vault this device makes and one a window made at the same time are one document.
-#[cfg(any(feature = "agents", feature = "apps"))]
-fn founding_document(workspace: &str) -> Result<automerge::AutoCommit, String> {
-    use tilo_resource::Resource as _;
-    let id = collab_types::document::DocumentId::parse(WORKSPACE_VAULT_DOCUMENT)
-        .ok_or("the vault's id is no document's")?;
-    let kind = collab_types::document::ResourceType::new(WorkspaceVaultEntries::KIND);
-    let mut doc = automerge::AutoCommit::new();
-    collaboration::resource::genesis(
-        &mut doc,
-        &collab_types::document::DocumentCheckout::new(id, kind),
-        workspace,
-        |doc| WorkspaceVaultEntries::initialize(doc).map_err(|error| error.to_string()),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(doc)
-}
-
-/// Where this service is built without the resources' genesis, a vault nobody has made yet is
-/// made by the first member's Passwords.
-#[cfg(not(any(feature = "agents", feature = "apps")))]
-fn founding_document(_workspace: &str) -> Result<automerge::AutoCommit, String> {
-    Err("The workspace's vault is made by Passwords on a member's device first".to_owned())
-}
-
-/// Every entry of the vault document `bytes` holds, opened with `keys`, each with its uses.
-/// The changes that write `changes` to `opened`'s vault as the device `device`, sealed under the
-/// vault's keys; the whole document where nobody has made it yet. Made apart from any wait: the
-/// document as it changes is not shared between threads.
-fn vault_changes(
-    opened: &OpenVault,
-    device: &[u8; 32],
-    changes: Vec<VaultChange>,
-    acting: &Acting,
-) -> Result<Vec<u8>, String> {
-    let mut replica = in_passwords(match &opened.document {
-        Some(bytes) => {
-            Replica::<WorkspaceVaultEntries>::load(bytes).map_err(|error| error.to_string())?
-        }
-        None => Replica::from_doc(founding_document(&opened.workspace)?),
-    })
-    .as_invoker_acting(acting.clone());
-    // This device's own actor: the genesis is the founding actor's change, and two devices
-    // continuing it under that actor would make one sequence with two different changes.
-    replica
-        .doc_mut()
-        .set_actor(automerge::ActorId::from(device.to_vec()));
-    let heads = replica.heads();
-    let founding = opened.document.is_none();
-    apply_changes(&mut replica, &opened.keys, changes)?;
-    Ok(if founding {
-        replica.save()
-    } else {
-        replica.doc_mut().save_after(&heads)
-    })
-}
-
 /// What a vault write keeps of `request`, the call it answers: the invocation and the call as
 /// its caller signed it; `None` for a call nobody signed. What the call was asked with is left
 /// out: an item's secret travels in with it, and the vault keeps a secret sealed or not at all.
@@ -1093,6 +1014,60 @@ mod tests {
                 .entries()
                 .is_empty()
         );
+        server.shutdown().await;
+    }
+
+    /// The vault is the system's record on every device: installing Passwords, whose package
+    /// declares its own records, keeps the vault's writes admitted, and a package that declares
+    /// the vault's type itself is refused, so no package judges the vault's writes by its copy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn installing_passwords_keeps_the_vault_the_systems() {
+        const PASSWORDS: &str = r#"format = 2
+
+[[resources]]
+kind = "passwords.item"
+label = "Item"
+version = 1
+fields = [
+  { path = "title", type = "text" },
+]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+"#;
+        let scratch = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let server = test_host(scratch.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
+        let surfaces = &workspaces.inner.host.surfaces;
+        surfaces.register_package(APP, PASSWORDS.as_bytes());
+        assert!(surfaces.hash_of(APP).is_some(), "Passwords is installed");
+        assert!(
+            surfaces
+                .kinds_of(APP)
+                .iter()
+                .any(|kind| kind == WorkspaceVaultEntries::KIND),
+            "the vault is the system's record of Passwords"
+        );
+        let squatter = PASSWORDS.replace("passwords.item", WorkspaceVaultEntries::KIND);
+        surfaces.register_package("test.vault-copy", squatter.as_bytes());
+        assert!(
+            surfaces.hash_of("test.vault-copy").is_none(),
+            "a package declaring the vault's type is refused"
+        );
+        assert!(surfaces.kinds_of("test.vault-copy").is_empty());
+
+        let workspace = workspaces.create("Vault").await.unwrap().workspace;
+        let opened = workspaces.open_vault(&workspace).await.unwrap();
+        let entry = SecretItem::login("Example", "ada", "correct horse battery staple");
+        workspaces
+            .write_vault(&opened, vec![VaultChange::Keep(entry.clone())], None, None)
+            .await
+            .unwrap();
+        let again = workspaces.open_vault(&workspace).await.unwrap();
+        assert_eq!(again.entries().len(), 1, "{again:?}");
+        assert_eq!(again.entries()[0].0, entry);
         server.shutdown().await;
     }
 }

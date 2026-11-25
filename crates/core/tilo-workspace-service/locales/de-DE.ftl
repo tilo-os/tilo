@@ -149,6 +149,7 @@ passwords-workspace-vault-keep-sealed = Verschlüsselten Tresoreintrag speichern
 passwords-workspace-vault-import-sealed = Verschlüsselten Tresoreintrag importieren
 passwords-workspace-vault-remove-sealed = Verschlüsselten Tresoreintrag löschen
 passwords-workspace-vault-keep-uses = Festhalten, wo ein Eintrag verwendet wurde
+browser-environment = Einstellungen des Arbeitsbereichsrechners
 
 ## App Store
 store-catalog = Store-Katalog
@@ -158,3 +159,8 @@ store-catalog-record-moderation-case = Moderationsfall festhalten
 # Die Aktionen des Tresor-Pakets, die eine Codegenerator-App über ihre Adresse aufruft.
 so-tilo-vault-keep = Einen Seed aufbewahren
 so-tilo-vault-forget = Einen Seed vergessen
+tilo-servers-floor = Rollback-Grenze
+tilo-servers-floor-set-floor-key = Grenzschlüssel festlegen
+tilo-servers-floor-request-floor-advance = Anheben der Grenze erbitten
+tilo-servers-floor-approve-floor-advance = Anheben der Grenze erlauben
+tilo-servers-floor-refuse-floor-advance = Anheben der Grenze ablehnen
