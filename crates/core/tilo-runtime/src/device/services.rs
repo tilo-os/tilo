@@ -830,6 +830,115 @@ fn device_person_root_record() -> io::Result<std::path::PathBuf> {
     root_record(uid)
 }
 
+/// The variable a deployment hands the owner's root with: a file holding the root's 32-byte seed
+/// as 64 hexadecimal characters, readable by its owner alone.
+pub(crate) const OWNER_ROOT_FILE: &str = "TILO_WORKSPACES_ROOT_FILE";
+
+/// Adopt the owner's root a deployment hands this daemon ([`OWNER_ROOT_FILE`]), once: the root
+/// kept here as on any of its person's own devices, which certifies this device's key and makes
+/// this computer one the person's services start as (so its configured workspaces are founded
+/// as the owner, not kept as a server's). A deployment that names none leaves the computer as it
+/// was; one whose root is kept here already adopts nothing again.
+///
+/// # Errors
+/// The file cannot be read by its owner alone, it holds no 32-byte seed as hex, the identity
+/// store keeps another person's root, or the root cannot be restored and certify this device.
+pub(crate) fn adopt_owner_root(profile: &Path) -> io::Result<()> {
+    let Some(file) = std::env::var_os(OWNER_ROOT_FILE) else {
+        return Ok(());
+    };
+    if file.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{OWNER_ROOT_FILE} names no file"),
+        ));
+    }
+    let file = PathBuf::from(file);
+    let keys = tilo_api::calls::device_keys();
+    let dir = device_identity_dir(profile, this_account_uid(), &keys)?;
+    adopt_root_file(&file, &dir, &keys)
+}
+
+/// [`adopt_owner_root`], for the root at `file` and the identity store `dir`, with `keys` this
+/// device's own: the same root a person's own device keeps, restored through the one way a
+/// person is brought back on a computer ([`tilo_identity::provisioning::restore_from_recovery_words`]).
+fn adopt_root_file(
+    file: &Path,
+    dir: &Path,
+    keys: &tilo_device_identity::IdentityPaths,
+) -> io::Result<()> {
+    use std::io::Read as _;
+    let handed = |why: String| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the owner root this deployment hands the daemon ({}): {why}",
+                file.display()
+            ),
+        )
+    };
+    let mut text = String::new();
+    // The root is its owner's secret: the file is read as a private one, owned by this user,
+    // owner-only and singly linked.
+    tilo_files::native::private::read(file)
+        .and_then(|file| file.take(129).read_to_string(&mut text))
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "the owner root this deployment hands the daemon ({}): {error}",
+                    file.display()
+                ),
+            )
+        })?;
+    let seed: [u8; 32] = hex::decode(text.trim())
+        .ok()
+        .and_then(|seed| <[u8; 32]>::try_from(seed).ok())
+        .ok_or_else(|| {
+            handed("it is the root's 32-byte seed as 64 hexadecimal characters".to_owned())
+        })?;
+    // The root kept here already is this one: a start after the first adopts nothing again.
+    if let Some(record) = tilo_identity::store::held_root(dir) {
+        let kept = tilo_identity::store::load_metadata_from_path(&record)
+            .map_err(|error| handed(error.to_string()))?;
+        let person = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+        return if kept.group_public_key == person {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "the owner root this deployment hands the daemon ({}) is another person's \
+                     than the root this computer already keeps ({})",
+                    file.display(),
+                    hex::encode(kept.group_public_key)
+                ),
+            ))
+        };
+    }
+    // The identity store's one way of keeping a person's root again, which also certifies this
+    // device's key under it: the same path a person's own device takes.
+    let words = tilo_user_identity::recovery_words::encode(&seed)
+        .ok_or_else(|| handed("its seed did not encode as a recovery key".to_owned()))?;
+    tilo_identity::provisioning::restore_from_recovery_words(
+        dir,
+        keys,
+        &words,
+        None,
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .map(drop)
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "the owner root this deployment hands the daemon ({}): {error}",
+                file.display()
+            ),
+        )
+    })
+}
+
 /// In a test: the record [`device_root_record`] answers while [`root_record_for_test`]'s guard
 /// is held, as if this computer kept that root.
 #[cfg(test)]
@@ -1581,6 +1690,9 @@ impl Daemon {
         if let Some(keeping) = keeping.as_ref() {
             keeping.enroll()?;
         }
+        // The owner's root a deployment hands this daemon is kept here before the identity is
+        // read, so this computer is the person's own device and founds its workspaces under it.
+        adopt_owner_root(root)?;
         let identity = Identity::here(root)?;
         tilo_files::native::private::directory(identity.place.dir())?;
         let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
@@ -1615,12 +1727,6 @@ impl Daemon {
                 tilo_server_protocol::servers::person_workspace_id(&identity.cert.user_public_key),
                 None,
             )
-        } else if keeping.is_some() {
-            // A server is signed in by its person's ticket; it founds no one of its own.
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                super::keep::SIGN_IN_FIRST,
-            ));
         } else {
             // The person's own workspace, at the id their key names: the one a device a ticket
             // of this computer's makes enters, as the `joined` arm above names it.

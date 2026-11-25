@@ -741,6 +741,10 @@ fn serve_device(
     // start once founding, a login or that ticket makes the identity, from `devices#found`. A
     // certificate that no identity names, or one this device cannot act as, leaves the daemon
     // answering its own actions rather than ending.
+    // A deployment may hand this daemon its owner's root instead of a ticket: the root is kept
+    // here as on any of its person's own devices, which certifies this device's key and makes
+    // this computer one its person's services start as, founding the workspaces it keeps.
+    crate::device::services::adopt_owner_root(profile)?;
     if !device.claimed() {
         device.spend_handed_ticket();
         if !device.until_ready(stop) {
@@ -1811,9 +1815,9 @@ fn admit_within<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>
             io::ErrorKind::TimedOut,
             "this computer has no person signed in yet: its daemon admitted no session in time",
         )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(
-            "this computer's daemon is stopping",
-        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other("this computer's daemon is stopping"))
+        }
     }
 }
 

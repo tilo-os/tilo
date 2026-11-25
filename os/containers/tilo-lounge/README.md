@@ -37,21 +37,25 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_ADMISSION` | `open` | who a kept workspace's entry lets in: `open` admits anyone who asks, at the default role; `invite` only people the workspace invited |
 | `TILO_WORKSPACES_DESCRIPTION` | the workspace's name | what a kept workspace is, as the public directory shows it |
 | `TILO_WORKSPACES_DEFAULT_ROLE` | `editor` | the role everyone who joins through the entry holds to begin with |
+| `TILO_WORKSPACES_ROOT_FILE` | none | the owner's root, mounted from the operator's secrets: its 32-byte seed as 64 hexadecimal characters, readable by the image's user alone. A volume given it is that owner's own device and founds its kept workspaces; an empty volume then needs no ticket |
 
 A kept workspace's entry is settled once, when it is founded, and what its owners
 change later stands: a later start reads the workspace's entry rather than
 settling the deployment's again. Founding a workspace is its founder's own
-device's act, so a volume holds the owner's root for it (its identity store its
-own): a volume a ticket joined keeps the workspaces its owners place on it
-(`servers add`) and founds none.
+device's act, so a volume is given its owner's root (`TILO_WORKSPACES_ROOT_FILE`):
+the daemon keeps it as any of the owner's own devices keeps it, certifies its
+device key under it and founds the workspaces its configuration keeps. A volume a
+ticket joined keeps the workspaces its owners place on it (`servers add`) and
+founds none.
 
 `TILO_SERVER_CONFIG` names the server configuration the daemon reads (default
 `$TILO_WORKSPACES_STATE/server.toml`), which the deployment writes when it fixes
 the endpoint's address, a published packet relay or a host name.
 
-`TILO_TICKET` is what an empty volume joins with: the ticket `tilo device add`
-prints, left on the volume once and spent at the daemon's first start. A volume
-that already holds its identity ignores it.
+`TILO_TICKET` is what an empty volume joins with instead: the ticket `tilo device
+add` prints, left on the volume once and spent at the daemon's first start. A
+volume that already holds its identity ignores it. A volume given its owner's root
+never joins with a ticket: it is that owner's own device.
 
 `TILO_SOURCE_REVISION` is the image's own revision; `TILO_SECRETS_DIR` already
 points into the state volume, where the workspace secrets are kept sealed.

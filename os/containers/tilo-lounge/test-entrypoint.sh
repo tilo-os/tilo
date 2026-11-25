@@ -103,10 +103,29 @@ lounge || fail "a deployment with a configuration did not start: $(cat "$work/er
 grep -Fqx 'web_entry = "https://elsewhere.example/"' "$config_file" \
   || fail 'the entrypoint replaced the configuration it was given'
 
+# A deployment given its owner's root hands it to the daemon: the volume acts as
+# that owner's own device, so the ticket it was also handed is left unspent, and
+# an empty volume needs none at all.
+root_file=$work/owner-root
+printf '%064d\n' 0 > "$root_file"
+chmod 600 "$root_file"
+rm -f "$config_file"
+lounge TILO_WORKSPACES_ROOT_FILE="$root_file" \
+  || fail "a deployment given its owner's root did not start: $(cat "$work/err")"
+env_has "TILO_WORKSPACES_ROOT_FILE=$root_file"
+[[ ! -s $work/state/credentials/tilo.ticket ]] \
+  || fail 'a volume given its owner root kept a ticket it was given'
+rm -f "$config_file"
+env -i PATH="$work/bin:/usr/bin:/bin" STUB_ENV="$STUB_ENV" STUB_CONFIG="$STUB_CONFIG" \
+  TILO_SERVER_CONFIG="$config_file" TILO_WORKSPACES_STATE="$work/from-root" \
+  TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ TILO_WORKSPACES_ROOT_FILE="$root_file" \
+  sh "$here/entrypoint.sh" \
+  || fail "an empty volume given its owner root did not start: $(cat "$work/err")"
+
 # What the image does not read stops the start rather than running with half
-# of the deployment's settings.
+# of the deployment's settings, and so does an owner root it cannot read.
 fails_with lounge TILO_WORKSPACES_PERSISTENT=lounge
-fails_with lounge TILO_WORKSPACES_ROOT_FILE=/run/secrets/root
+fails_with lounge TILO_WORKSPACES_ROOT_FILE="$work/no-such-root"
 fails_with lounge TILO_WORKSPACES_BOTS='a=b'
 fails_with lounge TILO_WORKSPACES_IROH_LISTEN=0.0.0.0:4433
 

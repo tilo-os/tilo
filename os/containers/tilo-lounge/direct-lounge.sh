@@ -5,18 +5,16 @@
 # minutes; the image's own test (test-image.sh) boots the built image.
 #
 # Sourced, not run: `start_lounge BUNDLE WORK` leaves the daemon answering and
-# sets `site_origin` and `log`. The workspace it keeps is placed on it by the
-# test, through the person's own commands. An empty volume joins a person with
-# a ticket, and no person's device is here to print one: the check makes the
-# person on a device of its own under WORK, and takes the first ticket a server
-# of theirs joins with — the device's own `devices#found`, the action
-# `tilo login --new-identity --ticket server` asks, waited on until it answers.
-# `LOUNGE_TICKET` names a ticket instead, for a caller that already has one.
-# `restart_lounge` stops the Lounge alone and starts it again on the volume it
-# kept, the site left serving, as a deployment's restart does. It needs node,
-# chromium, curl, and TILO_SERVER_BIN and TILO_CRYPTO_BIN naming built programs,
-# and TILO_FONTS_DIR the product's font catalog. The caller's EXIT trap must
-# call `stop_lounge`.
+# sets `site_origin` and `log`. The volume is a fresh deployment's, given its
+# owner's root among the operator's secrets: the daemon is that owner's own
+# device, so it founds the workspace its configuration keeps, under the root and
+# with the entry the deployment names. `LOUNGE_ADMISSION` (open unless set),
+# `LOUNGE_DEFAULT_ROLE`, `LOUNGE_DESCRIPTION` and `LOUNGE_WAIT_LIST_MAX` are the
+# entry it founds with. `restart_lounge` stops the Lounge alone and starts it
+# again on the volume it kept, the site left serving, as a deployment's restart
+# does. It needs node, chromium, curl, and TILO_SERVER_BIN and TILO_CRYPTO_BIN
+# naming built programs, and TILO_FONTS_DIR the product's font catalog. The
+# caller's EXIT trap must call `stop_lounge`.
 #
 # Its addresses are LOUNGE_PORT_BASE (default 19780) and the two ports after
 # it — the daemon's HTTPS web listener, its packet relay, and the site — so a
@@ -53,9 +51,9 @@ run_lounge() {
   # read why it did or did not do something.
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
     ${LOUNGE_LOG:+TILO_SERVER_LOG="$LOUNGE_LOG"} \
-    ${LOUNGE_TICKET:+TILO_TICKET="$LOUNGE_TICKET"} \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
+    TILO_WORKSPACES_ROOT_FILE="$lounge_volume/secrets/workspace-root" \
     TILO_WORKSPACES_STATE="$lounge_volume" \
     TILO_SERVER_CONFIG="$lounge_volume/server.toml" \
     sh "$lounge_here/entrypoint.sh" >> "$log" 2>&1 &
@@ -82,53 +80,29 @@ await_lounge() {
   done
 }
 
-# The person a check's Lounge belongs to: a device of theirs under WORK, the
-# port it answers on (past the Lounge's three), its log, and the ticket a server
-# of theirs joins with.
-person_home= person_port= person_log= server_ticket= person_pid=
-
-# A program as the person's device runs it, with the environment its native
-# endpoint is found by.
-device_environment=()
-person_environment() {
-  device_environment=(
-    HOME="$person_home" PATH="$lounge_bin:/usr/bin:/bin"
-    TMPDIR="$person_home/tmp" XDG_RUNTIME_DIR="$person_home/run"
-    XDG_CONFIG_HOME="$person_home/config" XDG_STATE_HOME="$person_home/state"
-    XDG_DATA_HOME="$person_home/data" XDG_CACHE_HOME="$person_home/cache"
-    TILO_IDENTITY_ROOT="$person_home/data/tilo"
-    TILO_DEVICE_PORT="$person_port"
-    TILO_SITE="$site_origin"
-  )
-}
-
-# The first ticket the person's device issues for a server, made as the person
-# is founded on it: the device's own `devices#found` action, waited on until the
-# person's services have issued what was asked. A server joins its person with
-# this ticket, as the entrypoint spends it.
-mint_ticket() {
-  local socket=$person_home/run/tilo/native.sock
-  python3 - "$socket" <<'PYTHON'
+# What this deployment is: the device acts as the owner root it was handed, and
+# the kept workspace is founded with the entry the deployment names, listed by the
+# directory it serves. A Lounge that founded nothing, or founded as its own device
+# key instead of the root, fails.
+verify_founded() {
+  local socket people directory entry
+  socket=$(find "$lounge_volume" -name native.sock -print -quit 2>/dev/null)
+  [[ -n $socket ]] || lounge_fail 'the Lounge keeps no native endpoint'
+  people=$(python3 - "$socket" <<'PYTHON'
 import json, socket, sys
-
-socket_path = sys.argv[1]
 call = {
     "jsonrpc": "2.0",
     "id": 1,
     "method": "tools/call",
     "params": {
         "name": "tilo_do",
-        "arguments": {
-            "path": "devices#found",
-            "args": {"tickets": ["server"], "name": "Lounge"},
-            "wait_ms": 150000,
-        },
+        "arguments": {"path": "devices#info", "args": {}, "wait_ms": 30000},
         "_meta": {"so.tilo.mcp": {"structured": True}},
     },
 }
 stream = socket.socket(socket.AF_UNIX)
-stream.settimeout(200)
-stream.connect(socket_path)
+stream.settimeout(60)
+stream.connect(sys.argv[1])
 stream.sendall((json.dumps(call) + "\n").encode())
 answer = b""
 while not answer.endswith(b"\n"):
@@ -141,52 +115,37 @@ result = answer.get("result", {})
 structured = result.get("structuredContent") or {}
 if not structured:
     structured = json.loads(result["content"][0]["text"])
-issued = structured.get("result") or {}
-for ticket in issued.get("tickets") or []:
-    if ticket.get("kind") == "server":
-        print(ticket["ticket"])
-        break
-else:
-    raise SystemExit(f"the person issued no server ticket: {json.dumps(answer)[:600]}")
+print(" ".join((structured.get("result") or {}).get("people") or []))
 PYTHON
-}
-
-# Found the person this Lounge belongs to, on a device of its own under WORK,
-# and take the first ticket a server of theirs joins with. The device is one of
-# the person's computers: its own home, its own endpoint, and the product's own
-# program the Lounge runs, started as a device with no server configuration.
-found_person() {
-  local runtime=$lounge_bin/tilo-runtime
-  [[ -x $runtime ]] || lounge_fail "no tilo-runtime at $runtime"
-  mkdir -p "$person_home/run" "$person_home/config" "$person_home/state" \
-    "$person_home/data" "$person_home/cache" "$person_home/tmp"
-  person_environment
-  # A session of its own: the person's device starts the services they run, and
-  # the whole session ends with it.
-  env -i "${device_environment[@]}" setsid "$runtime" >> "$person_log" 2>&1 &
-  local device=$!
-  local socket=$person_home/run/tilo/native.sock
-  for _ in $(seq 1 600); do
-    [[ -S $socket ]] && break
-    kill -0 "$device" 2>/dev/null \
-      || lounge_fail "the person's device stopped at its start: $(tail -3 "$person_log" 2>/dev/null)"
+)
+  [[ " $people " == *" $owner_root_public "* ]] \
+    || lounge_fail "the Lounge does not act as the owner root $owner_root_public: its device names $people"
+  for _ in $(seq 1 100); do
+    directory=$(curl -fsS -k -X POST -H "Origin: $server_origin" --data '' \
+      "$server_origin/peer/v1/directory" 2>/dev/null) && break
+    kill -0 "$lounge_pid" 2>/dev/null || lounge_fail 'the Lounge stopped before it answered its directory'
     sleep 0.1
   done
-  [[ -S $socket ]] || lounge_fail "the person's device did not answer at $socket"
-  server_ticket=$(mint_ticket) \
-    || lounge_fail "the person's device issued no server ticket: $(tail -3 "$person_log" 2>/dev/null)"
-  # The device that issued the ticket certifies the Lounge as one of its
-  # person's servers when the Lounge spends it, so it stays up until then.
-  person_pid=$device
-  lounge_pids+=("$device")
-}
-
-# The person's device, once the Lounge has joined: nothing asks it again.
-stop_person() {
-  [[ -n ${person_pid:-} ]] || return 0
-  kill -KILL -- "-$person_pid" 2>/dev/null || kill -KILL "$person_pid" 2>/dev/null || true
-  wait "$person_pid" 2>/dev/null || true
-  person_pid=
+  [[ -n $directory ]] || lounge_fail 'the Lounge never answered its directory'
+  entry=$(DIRECTORY_PAGE="$directory" WORKSPACE="$workspace" \
+    DESCRIPTION="${LOUNGE_DESCRIPTION:-Lounge}" ADMISSION="${LOUNGE_ADMISSION:-open}" \
+    python3 - <<'PYTHON'
+import json, os
+page = json.loads(os.environ["DIRECTORY_PAGE"])
+entry = next(
+    (e for e in page.get("workspaces", []) if e.get("workspace") == os.environ["WORKSPACE"]),
+    None,
+)
+if entry is None:
+    raise SystemExit(f"the directory lists no workspace {os.environ['WORKSPACE']}")
+if entry.get("name") != "Lounge" or entry.get("description") != os.environ["DESCRIPTION"]:
+    raise SystemExit(f"the directory lists it as {entry}")
+if bool(entry.get("invitationOnly")) != (os.environ["ADMISSION"] == "invite"):
+    raise SystemExit(f"the directory lists its entry as {entry}")
+print(f"{entry['workspace']} as {entry['name']} ({entry['description']}, admission {os.environ['ADMISSION']})")
+PYTHON
+) || lounge_fail 'the kept workspace is not listed with the entry the deployment names'
+  echo "ok: the kept workspace is founded under the owner root $owner_root_public: the directory lists $entry"
 }
 
 start_lounge() {
@@ -209,12 +168,17 @@ start_lounge() {
   "$crypto" generate-tls-fixture 127.0.0.1 "$work/site.ca.crt" "$work/site.key" "$work/site.crt" \
     || lounge_fail 'no certificate for the site'
 
-  # The volume, as a fresh deployment mounts it: empty, with a throwaway owner
-  # root among the operator's secrets.
+  # The volume, as a fresh deployment mounts it: empty, with the owner's root
+  # among the operator's secrets. The root is the person the Lounge belongs to,
+  # kept here as on any of their own devices: the deployment founds its kept
+  # workspace as them, under this root, and needs no ticket.
   local volume=$work/volume
   mkdir -p "$volume/secrets" "$work/bin"
-  printf 'a%.0s' $(seq 64) > "$volume/secrets/workspace-root"
+  "$crypto" generate-ed25519-key "$work/owner-root.seed" "$work/owner-root.pub" \
+    || lounge_fail 'no owner root for this Lounge'
+  od -An -tx1 -v "$work/owner-root.seed" | tr -d ' \n' > "$volume/secrets/workspace-root"
   chmod 600 "$volume/secrets/workspace-root"
+  owner_root_public=$(tr -d ' \n' < "$work/owner-root.pub")
   # The server as the image carries it: the product's font catalog beside the
   # program, which is where a Tilo binary finds it outside the image (its apps
   # lay text out, and a host that seeds them has no system fonts).
@@ -223,35 +187,35 @@ start_lounge() {
 
   # This Lounge's server configuration: its web UI and packet relay on this
   # check's ports, so two runs beside each other bind their own, and the
-  # workspace it founds and keeps of its own.
-  local id
+  # workspace its owner root founds and keeps, with the entry the deployment
+  # names. `open` (the default) admits anyone who asks; `invite` lists it and
+  # takes people by invitation.
+  local id admission role description
   id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  admission=${LOUNGE_ADMISSION:-open}
+  role=${LOUNGE_DEFAULT_ROLE:-editor}
+  description=${LOUNGE_DESCRIPTION:-Lounge}
   mkdir -p "$volume/lounge"
   printf '%s' "$id" > "$volume/lounge/workspace-id"
   {
     printf 'web_entry = "%s/"\n' "$site_origin"
     printf 'web_listen = "127.0.0.1:%s"\n' "$lounge_web_port"
     printf 'packet_relay = "127.0.0.1:%s"\n' "$lounge_live_port"
-    printf '\n[[kept]]\nid = "%s"\nname = "Lounge"\n' "$id"
+    printf '\n[[kept]]\nid = "%s"\nname = "Lounge"\nentry = "%s"\ndefault_role = "%s"\ndescription = "%s"\n' \
+      "$id" "$admission" "$role" "$description"
+    [ -z "${LOUNGE_WAIT_LIST_MAX:-}" ] \
+      || printf 'wait_list_max = %s\n' "$LOUNGE_WAIT_LIST_MAX"
   } > "$volume/server.toml"
 
   # The daemon keeps a profile private to its account, and the volume is its
   # profile: a deployment's volume is one.
   chmod 700 "$volume"
   lounge_volume=$volume lounge_bin=$work/bin lounge_home=$work
-  # An empty volume is a machine joining a person: a ticket a device of theirs
-  # prints. `LOUNGE_TICKET` names one; with none, the check makes the person on a
-  # device of its own here and takes the first ticket a server of theirs joins
-  # with, as a deployment's operator adds its Lounge.
-  if [[ -z ${LOUNGE_TICKET:-} && ! -s $volume/identity/device/cert.bin ]]; then
-    person_home=$work/person person_port=$((base + 3)) person_log=$work/person.log
-    found_person
-    LOUNGE_TICKET=$server_ticket
-  fi
   run_lounge
   await_lounge
   workspace=$(cat "$volume/lounge/workspace-id" 2>/dev/null) || lounge_fail 'the Lounge kept no workspace id'
   echo "ok: the Lounge is Ready ($workspace, $((SECONDS - started))s)"
+  verify_founded
 
   # Who the host is, as the operator hands it to the web entry
   # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first. The
@@ -266,7 +230,6 @@ start_lounge() {
     sleep 0.2
   done
   info=$(cat "$line") || lounge_fail 'the server said nothing of itself (web-host.json)'
-  stop_person
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
     "$server_origin" "$server_origin" Lounge \
     "$server_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &

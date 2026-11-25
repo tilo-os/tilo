@@ -29,9 +29,15 @@
 #   TILO_WORKSPACES_DEFAULT_ROLE    the role everyone who joins through the entry
 #                                   holds to begin with: viewer, commenter or
 #                                   editor (default editor)
+#   TILO_WORKSPACES_ROOT_FILE       the owner's root, mounted from the operator's
+#                                   secrets: its 32-byte seed as 64 hexadecimal
+#                                   characters, readable by this image's user alone.
+#                                   A volume given it acts as that owner's own
+#                                   device and founds the kept workspaces; empty
+#                                   volumes then need no ticket
 #
-# A kept workspace is founded by the founder's own device, under its root: this
-# volume is that root holder when it holds the owner's identity, and a volume a
+# A kept workspace is founded by the founder's own device, under its root: a volume
+# given its owner's root (TILO_WORKSPACES_ROOT_FILE) is that device, and a volume a
 # ticket joined keeps the workspaces its owners place on it without founding any.
 #
 # A deployment that fixes the endpoint's address, a published packet relay or a
@@ -49,7 +55,8 @@ fail() {
 }
 
 known='TILO_WORKSPACES_STATE TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_LIVE
-TILO_WORKSPACES_ADMISSION TILO_WORKSPACES_DESCRIPTION TILO_WORKSPACES_DEFAULT_ROLE'
+TILO_WORKSPACES_ADMISSION TILO_WORKSPACES_DESCRIPTION TILO_WORKSPACES_DEFAULT_ROLE
+TILO_WORKSPACES_ROOT_FILE'
 known=$(printf '%s' "$known" | tr '\n' ' ')
 for variable in $(env | sed -n 's/^\(TILO_WORKSPACES_[A-Za-z0-9_]*\)=.*/\1/p'); do
   case " $known " in
@@ -78,16 +85,24 @@ chmod 0700 "$state"
 
 # An empty volume is a machine joining an existing owner, and the one secret
 # that does it is the ticket `tilo device add` printed on an owner device, which
-# the daemon spends at its first start. A volume that already holds its device
-# key and login leaves a ticket it is given unspent.
+# the daemon spends at its first start. A volume given its owner's root instead
+# is that owner's own device, and needs no ticket. A volume that already holds
+# its device key and login leaves a ticket it is given unspent.
 credentials=$state/credentials
 mkdir -p -m 0700 "$credentials"
 rm -f "$credentials/tilo.ticket"
+owner_root=${TILO_WORKSPACES_ROOT_FILE:-}
+if [ -n "$owner_root" ] && [ ! -r "$owner_root" ]; then
+  fail "TILO_WORKSPACES_ROOT_FILE names no readable file: $owner_root"
+fi
 if [ ! -s "$state/identity/device/cert.bin" ]; then
-  if [ -z "${TILO_TICKET:-}" ]; then
-    fail 'no identity on this volume: make a ticket with `tilo device add` and pass it as TILO_TICKET'
+  if [ -n "$owner_root" ]; then
+    : # the root the deployment hands makes this device; no ticket joins it
+  elif [ -z "${TILO_TICKET:-}" ]; then
+    fail 'no identity on this volume: make a ticket with `tilo device add` and pass it as TILO_TICKET, or give it its owner root as TILO_WORKSPACES_ROOT_FILE'
+  else
+    (umask 077 && printf '%s\n' "$TILO_TICKET" > "$credentials/tilo.ticket")
   fi
-  (umask 077 && printf '%s\n' "$TILO_TICKET" > "$credentials/tilo.ticket")
 fi
 export CREDENTIALS_DIRECTORY=$credentials
 

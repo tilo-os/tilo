@@ -2280,3 +2280,146 @@ fn founding_on_a_persons_device_is_told_it_has_one() {
         );
     }
 }
+
+/// The owner's root a deployment hands the daemon is kept here as on any of its
+/// person's own devices: a root record under it and a certificate for this device's
+/// key that root signed, so the device acts as the owner and founds as the root
+/// holder. A root already kept is not made again, another person's stops the start,
+/// and so does a file that is not an owner-only hex seed.
+#[test]
+fn a_deployment_is_handed_its_owner_root_once_and_kept_as_that_persons_device() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let identity = dir.path().join("identity");
+    tilo_files::native::private::directory(&identity).unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(&identity);
+    tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let account = identity.join("accounts").join("1000");
+    let write_root = |name: &str, seed: &[u8; 32], mode: u32| {
+        let file = dir.path().join(name);
+        std::fs::write(&file, hex::encode(seed)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+        file
+    };
+
+    let seed = [7u8; 32];
+    let root_file = write_root("owner-root", &seed, 0o600);
+    adopt_root_file(&root_file, &account, &keys).expect("the owner root is kept here");
+
+    let person = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let record = tilo_identity::store::held_root(&account).expect("the root is kept here");
+    let metadata = tilo_identity::store::load_metadata_from_path(&record).unwrap();
+    assert_eq!(metadata.group_public_key, person);
+    let (device, cert) = tilo_identity::trusted_device::serving_in(&account, &keys)
+        .expect("this device's certificate is here");
+    assert_eq!(
+        cert.user_public_key, person,
+        "the certificate is rooted at the owner"
+    );
+    assert_eq!(
+        cert.device_public_key,
+        device.verifying_key().to_bytes(),
+        "the certificate is this device's key's"
+    );
+
+    // The root kept here is not made again, and another person's stops the start.
+    adopt_root_file(&root_file, &account, &keys).expect("a start after the first adopts nothing");
+    let another = write_root("another-root", &[9u8; 32], 0o600);
+    let refused =
+        adopt_root_file(&another, &account, &keys).expect_err("another person is no root here");
+    assert!(
+        refused.to_string().contains("another person's"),
+        "{refused}"
+    );
+
+    let open = write_root("open-root", &[11u8; 32], 0o644);
+    let refused =
+        adopt_root_file(&open, &account, &keys).expect_err("a file others may read is no root");
+    assert!(!refused.to_string().is_empty(), "{refused}");
+
+    let malformed = dir.path().join("malformed-root");
+    std::fs::write(&malformed, "not a root\n").unwrap();
+    std::fs::set_permissions(&malformed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let refused = adopt_root_file(&malformed, &account, &keys).expect_err("words are no root seed");
+    assert!(refused.to_string().contains("64 hexadecimal"), "{refused}");
+}
+
+/// A deployment given its owner's root is that owner's own device: the daemon it
+/// starts founds the workspace its configuration keeps, with the entry the
+/// deployment names, under the root rather than a key of the server's own.
+const OWNER_ROOT_TEST: &str = "device::services::tests::a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry";
+
+/// The kept workspace's id, as the deployment names it.
+const KEPT_WORKSPACE: &str = "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11";
+
+#[test]
+fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if let Some(root) = std::env::var_os(PROCESS_ROOT) {
+        // The deployment's own process: its root and its configuration, as a container's start.
+        let root = PathBuf::from(root);
+        let root_file = PathBuf::from(std::env::var_os(OWNER_ROOT_FILE).unwrap());
+        let daemon = Daemon::start_reporting(&root, &mut |_| {}).expect("the deployment starts");
+        let seed: [u8; 32] = hex::decode(std::fs::read_to_string(&root_file).unwrap().trim())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let owner = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+        assert_eq!(
+            daemon.cert.user_public_key, owner,
+            "the device acts as the owner root"
+        );
+        let runtime = tilo_rt::daemon("owner-root-test").build().unwrap();
+        let entry = runtime
+            .block_on(
+                daemon
+                    .workspaces
+                    .service()
+                    .workspaces()
+                    .entry_policy(KEPT_WORKSPACE),
+            )
+            .expect("the kept workspace is founded here");
+        assert!(
+            !entry.invitation_only,
+            "the entry is the open one the deployment names"
+        );
+        let listing = entry.listing.expect("the workspace is listed");
+        assert_eq!(listing.description, "Coffee and tea");
+        assert_eq!(listing.default_role, tilo_action_policy::Role::Commenter);
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let deployment = root.join("deployment");
+    std::fs::create_dir_all(&deployment).unwrap();
+    let root_file = deployment.join("owner-root");
+    std::fs::write(&root_file, hex::encode([3u8; 32])).unwrap();
+    std::fs::set_permissions(&root_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let config = deployment.join("server.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "web_entry = \"https://127.0.0.1:1/\"\nweb_listen = \"127.0.0.1:0\"\n\
+             identity_root = \"{}\"\nstate_root = \"{}\"\n\n\
+             [[kept]]\nid = \"{KEPT_WORKSPACE}\"\nname = \"Lounge\"\nentry = \"open\"\n\
+             default_role = \"commenter\"\ndescription = \"Coffee and tea\"\n",
+            deployment.join("server-identity").display(),
+            deployment.join("server-state").display()
+        ),
+    )
+    .unwrap();
+    let log = root.join("child.stdout");
+    let status = isolated_command(OWNER_ROOT_TEST, &root)
+        .env(OWNER_ROOT_FILE, &root_file)
+        .env(crate::device::keep::CONFIG_ENV, &config)
+        .stdout(std::fs::File::create(&log).unwrap())
+        .status_locked()
+        .unwrap();
+    let stdout = std::fs::read_to_string(&log).unwrap();
+    assert!(status.success(), "{stdout}");
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "the isolated child ran no test: {stdout}"
+    );
+}

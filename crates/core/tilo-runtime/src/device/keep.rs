@@ -24,9 +24,6 @@ use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 pub const CONFIG: &str = "/etc/tilo/server.toml";
 /// Names the server configuration in place of [`CONFIG`]: a server in a container, or a test's.
 pub const CONFIG_ENV: &str = "TILO_SERVER_CONFIG";
-/// What a server that no ticket signed in says.
-pub const SIGN_IN_FIRST: &str = "This server is not signed in: run `tilo device add` on one of \
-     your devices and sign it in with the ticket it prints (`tilo login <ticket>`).";
 
 /// Where this machine's server configuration is, when it is a server.
 pub(crate) fn config() -> Option<PathBuf> {
