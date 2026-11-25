@@ -13,7 +13,7 @@ description = "The collab client without the toolkit: what a process that commit
 default = []
 # The local session runtime: the identity the launcher bound, read through
 # the identity client.
-local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "tilo-local-identity/local-daemons"]
+local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client"]
 # A native launch: the manager joins its workspace on the connection the launcher
 # (or the shell, for a window it opened) handed the process.
 native = ["local-daemons"]
@@ -74,7 +74,7 @@ tilo-identity-client = { version = "0.1.0", path = "../tilo-identity-client", op
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Who sits at this device, below the collab client and the toolkit alike.
-tilo-local-identity = { version = "0.1.0", path = "../local-identity" }
+tilo-local-identity = { version = "0.1.0", path = "../../platform/local-identity" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # A file's durable record id is the `user.tilo.document-id` attribute
 # `tilo-files` keeps; record ids hash paths with a fixed FNV-1a.

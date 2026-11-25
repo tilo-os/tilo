@@ -133,13 +133,13 @@ fn index(doc: &Doc, text: &str, chars: usize) -> usize {
     }
 }
 
-pub use tilo_resource_plain::{common_ends, common_text_ends};
+pub use tilo_actions::{common_ends, common_text_ends};
 
 /// The smallest splice, in characters, that turns `before` into `after`:
 /// what the two share at their start and end is kept.
 #[must_use]
 pub fn splice_between(before: &str, after: &str) -> Option<TextEdit> {
-    tilo_resource_plain::splice_between(before, after).map(|splice| TextEdit::Splice {
+    tilo_actions::splice_between(before, after).map(|splice| TextEdit::Splice {
         at: splice.at,
         delete: splice.delete,
         insert: splice.insert,

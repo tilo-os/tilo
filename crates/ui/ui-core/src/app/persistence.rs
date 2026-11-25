@@ -24,7 +24,7 @@ impl App {
 
     #[cfg(feature = "model")]
     fn swap_in_replacement(&mut self) -> bool {
-        let _phase = tilo_resource_plain::profiling::Phase::start("ui.swap_component");
+        let _phase = tilo_actions::profiling::Phase::start("ui.swap_component");
         let _entry = self.enter_wake_scope();
         let Some(replacement) =
             crate::component_lifecycle::take_replacement(self.root_widget.as_mut())

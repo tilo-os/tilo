@@ -18,10 +18,10 @@ impl HistoryEntryId {
     }
 
     /// The id as the wire and a document key spell it: lower-case hex
-    /// ([`tilo_actions::remote::workspace_activity::entry_hex`]).
+    /// ([`crate::remote::workspace_activity::entry_hex`]).
     #[must_use]
     pub fn hex(&self) -> String {
-        tilo_actions::remote::workspace_activity::entry_hex(&self.0)
+        crate::remote::workspace_activity::entry_hex(&self.0)
     }
 
     /// The id [`Self::hex`] spells, in either case. `None` on anything that
@@ -29,6 +29,6 @@ impl HistoryEntryId {
     /// skipped rather than resolving to a wrong change.
     #[must_use]
     pub fn from_hex(hex: &str) -> Option<Self> {
-        tilo_actions::remote::workspace_activity::entry_id(hex).map(Self)
+        crate::remote::workspace_activity::entry_id(hex).map(Self)
     }
 }

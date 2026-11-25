@@ -39,7 +39,7 @@ sources = [
     "crates/core/tilo-app-id/src/lib.rs",
     "crates/core/actions/src/step.rs",
     "crates/core/actions/src/outcome.rs",
-    "crates/core/presence-types/src/hue.rs",
+    "crates/core/action-policy/src/presence/hue.rs",
 ]
 roots = ["FloatingSurfaceClientMessage", "FloatingSurfaceHostMessage"]
 

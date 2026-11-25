@@ -471,7 +471,7 @@ impl<'a> AvatarFace<'a> {
             self.paint_status(ctx, rect);
             return;
         }
-        #[cfg(feature = "local-daemons")]
+        #[cfg(all(feature = "local-daemons", feature = "model"))]
         let public_image = if self.image.is_none() {
             if self.tint == Tint::Neutral {
                 None
@@ -481,9 +481,9 @@ impl<'a> AvatarFace<'a> {
         } else {
             None
         };
-        #[cfg(feature = "local-daemons")]
+        #[cfg(all(feature = "local-daemons", feature = "model"))]
         let image = self.image.or(public_image.as_ref());
-        #[cfg(not(feature = "local-daemons"))]
+        #[cfg(not(all(feature = "local-daemons", feature = "model")))]
         let image = self.image;
         // The picture the person chose for their profile, wherever they
         // show up, unless the caller drew them neutral.
@@ -745,7 +745,7 @@ pub struct Avatar {
 
 // The photo type comes from tilo-identity-client, which only `local-daemons`
 // builds link; portable builds (the browser's) show initials or an image.
-#[cfg(feature = "local-daemons")]
+#[cfg(all(feature = "local-daemons", feature = "model"))]
 pub(crate) fn profile_image(photo: &tilo_identity_client::ProfilePhoto) -> peniko::ImageData {
     peniko::ImageData {
         data: peniko::Blob::new(std::sync::Arc::new(photo.rgba().to_vec())),

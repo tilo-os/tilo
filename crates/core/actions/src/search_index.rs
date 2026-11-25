@@ -48,8 +48,8 @@ pub struct IndexAction {
 }
 
 /// What kind of thing an entry is, and who it is about: what a search answers of it too
-/// ([`tilo_actions::remote::Found`]), so they are its types.
-pub use tilo_actions::remote::search::{IndexKind, IndexPerson, IndexWeight};
+/// ([`crate::remote::Found`]), so they are its types.
+pub use crate::remote::search::{IndexKind, IndexPerson, IndexWeight};
 
 /// One search entry, as the system index keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -119,7 +119,7 @@ pub struct IndexEntry {
     pub image: Option<String>,
     /// Who alone may find it, when its resource is sealed to its readers (a
     /// direct conversation, an unsent draft): each member as a change's
-    /// readers name them (`tilo_actions::contract::reader_name`). `None` for
+    /// readers name them (`crate::contract::reader_name`). `None` for
     /// whoever may read the record it was published from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<Vec<String>>,
@@ -214,7 +214,7 @@ impl IndexEntry {
     pub fn opens_its_resource(&self) -> bool {
         self.action
             .as_ref()
-            .is_none_or(|action| action.action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
+            .is_none_or(|action| action.action == crate::remote::APPLICATION_OPEN_ACTION)
     }
 
     /// The entry within this module's bounds: texts cut, fields capped,

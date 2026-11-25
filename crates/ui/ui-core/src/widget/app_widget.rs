@@ -420,7 +420,7 @@ mod component_adapter {
             drop(_entry);
             let moved = observation.moved(&self.inputs_now(outer));
             if let Some(why) = moved {
-                drop(tilo_resource_plain::profiling::Phase::start(why));
+                drop(tilo_actions::profiling::Phase::start(why));
             }
             moved.is_none()
         }
@@ -512,7 +512,7 @@ mod component_adapter {
             // with is the language it read, so the next pass reads it again.
             let crossed = self.component.callback_binding().lifetime.crossed();
             let locale = crate::i18n::I18nManager::revision();
-            let ((before, after), reads) = tilo_resource_plain::profiling::unobserved(|| {
+            let ((before, after), reads) = tilo_actions::profiling::unobserved(|| {
                 let binding = self.component.callback_binding();
                 let before = shown(self);
                 let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
@@ -1097,7 +1097,7 @@ mod component_adapter {
                 self.verify_rest(state);
                 return;
             }
-            let _profile = tilo_resource_plain::profiling::Phase::start("ui.component.sync");
+            let _profile = tilo_actions::profiling::Phase::start("ui.component.sync");
             let binding = self.component.callback_binding();
             let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
                 self.sync_root(state);

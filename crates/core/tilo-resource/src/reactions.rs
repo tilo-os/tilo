@@ -49,7 +49,7 @@ pub const MAX_REACTIONS: usize = 2000;
 /// tones) or a workspace emoji's `:name:`.
 pub const MAX_EMOJI_BYTES: usize = 64;
 pub use tilo_actions::reaction::{ReactionGroup, Reactor};
-pub use tilo_resource_plain::{MAX_CUSTOM_NAME, custom_emoji_name, valid_custom_emoji_name};
+pub use tilo_actions::{MAX_CUSTOM_NAME, custom_emoji_name, valid_custom_emoji_name};
 
 /// Separates the parts of a reaction's key: never part of an emoji or of a
 /// member id.

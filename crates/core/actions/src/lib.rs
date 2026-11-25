@@ -72,6 +72,19 @@
 //! [`Cow<'static, str>`](std::borrow::Cow) rather than `&'static str` because an
 //! app builds its parameters per frame out of live document state — a `const`
 //! declaration is `Cow::Borrowed` and costs nothing.
+//!
+//! ## Plain vocabulary
+//!
+//! The parts of Tilo's resource vocabulary that need no store, document or
+//! CRDT live here too: the smallest splice between two texts ([`splice_between`]),
+//! the scope a search looks within ([`ScopeDecl`]), the kind an item's address
+//! names ([`item_kind`]), the name a workspace emoji is written by
+//! ([`custom_emoji_name`]), the catalogue key a kind is named under
+//! ([`message_key`]), the id of a history entry ([`HistoryEntryId`]), the named
+//! scopes the app framework is profiled by ([`profiling`]), and the search
+//! entries an app publishes to the system index ([`search_index`]).
+//! `tilo-resource` publishes them where they have always been; the toolkit reads
+//! them here, with or without that model.
 
 #![cfg_attr(
     test,
@@ -310,14 +323,18 @@ pub mod context;
 pub mod contract;
 pub mod document_sync;
 pub mod draft;
+mod emoji;
 pub mod entry;
 pub mod envelope;
 pub mod executor;
 pub mod field_type;
 pub mod framework;
 pub mod group_form;
+mod history;
 pub mod interaction;
+mod item;
 pub mod key;
+mod label;
 pub mod noun;
 pub mod offload;
 pub mod opened_by;
@@ -325,6 +342,7 @@ pub mod outcome;
 pub mod outside_document;
 pub mod params;
 pub mod prefill;
+pub mod profiling;
 pub mod protocol;
 pub mod published;
 pub mod reaction;
@@ -335,6 +353,8 @@ pub mod resource;
 pub mod row_status;
 pub mod run;
 pub mod schema;
+mod scope;
+pub mod search_index;
 pub mod selection;
 pub mod selectors;
 pub mod send_to;
@@ -343,6 +363,7 @@ pub mod step;
 pub mod surface;
 pub mod task_step;
 pub mod terminal_text;
+mod text;
 pub mod tree;
 
 pub use action::{
@@ -376,6 +397,7 @@ pub use contract::{
     SECRET_ANSWER_TAG, UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful, resource_node,
 };
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
+pub use emoji::{MAX_CUSTOM_NAME, custom_emoji_name, valid_custom_emoji_name};
 pub use entry::{
     ActionItem, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep, PathStep,
     Scalar, VerbCall,
@@ -390,13 +412,16 @@ pub use executor::{
     settle_compensation, verify_change, with_invoking_context,
 };
 pub use framework::FrameworkChange;
+pub use history::HistoryEntryId;
 pub use interaction::{
     INTERACTION_VERSION, InteractionAction, InteractionAnchor, InteractionGridRange,
     InteractionPhase, InteractionTextRange, InteractionUpdate, InteractionViolation,
     MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES, MAX_LABEL_BYTES,
     SemanticInteraction,
 };
+pub use item::item_kind;
 pub use key::{ActionKey, CREATE_ACTION};
+pub use label::{message_key, noun_key};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
     InvocationUpdate, content_hash, content_resource, named_reference,
@@ -426,12 +451,14 @@ pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PRESENCE_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
 };
+pub use scope::{ScopeDecl, scope_contains};
 pub use selection::{
     BOUND_RESOURCE_PREFIX, MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS,
     SelectionAnchor, SelectionPlace, SelectionSubject, excerpt_of, logical_resource_id,
 };
 pub use send_to::{Recipient, RecipientKind, recipients_matching};
 pub use step::{Step, StepKind};
+pub use text::{Splice, common_ends, common_text_ends, splice_between};
 /// Grants and the decisions over them, as apps read and show them.
 pub use tilo_action_policy as policy;
 /// The field a resource's comments live in: an action that only comments

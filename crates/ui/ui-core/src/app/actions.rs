@@ -531,10 +531,10 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
-        let _phase = tilo_resource_plain::profiling::Phase::start("ui.publish_action_surface");
+        let _phase = tilo_actions::profiling::Phase::start("ui.publish_action_surface");
         self.actions.action_surface_owed = false;
         if self.collaboration.manager.is_connected() {
-            let _routes = tilo_resource_plain::profiling::Phase::start("ui.publish.routes");
+            let _routes = tilo_actions::profiling::Phase::start("ui.publish.routes");
             self.refresh_document_routes();
         }
         if self.collaboration.manager.take_action_surface_failed() {
@@ -548,8 +548,7 @@ impl App {
         // keystroke begins by publishing (an input's edits are attributed
         // to the surface on the route); this keeps that to a comparison.
         let unchanged = {
-            let _observation =
-                tilo_resource_plain::profiling::Phase::start("ui.publish.observation");
+            let _observation = tilo_actions::profiling::Phase::start("ui.publish.observation");
             let stamp = self.publication_stamp();
             stamp.as_ref().is_some_and(|stamp| {
                 Some(stamp) == self.actions.published_stamp.as_ref()
@@ -2049,7 +2048,7 @@ impl App {
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same API/lifecycle as every other caller.
     pub(super) fn dispatch_control_invocations(&mut self) -> usize {
-        let _phase = tilo_resource_plain::profiling::Phase::start("ui.dispatch_controls");
+        let _phase = tilo_actions::profiling::Phase::start("ui.dispatch_controls");
         // What an earlier pass refused and has not said yet is said first.
         self.say_refusals();
         self.service_close_admission();

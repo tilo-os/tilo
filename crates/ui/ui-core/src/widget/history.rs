@@ -13,7 +13,7 @@ use tilo_actions::{ActionContext, ActionFacet};
 pub use collab_types::history::authors::{
     AuthorRelation, HistoryAttribution, HistoryAuthor, hue_to_rgb,
 };
-pub use tilo_resource_plain::HistoryEntryId;
+pub use tilo_actions::HistoryEntryId;
 
 /// Optional on [`HistoryEntry`] — when present, the widget renders the
 /// row with the struck-through summary, suppresses the `[Revert]` chip,

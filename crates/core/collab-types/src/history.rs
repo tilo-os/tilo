@@ -222,7 +222,7 @@ impl words::HistoryWords for TestWords {
 use crate::artifact::ArtifactId;
 use crate::op::SignedOp;
 
-pub use tilo_resource_plain::HistoryEntryId;
+pub use tilo_actions::HistoryEntryId;
 
 /// A delegated agent on a workspace's roster, as the session verified it: its
 /// own device key, the person whose root signed its delegation for exactly

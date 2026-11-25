@@ -67,8 +67,7 @@ impl TextEdit {
 /// use.
 pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
     let cur = doc.text(text_id).unwrap_or_default();
-    let Some(tilo_resource_plain::Splice { at, delete, insert }) =
-        tilo_resource_plain::splice_between(&cur, new)
+    let Some(tilo_actions::Splice { at, delete, insert }) = tilo_actions::splice_between(&cur, new)
     else {
         return TextEdit {
             pos: 0,

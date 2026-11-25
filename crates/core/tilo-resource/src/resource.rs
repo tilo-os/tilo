@@ -2822,7 +2822,7 @@ pub enum SearchRowShape {
     },
 }
 
-pub use tilo_resource_plain::{ScopeDecl, scope_contains};
+pub use tilo_actions::{ScopeDecl, scope_contains};
 
 #[cfg(test)]
 mod schema_sharing_tests;

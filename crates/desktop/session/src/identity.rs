@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tilo_files::native::Watched;
 use tilo_session_core::desktop::state::{DesktopHandle, HostAction};
-use ui::local_identity::{LocalIdentity, LocalIdentitySource};
+use ui::local_identity::{LocalIdentity, LocalIdentitySource, PhotoSource};
 
 use crate::platform::notice::Notices;
 
@@ -55,12 +55,14 @@ impl LocalIdentitySource for WatchedLocalIdentity {
         self.0.get().identity.clone()
     }
 
-    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
-        self.0.get().photo.clone()
-    }
-
     fn refresh(&self) {
         self.0.refresh();
+    }
+}
+
+impl PhotoSource for WatchedLocalIdentity {
+    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
+        self.0.get().photo.clone()
     }
 }
 

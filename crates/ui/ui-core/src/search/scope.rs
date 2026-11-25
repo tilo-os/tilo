@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use tilo_resource_plain::ScopeDecl;
+use tilo_actions::ScopeDecl;
 
 /// One window group's identity, as the shell numbers it.
 pub type WindowGroupId = u64;

@@ -103,7 +103,7 @@ fn draw_frame_content_owning(
             __prof_resources,
         );
     }
-    let _phase = tilo_resource_plain::profiling::Phase::start("ui.draw");
+    let _phase = tilo_actions::profiling::Phase::start("ui.draw");
     // Widget rects are logical; this transform rasterises at the physical
     // resolution, so the frame stays crisp at any fractional scale.
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
@@ -708,7 +708,7 @@ fn lay_out_window(
     use crate::widget::layout::{
         CompositionFocus, composition_geometry, settle_widget_composition,
     };
-    let _phase = tilo_resource_plain::profiling::Phase::start("ui.layout");
+    let _phase = tilo_actions::profiling::Phase::start("ui.layout");
     // The app's frame starts under the host's chrome and, outside a Tilo
     // session, under the row of its window-bar parts.
     let area = crate::scale::SafeArea {
@@ -811,7 +811,7 @@ fn lay_out_window(
         #[cfg(test)]
         let remount_probe = crate::profiling::frame_probe::span("layout.remount");
         let remounted_now = in_place && {
-            let _phase = tilo_resource_plain::profiling::Phase::start("ui.remount");
+            let _phase = tilo_actions::profiling::Phase::start("ui.remount");
             let _entry = app.enter_wake_scope();
             app.remount_in_place()
         };
@@ -898,7 +898,7 @@ fn lay_out_window(
         if must_compute || rebuild || remounted_now {
             #[cfg(test)]
             let _compute = crate::profiling::frame_probe::span("layout.compute");
-            let _phase = tilo_resource_plain::profiling::Phase::start("ui.solve");
+            let _phase = tilo_actions::profiling::Phase::start("ui.solve");
             let start = crate::time::now();
             // The app's root is laid out in a host node the window's size, as a window gives its
             // app the size it shows: a root that sizes itself to its content grows past the

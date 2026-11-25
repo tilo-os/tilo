@@ -16,7 +16,7 @@ struct Pending {
     handled: Option<Instant>,
     keys: u32,
     frame_started: Option<Instant>,
-    before_frame: Vec<tilo_resource_plain::profiling::Sample>,
+    before_frame: Vec<tilo_actions::profiling::Sample>,
 }
 
 thread_local! {
@@ -67,7 +67,7 @@ pub(crate) fn key_dispatched(event: &winit::event::WindowEvent) {
                     frame_started: None,
                     before_frame: Vec::new(),
                 });
-                tilo_resource_plain::profiling::begin_live();
+                tilo_actions::profiling::begin_live();
             }
         }
     });
@@ -97,8 +97,8 @@ pub(crate) fn frame_started() {
             && waiting.frame_started.is_none()
         {
             waiting.frame_started = Some(crate::time::now());
-            waiting.before_frame = tilo_resource_plain::profiling::take_live();
-            tilo_resource_plain::profiling::begin_live();
+            waiting.before_frame = tilo_actions::profiling::take_live();
+            tilo_actions::profiling::begin_live();
         }
     });
 }
@@ -171,11 +171,7 @@ pub(crate) fn submitted(repaint: Repaint<'_>) -> Option<Box<dyn FnOnce() + Send>
             .flatten()
     })?;
     let submitted = crate::time::now();
-    let mut line = line_until_submit(
-        &waiting,
-        submitted,
-        &tilo_resource_plain::profiling::take_live(),
-    );
+    let mut line = line_until_submit(&waiting, submitted, &tilo_actions::profiling::take_live());
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -212,7 +208,7 @@ pub(crate) fn submitted(repaint: Repaint<'_>) -> Option<Box<dyn FnOnce() + Send>
 fn line_until_submit(
     waiting: &Pending,
     submitted: Instant,
-    scopes: &[tilo_resource_plain::profiling::Sample],
+    scopes: &[tilo_actions::profiling::Sample],
 ) -> String {
     let handled = waiting.handled.unwrap_or(waiting.dispatched);
     let started = waiting.frame_started.unwrap_or(submitted);
@@ -270,16 +266,16 @@ mod tests {
                     before_frame: Vec::new(),
                 });
             });
-            tilo_resource_plain::profiling::begin_live();
+            tilo_actions::profiling::begin_live();
             event_handled();
             assert!(
                 submitted(Repaint::Damage(&[])).is_none(),
                 "no frame started yet"
             );
             frame_started();
-            drop(tilo_resource_plain::profiling::Phase::start("ui.frame_sync"));
-            drop(tilo_resource_plain::profiling::Phase::start("ui.frame_sync"));
-            let scopes = tilo_resource_plain::profiling::take_live();
+            drop(tilo_actions::profiling::Phase::start("ui.frame_sync"));
+            drop(tilo_actions::profiling::Phase::start("ui.frame_sync"));
+            let scopes = tilo_actions::profiling::take_live();
             let line = PENDING.with(|pending| {
                 let pending = pending.borrow();
                 line_until_submit(pending.as_ref().unwrap(), crate::time::now(), &scopes)

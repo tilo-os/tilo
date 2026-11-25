@@ -42,6 +42,7 @@ mod member_access;
 mod path;
 mod person;
 mod policy_edit;
+pub mod presence;
 mod readers;
 pub mod reading;
 pub mod roles;

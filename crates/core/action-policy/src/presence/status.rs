@@ -133,7 +133,7 @@ impl PresenceVisibility {
 #[cfg(test)]
 mod presence_choice_tests {
     use super::*;
-    use crate::{Availability, IDLE_AFTER};
+    use crate::presence::{Availability, IDLE_AFTER};
 
     tilo_test_env::scenario! {
         fn presence_and_availability_follow_the_workspace_and_the_person;

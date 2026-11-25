@@ -53,7 +53,7 @@ pub fn emoji_ranges(text: &str, emoji: &WorkspaceEmoji) -> Vec<Range<usize>> {
         let close = name_start + name_len;
         let name = text.get(name_start..close).unwrap_or_default();
         if bytes.get(close) == Some(&b':')
-            && tilo_resource_plain::valid_custom_emoji_name(name)
+            && tilo_actions::valid_custom_emoji_name(name)
             && emoji.image(name).is_some()
         {
             found.push(open..close + 1);

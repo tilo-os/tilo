@@ -207,7 +207,7 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
 /// card, an agent's card in a window, its marks and carets, and the run a change is
 /// attributed to), so one member is one colour everywhere.
 #[must_use]
-pub fn member_color(member: &tilo_action_policy::MemberId) -> (u8, u8, u8) {
+pub fn member_color(member: &crate::MemberId) -> (u8, u8, u8) {
     identity_rgb(PresenceHue::of_member(member))
 }
 
@@ -217,7 +217,7 @@ pub fn member_color(member: &tilo_action_policy::MemberId) -> (u8, u8, u8) {
 /// change wears what the agent is, never the slot its `agent:<id>` spelling would hash to.
 #[must_use]
 pub fn identity_color(identity: &str) -> (u8, u8, u8) {
-    match tilo_action_policy::MemberId::of_actor_bytes(identity.as_bytes()) {
+    match crate::MemberId::of_actor_bytes(identity.as_bytes()) {
         Some(member) => member_color(&member),
         None => user_color(identity),
     }
@@ -283,8 +283,8 @@ impl PresenceHue {
     /// ([`Self::of_agent`], the same for every run of it). The one rule and the one key every
     /// surface asks, so a member is one colour on the bar, in every app and in history.
     #[must_use]
-    pub fn of_member(member: &tilo_action_policy::MemberId) -> Self {
-        use tilo_action_policy::MemberId;
+    pub fn of_member(member: &crate::MemberId) -> Self {
+        use crate::MemberId;
         match member {
             MemberId::Agent { id, .. } | MemberId::Bot(id) => Self::of_agent(id),
             MemberId::Person(person) => Self::of_identity(person.as_str()),
@@ -294,7 +294,7 @@ impl PresenceHue {
     /// The hue `actor` wears: a member's ([`Self::of_member`]), an automation's or an app's the
     /// one its id derives.
     #[must_use]
-    pub fn of_actor(actor: &tilo_action_policy::Actor) -> Self {
+    pub fn of_actor(actor: &crate::Actor) -> Self {
         match actor.member_id() {
             Some(member) => Self::of_member(member),
             None => Self::of_identity(actor.id()),

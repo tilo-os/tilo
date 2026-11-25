@@ -340,7 +340,7 @@ impl App {
     /// busy transport leaves it for the next wakeup and an over-limit delta
     /// is reported through [`Self::document_sync_status`].
     pub(super) fn broadcast_doc_delta(&mut self) {
-        let _phase = tilo_resource_plain::profiling::Phase::start("ui.broadcast_doc_delta");
+        let _phase = tilo_actions::profiling::Phase::start("ui.broadcast_doc_delta");
         self.restore_failed_document_publications();
         // A surface's record is the shell's own: it syncs with no one, so
         // there is no document route to broadcast it on.

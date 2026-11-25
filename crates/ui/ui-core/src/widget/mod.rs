@@ -2881,7 +2881,7 @@ pub use history::{
 };
 #[cfg(feature = "model")]
 pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
-pub use tilo_resource_plain::HistoryEntryId;
+pub use tilo_actions::HistoryEntryId;
 
 pub mod qr;
 mod qr_component;

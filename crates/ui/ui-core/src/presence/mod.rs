@@ -101,7 +101,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-pub use tilo_presence_types::{
+pub use tilo_action_policy::presence::{
     PEER_PALETTE, agent_client, agent_identity, identity_color, identity_rgb, member_color,
     user_color,
 };
@@ -455,7 +455,7 @@ pub struct PresenceCtx {
     acting_for: HashMap<MemberId, MemberId>,
     /// Short workspace-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
-    statuses: HashMap<MemberId, tilo_presence_types::LiveStatus>,
+    statuses: HashMap<MemberId, tilo_action_policy::presence::LiveStatus>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
@@ -1711,14 +1711,14 @@ impl PresenceCtx {
                     } else if text.chars().count() <= crate::MAX_STATUS_CHARS {
                         self.statuses.insert(
                             uid,
-                            tilo_presence_types::LiveStatus {
+                            tilo_action_policy::presence::LiveStatus {
                                 text,
                                 origin: if automatic {
-                                    tilo_presence_types::StatusOrigin::Inferred {
+                                    tilo_action_policy::presence::StatusOrigin::Inferred {
                                         generator: "remote-local-model".into(),
                                     }
                                 } else {
-                                    tilo_presence_types::StatusOrigin::Manual
+                                    tilo_action_policy::presence::StatusOrigin::Manual
                                 },
                                 updated_at: crate::time::wall(),
                             },
@@ -1799,18 +1799,18 @@ impl PresenceCtx {
         &self,
         user: &MemberId,
         now: SystemTime,
-    ) -> Option<&tilo_presence_types::LiveStatus> {
+    ) -> Option<&tilo_action_policy::presence::LiveStatus> {
         let status = self.statuses.get(user)?;
         match status.origin {
-            tilo_presence_types::StatusOrigin::Manual => Some(status),
-            tilo_presence_types::StatusOrigin::Inferred { .. }
+            tilo_action_policy::presence::StatusOrigin::Manual => Some(status),
+            tilo_action_policy::presence::StatusOrigin::Inferred { .. }
                 if now
                     .duration_since(status.updated_at)
                     .is_ok_and(|age| age <= crate::INFERRED_STATUS_TTL) =>
             {
                 Some(status)
             }
-            tilo_presence_types::StatusOrigin::Inferred { .. } => None,
+            tilo_action_policy::presence::StatusOrigin::Inferred { .. } => None,
         }
     }
 }

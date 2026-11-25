@@ -1783,8 +1783,7 @@ pub(crate) fn discover_cached_bound_resources(
             let snapshot = if let Some(cached) = cached {
                 cached
             } else {
-                let _phase =
-                    tilo_resource_plain::profiling::Phase::start("ui.bound_discovery_miss");
+                let _phase = tilo_actions::profiling::Phase::start("ui.bound_discovery_miss");
                 // The snapshot this one replaces: its controls' derivation
                 // and its filter token carry over, so what the two forests
                 // share is neither filtered nor surveyed again.
@@ -4810,7 +4809,7 @@ impl CallbackBinding {
         if OPEN_SCOPES.with_borrow(|open| open.last().is_some_and(|open| open.same(self, &actor))) {
             return Ok(CallbackScopeGuard::held());
         }
-        let _profile = tilo_resource_plain::profiling::Phase::start("ui.callback_scope");
+        let _profile = tilo_actions::profiling::Phase::start("ui.callback_scope");
         let wake = self
             .lifetime
             .enter_if_open()
@@ -4970,7 +4969,7 @@ impl CallbackBinding {
                 Ok(callback(outer, &ROOT))
             };
         }
-        let _phase = tilo_resource_plain::profiling::Phase::start("ui.record_frame");
+        let _phase = tilo_actions::profiling::Phase::start("ui.record_frame");
         self.records
             .with_action_state(&self.checkout.id, |document, history, state| {
                 let frame = Rc::new(RefCell::new(Some(ActionFrame {

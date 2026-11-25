@@ -201,7 +201,7 @@ pub fn item_resource_id_in(kind: &str, field: &str, item: &Id) -> String {
     format!("{kind}/{field}/{item}")
 }
 
-pub use tilo_resource_plain::item_kind;
+pub use tilo_actions::item_kind;
 
 /// A reference to one item of a collection, as an action that names an item
 /// of its own record takes it.

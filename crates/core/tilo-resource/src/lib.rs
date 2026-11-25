@@ -158,7 +158,7 @@ pub mod row;
 pub mod schema;
 pub mod schema_check;
 pub mod search_default;
-pub use tilo_resource_plain::search_index;
+pub use tilo_actions::search_index;
 pub mod shape;
 pub mod share;
 pub mod sort;
@@ -1091,4 +1091,4 @@ pub mod __private {
     }
 }
 
-pub use tilo_resource_plain::profiling;
+pub use tilo_actions::profiling;

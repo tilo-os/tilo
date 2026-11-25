@@ -316,7 +316,7 @@ pub fn install_noun(resolver: NounResolver) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
 }
 
-pub use tilo_resource_plain::{message_key, noun_key};
+pub use tilo_actions::{message_key, noun_key};
 
 /// The catalogue beside the crate being built, as a `static`:
 /// `declared_catalogue!(CATALOGUE);`, its source language embedded and its

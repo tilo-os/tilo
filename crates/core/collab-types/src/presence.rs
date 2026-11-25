@@ -18,7 +18,7 @@ pub use call::CallPresence;
 pub use payload::PresencePayload;
 pub use said::{DESKTOP_APP, Presence, stand_in};
 pub use tilo_action_policy::PersonId;
-pub use tilo_presence_types::{
+pub use tilo_action_policy::presence::{
     AppKind, Availability, DIGEST_KEY_FIELD, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus,
     MAX_STATUS_CHARS, PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PathSegment, PointerSpace,
     PresenceHue, PresenceKey, PresenceVisibility, SelectionRange, StatusOrigin, StatusSharing,
