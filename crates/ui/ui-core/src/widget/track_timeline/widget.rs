@@ -1955,7 +1955,8 @@ impl Widget for TrackTimeline {
         match event {
             WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.pointer) => {
                 if *delta != 0.0 {
-                    self.zoom_by(1.0 + *delta, self.pointer.x);
+                    // Fingers apart magnify: the lane shows less of the cut, about the pointer.
+                    self.zoom_by(1.0 / (1.0 + *delta), self.pointer.x);
                     *ctx.handled = true;
                 }
             }
