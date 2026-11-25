@@ -2356,3 +2356,106 @@ fn a_scroll_keeps_the_named_descendant_in_view() {
         "the same one kept in view leaves the content where it is"
     );
 }
+
+/// A one-colour leaf of a fixed size, to stand content in a scroll.
+struct Block {
+    rect: Rect,
+    size: (f64, f64),
+}
+
+impl Widget for Block {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a test's blocks are whole pixels"
+        )]
+        let style = Style {
+            size: Size::from_lengths(self.size.0 as f32, self.size.1 as f32),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn name(&self) -> &'static str {
+        "Block"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+/// A wheel goes to the scroller under the pointer, innermost first: one that does not scroll that
+/// way, or that the pointer stands outside of, leaves it to the one above, as a row of windows
+/// takes the sideways wheel a window's own column is no use for.
+#[test]
+fn a_wheel_a_scroll_refuses_reaches_the_row_above_it() {
+    let block = |width: f64, height: f64| {
+        Box::new(Block {
+            rect: Rect::ZERO,
+            size: (width, height),
+        }) as Element
+    };
+    let inner = Scrollable::new_vertical()
+        .with_cursor(Point::new(50.0, 50.0))
+        .with_child(block(200.0, 1600.0));
+    let column = crate::widget::Container::new()
+        .with_size(200.0, 300.0)
+        .with_child(Box::new(inner));
+    let mut strip = crate::widget::Row::new().no_wrap();
+    strip = strip.push(Box::new(column)).push(block(800.0, 300.0));
+    let mut row = Scrollable::new_horizontal()
+        .with_cursor(Point::new(50.0, 50.0))
+        .with_child(Box::new(strip));
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = row.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(400.0),
+            },
+        )
+        .unwrap();
+    row.apply_layout(&taffy, node, Point::ZERO);
+    let inner_offset = |row: &Scrollable| {
+        row.children()[0].children()[0]
+            .children()[0]
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Scrollable>())
+            .map_or(0.0, Scrollable::offset_y)
+    };
+
+    let sideways = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(-120.0, 0.0)),
+        phase: TouchPhase::Moved,
+    };
+    let taken = Dispatch::new().layout(&taffy, node).send(&mut row, &sideways);
+    assert!(taken.handled, "a wheel the column refuses is the row's");
+    assert_eq!(row.offset_x(), 120.0, "the row went sideways");
+    assert_eq!(inner_offset(&row), 0.0, "the column keeps its place");
+
+    let outside = cursor_moved(50.0, 380.0);
+    Dispatch::new()
+        .layout(&taffy, node)
+        .send(&mut row, &outside);
+    let taken = Dispatch::new().layout(&taffy, node).send(&mut row, &sideways);
+    assert!(
+        taken.handled,
+        "the row takes a wheel outside the column's viewport"
+    );
+    assert_eq!(row.offset_x(), 240.0, "the row went on sideways");
+    assert_eq!(inner_offset(&row), 0.0, "the column keeps its place");
+}

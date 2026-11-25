@@ -716,6 +716,11 @@ impl App {
         let Some(gesture) = self.sideways_gesture_now(now) else {
             return false;
         };
+        // A window no shell hosts has no strip to pan: what its views leave of the wheel goes
+        // nowhere, and the views come first, so the window keeps it as no one's.
+        if self.floating.client.is_none() {
+            return false;
+        }
         self.floating.sideways_gesture = Some(SidewaysGesture {
             last: now,
             ..gesture
@@ -743,6 +748,11 @@ impl App {
         let Some(travel) = sideways_travel_of(event, scale_factor) else {
             return;
         };
+        // No shell hosts this window, so no strip stands to pan: the wheel is no one's and the
+        // views keep the next event of the gesture.
+        if self.floating.client.is_none() {
+            return;
+        }
         if let Some(gesture) = self.sideways_gesture_now(now) {
             self.floating.sideways_gesture = Some(SidewaysGesture {
                 last: now,
