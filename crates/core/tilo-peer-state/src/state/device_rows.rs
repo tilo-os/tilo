@@ -165,7 +165,7 @@ impl PeerWorkspaceMut<'_> {
             Some(value) => candidate.put(&rows, key, value).map_err(message)?,
             None => candidate.delete(&rows, key).map_err(message)?,
         }
-        super::commit_governance(&mut candidate, super::now_secs(now));
+        super::commit_governance(&mut candidate, super::now_secs(now), None);
         let candidate = crate::cached_document::CachedDocument::written_on(
             self.peer.core.workspace_doc.as_ref(),
             candidate,

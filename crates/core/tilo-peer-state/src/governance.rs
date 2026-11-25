@@ -248,7 +248,7 @@ pub(crate) fn admit_invited_member(
             }
         }
     }
-    crate::state::commit_governance(&mut candidate, crate::state::now_secs(now));
+    crate::state::commit_governance(&mut candidate, crate::state::now_secs(now), None);
     let changes = candidate
         .get_changes(&before)
         .into_iter()

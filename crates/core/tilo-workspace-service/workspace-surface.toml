@@ -62,6 +62,18 @@ params = [
   { name = "role", required = false, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "owner"] } },
 ]
 
+[[resources.verbs]]
+id = "add-member"
+kind = "outside"
+
+[[resources.verbs]]
+id = "set-role"
+kind = "outside"
+
+[[resources.verbs]]
+id = "remove-member"
+kind = "outside"
+
 [[resources]]
 kind = "workspace.member"
 label = "Member"

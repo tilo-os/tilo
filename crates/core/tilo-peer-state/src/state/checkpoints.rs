@@ -807,7 +807,7 @@ impl PeerWorkspaceMut<'_> {
         candidate
             .put(&entries, entry.as_str(), ScalarValue::Bytes(bytes))
             .map_err(err)?;
-        super::commit_governance(&mut candidate, super::now_secs(now));
+        super::commit_governance(&mut candidate, super::now_secs(now), None);
         let candidate = crate::cached_document::CachedDocument::written_on(
             self.peer.core.workspace_doc.as_ref(),
             candidate,

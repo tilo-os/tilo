@@ -47,6 +47,7 @@ pub use facades::{
     PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
     PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
 };
+pub use governance_writes::ActionStamp;
 pub(crate) use governance_writes::{commit_governance, wall_secs};
 mod app_versions;
 mod calls;
@@ -385,6 +386,11 @@ pub struct StatePeer {
     /// running on two machines ([`copied`]): their changes are refused until the person re-adds
     /// one of the machines. Never persisted: a copy that starts again finds the clash again.
     copied: std::collections::BTreeMap<[u8; 32], copied::Copied>,
+    /// The governance action this copy writes while it makes one
+    /// ([`Self::stamp_action`]): the verb and the person or bot every
+    /// governance change it commits names. Never persisted: it is set for one
+    /// administration and cleared when it is committed.
+    action_stamp: Option<governance_writes::ActionStamp>,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,

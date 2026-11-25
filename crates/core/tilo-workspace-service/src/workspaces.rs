@@ -88,6 +88,8 @@ pub use follow::ResourceWrite;
 mod device_rejoin_tests;
 mod holding;
 #[cfg(test)]
+mod member_action_tests;
+#[cfg(test)]
 mod returning_person_tests;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owner, work_takes};
 mod links;

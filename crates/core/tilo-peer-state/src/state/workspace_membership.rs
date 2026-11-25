@@ -85,6 +85,10 @@ impl StatePeer {
     /// own device: what it writes is admitted as far as the caller's grants
     /// reach where they made it (`workspace::membership`), here as on every
     /// device that receives it.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every kind of member change, each read beside its action"
+    )]
     pub(super) fn apply_member_change(
         &mut self,
         caller: &DeviceCert,
@@ -105,22 +109,40 @@ impl StatePeer {
                 if *role == Role::Owner {
                     return Err("the owner's role is not given through membership".into());
                 }
-                self.governance_mut()
-                    .set_member_role(person(who)?, *role, key, now)
+                let who = person(who)?;
+                // The change names the action it is: joining at a role, or
+                // moving a member's role.
+                let verb = match change {
+                    Change::AddMember { .. } => roles::governance::ADD_MEMBER,
+                    _ => roles::governance::SET_ROLE,
+                };
+                self.as_action(verb, caller.user_public_key, |peer| {
+                    peer.governance_mut().set_member_role(who, *role, key, now)
+                })
             }
             Change::RemoveMember { person: who } => {
-                self.governance_mut().remove_member(person(who)?, key, now)
+                let who = person(who)?;
+                self.as_action(
+                    roles::governance::REMOVE_MEMBER,
+                    caller.user_public_key,
+                    |peer| peer.governance_mut().remove_member(who, key, now),
+                )
             }
             Change::TransferOwnership { person: who } => {
                 self.governance_mut()
                     .transfer_ownership(person(who)?, key, now)
             }
             Change::Ban { person: who } => {
-                self.governance_mut()
-                    .ban_member(person(who)?, &by, key, now)
+                let who = person(who)?;
+                self.as_action(roles::governance::BAN, caller.user_public_key, |peer| {
+                    peer.governance_mut().ban_member(who, &by, key, now)
+                })
             }
             Change::Unban { person: who } => {
-                self.governance_mut().unban_member(person(who)?, key, now)
+                let who = person(who)?;
+                self.as_action(roles::governance::UNBAN, caller.user_public_key, |peer| {
+                    peer.governance_mut().unban_member(who, key, now)
+                })
             }
             Change::Restrict {
                 person: who,
@@ -375,12 +397,13 @@ impl PeerWorkspaceMut<'_> {
             name,
         } = command
         {
-            return self.peer.governance_mut().place_member(
-                *person,
-                *place,
-                name.as_deref(),
-                key,
-                now,
+            return self.peer.as_action(
+                roles::governance::ADD_MEMBER,
+                caller.user_public_key,
+                |peer| {
+                    peer.governance_mut()
+                        .place_member(*person, *place, name.as_deref(), key, now)
+                },
             );
         }
         if let WorkspaceMembershipCommand::Settings(change) = command {

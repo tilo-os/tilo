@@ -39,7 +39,7 @@ pub fn workspace_seed(
         roster,
     )?;
     doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
-    super::commit_governance(&mut doc, super::now_secs(now));
+    super::commit_governance(&mut doc, super::now_secs(now), None);
     Ok(SeedState {
         workspace_changes: changes_of(&mut doc),
         // The workspace's shared desktop: every member's layout lands in it.
@@ -88,7 +88,7 @@ pub fn seed_workspace_at(
         &hex::encode(authority.device_public_key),
         roster,
     )?;
-    super::commit_governance(&mut doc, unix_secs);
+    super::commit_governance(&mut doc, unix_secs, None);
     Ok(changes_of(&mut doc))
 }
 

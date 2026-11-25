@@ -4964,6 +4964,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
 #[cfg(test)]
 mod surface_tests {
     use serde_json::{Value, json};
+    use tilo_action_policy::roles;
     use tilo_actions::ParamType;
     use tilo_actions::remote::{
         WORKSPACE_AGENTS, WORKSPACE_INVITATIONS, WORKSPACE_MEMBER, WORKSPACE_MEMBER_LIST_PUBLISHED,
@@ -4979,6 +4980,13 @@ mod surface_tests {
     /// The header the file carries: written by this test, so a change to it reads in review as
     /// an API change.
     const HEADER: &str = "# Written by its test; review like an API change.\n\n";
+
+    /// The verbs a member change names, declared on the members root it changes beside the
+    /// actions that make it: a change names the governance operation it is (`remove-member`,
+    /// `set-role`), where the action API publishes the same change under the name its resource
+    /// offers (`remove`, `role`). A store judges a change by the verb it names, so the
+    /// operations are declared by those words too.
+    const CHANGE_VERBS: [&str; 3] = ["add-member", "set-role", "remove-member"];
 
     /// The resources the workspace's actions are published on, in file order: each child of its
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
@@ -5026,7 +5034,7 @@ mod surface_tests {
         let mut resources: Vec<Value> = RESOURCES
             .iter()
             .map(|(kind, label)| {
-                let verbs: Vec<Value> = WORKSPACE_MEMBER_LIST_PUBLISHED
+                let mut verbs: Vec<Value> = WORKSPACE_MEMBER_LIST_PUBLISHED
                     .iter()
                     // The workspace's agents are the record's own actions, published on
                     // `workspace/agents` by the record's grants: no verb of this surface.
@@ -5044,6 +5052,17 @@ mod surface_tests {
                         })
                     })
                     .collect();
+                // The verbs a member change names, declared on the members root it changes: the
+                // store judges every change by the verb its author stamped it with.
+                if *kind == "members" {
+                    verbs.extend(CHANGE_VERBS.iter().map(|id| {
+                        json!({
+                            "id": id,
+                            "kind": roles::GOVERNANCE_KIND,
+                            "params": [],
+                        })
+                    }));
+                }
                 let mut resource = json!({
                     "kind": format!("workspace.{kind}"),
                     "label": label,

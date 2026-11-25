@@ -290,6 +290,7 @@ impl StatePeer {
                 .clone()
                 .or_else(|| self.core.workspace_doc.clone().map(Box::new)),
             copied: self.copied.clone(),
+            action_stamp: None,
         }
     }
 
