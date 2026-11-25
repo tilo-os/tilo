@@ -1210,7 +1210,11 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   its own key undoes what its grants let it, as a person would. A call made inside
   another is covered by the outer call's consent only when the outer one declares it;
   otherwise it is decided as if its caller made it directly, under the same grants and
-  rules, asking only where such a direct call would. A project
+  rules, asking only where such a direct call would. The member part of a
+  workspace's governance document is its `workspace/members` resource: the one change
+  feed lists each governance commit as a change of it, stamped with its verb, actor and
+  time, members read only its member fields, and rebasing the document keeps every
+  stamped change. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
