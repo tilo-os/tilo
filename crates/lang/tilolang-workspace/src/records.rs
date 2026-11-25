@@ -925,22 +925,27 @@ impl Records for crate::Service {
         &self,
         record: Record,
         policy: Option<Arc<WorkspacePolicy>>,
-        viewer: &Actor,
+        acting: &tilo_actions::Acting,
         app: &str,
         run: (&str, &str),
-        invocations: &[String],
+        (invocations, call): (&[String], Option<&tilo_actions::remote::SignedCall>),
     ) -> Result<u32, String> {
         // The agent takes the changes back for the person it works for, as every write an agent
-        // makes is made for them.
-        let acted_for = Some(record.reader().to_owned());
+        // makes is made for them, and each change records how it acted.
+        let viewer = &acting.by;
+        let person = record.reader().to_owned();
         let opened = opened_with(record, policy, viewer.clone(), app, None)?;
         let store = opened.host().store();
-        let _for = store.acting_for(acted_for);
+        let _for = store.acting_for(Some(person), Some(acting.clone()));
         let (id, title) = run;
         store.set_run(Some(Run {
             id: id.to_owned(),
             title: title.to_owned(),
         }));
+        // The undo serves the call that asked for it: it carries the call's invocation and
+        // keeps what its caller signed, as every write made for a call does.
+        store.serve(call.map(|call| call.signed.statement().invocation.0.to_string()));
+        store.serve_signed(call.cloned().map(Box::new));
         let mut undone = 0_u32;
         let mut failure = None;
         for invocation in invocations {
@@ -953,6 +958,8 @@ impl Records for crate::Service {
             }
         }
         store.set_run(None);
+        store.serve(None);
+        store.serve_signed(None);
         // What the workspace refused of the undo is the undo's answer, never a count.
         if let Some(refused) = store.take_refusal() {
             return Err(refused);

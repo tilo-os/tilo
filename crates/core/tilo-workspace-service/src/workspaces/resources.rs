@@ -1865,10 +1865,10 @@ impl Workspaces {
             // What the app writes outside an invocation it serves is the person's at the window,
             // or the caller's the device opened the view for.
             let otherwise = context.viewer().map_or_else(
-                || tilo_actions::Actor::Member(tilo_actions::MemberId::person(person)),
-                |viewer| viewer.acting().by.clone(),
+                || tilo_actions::Acting::person(person),
+                |viewer| viewer.acting().clone(),
             );
-            acting = Some(otherwise.clone());
+            acting = Some(otherwise.by.clone());
             // The device the write is made on is where a resource it makes live is live.
             let written_on = (
                 hex::encode(device.device()),
@@ -1900,7 +1900,9 @@ impl Workspaces {
                 None => true,
                 Some(named) => {
                     acting.as_ref() == Some(&named)
-                        || context.invoker_of(&stamp.invocation) == Some(&named)
+                        || context
+                            .invoker_of(&stamp.invocation)
+                            .is_some_and(|invoker| invoker.by == named)
                 }
             };
             self.opened_record_change(
@@ -2269,7 +2271,7 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         command: tilo_resource_store::wire::Command,
-        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         self.own_kind_command(workspace, (app, None), command, serving)
             .await
@@ -2286,7 +2288,7 @@ impl Workspaces {
         workspace: &str,
         (app, kind): (&str, Option<&str>),
         command: tilo_resource_store::wire::Command,
-        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         let device = self.member_identity()?;
         let caller = tilo_actions::remote::Caller::authenticated(
@@ -2347,8 +2349,8 @@ impl Workspaces {
 fn stamp_resource_invoker(
     command: &mut tilo_resource_store::wire::Command,
     device: &(String, String),
-    served: &dyn Fn(&str) -> Option<tilo_actions::Actor>,
-    otherwise: &tilo_actions::Actor,
+    served: &dyn Fn(&str) -> Option<tilo_actions::Acting>,
+    otherwise: &tilo_actions::Acting,
     person: &str,
     unserved: &mut Vec<(String, String)>,
 ) {
@@ -2389,20 +2391,25 @@ fn stamp_resource_invoker(
         | Command::ReviewRestore { .. }
         | Command::Records => return,
     };
-    let invoker = served(&stamp.invocation).unwrap_or_else(|| {
+    let mut acting = served(&stamp.invocation).unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));
         otherwise.clone()
     });
-    // An agent writes what its person handed it: the stamp names that person, as every receiver
-    // decides an agent by the pair of its id and the person it acted for, never by its id alone.
-    if stamp.acted_for.is_none()
-        && invoker
-            .member_id()
-            .is_some_and(tilo_action_policy::MemberId::is_agent)
-    {
-        stamp.acted_for = Some(person.to_owned());
+    // An agent works for a person: the person the route's caller is, where its call named none.
+    if acting.agent_id().is_some() && acting.acted_for_person().is_none() {
+        acting = acting.acting_for(tilo_actions::Acting::person(person));
     }
-    stamp.invoker = tilo_resource_store::Stamp::by(&invoker);
+    if stamp.acted_for.is_none() {
+        stamp.acted_for = acting.acted_for_person().map(str::to_owned);
+    }
+    stamp.invoker = tilo_resource_store::Stamp::by(&acting.by);
+    // How an agent acted is recorded, never left to be guessed: handed its session by its
+    // person's device, which the device answers for, or under a key of its own, whose call the
+    // write must keep.
+    if acting.agent_id().is_some() {
+        stamp.context.get_or_insert_default().invoker =
+            Some(tilo_actions::ActionInvoker::admitted(&acting));
+    }
     device.0.clone_into(&mut stamp.device);
     device.1.clone_into(&mut stamp.device_name);
 }

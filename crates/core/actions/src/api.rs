@@ -303,6 +303,22 @@ pub struct ActionEffect {
 }
 
 impl ActionEffect {
+    /// The verb of an undo declared as a step ([`Self::undo`]).
+    pub const UNDO: &'static str = "undo";
+
+    /// Taking back changes of the records `app` keeps, whichever kinds the changes wrote: an undo
+    /// declared as an action's step, which a reader admits as it admits any declared step.
+    #[must_use]
+    pub fn undo(app: impl Into<String>) -> Self {
+        Self::new(app, "", Self::UNDO)
+    }
+
+    /// Whether this is the undo of `app`'s records ([`Self::undo`]).
+    #[must_use]
+    pub fn undoes_in(&self, app: &str) -> bool {
+        self.app == app && self.kind.is_empty() && self.verb == Self::UNDO
+    }
+
     /// The step `verb` on records of `kind` that `app` keeps.
     #[must_use]
     pub fn new(app: impl Into<String>, kind: impl Into<String>, verb: impl Into<String>) -> Self {
@@ -316,6 +332,10 @@ impl ActionEffect {
 
 impl std::fmt::Display for ActionEffect {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // An undo names no kind: it takes back changes of the app's records, whichever.
+        if self.kind.is_empty() {
+            return write!(formatter, "{}#{}", self.app, self.verb);
+        }
         write!(formatter, "{} {}#{}", self.app, self.kind, self.verb)
     }
 }

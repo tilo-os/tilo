@@ -58,6 +58,7 @@ fn agent(who: &str) -> Caller {
         actor: tilolang_tilo::runtime::ids::MemberId::agent(who).into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
+        handed: false,
         app: None,
     }
 }

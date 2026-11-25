@@ -319,8 +319,8 @@ fn posted(
     }
 }
 
-/// The agent's turn reads the person's two changes and takes exactly them back as one run; a
-/// turn whose saver may not records nothing at all.
+/// The agent's turn, under the agent's own key, reads the person's two changes and takes exactly
+/// them back as one run, under the call it signed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_run() {
     super::set_surfaces();
@@ -344,9 +344,12 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
 
     let (model, asked) = scripted(owner.clone());
     let provider = Arc::new(tilo_actions::remote::TestProvider::new());
+    // Scout asks under its own key, which the person's root certified for it: no device of the
+    // person's signs for it.
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let keys = super::CertifiedKeys::of(&root, &workspace, SCOUT);
     let agents =
-        ServerAgents::on_device(workspaces.clone(), provider, Arc::new(super::Keys([7; 32])))
-            .scripted(model);
+        ServerAgents::on_device(workspaces.clone(), provider, Arc::new(keys)).scripted(model);
     let event = posted(&workspace, &owner, "m-1");
     let place =
         tilo_workspace_service::agents::triggered::Where::of(&event).expect("a message is a place");
@@ -415,6 +418,21 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
             .iter()
             .all(|version| version["task"]["id"].as_str() == Some(run)),
         "both undos are one run"
+    );
+    // The agent's own call took the changes back, under its own key: every undo names that one
+    // invocation, none of the person's, and the workspace admitted it as the step the call
+    // declares.
+    let by_call: std::collections::BTreeSet<&str> = undone
+        .iter()
+        .map(|version| version["invocation"].as_str().unwrap_or_default())
+        .collect();
+    let theirs: std::collections::BTreeSet<&str> = versions_of(&before, &owner)
+        .iter()
+        .map(|version| version["invocation"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        by_call.len() == 1 && !by_call.contains("") && by_call.is_disjoint(&theirs),
+        "the undo names the call that took the changes back: {by_call:?}, theirs {theirs:?}"
     );
 }
 

@@ -901,6 +901,7 @@ impl HostInner {
             request
                 .caller
                 .and_then(|caller| caller.on_behalf_of.clone()),
+            request.caller.and_then(crate::publish::Caller::acting_for),
         );
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {

@@ -289,7 +289,7 @@ pub(crate) async fn write(
     let stamp = Stamp {
         verb: write.verb.to_owned(),
         invoker: Stamp::by(write.by),
-        acted_for,
+        acted_for: acted_for.clone(),
         invocation: invocation.0.to_string(),
         at: jiff::Timestamp::now().to_string(),
         ..Stamp::default()
@@ -342,7 +342,16 @@ pub(crate) async fn write(
     }
     let caller =
         Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace);
-    let serving = (invocation, write.by.clone());
+    // An agent writes here as the device hands it its person's session: the device answers for it.
+    let serving = (
+        invocation,
+        match &acted_for {
+            Some(person) => tilo_actions::Acting::from(write.by.clone())
+                .handed()
+                .acting_for(tilo_actions::Acting::person(person.as_str())),
+            None => tilo_actions::Acting::from(write.by.clone()),
+        },
+    );
     let context =
         ResourceRequestContext::authenticated(app, workspace, caller).serving(vec![serving]);
     let command = if commands.len() == 1 {

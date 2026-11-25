@@ -498,7 +498,12 @@ async fn assert_scribed_as_agent(
         .unwrap();
     workspaces
         .resource_command(
-            &context.clone().serving(vec![(delivered, agent.clone())]),
+            &context.clone().serving(vec![(
+                delivered,
+                tilo_actions::Acting::from(agent.clone())
+                    .handed()
+                    .acting_for(tilo_actions::Acting::person(acted_for.as_str())),
+            )]),
             Command::Put {
                 kind: KIND.to_owned(),
                 id: "i-1".to_owned(),

@@ -67,6 +67,9 @@ pub struct Caller {
     pub agent: bool,
     /// The person an agent acts for.
     pub on_behalf_of: Option<String>,
+    /// Whether that person's own device handed the agent its session, and answers for what it
+    /// does: an agent that is not handed acts under a key of its own.
+    pub handed: bool,
     /// The app whose process the call came through, as the API admitted the connection: what the
     /// action reads as `invoker.app()`.
     pub app: Option<String>,
@@ -88,6 +91,19 @@ impl Caller {
     }
 }
 
+impl Caller {
+    /// How the caller acts, when software acts for a person: for whom, and whether that person's
+    /// device handed it its session. `None` for a caller acting for nobody, or for a person by
+    /// an id that is none.
+    #[must_use]
+    pub fn acting_for(&self) -> Option<tilo_actions::Acting> {
+        let person = tilo_actions::PersonId::parse(self.on_behalf_of.as_deref()?).ok()?;
+        let by = tilo_actions::Acting::from(self.actor.clone());
+        let by = if self.handed { by.handed() } else { by };
+        Some(by.acting_for(tilo_actions::Acting::person(person)))
+    }
+}
+
 impl From<&tilo_actions::ActionInvoker> for Caller {
     /// What the API admitted of `invoker`, as the runtime reads it.
     fn from(invoker: &tilo_actions::ActionInvoker) -> Self {
@@ -95,6 +111,7 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
             actor: invoker.acting.by.clone(),
             agent: !invoker.acting.is_person(),
             on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
+            handed: invoker.acting.handed,
             app: invoker.acting.app().map(|app| app.as_str().to_owned()),
         }
     }

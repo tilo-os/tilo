@@ -90,8 +90,11 @@ pub trait Records: Send + Sync {
         app: &str,
     ) -> Option<Vec<Json>>;
 
-    /// Take back the changes of `invocations` in `app`'s record, made as `viewer`, as one run of
-    /// `run` (its id and title): how many were taken back.
+    /// Take back the changes of `undo`'s invocations in `app`'s record, made as `acting` (an agent
+    /// for its person, as it acts: handed its person's session or under a key of its own), as one
+    /// run of `run` (its id and title), for `undo`'s call, the call its caller signed when one
+    /// asked for it: the undo carries that call's invocation and keeps the call, so every reader
+    /// checks that the call declares taking back changes of the record. How many were taken back.
     ///
     /// # Errors
     /// The record does not open, or a change could not be taken back.
@@ -99,10 +102,10 @@ pub trait Records: Send + Sync {
         &self,
         record: Record,
         policy: Option<Arc<WorkspacePolicy>>,
-        viewer: &tilo_actions::Actor,
+        acting: &tilo_actions::Acting,
         app: &str,
         run: (&str, &str),
-        invocations: &[String],
+        undo: (&[String], Option<&tilo_actions::remote::SignedCall>),
     ) -> Result<u32, String>;
 
     /// Whether `version` is a change `who` made.

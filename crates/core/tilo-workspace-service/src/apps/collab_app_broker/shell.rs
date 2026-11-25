@@ -857,10 +857,11 @@ async fn resources(
     serde_json::to_string(&reply).map_err(|error| error.to_string())
 }
 
-/// The invocations `command`'s steps were stamped as serving, with who invoked each.
+/// The invocations `command`'s steps were stamped as serving, with who invoked each and how, as
+/// the session recorded it.
 fn invokers(
     command: &tilo_resource_store::wire::Command,
-) -> Vec<(tilo_actions::InvocationId, tilo_actions::Actor)> {
+) -> Vec<(tilo_actions::InvocationId, tilo_actions::Acting)> {
     use tilo_resource_store::wire::Command;
     let stamp = match command {
         Command::Put { stamp, .. }
@@ -872,8 +873,9 @@ fn invokers(
         Command::Batch(commands) => return commands.iter().flat_map(invokers).collect(),
         _ => return Vec::new(),
     };
-    match (uuid::Uuid::parse_str(&stamp.invocation), stamp.invoked_by()) {
-        (Ok(invocation), Some(actor)) => vec![(tilo_actions::InvocationId(invocation), actor)],
+    let invoker = stamp.action_context().invoker.map(|invoker| invoker.acting);
+    match (uuid::Uuid::parse_str(&stamp.invocation), invoker) {
+        (Ok(invocation), Some(acting)) => vec![(tilo_actions::InvocationId(invocation), acting)],
         _ => Vec::new(),
     }
 }

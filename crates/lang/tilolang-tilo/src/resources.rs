@@ -330,9 +330,10 @@ struct Inner {
     /// Who the writes made now are made for, when the invoker is not the person at this device
     /// (a page whose reader is a member): the actor the changes name as theirs.
     serving_invoker: RefCell<Option<String>>,
-    /// The person the invoker acts for, when software does (an agent): the records it makes are
-    /// that person's, which a type that names `readers: author` seals them to.
-    serving_acted_for: RefCell<Option<String>>,
+    /// How the invoker acts, when software does it for a person (an agent): the records it makes
+    /// are that person's, which a type that names `readers: author` seals them to, and each
+    /// change records how the agent acted, handed its person's session or under a key of its own.
+    serving_acting: RefCell<Acted>,
     /// The invocation as the caller signed it, when the writes made now serve one a caller asked
     /// for under their own key: what each change keeps, for the holders that check it.
     serving_signed: RefCell<Option<Box<tilo_actions::remote::SignedCall>>>,
@@ -615,15 +616,22 @@ fn published_verb(note: &ChangeNote) -> String {
 /// A field's value, by the field's id.
 pub type FieldOf = (String, FieldValue);
 
-/// The person the writes it is held around are made for (see [`ResourceStore::acting_for`]).
+/// How the writes it is held around are made (see [`ResourceStore::acting_for`]).
 pub struct ActingFor {
     inner: Rc<Inner>,
-    previous: Option<String>,
+    previous: Acted,
+}
+
+/// The person software acts for, and how it acts, as the writes made for it record them.
+#[derive(Clone, Debug, Default)]
+struct Acted {
+    person: Option<String>,
+    acting: Option<tilo_actions::Acting>,
 }
 
 impl Drop for ActingFor {
     fn drop(&mut self) {
-        *self.inner.serving_acted_for.borrow_mut() = self.previous.take();
+        *self.inner.serving_acting.borrow_mut() = std::mem::take(&mut self.previous);
     }
 }
 
@@ -657,7 +665,7 @@ impl ResourceStore {
                 run: RefCell::default(),
                 serving: RefCell::default(),
                 serving_invoker: RefCell::default(),
-                serving_acted_for: RefCell::default(),
+                serving_acting: RefCell::default(),
                 serving_signed: RefCell::default(),
                 made: RefCell::default(),
                 burst: RefCell::default(),
@@ -876,14 +884,33 @@ impl ResourceStore {
     }
 
     /// Takes back the invocation `invocation`, everywhere it wrote, as an undo by `invoker`.
-    /// Returns the undo's own invocation, which a redo takes back in turn.
+    /// Returns the undo's own invocation, which a redo takes back in turn: the invocation the
+    /// store serves, as every write made while serving it carries, so history shows which call
+    /// took the change back.
     ///
     /// # Errors
     /// When the store refused it.
     pub fn undo(&self, invocation: &str, invoker: Option<&Actor>) -> Result<String, StoreError> {
+        // As any write: the invocation served, else the run's, and only a step nobody called (a
+        // person's own undo at a window serving nothing) is an invocation of its own.
+        let served = self
+            .inner
+            .serving
+            .borrow()
+            .clone()
+            .or_else(|| {
+                self.inner
+                    .runs
+                    .borrow()
+                    .first()
+                    .map(|(_, _, invocation)| invocation.clone())
+            })
+            .filter(|own| own != invocation);
+        let stamp = self.history_stamp("undo", invoker);
         let stamp = Stamp {
             undoes: Some(invocation.to_owned()),
-            ..self.history_stamp("undo", invoker)
+            invocation: served.unwrap_or(stamp.invocation.clone()),
+            ..stamp
         };
         let own = stamp.invocation.clone();
         self.command(Command::Undo {
@@ -986,15 +1013,17 @@ impl ResourceStore {
     /// burst of typing, so what is typed next is a step of its own.
     fn history_stamp(&self, verb: &str, invoker: Option<&Actor>) -> Stamp {
         *self.inner.burst.borrow_mut() = None;
+        let (acted_for, context) = self.acted_for();
         Stamp {
             verb: verb.to_owned(),
             invoker: invoker
                 .and_then(|actor| serde_json::to_string(actor).ok())
                 .unwrap_or_default(),
             // A move through history is a write like any other: made for the person its
-            // invoker acts for, under the call its caller signed, as a step of the run it is
-            // part of.
-            acted_for: self.inner.serving_acted_for.borrow().clone(),
+            // invoker acts for, recording how its agent acted, under the call its caller
+            // signed, as a step of the run it is part of.
+            acted_for,
+            context,
             signed: self.inner.serving_signed.borrow().clone(),
             group: self
                 .inner
@@ -3479,17 +3508,43 @@ impl ResourceStore {
         *self.inner.serving_invoker.borrow_mut() = invoker;
     }
 
-    /// The writes made from now on are made for `person`, whom the invoker acts for, until the
+    /// The writes made from now on are made for `person`, whom the invoker acts for, as
+    /// `acting` (how it acts: handed its person's session, or under a key of its own), until the
     /// guard drops: the records an agent makes are that person's, so a type that names
-    /// `readers: author` seals them to them and their devices. The person in place before is
-    /// restored, so a call made while another acts for someone leaves that one in place.
+    /// `readers: author` seals them to them and their devices, and each change records how the
+    /// agent acted. What was in place before is restored, so a call made while another acts for
+    /// someone leaves that one in place.
     #[must_use]
-    pub fn acting_for(&self, person: Option<String>) -> ActingFor {
-        let previous = std::mem::replace(&mut *self.inner.serving_acted_for.borrow_mut(), person);
+    pub fn acting_for(
+        &self,
+        person: Option<String>,
+        acting: Option<tilo_actions::Acting>,
+    ) -> ActingFor {
+        let previous = std::mem::replace(
+            &mut *self.inner.serving_acting.borrow_mut(),
+            Acted { person, acting },
+        );
         ActingFor {
             inner: Rc::clone(&self.inner),
             previous,
         }
+    }
+
+    /// The person the writes made now are made for, and how their agent acted, as each change
+    /// records them.
+    fn acted_for(&self) -> (Option<String>, Option<Box<tilo_actions::ActionContext>>) {
+        let acted = self.inner.serving_acting.borrow();
+        let context = acted
+            .acting
+            .as_ref()
+            .filter(|acting| acting.agent_id().is_some())
+            .map(|acting| {
+                Box::new(tilo_actions::ActionContext {
+                    invoker: Some(tilo_actions::ActionInvoker::admitted(acting)),
+                    ..tilo_actions::ActionContext::default()
+                })
+            });
+        (acted.person.clone(), context)
     }
 
     /// The writes made from now on serve the call `call` as its caller signed it (none: none),
@@ -3590,6 +3645,7 @@ impl ResourceStore {
     /// step of, who proposed it).
     fn stamp(&self, note: &ChangeNote) -> Stamp {
         let burst = self.burst_invocation(note);
+        let (acted_for, context) = self.acted_for();
         // A write made while serving an invocation is that invocation's, whatever run of the
         // runtime made it: the caller's id is what history and the workspace know it by.
         let invocation = self
@@ -3648,7 +3704,7 @@ impl ResourceStore {
                         .flatten()
                         .unwrap_or_default()
                 }),
-            acted_for: self.inner.serving_acted_for.borrow().clone(),
+            acted_for,
             invocation,
             membership: Vec::new(),
             undoes: None,
@@ -3680,7 +3736,7 @@ impl ResourceStore {
             // invoker it certifies: the app's own word for it is never taken.
             device: String::new(),
             device_name: String::new(),
-            context: None,
+            context,
         }
     }
 

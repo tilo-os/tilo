@@ -1684,7 +1684,7 @@ impl StatePeer {
         // elsewhere.
         let certificate = tilo_server_protocol::invocation::verify_recorded(
             &context,
-            (&self.core.workspace, keeper),
+            (&self.core.workspace, app_id, keeper),
             &self.core.revocations,
             crate::state::now_ns(authorization_time),
             Some(&published_name),
@@ -1716,6 +1716,7 @@ impl StatePeer {
                 let effect = keeper.is_some()
                     && tilo_server_protocol::invocation::declared_effect(
                         &context,
+                        app_id,
                         Some(&published_name),
                     );
                 Ok(NamedCall::For {
