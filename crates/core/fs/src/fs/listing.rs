@@ -100,7 +100,7 @@ impl QuickFS {
         // The revision is read before the folder is, so a cached page never asks the namespace
         // for a thousand names to throw them away.
         let revision = {
-            let ns = self.ns();
+            let ns = self.ns_read();
             ns.indexed_document_revision().to_owned()
         };
         let acl_revision = self
@@ -121,7 +121,7 @@ impl QuickFS {
             }
         }
         let (entries, dir_path) = {
-            let mut ns = self.ns();
+            let mut ns = self.ns_read();
             (ns.readdir(ino), ns.path_for(ino))
         };
         let entries = entries?;

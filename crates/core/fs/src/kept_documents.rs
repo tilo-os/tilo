@@ -54,6 +54,13 @@ pub struct KeptDocuments {
     unsynced: AtomicBool,
 }
 
+/// One document's changes as they go to its journal, with the heads they leave it at.
+struct Frame {
+    chunk: TreeChunk,
+    heads: Vec<automerge::ChangeHash>,
+    changes: Vec<u8>,
+}
+
 /// Where each document stands on disk.
 #[derive(Debug, Default)]
 struct Heads {
@@ -197,11 +204,13 @@ impl KeptDocuments {
             kept.saved.clone_from(&read);
             kept.journaled = read;
         }
-        self.journal(namespace)
+        self.journal_locked(namespace)
     }
 
-    /// Add what each document of `namespace` changed since it was last kept to its journal: called
-    /// under the namespace's lock, so a change is on disk before anything answers for it.
+    /// Add what each document of `namespace` changed since it was last kept to its journal, so a
+    /// change is on disk before anything answers for it. What changed is read under the
+    /// namespace's lock; the frames are written once it is let go, so a write to the disk is the
+    /// writer's wait, never a reader's.
     ///
     /// The tree's own document goes last. It lists the chunks, and a process that ends between
     /// two documents' frames must not come back with a tree that lists a chunk whose nodes it
@@ -212,24 +221,67 @@ impl KeptDocuments {
     /// A journal could not be added to; the documents journaled before it are kept.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the heads change with each journal written; both happen under the namespace's lock"
+        reason = "the heads stay held across each frame's write, so a save's set-aside never races one"
     )]
-    pub fn journal(&self, namespace: &mut Namespace) -> io::Result<()> {
+    pub fn journal(&self, namespace: &Mutex<Namespace>) -> io::Result<()> {
+        let mut kept;
+        let frames = {
+            let mut namespace = namespace.lock_recover();
+            kept = self.heads.lock_recover();
+            Self::pending(&mut namespace, &kept)
+        };
+        // The namespace is let go; the documents' heads are not, so a save's set-aside never
+        // races a frame's write.
+        self.append(&mut kept, frames)
+    }
+
+    /// [`Self::journal`] for a caller already holding the namespace's lock: a changeset that
+    /// writes its own step and journals it under the same hold.
+    ///
+    /// # Errors
+    /// A journal could not be added to; the documents journaled before it are kept.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the heads stay held across each frame's write, so a save's set-aside never races one"
+    )]
+    pub fn journal_locked(&self, namespace: &mut Namespace) -> io::Result<()> {
         let mut kept = self.heads.lock_recover();
+        let frames = Self::pending(namespace, &kept);
+        self.append(&mut kept, frames)
+    }
+
+    /// The frames that carry what `namespace` changed since each document was last kept, in the
+    /// order they must reach the disk.
+    fn pending(namespace: &mut Namespace, kept: &Heads) -> Vec<Frame> {
         let mut documents: Vec<_> = namespace.document_heads().into_iter().collect();
         documents.sort_by_key(|(chunk, _)| (*chunk == 0, *chunk));
+        let mut frames = Vec::new();
         for (chunk, heads) in documents {
             let known = kept.journaled.get(&chunk).cloned().unwrap_or_default();
             if known == heads {
                 continue;
             }
-            if let Some(write) = namespace.document_write(chunk, &known, usize::MAX)
-                && !write.changes.is_empty()
-            {
-                append_frame(&self.dir, &mut kept, chunk, &write.changes)?;
+            let changes = namespace
+                .document_write(chunk, &known, usize::MAX)
+                .map_or_else(Vec::new, |write| write.changes);
+            frames.push(Frame {
+                chunk,
+                heads,
+                changes,
+            });
+        }
+        frames
+    }
+
+    /// Write `frames` to their journals, in order, recording each document's heads as its frame
+    /// lands. A frame that fails leaves its heads unrecorded, so the next pass writes it again.
+    fn append(&self, kept: &mut Heads, frames: Vec<Frame>) -> io::Result<()> {
+        for frame in frames {
+            if !frame.changes.is_empty() {
+                append_frame(&self.dir, kept, frame.chunk, &frame.changes)?;
                 self.unsynced.store(true, Ordering::Release);
             }
-            kept.journaled.insert(chunk, heads);
+            kept.journaled.insert(frame.chunk, frame.heads);
         }
         Ok(())
     }
@@ -315,8 +367,9 @@ impl KeptDocuments {
             let mut namespace = namespace.lock_recover();
             // What the namespace changed since the last journal goes into it first: the journal
             // set aside below then holds every change up to the save.
-            self.journal(&mut namespace)?;
             let mut kept = self.heads.lock_recover();
+            let frames = Self::pending(&mut namespace, &kept);
+            self.append(&mut kept, frames)?;
             for (chunk, heads) in namespace.document_heads() {
                 if kept.saved.get(&chunk) == Some(&heads) {
                     continue;
@@ -524,7 +577,7 @@ mod tests {
         namespace
             .create_file(ROOT_INO, "written.txt", None, 1, 1)
             .unwrap();
-        kept.journal(&mut namespace).unwrap();
+        kept.journal_locked(&mut namespace).unwrap();
         // What the sync lists, and then what a save running beside it leaves of it.
         let listed = journals(dir.path()).unwrap();
         assert!(!listed.is_empty(), "a journal to sync");
@@ -569,7 +622,7 @@ mod tests {
                 locked
                     .create_file(ROOT_INO, format!("file-{n}.txt"), None, 1, 1)
                     .unwrap();
-                kept.journal(&mut locked).unwrap();
+                kept.journal_locked(&mut locked).unwrap();
                 drop(locked);
                 if n % 25 == 0 {
                     kept.keep(&namespace).unwrap();
@@ -593,7 +646,7 @@ mod tests {
             namespace
                 .create_file(ROOT_INO, format!("file-{n}.txt"), None, 1, 1)
                 .unwrap();
-            kept.journal(&mut namespace).unwrap();
+            kept.journal_locked(&mut namespace).unwrap();
         }
         let heads = namespace.document_heads();
         assert!(heads.len() > 2, "the files fill more than one chunk");
@@ -635,7 +688,7 @@ mod tests {
         let tree = file(dir.path(), 0, JOURNAL);
         let _ = std::fs::remove_file(&tree);
         std::fs::create_dir(&tree).unwrap();
-        assert!(kept.journal(&mut namespace).is_err());
+        assert!(kept.journal_locked(&mut namespace).is_err());
         for chunk in new {
             let journal = std::fs::metadata(file(dir.path(), chunk, JOURNAL));
             assert!(
@@ -654,7 +707,7 @@ mod tests {
         namespace
             .create_file(ROOT_INO, "before.txt", None, 1, 1)
             .unwrap();
-        kept.journal(&mut namespace).unwrap();
+        kept.journal_locked(&mut namespace).unwrap();
         let shared = Mutex::new(namespace);
         kept.keep(&shared).unwrap();
         assert!(!file(dir.path(), 0, JOURNAL).exists());
@@ -663,7 +716,7 @@ mod tests {
         namespace
             .create_file(ROOT_INO, "after.txt", None, 1, 1)
             .unwrap();
-        kept.journal(&mut namespace).unwrap();
+        kept.journal_locked(&mut namespace).unwrap();
 
         // Killed with a journal set aside and its save never written.
         for chunk in namespace.document_heads().into_keys() {
@@ -672,7 +725,7 @@ mod tests {
         namespace
             .create_file(ROOT_INO, "during.txt", None, 1, 1)
             .unwrap();
-        kept.journal(&mut namespace).unwrap();
+        kept.journal_locked(&mut namespace).unwrap();
         let heads = namespace.document_heads();
         drop((kept, namespace));
 
@@ -696,7 +749,7 @@ mod tests {
             namespace
                 .create_file(folder, format!("f{n:07}"), None, 1, 1)
                 .unwrap();
-            kept.journal(&mut namespace).unwrap();
+            kept.journal_locked(&mut namespace).unwrap();
         }
         kept.keep(&Mutex::new(namespace)).unwrap();
         drop(kept);
@@ -724,7 +777,7 @@ mod tests {
         namespace
             .create_file(ROOT_INO, "kept.txt", None, 1, 1)
             .unwrap();
-        kept.journal(&mut namespace).unwrap();
+        kept.journal_locked(&mut namespace).unwrap();
         let stood: BTreeMap<TreeChunk, Vec<[u8; 32]>> = namespace
             .document_heads()
             .into_iter()
@@ -749,7 +802,7 @@ mod tests {
         namespace
             .create_file(ROOT_INO, "whole.txt", None, 1, 1)
             .unwrap();
-        kept.journal(&mut namespace).unwrap();
+        kept.journal_locked(&mut namespace).unwrap();
         for chunk in namespace.document_heads().into_keys() {
             let journal = file(dir.path(), chunk, JOURNAL);
             if journal.exists() {

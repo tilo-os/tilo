@@ -93,15 +93,17 @@ pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 pub const SYNC_WINDOW: Duration = Duration::from_millis(200);
 
 /// Keeps on disk what the namespace changed since it last did, the moment the mount changed
-/// it ([`QuickFS::with_change_journal`]): handed the namespace under the lock the change was
-/// made in, before the request that made it is answered. What a request was answered for then
-/// outlives the process, killed or not, however long the namespace's own copy on disk lags.
-pub type ChangeJournal = Arc<dyn Fn(&mut Namespace) -> io::Result<()> + Send + Sync>;
+/// it ([`QuickFS::with_change_journal`]), before the request that made it is answered. What a
+/// request was answered for then outlives the process, killed or not, however long the
+/// namespace's own copy on disk lags. It takes the lock itself for what it reads, and writes
+/// once it has let the lock go: a write to the disk is the writer's wait, never a reader's.
+pub type ChangeJournal = Arc<dyn Fn(&Mutex<Namespace>) -> io::Result<()> + Send + Sync>;
 
 /// The namespace, locked for one step of the mount; what the step changed is handed to the
 /// mount's [`ChangeJournal`] as the lock is let go.
 pub(crate) struct NamespaceGuard<'a> {
-    namespace: std::sync::MutexGuard<'a, Namespace>,
+    /// Dropped by hand in [`Drop`], which lets the namespace go before its journal writes.
+    namespace: std::mem::ManuallyDrop<std::sync::MutexGuard<'a, Namespace>>,
     journal: Option<&'a Journaled>,
 }
 
@@ -109,6 +111,8 @@ pub(crate) struct NamespaceGuard<'a> {
 /// step changed anything: a step that only read hands nothing to it.
 pub(crate) struct Journaled {
     journal: ChangeJournal,
+    /// The namespace the journal locks itself, once the step that changed it has let it go.
+    namespace: Arc<Mutex<Namespace>>,
     changes: Mutex<tokio::sync::watch::Receiver<()>>,
 }
 
@@ -141,12 +145,19 @@ impl std::ops::DerefMut for NamespaceGuard<'_> {
 
 impl Drop for NamespaceGuard<'_> {
     fn drop(&mut self) {
+        // SAFETY: `Drop` runs once, and nothing else takes the guard out of its `ManuallyDrop`.
+        let namespace = unsafe { std::mem::ManuallyDrop::take(&mut self.namespace) };
         let Some(journaled) = self.journal else {
             return;
         };
-        if journaled.announced()
-            && let Err(error) = (journaled.journal)(&mut self.namespace)
-        {
+        if !journaled.announced() {
+            return;
+        }
+        // Let the namespace go before the journal writes: what it keeps is computed under the
+        // lock and written after it, so a read of settled content beside a fresh write waits for
+        // the change, never for the write that puts it on disk.
+        drop(namespace);
+        if let Err(error) = (journaled.journal)(&journaled.namespace) {
             eprintln!("the namespace's change could not be kept on disk: {error}");
         }
     }
@@ -711,8 +722,17 @@ impl QuickFS {
 
     fn ns(&self) -> NamespaceGuard<'_> {
         NamespaceGuard {
-            namespace: self.namespace.lock_recover(),
+            namespace: std::mem::ManuallyDrop::new(self.namespace.lock_recover()),
             journal: self.journal.as_ref(),
+        }
+    }
+
+    /// The namespace for a step that only reads. A read never owes a journal entry, and never
+    /// takes on the writing of one another step announced: at most it waits for the step in it.
+    fn ns_read(&self) -> NamespaceGuard<'_> {
+        NamespaceGuard {
+            namespace: std::mem::ManuallyDrop::new(self.namespace.lock_recover()),
+            journal: None,
         }
     }
 
@@ -723,6 +743,7 @@ impl QuickFS {
         let changes = self.namespace.lock_recover().subscribe_changes();
         self.journal = Some(Journaled {
             journal,
+            namespace: Arc::clone(&self.namespace),
             changes: Mutex::new(changes),
         });
         self
@@ -735,7 +756,7 @@ impl QuickFS {
             unlinked,
             path: self.enforcement.is_some(),
         };
-        self.ns().inode_view(ino, query)
+        self.ns_read().inode_view(ino, query)
     }
 
     /// The state of kernel handle `fh`, when it was opened on `ino`.
@@ -1520,7 +1541,7 @@ impl QuickFS {
             return FopenFlags::FOPEN_DIRECT_IO;
         }
         let volatile = self.payload_not_resident(ino) || self.buffers().contains_key(&ino);
-        let hash = self.ns().hash_for(ino);
+        let hash = self.ns_read().hash_for(ino);
         let mut cached = self.kernel_cached.lock_recover();
         if volatile {
             cached.remove(&ino);
@@ -1582,7 +1603,7 @@ impl QuickFS {
     fn sync_state_for(&self, ino: u64) -> Option<fs_protocol::SyncState> {
         use fs_protocol::SyncState;
         let (exists, is_dir, hash) = {
-            let ns = self.ns();
+            let ns = self.ns_read();
             let attr = ns.getattr(ino);
             let exists = attr.is_some();
             let is_dir = matches!(attr, Some(a) if a.kind == FileType::Directory);

@@ -628,7 +628,7 @@ impl TreeSync {
     /// it: the change goes into its document's journal on disk.
     pub fn journal(&self) -> crate::fs::ChangeJournal {
         let kept = Arc::clone(&self.kept);
-        Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
+        Arc::new(move |namespace: &Mutex<Namespace>| kept.journal(namespace))
     }
 
     /// Where the tree's parts are kept on disk, for a mount that saves them on its own

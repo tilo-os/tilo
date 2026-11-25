@@ -362,6 +362,35 @@ impl ContentStore {
         Some(out)
     }
 
+    /// [`Self::read_local`] on the calling thread: for a reader that answers from a thread of its
+    /// own (a mount's request, the native backend's), where a read handed to the daemon's blocking
+    /// pool and waited for takes a slot fresh writes and syncs are queued for. Never fetches.
+    pub fn read_local_now(
+        &self,
+        content: Hash,
+        manifest: &Manifest,
+        range: Range<u64>,
+    ) -> Option<Vec<u8>> {
+        if manifest.sealed().is_some() {
+            return None;
+        }
+        let end = range.end.min(manifest.total_len());
+        let start = range.start.min(end);
+        if content::is_file_backed(manifest) {
+            let key = *content.as_bytes();
+            return self
+                .files
+                .read_at(&key, start, end.saturating_sub(start))
+                .ok();
+        }
+        let mut out = Vec::with_capacity(usize::try_from(end.saturating_sub(start)).unwrap_or(0));
+        for (_, chunk_start, chunk) in manifest.overlapping(start..end) {
+            let bytes = self.local_now(Hash::from(chunk.hash))?;
+            copy_part(&mut out, &bytes, chunk_start, start, end);
+        }
+        Some(out)
+    }
+
     pub async fn is_complete(&self, content: Hash, manifest: &Manifest) -> bool {
         if content::is_file_backed(manifest) {
             return self

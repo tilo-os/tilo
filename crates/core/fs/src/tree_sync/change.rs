@@ -82,7 +82,7 @@ impl TreeSync {
         let _acting = crate::namespace::acting_as(acting);
         let changed = change(&mut namespace)?;
         self.kept
-            .journal(&mut namespace)
+            .journal_locked(&mut namespace)
             .map_err(|error| format!("the change is not kept on this computer: {error}"))?;
         drop(namespace);
         Ok(changed)

@@ -2488,3 +2488,179 @@ mod listing_stream_tests {
         assert_eq!(fresh.len(), 6, "the next listing sees the new name");
     }
 }
+
+mod settled_read_tests {
+    use super::*;
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use crate::ContentStore;
+    use crate::namespace::ROOT_INO;
+    use crate::test_bytes::pseudo;
+
+    /// The service the daemon runs for one workspace's tree: a persistent content store, the
+    /// mount over a namespace with its change journal, and the window its writes sync on.
+    fn service(
+        root: &std::path::Path,
+        handle: &tokio::runtime::Handle,
+        journal: Option<ChangeJournal>,
+    ) -> (Arc<QuickFS>, Arc<ContentStore>) {
+        let _entered = handle.enter();
+        let store = Arc::new(
+            handle
+                .block_on(ContentStore::open(root.join("content")))
+                .unwrap(),
+        );
+        let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
+        let namespace = Arc::new(Mutex::new(Namespace::new("settled-reads").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let mut fs =
+            QuickFS::new(namespace, hydrator, heuristics).with_write_stage_dir(root.join("stage"));
+        if let Some(journal) = journal {
+            fs = fs.with_change_journal(journal);
+        }
+        fs.sync_on_window(Arc::clone(&store), None);
+        (Arc::new(fs), store)
+    }
+
+    /// A file written through the mount's write path and closed: its bytes are committed content,
+    /// with no stage a read could answer from.
+    fn settled(fs: &QuickFS, name: &str, bytes: &[u8]) -> u64 {
+        let ino = fs.create_empty_file(ROOT_INO, name).unwrap();
+        fs.write_buffer(ino, 0, bytes).unwrap();
+        fs.flush_inode(ino).unwrap();
+        fs.drop_buffer(ino);
+        ino
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .max_blocking_threads(32)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// A settled read started on a thread of its own, as a mount's worker answers one. Answers
+    /// whether the reader got the whole file, and the thread to join once it is done.
+    fn read_on_another_thread(
+        fs: Arc<QuickFS>,
+        handle: tokio::runtime::Handle,
+        ino: u64,
+        len: u32,
+    ) -> (std::sync::mpsc::Receiver<bool>, std::thread::JoinHandle<()>) {
+        let (done, finished) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _entered = handle.enter();
+            let plan = fs.plan_read(ino, 0, 0, len);
+            let _ =
+                done.send(matches!(plan, ReadPlan::Local(bytes) if bytes.len() == len as usize));
+        });
+        (finished, reader)
+    }
+
+    /// A fresh file's journal reaches the disk inside the request that made it. That wait is the
+    /// writer's, never a reader's: a read of settled content answers while the write it is beside
+    /// is still in its journal.
+    #[test]
+    fn a_settled_read_does_not_wait_for_a_fresh_writes_journal() {
+        let rt = runtime();
+        let handle = rt.handle().clone();
+        let dir = tempfile::tempdir().unwrap();
+        let hold = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let journal: ChangeJournal = {
+            let hold = Arc::clone(&hold);
+            Arc::new(move |_namespace: &Mutex<Namespace>| {
+                // The first journal after this is armed is the one held open: later calls
+                // (a file's name and its content each journal once) pass at once.
+                if hold.swap(false, Ordering::AcqRel) {
+                    let _ = entered_tx.send(());
+                    let _ = release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(tilo_test_env::hang_bound());
+                }
+                Ok(())
+            })
+        };
+        let (fs, _store) = service(dir.path(), &handle, Some(journal));
+        let bytes = pseudo(4096, 1);
+        let ino = settled(&fs, "old.txt", &bytes);
+        // From here a fresh write's journal waits until this test says it may.
+        hold.store(true, Ordering::Release);
+        let writer = {
+            let fs = Arc::clone(&fs);
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let _entered = handle.enter();
+                fs.create_empty_file(ROOT_INO, "fresh.txt")
+            })
+        };
+        entered_rx
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the fresh write reached its journal");
+        let (finished, reader) = read_on_another_thread(
+            Arc::clone(&fs),
+            handle,
+            ino,
+            u32::try_from(bytes.len()).unwrap(),
+        );
+        let answered = finished.recv_timeout(Duration::from_secs(5));
+        let _ = release_tx.send(());
+        drop(release_tx);
+        let _ = writer.join().unwrap();
+        let _ = reader.join();
+        assert!(
+            answered.unwrap_or(false),
+            "a read of settled content waited for a fresh write's journal"
+        );
+    }
+
+    /// Reads of settled content answer on the thread that asked for them: a reader never queues
+    /// for a slot in the daemon's blocking pool, where fresh writes and syncs do their work.
+    #[test]
+    fn a_settled_read_does_not_wait_for_the_daemons_blocking_pool() {
+        let rt = runtime();
+        let handle = rt.handle().clone();
+        let dir = tempfile::tempdir().unwrap();
+        let (fs, _store) = service(dir.path(), &handle, None);
+        let bytes = pseudo(4096, 2);
+        let ino = settled(&fs, "old.txt", &bytes);
+        // Every blocking thread the daemon has is taken, as a burst of fresh writes and their
+        // syncs can take them.
+        let (took_tx, took_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        for _ in 0..32 {
+            let took_tx = took_tx.clone();
+            let release_rx = Arc::clone(&release_rx);
+            handle.spawn_blocking(move || {
+                let _ = took_tx.send(());
+                let _ = release_rx.lock().unwrap().recv();
+            });
+        }
+        for _ in 0..32 {
+            took_rx
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("a blocking thread");
+        }
+        let (finished, reader) = read_on_another_thread(
+            Arc::clone(&fs),
+            handle,
+            ino,
+            u32::try_from(bytes.len()).unwrap(),
+        );
+        let answered = finished.recv_timeout(Duration::from_secs(5));
+        drop(release_tx);
+        let _ = reader.join();
+        assert!(
+            answered.unwrap_or(false),
+            "a read of settled content waited for a blocking-pool slot"
+        );
+    }
+}

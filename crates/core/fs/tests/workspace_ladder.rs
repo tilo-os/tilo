@@ -423,7 +423,7 @@ async fn measure_rung(
         mirror
             .create_file(ROOT_INO, "one-more.txt", None, 1, 1_700_000_000)
             .unwrap();
-        kept.journal(&mut mirror).unwrap();
+        kept.journal_locked(&mut mirror).unwrap();
     }
     let started = Instant::now();
     kept.keep(&mirror).unwrap();

@@ -471,7 +471,7 @@ async fn every_change_the_mount_answered_for_outlives_a_kill() {
     {
         let fs = fixture.mount(true).with_change_journal({
             let kept = Arc::clone(&kept);
-            Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
+            Arc::new(move |namespace: &Mutex<Namespace>| kept.journal(namespace))
         });
         for n in 0..1_500 {
             let (ino, fh) = create_open(&fs, &format!("object-{n}"));

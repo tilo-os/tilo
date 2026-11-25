@@ -495,22 +495,37 @@ impl Hydrator {
         workspace: Option<collab_types::WorkspaceId>,
     ) -> Option<Vec<u8>> {
         self.authorize_scoped_read(workspace).ok()?;
-        let manifest = self.local_manifest_index(manifest_hash).await?;
+        // Every byte read here is on this device, and the caller is a thread of its own (a mount
+        // request, the native backend): the manifest and the chunks are read where the caller
+        // stands, never handed to the blocking pool fresh writes and syncs queue in.
+        let manifest = self.local_manifest_index_now(manifest_hash)?;
         let end = offset.saturating_add(size).min(manifest.total_len());
         let start = offset.min(end);
-        let Some(decoder) = self.decoder(&manifest, workspace).await.ok()? else {
+        if manifest.sealed().is_none() {
             return self
                 .store
-                .read_local(manifest_hash, &manifest, start..end)
-                .await;
-        };
+                .read_local_now(manifest_hash, &manifest, start..end);
+        }
+        let decoder = self.decoder(&manifest, workspace).await.ok()??;
         let mut out = Vec::new();
         for (_, chunk_start, chunk) in manifest.overlapping(start..end) {
-            let sealed = self.store.local(Hash::from(chunk.hash)).await?;
+            let sealed = self.store.local_now(Hash::from(chunk.hash))?;
             let bytes = decoder.open(&sealed, chunk.len).ok()?;
             crate::store::copy_part(&mut out, &bytes, chunk_start, start, end);
         }
         Some(out)
+    }
+
+    /// [`Self::local_manifest_index`] on the calling thread, for a reader that answers from a
+    /// thread of its own. A manifest is always kept inline in the store, so reading it is one
+    /// lookup, not a reason to queue for the blocking pool.
+    pub fn local_manifest_index_now(&self, manifest_hash: Hash) -> Option<Arc<Manifest>> {
+        if let Some(manifest) = self.manifests.get(&manifest_hash) {
+            return Some(manifest);
+        }
+        let manifest = Arc::new(Manifest::decode(&self.store.local_now(manifest_hash)?).ok()?);
+        self.manifests.insert(manifest_hash, Arc::clone(&manifest));
+        Some(manifest)
     }
 
     /// The blobs `manifest_hash`'s content is made of, as a [`ContentSource`] hands them over: the

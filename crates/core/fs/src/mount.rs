@@ -261,11 +261,12 @@ pub(super) async fn run_mount(
             }
         });
 
-    // Both backends: every change the mount makes is journaled on disk under the namespace's
-    // lock, before the request that made it is answered, so a process killed at any instant
-    // starts again holding every change it answered for.
+    // Both backends: every change the mount makes is journaled on disk before the request that
+    // made it is answered, so a process killed at any instant starts again holding every change
+    // it answered for. The journal reads the change under the namespace's lock and writes it
+    // after letting that go, so a read of settled content never waits for the write.
     let journal: Option<tilo_fs::fs::ChangeJournal> = kept.clone().map(|kept| {
-        Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
+        Arc::new(move |namespace: &Mutex<Namespace>| kept.journal(namespace))
             as tilo_fs::fs::ChangeJournal
     });
     let fs = match journal.clone() {

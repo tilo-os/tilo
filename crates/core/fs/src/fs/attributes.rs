@@ -52,7 +52,7 @@ impl QuickFS {
     }
     pub(super) fn presented_attr(&self, ino: u64) -> Option<(FileAttr, Duration)> {
         let buf_len = self.staged_len(ino);
-        let attr = self.ns().getattr(ino)?;
+        let attr = self.ns_read().getattr(ino)?;
         Some((self.live_attr(attr, buf_len), TTL))
     }
     /// The link count to report for a directory: `2` plus one per subdirectory in the view,
@@ -62,7 +62,7 @@ impl QuickFS {
     /// with files would otherwise be listed whole for each one.
     pub(super) fn visible_dir_nlink(&self, ino: u64) -> u32 {
         let (names, dir_path) = {
-            let ns = self.ns();
+            let ns = self.ns_read();
             (ns.subfolder_names(ino), ns.path_for(ino))
         };
         let subdirs = match (names, &self.enforcement) {
