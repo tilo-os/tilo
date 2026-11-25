@@ -23,7 +23,7 @@ use tilo_fs::namespace::FileToPut;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
-use crate::apps::services::FilesPutCall;
+use crate::apps::services::{FilesEntry, FilesPutCall};
 use crate::content::{ContentScope, ContentShelf};
 use crate::workspaces::Workspaces;
 
@@ -310,6 +310,62 @@ impl OpenedFiles {
             Box::new(call)
         });
         Ok(context)
+    }
+
+    /// What the folder at `folder` of `workspace`'s tree holds, as the workspace has it now: its
+    /// entries, and with `below` every entry beneath them too, each by its path. Read from the
+    /// tree a put changes, so a file put is listed once its put answered.
+    ///
+    /// # Errors
+    /// A path that leaves the workspace or names no folder of its tree, or this device does not
+    /// hold the workspace.
+    pub fn entries(
+        &self,
+        workspace: WorkspaceId,
+        folder: &str,
+        below: bool,
+    ) -> Result<Vec<FilesEntry>, String> {
+        let folder = super::paths::path_of(folder)?;
+        let mut entries = Vec::new();
+        tilo_rt::app().block_on(self.workspaces.puts().read(workspace, &mut |tree| {
+            entries.clear();
+            let start = tree
+                .resolve_path_ino(&folder)
+                .ok_or_else(|| format!("{folder:?} is no folder of this workspace"))?;
+            let mut folders = vec![(start, folder.clone())];
+            while let Some((ino, path)) = folders.pop() {
+                let children = tree
+                    .readdir(ino)
+                    .ok_or_else(|| format!("{path:?} is no folder of this workspace"))?;
+                for (child, kind, name) in children {
+                    // A name that is not UTF-8 is no path a listing offers, and the tree lists
+                    // its dot entries as any directory does.
+                    let Ok(name) = String::from_utf8(name.as_bytes().to_vec()) else {
+                        continue;
+                    };
+                    if name == "." || name == ".." {
+                        continue;
+                    }
+                    let path = if path.is_empty() {
+                        name
+                    } else {
+                        format!("{path}/{name}")
+                    };
+                    let is_folder = kind == tilo_fs::node::FileType::Directory;
+                    if is_folder && below {
+                        folders.push((child, path.clone()));
+                    }
+                    entries.push(FilesEntry {
+                        path,
+                        folder: is_folder,
+                    });
+                }
+            }
+            Ok(Value::Null)
+        }))
+        .map_err(|error| error.to_string())??;
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(entries)
     }
 
     /// The bytes named `hash` this workspace keeps: content put into it, or a file its tree

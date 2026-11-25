@@ -1365,6 +1365,15 @@ impl AppBrokerState {
             if !scope.wants(&provider) {
                 continue;
             }
+            // The workspace's own folder, holding its files.
+            #[cfg(feature = "files")]
+            if scope.wants_app(fs_protocol::tree::FILES_APP) {
+                rows.extend(super::files_listing::top_rows(
+                    self.services.files_open.as_ref(),
+                    (&workspace, &policy, now),
+                    &provider,
+                ));
+            }
             if let Some(governance) = self
                 .services
                 .workspace_governance
@@ -1788,6 +1797,11 @@ impl AppBrokerState {
         }
         if query.canonical_route.is_some() {
             return Pending::ready(self.canonical_provider_page(caller, query));
+        }
+        // What a folder of the workspace's tree holds is read from the tree, not the catalogue.
+        #[cfg(feature = "files")]
+        if let Some(page) = self.files_page(caller, query) {
+            return page;
         }
         if let Some(page) = self
             .provided()

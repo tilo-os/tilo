@@ -378,7 +378,7 @@ fn workspace_id(workspace: &str) -> Result<WorkspaceId, String> {
 /// # Errors
 /// A path that could leave the workspace: one starting at the root, one with an empty, `.` or
 /// `..` part, or a part no name of the workspace's tree may have.
-fn path_of(path: &str) -> Result<String, String> {
+pub(crate) fn path_of(path: &str) -> Result<String, String> {
     if path.starts_with('/') {
         return Err(format!("{path:?} starts outside the workspace"));
     }

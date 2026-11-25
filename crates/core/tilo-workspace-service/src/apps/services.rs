@@ -709,6 +709,28 @@ pub trait FilesTreePuts: Send + Sync {
         call: Option<FilesPutCall<'_>>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<serde_json::Value, String>;
+
+    /// What the folder at `folder` (`""` for the workspace's own) of `workspace`'s tree holds,
+    /// as the workspace has it now: its entries, and with `below` every entry beneath them too,
+    /// each by its path in the workspace.
+    ///
+    /// # Errors
+    /// This device does not hold the workspace, or `folder` names no folder of its tree.
+    fn entries(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        folder: &str,
+        below: bool,
+    ) -> Result<Vec<FilesEntry>, String>;
+}
+
+/// One entry of a workspace's folder ([`FilesTreePuts::entries`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilesEntry {
+    /// The entry's path in the workspace, never empty.
+    pub path: String,
+    /// Whether it is a folder rather than a file.
+    pub folder: bool,
 }
 
 /// The call a put into a workspace's folder is made for: the context the tree's change is made
@@ -730,6 +752,15 @@ impl FilesTreePuts for crate::files::OpenedFiles {
         confirm: &dyn Fn() -> bool,
     ) -> Result<serde_json::Value, String> {
         crate::files::OpenedFiles::put(self, workspace, arguments, call, confirm)
+    }
+
+    fn entries(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        folder: &str,
+        below: bool,
+    ) -> Result<Vec<FilesEntry>, String> {
+        crate::files::OpenedFiles::entries(self, workspace, folder, below)
     }
 }
 

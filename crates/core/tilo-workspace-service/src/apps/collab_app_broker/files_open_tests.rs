@@ -61,6 +61,15 @@ impl FilesTreePuts for Recorder {
             "replaced": false,
         }))
     }
+
+    fn entries(
+        &self,
+        _workspace: WorkspaceId,
+        _folder: &str,
+        _below: bool,
+    ) -> Result<Vec<crate::apps::services::FilesEntry>, String> {
+        Ok(Vec::new())
+    }
 }
 
 struct Fixture {

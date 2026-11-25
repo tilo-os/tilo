@@ -79,6 +79,9 @@ mod staged_admission;
 pub use staged_admission::StagedJob;
 use staged_admission::{Admitted, DefiniteOutcome, Delivery};
 mod file_clipboard;
+// The workspace's folder as its listing offers it.
+#[cfg(feature = "files")]
+mod files_listing;
 #[cfg(feature = "files")]
 mod files_open;
 mod host_workers;
