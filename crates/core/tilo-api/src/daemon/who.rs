@@ -261,11 +261,16 @@ pub fn certify_my_key(signer: &dyn tilo_user_identity::StatementSigner) -> Resul
 
 /// Certify the key this computer's daemon made for this account with the root the daemon keeps
 /// for that account alone: the person made their identity on this computer, so its session
-/// holds only their public record and cannot sign for them.
+/// holds only their public record and cannot sign for them. Answers whether there was a key to
+/// certify: the daemon names none for the account it runs as, or for a key already certified,
+/// and those never call `seats#certified`, which the person's own endpoint does not serve.
 ///
 /// # Errors
 /// No daemon answers, it keeps no root of this person's, or it refused the certificate.
 pub fn certify_here() -> Result<bool, String> {
+    if ask(&json!({"native": WHO}))?.get("certify").is_none() {
+        return Ok(false);
+    }
     let answer = ask(
         &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
             "name": "tilo_do",
