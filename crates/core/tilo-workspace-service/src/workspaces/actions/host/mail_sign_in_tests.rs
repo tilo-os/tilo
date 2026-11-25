@@ -31,6 +31,7 @@ use tilo_user_identity::DeviceCert;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
+use crate::workspaces::person_settings::cloud_control::{Mount, Request};
 use crate::workspaces::tests::{governor, test_host as test_holder};
 
 /// The domain whose settings document the discovery fake answers for, as a
@@ -980,16 +981,16 @@ async fn a_login_the_vault_keeps_adds_its_account() {
 /// service: every request it was told, and the mounts it answers with.
 #[derive(Default)]
 struct StandInCloud {
-    mounts: Mutex<Vec<tilo_fs_client::cloud::CloudMount>>,
-    requests: Mutex<Vec<tilo_fs_client::cloud::CloudRequest>>,
+    mounts: Mutex<Vec<Mount>>,
+    requests: Mutex<Vec<Request>>,
 }
 
 impl crate::workspaces::person_settings::cloud_control::CloudControl for StandInCloud {
-    fn mounts(&self) -> Result<Vec<tilo_fs_client::cloud::CloudMount>, String> {
+    fn mounts(&self) -> Result<Vec<Mount>, String> {
         Ok(self.mounts.lock().unwrap().clone())
     }
 
-    fn control(&self, request: tilo_fs_client::cloud::CloudRequest) -> Result<(), String> {
+    fn control(&self, request: Request) -> Result<(), String> {
         self.requests.lock().unwrap().push(request);
         Ok(())
     }
@@ -997,7 +998,7 @@ impl crate::workspaces::person_settings::cloud_control::CloudControl for StandIn
 
 impl StandInCloud {
     /// The next request it is told, or a panic naming what it was told instead.
-    fn told(&self, expected: tilo_fs_client::cloud::CloudRequest) {
+    fn told(&self, expected: Request) {
         let requests = self.requests.lock().unwrap();
         assert!(
             requests.last() == Some(&expected),
@@ -1011,8 +1012,6 @@ impl StandInCloud {
 /// whether the mount is paused.
 #[tokio::test]
 async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
-    use tilo_fs_client::cloud::{CloudMount, CloudRequest};
-
     let setup = Setup::new().await;
     let cloud = Arc::new(StandInCloud::default());
     setup.workspaces.cloud_control_through(Arc::clone(&cloud)
@@ -1084,7 +1083,7 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         )
         .await
         .expect("the service is told to sync now");
-    cloud.told(CloudRequest::SyncNow {
+    cloud.told(Request::SyncNow {
         account: id.to_owned(),
     });
     setup
@@ -1095,7 +1094,7 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         )
         .await
         .expect("the service is told to pause");
-    cloud.told(CloudRequest::Pause {
+    cloud.told(Request::Pause {
         account: id.to_owned(),
     });
     setup
@@ -1106,7 +1105,7 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         )
         .await
         .expect("the service is told to resume");
-    cloud.told(CloudRequest::Resume {
+    cloud.told(Request::Resume {
         account: id.to_owned(),
     });
 
@@ -1133,13 +1132,9 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
     );
 
     // The reading says a paused mount is paused.
-    *cloud.mounts.lock().unwrap() = vec![CloudMount {
+    *cloud.mounts.lock().unwrap() = vec![Mount {
         account: id.to_owned(),
-        mount_point: std::path::PathBuf::from("/home/ada/Remote/My Drive"),
-        health: None,
         paused: true,
-        capabilities: Default::default(),
-        signed_in: false,
     }];
     let reading = reading(&setup).await;
     let account = reading["accounts"]

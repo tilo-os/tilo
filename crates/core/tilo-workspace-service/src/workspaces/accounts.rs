@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use super::Workspaces;
 use super::person_settings;
+use super::person_settings::cloud_control::Mount;
 
 impl Workspaces {
     /// The accounts `workspace` keeps, as the apps this host serves read them: the same record
@@ -176,7 +177,7 @@ fn kind_of(type_id: &str) -> Option<Kind> {
 fn view_of(
     held: &accounts::person::AccountList,
     account: &accounts::Account,
-    mounts: &[tilo_fs_client::cloud::CloudMount],
+    mounts: &[Mount],
 ) -> Option<View> {
     if account.type_id.as_str() == accounts::person::TILO_IDENTITY_TYPE {
         return None;

@@ -17,6 +17,7 @@ use tilo_actions::remote::person_accounts::{
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
 #[cfg(feature = "agents")]
+use super::cloud_control::Request;
 use super::kept_sign_ins::sign_in_of;
 use super::kept_sign_ins::{
     NO_SIGN_IN, SIGN_IN, Signing, has_sign_in, places_of, sign_in_of as kept_sign_in_of,
@@ -472,13 +473,13 @@ impl Workspaces {
             return Err("Only a cloud-storage account's files sync on this device".to_owned());
         }
         let request = match action {
-            person_accounts::SYNC_NOW => tilo_fs_client::cloud::CloudRequest::SyncNow {
+            person_accounts::SYNC_NOW => Request::SyncNow {
                 account: control.account.clone(),
             },
-            person_accounts::PAUSE_SYNC => tilo_fs_client::cloud::CloudRequest::Pause {
+            person_accounts::PAUSE_SYNC => Request::Pause {
                 account: control.account.clone(),
             },
-            person_accounts::RESUME_SYNC => tilo_fs_client::cloud::CloudRequest::Resume {
+            person_accounts::RESUME_SYNC => Request::Resume {
                 account: control.account.clone(),
             },
             _ => return Err("That is no cloud-sync action".to_owned()),
