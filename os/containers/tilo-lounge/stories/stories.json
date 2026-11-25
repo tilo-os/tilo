@@ -122,8 +122,7 @@
       "walk": "shell",
       "driver": "shell/cli-login-ticket.py",
       "steps": [
-        "Ada signs in on her computer",
-        "Ada asks her computer for a ticket for another",
+        "Ada signs in on her computer, and its founding issues a ticket for another",
         "The second computer logs in with the ticket",
         "Ada puts a file in the workspace from her computer",
         "The second computer reads the file from the workspace"
@@ -136,8 +135,7 @@
       "walk": "shell",
       "driver": "shell/home-server-joins.py",
       "steps": [
-        "Ada signs in on her computer",
-        "Ada asks her computer for a ticket for a home server",
+        "Ada signs in on her computer, and its founding issues a ticket for a home server",
         "The home server joins with the ticket",
         "Ada puts a file in the workspace from her computer",
         "The home server reads the file from its own state"

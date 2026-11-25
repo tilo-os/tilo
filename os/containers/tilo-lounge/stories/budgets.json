@@ -63,15 +63,13 @@
       "Grace sees Ada’s words": 1000
     },
     "cli-login-ticket": {
-      "Ada signs in on her computer": 20000,
-      "Ada asks her computer for a ticket for another": 30000,
+      "Ada signs in on her computer, and its founding issues a ticket for another": 50000,
       "The second computer logs in with the ticket": 180000,
       "Ada puts a file in the workspace from her computer": 60000,
       "The second computer reads the file from the workspace": 60000
     },
     "home-server-joins": {
-      "Ada signs in on her computer": 20000,
-      "Ada asks her computer for a ticket for a home server": 30000,
+      "Ada signs in on her computer, and its founding issues a ticket for a home server": 50000,
       "The home server joins with the ticket": 180000,
       "Ada puts a file in the workspace from her computer": 60000,
       "The home server reads the file from its own state": 60000

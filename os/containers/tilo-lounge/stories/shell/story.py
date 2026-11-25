@@ -42,7 +42,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO / "scripts/headless-examples"))
 
-from real_apps import BUILD, Failed, Session, prepare, run, until  # noqa: E402,F401
+from real_apps import BUILD, Failed, Session, address, prepare, run, until  # noqa: E402,F401
 
 BUDGETS = json.loads((HERE.parent / "budgets.json").read_text())
 # How often a running shell is filmed. A snapshot of a software-rendered shell takes a while of
@@ -234,48 +234,27 @@ class Person:
         return target
 
     def name_self(self, name: str) -> None:
-        """Give this person the name `name` as a person does: the shell opens their own card,
-        whose field asks for the name. Read back off the bar and the identity record the card
-        keeps it in."""
-        def open_card() -> str:
-            self.session.invoke(SHELL, CHROME, "show-self", {})
-            return until(f"the name field on {self.name}'s own card", lambda: next(
-                (label for label in ("Your name", "Add your name") if self.target(label)), None),
-                15, 0.2)
+        """Give this person the name `name` as a person does: the session renames the person at
+        this device, which is the one action their own card's name field runs. Read back off the
+        bar and the identity record the rename keeps it in."""
+        def rename() -> dict:
+            rows = self.session.actions("set-name")
+            found = next((row for row in rows if address(row) == ("session:people", "set-name")),
+                         None)
+            if found is None:
+                raise Failed(f"{self.name}'s session offers no rename of the person at this "
+                             f"device; it lists "
+                             f"{[row.get('title') or row.get('name') for row in rows][:20]}")
+            self.session.invoke_row(found, {"name": name})
+            return found
 
-        # A person types once the caret is in the field. A shell just started may still be
-        # showing its first hint, which takes the first press, and the card closes with it: the
-        # person opens the card again, as anyone whose click was taken would. Each time is kept
-        # beside the story.
-        field = open_card()
-        taken = []
-        for attempt in range(3):
-            self.press(field, f"the name field on {self.name}'s own card")
-            try:
-                until(f"the caret in {self.name}'s name field", lambda: (
-                    ((self.session.state_dump() or {}).get("chrome") or {}).get("caret")), 3, 0.1)
-                break
-            except Failed:
-                shot = self.snapshot(self.story.out / "evidence" /
-                                     f"{self.key}-name-press-{attempt + 1}.png")
-                taken.append({"press": attempt + 1, "card_open": bool(self.target(field)),
-                              "shot": shot and shot.name, "controls": self.names()})
-                self.story.note(f"{self.key}-name-presses-taken", taken)
-                if attempt == 2:
-                    raise Failed(f"three presses of the name field on {self.name}'s own card "
-                                 f"put no caret in it (card open after each: "
-                                 f"{[t['card_open'] for t in taken]})") from None
-                field = open_card()
-        self.session.chord("Control", "a")
-        self.session.type(name)
-        self.session.key("Enter")
+        self.story.note(f"{self.key}-rename", str(rename().get("title") or "set-name"))
         until(f"{self.name}'s bar naming them",
               lambda: any(self.shows(named) for named in face_names(name)), 15, 0.2)
         record = self.state / "config/tilo/identity/primary.json"
         kept = json.loads(record.read_text()).get("display_name") if record.is_file() else None
         if kept != name:
             raise Failed(f"{self.name}'s identity keeps the name {kept!r}, not {name!r}")
-        self.session.key("Escape")
 
     def snapshot(self, path: Path) -> Path | None:
         try:
