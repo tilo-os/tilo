@@ -8,8 +8,9 @@
 //!
 //! The daemon works the turns of the agents its workspace lists, runs a workspace's shells for
 //! them, and answers a turn with the model the workspace links: an approval of the agent on the
-//! roster, a model, Chat's conversation to ask in, and the workspace's shells. A test that
-//! reaches the conversation before the app runs stops at the app's open.
+//! roster, a model, Chat's conversation to ask in, and the workspace's shells, so each test
+//! installs Chat and the Terminal app first. A test that reaches the conversation before the app
+//! runs stops at the app's open.
 
 use serde_json::{Value, json};
 use tilo_actions::api::ActionAddress;
@@ -29,10 +30,12 @@ const SCOUT_ID: &str = "scout";
 const WORKSPACE_NAME: &str = "home";
 
 /// The rich text a message that mentions their assistant says: its run marked as naming the
-/// assistant, which is what fires its trigger.
-fn mentioning(text: &str) -> Value {
+/// assistant, which is what fires its trigger. The mark names the member as
+/// [`tilo_action_policy::MemberId::mark_value`] writes it.
+fn mentioning(person: &str, text: &str) -> Value {
     let label = format!("@{SCOUT}");
-    json!({"blocks": [{
+    let member = tilo_action_policy::MemberId::agent(SCOUT_ID, person).mark_value();
+    json!({"rich": [{
         "id": "",
         "kind": "paragraph",
         "text": format!("{label} {text}"),
@@ -40,7 +43,7 @@ fn mentioning(text: &str) -> Value {
             "start": 0,
             "end": label.chars().count(),
             "name": "mention",
-            "value": format!("{{\"agent\":\"{SCOUT_ID}\"}}"),
+            "value": {"Str": member},
         }],
         "attrs": {},
         "children": [],
@@ -55,7 +58,7 @@ async fn write_to_scout(host: &host::Host, channel: &str, words: &str) -> (Strin
             .tool(
                 "tilo_do",
                 &json!({"path": format!("so.tilo.chat/{channel}#send"),
-                        "args": {"body": mentioning(words)}}),
+                        "args": {"body": mentioning(host.person(), words)}}),
             )
             .await,
     )
@@ -161,7 +164,7 @@ async fn nothing_ran(host: &host::Host, output: &str) {
 /// words it can tell its person, and nothing is run or asked.
 #[test]
 fn an_agent_approved_without_the_terminal_runs_no_command() {
-    host::run(|host| async move {
+    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
@@ -191,7 +194,7 @@ fn an_agent_approved_without_the_terminal_runs_no_command() {
 /// agent told what it printed; a second command asks again.
 #[test]
 fn an_agents_command_asks_in_the_conversation_and_is_done_once_on_its_persons_answer() {
-    host::run(|host| async move {
+    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
@@ -234,7 +237,7 @@ fn an_agents_command_asks_in_the_conversation_and_is_done_once_on_its_persons_an
 /// command is carried out unasked; taken back, the next command asks again.
 #[test]
 fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_back() {
-    host::run(|host| async move {
+    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
@@ -275,7 +278,7 @@ fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_b
 /// in its reply; the person's next message is a turn of its own and is answered.
 #[test]
 fn on_the_servers_model_a_turn_that_failed_with_a_command_pending_lets_the_next_message_in() {
-    host::run(|host| async move {
+    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
@@ -305,7 +308,7 @@ fn on_the_servers_model_a_turn_that_failed_with_a_command_pending_lets_the_next_
 /// of the actor who asked.
 #[test]
 fn a_commands_git_identity_is_the_agent_that_asked_as_the_workspace_names_it() {
-    host::run(|host| async move {
+    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
