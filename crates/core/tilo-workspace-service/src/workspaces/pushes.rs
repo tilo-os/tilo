@@ -55,6 +55,12 @@ struct Pushed {
     /// The content each record this device wrote names, as it last read the
     /// record, by workspace, app and record.
     named: BTreeMap<(String, String, String), BTreeSet<String>>,
+    /// The apps of each workspace this device pushed content of: only their
+    /// records may name content of this device's to let go of.
+    pushing_apps: BTreeSet<(String, String)>,
+    /// The records being read for what they name, with whether another write
+    /// of theirs landed since the read began.
+    reading: BTreeMap<(String, String, String), bool>,
 }
 
 struct Going {
@@ -87,22 +93,19 @@ impl Workspaces {
             return;
         };
         let hash = hash.to_ascii_lowercase();
-        self.inner
-            .content
-            .pushes
-            .state
-            .lock_recover()
-            .going
-            .entry(workspace.to_owned())
-            .or_default()
-            .insert(
-                hash.clone(),
-                Going {
-                    app: app.to_owned(),
-                    host,
-                    pushed_ms: tilo_clock::unix_now_ms(),
-                },
-            );
+        let mut state = self.inner.content.pushes.state.lock_recover();
+        state
+            .pushing_apps
+            .insert((workspace.to_owned(), app.to_owned()));
+        state.going.entry(workspace.to_owned()).or_default().insert(
+            hash.clone(),
+            Going {
+                app: app.to_owned(),
+                host,
+                pushed_ms: tilo_clock::unix_now_ms(),
+            },
+        );
+        drop(state);
         self.going_moved(workspace);
         self.send_push(id, host, app, &hash);
     }
@@ -249,6 +252,27 @@ impl Workspaces {
         if answered {
             self.going_moved(workspace);
         }
+    }
+
+    /// The host of `workspace` refused `hash`, which this device pushed, past
+    /// a limit its owners set: it goes no more, and the refusal the host
+    /// recorded in the workspace says why. Whether it was this device's push.
+    pub(super) fn push_refused(&self, workspace: &str, hash: &str) -> bool {
+        let refused = self
+            .inner
+            .content
+            .pushes
+            .state
+            .lock_recover()
+            .going
+            .get_mut(workspace)
+            .and_then(|going| going.remove(&hash.to_ascii_lowercase()))
+            .is_some();
+        if refused {
+            tracing::info!(%workspace, %hash, "the workspace's server refused a file past a limit");
+            self.going_moved(workspace);
+        }
+        refused
     }
 
     /// What goes to the hosts of `workspace` moved: whoever waits for it to
@@ -405,8 +429,54 @@ impl Workspaces {
 
     /// This device's own write reached `app`'s `record` of `workspace`: the
     /// content the record named and names no more, and that no other record
-    /// this device wrote names, is released at the host.
-    pub(super) async fn own_write_named(&self, workspace: &str, app: &str, record: &str) {
+    /// this device wrote names, is released at the host. Only an app this
+    /// device pushed content of is read, and a record once at a time: the
+    /// writes that land while it is read are looked at together after, so a
+    /// record taking thousands of writes is not read whole for each.
+    pub(super) fn own_write_landed(&self, workspace: &str, app: &str, record: &str) {
+        let key = (workspace.to_owned(), app.to_owned(), record.to_owned());
+        {
+            let mut state = self.inner.content.pushes.state.lock_recover();
+            if !state
+                .pushing_apps
+                .contains(&(workspace.to_owned(), app.to_owned()))
+            {
+                return;
+            }
+            if let Some(again) = state.reading.get_mut(&key) {
+                *again = true;
+                return;
+            }
+            state.reading.insert(key.clone(), false);
+        }
+        let workspaces = self.clone();
+        tokio::spawn(async move {
+            let (workspace, app, record) = &key;
+            loop {
+                workspaces.own_write_named(workspace, app, record).await;
+                if !workspaces.read_again(&key) {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Whether another write of the record `key` landed while it was read:
+    /// it is read again then, and is no longer being read otherwise.
+    fn read_again(&self, key: &(String, String, String)) -> bool {
+        let mut state = self.inner.content.pushes.state.lock_recover();
+        let again = state.reading.get(key) == Some(&true);
+        if again {
+            state.reading.insert(key.clone(), false);
+        } else {
+            state.reading.remove(key);
+        }
+        again
+    }
+
+    /// What `app`'s `record` of `workspace` names now, against what it named
+    /// as last read: what it names no more is released at the host.
+    async fn own_write_named(&self, workspace: &str, app: &str, record: &str) {
         let Some(id) = WorkspaceId::parse(workspace) else {
             return;
         };

@@ -2542,15 +2542,7 @@ impl Workspaces {
             }
             // This device's own write: what it no longer names is let go at the host.
             if self.member_device_key() == Some(author) {
-                let (workspaces, workspace, app, record) = (
-                    self.clone(),
-                    workspace.to_owned(),
-                    app_id.clone(),
-                    document_id.clone(),
-                );
-                tokio::spawn(async move {
-                    workspaces.own_write_named(&workspace, &app, &record).await;
-                });
+                self.own_write_landed(workspace, app_id, document_id);
             }
         } else {
             // A write the copy cannot take in yet (a sealed record whose keys have not reached the

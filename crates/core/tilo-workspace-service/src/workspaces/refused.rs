@@ -4,18 +4,19 @@
 //! ([`collab_types::content_refusal_document_id`]), so a host that restarts
 //! finds the refusal it made and never refuses the same content twice.
 //!
-//! A refusal is written as the host's own record, signed and sealed as the
-//! device, and every device of the workspace takes it as it takes any record's
-//! write. Its fields are the refusal a person reads: the record whose content
-//! it is, the content's address and size, the limit it went over and what that
-//! allowed, who posted it, when it was refused, who can raise the limit, and
-//! who the refusal is for. A refusal whose limit was raised and whose content
+//! A refusal is a resource of the workspace's store, of the kind [`KIND`] its
+//! app declares ([`surface`]), written as the host's own edit, and every device
+//! of the workspace takes it as it takes any record's write. Its fields are
+//! the refusal a person reads: the record whose content it is, the content's
+//! address and size, the limit it went over and what that allowed, who posted
+//! it, when it was refused, who can raise the limit, and who the refusal is
+//! for. A refusal whose limit was raised and whose content
 //! the host kept is written again with `withdrawn` set: the record stays, as a
 //! version history does, and no reader shows it as standing.
 
 use std::collections::BTreeMap;
 
-use automerge::transaction::{CommitOptions, Transactable as _};
+use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, ScalarValue, Value as AmValue};
 
 use tilo_action_policy::{ContentLimit, Raises};
@@ -29,6 +30,32 @@ pub const KIND: &str = collab_types::CONTENT_REFUSAL_KIND;
 
 /// The app the host writes its refusal records under.
 pub const APP: &str = collab_types::CONTENT_REFUSAL_APP;
+
+/// What [`APP`] declares its refusal records are, so every holder's store
+/// keeps them: the surface's compiled form.
+pub(crate) fn surface() -> String {
+    collab_types::surface::canonical(&serde_json::json!({
+        "format": 2,
+        "resources": [{
+            "kind": KIND,
+            "label": "Refused content",
+            "version": 1,
+            "fields": [
+                { "path": "record", "type": "text" },
+                { "path": "hash", "type": "text" },
+                { "path": "bytes", "type": "int" },
+                { "path": "limit", "type": "text" },
+                { "path": "allowed", "type": "int" },
+                { "path": "member", "type": "text" },
+                { "path": "at", "type": "int" },
+                { "path": "raise", "type": "text" },
+                { "path": "withdrawn", "type": "bool" },
+                { "path": "readers", "type": { "list": "text" } },
+            ],
+            "verbs": [{ "id": "type", "kind": "undoable" }],
+        }],
+    }))
+}
 
 /// One record of the content a host refused: the fields a person reads, and
 /// the people the record names as its readers.
@@ -52,10 +79,6 @@ pub struct Refusal {
     /// The limit was raised and the content is kept: the record no longer
     /// stands.
     pub withdrawn: bool,
-}
-
-fn now_ms() -> u64 {
-    tilo_clock::unix_now_ns() / 1_000_000
 }
 
 /// `actor` as a person reads it: a member by their person id, an automation or
@@ -93,21 +116,12 @@ impl Refusal {
         }
     }
 
-    /// The changes that write this refusal into a record `held` already, or
-    /// the whole record it founds, and whether it founds one. The change names
-    /// the host's person as the one who made it, as every record's does: a
-    /// change that names no invoker is refused by the workspace.
-    fn write(&self, held: Option<&[u8]>, actor: &Actor) -> Result<(Vec<u8>, bool), String> {
-        let (mut document, founding) = match held {
-            Some(bytes) => (
-                AutoCommit::load(bytes).map_err(|error| error.to_string())?,
-                false,
-            ),
-            None => (AutoCommit::new(), true),
-        };
-        let heads = document.get_heads();
+    /// Write this refusal into `document`, its record as the store holds it,
+    /// or a record it founds: the people it is for are named once, as it is
+    /// founded.
+    fn write_into(&self, document: &mut AutoCommit) -> Result<(), String> {
         let failing = |error: automerge::AutomergeError| error.to_string();
-        document.put(ROOT, "kind", KIND).map_err(failing)?;
+        let founding = document.get(ROOT, "readers").map_err(failing)?.is_none();
         document
             .put(ROOT, "record", self.record.as_str())
             .map_err(failing)?;
@@ -159,28 +173,7 @@ impl Refusal {
                     .map_err(failing)?;
             }
         }
-        let stamp = tilo_resource_store::Stamp {
-            verb: "content.refused".to_owned(),
-            invoker: tilo_resource_store::Stamp::by(actor),
-            invocation: format!("refusal:{}", self.id()),
-            ..tilo_resource_store::Stamp::default()
-        };
-        let committed = document.commit_with(
-            CommitOptions::default()
-                .with_message(stamp.message())
-                .with_time(i64::try_from(now_ms()).unwrap_or(i64::MAX)),
-        );
-        if committed.is_none() {
-            return Ok((Vec::new(), founding));
-        }
-        Ok((
-            if founding {
-                document.save()
-            } else {
-                document.save_after(&heads)
-            },
-            founding,
-        ))
+        Ok(())
     }
 
     /// The refusal a record's bytes hold, or `None` when they hold none.
@@ -263,30 +256,10 @@ impl Workspaces {
     /// The workspace is not hosted here, the record does not read, or the
     /// workspace refused the write.
     pub async fn record_refusal(&self, workspace: &str, refusal: &Refusal) -> Result<(), String> {
-        let id = refusal.id();
-        let held = self
-            .resource_document(workspace, APP, &id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let host = Actor::Member(MemberId::person(tilo_actions::PersonId::from_root(
-            self.device_person(),
-        )));
-        let (changes, founding) = refusal.write(held.as_deref(), &host)?;
-        if changes.is_empty() {
-            return Ok(());
-        }
-        self.own_write(
-            workspace,
-            (APP, &id),
-            None,
-            &changes,
-            founding,
-            founding,
-            None,
-        )
+        self.author_record(workspace, (APP, KIND, &refusal.id()), |document| {
+            refusal.write_into(document)
+        })
         .await
-        .map_err(|error| error.to_string())?;
-        Ok(())
     }
 
     /// Every refusal standing in `workspace`, read back from its records: what

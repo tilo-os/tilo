@@ -213,6 +213,12 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
         system::<tilo_workspace_emoji::WorkspaceEmoji>(surfaces, tilo_workspace_emoji::OWNER);
         system::<tilo_contact_directory::ContactDirectory>(surfaces, tilo_app_id::apps::CONTACTS);
         system::<crate::environment::VmEnvironment>(surfaces, crate::environment::VM_APP);
+        // The content a host stopped keeping past a limit, kept in each workspace's store.
+        super::keep_surface(
+            surfaces,
+            super::refused::APP,
+            super::refused::surface().as_bytes(),
+        )?;
         // The calls that wait for their person's yes, kept in each workspace's store.
         super::keep_surface(
             surfaces,

@@ -163,6 +163,8 @@ struct Gathering {
 #[derive(Default)]
 struct Sorted {
     refused: Vec<ContentRefusalRecord>,
+    /// The pushes refused, by app and hash: their pusher is told so.
+    turned_away: Vec<(String, String)>,
     held: Vec<(String, String)>,
     whole: Vec<Arrival>,
 }
@@ -403,41 +405,53 @@ impl KeptContent {
     /// more.
     async fn open_workspace(&self, workspace: &str) {
         self.policy_of(workspace).await;
+        // The people known before count too: a member just removed is no
+        // person of the workspace's any more, and their holds go with them.
+        let mut known: BTreeSet<[u8; 32]> = self
+            .state
+            .lock_recover()
+            .people
+            .get(workspace)
+            .map(|people| people.of_device.values().copied().collect())
+            .unwrap_or_default();
         if let Some((owner, of_device)) = self.workspaces.people_of(workspace).await {
+            known.extend(of_device.values().copied());
             self.state
                 .lock_recover()
                 .people
                 .insert(workspace.to_owned(), People { owner, of_device });
         }
-        let refused = self
+        let refused: BTreeMap<String, ContentRefusalRecord> = self
             .workspaces
             .refusals(workspace)
             .await
             .into_iter()
             .map(|refusal| (refusal.hash.clone(), refusal))
             .collect();
+        // What the workspace's records say joins what this host refused since:
+        // a refusal whose record is still being written stands meanwhile.
         self.state
             .lock_recover()
             .refused
-            .insert(workspace.to_owned(), refused);
+            .entry(workspace.to_owned())
+            .or_default()
+            .extend(refused);
         self.open_ledger(workspace);
         if let Some(members) = self.workspaces.member_people(workspace).await {
-            self.drop_departed(workspace, &members);
+            self.drop_departed(workspace, &known, &members);
         }
     }
 
-    /// Let go of the holds in `workspace` of the people no longer among its
-    /// `members`, and of the content no one holds then. A holder this host
-    /// knows no person of is a device of its own and stays.
-    fn drop_departed(&self, workspace: &str, members: &BTreeSet<[u8; 32]>) {
-        let known: BTreeSet<String> = {
-            let state = self.state.lock_recover();
-            state
-                .people
-                .get(workspace)
-                .map(|people| people.of_device.values().map(hex::encode).collect())
-                .unwrap_or_default()
-        };
+    /// Let go of the holds in `workspace` of the `known` people no longer
+    /// among its `members`, and of the content no one holds then. A holder
+    /// this host knows no person of is a device of its own and stays.
+    fn drop_departed(
+        &self,
+        workspace: &str,
+        known: &BTreeSet<[u8; 32]>,
+        members: &BTreeSet<[u8; 32]>,
+    ) {
+        let known: BTreeSet<String> = known.iter().map(hex::encode).collect();
         let members: BTreeSet<String> = members.iter().map(hex::encode).collect();
         let departed = |holder: &String| known.contains(holder) && !members.contains(holder);
         let changed: Vec<String> = {
@@ -871,6 +885,7 @@ impl KeptContent {
         let kept_here = |hash: &str| store.as_ref().is_some_and(|store| store.has(hash));
         let Some(Sorted {
             mut refused,
+            turned_away,
             held,
             whole,
         }) = self.sort_pushed(workspace, from, pieces, &limits, &kept_here, now)
@@ -881,6 +896,31 @@ impl KeptContent {
             self.hold(workspace, &hash, &app, from);
             self.answer(workspace, from, &app, &hash);
         }
+        for (app, hash) in turned_away {
+            self.answer_refused(workspace, from, &app, &hash);
+        }
+        let taken = self.take_whole(workspace, from, whole, &limits, now, &mut refused);
+        if !refused.is_empty() {
+            self.record_refusals(workspace, refused);
+        }
+        if taken {
+            self.arrived.notify_one();
+        }
+    }
+
+    /// Take `whole`, pushes of the device `from` in `workspace` made whole,
+    /// to be written to the store: each one that hashes to its address and
+    /// fits `limits`, and the others refused into `refused`, their pusher told
+    /// so. Whether any was taken.
+    fn take_whole(
+        &self,
+        workspace: &str,
+        from: [u8; 32],
+        whole: Vec<Arrival>,
+        limits: &KeptLimits,
+        now: u64,
+        refused: &mut Vec<ContentRefusalRecord>,
+    ) -> bool {
         // Checked against their addresses with the lock let go: hashing a
         // large file takes a while, and every other piece waits on the lock.
         let arrived: Vec<Arrival> = whole
@@ -899,8 +939,9 @@ impl KeptContent {
             let size = u64::try_from(arrived.bytes.len()).unwrap_or(u64::MAX);
             let member = Self::member_of(&state, workspace, &from);
             if let Some((limit, allowed)) =
-                Self::over(&mut state, &limits, workspace, &member, size, now)
+                Self::over(&mut state, limits, workspace, &member, size, now)
             {
+                self.answer_refused(workspace, from, &arrived.app, &arrived.hash);
                 refused.push(self.refuse(
                     &mut state,
                     &RefusedContent {
@@ -927,12 +968,7 @@ impl KeptContent {
             taken = true;
         }
         drop(state);
-        if !refused.is_empty() {
-            self.record_refusals(workspace, refused);
-        }
-        if taken {
-            self.arrived.notify_one();
-        }
+        taken
     }
 
     /// Sort `pieces` the member device `from` pushed in `workspace` under the lock: those
@@ -973,12 +1009,16 @@ impl KeptContent {
                 continue;
             }
             if Self::already_refused(&mut state, limits, workspace, &hash, now) {
+                sorted.turned_away.push((piece.app_id, hash));
                 continue;
             }
             if let Some(file_bytes) = limits.file_bytes
                 && piece.total > file_bytes
             {
                 // Refused before any byte of it is kept, so its poster reads why.
+                sorted
+                    .turned_away
+                    .push((piece.app_id.clone(), hash.clone()));
                 sorted.refused.push(self.refuse(
                     &mut state,
                     &RefusedContent {
@@ -1369,15 +1409,39 @@ impl KeptContent {
     /// Say to the device `from` that this host keeps `hash` of `app` of
     /// `workspace`, which it pushed: its push goes no more.
     fn answer(&self, workspace: &str, from: [u8; 32], app: &str, hash: &str) {
+        self.tell_pusher(
+            workspace,
+            NeighbourMsg::DocumentContentKept {
+                responder: peer_handle(&self.device),
+                requester: peer_handle(&from),
+                app_id: app.to_owned(),
+                cluster_id: workspace.to_owned(),
+                hash: hash.to_owned(),
+            },
+        );
+    }
+
+    /// Say to the device `from` that this host refuses `hash` of `app` of
+    /// `workspace`, which it pushed, past a limit: its push goes no more, and
+    /// the refusal recorded in the workspace says why.
+    fn answer_refused(&self, workspace: &str, from: [u8; 32], app: &str, hash: &str) {
+        self.tell_pusher(
+            workspace,
+            NeighbourMsg::DocumentContentRefused {
+                responder: peer_handle(&self.device),
+                requester: peer_handle(&from),
+                app_id: app.to_owned(),
+                cluster_id: workspace.to_owned(),
+                hash: hash.to_owned(),
+            },
+        );
+    }
+
+    /// Send `kept`, this host's answer to a push of `workspace`, to the
+    /// device it names.
+    fn tell_pusher(&self, workspace: &str, kept: NeighbourMsg) {
         let Some(workspace_id) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
             return;
-        };
-        let kept = NeighbourMsg::DocumentContentKept {
-            responder: peer_handle(&self.device),
-            requester: peer_handle(&from),
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_owned(),
-            hash: hash.to_owned(),
         };
         let workspaces = self.workspaces.clone();
         tokio::spawn(async move {

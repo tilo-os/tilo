@@ -646,6 +646,18 @@ impl Workspaces {
             }
             return;
         }
+        if let NeighbourMsg::DocumentContentRefused {
+            requester,
+            cluster_id,
+            hash,
+            ..
+        } = &message
+            && *requester == tilo_peer_state::peer_handle(&self.device_cert().device_public_key)
+            && cluster_id == workspace
+            && self.push_refused(workspace, hash)
+        {
+            return;
+        }
         self.keep_content_for_host(workspace, from, message);
     }
 
