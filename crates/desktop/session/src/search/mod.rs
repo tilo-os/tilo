@@ -2232,15 +2232,15 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn search_over(
         daemon: &crate::daemon_fixture::TestDaemon,
-        index: Option<std::sync::Arc<tilo_workspace_service::search::AppContentIndex>>,
+        index: Option<std::sync::Arc<tilo_workspace_search::AppContentIndex>>,
         opened: &Rc<std::cell::RefCell<Vec<(String, String)>>>,
     ) -> SessionSearch {
         SessionSearch::new(
             SearchOptions {
                 index: index.map(|index| {
-                    std::sync::Arc::new(tilo_workspace_service::search::IndexSearch::new(
+                    std::sync::Arc::new(tilo_workspace_search::IndexSearch::new(
                         index,
-                        tilo_workspace_service::search::deciding(|_, _| true),
+                        tilo_workspace_search::deciding(|_, _| true),
                     ))
                         as std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>
                 }),
@@ -2275,7 +2275,7 @@ mod tests {
             // The device's index holds what Notes reads of the note, as the store's indexer
             // publishes it.
             let index =
-                std::sync::Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
+                std::sync::Arc::new(tilo_workspace_search::AppContentIndex::in_memory());
             let entry = ui::search::index_publication::IndexEntry {
                 key: note.record.clone(),
                 resource: note.record.clone(),
@@ -2448,7 +2448,7 @@ mod tests {
     fn a_windows_search_reads_what_its_app_published_and_no_other() {
         use std::sync::Arc;
 
-        let index = Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
+        let index = Arc::new(tilo_workspace_search::AppContentIndex::in_memory());
         let mut publisher = ui::search::index_publication::Publisher::default();
         for (app, key, title) in [
             ("so.tilo.chat", "chat.workspace/channels/c_voice", "voice"),
@@ -2479,9 +2479,9 @@ mod tests {
         }
         let search = SessionSearch::new(
             SearchOptions {
-                index: Some(Arc::new(tilo_workspace_service::search::IndexSearch::new(
+                index: Some(Arc::new(tilo_workspace_search::IndexSearch::new(
                     Arc::clone(&index),
-                    tilo_workspace_service::search::deciding(|_, _| true),
+                    tilo_workspace_search::deciding(|_, _| true),
                 ))),
                 ..SearchOptions::default()
             },

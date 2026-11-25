@@ -940,7 +940,7 @@ impl ServiceWorkspaces {
     }
 
     /// The search of the device's index, once the daemon keeps one and its broker serves.
-    pub(crate) fn search(&self) -> Option<Arc<tilo_workspace_service::search::IndexSearch>> {
+    pub(crate) fn search(&self) -> Option<Arc<tilo_workspace_search::IndexSearch>> {
         self.search.get()?.search()
     }
 

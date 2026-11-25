@@ -112,8 +112,12 @@ impl IndexSearch {
     }
 
     /// [`Self::finding`], as a search whose every decision is made at once answers it.
-    #[cfg(test)]
-    pub(crate) fn found(&self, caller: &Caller, needle: &str, within: &Within) -> Vec<Found> {
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::expect_used,
+        reason = "a test whose read waits has no answer to check"
+    )]
+    pub fn found(&self, caller: &Caller, needle: &str, within: &Within) -> Vec<Found> {
         self.finding(caller, needle, within)
             .wait_timeout(std::time::Duration::ZERO)
             .ok()

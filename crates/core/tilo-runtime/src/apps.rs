@@ -990,19 +990,17 @@ impl Apps {
 /// `tilo-launcher` in its record mode with no services, reads the record on its input and answers
 /// its entries on its output.
 #[cfg(target_os = "linux")]
-impl tilo_workspace_service::search::records::RecordReader for Apps {
+impl tilo_workspace_search::records::RecordReader for Apps {
     fn entries(
         &self,
         app: &str,
         doc: &[u8],
-    ) -> Result<
-        Vec<tilo_resource::search_index::IndexEntry>,
-        tilo_workspace_service::search::records::Unread,
-    > {
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_search::records::Unread>
+    {
         use std::io::Write as _;
         use std::os::unix::process::ExitStatusExt as _;
         use std::process::{Command, Stdio};
-        use tilo_workspace_service::search::records::{INDEX_FLAG, Unread};
+        use tilo_workspace_search::records::{INDEX_FLAG, Unread};
 
         let launcher = self
             .launcher_candidates
@@ -1070,18 +1068,16 @@ impl tilo_workspace_service::search::records::RecordReader for Apps {
 
 /// Where no app sandbox runs, no app reads its records: search holds what running apps publish.
 #[cfg(not(target_os = "linux"))]
-impl tilo_workspace_service::search::records::RecordReader for Apps {
+impl tilo_workspace_search::records::RecordReader for Apps {
     fn entries(
         &self,
         app: &str,
         _doc: &[u8],
-    ) -> Result<
-        Vec<tilo_resource::search_index::IndexEntry>,
-        tilo_workspace_service::search::records::Unread,
-    > {
-        Err(tilo_workspace_service::search::records::Unread::Refused(
-            format!("{app} reads no record here: this platform starts no app in its record mode"),
-        ))
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_search::records::Unread>
+    {
+        Err(tilo_workspace_search::records::Unread::Refused(format!(
+            "{app} reads no record here: this platform starts no app in its record mode"
+        )))
     }
 }
 

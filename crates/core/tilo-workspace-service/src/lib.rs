@@ -43,14 +43,14 @@ pub mod own_device;
 /// their turns reach.
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 pub mod agents;
+/// What changed in the records of the workspaces a device holds.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod change_feed;
 #[cfg(not(target_arch = "wasm32"))]
 mod connections;
 /// Content a record references, reaching the devices that may read it.
 #[cfg(all(feature = "content", not(target_arch = "wasm32")))]
 pub mod content;
-/// What changed in the records of the workspaces a device holds.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod change_feed;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
@@ -94,8 +94,6 @@ pub mod registry;
 /// The typed actions of the workspace resources the person's shell changes.
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 pub mod resource_actions;
-#[cfg(all(feature = "content", not(target_arch = "wasm32")))]
-pub mod search;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod service;
 #[cfg(not(target_arch = "wasm32"))]
@@ -148,4 +146,3 @@ use tilo_server_protocol::{auth, policy};
 mod transport {
     pub(crate) use tilo_server_protocol::transport::*;
 }
-

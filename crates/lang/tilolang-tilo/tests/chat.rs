@@ -1945,7 +1945,7 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
     use tilo_desktop_search::Source as _;
     use tilo_desktop_search::indexed::IndexedContent;
     use tilo_resource::search_index::{IndexState, Publisher};
-    use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+    use tilo_workspace_search::{AppContentIndex, IndexSearch};
 
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
@@ -1981,7 +1981,7 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
     }
     let search = IndexSearch::new(
         Arc::new(index),
-        tilo_workspace_service::search::deciding(|_, _| true),
+        tilo_workspace_search::deciding(|_, _| true),
     );
     let hits = IndexedContent::new(
         Arc::new(search),

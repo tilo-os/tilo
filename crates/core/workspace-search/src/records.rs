@@ -312,7 +312,7 @@ mod tests {
     use tilo_resource::search_index::IndexEntry;
 
     use super::{RecordIndex, RecordReader, StoreReader, Unread};
-    use crate::search::{AppContentIndex, IndexSearch};
+    use crate::{AppContentIndex, IndexSearch};
 
     const WORKSPACE: &str = "w-team";
     const NOTES: &str = "so.tilo.notes";
@@ -444,7 +444,7 @@ mod tests {
             DOCUMENTS,
             "every document the device holds was read once"
         );
-        let search = IndexSearch::new(Arc::clone(&content), crate::search::deciding(|_, _| true));
+        let search = IndexSearch::new(Arc::clone(&content), crate::deciding(|_, _| true));
         let ada = Caller::local_person("ada");
         let found = search.found(&ada, "word07x03", &Within::default());
         assert_eq!(found.len(), 1, "one note holds the word: {found:?}");

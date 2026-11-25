@@ -800,6 +800,8 @@ mod tests {
     use tilo_actions::remote::Caller;
     use tilo_actions::{Actor, MemberId};
     use tilo_resource_store::Stamp;
+    use tilo_workspace_search::records::{RecordIndex, RecordReader, StoreReader, Unread};
+    use tilo_workspace_search::{AppContentIndex, IndexSearch, deciding};
 
     use crate::apps::services::ResourceRequestContext;
     use crate::workspaces::fixtures::{TestHost, hosting_device_with, test_host_holding};
@@ -1734,16 +1736,15 @@ mod tests {
     /// computes from what the note holds.
     struct NoteReader;
 
-    impl crate::search::records::RecordReader for NoteReader {
+    impl RecordReader for NoteReader {
         fn entries(
             &self,
             _: &str,
             doc: &[u8],
-        ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, crate::search::records::Unread>
-        {
+        ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, Unread> {
             use automerge::ReadDoc as _;
             let doc = automerge::AutoCommit::load(doc)
-                .map_err(|error| crate::search::records::Unread::Refused(error.to_string()))?;
+                .map_err(|error| Unread::Refused(error.to_string()))?;
             let title = doc
                 .get(automerge::ROOT, "title")
                 .ok()
@@ -1763,7 +1764,7 @@ mod tests {
     /// them a tilolang app's.
     struct Stores(Workspaces);
 
-    impl crate::search::records::StoreReader for Stores {
+    impl StoreReader for Stores {
         fn workspaces(&self) -> Vec<String> {
             self.0.stored_workspaces()
         }
@@ -1796,19 +1797,11 @@ mod tests {
     }
 
     /// What a person searching for `query` finds, once the index answers `expected`.
-    async fn found_once(
-        search: &crate::search::IndexSearch,
-        query: &str,
-        expected: &[&str],
-    ) -> Vec<String> {
+    async fn found_once(search: &IndexSearch, query: &str, expected: &[&str]) -> Vec<String> {
         let started = std::time::Instant::now();
         loop {
             let found: Vec<String> = search
-                .found(
-                    &tilo_actions::remote::Caller::local_person("ada"),
-                    query,
-                    &tilo_actions::remote::Within::default(),
-                )
+                .found(&Caller::local_person("ada"), query, &Default::default())
                 .into_iter()
                 .map(|found| found.label)
                 .collect();
@@ -1827,13 +1820,13 @@ mod tests {
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
         let me = caller_of(workspaces, &workspace).acting().by.clone();
-        let content = std::sync::Arc::new(crate::search::AppContentIndex::in_memory());
-        let records = crate::search::records::RecordIndex::start(
+        let content = std::sync::Arc::new(AppContentIndex::in_memory());
+        let records = RecordIndex::start(
             std::sync::Arc::new(NoteReader),
             std::sync::Arc::new(Stores(workspaces.clone())),
             std::sync::Arc::clone(&content),
         );
-        let search = crate::search::IndexSearch::new(content, crate::search::deciding(|_, _| true));
+        let search = IndexSearch::new(content, deciding(|_, _| true));
         let mut writes = workspaces.document_writes();
         // Search is told of every document a write lands in, as the device's daemon tells it.
         let mut follow = || {

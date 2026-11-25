@@ -2050,7 +2050,7 @@ fn mail() -> Bundle {
 /// Publish what search holds of the app the instance runs, read from the workspace's store as
 /// the device's daemon reads it ([`tilolang_tilo::search::whole`]): the entries of every resource
 /// of the app that holds text, the test's index keeping them under the app's one slot.
-fn published_index(index: &tilo_workspace_service::search::AppContentIndex, host: &Host) {
+fn published_index(index: &tilo_workspace_search::AppContentIndex, host: &Host) {
     let published = tilolang_tilo::search::publish_whole(
         tilo_resource::search_index::Publisher::default(),
         tilo_resource::search_index::IndexState {
@@ -2070,7 +2070,7 @@ fn published_index(index: &tilo_workspace_service::search::AppContentIndex, host
 fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     use tilo_desktop_search::indexed::IndexedContent;
     use tilo_desktop_search::model::{Source as _, Target};
-    use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+    use tilo_workspace_search::{AppContentIndex, IndexSearch};
 
     // A live Mail instance, its room filled by the package's own scenario, runs its frames.
     let (mut host, mut window, sent, _inbox, _route) = running_app("ada", MAIL, mail());
@@ -2107,7 +2107,7 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     // word is in are the two hits.
     let search = IndexSearch::new(
         std::sync::Arc::clone(&index),
-        tilo_workspace_service::search::deciding(|_, _| true),
+        tilo_workspace_search::deciding(|_, _| true),
     );
     let content = IndexedContent::new(
         std::sync::Arc::new(search),

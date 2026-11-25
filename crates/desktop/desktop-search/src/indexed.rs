@@ -574,7 +574,7 @@ impl Source for IndexedContent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+    use tilo_workspace_search::{AppContentIndex, IndexSearch};
     use ui::search::index_publication::{IndexAction, IndexEntry, IndexState, Publisher};
 
     /// This source over `index`, as the device's search answers it for `person`, who may read it
@@ -586,7 +586,7 @@ mod tests {
     ) -> IndexedContent {
         let search = Arc::new(IndexSearch::new(
             Arc::clone(index),
-            tilo_workspace_service::search::deciding(|_, _| true),
+            tilo_workspace_search::deciding(|_, _| true),
         ));
         IndexedContent::new(
             search,

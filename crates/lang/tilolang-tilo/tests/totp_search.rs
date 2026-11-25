@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tilo_desktop_search::indexed::IndexedContent;
 use tilo_desktop_search::model::{OPEN_ANCHOR, Source as _, Target};
 use tilo_resource::search_index::{IndexEntry, IndexState, Publisher};
-use tilo_workspace_service::search::{AppContentIndex, IndexSearch, deciding};
+use tilo_workspace_search::{AppContentIndex, IndexSearch, deciding};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers, VaultCode, VaultHost};
 use tilolang_runtime::value::ResourceRef;

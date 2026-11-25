@@ -9,7 +9,7 @@ use tilo_desktop_search::model::{OPEN_ANCHOR, Source as _, Target};
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_render_protocol::patch::{self as ui, ToUi, Transport as _};
 use tilo_resource::search_index::{IndexState, Publisher};
-use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+use tilo_workspace_search::{AppContentIndex, IndexSearch};
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Actor, InvokeOutcome};
 use tilolang_tilo::OpenEffect;
@@ -280,7 +280,7 @@ fn search(host: &Host, needle: &str, deck: &ResourceRef) -> Vec<tilo_desktop_sea
     }
     let search = IndexSearch::new(
         Arc::new(index),
-        tilo_workspace_service::search::deciding(|_, _| true),
+        tilo_workspace_search::deciding(|_, _| true),
     );
     let content = IndexedContent::new(
         Arc::new(search),

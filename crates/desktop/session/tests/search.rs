@@ -33,7 +33,7 @@ use tilo_session_core::desktop::verbs::{
     LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id,
 };
 use tilo_sheets::SheetState as _;
-use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+use tilo_workspace_search::{AppContentIndex, IndexSearch};
 
 /// The platform search action every window and the shell publish: what a window's search control, its
 /// toolbar's magnifier and Ctrl+K run (`tilo_ui::widget::search_request::SearchRequest`).
@@ -109,7 +109,7 @@ fn session_over(asked: Rc<Asked>, content: Option<Arc<AppContentIndex>>) -> Sess
             index: content.map(|content| {
                 Arc::new(IndexSearch::new(
                     content,
-                    tilo_workspace_service::search::deciding(|_, _| true),
+                    tilo_workspace_search::deciding(|_, _| true),
                 )) as Arc<dyn tilo_actions::remote::ResourceSearch>
             }),
             ..SearchOptions::default()

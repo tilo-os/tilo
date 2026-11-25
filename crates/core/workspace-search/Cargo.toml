@@ -1,0 +1,47 @@
+[package]
+name = "tilo-workspace-search"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "The device's one index of what its apps and records hold, and the workspace search every caller is answered from, with only what that caller may read."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tilo_workspace_search"
+path = "src/lib.rs"
+
+[features]
+# A search answered at once, for tests whose every read is decided immediately.
+test-support = []
+
+[dependencies]
+tilo-actions = { path = "../actions", features = ["answer-reads", "document-read"] }
+tilo-action-policy = { path = "../action-policy" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# A link in a record's text names what it points at.
+tilo-reference = { path = "../reference" }
+tilo-resource = { path = "../tilo-resource" }
+# A record's content resource, as the store names it.
+tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
+# The ranking `search#find` is answered with.
+tilo-search = { path = "../../platform/search" }
+# Which records are the store's own documents, not an app's.
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
+tilo-rt.workspace = true
+futures = { workspace = true, default-features = true }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

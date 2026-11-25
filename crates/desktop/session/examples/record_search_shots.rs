@@ -24,7 +24,7 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_session::{AppLists, Lists, Options, SearchOptions, Session};
 use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
-use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+use tilo_workspace_search::{AppContentIndex, IndexSearch};
 use ui::search::index_publication::{IndexDelta, IndexEntry, IndexKind, IndexPerson};
 
 /// The app whose records are read.
@@ -151,7 +151,7 @@ fn chat_search(content: &Arc<AppContentIndex>) -> SearchOptions {
     SearchOptions {
         index: Some(Arc::new(IndexSearch::new(
             Arc::clone(content),
-            tilo_workspace_service::search::deciding(|_, _| true),
+            tilo_workspace_search::deciding(|_, _| true),
         ))),
         ..SearchOptions::default()
     }

@@ -738,7 +738,10 @@ pub(crate) fn renew_certificates(uid: u32, device: [u8; 32]) -> Result<u64, Stri
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let now = tilo_clock::unix_now_ns();
     let mut due: Vec<(std::path::PathBuf, DeviceCert)> = Vec::new();
-    for path in [paths.device_cert_for_user(&person), paths.device_cert.clone()] {
+    for path in [
+        paths.device_cert_for_user(&person),
+        paths.device_cert.clone(),
+    ] {
         let Ok(cert) = persist::read_device_cert(&path) else {
             continue;
         };
@@ -1993,7 +1996,8 @@ impl Daemon {
         let apps = Arc::new(apps::Apps::from_env(root, &sockets));
         // A server's page serves its kept workspaces' links: the apps it starts mint a
         // resource's link under it, and the apps of a device that keeps no server mint none.
-        if let Some((web_entry, workspaces)) = keeping.as_ref().and_then(super::keep::Keeping::serving)
+        if let Some((web_entry, workspaces)) =
+            keeping.as_ref().and_then(super::keep::Keeping::serving)
         {
             apps.keep_serving(&web_entry, &workspaces);
         }
@@ -2460,7 +2464,7 @@ impl Daemon {
         let search = super::search::DeviceSearch::open(
             root,
             workspaces.copies(),
-            Arc::clone(&apps) as Arc<dyn tilo_workspace_service::search::records::RecordReader>,
+            Arc::clone(&apps) as Arc<dyn tilo_workspace_search::records::RecordReader>,
             &actor,
         );
         workspaces.keep_search(Arc::clone(&search));
@@ -4842,7 +4846,10 @@ async fn enter_the_key(workspaces: &ServiceWorkspaces, workspace: &str, key: &Gr
         .copies()
         .enter(
             workspace,
-            (key.cert(), &signing as &dyn collab_types::signer::DeviceSigner),
+            (
+                key.cert(),
+                &signing as &dyn collab_types::signer::DeviceSigner,
+            ),
         )
         .await
     {
@@ -5765,9 +5772,7 @@ impl RuntimeActionProvider {
                 .enter_agent_key((key.as_ref(), &cert), &named, &cert.device_label)
                 .await
         })
-        .map_err(|why| {
-            io::Error::other(format!("the agent can't act in this workspace: {why}"))
-        })?;
+        .map_err(|why| io::Error::other(format!("the agent can't act in this workspace: {why}")))?;
         // Once listed, the agent's calls are a run of the person's admission, delegated to this
         // agent: what owns a host action they start, rechecked against the workspace's record of
         // its agents. The agent's signature on each call is checked too, but never stands in for

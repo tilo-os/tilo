@@ -26,7 +26,7 @@ agents = ["apps", "device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session
 device-keys = ["dep:tilo-workspace-keys", "dep:tilo-identity"]
 # Content a record references, reaching the devices that may read it: what a host serves
 # for its workspaces' records, with or without apps on top.
-content = ["dep:tilo-broker-core", "dep:tilo-search"]
+content = ["dep:tilo-broker-core", "dep:tilo-workspace-search"]
 # A workspace's file tree held in the device's own service, its bytes on the records' route.
 files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:rustix", "dep:ui"]
 # A session client's pages, read through the document core over the replica its engine admits
@@ -48,8 +48,8 @@ tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
-# The ranking the device's search index answers `search#find` with.
-tilo-search = { path = "../../platform/search", optional = true }
+# The device's search index, which `search#find` is answered from.
+tilo-workspace-search = { path = "../workspace-search", optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The platform's own wakeups: a moment an app's trigger lands on this device is handed to the OS
 # as a scheduled notification, so it comes offline and asleep.
@@ -247,6 +247,7 @@ tilo-mcp = { path = "../tilo-mcp" }
 # A dispatcher that answers as an app's own host: what a device's action service asks
 # through, and what a workspace's host answers beside it.
 tilo-actions = { path = "../actions", features = ["test-support"] }
+tilo-workspace-search = { path = "../workspace-search", features = ["test-support"] }
 # A direct link a test makes a reader fall behind, with the frames it hears
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }

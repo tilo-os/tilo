@@ -263,6 +263,8 @@ tilo-network-actor = { path = "../network-actor" }
 # This device's own workspace service: the one a server runs, holding the workspaces this
 # device founds.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["agents", "apps", "files"] }
+# The device's search index the palette reads.
+tilo-workspace-search = { path = "../../core/workspace-search" }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
 tilo-server-client = { path = "../../core/tilo-server-client" }

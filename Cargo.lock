@@ -16889,7 +16889,7 @@ dependencies = [
  "tilo-settings-store",
  "tilo-test-env",
  "tilo-ui",
- "tilo-workspace-service",
+ "tilo-workspace-search",
  "tracing",
  "walkdir",
  "workspace-hack",
@@ -19718,6 +19718,7 @@ dependencies = [
  "tilo-wasm-aot",
  "tilo-wire-frame",
  "tilo-workspace-keys",
+ "tilo-workspace-search",
  "tilo-workspace-service",
  "tilolang-cli",
  "tokio",
@@ -20435,6 +20436,7 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilo-workspace-keys",
+ "tilo-workspace-search",
  "tilo-workspace-service",
  "tilolang-calendar",
  "tilolang-cli",
@@ -21983,6 +21985,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-workspace-search"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-collab-types",
+ "tilo-lock",
+ "tilo-reference",
+ "tilo-resource",
+ "tilo-resource-store",
+ "tilo-rt",
+ "tilo-search",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-workspace-service"
 version = "0.1.0"
 dependencies = [
@@ -22084,7 +22109,6 @@ dependencies = [
  "tilo-runtime-collab",
  "tilo-runtime-portal",
  "tilo-seal",
- "tilo-search",
  "tilo-secrets",
  "tilo-server-client",
  "tilo-server-protocol",
@@ -22102,6 +22126,7 @@ dependencies = [
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tilo-workspace-keys",
+ "tilo-workspace-search",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",
@@ -22403,7 +22428,7 @@ dependencies = [
  "tilo-video-edit",
  "tilo-video-picture",
  "tilo-wake",
- "tilo-workspace-service",
+ "tilo-workspace-search",
  "tilolang",
  "tilolang-calendar",
  "tilolang-mail",
@@ -22536,7 +22561,7 @@ dependencies = [
  "tilo-view",
  "tilo-wire-frame",
  "tilo-workspace-emoji",
- "tilo-workspace-service",
+ "tilo-workspace-search",
  "tilolang",
  "tilolang-mail",
  "tilolang-runtime",

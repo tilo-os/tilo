@@ -134,6 +134,8 @@ neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on. Its agents
 # are the ones this machine runs for the workspaces it holds, on every platform it serves.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+# The device's search index, which `search#find` is answered from.
+tilo-workspace-search = { path = "../workspace-search" }
 # The host services the broker is built with, the person's own devices among them.
 tilo-broker-core = { path = "../broker-core" }
 # An app's records are founded and written through a confined worker of this executable.

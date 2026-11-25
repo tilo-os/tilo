@@ -51,7 +51,7 @@ walkdir = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The device's search index, which the source over it is tested against.
-tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["content"] }
+tilo-workspace-search = { path = "../../core/workspace-search" }
 serial_test.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
