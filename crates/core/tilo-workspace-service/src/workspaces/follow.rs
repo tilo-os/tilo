@@ -815,7 +815,7 @@ impl Workspaces {
         let workspace_id = state.id().map_err(Refusal::Other)?;
         let host = &self.inner.host;
         let now = tilo_clock::unix_now_ns();
-        let (certificate, keeps_workspace) = state.read(|peer| {
+        let certificate = state.read(|peer| {
             // The device a workspace names among its holders is no member and is
             // admitted by the one row its naming writes: the address it signed,
             // carrying its own certificate.
@@ -824,12 +824,10 @@ impl Workspaces {
                 .keeping_devices()
                 .into_iter()
                 .find(|keeping| keeping.host.device_public_key == remote);
-            let certificate = peer
-                .certificates()
+            peer.certificates()
                 .into_iter()
                 .find(|certificate| certificate.device_public_key == remote)
-                .or_else(|| keeping.clone().map(|keeping| keeping.host));
-            (certificate, keeping.is_some())
+                .or_else(|| keeping.map(|keeping| keeping.host))
         });
         // A hosted browser environment's device is the server's own: the
         // register holds the certificate it was placed with, which the
@@ -888,7 +886,6 @@ impl Workspaces {
             workspace_id,
             decision,
             key_access,
-            keeps_workspace,
             peer,
         })
     }
@@ -915,7 +912,6 @@ impl Workspaces {
             workspace_id,
             decision,
             key_access,
-            keeps_workspace,
             peer,
         } = self.link_decision(remote, offered, link)?;
         let host = &self.inner.host;
@@ -958,7 +954,10 @@ impl Workspaces {
         }
         Ok(tilo_peer_state::direct::LinkScope {
             reads,
-            own_frames_only: !keeps_workspace,
+            // Whether the device passes on other devices' frames is the link's to read for
+            // each frame, as the workspace names its keeping devices then: a device named
+            // after its link came up passes them on from then.
+            own_frames_only: false,
             key_access,
             lists_itself: false,
         })
@@ -1177,7 +1176,6 @@ struct LinkDecision {
     workspace_id: WorkspaceId,
     decision: crate::workspace_access::Decision,
     key_access: bool,
-    keeps_workspace: bool,
     peer: crate::auth::AuthenticatedPeer,
 }
 
