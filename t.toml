@@ -721,23 +721,17 @@ run = "bash tools/ci/app-models.sh"
 outputs = ["/target/app-models/**"]
 default = false
 
-# The tests that install an app from its package and apply its action through
-# the module the package carries: the server's own, and an agent's through the
-# workspace's action API. They read what `app-models` built, so they are left
-# out of their packages' own test families (which build no module) and run
-# here, where the module is in place. `workspace-unify` comes beside the
-# package so its features resolve as the test family's build gives them.
-# The server's test is handed a package the image's pack path built
-# (tools/ci/pack-model-tapp.sh), so what it applies an action from is a package
-# an image would install, not one the test staged. The command names
-# workspace-unify beside the package so its units are the `test` and `test-x86_64`
-# families' units and the compiler cache serves them: a narrowed `-p` selection
-# otherwise resolves its dependencies' features on its own and compiles them again.
+# The test that applies an installed app's action from the package an image
+# installs, not one the test compiled: Database Client's `.tapp` is built by
+# the image's own pack path (tools/apps/tilolang_packages.sh, which
+# os/scripts/pack-apps.sh calls; tools/ci/pack-model-tapp.sh drives it), and
+# the test loads the module that package carries and runs the app's own verb
+# through it. It is `#[ignore]`d in its package's own test family, which hands
+# it no package, and run here.
 [[check]]
 name = "test-packaged-model"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-model-tapp.sh /target/packaged-model db-client\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.db-client.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\n"
-needs = ["app-models"]
+run = "set -euo pipefail\nbash tools/ci/pack-model-tapp.sh /target/packaged-model db-client\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.db-client.tapp cargo test --locked -p tilolang-runtime --test it packaged_app -- --ignored\n"
 
 [[check]]
 name = "codemap"

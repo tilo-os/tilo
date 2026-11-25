@@ -5,7 +5,8 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
+    use std::path::Path;
     use std::rc::Rc;
 
     use crate::common::*;
@@ -128,6 +129,16 @@ mod cases {
 
     impl Client {
         fn new() -> Self {
+            Self::with_app(App::compile(SOURCE, &[]))
+        }
+
+        /// The client whose app is the package the image's pack path built: its module is
+        /// the package's bytes, not a build of the source this test carries.
+        fn packaged() -> Self {
+            Self::with_app(packaged_app())
+        }
+
+        fn with_app(app: App) -> Self {
             // The app declares the effects it uses; the authority here allows them for it.
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
@@ -138,7 +149,6 @@ mod cases {
             let clip = Clip::default();
             rt.set_clipboard(clip.clone());
             rt.set_clock(|| "2026-01-02T03:04:05Z".to_owned());
-            let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
             for action in ["copy_row", "copy_result"] {
                 authority.grant_outside(&app.action(action));
@@ -499,6 +509,62 @@ mod cases {
                 "browse",
                 &[("d", self.root_arg()), ("t", Value::resource(&found))],
             );
+        }
+    }
+
+    /// The app the image's pack path built, read from the `.tapp` `TILO_APP_PACKAGE` names
+    /// (`tools/ci/pack-model-tapp.sh`): the signature verifies, the package carries its module
+    /// and surface, and the module is loaded the way this runtime runs an installed app's.
+    fn packaged_app() -> App {
+        let path = std::env::var_os("TILO_APP_PACKAGE")
+            .expect("TILO_APP_PACKAGE names no package; run it with `t test test-packaged-model`");
+        let bytes = std::fs::read(Path::new(&path)).expect("the package reads");
+        let mut blobs: BTreeMap<tilo_app_package::blobs::BlobHash, Vec<u8>> = BTreeMap::new();
+        let package = tilo_app_package::tapp::read(bytes.as_slice(), &mut blobs)
+            .expect("the bytes are a .tapp");
+        assert!(
+            tilo_app_package::verify::verify(&package.meta, &[])
+                .manifest()
+                .is_some(),
+            "the package's signature verifies"
+        );
+        assert_eq!(
+            package.meta.manifest.package.id, "so.tilo.db-client",
+            "the package is Database Client's"
+        );
+        let entries = &package.meta.collection.entries;
+        for entry in ["app.wasm", "app.ids", "surface.json"] {
+            assert!(entries.contains_key(entry), "the package carries {entry}");
+        }
+        // The payload as an install stages it, hash-checked by the installer's own unpack.
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let payload = scratch.path().join("payload");
+        tilo_app_package::unpack(&package.meta, &blobs, &payload)
+            .expect("the package's payload unpacks");
+        let bundle = tilolang_tilo::bundle::Bundle::read(&payload)
+            .expect("the package's payload is a tilolang bundle");
+        // The surface the signed package carries is the compiled form of the module's own
+        // declarations: what a receiver decides the app's changes against.
+        let carried = entries
+            .get("surface.json")
+            .and_then(|hash| blobs.get(hash))
+            .expect("the package carries its surface's bytes");
+        assert_eq!(
+            &bundle.surface().expect("the module's surface compiles"),
+            carried,
+            "the package's surface is its module's"
+        );
+        let platform = tilolang_tilo::platform_apps::platform_packages_of(
+            bundle.meta.uses.iter().map(String::as_str),
+        )
+        .expect("the platform's packages read");
+        App {
+            compiled: tilolang::Compiled {
+                wasm: bundle.wasm,
+                meta: bundle.meta,
+                ids: tilolang::IdsLock::parse(&bundle.ids).expect("the package's ids read"),
+            },
+            platform,
         }
     }
 
@@ -895,5 +961,96 @@ mod cases {
             assert!(c.columns().is_empty(), "nor the columns of its relations");
             assert!(c.connections().len() == 1, "the saved connection stays");
         }
+    }
+
+    /// The app an image installs is the one that applies its action: the module the check's
+    /// package carries writes the record, its change is the app's action and the invoker's, and
+    /// an argument the app's verb does not take writes nothing.
+    #[test]
+    #[ignore = "reads the package the image's pack path built (t test test-packaged-model)"]
+    fn the_packaged_app_applies_its_action_from_the_package_an_image_installs() {
+        let c = Client::packaged();
+        assert_eq!(
+            c.app.meta().app,
+            "so.tilo.db-client",
+            "the module is Database Client's"
+        );
+        assert_eq!(c.app.meta().title, "Database Client");
+        assert!(
+            c.connections().is_empty(),
+            "a fresh workspace has no fabricated connections"
+        );
+
+        c.with(
+            "add_connection",
+            &[
+                ("d", c.root_arg()),
+                ("name", Value::text("Packaged")),
+                ("engine_index", Value::Int(0)),
+                ("host", Value::text("")),
+                ("port", Value::Int(0)),
+                ("database", Value::text("")),
+                ("user", Value::text("")),
+                ("file_path", Value::text(c.path.clone())),
+                ("password", Value::text("hunter2")),
+            ],
+        );
+        c.settle();
+        let saved = c.connections();
+        assert_eq!(saved.len(), 1, "the package's action saved the connection");
+        assert_eq!(c.text(&saved[0], "name"), "Packaged");
+        assert!(
+            !format!("{:?}", c.rt.read(&saved[0], "file_path").unwrap()).contains("hunter2"),
+            "the shared record keeps no password"
+        );
+        assert!(
+            c.flag(&c.session(), "connected"),
+            "the connection the action opened"
+        );
+
+        // The change is the app's own verb, and the person who invoked it.
+        let action = c.app.action("add_connection");
+        let versions = c.rt.versions(&c.root).unwrap();
+        assert!(
+            versions
+                .iter()
+                .any(|version| version.action == action && version.who.as_ref() == Some(&me())),
+            "a version is the packaged app's action by its invoker: {versions:?}"
+        );
+
+        // An argument the verb does not take is refused, and nothing is written.
+        let verb = c
+            .app
+            .meta()
+            .actions
+            .iter()
+            .find(|action| action.name == "add_connection")
+            .expect("the package declares the verb");
+        let at = verb
+            .params
+            .iter()
+            .position(|param| param.name == "name")
+            .expect("the verb takes a name");
+        let mut wrong = c.app.args(
+            &c.rt,
+            "add_connection",
+            &[
+                ("d", c.root_arg()),
+                ("name", Value::text("Sneaky")),
+                ("engine_index", Value::Int(0)),
+                ("host", Value::text("")),
+                ("port", Value::Int(0)),
+                ("database", Value::text("")),
+                ("user", Value::text("")),
+                ("file_path", Value::text(c.path.clone())),
+                ("password", Value::text("")),
+            ],
+        );
+        wrong[at] = Value::Int(1);
+        assert!(
+            c.rt.invoke_action(&me(), (action.as_str(), wrong)).is_err(),
+            "a wrong argument is refused before the app runs"
+        );
+        assert_eq!(c.connections().len(), 1, "a refused action writes nothing");
     }
 }

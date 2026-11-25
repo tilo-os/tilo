@@ -122,6 +122,8 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # The platform's packages (the device, the session) an app compiles against in its test.
 tilolang-tilo = { path = "../tilolang-tilo" }
+# The package an image installs, which the packaged-app test reads the app's own module from.
+tilo-app-package = { path = "../../core/tilo-app-package" }
 wat = "1"
 # The hex editor's device work, answered by the crate a session registers.
 hex-engine = { path = "../../engines/hex-engine" }
