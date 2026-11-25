@@ -39,10 +39,10 @@ pub const KEY_FILE_ENV: &str = "TILO_KEY_FILE";
 
 /// Names the descriptor of the connection to the daemon's native endpoint the launcher opened for
 /// an app it started, which the daemon admits as that app.
-pub const NATIVE_FD_ENV: &str = "TILO_SVC_NATIVE_FD";
+pub const NATIVE_FD_ENV: &str = tilo_actions::remote::handed::NATIVE_FD_ENV;
 
 /// Names the workspace an app the launcher started acts in.
-pub const WORKSPACE_ENV: &str = "TILO_WORKSPACE_ID";
+pub const WORKSPACE_ENV: &str = tilo_actions::remote::handed::WORKSPACE_ENV;
 
 /// Names the desktop's own API socket, as `TILO_MCP_SERVER` names the agent socket: a program of
 /// a login whose runtime directory is not the one the desktop was started in finds it here.
@@ -313,35 +313,28 @@ impl Calls {
     /// # Errors
     /// No daemon answers, or it serves this account no workspace.
     pub async fn connect(socket: Option<&Path>, workspace: Option<&str>) -> Result<Self> {
-        /// Whether this process took the descriptor the launcher handed it: it is taken once.
-        static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let handed = std::env::var(NATIVE_FD_ENV)
-            .ok()
-            .and_then(|fd| fd.trim().parse::<usize>().ok());
-        let (stream, workspace, app) = match (socket, handed) {
-            (None, Some(fd)) => {
-                if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    bail!(
-                        "this app's one connection to the daemon is open already: share the \
-                         client that holds it"
-                    );
-                }
-                let stream = inherited(fd)?;
-                let workspace = workspace
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        std::env::var(WORKSPACE_ENV)
-                            .ok()
-                            .filter(|ws| !ws.is_empty())
-                    })
-                    .ok_or_else(|| {
-                        anyhow!("an app's connection names its workspace in {WORKSPACE_ENV}")
-                    })?;
-                (stream, Some(workspace), true)
-            }
-            _ => (connected(socket)?, workspace.map(str::to_owned), false),
+        let handed = (socket.is_none() && tilo_actions::remote::handed::was_handed())
+            .then(|| {
+                tilo_actions::remote::handed::connection().ok_or_else(|| {
+                    anyhow!(
+                        "this app's connection to the daemon could not be opened, or names no \
+                     workspace in {WORKSPACE_ENV}"
+                    )
+                })
+            })
+            .transpose()?;
+        let (line, workspace, app) = match handed {
+            Some(handed) => (
+                handed.line,
+                Some(workspace.map_or(handed.workspace, str::to_owned)),
+                true,
+            ),
+            None => (
+                Arc::new(LineClient::of_stream(connected(socket)?)?),
+                workspace.map(str::to_owned),
+                false,
+            ),
         };
-        let line = Arc::new(LineClient::of_stream(stream)?);
         let mut calls = match workspace {
             Some(workspace) => Self::in_workspace(line, &workspace),
             None => Self::over(line).await?,
@@ -1561,31 +1554,6 @@ async fn settled(
             .ok_or_else(unanswered)?
             .receipt()
             .status;
-    }
-}
-
-/// The connection the launcher opened for this process and named by `value`: a descriptor on
-/// Unix, an inherited handle on Windows. Taken once ([`Calls::connect`]'s `TAKEN`), so this is
-/// its one owner.
-#[expect(
-    unsafe_code,
-    reason = "the launcher hands the connection as a descriptor"
-)]
-fn inherited(value: usize) -> Result<tilo_files::native::socket::Stream> {
-    #[cfg(unix)]
-    {
-        let fd = std::os::fd::RawFd::try_from(value)
-            .with_context(|| format!("{NATIVE_FD_ENV} names no descriptor"))?;
-        // SAFETY: the launcher opened `fd` for this process alone, taken once.
-        Ok(unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd) })
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::{FromRawHandle as _, OwnedHandle, RawHandle};
-        // SAFETY: the launcher made this handle inheritable for this process alone, taken once.
-        let handle = unsafe { OwnedHandle::from_raw_handle(value as RawHandle) };
-        tilo_files::native::socket::Stream::from_handle(handle)
-            .with_context(|| format!("{NATIVE_FD_ENV} names no connection"))
     }
 }
 

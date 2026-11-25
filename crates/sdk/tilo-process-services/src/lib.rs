@@ -63,4 +63,6 @@ pub use tilo_dialogs::shell as shell_choosers;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod saf;
 pub mod time;
+#[cfg(target_os = "linux")]
+mod vault_secrets;
 pub mod wake;

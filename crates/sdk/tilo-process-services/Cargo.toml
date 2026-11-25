@@ -86,6 +86,11 @@ zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, optional = true, features = ["screencast"] }
+# An app process keeps its secrets in the workspace's vault, through the vault's actions on the
+# connection its launcher handed it.
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -8,7 +8,8 @@
 //! than the call that read it.
 //!
 //! A host process has no such connection and keeps the operating system's keychain instead
-//! (`host-keyring`); [`crate::system_backend`] picks before either is asked.
+//! (`tilo_secrets`, built with `host-keyring`); [`crate::process`]'s system secrets pick before
+//! either is asked.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,12 +20,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus,
 };
 
-use crate::{Protection, Secret, SecretBackend, SecretError};
-
-/// The descriptor of this process's connection to the daemon, as the launcher hands it.
-const NATIVE_FD_ENV: &str = "TILO_SVC_NATIVE_FD";
-/// The workspace the launcher started this process in: what its connection acts in.
-const WORKSPACE_ENV: &str = "TILO_WORKSPACE_ID";
+use tilo_secrets::{Protection, Secret, SecretBackend, SecretError};
 
 /// How long one call may wait for the daemon's answer: a release or keep the person is asked
 /// about answers after they do, and a call nobody answers is a failure rather than a hang.
@@ -37,29 +33,13 @@ pub(crate) struct VaultStore {
 }
 
 impl VaultStore {
-    /// The store of a process the launcher handed a connection to its daemon: `None` for a host
-    /// process, which has none.
-    pub(crate) fn inherited() -> Option<Self> {
-        let fd = std::env::var(NATIVE_FD_ENV)
-            .ok()?
-            .trim()
-            .parse::<std::os::fd::RawFd>()
-            .ok()?;
-        let workspace = std::env::var(WORKSPACE_ENV)
-            .ok()
-            .filter(|workspace| !workspace.is_empty())?;
-        // SAFETY: the launcher opened `fd` for this process alone; taking it once, here, is the
-        // one owner it has.
-        #[expect(
-            unsafe_code,
-            reason = "the launcher hands the connection as a descriptor"
-        )]
-        let stream =
-            unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-        let line = LineClient::of_stream(stream).ok()?;
+    /// The store of a process the launcher handed a connection to its daemon, on that one
+    /// connection: `None` for a host process, which has none.
+    pub(crate) fn handed() -> Option<Self> {
+        let handed = tilo_actions::remote::handed::connection()?;
         Some(Self {
-            line: Arc::new(line),
-            workspace,
+            line: handed.line,
+            workspace: handed.workspace,
         })
     }
 

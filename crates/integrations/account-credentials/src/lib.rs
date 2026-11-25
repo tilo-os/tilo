@@ -70,7 +70,7 @@ pub use clients::{COPILOT_TOKEN_ENDPOINT, ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "store")]
 pub use credential_store::{
     CredentialError, CredentialStore, DriveCredential, GrantState, RenewedGrant, SIGN_IN_TIMEOUT,
-    copied_secret, copied_source_matches, icloud_apple_id, icloud_secret, is_cloud_type,
+    copied_secret, copied_source_matches, for_mount, icloud_apple_id, icloud_secret, is_cloud_type,
     is_copied_secret, oauth_secret, oauth_tokens, password_credential, protected_grant_protocol,
     requires_protected_consumer,
 };

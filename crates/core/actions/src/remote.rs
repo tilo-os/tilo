@@ -144,6 +144,8 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 mod execution_lease;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod handed;
 mod line;
 pub use execution_lease::ExecutionLease;
 #[cfg(not(target_arch = "wasm32"))]

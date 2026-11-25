@@ -64,14 +64,32 @@ pub trait SecretsProvider: Send + Sync {
     fn store(&self, app_id: &str) -> SecretStore;
 }
 
-/// Each app's secrets in this target's secret store (the Secret Service,
-/// the Keychain, or the browser's wrapped store).
+/// Each app's secrets in this target's secret store: the workspace's vault for a process its
+/// launcher handed a connection to the daemon, else the Secret Service, the Keychain, or the
+/// browser's wrapped store.
 struct SystemSecrets;
 
 impl SecretsProvider for SystemSecrets {
     fn store(&self, app_id: &str) -> SecretStore {
+        #[cfg(target_os = "linux")]
+        if let Some(vault) = handed_vault() {
+            return SecretStore::with_backend(app_id, vault);
+        }
         SecretStore::for_app(app_id)
     }
+}
+
+/// The workspace's vault over the connection the launcher handed this process, made once: `None`
+/// for a process it handed none.
+#[cfg(target_os = "linux")]
+fn handed_vault() -> Option<Arc<dyn SecretBackend>> {
+    static VAULT: std::sync::OnceLock<Option<Arc<dyn SecretBackend>>> = std::sync::OnceLock::new();
+    VAULT
+        .get_or_init(|| {
+            crate::vault_secrets::VaultStore::handed()
+                .map(|vault| Arc::new(vault) as Arc<dyn SecretBackend>)
+        })
+        .clone()
 }
 
 /// Secrets in one map that lives as long as the provider, for processes that

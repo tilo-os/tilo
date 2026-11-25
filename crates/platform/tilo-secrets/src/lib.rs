@@ -61,8 +61,6 @@ mod linux;
 mod macos;
 #[cfg(all(target_os = "linux", feature = "host-keyring"))]
 pub mod owner_migration;
-#[cfg(target_os = "linux")]
-mod vault;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;
 #[cfg(target_os = "windows")]
@@ -602,15 +600,12 @@ impl SecretBackend for Refused {
     }
 }
 
-/// An app process holds a connection its launcher handed it, and keeps its secrets in the
-/// workspace's vault over it; a process with no such connection asks the operating system's
-/// Secret Service, which only a host build links (`host-keyring`). A build with neither answers
+/// A host process asks the operating system's Secret Service, which only a host build links
+/// (`host-keyring`). An app process keeps its secrets in the workspace's vault, which its SDK
+/// hands it as its store ([`SecretStore::with_backend`]); a build that links neither answers
 /// that it has no store rather than writing a secret somewhere nobody sealed.
 #[cfg(target_os = "linux")]
 fn system_backend() -> Backend {
-    if let Some(store) = crate::vault::VaultStore::inherited() {
-        return Backend::Sync(Arc::new(store));
-    }
     #[cfg(feature = "host-keyring")]
     {
         Backend::Sync(Arc::new(linux::SecretService))

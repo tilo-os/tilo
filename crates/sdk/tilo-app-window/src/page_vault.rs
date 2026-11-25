@@ -2,12 +2,12 @@
 //! ([`tilo_page_engine::LoginVault`]).
 //!
 //! The launcher connected this process to the device's daemon before its sandbox started
-//! (`TILO_SVC_NATIVE_FD`), so the daemon knows the connection as the process it launched for the
-//! app, and answers the vault's page login actions for that process alone
+//! (`tilo_actions::remote::handed`), so the daemon knows the connection as the process it launched
+//! for the app, and answers the vault's page login actions for that process alone
 //! (`tilo_actions::remote::person_vault::PAGE_LOGINS`). A password goes between this window's
 //! engine and the vault over that connection, and nowhere else.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_actions::remote::person_vault::{self, ItemRef, KeepPageLogin, PageFilled, PageLogins};
@@ -18,51 +18,16 @@ use tilo_actions::remote::{
 use tilo_page_engine::{Answered, LoginVault, VaultLogin};
 use tilo_webview::ReleasedText;
 
-/// The descriptor of this process's connection to the daemon, as the launcher hands it.
-const NATIVE_FD_ENV: &str = "TILO_SVC_NATIVE_FD";
-/// The workspace the launcher started this process in.
-const WORKSPACE_ENV: &str = "TILO_WORKSPACE_ID";
-
 /// What a window the daemon did not start, or whose connection is gone, is told.
 const NO_DAEMON: &str = "This window has no connection to your computer's daemon, so it cannot \
                          reach your workspace's vault";
 /// What a call the daemon left unanswered is told.
 const UNANSWERED: &str = "Your computer's daemon did not answer";
 
-/// This process's connection to the daemon, opened once: `None` where the launcher handed it
-/// none.
+/// This process's connection to the daemon, the one the launcher handed it: `None` where it
+/// handed none.
 fn line() -> Option<(Arc<LineClient>, String)> {
-    static LINE: OnceLock<Option<(Arc<LineClient>, String)>> = OnceLock::new();
-    LINE.get_or_init(|| {
-        #[cfg(unix)]
-        {
-            let fd = std::env::var(NATIVE_FD_ENV)
-                .ok()?
-                .trim()
-                .parse::<std::os::fd::RawFd>()
-                .ok()?;
-            let workspace = std::env::var(WORKSPACE_ENV)
-                .ok()
-                .filter(|ws| !ws.is_empty())?;
-            // SAFETY: the launcher opened `fd` for this process alone, and the `OnceLock` makes
-            // this the one owner of it.
-            #[expect(
-                unsafe_code,
-                reason = "the launcher hands the connection as a descriptor"
-            )]
-            let stream = unsafe {
-                <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd)
-            };
-            let line = LineClient::of_stream(stream).ok()?;
-            Some((Arc::new(line), workspace))
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (NATIVE_FD_ENV, WORKSPACE_ENV);
-            None
-        }
-    })
-    .clone()
+    tilo_actions::remote::handed::connection().map(|handed| (handed.line, handed.workspace))
 }
 
 /// The vault this window asks on its own connection, waking the window with `wake` as each call

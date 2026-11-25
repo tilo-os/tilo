@@ -37,17 +37,12 @@ sha2.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
-# An app process keeps its secrets in the workspace's vault over the connection its launcher
-# handed it (`vault`), and a host process in the freedesktop Secret Service (`host-keyring`),
-# spoken directly: no `secret-tool` process.
+# A host process keeps its secrets in the freedesktop Secret Service (`host-keyring`), spoken
+# directly: no `secret-tool` process. An app process's store is the workspace's vault, which
+# the SDK (`tilo-process-services`) hands it over the connection its launcher opened.
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio = { workspace = true, features = ["net"] }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
-# The vault's actions on the app's held connection, and the one line protocol they travel on.
-tilo-actions = { version = "0.1.0", path = "../../core/actions" }
-tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
-serde.workspace = true
-serde_json.workspace = true
 
 # The login Keychain's generic passwords.
 # The Keystore wraps the store's key, reached through the process's Java VM.
