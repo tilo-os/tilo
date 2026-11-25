@@ -187,7 +187,7 @@ fn sign_in(data: &[u8]) -> Option<(String, Vec<u8>)> {
 /// What `sign` asks to have signed, read. Refusals never quote it.
 fn read(sign: &Sign) -> Result<Signed, String> {
     let text = sign.data.trim();
-    if text.is_empty() || text.len() > MAX_DATA_BYTES.div_ceil(3) * 4 {
+    if text.is_empty() || text.len() > MAX_DATA_BYTES.div_ceil(3).saturating_mul(4) {
         return Err(NOT_DATA.to_owned());
     }
     let data = Base64::decode_vec(text).map_err(|_| NOT_DATA.to_owned())?;
@@ -246,7 +246,7 @@ pub(super) async fn sign(
     workspace: &str,
     sign: &Sign,
     item: &ItemId,
-    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
+    (by, acting, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
     let signed = read(sign)?;
@@ -272,7 +272,7 @@ pub(super) async fn sign(
     }
     signed.fits(key.public_key())?;
     workspaces
-        .write_vault(&opened, items.take_changes(), Some(asker), Some(asked))
+        .write_vault(&opened, items.take_changes(), Some(acting), Some(asked))
         .await?;
     signed.made_with(&key)
 }

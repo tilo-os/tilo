@@ -15,6 +15,7 @@
     reason = "in a test these are the assertion, and each test keeps its host to the end"
 )]
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use accounts::vault_items;
@@ -130,7 +131,7 @@ async fn kept(
     owner: &tilo_user_identity::DeviceCert,
     (place, secret): (&str, &str),
 ) -> ItemRef {
-    let added = ask(
+    let Ok(added) = ask(
         service,
         workspace_id,
         (owner, &caller(owner)),
@@ -138,8 +139,13 @@ async fn kept(
         json!({"kind": "key", "belongsTo": [place], "secret": secret}),
     )
     .await
-    .expect("the person keeps a key");
-    ItemRef::parse(added["reference"].as_str().unwrap()).unwrap()
+    else {
+        unreachable!("the person keeps a key");
+    };
+    let Some(reference) = added.get("reference").and_then(Value::as_str) else {
+        unreachable!("an item kept answers its reference");
+    };
+    ItemRef::parse(reference).unwrap()
 }
 
 /// Everything the workspace's asked records keep, as text.
@@ -745,7 +751,10 @@ impl HostConnections for BridgeAndReader {
 fn keep_of(purpose: &str, value: &str, replacing: Option<&ItemRef>) -> InvokeRequest {
     let mut argument = json!({"purpose": purpose, "value": value});
     if let Some(item) = replacing {
-        argument["replacing"] = json!(item.to_string());
+        let Some(argument) = argument.as_object_mut() else {
+            unreachable!("a keep's argument is an object");
+        };
+        argument.insert("replacing".to_owned(), json!(item.to_string()));
     }
     InvokeRequest {
         invocation: InvocationId::new(),
@@ -1127,7 +1136,11 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
     assert_eq!(kept_record.request.target, person_vault::keep_target());
     assert_eq!(kept_record.sealed, vec!["value".to_owned()]);
     assert_eq!(
-        kept_record.caller.acting().app().map(std::string::ToString::to_string),
+        kept_record
+            .caller
+            .acting()
+            .app()
+            .map(std::string::ToString::to_string),
         Some(BRIDGE.to_owned())
     );
     assert!(
@@ -1143,16 +1156,11 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
         release_record.secret,
         "it keeps only that the secret was given"
     );
-    let recorded: String = listed
-        .iter()
-        .map(|recorded| {
-            format!(
-                "{}{:?}",
-                serde_json::to_string(&recorded.request).unwrap(),
-                recorded.state
-            )
-        })
-        .collect();
+    let mut recorded = String::new();
+    for record in &listed {
+        let request = serde_json::to_string(&record.request).unwrap();
+        write!(recorded, "{request}{:?}", record.state).unwrap();
+    }
     assert!(recorded.contains("bot-token"), "{recorded}");
     assert!(
         !recorded.contains(TOKEN),

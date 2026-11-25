@@ -76,7 +76,9 @@ impl Workspaces {
         };
         let policy = {
             let governed = state.lock().await;
-            match governed.peer().governance().governed_policy() {
+            let policy = governed.peer().governance().governed_policy();
+            drop(governed);
+            match policy {
                 Ok(policy) => policy,
                 Err(_) => return error,
             }

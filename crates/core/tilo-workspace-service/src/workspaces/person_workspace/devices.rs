@@ -447,11 +447,15 @@ impl Devices {
     /// The action that asks to drive `driven` from `driver` at `asked_ms`.
     #[must_use]
     pub fn asking_input(
-        driven: &[u8; 32],
-        driver: &[u8; 32],
+        driven_device: &[u8; 32],
+        from_device: &[u8; 32],
         asked_ms: i64,
     ) -> tilo_resource::Invoke<Self> {
-        Self::ASK_INPUT.with((hex::encode(driven), hex::encode(driver), asked_ms))
+        Self::ASK_INPUT.with((
+            hex::encode(driven_device),
+            hex::encode(from_device),
+            asked_ms,
+        ))
     }
 
     /// The action that lets `hand.driver` drive `driven` as `hand` says.
@@ -472,11 +476,15 @@ impl Devices {
     /// The action that ends the hand-over of `driven` to `driver` under `nonce`.
     #[must_use]
     pub fn ending_input(
-        driven: &[u8; 32],
-        driver: &[u8; 32],
+        driven_device: &[u8; 32],
+        from_device: &[u8; 32],
         nonce: &str,
     ) -> tilo_resource::Invoke<Self> {
-        Self::END_INPUT.with((hex::encode(driven), hex::encode(driver), nonce.to_owned()))
+        Self::END_INPUT.with((
+            hex::encode(driven_device),
+            hex::encode(from_device),
+            nonce.to_owned(),
+        ))
     }
 
     /// The action that shows `notice` on the person's other devices under `id`.
@@ -558,8 +566,9 @@ impl Devices {
             ));
         }
         let key = answer.key();
+        let starting_at = answer.at_ns;
         self.unlocks
-            .retain(|id, kept| *id != key && kept.until_ns > answer.at_ns);
+            .retain(|id, kept| *id != key && kept.until_ns > starting_at);
         self.unlocks.push(key, answer);
         Ok(())
     }
@@ -1137,15 +1146,15 @@ impl Devices {
     #[action]
     pub fn ask_input(
         &mut self,
-        driven: String,
-        driver: String,
+        driven_device: String,
+        from_device: String,
         asked_ms: i64,
     ) -> Result<(), Refusal> {
-        validate_key(&driven)?;
-        validate_key(&driver)?;
-        if driven == driver
-            || !self.devices.contains(&Id::from_raw(driven.clone()))
-            || !self.devices.contains(&Id::from_raw(driver.clone()))
+        validate_key(&driven_device)?;
+        validate_key(&from_device)?;
+        if driven_device == from_device
+            || !self.devices.contains(&Id::from_raw(driven_device.clone()))
+            || !self.devices.contains(&Id::from_raw(from_device.clone()))
         {
             return Err(Refusal::new("a device drives another of your devices"));
         }
@@ -1154,23 +1163,23 @@ impl Devices {
                 "a hand-over is asked at a time since the epoch",
             ));
         }
-        let driven = Id::from_raw(driven);
+        let driven_device = Id::from_raw(driven_device);
         if self
             .inputs
-            .get(&driven)
+            .get(&driven_device)
             .is_some_and(|kept| kept.granted_ms > 0 && asked_ms < kept.until_ms)
         {
             return Ok(());
         }
         let ask = InputHand {
-            driver,
+            driver: from_device,
             asked_ms,
             ..InputHand::default()
         };
-        match self.inputs.get_mut(&driven) {
+        match self.inputs.get_mut(&driven_device) {
             Some(kept) => *kept = ask,
             None => {
-                self.inputs.push(driven, ask);
+                self.inputs.push(driven_device, ask);
             }
         }
         Ok(())
@@ -1324,17 +1333,17 @@ impl Devices {
     #[action]
     pub fn end_input(
         &mut self,
-        driven: String,
-        driver: String,
+        driven_device: String,
+        from_device: String,
         nonce: String,
     ) -> Result<(), Refusal> {
-        let driven = Id::from_raw(driven);
+        let driven_device = Id::from_raw(driven_device);
         if self
             .inputs
-            .get(&driven)
-            .is_some_and(|kept| kept.driver == driver && kept.nonce == nonce)
+            .get(&driven_device)
+            .is_some_and(|kept| kept.driver == from_device && kept.nonce == nonce)
         {
-            self.inputs.retain(|id, _| *id != driven);
+            self.inputs.retain(|id, _| *id != driven_device);
         }
         Ok(())
     }
@@ -1402,7 +1411,10 @@ impl Devices {
                 "a notification says something, warns or tells of an error",
             ));
         }
-        if shown_ms <= 0 || until_ms <= shown_ms || until_ms - shown_ms > MAX_NOTICE_SHOWN_MS {
+        if shown_ms <= 0
+            || until_ms <= shown_ms
+            || until_ms.saturating_sub(shown_ms) > MAX_NOTICE_SHOWN_MS
+        {
             return Err(Refusal::new(
                 "a notification is shown elsewhere for up to 15 minutes",
             ));

@@ -30,12 +30,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         .update(b"large record")
         .finalize_xof()
         .fill(&mut text);
-    let large = || {
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "text", hex::encode(&text))
-            .unwrap();
-        doc.save()
-    };
+    let large = || the_large_record(&text);
     let state = workspace.collaboration().clone();
     let mut candidate = workspace.peer().clone();
     candidate
@@ -45,15 +40,6 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     workspace
         .keep(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
         .unwrap();
-    let stored = |workspace: &GovernedWorkspace| {
-        workspace
-            .record
-            .peer
-            .iter()
-            .filter(|part| matches!(part, peer_parts::PeerPart::Stored { .. }))
-            .cloned()
-            .collect::<Vec<_>>()
-    };
     let first = stored(&workspace);
     assert!(
         !first.is_empty(),
@@ -64,13 +50,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         first.len(),
         "every large part of the record has a file of its own, and only those"
     );
-    let modified = |workspace: &GovernedWorkspace| {
-        std::fs::read_dir(workspace.path.with_extension("parts"))
-            .unwrap()
-            .map(|entry| entry.unwrap().metadata().unwrap().modified().unwrap())
-            .collect::<Vec<_>>()
-    };
-    let written = modified(&workspace);
+    let written = written_at(&workspace);
 
     // A change that leaves the record alone does not write it again.
     let candidate = workspace.peer().clone();
@@ -78,7 +58,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         .keep(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
         .unwrap();
     assert_eq!(stored(&workspace), first);
-    assert_eq!(modified(&workspace), written);
+    assert_eq!(written_at(&workspace), written);
 
     // Changing it stores it anew and removes what no workspace file names.
     let mut candidate = workspace.peer().clone();
@@ -112,8 +92,43 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     );
 
     // A stored part that does not match its hash refuses to open.
-    let peer_parts::PeerPart::Stored { digest, .. } = &second[0] else {
-        unreachable!()
+    a_part_whose_hash_no_longer_matches_refuses_to_open(&workspace, &second);
+}
+
+/// The record's `text` as a large document: text no compression makes small.
+fn the_large_record(text: &[u8]) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+    let mut doc = automerge::AutoCommit::new();
+    doc.put(automerge::ROOT, "text", hex::encode(text)).unwrap();
+    doc.save()
+}
+
+/// Every part of `workspace`'s record that is stored in a file of its own.
+fn stored(workspace: &GovernedWorkspace) -> Vec<peer_parts::PeerPart> {
+    workspace
+        .record
+        .peer
+        .iter()
+        .filter(|part| matches!(part, peer_parts::PeerPart::Stored { .. }))
+        .cloned()
+        .collect()
+}
+
+/// When each of the record's stored parts was last written.
+fn written_at(workspace: &GovernedWorkspace) -> Vec<SystemTime> {
+    std::fs::read_dir(workspace.path.with_extension("parts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().modified().unwrap())
+        .collect()
+}
+
+/// A stored part whose bytes no longer match its hash keeps `workspace` from opening.
+fn a_part_whose_hash_no_longer_matches_refuses_to_open(
+    workspace: &GovernedWorkspace,
+    parts: &[peer_parts::PeerPart],
+) {
+    let Some(peer_parts::PeerPart::Stored { digest, .. }) = parts.first() else {
+        unreachable!("the record is stored in parts")
     };
     let path = workspace
         .path

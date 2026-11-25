@@ -244,6 +244,7 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
             })
             .unwrap();
         lounge.workspaces.settle(&mut governed).await.unwrap();
+        drop(governed);
     }
     assert!(
         state

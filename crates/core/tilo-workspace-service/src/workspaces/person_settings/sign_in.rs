@@ -359,28 +359,14 @@ impl Workspaces {
         let open = authorization.url().to_owned();
         let id = tilo_oauth::random_token().map_err(|error| error.to_string())?;
         let until_ms = now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES));
-        let name = if asking.name.trim().is_empty() {
-            if address.is_empty() {
-                issuer.label().to_owned()
-            } else {
-                address.clone()
-            }
-        } else {
-            asking.name.trim().to_owned()
-        };
-        // A mailbox's sign-in keeps its mail; the other services its provider offers are
-        // asked for later, from the account's row.
-        let services = Services {
-            mail: true,
-            calendar: false,
-            files: false,
-        };
+        let name = mail_sign_in_name(issuer, asking, &address);
+        let services = mail_services();
         begun().insert(
             id.clone(),
             Begun {
                 id: id.clone(),
                 person,
-                root: root,
+                root,
                 until_ms,
                 failed: None,
                 flow: Flow::OauthMail {
@@ -728,20 +714,16 @@ impl Workspaces {
         }
         let acting = tilo_action_policy::Acting::person(hex::encode(person));
         // What this finishes is kept as the call that completes it asked.
-        let vault = call.map_or(self.vault_for(workspace, &acting), |call| {
-            self.vault_for(workspace, &acting).serving(call)
-        });
-        enum Finish {
-            Icloud(ICloudChallenge, String, String),
-            Pasted(Box<Authorization>, OAuthCloud, String),
-            None,
-        }
+        let vault = call.map_or_else(
+            || self.vault_for(workspace, &acting),
+            |call| self.vault_for(workspace, &acting).serving(call),
+        );
         let finish = {
             let mut entries = begun();
             let Some(entry) = entries.get_mut(&submitting.sign_in) else {
                 return Err("That sign-in was not begun here".into());
             };
-            match &mut entry.flow {
+            let finish = match &mut entry.flow {
                 Flow::Icloud {
                     challenge,
                     name,
@@ -761,38 +743,19 @@ impl Workspaces {
                     None => Finish::None,
                 },
                 Flow::Nextcloud { .. } | Flow::OauthMail { .. } => Finish::None,
-            }
+            };
+            drop(entries);
+            finish
         };
         match finish {
             Finish::Icloud(challenge, name, apple_id) => {
-                let auth = tokio::task::spawn_blocking({
-                    let workspaces = self.clone();
-                    move || workspaces.icloud_auth()
-                })
-                .await
-                .map_err(|_| "the verification code was not read to the end".to_owned())??;
-                let outcome = tokio::task::spawn_blocking({
-                    let code = code.clone();
-                    move || auth.verify_code(&challenge, &code)
-                })
-                .await
-                .map_err(|_| "the verification code was not read to the end".to_owned())?;
-                let session = match outcome {
-                    Ok(session) => session,
-                    Err(error) => {
-                        let refused = error.to_string();
-                        if matches!(
-                            error,
-                            account_credentials::icloud::ICloudAuthError::InvalidCode
-                        ) {
-                            return Err(format!("{refused}. Enter the newest code"));
-                        }
-                        begun().remove(&submitting.sign_in);
-                        return Err(refused);
-                    }
-                };
-                keep_icloud_account(vault, &name, &apple_id, &session).await?;
-                begun().remove(&submitting.sign_in);
+                finish_icloud_sign_in(
+                    self,
+                    vault,
+                    (challenge, name, apple_id),
+                    (&code, &submitting.sign_in),
+                )
+                .await?;
             }
             Finish::Pasted(authorization, cloud, name) => {
                 let finished = tokio::task::spawn_blocking(move || {
@@ -831,14 +794,16 @@ impl Workspaces {
     )]
     pub(in crate::workspaces) fn cloud_credentials(&self, root: &Path) -> CredentialStore {
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(store) = self
-            .inner
-            .cloud_sign_in
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
         {
-            return store;
+            let stood_in = self
+                .inner
+                .cloud_sign_in
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(store) = stood_in {
+                return store;
+            }
         }
         CredentialStore::for_root(Some(root.to_path_buf()))
     }
@@ -853,18 +818,51 @@ impl Workspaces {
     )]
     fn icloud_auth(&self) -> Result<std::sync::Arc<dyn ICloudAuth>, String> {
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(auth) = self
-            .inner
-            .icloud_sign_in
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
         {
-            return Ok(auth);
+            let stood_in = self
+                .inner
+                .icloud_sign_in
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(auth) = stood_in {
+                return Ok(auth);
+            }
         }
         WebICloud::apple()
             .map(|auth| std::sync::Arc::new(auth) as std::sync::Arc<dyn ICloudAuth>)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// What a code a person submits finishes: a sign-in of the provider's own page, keeping the
+/// grant it returns, or nothing that waits for a code.
+enum Finish {
+    Icloud(ICloudChallenge, String, String),
+    Pasted(Box<Authorization>, OAuthCloud, String),
+    None,
+}
+
+/// The name a mailbox's account is shown as: what the person typed, the address it signs in at,
+/// or its provider's own name.
+fn mail_sign_in_name(issuer: OAuthIssuer, asking: &BeginSignIn, address: &str) -> String {
+    if !asking.name.trim().is_empty() {
+        return asking.name.trim().to_owned();
+    }
+    if address.is_empty() {
+        issuer.label().to_owned()
+    } else {
+        address.to_owned()
+    }
+}
+
+/// The services a mailbox's sign-in keeps: its mail alone, the provider's others asked for
+/// later, from the account's row.
+const fn mail_services() -> Services {
+    Services {
+        mail: true,
+        calendar: false,
+        files: false,
     }
 }
 
@@ -996,6 +994,7 @@ pub(super) fn cancel(person: &[u8; 32], cancel: &CancelSignIn) -> Result<(), Str
             _ => {}
         }
     }
+    drop(entries);
     Ok(())
 }
 
@@ -1154,6 +1153,45 @@ async fn keep_oauth_mail(
         .await?;
     accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
     vault.keep_account(&account).await
+}
+
+/// Finish the `iCloud` sign-in `challenge` waits on with `code`, keeping the account it signs
+/// in to as `name` under `apple_id`; a code the provider turns away leaves the sign-in waiting.
+async fn finish_icloud_sign_in(
+    workspaces: &Workspaces,
+    vault: VaultAt<'_>,
+    (challenge, name, apple_id): (ICloudChallenge, String, String),
+    (code, sign_in): (&str, &str),
+) -> Result<(), String> {
+    let auth = tokio::task::spawn_blocking({
+        let workspaces = workspaces.clone();
+        move || workspaces.icloud_auth()
+    })
+    .await
+    .map_err(|_| "the verification code was not read to the end".to_owned())??;
+    let outcome = tokio::task::spawn_blocking({
+        let code = code.to_owned();
+        move || auth.verify_code(&challenge, &code)
+    })
+    .await
+    .map_err(|_| "the verification code was not read to the end".to_owned())?;
+    let session = match outcome {
+        Ok(session) => session,
+        Err(error) => {
+            let refused = error.to_string();
+            if matches!(
+                error,
+                account_credentials::icloud::ICloudAuthError::InvalidCode
+            ) {
+                return Err(format!("{refused}. Enter the newest code"));
+            }
+            begun().remove(sign_in);
+            return Err(refused);
+        }
+    };
+    keep_icloud_account(vault, &name, &apple_id, &session).await?;
+    begun().remove(sign_in);
+    Ok(())
 }
 
 /// Keep an `Apple ID`'s session: its grant in the workspace's vault, the

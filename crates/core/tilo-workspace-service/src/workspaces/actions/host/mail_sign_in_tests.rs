@@ -862,6 +862,19 @@ async fn another_member_lists_the_account_and_checks_its_server() {
 #[tokio::test]
 async fn a_login_the_vault_keeps_adds_its_account() {
     let setup = Setup::new().await;
+    let (reference, site) = logins_kept_in_the_vault(&setup).await;
+
+    // The accounts listing offers the logins the vault keeps, and says nothing of what they
+    // sign in with.
+    the_listing_offers_every_kept_login(&setup, &reference, &site).await;
+
+    // Adding from it keeps the account, signing in with that entry and nothing copied.
+    an_account_added_from_its_login(&setup, &reference).await;
+}
+
+/// Ada's mail login, and a login for a site that is no mail server, kept in the workspace's
+/// vault: their references.
+async fn logins_kept_in_the_vault(setup: &Setup) -> (String, String) {
     let kept = setup
         .ask_target(
             &setup.owner,
@@ -897,9 +910,12 @@ async fn a_login_the_vault_keeps_adds_its_account() {
         .await
         .expect("the workspace's vault keeps her site login");
     let site = site["reference"].as_str().expect("a reference").to_owned();
+    (reference, site)
+}
 
-    // The accounts listing offers the logins the vault keeps, and says nothing of what they
-    // sign in with.
+/// The accounts listing offers the logins the vault keeps, by reference, name and places, and
+/// says nothing of what they sign in with.
+async fn the_listing_offers_every_kept_login(setup: &Setup, reference: &str, site: &str) {
     let offered: MailSignIns = serde_json::from_value(
         setup
             .ask(
@@ -936,8 +952,11 @@ async fn a_login_the_vault_keeps_adds_its_account() {
     let said = serde_json::to_string(&offered).unwrap();
     assert!(!said.contains("kept-password"), "{said}");
     assert!(!said.contains("site-password"), "{said}");
+}
 
-    // Adding from it keeps the account, signing in with that entry and nothing copied.
+/// Adding an account from the kept login `reference` keeps it, signing in with that entry and
+/// nothing copied.
+async fn an_account_added_from_its_login(setup: &Setup, reference: &str) {
     let added: MailAccount = serde_json::from_value(
         setup
             .ask(
@@ -958,7 +977,7 @@ async fn a_login_the_vault_keeps_adds_its_account() {
     .unwrap();
     assert_eq!(added.address, EXAMPLE);
     assert!(added.has_secret);
-    let config = settings(&setup, EXAMPLE).await;
+    let config = settings(setup, EXAMPLE).await;
     assert_eq!(
         config[accounts::email::PASSWORD_ITEM_KEY],
         json!(reference),
@@ -998,10 +1017,10 @@ impl crate::workspaces::person_settings::cloud_control::CloudControl for StandIn
 
 impl StandInCloud {
     /// The next request it is told, or a panic naming what it was told instead.
-    fn told(&self, expected: Request) {
+    fn told(&self, expected: &Request) {
         let requests = self.requests.lock().unwrap();
         assert!(
-            requests.last() == Some(&expected),
+            requests.last() == Some(expected),
             "the files service was told {requests:?}, not {expected:?}"
         );
     }
@@ -1017,6 +1036,23 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
     setup.workspaces.cloud_control_through(Arc::clone(&cloud)
         as Arc<dyn crate::workspaces::person_settings::cloud_control::CloudControl>);
     let id = "google-drive:my-drive";
+    keep_the_drive(&setup, id).await;
+
+    // Its files stay in sync until copied once; the choice is kept on the account.
+    its_files_mode_is_chosen(&setup, id).await;
+
+    // Sync now, pause and resume each reach this device's files service.
+    sync_controls_reach_the_files_service(&setup, &cloud, id).await;
+
+    // A mail account's files do not sync here, so its sync is refused.
+    a_mail_accounts_files_do_not_sync(&setup).await;
+
+    // The reading says a paused mount is paused.
+    a_paused_mount_reads_paused(&setup, &cloud, id).await;
+}
+
+/// `id`, a drive whose files sync, kept on the workspace as one of this device's accounts.
+async fn keep_the_drive(setup: &Setup, id: &str) {
     let mut drive = accounts::Account::new(id, accounts::cloud_types::GOOGLE_DRIVE);
     drive.display_name = "My Drive".into();
     drive.config = json!({
@@ -1035,10 +1071,13 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         )
         .await
         .unwrap();
+}
 
-    // Its files stay in sync until copied once; the choice is kept on the account.
+/// The drive `id` copies its files once when its person chooses, and no mode there is none of
+/// is kept.
+async fn its_files_mode_is_chosen(setup: &Setup, id: &str) {
     assert_eq!(
-        accounts::cloud_types::mode_of(&settings(&setup, id).await),
+        accounts::cloud_types::mode_of(&settings(setup, id).await),
         Some(accounts::cloud_types::FilesMode::Sync)
     );
     let kept: SetFilesMode = SetFilesMode {
@@ -1054,7 +1093,7 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         .await
         .expect("its person chooses to copy it once");
     assert_eq!(
-        accounts::cloud_types::mode_of(&settings(&setup, id).await),
+        accounts::cloud_types::mode_of(&settings(setup, id).await),
         Some(accounts::cloud_types::FilesMode::Import)
     );
     let refused = setup
@@ -1069,8 +1108,10 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         matches!(&refused, ActionCallError::Refused { reason } if reason.contains("files mode")),
         "{refused:?}"
     );
+}
 
-    // Sync now, pause and resume each reach this device's files service.
+/// Sync now, pause and resume each reach this device's files service.
+async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &StandInCloud, id: &str) {
     let sync = serde_json::to_value(SyncControl {
         account: id.to_owned(),
     })
@@ -1083,7 +1124,7 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         )
         .await
         .expect("the service is told to sync now");
-    cloud.told(Request::SyncNow {
+    cloud.told(&Request::SyncNow {
         account: id.to_owned(),
     });
     setup
@@ -1094,7 +1135,7 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         )
         .await
         .expect("the service is told to pause");
-    cloud.told(Request::Pause {
+    cloud.told(&Request::Pause {
         account: id.to_owned(),
     });
     setup
@@ -1105,11 +1146,13 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         )
         .await
         .expect("the service is told to resume");
-    cloud.told(Request::Resume {
+    cloud.told(&Request::Resume {
         account: id.to_owned(),
     });
+}
 
-    // A mail account's files do not sync here, so its sync is refused.
+/// A mail account's files do not sync on a device, so its sync is refused.
+async fn a_mail_accounts_files_do_not_sync(setup: &Setup) {
     setup
         .ask(
             person_accounts::RESOURCE,
@@ -1130,13 +1173,15 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
         matches!(&refused, ActionCallError::Refused { reason } if reason.contains("cloud-storage")),
         "{refused:?}"
     );
+}
 
-    // The reading says a paused mount is paused.
+/// The reading says a paused mount is paused, and its files mode is the one chosen.
+async fn a_paused_mount_reads_paused(setup: &Setup, cloud: &StandInCloud, id: &str) {
     *cloud.mounts.lock().unwrap() = vec![Mount {
         account: id.to_owned(),
         paused: true,
     }];
-    let reading = reading(&setup).await;
+    let reading = reading(setup).await;
     let account = reading["accounts"]
         .as_array()
         .and_then(|accounts| accounts.iter().find(|account| account["id"] == json!(id)))

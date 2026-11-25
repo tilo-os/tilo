@@ -23,21 +23,27 @@ pub(super) fn at_once(
 ) -> Result<Value, ActionCallError> {
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
-        status => {
-            let store = workspaces
-                .asked_store()
-                .expect("the host keeps one store of the calls that wait");
-            let kept = store
-                .record(&request.invocation.0.to_string())
-                .and_then(|at| store.kept_ask(&at))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "the host answers at once or keeps the call for its person, not {status:?}"
-                    )
-                });
-            Err(ActionCallError::ConfirmationRequired(Box::new(kept.facts)))
-        }
+        status => Err(kept_asking(workspaces, request, &status)),
     }
+}
+
+/// What the host kept of `request` for its person, as the answer that awaits them: a receipt
+/// that neither completed nor waits is a host breaking its one rule.
+fn kept_asking(
+    workspaces: &Workspaces,
+    request: &InvokeRequest,
+    status: &ReceiptStatus,
+) -> ActionCallError {
+    let store = workspaces
+        .asked_store()
+        .expect("the host keeps one store of the calls that wait");
+    let kept = store
+        .record(&request.invocation.0.to_string())
+        .and_then(|at| store.kept_ask(&at))
+        .unwrap_or_else(|| {
+            panic!("the host answers at once or keeps the call for its person, not {status:?}")
+        });
+    ActionCallError::ConfirmationRequired(Box::new(kept.facts))
 }
 
 /// `request`, which `caller` made over `page` and which waits in its asked record, answered

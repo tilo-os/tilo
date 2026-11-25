@@ -900,10 +900,8 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let args = Args::of(&request.argument)?;
-        let asked =
-            administered_request(&args.0).map_err(|error| ActionCallError::InvalidRequest {
-                reason: error,
-            })?;
+        let asked = administered_request(&args.0)
+            .map_err(|error| ActionCallError::InvalidRequest { reason: error })?;
         let reply = self.answer_administration(device, caller, asked).await;
         administered_answer(&reply).map_err(|reason| ActionCallError::Refused { reason })
     }
@@ -1281,22 +1279,13 @@ impl Workspaces {
                 .enter_host_persons(device, name, moving, request_id, expiry(now, seconds))
                 .await;
         };
-        // A grant for one workspace enters that one, already made: it makes no other.
+        // A grant for one workspace enters that one, already made: it makes no other, and labels
+        // none, labels being its person's for their programs.
         let makes = device
             .capabilities
             .agent
             .is_none_or(|scope| scope.makes_workspaces());
-        // Nor does it label one: labels are its person's, for their programs.
-        if !makes
-            && (name.is_some()
-                || labels.is_some()
-                || !moving.is_some_and(|workspace| {
-                    device
-                        .capabilities
-                        .agent
-                        .is_some_and(|scope| scope.reaches(workspace))
-                }))
-        {
+        if !makes && Self::a_grant_asks_for_more(device, (name, moving), labels.as_ref()) {
             return Err(ActionCallError::refused(
                 AdminRefusal::NotYourOwn.to_reason(),
             ));
@@ -1304,13 +1293,7 @@ impl Workspaces {
         // A backend that keeps a workspace per customer labels each with its own id for that
         // customer: asking again with the same labels when a call is retried answers the
         // workspace labelled so, not another one beside it.
-        if moving.is_none()
-            && name.is_some()
-            && let Some(labels) = labels.as_ref().filter(|labels| !labels.is_empty())
-            && let Some(existing) = own
-                .of(&person)
-                .into_iter()
-                .find(|workspace| self.labels_of(workspace) == *labels)
+        if let Some(existing) = self.own_labelled_for(person, (name, moving), labels.as_ref(), own)
         {
             let summary = self
                 .summary(&existing)
@@ -1331,20 +1314,10 @@ impl Workspaces {
         // and a person's own workspace asked for by no name (two of their
         // devices asking at once get one). A named new workspace has a fresh
         // identity of its own, so a backend's hundreds are made side by side.
-        let making = match (moving, name) {
-            (Some(workspace), _) => Some(own.making(workspace.to_owned()).await),
-            (None, None) => Some(own.making(hex::encode(person)).await),
-            (None, Some(_)) => None,
-        };
+        let making = Self::own_making(own, (moving, name), person).await;
         let theirs = moving.filter(|moving| own.is_of(&person, moving));
         // A key the workspace keeps as revoked is told so, and invited no more.
-        if device.capabilities.agent.is_some()
-            && let Some(moving) = moving
-        {
-            self.refuse_revoked_key(moving, device)
-                .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        }
+        self.refuse_revoked_agent_key(device, moving).await?;
         let summary = if let Some(moving) = theirs {
             // One of theirs: a device of theirs entering it, or a grant's
             // parent asking for the invitation into it.
@@ -1392,18 +1365,11 @@ impl Workspaces {
                 AdminRefusal::NotYourOwn.to_reason(),
             ));
         } else {
-            // Another one, for a person the site let in ([`Self::check_account`]):
-            // there is no bound on how many a person keeps, and one they did
+            // Another one, for a person the site let in ([`Self::check_account`]): one they did
             // not name is named in their language. The person's own workspace and the entry in
             // their list are their own device's to write: this host founds and writes neither.
-            let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
-            let summary = self
-                .create_for(&name, moving, person)
-                .await
-                .map_err(ActionCallError::refused)?;
-            own.record(&person, &summary.workspace)
-                .map_err(ActionCallError::refused)?;
-            summary
+            self.make_own_workspace(person, (name, moving, language), own)
+                .await?
         };
         if let Some(labels) = labels {
             self.label(&summary.workspace, &labels)
@@ -1418,6 +1384,72 @@ impl Workspaces {
             expiry(now, seconds),
         )
         .await
+    }
+
+    /// The wait that makes a workspace two asks at once would make one by the name the ask gives,
+    /// or by its person where it names none; a named new workspace is fresh, so it waits for none.
+    async fn own_making(
+        own: &crate::workspaces::own::OwnWorkspaces,
+        (moving, name): (Option<&str>, Option<&str>),
+        person: [u8; 32],
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        match (moving, name) {
+            (Some(workspace), _) => Some(own.making(workspace.to_owned()).await),
+            (None, None) => Some(own.making(hex::encode(person)).await),
+            (None, Some(_)) => None,
+        }
+    }
+
+    /// A key the workspace keeps as revoked is told so, and invited no more.
+    async fn refuse_revoked_agent_key(
+        &self,
+        device: &DeviceCert,
+        moving: Option<&str>,
+    ) -> Result<(), ActionCallError> {
+        if device.capabilities.agent.is_some()
+            && let Some(moving) = moving
+        {
+            self.refuse_revoked_key(moving, device)
+                .await
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// `person`'s new workspace, made under `name` or the one its language names, and recorded
+    /// as theirs: their own device writes the entry in their list.
+    async fn make_own_workspace(
+        &self,
+        person: [u8; 32],
+        (name, moving, language): (Option<&str>, Option<&str>, Option<&str>),
+        own: &crate::workspaces::own::OwnWorkspaces,
+    ) -> Result<WorkspaceSummary, ActionCallError> {
+        let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
+        let summary = self
+            .create_for(&name, moving, person)
+            .await
+            .map_err(ActionCallError::refused)?;
+        own.record(&person, &summary.workspace)
+            .map_err(ActionCallError::refused)?;
+        Ok(summary)
+    }
+
+    /// The workspace `person` already has under exactly `labels`, which an ask naming no
+    /// workspace and retried with the same labels answers rather than making another.
+    fn own_labelled_for(
+        &self,
+        person: [u8; 32],
+        (name, moving): (Option<&str>, Option<&str>),
+        labels: Option<&WorkspaceLabels>,
+        own: &crate::workspaces::own::OwnWorkspaces,
+    ) -> Option<String> {
+        if moving.is_some() || name.is_none() {
+            return None;
+        }
+        let labels = labels.filter(|labels| !labels.is_empty())?;
+        own.of(&person)
+            .into_iter()
+            .find(|workspace| self.labels_of(workspace) == *labels)
     }
 
     /// Invite the host's own person (`device` is theirs) into the workspace
@@ -1453,6 +1485,23 @@ impl Workspaces {
             expires_at_ns,
         )
         .await
+    }
+
+    /// Whether `device`'s grant, which reaches one workspace already made, is asked for more
+    /// than that: a name, a label, or a workspace it does not reach.
+    fn a_grant_asks_for_more(
+        device: &DeviceCert,
+        (name, moving): (Option<&str>, Option<&str>),
+        labels: Option<&WorkspaceLabels>,
+    ) -> bool {
+        name.is_some()
+            || labels.is_some()
+            || !moving.is_some_and(|workspace| {
+                device
+                    .capabilities
+                    .agent
+                    .is_some_and(|scope| scope.reaches(workspace))
+            })
     }
 
     /// The role `person` holds in `workspace` now, a member it has not

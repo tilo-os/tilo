@@ -401,6 +401,9 @@ fn account_params() -> Vec<ActionParam> {
 
 #[cfg(test)]
 mod surface_tests {
+    use tilo_actions::field_type::{FieldType, NamedType, TypeCase, TypeField};
+    use tilo_actions::surface::{FieldSurface, Surface};
+
     use super::*;
 
     /// A workspace's accounts as a view of another language reads and changes them
@@ -409,10 +412,38 @@ mod surface_tests {
     /// a host loads the package from; `UPDATE_SNAPSHOTS=1` writes it from this one source.
     #[must_use]
     pub fn surface() -> tilo_actions::surface::Surface {
-        use tilo_actions::field_type::{FieldType, NamedType, TypeCase, TypeField};
-        use tilo_actions::surface::{FieldSurface, Surface};
+        Surface {
+            kind: "accounts".to_owned(),
+            label: "Connected accounts".to_owned(),
+            version: 1,
+            person: false,
+            readers: None,
+            verbs: VERBS.iter().map(verb_surface).collect(),
+            fields: vec![reading(
+                "accounts",
+                list(named("AccountView".to_owned())),
+                "The accounts the workspace connected, in the record's order.",
+            )],
+            types: vec![
+                account_view(),
+                mail_sign_in(),
+                signed_in_account(),
+                mail_sign_ins(),
+                calendar_view(),
+                account_services(),
+                sign_in_step(),
+                account_kind(),
+                account_status(),
+            ],
+            shows: Vec::new(),
+            live: None,
+            setters: false,
+        }
+    }
 
-        let reading = |path: &str, ty: FieldType, title: &str| FieldSurface {
+    /// A reading of the surface: its path, type and title.
+    fn reading(path: &str, ty: FieldType, title: &str) -> FieldSurface {
+        FieldSurface {
             path: path.to_owned(),
             owner: String::new(),
             title: title.to_owned(),
@@ -423,10 +454,19 @@ mod surface_tests {
             label: false,
             whole: false,
             ops: None,
-        };
-        let named = FieldType::Named;
-        let list = |ty: FieldType| FieldType::List(Box::new(ty));
-        let record = |name: &str, doc: &str, fields: &[(&str, FieldType, &str)]| NamedType {
+        }
+    }
+
+    fn named(name: String) -> FieldType {
+        FieldType::Named(name)
+    }
+
+    fn list(ty: FieldType) -> FieldType {
+        FieldType::List(Box::new(ty))
+    }
+
+    fn record(name: &str, doc: &str, fields: &[(&str, FieldType, &str)]) -> NamedType {
+        NamedType {
             name: name.to_owned(),
             doc: doc.to_owned(),
             fields: fields
@@ -438,9 +478,12 @@ mod surface_tests {
                 })
                 .collect(),
             cases: Vec::new(),
-        };
-        // One case per value the reading serialises the kind as.
-        let kind = NamedType {
+        }
+    }
+
+    /// The kind of service an account is, one case per value the reading serialises.
+    fn account_kind() -> NamedType {
+        NamedType {
             name: "AccountKind".to_owned(),
             doc: "The kind of service an account is.".to_owned(),
             fields: Vec::new(),
@@ -457,9 +500,12 @@ mod surface_tests {
                     fields: Vec::new(),
                 })
                 .collect(),
-        };
-        // One case per value the reading serialises the sync status as.
-        let status = NamedType {
+        }
+    }
+
+    /// How an account's last sync went, one case per value the reading serialises.
+    fn account_status() -> NamedType {
+        NamedType {
             name: "AccountStatus".to_owned(),
             doc: "How an account's last sync went, as its row says.".to_owned(),
             fields: Vec::new(),
@@ -478,223 +524,231 @@ mod surface_tests {
                 fields: Vec::new(),
             })
             .collect(),
-        };
-        Surface {
-            kind: "accounts".to_owned(),
-            label: "Connected accounts".to_owned(),
-            version: 1,
-            person: false,
-            readers: None,
-            verbs: VERBS.iter().map(verb_surface).collect(),
-            fields: vec![reading(
-                "accounts",
-                list(named("AccountView".to_owned())),
-                "The accounts the workspace connected, in the record's order.",
-            )],
-            types: vec![
-                record(
-                    "AccountView",
-                    "One account the workspace connected, without its secret.",
-                    &[
-                        (
-                            "id",
-                            FieldType::Text,
-                            "The account's id, as every action names it.",
-                        ),
-                        (
-                            "kind",
-                            named("AccountKind".to_owned()),
-                            "The kind of service it is.",
-                        ),
-                        ("name", FieldType::Text, "What its person calls it."),
-                        (
-                            "address",
-                            FieldType::Text,
-                            "The address or name it signs in at.",
-                        ),
-                        ("username", FieldType::Text, "The name it signs in with."),
-                        ("provider", FieldType::Text, "The provider it belongs to."),
-                        (
-                            "status",
-                            named("AccountStatus".to_owned()),
-                            "How its last sync went.",
-                        ),
-                        (
-                            "words",
-                            FieldType::Text,
-                            "What a person reads about that, as its device said it.",
-                        ),
-                        ("enabled", FieldType::Bool, "Whether the account is in use."),
-                        (
-                            "incoming",
-                            FieldType::Text,
-                            "A mail account's incoming server as a person writes it.",
-                        ),
-                        (
-                            "outgoing",
-                            FieldType::Text,
-                            "Its outgoing server as a person writes it.",
-                        ),
-                        (
-                            "identities",
-                            list(FieldType::Text),
-                            "The other addresses it sends as, each `Name <address>`.",
-                        ),
-                        (
-                            "calendars",
-                            list(named("CalendarView".to_owned())),
-                            "A calendar account's calendars and which of them show.",
-                        ),
-                        (
-                            "services",
-                            named("AccountServices".to_owned()),
-                            "Which of its services the account feeds.",
-                        ),
-                        (
-                            "files_mode",
-                            FieldType::Text,
-                            "A cloud-storage account's files: `sync` kept in sync, `import` \
-                             copied into the workspace once.",
-                        ),
-                        (
-                            "paused",
-                            FieldType::Bool,
-                            "Whether its background sync and uploads are paused.",
-                        ),
-                    ],
-                ),
-                record(
-                    "MailSignIn",
-                    "A login of the workspace's vault that belongs to a mail server.",
-                    &[
-                        (
-                            "id",
-                            FieldType::Text,
-                            "Its reference, as adding an account from it names it.",
-                        ),
-                        ("title", FieldType::Text, "What Passwords shows it as."),
-                        ("username", FieldType::Text, "The name it signs in with."),
-                        (
-                            "places",
-                            list(FieldType::Text),
-                            "The places it belongs to, each `imap://…`, `smtp://…` or a                              server's origin.",
-                        ),
-                        (
-                            "account",
-                            named("SignedInAccount".to_owned()),
-                            "The workspace's account it signs in for, where it keeps one.",
-                        ),
-                    ],
-                ),
-                record(
-                    "SignedInAccount",
-                    "An account of the workspace's that has a sign-in: where it signs in, never                      what it signs in with.",
-                    &[
-                        ("id", FieldType::Text, "The account's id."),
-                        ("kind", FieldType::Text, "The kind of account it is."),
-                        ("name", FieldType::Text, "What its person calls it."),
-                        (
-                            "address",
-                            FieldType::Text,
-                            "The address or name it signs in at.",
-                        ),
-                        (
-                            "server",
-                            FieldType::Text,
-                            "The server it signs in to, empty where its settings name none.",
-                        ),
-                        (
-                            "read_only",
-                            FieldType::Bool,
-                            "Whether nothing is ever written to its server.",
-                        ),
-                        ("enabled", FieldType::Bool, "Whether the account is in use."),
-                        (
-                            "settings",
-                            FieldType::Json,
-                            "The account's settings an app that signs in reads: its servers, its \
-                             ports and the name it signs in as, and the vault entry that keeps \
-                             its secret.",
-                        ),
-                    ],
-                ),
-                record(
-                    "MailSignIns",
-                    "The logins the workspace's vault keeps.",
-                    &[(
-                        "sign_ins",
-                        list(named("MailSignIn".to_owned())),
-                        "Each by its reference, its name and the places it belongs to.",
-                    )],
-                ),
-                record(
-                    "CalendarView",
-                    "One of a calendar account's calendars.",
-                    &[
-                        (
-                            "id",
-                            FieldType::Text,
-                            "Its id, as its server keeps it and the selection names it.",
-                        ),
-                        ("name", FieldType::Text, "What its server calls it."),
-                        (
-                            "visible",
-                            FieldType::Bool,
-                            "Whether its events show in the calendar.",
-                        ),
-                        (
-                            "read_only",
-                            FieldType::Bool,
-                            "Whether its server lets this workspace change it.",
-                        ),
-                    ],
-                ),
-                record(
-                    "AccountServices",
-                    "Which of one account's services its person uses.",
-                    &[
-                        ("mail", FieldType::Bool, "Whether its mail shows in Mail."),
-                        (
-                            "calendar",
-                            FieldType::Bool,
-                            "Whether its calendars show in Calendar.",
-                        ),
-                        (
-                            "files",
-                            FieldType::Bool,
-                            "Whether its files mount in Files.",
-                        ),
-                    ],
-                ),
-                record(
-                    "SignInStep",
-                    "Where a sign-in goes, and what it waits for.",
-                    &[
-                        (
-                            "id",
-                            FieldType::Text,
-                            "The sign-in's id, as finishing or stopping it names it.",
-                        ),
-                        (
-                            "open",
-                            FieldType::Text,
-                            "The provider's page to open in the browser.",
-                        ),
-                        (
-                            "code",
-                            FieldType::Text,
-                            "What it waits for beyond the browser: a verification code, or the \
-                             code a provider showed. Empty when it needs none.",
-                        ),
-                    ],
-                ),
-                kind,
-                status,
-            ],
-            shows: Vec::new(),
-            live: None,
-            setters: false,
         }
+    }
+
+    /// The account the reading holds, without its secret.
+    fn account_view() -> NamedType {
+        record(
+            "AccountView",
+            "One account the workspace connected, without its secret.",
+            &[
+                (
+                    "id",
+                    FieldType::Text,
+                    "The account's id, as every action names it.",
+                ),
+                (
+                    "kind",
+                    named("AccountKind".to_owned()),
+                    "The kind of service it is.",
+                ),
+                ("name", FieldType::Text, "What its person calls it."),
+                (
+                    "address",
+                    FieldType::Text,
+                    "The address or name it signs in at.",
+                ),
+                ("username", FieldType::Text, "The name it signs in with."),
+                ("provider", FieldType::Text, "The provider it belongs to."),
+                (
+                    "status",
+                    named("AccountStatus".to_owned()),
+                    "How its last sync went.",
+                ),
+                (
+                    "words",
+                    FieldType::Text,
+                    "What a person reads about that, as its device said it.",
+                ),
+                ("enabled", FieldType::Bool, "Whether the account is in use."),
+                (
+                    "incoming",
+                    FieldType::Text,
+                    "A mail account's incoming server as a person writes it.",
+                ),
+                (
+                    "outgoing",
+                    FieldType::Text,
+                    "Its outgoing server as a person writes it.",
+                ),
+                (
+                    "identities",
+                    list(FieldType::Text),
+                    "The other addresses it sends as, each `Name <address>`.",
+                ),
+                (
+                    "calendars",
+                    list(named("CalendarView".to_owned())),
+                    "A calendar account's calendars and which of them show.",
+                ),
+                (
+                    "services",
+                    named("AccountServices".to_owned()),
+                    "Which of its services the account feeds.",
+                ),
+                (
+                    "files_mode",
+                    FieldType::Text,
+                    "A cloud-storage account's files: `sync` kept in sync, `import` \
+                     copied into the workspace once.",
+                ),
+                (
+                    "paused",
+                    FieldType::Bool,
+                    "Whether its background sync and uploads are paused.",
+                ),
+            ],
+        )
+    }
+
+    /// A login of the vault that belongs to a mail server.
+    fn mail_sign_in() -> NamedType {
+        record(
+            "MailSignIn",
+            "A login of the workspace's vault that belongs to a mail server.",
+            &[
+                (
+                    "id",
+                    FieldType::Text,
+                    "Its reference, as adding an account from it names it.",
+                ),
+                ("title", FieldType::Text, "What Passwords shows it as."),
+                ("username", FieldType::Text, "The name it signs in with."),
+                (
+                    "places",
+                    list(FieldType::Text),
+                    "The places it belongs to, each `imap://…`, `smtp://…` or a                              server's origin.",
+                ),
+                (
+                    "account",
+                    named("SignedInAccount".to_owned()),
+                    "The workspace's account it signs in for, where it keeps one.",
+                ),
+            ],
+        )
+    }
+
+    /// An account of the workspace that has a sign-in.
+    fn signed_in_account() -> NamedType {
+        record(
+            "SignedInAccount",
+            "An account of the workspace's that has a sign-in: where it signs in, never                      what it signs in with.",
+            &[
+                ("id", FieldType::Text, "The account's id."),
+                ("kind", FieldType::Text, "The kind of account it is."),
+                ("name", FieldType::Text, "What its person calls it."),
+                (
+                    "address",
+                    FieldType::Text,
+                    "The address or name it signs in at.",
+                ),
+                (
+                    "server",
+                    FieldType::Text,
+                    "The server it signs in to, empty where its settings name none.",
+                ),
+                (
+                    "read_only",
+                    FieldType::Bool,
+                    "Whether nothing is ever written to its server.",
+                ),
+                ("enabled", FieldType::Bool, "Whether the account is in use."),
+                (
+                    "settings",
+                    FieldType::Json,
+                    "The account's settings an app that signs in reads: its servers, its \
+                     ports and the name it signs in as, and the vault entry that keeps \
+                     its secret.",
+                ),
+            ],
+        )
+    }
+
+    /// The logins the vault keeps.
+    fn mail_sign_ins() -> NamedType {
+        record(
+            "MailSignIns",
+            "The logins the workspace's vault keeps.",
+            &[(
+                "sign_ins",
+                list(named("MailSignIn".to_owned())),
+                "Each by its reference, its name and the places it belongs to.",
+            )],
+        )
+    }
+
+    /// One of a calendar account's calendars.
+    fn calendar_view() -> NamedType {
+        record(
+            "CalendarView",
+            "One of a calendar account's calendars.",
+            &[
+                (
+                    "id",
+                    FieldType::Text,
+                    "Its id, as its server keeps it and the selection names it.",
+                ),
+                ("name", FieldType::Text, "What its server calls it."),
+                (
+                    "visible",
+                    FieldType::Bool,
+                    "Whether its events show in the calendar.",
+                ),
+                (
+                    "read_only",
+                    FieldType::Bool,
+                    "Whether its server lets this workspace change it.",
+                ),
+            ],
+        )
+    }
+
+    /// Which of one account's services its person uses.
+    fn account_services() -> NamedType {
+        record(
+            "AccountServices",
+            "Which of one account's services its person uses.",
+            &[
+                ("mail", FieldType::Bool, "Whether its mail shows in Mail."),
+                (
+                    "calendar",
+                    FieldType::Bool,
+                    "Whether its calendars show in Calendar.",
+                ),
+                (
+                    "files",
+                    FieldType::Bool,
+                    "Whether its files mount in Files.",
+                ),
+            ],
+        )
+    }
+
+    /// Where a sign-in goes, and what it waits for.
+    fn sign_in_step() -> NamedType {
+        record(
+            "SignInStep",
+            "Where a sign-in goes, and what it waits for.",
+            &[
+                (
+                    "id",
+                    FieldType::Text,
+                    "The sign-in's id, as finishing or stopping it names it.",
+                ),
+                (
+                    "open",
+                    FieldType::Text,
+                    "The provider's page to open in the browser.",
+                ),
+                (
+                    "code",
+                    FieldType::Text,
+                    "What it waits for beyond the browser: a verification code, or the \
+                     code a provider showed. Empty when it needs none.",
+                ),
+            ],
+        )
     }
 
     /// One verb as a view of another language calls it: its verb, what it takes and what it is
@@ -713,7 +767,7 @@ mod surface_tests {
                     (ParamType::Number, _) => FieldType::Float,
                     (ParamType::Boolean, _) => FieldType::Bool,
                     (ParamType::Array, _) => FieldType::List(Box::new(FieldType::Text)),
-                    (ParamType::Object, _) | (ParamType::Resource, _) => FieldType::Any,
+                    (ParamType::Object | ParamType::Resource, _) => FieldType::Any,
                 };
                 ParamSurface {
                     name: param.name.into_owned(),

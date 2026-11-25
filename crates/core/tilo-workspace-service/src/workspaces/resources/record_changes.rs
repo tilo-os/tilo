@@ -194,6 +194,7 @@ impl Workspaces {
         for (app, kind) in self.inner.host.surfaces.kinds() {
             records.extend(store.ids_of(&kind).map(|id| (app.clone(), id.to_owned())));
         }
+        drop(store);
         Ok(records)
     }
 
@@ -335,6 +336,7 @@ impl Workspaces {
                 )?),
                 None => None,
             };
+            drop(store);
             (writes, action)
         };
         self.keep_writes(governed, device, app, writes, action)
@@ -411,9 +413,40 @@ impl Workspaces {
             .workspace(to)
             .await
             .map_err(|error| error.to_string())?;
-        let mut governed = std::sync::Arc::clone(&destination).lock_owned().await;
+        // Both sides admit their change: keep the arrival, then the departure.
+        self.keep_arrival(
+            std::sync::Arc::clone(&destination).lock_owned().await,
+            (caller, author),
+            (app, &kind),
+            (target, to),
+            (stamp, std::sync::Arc::clone(&device)),
+        )
+        .await?;
+        self.keep_filling(
+            std::sync::Arc::clone(&destination).lock_owned().await,
+            (app, &kind),
+            (target, std::sync::Arc::clone(&device)),
+            content,
+        )
+        .await?;
+        let departing = std::sync::Arc::clone(&source).lock_owned().await;
+        self.keep_writes(departing, device, app, removal, None)
+            .await
+            .map(drop)
+    }
+
+    /// Keep the record `kind` of `app` arriving in `to` as `target`, in `governed`'s
+    /// destination: drafted there, then kept as `device`'s write once `to` admits it.
+    async fn keep_arrival(
+        &self,
+        mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        (caller, author): (&tilo_actions::remote::Caller, [u8; 32]),
+        (app, kind): (&str, &str),
+        (target, to): (&str, &str),
+        (stamp, device): (Stamp, std::sync::Arc<crate::workspaces::MemberDevice>),
+    ) -> Result<(), String> {
         let founding = Command::Put {
-            kind: kind.clone(),
+            kind: kind.to_owned(),
             id: target.to_owned(),
             resource: Resource {
                 readers: collab_types::EVERY_MEMBER.to_owned(),
@@ -426,27 +459,27 @@ impl Workspaces {
         let founding =
             tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
                 .map_err(|refused| refused.error.to_string())?;
-        self.would_keep(&mut governed, (caller, author), (app, &kind), &founding)
+        self.would_keep(&mut governed, (caller, author), (app, kind), &founding)
             .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
+        self.keep_writes(governed, device, app, founding, None)
+            .await
+            .map(drop)
+    }
 
-        // Both sides admit their change: keep the arrival, then the departure.
-        self.keep_writes(
-            governed,
-            std::sync::Arc::clone(&device),
-            app,
-            founding,
-            None,
-        )
-        .await?;
-        let mut governed = std::sync::Arc::clone(&destination).lock_owned().await;
+    /// Keep `content`, what the record holds now, in `destination` at `target` as `app`'s
+    /// write of `device`.
+    async fn keep_filling(
+        &self,
+        mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        (app, kind): (&str, &str),
+        (target, device): (&str, std::sync::Arc<crate::workspaces::MemberDevice>),
+        content: Vec<AmChange>,
+    ) -> Result<(), String> {
         let filled = self
             .store_of(&mut governed)
-            .content_writes(&kind, target, content)
+            .content_writes(kind, target, content)
             .map_err(|error| error.to_string())?;
-        self.keep_writes(governed, std::sync::Arc::clone(&device), app, filled, None)
-            .await?;
-        let governed = std::sync::Arc::clone(&source).lock_owned().await;
-        self.keep_writes(governed, device, app, removal, None)
+        self.keep_writes(governed, device, app, filled, None)
             .await
             .map(drop)
     }
@@ -514,7 +547,10 @@ mod tests {
                 state = state
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
-                char::from(LETTERS[usize::try_from(state >> 58).unwrap()])
+                let Some(letter) = LETTERS.get(usize::try_from(state >> 58).unwrap()) else {
+                    unreachable!("six bits name one of the sixty-four letters");
+                };
+                char::from(*letter)
             })
             .collect()
     }
@@ -566,7 +602,11 @@ mod tests {
             cluster_id: workspace.clone(),
             document: String::new(),
         };
-        workspaces.own_route_keys(&route, true).await.unwrap().unwrap();
+        workspaces
+            .own_route_keys(&route, true)
+            .await
+            .unwrap()
+            .unwrap();
         workspace
     }
 
@@ -1051,9 +1091,12 @@ mod tests {
         let mut store = workspaces.store_of(&mut governed);
         store.index().get(NOTE, record)?;
         let doc = store.content_document(NOTE, record).unwrap()?;
-        doc.get(automerge::ROOT, "title")
+        let title = doc
+            .get(automerge::ROOT, "title")
             .unwrap()
-            .and_then(|(value, _)| value.into_string().ok())
+            .and_then(|(value, _)| value.into_string().ok());
+        drop(store);
+        title
     }
 
     /// The person's agent `scout`, as it calls from `workspace`: its certificate chain says
@@ -1183,10 +1226,12 @@ mod tests {
         let Some((_, items)) = doc.get(automerge::ROOT, "items").unwrap() else {
             return Vec::new();
         };
-        (0..doc.length(&items))
+        let kept = (0..doc.length(&items))
             .filter_map(|at| doc.get(&items, at).unwrap())
             .filter_map(|(value, _)| value.into_string().ok())
-            .collect()
+            .collect();
+        drop(store);
+        kept
     }
 
     /// The founding every holder derives of the note `record`: its `items` list.
@@ -1202,9 +1247,10 @@ mod tests {
     /// A device's first item of `record`, written on the derived founding as `writer` types it.
     fn first_item(record: &str, writer: &str, item: &str, by: &Actor) -> Vec<u8> {
         use automerge::ReadDoc as _;
+        use tilo_automerge::ApplyIncoming as _;
         let mut note =
             automerge::AutoCommit::new().with_actor(automerge::ActorId::from(writer.as_bytes()));
-        note.apply_changes([derived(record)]).unwrap();
+        note.apply_incoming([derived(record)]).unwrap();
         let (_, items) = note.get(automerge::ROOT, "items").unwrap().unwrap();
         note.insert(&items, 0, item).unwrap();
         commit(&mut note, &typed_by(by));

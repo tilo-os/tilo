@@ -1221,10 +1221,6 @@ async fn a_linked_write_wakes_the_write_watch_once() {
 /// comes back to its own: each linked device hears each of the writer's writes once, live, and
 /// the writer hears none of its own, all sealed as their authors wrote them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: both directions, the echo check and the cleanup"
-)]
 async fn a_write_reaches_every_member_once() {
     const WRITES: u64 = 6;
     let (lounge, mut writer) = lounge_with_link().await;

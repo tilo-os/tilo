@@ -686,6 +686,157 @@ fn unblocked_user(user: &[u8; 32]) -> tilo_resource::Invoke<crate::workspaces::b
     crate::workspaces::blocked::Blocked::UNBLOCK_USER.with(hex::encode(user))
 }
 
+/// Wait until the host holds no ended link to any of `devices`, as lifting a block finds it.
+async fn until_no_links_remain(
+    host: &tilo_peer_state::direct::DirectSync,
+    devices: [[u8; 32]; 2],
+    message: &str,
+) {
+    tilo_test_env::within(message, async {
+        while devices
+            .into_iter()
+            .any(|device| host.ended_link(device).is_some())
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+/// The blocked device's next dial is refused before it listens.
+async fn a_blocked_devices_next_dial_is_refused(
+    (server, workspaces): (&TestHost, &Workspaces),
+    workspace_id: WorkspaceId,
+    (guest, guest_key): (&DeviceCert, &SigningKey),
+    host_cert: &DeviceCert,
+) {
+    let (again, _link, dialed) = dialed(
+        server,
+        workspaces,
+        workspace_id,
+        guest,
+        guest_key,
+        host_cert,
+        guest_key.verifying_key().to_bytes(),
+    )
+    .await;
+    assert!(
+        dialed.is_err(),
+        "the host refuses the blocked device's dial"
+    );
+    again.close().await;
+}
+
+/// A second device of the guest's person, certified by their root, admitted to the workspace and
+/// dialling it: the device and the link it keeps running.
+async fn a_second_device_dialling(
+    (server, workspaces): (&TestHost, &Workspaces),
+    (workspace, workspace_id): (&str, WorkspaceId),
+    (owner, root): (&DeviceCert, &SigningKey),
+) -> (
+    DeviceCert,
+    Arc<Dialer>,
+    tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
+) {
+    let (second, second_key) =
+        admitted_guest(workspaces, workspace, owner, (root, true), "guest-2").await;
+    let (endpoint, link) = dialled_and_running(
+        server,
+        workspaces,
+        workspace_id,
+        &second,
+        &second_key,
+        owner,
+    )
+    .await;
+    (second, endpoint, link)
+}
+
+/// The operator blocks `device`: the record of their own workspace says so, the host re-checks
+/// what admission reads, and the link ends refused as this host's, not left running.
+async fn blocking_the_device_ends_its_link(
+    workspaces: &Workspaces,
+    host: &tilo_peer_state::direct::DirectSync,
+    device: [u8; 32],
+    (endpoint, link): (
+        Arc<Dialer>,
+        tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
+    ),
+) {
+    workspaces
+        .apply_blocked(blocked_device(&device))
+        .await
+        .expect("the block is written");
+    tilo_test_env::within("the blocked device's link to end", async {
+        while host.ended_link(device).is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let ended = tokio::time::timeout(WAIT, link)
+        .await
+        .expect("the blocked device's link ends")
+        .expect("its task ends with it");
+    match ended {
+        Err(tilo_server_protocol::refusal::Refusal::NotAllowed(reason)) => assert_eq!(
+            reason, "this host refuses this device",
+            "the refusal says the host refuses the device"
+        ),
+        Err(refusal) => panic!("a blocked device's link ends refused: {refusal}"),
+        Ok(()) => panic!("a blocked device's link is ended, not left running"),
+    }
+    endpoint.close().await;
+}
+
+/// Blocking `person` refuses every device of theirs: the host ends each link it holds as this
+/// host's, and each ends refused.
+async fn the_persons_blocked_key_ends_every_device_of_theirs(
+    (workspaces, host): (&Workspaces, &tilo_peer_state::direct::DirectSync),
+    person: &[u8; 32],
+    devices: [[u8; 32]; 2],
+    links: [(
+        &'static str,
+        tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
+    ); 2],
+) {
+    workspaces
+        .apply_blocked(blocked_user(person))
+        .await
+        .expect("the person is blocked");
+    tilo_test_env::within("the person's blocked devices' links to end", async {
+        while devices
+            .into_iter()
+            .any(|device| host.ended_link(device).is_none())
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    for device in devices {
+        assert_eq!(
+            host.ended_link(device),
+            Some(tilo_server_protocol::refusal::Refusal::NotAllowed(
+                "this host refuses this device".into()
+            )),
+            "the person's blocked key ends every device of theirs"
+        );
+    }
+    for (label, link) in links {
+        let ended = tokio::time::timeout(WAIT, link)
+            .await
+            .expect("the person's blocked links end")
+            .expect("its task ends with it");
+        assert!(
+            matches!(
+                &ended,
+                Err(tilo_server_protocol::refusal::Refusal::NotAllowed(reason))
+                    if reason == "this host refuses this device"
+            ),
+            "{label}'s link to a device of the blocked person ends refused: {ended:?}"
+        );
+    }
+}
+
 /// A guest the workspace's membership holds reaches it over the link it dials.
 /// The operator blocks its device: the link ends, refused as this host's, and
 /// the guest's next dial is refused. Lifting the block admits it again. The
@@ -724,46 +875,22 @@ async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it
 
     // The operator blocks the guest's device: the record of their own
     // workspace says so, and the host re-checks what admission reads.
-    workspaces
-        .apply_blocked(blocked_device(&guest.device_public_key))
-        .await
-        .expect("the block is written");
-    tilo_test_env::within("the blocked device's link to end", async {
-        while host.ended_link(guest.device_public_key).is_none() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    let ended = tokio::time::timeout(WAIT, guest_link)
-        .await
-        .expect("the blocked device's link ends")
-        .expect("its task ends with it");
-    match ended {
-        Err(tilo_server_protocol::refusal::Refusal::NotAllowed(reason)) => assert_eq!(
-            reason, "this host refuses this device",
-            "the refusal says the host refuses the device"
-        ),
-        Err(refusal) => panic!("a blocked device's link ends refused: {refusal}"),
-        Ok(()) => panic!("a blocked device's link is ended, not left running"),
-    }
-    guest_endpoint.close().await;
-
-    // Its next dial is refused before it listens.
-    let (again, _link, dialed) = dialed(
-        &server,
+    blocking_the_device_ends_its_link(
         &workspaces,
-        created.workspace_id,
-        &guest,
-        &guest_key,
-        &cert,
-        guest_key.verifying_key().to_bytes(),
+        &host,
+        guest.device_public_key,
+        (guest_endpoint, guest_link),
     )
     .await;
-    assert!(
-        dialed.is_err(),
-        "the host refuses the blocked device's dial"
-    );
-    again.close().await;
+
+    // Its next dial is refused before it listens.
+    a_blocked_devices_next_dial_is_refused(
+        (&server, &workspaces),
+        created.workspace_id,
+        (&guest, &guest_key),
+        &cert,
+    )
+    .await;
 
     // Lifted, the host opens the link to the device again and its next dial is
     // admitted.
@@ -789,59 +916,19 @@ async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it
 
     // The person's key refuses every device of theirs: the guest's own device
     // and a second one their root certified, admitted to the workspace.
-    let (second, second_key) = admitted_guest(
-        &workspaces,
-        &created.workspace,
-        &cert,
-        (&guest_root, true),
-        "guest-2",
+    let (second, second_endpoint, second_link) = a_second_device_dialling(
+        (&server, &workspaces),
+        (&created.workspace, created.workspace_id),
+        (&cert, &guest_root),
     )
     .await;
-    let (second_endpoint, second_link) = dialled_and_running(
-        &server,
-        &workspaces,
-        created.workspace_id,
-        &second,
-        &second_key,
-        &cert,
+    the_persons_blocked_key_ends_every_device_of_theirs(
+        (&workspaces, &host),
+        &guest.user_public_key,
+        [guest.device_public_key, second.device_public_key],
+        [("guest", guest_link), ("guest-2", second_link)],
     )
     .await;
-    workspaces
-        .apply_blocked(blocked_user(&guest.user_public_key))
-        .await
-        .expect("the person is blocked");
-    tilo_test_env::within("the person's blocked devices' links to end", async {
-        while [guest.device_public_key, second.device_public_key]
-            .into_iter()
-            .any(|device| host.ended_link(device).is_none())
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    for device in [guest.device_public_key, second.device_public_key] {
-        assert_eq!(
-            host.ended_link(device),
-            Some(tilo_server_protocol::refusal::Refusal::NotAllowed(
-                "this host refuses this device".into()
-            )),
-            "the person's blocked key ends every device of theirs"
-        );
-    }
-    for (label, link) in [("guest", guest_link), ("guest-2", second_link)] {
-        let ended = tokio::time::timeout(WAIT, link)
-            .await
-            .expect("the person's blocked links end")
-            .expect("its task ends with it");
-        assert!(
-            matches!(
-                &ended,
-                Err(tilo_server_protocol::refusal::Refusal::NotAllowed(reason))
-                    if reason == "this host refuses this device"
-            ),
-            "{label}'s link to a device of the blocked person ends refused: {ended:?}"
-        );
-    }
     guest_endpoint.close().await;
     second_endpoint.close().await;
 
@@ -849,14 +936,11 @@ async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it
         .apply_blocked(unblocked_user(&guest.user_public_key))
         .await
         .expect("the person is admitted again");
-    tilo_test_env::within("the person's links to be opened again", async {
-        while [guest.device_public_key, second.device_public_key]
-            .into_iter()
-            .any(|device| host.ended_link(device).is_some())
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    until_no_links_remain(
+        &host,
+        [guest.device_public_key, second.device_public_key],
+        "the person's links to be opened again",
+    )
     .await;
     let (guest_endpoint, guest_link) = dialled_and_running(
         &server,

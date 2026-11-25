@@ -11,6 +11,7 @@
     reason = "in a test these are the assertion, and each test keeps its host to the end"
 )]
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -226,13 +227,23 @@ async fn a_device_holds_one_key_per_app_and_purpose_answered_to_the_apps_own_pro
     assert!(!asked.is_empty(), "the asks are recorded");
     assert!(asked.iter().all(|recorded| recorded.secret));
     assert!(asked.iter().all(|recorded| {
-        recorded.caller.acting().app().map(std::string::ToString::to_string) == Some(BRIDGE.to_owned())
-            || recorded.caller.acting().app().map(std::string::ToString::to_string) == Some(READER.to_owned())
+        recorded
+            .caller
+            .acting()
+            .app()
+            .map(std::string::ToString::to_string)
+            == Some(BRIDGE.to_owned())
+            || recorded
+                .caller
+                .acting()
+                .app()
+                .map(std::string::ToString::to_string)
+                == Some(READER.to_owned())
     }));
-    let recorded: String = listed
-        .iter()
-        .map(|recorded| format!("{:?}", recorded.state))
-        .collect();
+    let mut recorded = String::new();
+    for record in &listed {
+        write!(recorded, "{:?}", record.state).unwrap();
+    }
     assert!(!recorded.contains(&first.key), "a record holds the key");
     assert!(
         workspaces

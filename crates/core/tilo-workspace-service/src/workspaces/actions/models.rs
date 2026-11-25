@@ -657,7 +657,7 @@ mod surface_tests {
                         FieldType::List(Box::new(FieldType::Named("RequestHeader".to_owned())))
                     }
                     (ParamType::Array, _) => FieldType::List(Box::new(FieldType::Text)),
-                    (ParamType::Object, _) | (ParamType::Resource, _) => FieldType::Any,
+                    (ParamType::Object | ParamType::Resource, _) => FieldType::Any,
                 };
                 ParamSurface {
                     name: param.name.into_owned(),

@@ -74,7 +74,7 @@ pub enum PushEnvironment {
 /// How a device is reached while its app is closed: the push service of
 /// its system, by the token that service gave the app there, or a web push
 /// endpoint the device itself subscribed with (RFC 8030), as a phone's
-/// UnifiedPush distributor gives one.
+/// `UnifiedPush` distributor gives one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PushKind {

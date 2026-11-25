@@ -557,26 +557,7 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
 
     // Every change it would make asks her first: unanswered none is made,
     // and her no refuses it.
-    for (verb, argument) in changes() {
-        let unasked = ask_as(&host, workspace_id, &ada, &agent, (verb, argument.clone())).await;
-        assert!(
-            matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-            "{verb} with nobody to ask through: {unasked:?}"
-        );
-    }
-    let refusing = Answering::declining();
-    for (verb, argument) in changes() {
-        let refused = ask_as(&host, workspace_id, &ada, &agent, (verb, argument)).await;
-        assert!(
-            matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
-            "{verb} she declined: {refused:?}"
-        );
-    }
-    assert_eq!(
-        refusing.asked().len(),
-        changes().len(),
-        "each change asked her"
-    );
+    every_change_asks_her_first(&host, workspace_id, &ada, &agent, &changes()).await;
     let hers = ask_own(&host, workspace_id, &ada, model_providers::LIST, json!({}))
         .await
         .unwrap();
@@ -616,6 +597,37 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
         .unwrap();
     assert_eq!(scripted.asked()[0].key.as_deref(), Some(REPLACED_KEY));
     server.shutdown().await;
+}
+
+/// Every change `agent` would make asks `ada` first: unanswered none is made, and her no
+/// refuses it.
+async fn every_change_asks_her_first(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    ada: &DeviceCert,
+    agent: &Caller,
+    changes: &[(&'static str, Value)],
+) {
+    for (verb, argument) in changes {
+        let unasked = ask_as(host, workspace_id, ada, agent, (verb, argument.clone())).await;
+        assert!(
+            matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+            "{verb} with nobody to ask through: {unasked:?}"
+        );
+    }
+    let refusing = Answering::declining();
+    for (verb, argument) in changes {
+        let refused = ask_as(host, workspace_id, ada, agent, (verb, argument.clone())).await;
+        assert!(
+            matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
+            "{verb} she declined: {refused:?}"
+        );
+    }
+    assert_eq!(
+        refusing.asked().len(),
+        changes.len(),
+        "each change asked her"
+    );
 }
 
 /// A page's window asks the workspace's model through its host: the turn is
@@ -900,61 +912,29 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
             .as_deref(),
         Some(KEPT_KEY)
     );
-    let mut said = Vec::new();
-
-    for (typed, which, why) in [
-        (
-            UNKNOWN_KEY,
-            "a key the provider turns away",
-            "did not accept this key",
-        ),
-        (
-            UNCARRIED_KEY,
-            "a key no request can carry",
-            "did not accept this key",
-        ),
-        (
-            UNANSWERED_KEY,
-            "a key the provider gives no answer about",
-            "could not be asked about this key now",
-        ),
-    ] {
-        let answered = ask_own(
-            &service,
-            workspace_id,
-            &ada,
-            model_providers::SET_KEY,
-            json!({"provider": provider, "key": typed}),
-        )
-        .await;
-        let Err(ActionCallError::Refused { reason }) = &answered else {
-            panic!("{which} was kept: {answered:?}");
-        };
-        assert_eq!(
-            reason,
-            &format!("Stand-in {why}. The key kept before is still in use."),
-            "{which}"
-        );
-        said.push(reason.clone());
-        let hers = ask_own(
-            &service,
-            workspace_id,
-            &ada,
-            model_providers::LIST,
-            json!({}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
-        said.push(hers.to_string());
-        assert_eq!(
-            asked_with(&workspaces, workspace_id, &scripted)
-                .await
-                .as_deref(),
-            Some(KEPT_KEY),
-            "after {which}"
-        );
-    }
+    let mut said = keys_it_does_not_take_are_refused(
+        (&workspaces, (&service, workspace_id, &ada), &scripted),
+        &provider,
+        KEPT_KEY,
+        [
+            (
+                UNKNOWN_KEY,
+                "a key the provider turns away",
+                "did not accept this key",
+            ),
+            (
+                UNCARRIED_KEY,
+                "a key no request can carry",
+                "did not accept this key",
+            ),
+            (
+                UNANSWERED_KEY,
+                "a key the provider gives no answer about",
+                "could not be asked about this key now",
+            ),
+        ],
+    )
+    .await;
 
     // The provider's own list is asked with the kept key still.
     stand_in.drain_requests();
@@ -985,6 +965,54 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
         &said,
         &lines.written(),
     );
+}
+
+/// Each of `rejected` is a key `provider` does not take, refused naming it: the listing still
+/// says a key is kept, and the model is still asked with `kept`. What she was told of each, as
+/// text.
+async fn keys_it_does_not_take_are_refused(
+    (workspaces, (service, workspace_id, ada), scripted): (
+        &Workspaces,
+        (&ServiceWorkspaceActions, WorkspaceId, &DeviceCert),
+        &ScriptedProvider,
+    ),
+    provider: &str,
+    kept: &str,
+    rejected: [(&str, &str, &str); 3],
+) -> Vec<String> {
+    let mut said = Vec::new();
+    for (typed, which, why) in rejected {
+        let answered = ask_own(
+            service,
+            workspace_id,
+            ada,
+            model_providers::SET_KEY,
+            json!({"provider": provider, "key": typed}),
+        )
+        .await;
+        let Err(ActionCallError::Refused { reason }) = &answered else {
+            panic!("{which} was kept: {answered:?}");
+        };
+        assert_eq!(
+            reason,
+            &format!("Stand-in {why}. The key kept before is still in use."),
+            "{which}"
+        );
+        said.push(reason.clone());
+        let hers = ask_own(service, workspace_id, ada, model_providers::LIST, json!({}))
+            .await
+            .unwrap();
+        assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
+        said.push(hers.to_string());
+        assert_eq!(
+            asked_with(workspaces, workspace_id, scripted)
+                .await
+                .as_deref(),
+            Some(kept),
+            "after {which}"
+        );
+    }
+    said
 }
 
 /// A person links a provider and types a first key the provider turns away.

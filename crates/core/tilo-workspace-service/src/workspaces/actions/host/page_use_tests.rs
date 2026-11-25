@@ -41,7 +41,7 @@ async fn kept(
     who: (&DeviceCert, &Caller),
     (kind, place, secret): (&str, &str, &str),
 ) -> ItemRef {
-    let kept = ask(
+    let Ok(kept) = ask(
         service,
         workspace_id,
         who,
@@ -49,8 +49,13 @@ async fn kept(
         json!({"kind": kind, "belongsTo": [place], "secret": secret}),
     )
     .await
-    .expect("the person keeps an item");
-    ItemRef::parse(kept["reference"].as_str().unwrap()).unwrap()
+    else {
+        unreachable!("the person keeps an item");
+    };
+    let Some(reference) = kept.get("reference").and_then(Value::as_str) else {
+        unreachable!("an item kept answers its reference");
+    };
+    ItemRef::parse(reference).unwrap()
 }
 
 /// What `item` remembers, as its person reads it from their own device.
@@ -60,7 +65,7 @@ async fn remembered(
     who: (&DeviceCert, &Caller),
     item: &ItemRef,
 ) -> Value {
-    ask(
+    let Ok(remembers) = ask(
         service,
         workspace_id,
         who,
@@ -68,7 +73,10 @@ async fn remembered(
         json!({"item": item}),
     )
     .await
-    .expect("a person reads what their item remembers")
+    else {
+        unreachable!("a person reads what their item remembers");
+    };
+    remembers
 }
 
 fn fill(site: &str, item: &ItemRef) -> FillPage {

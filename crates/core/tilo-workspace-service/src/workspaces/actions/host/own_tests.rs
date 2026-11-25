@@ -694,10 +694,6 @@ async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them()
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "each scope of grant, from the one that makes none to the one that makes them all"
-)]
 async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspaces() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

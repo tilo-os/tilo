@@ -117,7 +117,7 @@ async fn entry_titled(
     workspace_id: tilo_server_protocol::WorkspaceId,
     ada: &DeviceCert,
     title: &str,
-) -> Option<Value> {
+) -> Result<Option<Value>, ActionCallError> {
     let as_ada = caller(ada);
     let listed = ask(
         service,
@@ -126,18 +126,28 @@ async fn entry_titled(
         person_vault::LIST,
         json!({}),
     )
-    .await
-    .expect("Ada lists the vault");
-    let item = listed["items"]
-        .as_array()
-        .unwrap()
+    .await?;
+    let Some(items) = listed.get("items").and_then(Value::as_array) else {
+        unreachable!("listing the vault answers its items");
+    };
+    let Some(item) = items
         .iter()
-        .find(|item| item["title"] == title)?
-        .clone();
+        .find(|item| item.get("title").and_then(Value::as_str) == Some(title))
+    else {
+        return Ok(None);
+    };
+    let Some(reference) = item.get("reference") else {
+        unreachable!("an item listed carries its reference");
+    };
     let mut shown = serde_json::Map::new();
     let mut parts = vec![("password".to_owned(), "secret".to_owned())];
     parts.push(("notes".to_owned(), "notes".to_owned()));
-    for label in item["fields"].as_array().into_iter().flatten() {
+    for label in item
+        .get("fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let label = label.as_str().unwrap();
         parts.push((format!("field:{label}"), format!("field:{label}")));
     }
@@ -147,21 +157,29 @@ async fn entry_titled(
             workspace_id,
             (ada, &as_ada),
             person_vault::REVEAL,
-            json!({"item": item["reference"], "part": part}),
+            json!({"item": reference, "part": part}),
         )
-        .await
-        .expect("Ada is shown her item");
-        shown.insert(name, value["value"].clone());
+        .await?;
+        let Some(value) = value.get("value") else {
+            unreachable!("a revealed part carries its value");
+        };
+        shown.insert(name, value.clone());
     }
     let fields: serde_json::Map<String, Value> = shown
         .iter()
         .filter_map(|(name, value)| Some((name.strip_prefix("field:")?.to_owned(), value.clone())))
         .collect();
-    Some(json!({
-        "password": shown["password"],
-        "notes": shown["notes"],
+    let Some(password) = shown.get("password") else {
+        unreachable!("every item is shown its password");
+    };
+    let Some(notes) = shown.get("notes") else {
+        unreachable!("every item is shown its notes");
+    };
+    Ok(Some(json!({
+        "password": password,
+        "notes": notes,
         "fields": fields,
-    }))
+    })))
 }
 
 #[tokio::test]
@@ -200,6 +218,7 @@ async fn an_asked_vault_addition_keeps_its_secret_in_memory_alone() {
     .expect("approved, the item is kept");
     let entry = entry_titled(&service, workspace_id, &ada, "Bank")
         .await
+        .expect("the vault lists for Ada")
         .expect("the approved item is kept");
     assert_eq!(entry["password"], SECRET, "{entry}");
     assert_eq!(entry["notes"], NOTE);
@@ -236,6 +255,7 @@ async fn an_asked_vault_addition_keeps_its_secret_in_memory_alone() {
     assert!(
         entry_titled(&service, workspace_id, &ada, "Later")
             .await
+            .expect("the vault lists for Ada")
             .is_none(),
         "nothing is kept without its secret"
     );
@@ -306,7 +326,7 @@ async fn kept_accounts(
     service: &ServiceWorkspaceActions,
     workspace_id: tilo_server_protocol::WorkspaceId,
     ada: &DeviceCert,
-) -> Vec<String> {
+) -> Result<Vec<String>, ActionCallError> {
     use tilo_actions::remote::ActionProvider as _;
     use tilo_actions::remote::person_accounts;
 
@@ -323,19 +343,23 @@ async fn kept_accounts(
         appearance: None,
         signed: None,
     };
-    let receipt = super::super::tests::settled(page.invoke(&caller(ada), request))
-        .await
-        .expect("Ada reads the accounts");
+    let receipt = super::super::tests::settled(page.invoke(&caller(ada), request)).await?;
     let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status else {
         panic!("the host answers at once, not {:?}", receipt.status);
     };
     let listed = output.value.unwrap_or_default();
-    listed["accounts"]
-        .as_array()
-        .unwrap()
+    let Some(accounts) = listed.get("accounts").and_then(Value::as_array) else {
+        unreachable!("listing the accounts answers them");
+    };
+    Ok(accounts
         .iter()
-        .filter_map(|account| account["address"].as_str().map(str::to_owned))
-        .collect()
+        .filter_map(|account| {
+            account
+                .get("address")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect())
 }
 
 /// What an action publishes as secret waits in the device's memory alone, whatever the action:
@@ -407,7 +431,9 @@ async fn an_asked_mail_account_keeps_its_password_in_memory_alone() {
         matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains(SECRET_GONE)),
         "{refused:?}"
     );
-    let kept = kept_accounts(&service, workspace_id, &ada).await;
+    let kept = kept_accounts(&service, workspace_id, &ada)
+        .await
+        .expect("Ada reads the accounts");
     assert!(
         kept.contains(&"ada@lab.example.test".to_owned()),
         "{kept:?}"

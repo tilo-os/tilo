@@ -440,7 +440,7 @@ fn body_of(
             bytes,
         });
     }
-    multipart(&parts)
+    Ok(Some(multipart(&parts)))
 }
 
 /// The bytes `reference` names, from the workspace's store: the one place
@@ -473,7 +473,7 @@ fn media_type(reference: &ContentRef, fallback: &str) -> String {
 
 /// `parts` framed as one multipart body, its boundary one no part's bytes
 /// hold.
-fn multipart(parts: &[SentPart]) -> Result<Option<Sending>, String> {
+fn multipart(parts: &[SentPart]) -> Sending {
     let mut boundary = String::from("tilo-web-call-boundary-7f3c9a");
     while parts.iter().any(|part| {
         part.bytes
@@ -506,10 +506,10 @@ fn multipart(parts: &[SentPart]) -> Result<Option<Sending>, String> {
         bytes.extend_from_slice(b"\r\n");
     }
     bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-    Ok(Some(Sending {
+    Sending {
         content_type: Some(format!("multipart/form-data; boundary={boundary}")),
         bytes,
-    }))
+    }
 }
 
 /// A header that carries the key: its value prints as withheld.
@@ -552,7 +552,7 @@ pub(super) async fn send(
     workspaces: &super::Workspaces,
     workspace: &str,
     call: WebCall,
-    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
+    (by, acting, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
     caller_app: Option<&str>,
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
@@ -562,7 +562,7 @@ pub(super) async fn send(
     let content = |app: &str, hash: &str| workspaces.kept_record_bytes(workspace, app, hash);
     let ready = ready(reach, &mut items, call, by, caller_app, purpose, &content)?;
     workspaces
-        .write_vault(&opened, items.take_changes(), Some(asker), Some(asked))
+        .write_vault(&opened, items.take_changes(), Some(acting), Some(asked))
         .await?;
     deliver(reach, system_lookup(), ready).await
 }
@@ -584,7 +584,7 @@ async fn send_through(
     items: &mut VaultItems,
     call: WebCall,
     calling: Calling<'_>,
-    content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
+    content: &(dyn Fn(&str, &str) -> Option<Vec<u8>> + Sync),
 ) -> Result<Value, String> {
     let ready = ready(
         reach,
@@ -612,23 +612,24 @@ struct Ready {
 /// workspace's store first (`content`), so content it does not keep is refused before the key is
 /// anywhere. The use is written down in `items` with `purpose` and with what this call does
 /// ([`in_a_line`]), whatever `purpose` says of that.
-fn ready(
+fn ready<C: std::borrow::Borrow<WebCall>>(
     reach: Destinations,
     items: &mut VaultItems,
-    call: WebCall,
+    call: C,
     by: &str,
     caller_app: Option<&str>,
     purpose: UsedFor<'_>,
     content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
 ) -> Result<Ready, String> {
-    let mut url = address(&call, reach)?;
-    let method = method(&call)?;
-    let body = body_of(&call, caller_app, content)?;
-    let (item, kind, places) = wanted(&call)?;
+    let call = call.borrow();
+    let mut url = address(call, reach)?;
+    let method = method(call)?;
+    let body = body_of(call, caller_app, content)?;
+    let (item, kind, places) = wanted(call)?;
     // The key leaves the vault last, once nothing else refuses the call,
     // and its use is written down before it is handed out.
     let key_in = items.key_in(&item).map_err(|error| error.to_string())?;
-    let mut sent = headers(&call, &key_in)?;
+    let mut sent = headers(call, &key_in)?;
     rides_alone(&url, &key_in)?;
     // Said before the key is anywhere in the request.
     let what = in_a_line(
@@ -1067,6 +1068,17 @@ mod tests {
         );
 
         // Content this workspace keeps for no app it asks as is refused, and nothing is sent.
+        content_it_does_not_keep_is_refused(&mut items, &call, &keeps).await;
+        assert!(service.drain_requests().is_empty(), "nothing was sent");
+    }
+
+    /// Content this workspace keeps for no app the call asks as is refused before anything is
+    /// sent.
+    async fn content_it_does_not_keep_is_refused(
+        items: &mut VaultItems,
+        call: &WebCall,
+        keeps: &(dyn Fn(&str, &str) -> Option<Vec<u8>> + Sync),
+    ) {
         let mut unkept = call.clone();
         if let Some(part) = unkept.body_parts.get_mut(1)
             && let Some(content) = &mut part.content
@@ -1077,18 +1089,17 @@ mod tests {
         let refused = send_through(
             Destinations::Any,
             lookup,
-            &mut items,
+            items,
             unkept,
             Calling {
                 by: "Scout",
                 app: None,
                 purpose: UsedFor::default(),
             },
-            &keeps,
+            keeps,
         )
         .await;
         assert_eq!(refused, Err(NOT_KEPT.to_owned()));
-        assert!(service.drain_requests().is_empty(), "nothing was sent");
     }
 
     /// What a call sends is bounded by what the workspace's store keeps, not by what one inline

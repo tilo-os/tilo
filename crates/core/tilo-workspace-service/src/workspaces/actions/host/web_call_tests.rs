@@ -212,7 +212,13 @@ pub(super) fn logged() -> (Lines, tracing::subscriber::DefaultGuard) {
 
 /// The item `kept` answered, by its reference.
 fn reference(kept: Result<Value, ActionCallError>) -> Value {
-    kept.expect("the person keeps a key")["reference"].clone()
+    let Ok(kept) = kept else {
+        unreachable!("the person keeps a key");
+    };
+    let Some(reference) = kept.get("reference") else {
+        unreachable!("an item kept answers its reference");
+    };
+    reference.clone()
 }
 
 /// A call waits for its person first and sends nothing. What they are shown names the call

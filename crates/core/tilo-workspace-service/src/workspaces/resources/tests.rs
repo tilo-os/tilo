@@ -45,6 +45,7 @@ fn a_store_a_hard_stop_left_answers_from_its_index() {
                     .put(&kind, &format!("i{part}-{index}"), resource, &stamp)
                     .unwrap();
             }
+            drop(store);
         }
         let doc = format!("*/{kind}#0");
         resources.kept(&doc, &before).unwrap();

@@ -2361,7 +2361,7 @@ async fn last_allowed(
                 .message()
                 .and_then(tilo_actions::ActionContext::from_change_message)
         })
-        .last()
+        .next_back()
         .and_then(|context| context.signed)
         .and_then(|call| call.allowed)
 }

@@ -564,54 +564,15 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
         before + 1
     );
 
-    // The approve answered that call alone. The same invocation sent again answers what it came
-    // to and runs nothing again; the call sent again as another invocation, or another call, is
-    // refused.
-    let resent = invoked(
-        &service,
-        workspace_id,
+    // The approve answered that call alone.
+    an_approve_answers_that_call_alone(
+        (&service, workspace_id),
         her,
-        carrying_approve(adding.clone(), &kept_at),
+        &store,
+        (&kept_at, before),
+        (&adding, &listing),
     )
     .await;
-    assert!(
-        matches!(&resent, Ok(receipt) if receipt.invocation == adding.invocation),
-        "resent: {resent:?}"
-    );
-    let again = invoked(
-        &service,
-        workspace_id,
-        her,
-        carrying_approve(
-            InvokeRequest {
-                invocation: InvocationId::new(),
-                ..adding.clone()
-            },
-            &kept_at,
-        ),
-    )
-    .await;
-    assert!(forged(&again), "replayed: {again:?}");
-    let moved = invoked(
-        &service,
-        workspace_id,
-        her,
-        carrying_approve(keeping("https://moved.test"), &kept_at),
-    )
-    .await;
-    assert!(forged(&moved), "moved: {moved:?}");
-    let onto_mail = invoked(
-        &service,
-        workspace_id,
-        her,
-        carrying_approve(listing.clone(), &kept_at),
-    )
-    .await;
-    assert!(forged(&onto_mail), "moved onto Mail's call: {onto_mail:?}");
-    assert_eq!(
-        logins_unasked(&store, &service, workspace_id, her).await,
-        before + 1
-    );
 
     // Mail's call runs on her approve of its own record.
     resolve(&service, workspace_id, her, &listed_at, Offer::Approve)
@@ -627,6 +588,63 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
     server.shutdown().await;
 }
 
+/// The approve answered that call alone: the same invocation sent again answers what it came
+/// to and runs nothing again, and the call sent again as another invocation, or another call, is
+/// refused.
+async fn an_approve_answers_that_call_alone(
+    (service, workspace_id): (&ServiceWorkspaceActions, WorkspaceId),
+    who: (&DeviceCert, &Caller),
+    store: &AskedStore,
+    (kept_at, before): (&asked::RecordRef, usize),
+    (adding, listing): (&InvokeRequest, &InvokeRequest),
+) {
+    let resent = invoked(
+        service,
+        workspace_id,
+        who,
+        carrying_approve(adding.clone(), kept_at),
+    )
+    .await;
+    assert!(
+        matches!(&resent, Ok(receipt) if receipt.invocation == adding.invocation),
+        "resent: {resent:?}"
+    );
+    let again = invoked(
+        service,
+        workspace_id,
+        who,
+        carrying_approve(
+            InvokeRequest {
+                invocation: InvocationId::new(),
+                ..adding.clone()
+            },
+            kept_at,
+        ),
+    )
+    .await;
+    assert!(forged(&again), "replayed: {again:?}");
+    let moved = invoked(
+        service,
+        workspace_id,
+        who,
+        carrying_approve(keeping("https://moved.test"), kept_at),
+    )
+    .await;
+    assert!(forged(&moved), "moved: {moved:?}");
+    let onto_mail = invoked(
+        service,
+        workspace_id,
+        who,
+        carrying_approve(listing.clone(), kept_at),
+    )
+    .await;
+    assert!(forged(&onto_mail), "moved onto Mail's call: {onto_mail:?}");
+    assert_eq!(
+        logins_unasked(store, service, workspace_id, who).await,
+        before.saturating_add(1)
+    );
+}
+
 /// What `who`'s vault lists, read under the rule that asks them first: the read waits in its
 /// asked record too, and their approve answers it.
 async fn logins_unasked(
@@ -639,19 +657,18 @@ async fn logins_unasked(
     let receipt = invoked(service, workspace_id, who, listing.clone())
         .await
         .unwrap();
-    let output = match receipt.status {
-        ReceiptStatus::Completed { output } => output,
-        _ => {
-            let at = store
-                .record(&listing.invocation.0.to_string())
-                .expect("the read waits in its asked record");
-            resolve(service, workspace_id, who, &at, Offer::Approve)
-                .await
-                .unwrap();
-            match ended(service, workspace_id, who, listing.invocation).await {
-                InvocationUpdate::Succeeded { output, .. } => output,
-                other => panic!("the read ends listed: {other:?}"),
-            }
+    let output = if let ReceiptStatus::Completed { output } = receipt.status {
+        output
+    } else {
+        let at = store
+            .record(&listing.invocation.0.to_string())
+            .expect("the read waits in its asked record");
+        resolve(service, workspace_id, who, &at, Offer::Approve)
+            .await
+            .unwrap();
+        match ended(service, workspace_id, who, listing.invocation).await {
+            InvocationUpdate::Succeeded { output, .. } => output,
+            other => panic!("the read ends listed: {other:?}"),
         }
     };
     output.value.unwrap()["items"]

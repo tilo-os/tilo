@@ -36,7 +36,7 @@ const TYPED: &str = "made-up-typed-password-41";
 const THEIRS: &str = "made-up-kept-password-17";
 
 /// `action` at the vault, as the window's process calls it with `argument`.
-fn call(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
+fn call(target: RemoteActionTarget, argument: &Value) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
         target,
@@ -51,12 +51,12 @@ fn call(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
     }
 }
 
-fn at_vault(action: &str, argument: Value) -> InvokeRequest {
+fn at_vault(action: &str, argument: &Value) -> InvokeRequest {
     call(person_vault::target(action), argument)
 }
 
 fn fill(item: &ItemRef, site: &str) -> InvokeRequest {
-    call(person_vault::page_fill_target(item), json!({"site": site}))
+    call(person_vault::page_fill_target(item), &json!({"site": site}))
 }
 
 /// The browser's window keeps the login its page sent, reads its site's logins by name, fills its
@@ -100,7 +100,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     let kept: PageLogin = serde_json::from_value(
         page(at_vault(
             person_vault::KEEP_PAGE_LOGIN,
-            serde_json::to_value(&keeping).unwrap(),
+            &serde_json::to_value(&keeping).unwrap(),
         ))
         .await
         .expect("the window keeps its page's login"),
@@ -122,7 +122,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     );
 
     // The site's logins, by name alone.
-    let listed = page(at_vault(person_vault::PAGE_LOGINS, json!({"site": SHOP})))
+    let listed = page(at_vault(person_vault::PAGE_LOGINS, &json!({"site": SHOP})))
         .await
         .unwrap();
     assert!(!listed.to_string().contains(TYPED) && !listed.to_string().contains(THEIRS));
@@ -136,7 +136,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     let elsewhere: PageLogins = serde_json::from_value(
         page(at_vault(
             person_vault::PAGE_LOGINS,
-            json!({"site": "https://other.example.test"}),
+            &json!({"site": "https://other.example.test"}),
         ))
         .await
         .unwrap(),
@@ -170,7 +170,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     let forget_theirs = refusal(
         page(at_vault(
             person_vault::FORGET_PAGE_LOGIN,
-            json!({"site": SHOP, "item": theirs}),
+            &json!({"site": SHOP, "item": theirs}),
         ))
         .await,
     );
@@ -226,7 +226,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     let left: PageLogins = serde_json::from_value(
         page(at_vault(
             person_vault::FORGET_PAGE_LOGIN,
-            json!({"site": SHOP, "item": kept.reference}),
+            &json!({"site": SHOP, "item": kept.reference}),
         ))
         .await
         .unwrap(),

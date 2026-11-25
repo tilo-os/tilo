@@ -99,23 +99,11 @@ impl Admit for Workspaces {
             let entered = match (member_device, entering.through) {
                 (Some(entered), _) => entered,
                 (None, Through::Entry) => {
-                    // The entry issues the person an invitation, which the
-                    // device redeems by the admission it signs on it.
-                    if !entering.admission.is_empty() {
-                        return Entered::Refused(refused(
-                            "an admission comes with the invitation the entry issued".to_owned(),
-                        ));
-                    }
-                    match self.entry(cert, &entering.workspace, &entering.name).await {
-                        Ok((invitation, token)) => {
-                            let through = Through::Invitation {
-                                invitation,
-                                token: Some(token.into_bytes()),
-                            };
-                            return self.sign_on(&entering.workspace, through).await;
-                        }
-                        Err(refused) => return Entered::Refused(refused),
-                    }
+                    self.entered_by_entry(
+                        cert,
+                        (&entering.workspace, &entering.name, &entering.admission),
+                    )
+                    .await
                 }
                 (None, Through::Invitation { invitation, token }) => {
                     // The keys the entry asks for are the named workspace's group's: an
@@ -164,6 +152,30 @@ impl Admit for Workspaces {
 }
 
 impl Workspaces {
+    /// The entry issues the person an invitation, which the device redeems by the admission it
+    /// signs on it: an entry that names an admission of its own already is refused.
+    async fn entered_by_entry(
+        &self,
+        cert: &DeviceCert,
+        (workspace, name, admission): (&str, &str, &[Vec<u8>]),
+    ) -> Entered {
+        if !admission.is_empty() {
+            return Entered::Refused(refused(
+                "an admission comes with the invitation the entry issued".to_owned(),
+            ));
+        }
+        match self.entry(cert, workspace, name).await {
+            Ok((invitation, token)) => {
+                let through = Through::Invitation {
+                    invitation,
+                    token: Some(token.into_bytes()),
+                };
+                self.sign_on(workspace, through).await
+            }
+            Err(refused) => Entered::Refused(refused),
+        }
+    }
+
     /// What a device that may come into `workspace` is answered before it
     /// signs its own admission: the workspace's member list it writes it on,
     /// and how to come back with it (`through`).
@@ -364,10 +376,6 @@ impl Workspaces {
     /// anyone: a key acting for the person rather than a device of theirs
     /// (an agent's grant), a person the workspace does not have in it, or
     /// one it banned or removed within the day.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until the device is committed, settled and its admission read"
-    )]
     async fn member_device(
         &self,
         cert: &DeviceCert,
