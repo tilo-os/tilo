@@ -223,10 +223,12 @@ async fn import_beside_the_person(host: &host::Host) -> (Vec<List>, Vec<Call>) {
                     took: began.elapsed(),
                     moved: bytes_moved().saturating_sub(before),
                 });
-                let made = answer["made"]
-                    .as_array()
-                    .or_else(|| answer["value"]["made"].as_array())
-                    .map_or(0, Vec::len);
+                // `new_tasks` answers the tasks it made, each a reference to one of them.
+                let made = answer["result"].as_array().map_or(0, |made| {
+                    made.iter()
+                        .filter(|task| task["kind"] == "tl.so.tilo.tasks.Task")
+                        .count()
+                });
                 assert_eq!(made, LIST, "every issue of a list is made: {answer}");
                 landed.store(list + 1, Ordering::Release);
             }
