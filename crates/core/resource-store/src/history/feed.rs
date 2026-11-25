@@ -94,7 +94,7 @@ impl ChangeLog {
                 None => None,
             };
             if let Some(after) = news {
-                for entry in super::verbs::entries_after(&doc, &after, words) {
+                for entry in super::verbs::entries_after((&doc, &route.1), &after, words) {
                     self.keep(ResourceChanged {
                         app: route.0.clone(),
                         record: route.1.clone(),

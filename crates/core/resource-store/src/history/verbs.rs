@@ -1240,7 +1240,7 @@ fn sentence(version: &Version, words: &dyn HistoryWords) -> String {
 }
 
 fn entry(
-    doc: &AutoCommit,
+    (doc, doc_id): (&AutoCommit, &str),
     version: &Version,
     undone: &HashSet<String>,
     checkpoints: &[Checkpoint],
@@ -1270,7 +1270,7 @@ fn entry(
     // What the change did to the resource it is a version of, read from the change itself as the
     // store reads it, and which resource that was: a watcher is told both beside the change's id
     // rather than working them out from what it saw before.
-    if let Some((what, item)) = happened(doc, version) {
+    if let Some((what, item)) = happened((doc, doc_id), version) {
         entry.insert("happened".into(), what.word().into());
         if context.is_none()
             && let Some(item) = item
@@ -1320,17 +1320,19 @@ fn stamped_verb(doc: &AutoCommit, version: &Version) -> Option<String> {
 }
 
 /// What `version` did to the resource it is a change of, and that resource's id, as the store
-/// reads the change: it made the resource, removed it, or edited it. `None` for a document
+/// reads the change in its document `doc_id` (`""` where the document is not named): it made the
+/// resource, removed it, or edited it. A content document names the resource whose content it
+/// holds, so its changes are edits of that resource. `None` for a document
 /// whose changes are not resources kept in the store: a change with no word for what it did is
 /// a fault to a watcher, never an edit.
 fn happened(
-    doc: &AutoCommit,
+    (doc, doc_id): (&AutoCommit, &str),
     version: &Version,
 ) -> Option<(tilo_actions::remote::What, Option<String>)> {
     use tilo_actions::remote::What;
     let committed = doc.committed_document();
     let change = committed.get_change_by_hash(&version.hash)?;
-    let touched = crate::admit::touches(committed, "", &change)?;
+    let touched = crate::admit::touches(committed, doc_id, &change)?;
     let made = touched.resources.iter().find(|(_, touch)| touch.made);
     let removed = touched.resources.iter().find(|(_, touch)| touch.removed);
     let what = if made.is_some() {
@@ -1581,7 +1583,7 @@ fn listed_move(
         return Value::Null;
     };
     if changes.len() == 1 {
-        return entry(doc, newest, undone, checkpoints, words);
+        return entry((doc, ""), newest, undone, checkpoints, words);
     }
     let op = history_move(newest).unwrap_or(tilo_actions::HistoryOp::Undo);
     let mut whole = (*newest).clone();
@@ -1589,14 +1591,14 @@ fn listed_move(
         let steps = u32::try_from(changes.len()).unwrap_or(u32::MAX);
         context.what = Some(tilo_actions::Did::history(op, steps, None));
     }
-    let mut listed = entry(doc, &whole, undone, checkpoints, words);
+    let mut listed = entry((doc, ""), &whole, undone, checkpoints, words);
     if let Value::Object(fields) = &mut listed {
         for key in ["takes_back", "brings_back"] {
             let moved: Vec<Value> = changes
                 .iter()
                 .rev()
                 .filter_map(|change| {
-                    let mut one = entry(doc, change, undone, checkpoints, words);
+                    let mut one = entry((doc, ""), change, undone, checkpoints, words);
                     one.as_object_mut()?.remove(key)
                 })
                 .flat_map(|moved| moved.as_array().cloned().unwrap_or_default())
@@ -1640,13 +1642,13 @@ pub fn reads_entry(entry: &Value, reader: Option<&tilo_actions::MemberId>) -> bo
     })
 }
 
-/// The changes of `doc` made after the version `after` (every change, for
+/// The changes of `doc`, the record `doc_id`, made after the version `after` (every change, for
 /// none), oldest first, each as `history` lists it, whole: what a feed of a
 /// workspace's changes reports of one record, as the record's own history
 /// would. A change only some members read lists them as `readers`, and whoever
 /// passes it on lists it to them alone ([`reads_entry`]).
 pub fn entries_after(
-    doc: &AutoCommit,
+    (doc, doc_id): (&AutoCommit, &str),
     after: &[ChangeHash],
     words: &dyn HistoryWords,
 ) -> Vec<Value> {
@@ -1665,7 +1667,7 @@ pub fn entries_after(
         .iter()
         .filter(|version| since.contains(&version.hash))
         .filter(|version| !steps::is_schema_genesis(version) && !is_document_making(version))
-        .map(|version| entry(doc, version, &undone, &checkpoints, words))
+        .map(|version| entry((doc, doc_id), version, &undone, &checkpoints, words))
         .collect()
 }
 
@@ -2080,7 +2082,7 @@ mod tests {
             doc.put(ROOT, "saved", 1_i64).unwrap();
             doc.commit().unwrap();
 
-            let entries = entries_after(&doc, &[], &TestWords);
+            let entries = entries_after((&doc, ""), &[], &TestWords);
             assert_eq!(entries.len(), 1, "{entries:?}");
             assert!(
                 !entries[0]["sentence"]
@@ -2172,15 +2174,35 @@ mod tests {
         doc.commit_with(
             automerge::transaction::CommitOptions::default().with_message(stamp.message()),
         );
-        let entries = entries_after(&doc, &[], &TestWords);
+        let entries = entries_after((&doc, ""), &[], &TestWords);
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0]["verb"], json!("ban"), "{entries:?}");
 
         // A change its author stamped no verb on says none.
         doc.put(ROOT, "banned", false).unwrap();
         doc.commit().unwrap();
-        let entries = entries_after(&doc, &[], &TestWords);
+        let entries = entries_after((&doc, ""), &[], &TestWords);
         assert_eq!(entries[1]["verb"], Value::Null, "{entries:?}");
+    }
+
+    /// A change to a resource's content, kept in a document of its own, is an edit of that
+    /// resource: the document's name says whose content it holds.
+    #[test]
+    fn a_change_to_a_resources_content_edits_that_resource() {
+        let mut doc = AutoCommit::new();
+        let body = doc
+            .put_object(ROOT, "body", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&body, 0, 0, "first words").unwrap();
+        doc.commit();
+
+        let entries = entries_after((&doc, "*/tl.test.Message/m1~0"), &[], &TestWords);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(
+            (&entries[0]["happened"], &entries[0]["item"]),
+            (&json!("edited"), &json!("m1")),
+            "{entries:?}"
+        );
     }
 
     /// Every change says what it did to the resource it is a version of, read from the change
@@ -2201,7 +2223,7 @@ mod tests {
         doc.delete(ROOT, "r:note1").unwrap();
         doc.commit();
 
-        let entries = entries_after(&doc, &[], &TestWords);
+        let entries = entries_after((&doc, ""), &[], &TestWords);
         let said: Vec<(&str, &str, &str)> = entries
             .iter()
             .map(|entry| {
