@@ -9,7 +9,7 @@
 //! The packages are copied to a scratch directory before they are built: a build writes each
 //! package's ids lock and source catalogue, and a test never writes the tree it runs from.
 //! The build is made once for the test processes of a run ([`built`]): a run starts a process
-//! per test, and each built the same six packages again before its first line.
+//! per test, and each built the same packages again before its first line.
 //! Every process still installs the packages into a store of its own.
 
 use std::hash::{Hash as _, Hasher as _};

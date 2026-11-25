@@ -1205,7 +1205,7 @@ pub fn install_apps_in(store: &Path, scratch: &Path) {
     let installed = dev_apps::install(store, scratch);
     assert_eq!(
         installed.len(),
-        6,
+        dev_apps::APPS.len(),
         "every app of the development session is installed, the shell among them: {installed:?}"
     );
 }

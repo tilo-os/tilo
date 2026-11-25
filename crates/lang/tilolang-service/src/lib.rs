@@ -237,6 +237,25 @@ impl ResourceService {
         self.publications = Publications::new(&host);
         self.watch = host.store().watch();
         self.host = host;
+        // The connector an origin was reached over is the same one across a new host: what the
+        // packages hand their outside effects is routed to it there too, so a record moved into
+        // the workspace keeps reaching the service that keeps it in step.
+        self.route_effects();
+    }
+
+    /// What an effect of a package's action hands an origin goes to that origin; anything this
+    /// service does not carry out itself (the development log's `post`) goes to the log, as a
+    /// window without a sink does.
+    fn route_effects(&self) {
+        if self.origins.borrow().is_empty() {
+            return;
+        }
+        self.host
+            .runtime()
+            .set_sink(tilolang_tilo::origin::RoutingSink {
+                origins: std::rc::Rc::clone(&self.origins),
+                rest: Box::new(tilolang_tilo::sink::LogSink::dev()),
+            });
     }
 
     /// Read the resources in `words`.
@@ -332,15 +351,7 @@ impl ResourceService {
         let stream = tilo_socket::Stream::from(connection);
         let shared = tilolang_tilo::origin::remote(origin, stream, wake)?;
         self.origins.borrow_mut().push(shared);
-        // What an effect of a package's action hands an origin goes to that origin; anything
-        // this service does not carry out itself (the development log's `post`) goes to the
-        // log, as a window without a sink does.
-        self.host
-            .runtime()
-            .set_sink(tilolang_tilo::origin::RoutingSink {
-                origins: std::rc::Rc::clone(&self.origins),
-                rest: Box::new(tilolang_tilo::sink::LogSink::dev()),
-            });
+        self.route_effects();
         Ok(())
     }
 
@@ -1304,6 +1315,11 @@ impl Service for ResourceService {
             if let Some(refused) = host.store().take_refusal() {
                 return Err(refused);
             }
+        }
+        // What the app handed outside waits in the store it is leaving: it goes to the origin it
+        // reached before the records move, so an action's effect is not lost with them.
+        if !self.origins.borrow().is_empty() {
+            self.host.settle_outbox()?;
         }
         self.install(host);
         self.in_workspace = true;
