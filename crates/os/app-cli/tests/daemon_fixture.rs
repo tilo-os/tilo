@@ -731,6 +731,7 @@ fn apply(state: &Arc<State>, change: Change) -> Result<Value, String> {
             store: &store,
             catalog: &catalog,
             max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
+            device: None,
         },
         change,
         &Entry::Device(&files),
