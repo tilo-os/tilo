@@ -1552,9 +1552,10 @@ fn open_who_is_here(session: &mut Session) {
         .expect("the roster opens");
 }
 
-/// Every control the people list draws under `label`, by where it stands and what it says of
-/// itself: a row carries the lines under its name with the name ("Agent, Fieldwork, In Notes"), so
-/// a row answers to the name among them.
+/// The people list's own rows and headings saying `label`, by where they stand, and what they say
+/// of themselves: a row carries the lines under its name with the name ("Agent, Fieldwork, In
+/// Notes"), so a row answers to the name among them. A person's name is also said by the bar's face
+/// and by the control at the row's far end, which are no rows and stand elsewhere.
 fn people_nodes(session: &Session, label: &str) -> Vec<(f64, f64, f64, f64, Option<String>)> {
     session
         .a11y_windows()
@@ -1562,7 +1563,12 @@ fn people_nodes(session: &Session, label: &str) -> Vec<(f64, f64, f64, f64, Opti
         .flat_map(|(_, _, tree)| {
             tree.nodes
                 .iter()
-                .filter(|(_, node)| node.label().is_some_and(|said| says_that(said, label)))
+                .filter(|(_, node)| {
+                    matches!(
+                        node.role(),
+                        ui::accesskit::Role::ListItem | ui::accesskit::Role::Heading
+                    ) && node.label().is_some_and(|said| says_that(said, label))
+                })
                 .filter_map(|(_, node)| {
                     let rect = node.bounds()?;
                     (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
@@ -1715,7 +1721,7 @@ fn the_people_list_header_says_the_workspace_and_groups_people_ahead_of_software
         session.accessible_labels()
     );
     assert_eq!(
-        people_nodes(&session, "Go there").len(),
+        session.shell_controls("Go there").len(),
         1,
         "only software works in a window this roster can go to"
     );

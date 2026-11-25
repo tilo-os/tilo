@@ -256,11 +256,6 @@ view person_listed(p: device.Person, board: device.People, group: Text) {
                     on choose: device.follow(device.people, person: p.key)
                 }
             }
-            if p.agent and goable(p) {
-                ui.MenuItem("Go where {label} works", icon: .arrow_right) {
-                    on choose: device.go_to(device.people, person: p.key)
-                }
-            }
         }
     }
 }
@@ -268,14 +263,9 @@ view person_listed(p: device.Person, board: device.People, group: Text) {
 /// What a reader hears of a person beyond their name: whether they are software, where they are,
 /// what they say they are doing, how available they are, and whether they follow this person.
 fn spoken_details(p: device.Person) -> Text {
+    // Who they are as software, and when they joined, stand on the row itself: its tag and the
+    // line under its name. The details say what those lines do not.
     let said: List<Text> = []
-    if p.agent {
-        said = said + [std.say("Agent")]
-    }
-    if p.joined != "" {
-        let joined = p.joined
-        said = said + [std.say("Joined {joined}")]
-    }
     // The place says where they are, never the call the line under it already says.
     if p.activity != "" or p.in_app != "" {
         let place = where_line(p)
@@ -352,22 +342,18 @@ view person_row(p: device.Person, board: device.People) {
                     wave_button(p, board, name)
                 }
                 follow_button(followed, p, name)
-                // Where software works, with the way there: pressing it brings that window
-                // forward, so what it is on stands in front of this person.
-                if p.agent and goable(p) {
-                    ui.Button(
-                        std.say("Go where {name} works"),
-                        icon: .arrow_right,
-                        icon_only: true,
-                        size: .small,
-                        role: .plain,
-                    ) {
-                        on press: device.go_to(device.people, person: p.key)
-                    }
-                }
             }
         }
         on activate: device.show_person(device.people, person: p.key)
+    }
+    if p.agent and goable(p) {
+        // Where software works: the window it is in, with the way there. Pressing it brings that
+        // window forward, so what it is on stands in front of this person.
+        row(gap: .related, align: .center) {
+            ui.Button("Go there", icon: .arrow_right, size: .small, role: .plain) {
+                on press: device.go_to(device.people, person: p.key)
+            }
+        }
     }
 }
 

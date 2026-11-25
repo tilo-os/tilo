@@ -428,13 +428,23 @@ impl PeopleDevice {
                         })
                         .unwrap_or_default();
                 }
-                Some((person, member.joined_at))
+                Some((
+                    person,
+                    member
+                        .id
+                        .person_id()
+                        .and_then(|person| workspace.policy.joined_at(person)),
+                ))
             })
             .collect();
         // Someone nobody named is told apart by when they joined: their name and face are every
         // unnamed person's.
         name_the_unnamed(&mut raw);
         let mut rows: Vec<Person> = raw.into_iter().map(|(person, _)| person).collect();
+        // The person at this device stands in the roster's own "You" row, never among the others.
+        if let Some(own) = self.sync.as_ref().map(|sync| sync.publisher().to_string()) {
+            rows.retain(|person| person.key != own);
+        }
         // Whom each person here follows, as their presence says: "Following Ada" on the row of
         // someone following Ada, "Following you" on the row of someone following this person.
         if let Some(sync) = &self.sync {
