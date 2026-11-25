@@ -1,6 +1,7 @@
 //! A whole connection of the line wire, answered as one caller: what a local socket that keeps
 //! state between lines serves.
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,6 +10,7 @@ use std::time::Duration;
 use tilo_lock::MutexRecover as _;
 
 use super::{answer_message, frame_line, line_refusal};
+use crate::outcome::InvocationId;
 use crate::remote::refuse;
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, ContentGetAnswer, HostedContentPuts,
@@ -33,6 +35,9 @@ const WAITING_AT_ONCE: usize = 64;
 /// ([`RemoteActionMessage::waits`]) is answered on a thread of its own, so the lines after it are
 /// answered meanwhile; each answer names what it answers, so the order answers go out in is
 /// theirs. A line that is no frame is refused, and the connection goes on.
+///
+/// A connection that ends cancels the calls it still waits on, through
+/// [`ActionProvider::cancel`]: a call that outlives its caller is told it stopped.
 pub fn serve_lines<H: ActionProvider + Clone + Send + Sync + 'static>(
     tree: impl FnMut(&RemoteActionFrame) -> Result<(H, Caller), ActionCallError>,
     uploads: &HostedContentPuts,
@@ -72,22 +77,28 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
     slack: Duration,
     lanes: Option<&dyn CallLanes>,
 ) {
-    let output = Arc::new(Mutex::new(output));
-    let waiting = Arc::new(AtomicUsize::new(0));
+    let connection = Arc::new(Connection {
+        output: Mutex::new(output),
+        waiting: AtomicUsize::new(0),
+        in_flight: Mutex::default(),
+    });
     let mut next = first;
     loop {
         let line = match next.take() {
             Some(line) => line,
             None => match read_line(&mut input) {
                 Ok(Some(line)) => line,
-                Ok(None) | Err(_) => return,
+                Ok(None) | Err(_) => break,
             },
         };
         let frame = match RemoteActionFrame::decode(&line) {
             Ok(frame) => frame,
             Err(error) => {
-                if !write_line(&output, &line_refusal("parse_error", &error.to_string())) {
-                    return;
+                if !write_line(
+                    &connection.output,
+                    &line_refusal("parse_error", &error.to_string()),
+                ) {
+                    break;
                 }
                 continue;
             }
@@ -97,8 +108,8 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
                 Take::NotCall => {}
                 Take::Silent => continue,
                 Take::Answer(answer) => {
-                    if !write_line(&output, &answer) {
-                        return;
+                    if !write_line(&connection.output, &answer) {
+                        break;
                     }
                     continue;
                 }
@@ -111,59 +122,155 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
                     || line_refusal("parse_error", "a frame sent here asks something"),
                     frame_line,
                 );
-                if !write_line(&output, &answer) {
-                    return;
+                if !write_line(&connection.output, &answer) {
+                    break;
                 }
                 continue;
             }
         };
         let (provider, caller) = (&provider, &caller);
-        let answer = match frame.message {
-            RemoteActionMessage::ContentPutRequest { correlation, step } => {
-                let result =
-                    uploads.step(&|target| provider.content_puts_for(target), caller, step);
-                frame_line(RemoteActionMessage::ContentPutResponse {
-                    correlation,
-                    result,
-                })
-            }
-            RemoteActionMessage::ContentGetRequest {
-                correlation,
-                content,
-                offset,
-                length,
-            } => {
-                let result = provider
-                    .content_gets()
-                    .ok_or_else(no_content_store)
-                    .and_then(|store| store.get(caller, &content, offset, length))
-                    .and_then(ContentGetAnswer::new);
-                frame_line(RemoteActionMessage::ContentGetResponse {
-                    correlation,
-                    result,
-                })
-            }
-            message if message.waits() && waiting.load(Ordering::Relaxed) < WAITING_AT_ONCE => {
-                waiting.fetch_add(1, Ordering::Relaxed);
-                let (provider, caller) = (provider.clone(), caller.clone());
-                let (output, waiting) = (Arc::clone(&output), Arc::clone(&waiting));
-                let spawned = std::thread::Builder::new()
-                    .name("tilo-line-wait".into())
-                    .spawn(move || {
-                        let answer = answer_message(&provider, &caller, message, slack);
-                        write_line(&output, &answer);
-                        waiting.fetch_sub(1, Ordering::Relaxed);
-                    });
-                if spawned.is_err() {
-                    return;
-                }
-                continue;
-            }
-            message => answer_message(provider, caller, message, slack),
-        };
-        if !write_line(&output, &answer) {
-            return;
+        let invocation = invocation_of(&frame.message);
+        if let Some(invocation) = invocation {
+            connection
+                .in_flight
+                .lock_recover()
+                .insert(invocation, (provider.clone(), caller.clone()));
         }
+        match answer_frame(
+            provider,
+            caller,
+            uploads,
+            frame.message,
+            slack,
+            &connection,
+            invocation,
+        ) {
+            Answered::Spawned => {}
+            Answered::Ended => break,
+            Answered::Line(answer) => {
+                if !write_line(&connection.output, &answer) {
+                    break;
+                }
+            }
+        }
+    }
+    // The connection ended: what it was still waiting on is cancelled, as its caller's call.
+    let running: Vec<(InvocationId, H, Caller)> = connection
+        .in_flight
+        .lock_recover()
+        .drain()
+        .map(|(invocation, (provider, caller))| (invocation, provider, caller))
+        .collect();
+    for (invocation, provider, caller) in running {
+        let _cancelling = provider.cancel(&caller, &invocation);
+    }
+}
+
+/// What one connection keeps while it serves: where answers go, how many frames wait at once, and
+/// the calls it still waits on, each cancelled when the connection ends.
+struct Connection<H, W> {
+    output: Mutex<W>,
+    waiting: AtomicUsize,
+    in_flight: Mutex<HashMap<InvocationId, (H, Caller)>>,
+}
+
+/// What became of the answer to one frame.
+enum Answered {
+    /// A thread of its own answers it, so the lines after it are answered meanwhile.
+    Spawned,
+    /// The line to write now.
+    Line(String),
+    /// It could not be answered: the connection ends.
+    Ended,
+}
+
+/// Answer the frame `message` as `provider` and `caller`, keeping `invocation` as the
+/// connection's call until an answer ends it.
+fn answer_frame<H: ActionProvider + Clone + Send + Sync + 'static, W: Write + Send + 'static>(
+    provider: &H,
+    caller: &Caller,
+    uploads: &HostedContentPuts,
+    message: RemoteActionMessage,
+    slack: Duration,
+    connection: &Arc<Connection<H, W>>,
+    invocation: Option<InvocationId>,
+) -> Answered {
+    let line = match message {
+        RemoteActionMessage::ContentPutRequest { correlation, step } => {
+            let result = uploads.step(&|target| provider.content_puts_for(target), caller, step);
+            frame_line(RemoteActionMessage::ContentPutResponse {
+                correlation,
+                result,
+            })
+        }
+        RemoteActionMessage::ContentGetRequest {
+            correlation,
+            content,
+            offset,
+            length,
+        } => {
+            let result = provider
+                .content_gets()
+                .ok_or_else(no_content_store)
+                .and_then(|store| store.get(caller, &content, offset, length))
+                .and_then(ContentGetAnswer::new);
+            frame_line(RemoteActionMessage::ContentGetResponse {
+                correlation,
+                result,
+            })
+        }
+        message
+            if message.waits() && connection.waiting.load(Ordering::Relaxed) < WAITING_AT_ONCE =>
+        {
+            connection.waiting.fetch_add(1, Ordering::Relaxed);
+            let (provider, caller) = (provider.clone(), caller.clone());
+            let connection = Arc::clone(connection);
+            let spawned = std::thread::Builder::new()
+                .name("tilo-line-wait".into())
+                .spawn(move || {
+                    let answer = answer_message(&provider, &caller, message, slack);
+                    if let Some(invocation) = invocation
+                        && answers_the_end(&answer)
+                    {
+                        connection.in_flight.lock_recover().remove(&invocation);
+                    }
+                    write_line(&connection.output, &answer);
+                    connection.waiting.fetch_sub(1, Ordering::Relaxed);
+                });
+            return if spawned.is_err() {
+                Answered::Ended
+            } else {
+                Answered::Spawned
+            };
+        }
+        message => answer_message(provider, caller, message, slack),
+    };
+    if let Some(invocation) = invocation
+        && answers_the_end(&line)
+    {
+        connection.in_flight.lock_recover().remove(&invocation);
+    }
+    Answered::Line(line)
+}
+
+/// The invocation a message waits on, when it is one a connection keeps waiting on.
+fn invocation_of(message: &RemoteActionMessage) -> Option<InvocationId> {
+    match message {
+        RemoteActionMessage::Invoke(request) => Some(request.invocation),
+        _ => None,
+    }
+}
+
+/// Whether the answer to an invocation ends it: one that runs on is kept as the connection's call
+/// until it ends or the connection does, and an answer this cannot read is its end.
+fn answers_the_end(answer: &str) -> bool {
+    let Ok(frame) = RemoteActionFrame::decode(answer.as_bytes()) else {
+        return true;
+    };
+    match frame.message {
+        RemoteActionMessage::Receipt(receipt) => receipt.status.is_terminal(),
+        RemoteActionMessage::Update { state, .. } => state.is_none_or(|state| state.is_terminal()),
+        _ => true,
     }
 }
 
@@ -217,9 +324,9 @@ mod tests {
     use crate::api::ActionAddress;
     use crate::outcome::{ActionOutput, InvocationId};
     use crate::remote::{
-        CataloguePage, CatalogueQuery, ContentGets, ContentPiece, ContentPut, ContentPuts,
-        InvocationReceipt, InvocationState, InvokeRequest, LineClient, Pending, ReceiptStatus,
-        RemoteActionTarget, TestProvider,
+        CataloguePage, CatalogueQuery, Completer, ContentGets, ContentPiece, ContentPut,
+        ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, LineClient, Pending,
+        ReceiptStatus, RemoteActionTarget, TestProvider, pending,
     };
     use std::collections::HashMap;
     use std::io::BufReader;
@@ -527,5 +634,80 @@ mod tests {
         drop(client);
         let mut rest = String::new();
         assert_eq!(reader.read_line(&mut rest).unwrap(), 0, "{rest}");
+    }
+
+    /// What answers a call kept until it hears it stop.
+    type Held = Completer<Result<InvocationReceipt, ActionCallError>>;
+
+    /// A provider whose one call runs until it hears it stop, recording the stop.
+    #[derive(Clone, Default)]
+    struct Waiting {
+        asked: Arc<Mutex<Vec<InvocationId>>>,
+        cancels: Arc<Mutex<Vec<InvocationId>>>,
+        held: Arc<Mutex<Vec<Held>>>,
+    }
+
+    impl ActionProvider for Waiting {
+        fn query(
+            &self,
+            _: &Caller,
+            _: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Ok(CataloguePage::default()))
+        }
+
+        fn invoke(
+            &self,
+            _: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            self.asked.lock_recover().push(request.invocation);
+            let (complete, answer) = pending();
+            self.held.lock_recover().push(complete);
+            answer
+        }
+
+        fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(&self, _: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+            self.cancels.lock_recover().push(*id);
+            Pending::ready(Ok(()))
+        }
+    }
+
+    /// A connection that ends cancels the call it still waited on: one that outlives the
+    /// connection that began it is told it stopped, rather than answered nobody.
+    #[test]
+    fn a_connection_that_ends_cancels_the_call_it_waited_on() {
+        let provider = Waiting::default();
+        let caller = Caller::local_app("notes").in_workspace("w");
+        let (near, far) = UnixStream::pair().unwrap();
+        let output = far.try_clone().unwrap();
+        let serving = provider.clone();
+        std::thread::spawn(move || {
+            serve_lines(
+                move |_| Ok((serving.clone(), caller.clone())),
+                &HostedContentPuts::default(),
+                None,
+                BufReader::new(far),
+                output,
+                Duration::ZERO,
+            );
+        });
+        let client = LineClient::of_stream(near).unwrap();
+        let mut request = InvokeRequest::plain(target(), serde_json::Map::new());
+        request.wait_ms = Some(0);
+        let invocation = request.invocation;
+        let pending = client.invoke(&Caller::local_person("ada"), request);
+        tilo_test_env::wait_until("the provider to hold the call", || {
+            provider.asked.lock_recover().contains(&invocation)
+        });
+        drop(client);
+        tilo_test_env::wait_until("the call to be cancelled", || {
+            provider.cancels.lock_recover().contains(&invocation)
+        });
+        drop(pending);
     }
 }
