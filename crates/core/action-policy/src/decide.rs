@@ -644,13 +644,26 @@ impl Authority<'_> {
             .fold(person, Answer::min)
     }
 
-    /// Whether `verdict` is the answer the person gave in advance for this very action or
-    /// resource, for their agent ([`Self::answers_in_advance`]): a call such an answer allows
-    /// runs unasked, though it reaches outside Tilo, because asking would put to them what they
-    /// already answered.
+    /// Whether `verdict` allows the call by the answer the person gave their agent in advance
+    /// for this very action or resource ([`crate::agent_answers::AnswerScope::Action`], what
+    /// "Always allow this" gives): a call such an answer allows runs unasked, though it reaches
+    /// outside Tilo or its person attends, because asking would put to them what they already
+    /// answered. A broader answer (a whole app or kind of resource) lifts no such ask.
     #[must_use]
     pub fn answered_in_advance(&self, verdict: &Verdict<'_>) -> bool {
-        self.answers_in_advance(&verdict.parts)
+        verdict.parts.iter().skip(self.people.max(1)).any(|part| {
+            part.answer == Answer::Allow
+                && matches!(part.basis, Basis::Grant(grant)
+                if set_by_its_person(grant)
+                    && self.person.grantees.contains(&grant.granted_by)
+                    && matches!(
+                        crate::agent_answers::AnswerScope::of_node(&grant.node),
+                        Some(
+                            crate::agent_answers::AnswerScope::Action { .. }
+                                | crate::agent_answers::AnswerScope::Resource { .. }
+                        )
+                    ))
+        })
     }
 
     /// Whether `parts` (the person's decision, then each delegation's) answer an
