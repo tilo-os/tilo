@@ -104,7 +104,7 @@ async fn two_devices_of_one_person_converge_directly() {
     assert!(b.rows().is_empty());
 
     let directory = tempfile::tempdir().unwrap();
-    let a = stored(DirectSync::new(a, a_key.clone()), &directory);
+    let a = stored(&DirectSync::new(a, a_key.clone()), &directory);
     let keys = members_keys(WORKSPACE);
     seed(&a, &keys, &a_key, &a_cert.user_public_key, "from a");
     let b = DirectSync::new(b, b_key.clone());
@@ -215,7 +215,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     assert!(b.rows().is_empty());
 
     let directory = tempfile::tempdir().unwrap();
-    let a = stored(DirectSync::new(a, a_key.clone()), &directory);
+    let a = stored(&DirectSync::new(a, a_key.clone()), &directory);
     let keys = members_keys(WORKSPACE);
     seed(&a, &keys, &a_key, &a_cert.user_public_key, "from a");
     let b = DirectSync::new(b, b_key.clone());
@@ -297,7 +297,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     let joined = StatePeer::from_join(WORKSPACE, cert.clone(), roster, &[], now).unwrap();
 
     let directory = tempfile::tempdir().unwrap();
-    let host = stored(DirectSync::new(made, key.clone()), &directory);
+    let host = stored(&DirectSync::new(made, key.clone()), &directory);
     let keys = members_keys(WORKSPACE);
     seed(&host, &keys, &key, &cert.user_public_key, "from the host");
     let member = DirectSync::new(joined, key.clone());
@@ -355,7 +355,7 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     .unwrap();
     let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let a = stored(DirectSync::new(a, a_key.clone()), &directory);
+    let a = stored(&DirectSync::new(a, a_key.clone()), &directory);
     let keys = members_keys(WORKSPACE);
     let person = root.verifying_key().to_bytes();
     seed(&a, &keys, &a_key, &person, "from a");

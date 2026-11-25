@@ -97,12 +97,14 @@ pub fn sealed_write(
         .certificates()
         .into_iter()
         .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
-        .map(|cert| {
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(hex::encode(
-                cert.user_public_key,
-            )))
-        })
-        .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message());
+        .map_or_else(
+            || tilo_actions::FrameworkChange::Native.change_message(),
+            |cert| {
+                tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
+                    hex::encode(cert.user_public_key),
+                ))
+            },
+        );
     document.commit_with(automerge::transaction::CommitOptions::default().with_message(person));
     if starts {
         return sealed_checkpoint(peer, keys, key, (app, record), document.save());

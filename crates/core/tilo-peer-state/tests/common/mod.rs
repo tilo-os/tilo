@@ -72,7 +72,7 @@ pub fn workspace(
 
 /// `sync`, keeping what it holds and is sent in a store in `directory`, as
 /// every device holding a workspace does.
-pub fn stored(sync: DirectSync, directory: &tempfile::TempDir) -> DirectSync {
+pub fn stored(sync: &DirectSync, directory: &tempfile::TempDir) -> DirectSync {
     let store = tilo_peer_state::store::Store::open(
         directory.path(),
         tilo_peer_state::store::Appetite::StoreAll,

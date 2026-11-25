@@ -4,6 +4,7 @@
 //! than they do or never arrives at all.
 
 use super::{DIRECT_ALPN, DirectSync, Replica};
+use crate::StatePeer;
 use crate::loopback::{addr, endpoint};
 use crate::owner::testing::{APP, WORKSPACE, finalize, governed_fixture_at, member_key};
 use crate::owner::{NativeWorkspaceOwner, open_file};
@@ -12,7 +13,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tilo_desktop_model::WorkspaceId;
 
 /// The bytes of one part's text: eighty of them are more than a link takes
@@ -61,8 +62,7 @@ fn bytes_moved() -> u64 {
 /// commits its owner made doing so, and how many of the parts it then held
 /// whole.
 fn join(parts: usize) -> (u64, u64, usize) {
-    let ((intent, bootstrap, _, _, now), mut governor, key) =
-        governed_fixture_at(tilo_clock::wall());
+    let ((intent, bootstrap, _, _, now), governor, key) = governed_fixture_at(tilo_clock::wall());
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
@@ -70,8 +70,31 @@ fn join(parts: usize) -> (u64, u64, usize) {
         .install(&finalize(intent, pending, bootstrap).unwrap(), now)
         .unwrap();
     let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
-    // The parts as the host wrote them: each started with its text, then
-    // changed an item at a time, every change kept at the host's store.
+    let host = host_of(governor, &key, parts, now, &directory);
+    let generation = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(workspace, |view| Ok(view.generation()))
+            .unwrap()
+    };
+    let before = generation(&owner);
+    let member = DirectSync::over(owner.replica(workspace).unwrap(), member_key())
+        .owning(owner.clone(), workspace)
+        .unwrap();
+    let moved = moved_during_join(&host, &member, &key, parts);
+    let held = held_parts(&member, parts);
+    (moved, generation(&owner).saturating_sub(before), held)
+}
+
+/// The host serving `parts` parts: each started with its text and then changed
+/// an item at a time, every write published sealed and kept in the host's store
+/// under `directory`.
+fn host_of(
+    mut governor: StatePeer,
+    key: &SigningKey,
+    parts: usize,
+    now: SystemTime,
+    directory: &tempfile::TempDir,
+) -> DirectSync {
     let mut written = Vec::new();
     let person = governor.owner_certificates()[0].user_public_key;
     let keys = crate::sealed_records::members_keys(WORKSPACE);
@@ -92,7 +115,7 @@ fn join(parts: usize) -> (u64, u64, usize) {
         written.push(
             governor
                 .publication_mut()
-                .publish_sealed_checkpoint(APP, &record, document.save(), &mut seal, &key, now)
+                .publish_sealed_checkpoint(APP, &record, document.save(), &mut seal, key, now)
                 .unwrap(),
         );
         for change in 0..CHANGES_EACH {
@@ -105,7 +128,7 @@ fn join(parts: usize) -> (u64, u64, usize) {
             written.push(
                 governor
                     .publication_mut()
-                    .publish_sealed_incremental(APP, &record, changes, &mut seal, &key, now)
+                    .publish_sealed_incremental(APP, &record, changes, &mut seal, key, now)
                     .unwrap(),
             );
         }
@@ -116,21 +139,23 @@ fn join(parts: usize) -> (u64, u64, usize) {
         host.keep(frame, false).unwrap();
     }
     drop(written);
-    let generation = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_current(workspace, |view| Ok(view.generation()))
-            .unwrap()
-    };
-    let before = generation(&owner);
-    let member = DirectSync::over(owner.replica(workspace).unwrap(), member_key())
-        .owning(owner.clone(), workspace)
-        .unwrap();
+    host
+}
+
+/// The bytes `host` and `member` read and wrote while the member took in what
+/// the host holds of `parts` parts.
+fn moved_during_join(
+    host: &DirectSync,
+    member: &DirectSync,
+    key: &SigningKey,
+    parts: usize,
+) -> u64 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
-    let moved = runtime.block_on(async {
-        let host_endpoint = endpoint(&key).await;
+    runtime.block_on(async {
+        let host_endpoint = endpoint(key).await;
         let router = iroh::protocol::Router::builder(host_endpoint.clone())
             .accept(DIRECT_ALPN, host.clone())
             .spawn();
@@ -158,8 +183,14 @@ fn join(parts: usize) -> (u64, u64, usize) {
             .unwrap();
         tilo_test_env::within("the newcomer to close", member_endpoint.close()).await;
         moved
-    });
-    let held = (0..parts)
+    })
+}
+
+/// How many of `parts` parts `member` holds whole: each its text and
+/// [`CHANGES_EACH`] changes.
+fn held_parts(member: &DirectSync, parts: usize) -> usize {
+    let keys = crate::sealed_records::members_keys(WORKSPACE);
+    (0..parts)
         .filter(|part| {
             member.read(|peer| {
                 crate::sealed_records::opened(peer, &keys, (APP, &format!("part:{part}")))
@@ -167,8 +198,7 @@ fn join(parts: usize) -> (u64, u64, usize) {
                     .is_some_and(|document| document.length(ROOT) == CHANGES_EACH + 1)
             })
         })
-        .count();
-    (moved, generation(&owner).saturating_sub(before), held)
+        .count()
 }
 
 #[tokio::test]

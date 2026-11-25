@@ -790,7 +790,7 @@ mod tests {
             peer_of(&read, workspace)? == state,
             "the snapshot's chunks read back as the state",
         )?;
-        let mut changed = state.clone();
+        let mut changed = state;
         changed
             .get_mut(STATE / 2..STATE / 2 + 16)
             .ok_or("the state is shorter than its middle")?

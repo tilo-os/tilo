@@ -1217,6 +1217,50 @@ fn at_the_entry(action: &str) -> InvokeRequest {
     }
 }
 
+/// `request` as `caller` sends it to the device at `remote`, and the status the device answered it
+/// with.
+async fn asking_as(
+    remote: &RemoteDevice,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<ReceiptStatus, ActionCallError> {
+    tokio::time::timeout(PATIENCE, ActionProvider::invoke(remote, caller, request))
+        .await
+        .expect("the device answers")
+        .expect("the asker is not dropped")
+        .map(|receipt| receipt.status)
+}
+
+/// What the entry lets a visitor's page do: the calls the entry opens complete, and every other
+/// write or read is refused as to a stranger, before any dispatcher meets the visitor.
+async fn the_entry_decides_a_visitors_calls(remote: &RemoteDevice, nobody: &Caller) {
+    assert_eq!(
+        asking_as(remote, nobody, invoke(InvocationId::new())).await,
+        Err(ActionCallError::NotPermitted),
+        "a visitor may not change a note"
+    );
+    assert_eq!(
+        asking_as(remote, nobody, at_the_entry("invite")).await,
+        Err(ActionCallError::NotPermitted),
+        "nor invite anyone from the wait list"
+    );
+    // Leaving an address, confirming it and taking it off are open to any key.
+    for action in ["join", "confirm", "leave"] {
+        assert!(
+            matches!(
+                asking_as(remote, nobody, at_the_entry(action)).await,
+                Ok(ReceiptStatus::Completed { .. })
+            ),
+            "a visitor may {action}"
+        );
+    }
+    assert_eq!(
+        queried(remote, nobody).await,
+        Err(ActionCallError::NotPermitted),
+        "nor browse the workspace's actions"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -1250,45 +1294,8 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     let (visitor_endpoint, visitor_service) = asking(&visitor).await;
     let remote = visitor_service.remote(&visitor_endpoint, &engine.addr(), WORKSPACE);
     let nobody = Caller::visitor(visitor.verifying_key().to_bytes());
-    let ask = |request: InvokeRequest| {
-        let remote = &remote;
-        let nobody = &nobody;
-        async move {
-            tokio::time::timeout(PATIENCE, ActionProvider::invoke(remote, nobody, request))
-                .await
-                .expect("the device answers")
-                .expect("the asker is not dropped")
-                .map(|receipt| receipt.status)
-        }
-    };
 
-    // Anything but what the entry opens is refused, as to a stranger, before any dispatcher
-    // meets the visitor.
-    assert_eq!(
-        ask(invoke(InvocationId::new())).await,
-        Err(ActionCallError::NotPermitted),
-        "a visitor may not change a note"
-    );
-    assert_eq!(
-        ask(at_the_entry("invite")).await,
-        Err(ActionCallError::NotPermitted),
-        "nor invite anyone from the wait list"
-    );
-    // Leaving an address, confirming it and taking it off are open to any key.
-    for action in ["join", "confirm", "leave"] {
-        assert!(
-            matches!(
-                ask(at_the_entry(action)).await,
-                Ok(ReceiptStatus::Completed { .. })
-            ),
-            "a visitor may {action}"
-        );
-    }
-    assert_eq!(
-        queried(&remote, &nobody).await,
-        Err(ActionCallError::NotPermitted),
-        "nor browse the workspace's actions"
-    );
+    the_entry_decides_a_visitors_calls(&remote, &nobody).await;
     let seen = dispatcher.callers();
     assert_eq!(seen.len(), 3, "only what the grants allow runs");
     assert_eq!(
@@ -1303,7 +1310,7 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     let calls_so_far = 3;
     for _ in calls_so_far..tilo_peer_state::actions::VISITOR_CALLS_PER_TEN_MINUTES {
         assert!(matches!(
-            ask(at_the_entry("join")).await,
+            asking_as(&remote, &nobody, at_the_entry("join")).await,
             Ok(ReceiptStatus::Completed { .. })
         ));
     }

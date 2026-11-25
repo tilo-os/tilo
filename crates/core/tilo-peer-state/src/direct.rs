@@ -5224,16 +5224,18 @@ mod tests {
         }
     }
 
+    /// The record the live write is about: its app, and its name.
+    const APP: &str = "test.app";
+    const RECORD: &str = "tab:1";
+
     /// A write the other device sent live while this one still reads the
     /// history written before it waits for that history: the author's writes
     /// to a record apply in the order the author wrote them, even where the
     /// later one does not build on the earlier.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_live_write_waits_for_the_history_written_before_it() {
-        use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+        use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
         use collab_types::CommitNamed as _;
-        const APP: &str = "test.app";
-        const RECORD: &str = "tab:1";
         let root = SigningKey::from_bytes(&[1; 32]);
         let roster = [device(&root, 2), device(&root, 3)];
         let mut record = AutoCommit::new();
@@ -5310,11 +5312,26 @@ mod tests {
         };
         let (first, second) = (publish(first), publish(second));
 
-        // The later write comes live before the member has read the history
-        // that holds the earlier one.
+        takes_a_live_write_after_the_history(&member, host.device(), state, first, second, &keys)
+            .await;
+    }
+
+    /// The member takes the history in as one link read it, while the host sends the later write
+    /// live first: every write applies, in the order its author wrote them.
+    async fn takes_a_live_write_after_the_history(
+        member: &DirectSync,
+        host_device: [u8; 32],
+        state: Vec<Authored>,
+        first: NeighbourMsg,
+        second: NeighbourMsg,
+        keys: &key_group::ContentKeys,
+    ) {
+        use automerge::{AutoCommit, ROOT, ReadDoc as _};
+        // The later write comes live before the member has read the history that holds the
+        // earlier one.
         let (live, frames) = tokio::sync::mpsc::channel(1);
         live.try_send(Authored {
-            from: host.device(),
+            from: host_device,
             message: second,
             published: false,
         })
@@ -5325,13 +5342,13 @@ mod tests {
             for authored in state {
                 member.admit(authored.from, authored.message, true).await;
             }
-            member.admit(host.device(), first, true).await;
+            member.admit(host_device, first, true).await;
             in_hand.send_replace(true);
             drop(live);
         };
         let admit = LinkAdmit::dialling();
         tokio::join!(
-            member.admit_in_order(host.device(), &asks, None, frames, history, &admit),
+            member.admit_in_order(host_device, &asks, None, frames, history, &admit),
             reading_history
         );
 

@@ -618,6 +618,21 @@ impl std::fmt::Display for DraftRefusal {
     }
 }
 
+/// `ciphertext`, a checkpoint of `document`, naming each author's last write it holds, so a
+/// replica that founds the record from it waits for none of them.
+fn checkpoint_payload(
+    document: Option<&super::backend::StoredDocument>,
+    ciphertext: Vec<u8>,
+) -> Result<Vec<u8>, DraftRefusal> {
+    let floors = document
+        .into_iter()
+        .flat_map(|held| held.channel.last_seq_per_author.iter())
+        .map(|(author, seq)| (*author, *seq));
+    collab_types::SealedCheckpoint::new(floors, ciphertext)
+        .encode()
+        .map_err(|error| DraftRefusal::Refused(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,19 +951,4 @@ mod tests {
         };
         assert_eq!(heads(&receiver), heads(&peer), "both have every write");
     }
-}
-
-/// `ciphertext`, a checkpoint of `document`, naming each author's last write it holds, so a
-/// replica that founds the record from it waits for none of them.
-fn checkpoint_payload(
-    document: Option<&super::backend::StoredDocument>,
-    ciphertext: Vec<u8>,
-) -> Result<Vec<u8>, DraftRefusal> {
-    let floors = document
-        .into_iter()
-        .flat_map(|held| held.channel.last_seq_per_author.iter())
-        .map(|(author, seq)| (*author, *seq));
-    collab_types::SealedCheckpoint::new(floors, ciphertext)
-        .encode()
-        .map_err(|error| DraftRefusal::Refused(error.to_string()))
 }
