@@ -307,8 +307,7 @@ mod sys {
         Ok(())
     }
 
-    /// The standard library's lock is `flock` on Unix and `LockFileEx` on
-    /// Windows. `flock` restarts neither a wait nor an unlock interrupted by a
+    /// The lock is `flock` on Unix and `LockFileEx` on Windows. `flock` restarts neither a wait nor an unlock interrupted by a
     /// signal handler installed without `SA_RESTART`; resuming the same call is
     /// the documented response and says nothing about contention.
     fn resumed(mut call: impl FnMut() -> io::Result<()>) -> io::Result<()> {
@@ -320,19 +319,58 @@ mod sys {
         }
     }
 
+    /// `flock` itself on Unix: the standard library's file locks answer "not supported" on
+    /// Unix systems it does not list, Android among them, though their kernels have `flock`.
+    #[cfg(unix)]
+    fn flock(file: &File, operation: rustix::fs::FlockOperation) -> io::Result<()> {
+        rustix::fs::flock(file, operation).map_err(io::Error::from)
+    }
+
     pub(super) fn lock(file: &File, mode: LockMode) -> io::Result<()> {
-        resumed(|| match mode {
+        #[cfg(unix)]
+        let call = || {
+            flock(
+                file,
+                match mode {
+                    LockMode::Shared => rustix::fs::FlockOperation::LockShared,
+                    LockMode::Exclusive => rustix::fs::FlockOperation::LockExclusive,
+                },
+            )
+        };
+        #[cfg(not(unix))]
+        let call = || match mode {
             LockMode::Shared => file.lock_shared(),
             LockMode::Exclusive => file.lock(),
-        })
+        };
+        resumed(call)
+    }
+
+    #[cfg(unix)]
+    fn try_lock_once(file: &File, mode: LockMode) -> Result<(), TryLockError> {
+        let operation = match mode {
+            LockMode::Shared => rustix::fs::FlockOperation::NonBlockingLockShared,
+            LockMode::Exclusive => rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        };
+        match flock(file, operation) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                Err(TryLockError::WouldBlock)
+            }
+            Err(error) => Err(TryLockError::Error(error)),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn try_lock_once(file: &File, mode: LockMode) -> Result<(), TryLockError> {
+        match mode {
+            LockMode::Shared => file.try_lock_shared(),
+            LockMode::Exclusive => file.try_lock(),
+        }
     }
 
     pub(super) fn try_lock(file: &File, mode: LockMode) -> Result<(), TryLockError> {
         loop {
-            match match mode {
-                LockMode::Shared => file.try_lock_shared(),
-                LockMode::Exclusive => file.try_lock(),
-            } {
+            match try_lock_once(file, mode) {
                 Err(TryLockError::Error(error)) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
             }
@@ -354,6 +392,9 @@ mod sys {
     }
 
     pub(super) fn unlock(file: &File) -> io::Result<()> {
+        #[cfg(unix)]
+        return resumed(|| flock(file, rustix::fs::FlockOperation::Unlock));
+        #[cfg(not(unix))]
         resumed(|| file.unlock())
     }
 
