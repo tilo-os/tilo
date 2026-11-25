@@ -953,55 +953,8 @@ pub fn findings(
             format!("there is no committed {FILE}; write it with `tilolang surface`"),
         )),
         Some(committed) => {
-            let before_format = committed.format;
-            let before_reads = committed.reads.clone();
-            let committed: Vec<Value> = committed.resources.iter().map(filed).collect();
-            let reported: Vec<Value> = own.iter().map(filed).collect();
-            if before_reads != reads {
-                out.findings.push(finding(
-                    Level::Error,
-                    "surface",
-                    format!(
-                        "the code reads {:?} of other apps' resources and {FILE} reads {:?}; review it and write it with `tilolang surface`",
-                        reads, before_reads
-                    ),
-                ));
-            }
-            let old = keyed(&committed, "kind");
-            let new = keyed(&reported, "kind");
-            let mut changes = Vec::new();
-            for (kind, now) in &new {
-                let Some(before) = old.get(kind) else {
-                    changes.push(format!("new resource `{kind}`"));
-                    continue;
-                };
-                changes.extend(differences(kind, before, now, before_format));
-                let storage = incompatible(before, now);
-                let bumped = now.get("version").and_then(Value::as_u64)
-                    > before.get("version").and_then(Value::as_u64);
-                if !storage.is_empty() && !bumped {
-                    out.findings.push(finding(
-                        Level::Error,
-                        "storage",
-                        format!(
-                            "{kind} reads stored fields differently ({}) without a new storage version; bump `#[resource(version = N)]` and migrate older documents",
-                            storage.join(", ")
-                        ),
-                    ));
-                }
-            }
-            for kind in old.keys().filter(|kind| !new.contains_key(*kind)) {
-                changes.push(format!("resource `{kind}` is gone"));
-            }
-            if !changes.is_empty() {
-                out.findings.push(finding(
-                    Level::Error,
-                    "surface",
-                    format!(
-                        "the code's surface differs from {FILE} ({}); review it and write it with `tilolang surface`",
-                        changes.join("; ")
-                    ),
-                ));
+            for (level, rule, message) in drift(committed, &own, &reads) {
+                out.findings.push(finding(level, rule, message));
             }
         }
     }
@@ -1021,6 +974,66 @@ pub fn findings(
                 ..finding(Level::Error, "history-message", message)
             });
         }
+    }
+    out
+}
+
+/// How the code's surface differs from the committed `committed`: what it reads of other apps,
+/// its own resources' verbs and fields, and storage read differently without a version bump.
+fn drift(
+    committed: &Committed,
+    own: &[Value],
+    reads: &[String],
+) -> Vec<(Level, &'static str, String)> {
+    let mut out = Vec::new();
+    let before_format = committed.format;
+    let before_reads = &committed.reads;
+    let committed: Vec<Value> = committed.resources.iter().map(filed).collect();
+    let reported: Vec<Value> = own.iter().map(filed).collect();
+    if before_reads.as_slice() != reads {
+        out.push((
+            Level::Error,
+            "surface",
+            format!(
+                "the code reads {reads:?} of other apps' resources and {FILE} reads {before_reads:?}; review it and write it with `tilolang surface`"
+            ),
+        ));
+    }
+    let old = keyed(&committed, "kind");
+    let new = keyed(&reported, "kind");
+    let mut changes = Vec::new();
+    for (kind, now) in &new {
+        let Some(before) = old.get(kind) else {
+            changes.push(format!("new resource `{kind}`"));
+            continue;
+        };
+        changes.extend(differences(kind, before, now, before_format));
+        let storage = incompatible(before, now);
+        let bumped = now.get("version").and_then(Value::as_u64)
+            > before.get("version").and_then(Value::as_u64);
+        if !storage.is_empty() && !bumped {
+            out.push((
+                Level::Error,
+                "storage",
+                format!(
+                    "{kind} reads stored fields differently ({}) without a new storage version; bump `#[resource(version = N)]` and migrate older documents",
+                    storage.join(", ")
+                ),
+            ));
+        }
+    }
+    for kind in old.keys().filter(|kind| !new.contains_key(*kind)) {
+        changes.push(format!("resource `{kind}` is gone"));
+    }
+    if !changes.is_empty() {
+        out.push((
+            Level::Error,
+            "surface",
+            format!(
+                "the code's surface differs from {FILE} ({}); review it and write it with `tilolang surface`",
+                changes.join("; ")
+            ),
+        ));
     }
     out
 }
@@ -1366,7 +1379,7 @@ pub(crate) fn with_offers(manifest: &str, offers: &[Value]) -> String {
                 !matches!(
                     (key, value.as_str()),
                     ("kind", Some("undoable")) | ("operation", Some("effect"))
-                ) && !(key == "asks" && value.as_array().is_some_and(Vec::is_empty))
+                ) && (key != "asks" || !value.as_array().is_some_and(Vec::is_empty))
             }) else {
                 continue;
             };
