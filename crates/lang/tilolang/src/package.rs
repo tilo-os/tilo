@@ -314,6 +314,7 @@ fn emit_package(a: Analysis) -> Compiled {
     meta.templates = a.templates;
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
+    crate::stdlib::digest().clone_into(&mut meta.std);
     let wasm = codegen::emit(&a.ir, Some(&meta.to_json_bytes()));
     Compiled {
         wasm,
@@ -1025,6 +1026,7 @@ pub fn compile_block_for(
     };
     let bare = codegen::emit(&result.module, None);
     meta.module_hash = sha256_hex(&bare);
+    crate::stdlib::digest().clone_into(&mut meta.std);
     let wasm = codegen::emit(&result.module, Some(&meta.to_json_bytes()));
     let kind = match &result.ty {
         Ty::View => BlockKind::View,
@@ -1194,6 +1196,7 @@ pub fn compile_program_reading(
     };
     let bare = codegen::emit(&result.module, None);
     meta.module_hash = sha256_hex(&bare);
+    crate::stdlib::digest().clone_into(&mut meta.std);
     let wasm = codegen::emit(&result.module, Some(&meta.to_json_bytes()));
     Ok(CompiledProgram {
         wasm,

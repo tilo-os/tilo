@@ -19,9 +19,18 @@ pub(crate) fn verified_tilolang(
         .map(str::to_owned)
         .ok_or_else(|| format!("{} is no tilolang app", installed.id))?;
     let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
-    installed_runtime(&catalog, &runtime)?;
+    let runtime_root = installed_runtime(&catalog, &runtime)?;
+    // The standard library is the runtime's, proven with the rest of its payload just above.
+    let std_file = runtime_root.join(runtime_portal::process_link::STD_FILE);
+    let std = std::fs::read(&std_file).map_err(|error| {
+        format!(
+            "its runtime {runtime} carries no standard library ({}): {error}",
+            std_file.display()
+        )
+    })?;
     let module = runtime_portal::process_link::Module::read(&installed.payload_root)
-        .map_err(|error| format!("its module: {error}"))?;
+        .map_err(|error| format!("its module: {error}"))?
+        .with_std(std);
     Ok(crate::device::package_runs::Verified {
         app_runtime: manifest.runtime.clone().unwrap_or_default(),
         runtime,

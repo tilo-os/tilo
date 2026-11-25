@@ -507,6 +507,8 @@ dependencies = [
  "tilo-runtime-bundle",
  "tilo-settings-store",
  "tilo-test-env",
+ "tilolang",
+ "tilolang-tilo",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]

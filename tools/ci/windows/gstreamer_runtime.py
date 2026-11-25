@@ -383,7 +383,8 @@ def stage(out, wheels):
 IN_BUNDLE = (('bin/', 'bin/'), ('lib/gstreamer-1.0/', 'lib/gstreamer-1.0/'),
              ('libexec/', 'lib/libexec/'), ('licenses/', 'lib/licenses/'))
 # What a runtime bundle holds of its own, beside the closure.
-OWN = {'bin/tilolang-process.exe'}
+# The runtime's own files: its binary and the standard library its apps run beside.
+OWN = {'bin/tilolang-process.exe', 'lib/tilo.std.wasm'}
 
 
 def audit(bundle, staged):

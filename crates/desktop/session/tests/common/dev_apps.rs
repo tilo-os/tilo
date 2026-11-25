@@ -231,7 +231,7 @@ fn build_into(dir: &Path) {
                 search: vec![source.clone(), packages()],
                 out: out.clone(),
                 tilo_runtime: runtime().to_owned(),
-                tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+                tilolang_runtime: package::default_tilolang_runtime(),
                 version: "0.1.0".to_owned(),
                 locked: false,
             },
@@ -342,7 +342,7 @@ pub fn install_package(dir: &Path, store: &Path) -> String {
             search: vec![packages()],
             out: out.clone(),
             tilo_runtime: runtime().to_owned(),
-            tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+            tilolang_runtime: package::default_tilolang_runtime(),
             version: "0.1.0".to_owned(),
             locked: false,
         },
@@ -448,14 +448,19 @@ pub fn runtimes() -> &'static Runtimes {
                 .map(|(_, version)| version)
                 .unwrap_or_else(|| panic!("{runtime} names its version"))
         };
-        let tilolang = version(package::DEFAULT_TILOLANG_RUNTIME);
+        // It carries the standard library the apps are built against, which none of them does.
+        let tilolang = package::default_tilolang_runtime();
+        let (_, tilolang) = tilolang
+            .split_once('/')
+            .expect("the tilolang runtime names its version");
+        let std = package::write_std(&root).expect("the standard library the runtime carries");
         runtime_bundle::build_binaries_bundle(
             &bundles.join(tilolang),
             tilolang,
             None,
             Some(&key),
             &programs,
-            &[],
+            std::slice::from_ref(&std),
         )
         .expect("the tilolang runtime");
         // The libraries the programs load, as the loader resolves them on this machine: what the

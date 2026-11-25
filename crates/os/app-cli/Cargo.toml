@@ -85,6 +85,10 @@ launcher = { path = "../../core/launcher" }
 # A test's daemon installs the way the device's does, through the same changes
 # the cache's actions make.
 package-actions = { path = "../../core/package-actions" }
+# A tilolang package built against a standard library the device lacks installs with the
+# runtime that carries it, and opens on it.
+tilolang = { path = "../../lang/tilolang" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 
 [[test]]
 name = "it"

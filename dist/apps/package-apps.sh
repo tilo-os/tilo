@@ -157,9 +157,10 @@ if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 && $tools_built != 1 ]]; then
     (cd "$repo_root" && cargo build --profile "$tools_profile" --locked \
         -p tilo-app-package-cli -p tilo-runtime-bundle "${sdk_packages[@]}")
     if (( tilolang_apps > 0 )); then
-        # `tilolang build` stages, packs and signs each package's tapp.
+        # `tilolang build` stages, packs and signs each package's tapp; `tilolang-std`
+        # compiles the standard library the tilolang runtime bundle carries.
         (cd "$repo_root" && cargo build --profile "$tools_profile" --locked \
-            -p tilolang-cli --bin tilolang)
+            -p tilolang-cli --bin tilolang -p tilolang --bin tilolang-std)
     fi
 fi
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
@@ -357,6 +358,7 @@ if (( tilolang_apps > 0 )); then
     [[ -f $tilolang_bin ]] || { printf 'missing tilolang runtime binary: %s\n' "$tilolang_bin" >&2; exit 1; }
     tilolang_bundle="$out/runtime/tilolang/$tilolang_version"
     tilolang_bake_runtime "$release_dir/tilo-runtime-bundle" "$tilolang_bin" \
+        "$release_dir/tilolang-std" "$repo_root" \
         "$runtime_identity" "$tilolang_bundle" "$tilolang_version" \
         || { printf 'baking the tilolang runtime bundle failed\n' >&2; exit 1; }
     # `tilolang build` keeps each tapp's own name (`<last id segment>.tapp`); the collection

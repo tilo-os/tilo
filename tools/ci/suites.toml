@@ -743,6 +743,12 @@ readers = [
 ]
 
 [[cargo]]
+package = "app-cli"
+# The runtime fetch test builds an app against an edited copy of the standard library's source.
+inputs = ["crates/lang/tilolang/std/"]
+readers = ["crates/os/app-cli/tests/runtime_fetch.rs"]
+
+[[cargo]]
 package = "tilo-api"
 # The sign-in tests build a host's answers from the fixture file the API's image ships, so a
 # change to either checks and tests the other.
@@ -916,9 +922,13 @@ inputs = [
   "crates/sdk/tilo-app-window/locales/en-US.ftl",
   "crates/core/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.toml",
+  # The runtime's version is keyed alike by the packing's shell helper and by the crate.
+  "tools/apps/tilolang_packages.sh",
+  "crates/lang/tilolang-process/tilo-runtime.toml",
 ]
 readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",
+  "crates/lang/tilolang-tilo/src/lib.rs",
   "crates/lang/tilolang-tilo/src/platform_apps.rs",
   "crates/lang/tilolang-tilo/src/shell.rs",
   "crates/lang/tilolang-tilo/src/surface.rs",

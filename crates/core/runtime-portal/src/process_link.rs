@@ -562,6 +562,10 @@ pub struct Module {
     pub compiled: Vec<Vec<u8>>,
 }
 
+/// Where a tilolang runtime bundle keeps the standard library it carries, compiled: the library
+/// every package that names the runtime was compiled against, which no package carries itself.
+pub const STD_FILE: &str = "lib/tilo.std.wasm";
+
 impl Module {
     /// The module the package payload at `payload` holds.
     ///
@@ -594,6 +598,15 @@ impl Module {
             imports,
             compiled: Vec::new(),
         })
+    }
+
+    /// The module with `std`, the standard library its runtime carries ([`STD_FILE`]), first
+    /// among the packages it uses: the device compiles it once for every package on that runtime,
+    /// and the process runs the package beside it.
+    #[must_use]
+    pub fn with_std(mut self, std: Vec<u8>) -> Self {
+        self.imports.insert(0, std);
+        self
     }
 
     /// The module as the bytes its memfd holds.

@@ -415,3 +415,44 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     assert_eq!(window.own(), catalogues);
     assert!(window.library_rode_along());
 }
+
+/// A package runs beside the standard library it was compiled against: one built against another
+/// library is refused, saying which, where only the library this compiler ships is loaded; and the
+/// library a host was handed is the one its packages are held to.
+#[test]
+fn a_package_built_against_another_library_is_refused() {
+    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority};
+
+    let built_elsewhere =
+        |meta: &mut tilolang_runtime::Meta| meta.std = "0123456789abcdef".to_owned();
+    let mut meta = crate::common::counter_meta();
+    built_elsewhere(&mut meta);
+    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    let refused = rt
+        .load_package(&crate::common::counter_wasm(), meta.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("compiled against the standard library 0123456789abcdef")
+            && refused.contains(tilolang::stdlib::digest()),
+        "{refused}"
+    );
+
+    // Handed the library it was built against, it runs beside that one, and a package of the
+    // library shipped here is the one refused.
+    let library = tilolang::stdlib::compiled();
+    let mut handed = library.meta.clone();
+    built_elsewhere(&mut handed);
+    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    rt.reload_package(&library.wasm, handed).unwrap();
+    rt.load_package(&crate::common::counter_wasm(), meta)
+        .unwrap();
+    let here = rt
+        .load_package(&crate::common::list_wasm(), crate::common::list_meta())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        here.contains("this runtime carries 0123456789abcdef"),
+        "{here}"
+    );
+}

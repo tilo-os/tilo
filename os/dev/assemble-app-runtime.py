@@ -361,9 +361,10 @@ def source_membership(destination, digest, apps):
 def bake_tilolang_runtime(repo, target, profile, identity, runtime_root):
     """Bake the tilolang runtime bundle beside the Tilo runtime, as the image bakes it.
 
-    The bundle is its one binary alone (`--binaries-only` in
-    tools/apps/tilolang_packages.sh, the release's and the image's own packing): the
-    launcher runs it on the Tilo runtime its libraries come from. It is signed
+    The bundle is its one binary and the standard library its apps run beside
+    (`--binaries-only` in tools/apps/tilolang_packages.sh, the release's and the
+    image's own packing): the launcher runs it on the Tilo runtime its libraries
+    come from. It is signed
     by the identity that signed the Tilo runtime, so one publisher pin trusts both,
     and it lands at `/<version>`, where the launcher resolves the
     `tilolang/<version>` every package names. Returns the version baked."""
@@ -375,6 +376,7 @@ def bake_tilolang_runtime(repo, target, profile, identity, runtime_root):
         'tilolang_bake_runtime '
         f'{shlex.quote(str(target / "release/tilo-runtime-bundle"))} '
         f'{shlex.quote(str(target / profile_directory(profile) / "tilolang-process"))} '
+        f'{shlex.quote(str(target / "release/tilolang-std"))} {shlex.quote(str(repo))} '
         f'{shlex.quote(str(identity))} "$1/$version" "$version"',
         'printf "%s\\n" "$version"',
         '',
@@ -628,8 +630,9 @@ def prepare_tools(args, tilolang=False):
              '-p', 'app-cli']
     if tilolang:
         # `tilolang build`, which the image builds when its app set names a
-        # tilolang package.
-        tools += ['-p', 'tilolang-cli']
+        # tilolang package, and `tilolang-std`, which compiles the standard
+        # library its runtime bundle carries.
+        tools += ['-p', 'tilolang-cli', '-p', 'tilolang']
     if args.compiler_interface_out is not None:
         tools += ['-p', 'tilolang-cli']
     run(tools, env=tools_env)

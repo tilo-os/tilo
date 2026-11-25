@@ -17,19 +17,29 @@
 # build and sign the same things, so they share these functions rather than
 # each writing the invocation.
 #
-#   tilolang_runtime_version REPO
-#       The version the tilolang runtime bundle provides, from the manifest
-#       that declares it (the `tilolang/<version>` every package names in
-#       `optional-runtimes`).
+#   tilolang_std_digest REPO
+#       The digest of the standard library in REPO (crates/lang/tilolang/std):
+#       the first 16 hex digits of the SHA-256 of its app.tl followed by its
+#       app.ids, as `tilolang::stdlib::digest` takes it.
 #
-#   tilolang_bake_runtime BUNDLE_BIN BIN IDENTITY OUT VERSION [ARCH [LIBRARIES]]
+#   tilolang_runtime_version REPO
+#       The version the tilolang runtime bundle provides: the build its
+#       manifest declares, keyed by the standard library it carries
+#       (`<version>+tilolang.<std digest>`, the `tilolang/<version>` every
+#       package built from REPO names in `optional-runtimes`).
+#
+#   tilolang_bake_runtime BUNDLE_BIN BIN STD_TOOL REPO IDENTITY OUT VERSION [ARCH [LIBRARIES]]
 #       Build the signed bundle of the thin `tilolang-process` binary BIN into
 #       OUT (which becomes `<runtime root>/<version>`). The bundle holds the
-#       binary alone (`--binaries-only`): the launcher runs it on the Tilo
-#       runtime its libraries come from, so a loader set of its own is never
-#       read. A Mac's runtime names the architectures of its universal binary
-#       in ARCH (`aarch64+x86_64`) and brings the libraries it loads relative
-#       to itself as the directory LIBRARIES, kept as `lib/<its name>/`.
+#       binary (`--binaries-only`) and the standard library every package on
+#       it runs beside, compiled from REPO by the host tool STD_TOOL
+#       (`tilolang-std`, built for the machine that bakes: the module is wasm,
+#       the same for every device) and kept as `lib/tilo.std.wasm`; a VERSION
+#       keyed by another library is refused. The launcher runs the binary on
+#       the Tilo runtime its libraries come from, so a loader set of its own is
+#       never read. A Mac's runtime names the architectures of its universal
+#       binary in ARCH (`aarch64+x86_64`) and brings the libraries it loads
+#       relative to itself as the directory LIBRARIES, kept as `lib/<its name>/`.
 #
 #   tilolang_build_package TILOLANG_BIN REPO DIR NAME OUT IDENTITY VERSION TILO_RUNTIME [ID]
 #       Compile the package at REPO/DIR with the packages it uses (searching
@@ -45,17 +55,32 @@ tilolang_die() {
     return 1
 }
 
+tilolang_std_digest() {
+    local std="$1/crates/lang/tilolang/std" digest
+    [ -f "$std/app.tl" ] && [ -f "$std/app.ids" ] \
+        || { tilolang_die "no standard library at $std"; return 1; }
+    if command -v sha256sum >/dev/null; then
+        digest=$(cat "$std/app.tl" "$std/app.ids" | sha256sum | cut -c1-16)
+    else
+        digest=$(cat "$std/app.tl" "$std/app.ids" | shasum -a 256 | cut -c1-16)
+    fi
+    [ ${#digest} -eq 16 ] || { tilolang_die "could not hash the standard library at $std"; return 1; }
+    printf '%s\n' "$digest"
+}
+
 tilolang_runtime_version() {
-    local repo=$1 manifest version
+    local repo=$1 manifest version digest
     manifest="$repo/crates/lang/tilolang-process/tilo-runtime.toml"
     [ -f "$manifest" ] || { tilolang_die "no $manifest"; return 1; }
     version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' "$manifest" | head -1)
     [ -n "$version" ] || { tilolang_die "$manifest provides no tilolang version"; return 1; }
-    printf '%s\n' "$version"
+    digest=$(tilolang_std_digest "$repo") || return 1
+    printf '%s.%s\n' "$version" "$digest"
 }
 
 tilolang_bake_runtime() {
-    local bundle_bin=$1 bin=$2 identity=$3 out=$4 version=$5 arch=${6:-} libraries=${7:-}
+    local bundle_bin=$1 bin=$2 std_tool=$3 repo=$4 identity=$5 out=$6 version=$7
+    local arch=${8:-} libraries=${9:-} work digest
     [ -n "$version" ] || { tilolang_die "a tilolang runtime bundle needs its version"; return 1; }
     local extra=()
     [ -z "$arch" ] || extra+=(--arch "$arch")
@@ -65,10 +90,21 @@ tilolang_bake_runtime() {
     fi
     [ -f "$bin" ] || { tilolang_die "no tilolang runtime binary at $bin"; return 1; }
     [ -x "$bin" ] || chmod +x "$bin"
+    [ -x "$std_tool" ] || { tilolang_die "no standard library compiler at $std_tool"; return 1; }
+    work=$(mktemp -d) || return 1
+    digest=$("$std_tool" "$repo/crates/lang/tilolang/std" --out "$work/tilo.std.wasm") \
+        || { rm -rf -- "$work"; tilolang_die "the standard library in $repo does not compile"; return 1; }
+    if [ "${version##*+tilolang.}" != "$digest" ]; then
+        rm -rf -- "$work"
+        tilolang_die "the runtime $version is keyed by another standard library than $repo's ($digest)"
+        return 1
+    fi
     rm -rf -- "$out"
     "$bundle_bin" build --binaries-only --version "$version" --out "$out" \
-        --include-bin "$bin" --identity "$identity" "${extra[@]}" >/dev/null \
-        || { tilolang_die "could not bake the tilolang runtime bundle $version"; return 1; }
+        --include-bin "$bin" --include "$work/tilo.std.wasm" --identity "$identity" \
+        "${extra[@]}" >/dev/null \
+        || { rm -rf -- "$work"; tilolang_die "could not bake the tilolang runtime bundle $version"; return 1; }
+    rm -rf -- "$work"
 }
 
 tilolang_build_package() {

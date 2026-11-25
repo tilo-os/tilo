@@ -118,6 +118,16 @@ pub enum LaunchError {
     )]
     RuntimeBundleSignature { path: PathBuf, reason: String },
     #[error(
+        "the tilolang runtime `{runtime}` at {path} carries no standard library ({file}), which \
+         every tilolang app on it runs beside: bake the runtime again with \
+         `tilolang_bake_runtime`, or install it again with an app that names it"
+    )]
+    RuntimeStdMissing {
+        runtime: String,
+        path: PathBuf,
+        file: &'static str,
+    },
+    #[error(
         "`{desktop_id}` is a host application, not a Tilo package: it has no manifest, so \
          there is no sandbox to build for it. Launch it with `tilo-launcher machine-app \
          --desktop-id {desktop_id}`, which runs it unconfined and says so."
@@ -754,6 +764,44 @@ pub fn runtime_installed(raw: &str) -> bool {
             .iter()
             .any(|cand| cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists())
     })
+}
+
+/// The standard library the tilolang runtime `raw` (`tilolang/<version>`) carries
+/// ([`runtime_portal::process_link::STD_FILE`]), read from its bundle where a launch finds it and
+/// proven as a launch proves that bundle: its signed manifest, and the library's bytes against
+/// the hash the manifest lists. `None` when the runtime is not installed here.
+///
+/// # Errors
+/// A malformed reference, a bundle that does not verify, or one that carries no library.
+pub fn runtime_std(raw: &str) -> Result<Option<Vec<u8>>, LaunchError> {
+    let (version, candidates) = runtime_lookup(raw)?;
+    let system = runtime_bundle::system_bundle_path(version);
+    let Some(dir) = candidates
+        .into_iter()
+        .find(|cand| cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists())
+    else {
+        return Ok(None);
+    };
+    let manifest = verified_bundle(&dir, &LaunchOptions::default(), dir == system)?;
+    let file = runtime_portal::process_link::STD_FILE;
+    let missing = || LaunchError::RuntimeStdMissing {
+        runtime: raw.to_owned(),
+        path: dir.clone(),
+        file,
+    };
+    let listed = manifest
+        .files
+        .iter()
+        .find(|listed| listed.path == file)
+        .ok_or_else(missing)?;
+    let bytes = std::fs::read(dir.join(file)).map_err(|_| missing())?;
+    if blake3::hash(&bytes).to_hex().as_str() != listed.hash {
+        return Err(LaunchError::RuntimeBundleSignature {
+            path: dir.clone(),
+            reason: format!("{file} is not the file its manifest lists"),
+        });
+    }
+    Ok(Some(bytes))
 }
 
 /// Where to look for runtime `version`, in order.

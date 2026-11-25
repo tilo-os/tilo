@@ -211,7 +211,7 @@ impl Runtime {
     /// `Package` for a module that does not link, lacks a declared export, or reuses another
     /// package's declaration ids.
     pub fn load_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
-        self.load_library(&meta.app)?;
+        self.load_library(&meta)?;
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm, crate::words::WordsRole::Window);
         self.check_exports(&hash, &meta)?;
@@ -236,7 +236,7 @@ impl Runtime {
     ///
     /// As [`Runtime::load_package`]; the old version stays loaded when the new one is refused.
     pub fn reload_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
-        self.load_library(&meta.app)?;
+        self.load_library(&meta)?;
         let hash = self.core.engine.compile(wasm)?;
         // The version loaded now brings its own words: a package reloaded after its catalogues
         // were translated reads them, not the ones it was loaded with before. The window's own
@@ -274,21 +274,46 @@ impl Runtime {
         self.core.store.borrow_mut().loaded_types(&types);
     }
 
-    /// The standard library, `tilo.std`, loaded here as the compiler ships it, beside the package
-    /// of `app` that is being loaded. Every package compiles against it: its views travel to each
-    /// as templates it expands where it calls them, and its `fn`s are code a package calls where
-    /// it is (`std.reactions_said(keys)`), which runs only with the library loaded beside it. Its
+    /// The standard library, `tilo.std`, beside the package `meta` describes, which was compiled
+    /// against it ([`Meta::std`]). Every package compiles against it: its views travel to each as
+    /// templates it expands where it calls them, and its `fn`s are code a package calls where it
+    /// is (`std.reactions_said(keys)`), which runs only with the library loaded beside it. Its
     /// words ride along in the window's language, since a window shows some other package's views
     /// and never the library's own.
     ///
+    /// A host handed the library's module (a tilolang runtime bundle carries the one its packages
+    /// were built against, and the device hands it over before them) runs every package beside
+    /// that one; any other host loads the library the compiler here ships. Either way a package
+    /// compiled against another library is refused: its code calls functions and expands
+    /// templates of the library it was built with, which are not the ones here. It runs on the
+    /// tilolang runtime keyed by its library (`tilolang/<version>+tilolang.<digest>`).
+    ///
     /// # Errors
     ///
-    /// A message when the library's module does not compile or link here, which is a bug: the
+    /// `Package` for a package compiled against another library than the one here; a message
+    /// when the shipped library's module does not compile or link here, which is a bug: the
     /// library ships with the compiler that built this runtime.
-    fn load_library(&self, app: &str) -> Result<(), RuntimeError> {
-        if app == tilolang::stdlib::APP
-            || self.core.registry.borrow().holds_app(tilolang::stdlib::APP)
-        {
+    fn load_library(&self, meta: &Meta) -> Result<(), RuntimeError> {
+        if meta.app == tilolang::stdlib::APP {
+            return Ok(());
+        }
+        let held = self
+            .core
+            .registry
+            .borrow()
+            .packages()
+            .iter()
+            .find(|package| package.meta.app == tilolang::stdlib::APP)
+            .map(|library| library.meta.std.clone());
+        let here = held
+            .clone()
+            .unwrap_or_else(|| tilolang::stdlib::digest().to_owned());
+        if meta.std != here {
+            return Err(RuntimeError::Package(other_library(
+                &meta.app, &meta.std, &here,
+            )));
+        }
+        if held.is_some() {
             return Ok(());
         }
         let compiled = tilolang::stdlib::compiled();
@@ -415,7 +440,7 @@ impl Runtime {
     ///
     /// As [`Runtime::load_package`].
     pub fn load_foreign_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
-        self.load_library(&meta.app)?;
+        self.load_library(&meta)?;
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm, crate::words::WordsRole::Used);
         self.check_exports(&hash, &meta)?;
@@ -2281,4 +2306,21 @@ pub struct Reading {
     /// Whether they read the clock, the window's space or the person's view state: the answer
     /// moves without the workspace moving, so it is not kept.
     pub beyond: bool,
+}
+
+/// Why a package compiled against the standard library `built` does not load on a runtime that
+/// carries `here`.
+fn other_library(app: &str, built: &str, here: &str) -> String {
+    if built.is_empty() {
+        format!(
+            "{app} records no standard library it was compiled against: build it again with this \
+             Tilo, whose runtime carries the standard library {here}"
+        )
+    } else {
+        format!(
+            "{app} was compiled against the standard library {built}, and this runtime carries \
+             {here}: it runs on the tilolang runtime built for its library \
+             (`tilolang/<version>+tilolang.{built}`), or here once it is built again with this Tilo"
+        )
+    }
 }

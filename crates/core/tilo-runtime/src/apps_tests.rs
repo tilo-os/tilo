@@ -798,7 +798,7 @@ view value(v: Value) {
             search: Vec::new(),
             out: root.join("stage"),
             tilo_runtime: tilolang_cli::package::DEFAULT_TILO_RUNTIME.to_owned(),
-            tilolang_runtime: tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+            tilolang_runtime: tilolang_cli::package::default_tilolang_runtime(),
             version: "0.1.0".to_owned(),
             locked: false,
         };
@@ -814,8 +814,8 @@ view value(v: Value) {
         environment.set("WAYLAND_DISPLAY", &display);
         let runtimes = root.join("runtimes");
         for package in [
-            tilolang_cli::package::DEFAULT_TILO_RUNTIME,
-            tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME,
+            tilolang_cli::package::DEFAULT_TILO_RUNTIME.to_owned(),
+            tilolang_cli::package::default_tilolang_runtime(),
         ] {
             let version = package.split_once('/').unwrap().1;
             std::fs::create_dir_all(runtimes.join(version)).unwrap();

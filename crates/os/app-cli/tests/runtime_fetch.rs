@@ -853,3 +853,312 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
     assert!(app_cli::runtime_installed(&engine_ref));
     assert!(app_cli::runtime_installed(&device_ref));
 }
+
+/// What a child of this test writes when it builds against the edited library: where the build
+/// lands. The child is this test run again, so its process compiles with that library alone.
+const EDITED_BUILD: &str = "TILO_TEST_EDITED_STD_BUILD";
+
+const EDITED_APP_ID: &str = "so.tilo.edited";
+
+/// A package that says what the standard library makes of a reaction.
+const EDITED_APP: &str = r#"app so.tilo.edited "Edited library"
+
+/// What the window shows.
+type Board {
+    name: Text = ""
+}
+
+root Board
+
+default view board for Board
+
+/// The board's window: the reactions the library says.
+view board(b: Board) {
+    ui.Text(std.reactions_said(["x:1f"]))
+}
+"#;
+
+/// The standard library with an edit: its reactions say so. Built against it, a package records
+/// another library than the one this build carries, and runs only on the runtime that carries it.
+fn edit_library(dir: &Path) {
+    let std = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lang/tilolang/std");
+    std::fs::create_dir_all(dir).unwrap();
+    let source = std::fs::read_to_string(std.join("app.tl")).unwrap();
+    let said = "    each_said(keys.map(k -> emoji_of(k)), 0, [])\n";
+    assert!(source.contains(said), "the library says its reactions");
+    std::fs::write(
+        dir.join("app.tl"),
+        source.replace(
+            said,
+            "    \"edited: {each_said(keys.map(k -> emoji_of(k)), 0, [])}\"\n",
+        ),
+    )
+    .unwrap();
+    std::fs::copy(std.join("app.ids"), dir.join("app.ids")).unwrap();
+}
+
+/// In the child: compile the edited library and the package against it, as `tilolang build` and
+/// `tilolang-std` do in a checkout that holds the edit, into `out`: the package's payload, the
+/// library's module and its digest.
+fn build_against_edited_library(out: &Path) {
+    tilolang::stdlib::load_from(&out.join("std")).unwrap();
+    let source = out.join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("app.tl"), EDITED_APP).unwrap();
+    let bundles = tilolang_tilo::bundle::compiled(&source, &[]).unwrap();
+    let app = bundles.last().unwrap();
+    assert_eq!(app.meta.std, tilolang::stdlib::digest());
+    app.write_installed(&out.join("payload")).unwrap();
+    std::fs::write(
+        out.join("tilo.std.wasm"),
+        &tilolang::stdlib::compiled().wasm,
+    )
+    .unwrap();
+    std::fs::write(out.join("digest"), tilolang::stdlib::digest()).unwrap();
+}
+
+/// The signed package of the tilolang app whose payload is `payload`, as `tilolang build` writes
+/// its manifest: it runs on the device's Tilo runtime `runtime` and executes the tilolang runtime
+/// `tilolang`, which it requires.
+fn tilolang_app_tapp(payload: &Path, runtime: &str, tilolang: &str) -> Vec<u8> {
+    tapp(
+        &format!(
+            r#"
+[package]
+id = "{EDITED_APP_ID}"
+version = "1.0.0"
+kind = "app"
+name = "Edited library"
+runtime = "{runtime}"
+optional-runtimes = ["{tilolang}"]
+
+[package.isa]
+{isa}
+
+[publisher]
+identity = "ed25519:{key}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+runtime = "{tilolang}"
+bin = "bin/tilolang-process"
+type = "gui"
+"#,
+            isa = manifest_isa(),
+            key = hex::encode(publisher().verifying_key().to_bytes()),
+        ),
+        payload,
+    )
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one device and registry: the build, the install that fetches the runtime and the open"
+)]
+fn a_package_built_against_another_library_fetches_the_runtime_that_carries_it_and_opens() {
+    if let Some(out) = std::env::var_os(EDITED_BUILD) {
+        build_against_edited_library(Path::new(&out));
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let owner = SigningKey::from_bytes(&[22_u8; 32]);
+
+    // A checkout whose library has an edit builds the package, in a process of its own: this one
+    // keeps the library the device's own tilolang runtime carries.
+    let built = root.join("edited");
+    edit_library(&built.join("std"));
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime_fetch::a_package_built_against_another_library_fetches_the_runtime_that_carries_it_and_opens",
+            "--nocapture",
+        ])
+        .env(EDITED_BUILD, &built)
+        .output_locked()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "the package builds against the edited library: {}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let edited = std::fs::read_to_string(built.join("digest")).unwrap();
+    assert_ne!(
+        edited,
+        tilolang::stdlib::digest(),
+        "the edit is another library"
+    );
+    let needed = tilolang_tilo::runtime_of(&edited);
+    assert_ne!(needed, tilolang_tilo::runtime());
+    let package_bytes = |dir: &Path| {
+        let mut size = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            size += entry.metadata().unwrap().len();
+        }
+        size
+    };
+    assert!(
+        !built.join("payload/imports").exists()
+            && package_bytes(&built.join("payload")) < 64 * 1024,
+        "the package carries no library of its own"
+    );
+
+    let runtime_identity = runtime_bundle::Identity::generate();
+    let identity_path = root.join("runtime-publisher.json");
+    std::fs::write(&identity_path, runtime_identity.to_json_bytes()).unwrap();
+    let trust = root.join("trusted-runtime-publishers.txt");
+    std::fs::write(&trust, format!("{}\n", runtime_identity.public_key_hex())).unwrap();
+    let (device_version, device_bundle) = runtime_bundle(
+        root,
+        "device",
+        b"toolkit the image was built with",
+        &identity_path,
+    );
+    let runtimes = root.join("runtimes");
+    std::fs::create_dir_all(&runtimes).unwrap();
+    std::fs::rename(&device_bundle, runtimes.join(&device_version)).unwrap();
+    runtime_bundle::gc::BundleRoot::new(&runtimes)
+        .pin(&device_version)
+        .unwrap();
+    let device_runtime = format!("tilo-runtime/{device_version}");
+
+    // The tilolang runtime of the edited library, as the packing bakes it: the host binary and
+    // the library, signed, offered by the registry as a runtime package.
+    let host = root.join("tilolang-process");
+    std::fs::write(&host, b"#!/bin/true\n").unwrap();
+    std::fs::set_permissions(&host, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let edited_bundle = root.join("tilolang-edited");
+    runtime_bundle::build_binaries_bundle(
+        &edited_bundle,
+        needed.split_once('/').unwrap().1,
+        None,
+        Some(&identity_path),
+        &[host],
+        &[built.join("tilo.std.wasm")],
+    )
+    .unwrap();
+    let served = Served::default();
+    let base = format!("http://127.0.0.1:{}", served.start());
+    let app = tilolang_app_tapp(&built.join("payload"), &device_runtime, &needed);
+    let runtime =
+        runtime_package_tapp(&edited_bundle, "so.tilo.runtime.tilolang", &needed, "0.1.0");
+    served.put("/edited.tapp", app.clone());
+    served.put("/tilolang.tapp", runtime.clone());
+    let entries = vec![
+        entry(
+            EDITED_APP_ID,
+            "1.0.0",
+            &format!("{base}/edited.tapp"),
+            &app,
+            &device_runtime,
+        ),
+        entry(
+            "so.tilo.runtime.tilolang",
+            "0.1.0",
+            &format!("{base}/tilolang.tapp"),
+            &runtime,
+            &needed,
+        ),
+    ];
+    served.put(
+        "/entries",
+        serde_json::to_vec(&snapshot(entries, &owner, None)).unwrap(),
+    );
+    let data = tempfile::tempdir().unwrap();
+    let device = Device::new(
+        Some(registry_config("local", &base, &owner)),
+        &[
+            ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
+            ("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust),
+            ("XDG_DATA_HOME", data.path()),
+        ],
+    );
+    let _daemon = Daemon::start(device.apps.path());
+    assert!(
+        !app_cli::runtime_installed(&needed),
+        "the device lacks the edited library"
+    );
+
+    // The install fetches the runtime the package names, as it fetches any it requires.
+    let listing = app_cli::available();
+    let offer = listing
+        .apps
+        .iter()
+        .find(|app| app.package_id == EDITED_APP_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "the app is offered: {:?}, unreachable {:?}",
+                listing
+                    .apps
+                    .iter()
+                    .map(|app| &app.package_id)
+                    .collect::<Vec<_>>(),
+                listing.unreachable
+            )
+        })
+        .clone();
+    app_cli::install::install_app(&offer).unwrap();
+    assert!(
+        app_cli::runtime_installed(&needed),
+        "the runtime came with the app"
+    );
+
+    // Opened as the device opens it: the installation verified as a launch verifies it, its
+    // module beside the library the runtime carries, and its window drawn on that library.
+    let installed = package_store::find_installed(EDITED_APP_ID)
+        .unwrap()
+        .unwrap();
+    let instance = launcher::run::tilolang_process::verified_instance(
+        &installed,
+        &installed.manifest_path,
+        &installed.payload_root,
+        &installed.package_id_hex,
+    )
+    .unwrap();
+    assert_eq!(instance.runtime, needed);
+    let module = instance.module;
+    let bundle =
+        tilolang_tilo::bundle::Bundle::from_parts(module.wasm, module.ids, &module.imports)
+            .unwrap();
+    let library = bundle
+        .imports
+        .first()
+        .expect("the runtime's library comes first");
+    assert_eq!(library.meta.app, tilolang::stdlib::APP);
+    assert_eq!(library.meta.std, edited);
+    let viewer =
+        tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
+    let window = tilolang_tilo::host::Host::new(viewer.clone(), || None).unwrap();
+    window.load_bundle(&bundle).unwrap();
+    window.root_of(EDITED_APP_ID).unwrap();
+    let view = window.open_main(EDITED_APP_ID).unwrap();
+    let shown = format!("{:?}", view.tree());
+    assert!(
+        shown.contains("edited: x 1"),
+        "the window runs the edited library's code: {shown}"
+    );
+
+    // A host that has only the library this build carries refuses the package, and says why.
+    let carried = tilolang_tilo::bundle::Bundle::read(&installed.payload_root).unwrap();
+    let elsewhere = tilolang_tilo::host::Host::new(viewer, || None).unwrap();
+    let refused = elsewhere
+        .load_bundle(&carried)
+        .map(drop)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains(&format!("compiled against the standard library {edited}"))
+            && refused.contains(tilolang::stdlib::digest()),
+        "{refused}"
+    );
+}

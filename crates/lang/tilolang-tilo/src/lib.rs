@@ -13,8 +13,21 @@
 //!   its window component patches and taking what the person did;
 
 /// The tilolang runtime this build is, as a package's manifest names the runtime its code runs
-/// on: `tilolang/<version>+tilolang`, the build `tilolang-process/tilo-runtime.toml` provides.
-pub const RUNTIME: &str = concat!("tilolang/", env!("CARGO_PKG_VERSION"), "+tilolang");
+/// on: [`runtime_of`] the standard library it compiles with.
+#[must_use]
+pub fn runtime() -> String {
+    runtime_of(tilolang::stdlib::digest())
+}
+
+/// The tilolang runtime that carries the standard library `std` (its
+/// [`tilolang::stdlib::digest`]): `tilolang/<version>+tilolang.<std>`, the build
+/// `tilolang-process/tilo-runtime.toml` provides (`tilolang/<version>+tilolang`) keyed by the
+/// library it carries. A package compiled against one library runs on that runtime alone, and a
+/// device that lacks it fetches it as it fetches any runtime a package requires.
+#[must_use]
+pub fn runtime_of(std: &str) -> String {
+    format!("tilolang/{}+tilolang.{std}", env!("CARGO_PKG_VERSION"))
+}
 
 pub mod action;
 pub mod authority;
@@ -65,3 +78,31 @@ pub use tilolang;
 pub use tilolang::HOST_APP;
 /// The runtime, for hosts that drive views and read values.
 pub use tilolang_runtime as runtime;
+
+#[cfg(test)]
+mod tests {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    /// The scripts that bake the runtime and the packages that name it key it alike: the shell
+    /// helper every packing sources (`tools/apps/tilolang_packages.sh`) names the version this
+    /// build's packages name, from the same tree's manifest and standard library.
+    #[test]
+    fn the_shell_names_the_runtime_this_build_names() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(r#"set -euo pipefail; . "$1/tools/apps/tilolang_packages.sh"; tilolang_runtime_version "$1""#)
+            .arg("bash")
+            .arg(&repo)
+            .output_locked()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let version = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(format!("tilolang/{}", version.trim()), super::runtime());
+        assert!(super::runtime().ends_with(&format!(".{}", tilolang::stdlib::digest())));
+    }
+}

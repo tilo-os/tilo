@@ -409,6 +409,7 @@ if [[ -f $tilolang_bin ]]; then
         say "baking the tilolang runtime bundle"
         mkdir -p "$state/work"
         tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" \
+            "$bin/tilolang-std" "$repo_root" \
             "$identity" "$state/work/tilolang" "$tilolang_version" \
             || die "could not bake the tilolang runtime bundle"
         rm -rf "$runtimes/$tilolang_version"
