@@ -239,21 +239,29 @@ impl NativeDevice {
         }
     }
 
-    /// `frame` of `route`, sealed under the group's current epoch.
+    /// `frame` of `route`, sealed under the group's current epoch: the payload a write of it
+    /// carries, a checkpoint's naming no earlier write it holds.
     pub fn seal(
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
         frame: &[u8],
     ) -> (EncryptionMetadata, Vec<u8>) {
-        self.peer
+        let retention = collab_types::ContentRetention::of_frame(frame);
+        let (metadata, sealed) = self
+            .peer
             .content_keys()
             .unwrap()
             .seal_content(
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.document),
-                collab_types::ContentRetention::of_frame(frame),
+                retention,
                 frame,
             )
-            .unwrap()
+            .unwrap();
+        if retention == collab_types::ContentRetention::Checkpoint {
+            let checkpoint = collab_types::SealedCheckpoint::new([], sealed);
+            return (metadata, checkpoint.encode().unwrap());
+        }
+        (metadata, sealed)
     }
 
     /// Publish `op`, signed by this device, as its write of `route`.
@@ -303,7 +311,8 @@ impl NativeDevice {
             .as_ref()
             .expect("a sealed record is never written in the clear");
         let keys = self.peer.content_keys()?;
-        match keys.open_content(op.artifact, metadata, &op.payload) {
+        let ciphertext = collab_types::sealed_ciphertext(op).expect("a sealed write's ciphertext");
+        match keys.open_content(op.artifact, metadata, &ciphertext) {
             Ok(clear) => Some(clear.to_vec()),
             Err(key_group::Error::MissingContentKey(_)) => None,
             Err(error) => panic!("the write does not open: {error}"),

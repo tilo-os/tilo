@@ -570,12 +570,15 @@ mod tests {
     /// The root key of the person whose device a peer's edits are signed by.
     const EDITOR: [u8; 32] = [5; 32];
 
-    /// A peer's `sequence`-th edit of `record` in `workspace`, setting its title.
+    /// A peer's `sequence`-th edit of `record` in `workspace`, setting its title, sealed as a
+    /// workspace's every write is.
     fn edit(workspace: &str, record: &str, sequence: u64, title: &str) -> SignedOp {
-        use collab_types::{OpKind, field_edit_mutation, sign_op};
+        use collab_types::{
+            ContentRetention, EncryptionMetadata, OpKind, field_edit_mutation, sign_op,
+        };
         let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
         let (mutation, _) = field_edit_mutation("note", "title", title, &EDITOR).unwrap();
-        let mut op = SignedOp::new_unsigned(
+        let mut op = SignedOp::new_unsigned_with_encryption(
             mutation.encode().unwrap(),
             document_artifact_id(CHAT, workspace, record),
             Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
@@ -583,6 +586,7 @@ mod tests {
             OpKind::Change,
             tilo_clock::wall(),
             sequence,
+            EncryptionMetadata::content_key(1, ContentRetention::Delta),
         );
         sign_op(&mut op, &key).unwrap();
         op

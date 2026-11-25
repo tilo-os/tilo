@@ -111,9 +111,9 @@ pub use commit::{
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SEGMENTED_COMPACTION_VERSION,
-    SealedCompaction, SealedCompactionSegment, encode_compaction_payload, hash_op_prefix,
-    hash_sealed_prefix, is_compaction_piece, is_compaction_segment, parse_compaction_payload,
-    sealed_ciphertext, segment_hash,
+    SealedCheckpoint, SealedCompaction, SealedCompactionSegment, encode_compaction_payload,
+    hash_op_prefix, hash_sealed_prefix, is_compaction_piece, is_compaction_segment,
+    is_sealed_checkpoint, parse_compaction_payload, sealed_ciphertext, segment_hash,
 };
 pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,

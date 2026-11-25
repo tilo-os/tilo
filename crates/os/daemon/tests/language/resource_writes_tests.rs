@@ -271,6 +271,14 @@ impl Writer {
         let author =
             collab_types::Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes());
         self.seq = self.seq.saturating_add(1);
+        // A founding checkpoint holds no write before it.
+        let payload = if founding {
+            collab_types::SealedCheckpoint::new([], payload)
+                .encode()
+                .unwrap()
+        } else {
+            payload
+        };
         let mut envelope = SignedOp::new_unsigned_with_encryption(
             payload,
             artifact,

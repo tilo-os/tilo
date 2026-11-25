@@ -77,16 +77,25 @@ impl HistoryKeys {
         let retention = metadata
             .retention()
             .ok_or("the write is not sealed with a content key")?;
-        let plaintext = self
-            .0
-            .open_content(envelope.artifact, &metadata, &envelope.payload)
-            .map_err(|error| error.to_string())?;
         if metadata.epoch == self.0.epoch() {
             return Ok((metadata, envelope.payload.clone()));
         }
-        self.0
+        let plaintext = self.open(envelope)?;
+        let (metadata, ciphertext) = self
+            .0
             .seal_content(envelope.artifact, retention, &plaintext)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        // A checkpoint renewed still names the writes it holds.
+        if collab_types::is_sealed_checkpoint(envelope) {
+            let floors = collab_types::SealedCheckpoint::parse(envelope)
+                .map_err(|error| error.to_string())?
+                .floors;
+            let payload = collab_types::SealedCheckpoint::new(floors, ciphertext)
+                .encode()
+                .map_err(|error| error.to_string())?;
+            return Ok((metadata, payload));
+        }
+        Ok((metadata, ciphertext))
     }
 }
 

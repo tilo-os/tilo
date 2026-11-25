@@ -453,19 +453,107 @@ pub fn hash_sealed_prefix<'a>(
     hash_ops(ops)
 }
 
+/// A sealed checkpoint's payload: the whole record as its writer saved it,
+/// sealed, and the last write of each author it holds. A replica that holds
+/// no key reads the floors alone: a write an author numbered past the next
+/// one after its floor waits for the writes between, and one at or under it
+/// is history the checkpoint already holds, so a device never waits for a
+/// write a checkpoint folded in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealedCheckpoint {
+    /// Each author's last write the checkpoint holds, by author.
+    pub floors: Vec<(Ed25519PublicKey, u64)>,
+    /// The record's snapshot, sealed under the channel's content key.
+    #[serde(with = "serde_bytes")]
+    pub ciphertext: Vec<u8>,
+}
+
+impl SealedCheckpoint {
+    /// The checkpoint of `ciphertext` holding each author's writes up to
+    /// `floors`.
+    #[must_use]
+    pub fn new(
+        floors: impl IntoIterator<Item = (Ed25519PublicKey, u64)>,
+        ciphertext: Vec<u8>,
+    ) -> Self {
+        let mut floors: Vec<_> = floors.into_iter().filter(|(_, seq)| *seq > 0).collect();
+        // Each author once, at the highest write named for them.
+        floors.sort_by(|(a, a_seq), (b, b_seq)| a.cmp(b).then(b_seq.cmp(a_seq)));
+        floors.dedup_by_key(|(author, _)| *author);
+        Self { floors, ciphertext }
+    }
+
+    /// The payload an op carries for it.
+    ///
+    /// # Errors
+    ///
+    /// The checkpoint does not encode.
+    pub fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(self)
+    }
+
+    /// Decode `op` as a sealed checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// `op` is no sealed checkpoint ([`is_sealed_checkpoint`]), or its
+    /// payload is not one.
+    pub fn parse(op: &SignedOp) -> Result<Self, CompactionError> {
+        if !is_sealed_checkpoint(op) {
+            return Err(CompactionError::InvalidSealed("not a sealed checkpoint"));
+        }
+        from_canonical_bytes(&op.payload).map_err(CompactionError::Malformed)
+    }
+
+    /// The last write of `author` the checkpoint `op` holds, 0 for none,
+    /// read without copying its snapshot.
+    ///
+    /// # Errors
+    ///
+    /// `op` is no sealed checkpoint, or its payload names no floors.
+    pub fn floor_of(op: &SignedOp, author: &Ed25519PublicKey) -> Result<u64, CompactionError> {
+        if !is_sealed_checkpoint(op) {
+            return Err(CompactionError::InvalidSealed("not a sealed checkpoint"));
+        }
+        // The floors come first in its encoding, the snapshot after them.
+        let (floors, _) = postcard::take_from_bytes::<Vec<(Ed25519PublicKey, u64)>>(&op.payload)
+            .map_err(|error| {
+                CompactionError::Malformed(CanonicalError::Deserialize(error.to_string()))
+            })?;
+        Ok(floors
+            .iter()
+            .find(|(held, _)| held == author)
+            .map_or(0, |(_, seq)| *seq))
+    }
+}
+
+/// Whether `op` is a sealed checkpoint: a change whose content-key retention
+/// is a checkpoint, the record whole as its writer saved it.
+#[must_use]
+pub fn is_sealed_checkpoint(op: &SignedOp) -> bool {
+    op.kind == OpKind::Change
+        && op.encryption.and_then(|meta| meta.retention()) == Some(ContentRetention::Checkpoint)
+}
+
 /// The content-key ciphertext of a sealed op: a sealed compaction's
-/// snapshot (or one segment of it), any other op's payload. Every content opener reads through
-/// this, so a key holder opens a compaction like any sealed snapshot.
+/// snapshot (or one segment of it), a sealed checkpoint's snapshot, any other
+/// op's payload. Every content opener reads through this, so a key holder
+/// opens a compaction or a checkpoint like any sealed snapshot.
 ///
 /// # Errors
 ///
-/// As [`SealedCompaction::parse`], for a `Compaction` op.
+/// As [`SealedCompaction::parse`], for a `Compaction` op, and
+/// [`SealedCheckpoint::parse`], for a checkpoint.
 pub fn sealed_ciphertext(op: &SignedOp) -> Result<Cow<'_, [u8]>, CompactionError> {
     if is_compaction_segment(op) {
         return SealedCompactionSegment::parse(op).map(|segment| Cow::Owned(segment.ciphertext));
     }
     if op.kind == OpKind::Compaction {
         return SealedCompaction::parse(op).map(|compaction| Cow::Owned(compaction.ciphertext));
+    }
+    if is_sealed_checkpoint(op) {
+        return SealedCheckpoint::parse(op).map(|checkpoint| Cow::Owned(checkpoint.ciphertext));
     }
     Ok(Cow::Borrowed(&op.payload))
 }

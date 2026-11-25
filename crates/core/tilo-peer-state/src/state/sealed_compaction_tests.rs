@@ -312,7 +312,8 @@ pub(super) fn write(
 
 /// `key`'s sealed checkpoint of `peer`'s record: the whole record as the key
 /// holder saved it, the first thing the workspace keeps at the head of a sealed
-/// channel and replays to a device joining the workspace.
+/// channel and replays to a device joining the workspace, naming each
+/// author's last write it holds.
 fn checkpoint(
     peer: &StatePeer,
     keys: &ContentKeys,
@@ -325,11 +326,18 @@ fn checkpoint(
     let (metadata, ciphertext) = keys
         .seal_content(artifact(), ContentRetention::Checkpoint, &snapshot)
         .unwrap();
+    let floors = peer.core.documents[&route()]
+        .channel
+        .last_seq_per_author
+        .iter()
+        .map(|(author, seq)| (*author, *seq));
     message(signed(
         key,
         next_seq(peer, key),
         OpKind::Change,
-        ciphertext,
+        collab_types::SealedCheckpoint::new(floors, ciphertext)
+            .encode()
+            .unwrap(),
         Some(metadata),
         now,
     ))
@@ -1342,7 +1350,7 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
         let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, first.clone(), now);
+        admit(&mut f.replica, &f.other, first, now);
         let later = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
         admit(&mut f.replica, &f.other, later.clone(), now);
         let saved = checkpoint(&f.replica, &keys, &f.owner, now);
@@ -1377,16 +1385,10 @@ tilo_test_env::scenario! {
         );
         // The checkpoint is the whole record as its writer saved it, so it founds
         // the route for a replica holding none of it, and the change that waited
-        // is decided again behind it: it is its writer's second, and waits for
-        // the first, which its sender is asked for.
+        // is decided again behind it: the checkpoint holds its writer's writes up
+        // to it, so it waits for nothing the checkpoint folded in.
         admit(&mut fresh, &f.owner, saved.clone(), now);
-        assert_eq!(held(&fresh), vec![envelope_of(&saved)]);
-        // The answer admits the first, and the change that waited behind it.
-        admit(&mut fresh, &f.other, first.clone(), now);
-        assert_eq!(
-            held(&fresh),
-            vec![envelope_of(&saved), envelope_of(&first), envelope_of(&later)]
-        );
+        assert_eq!(held(&fresh), vec![envelope_of(&saved), envelope_of(&later)]);
     }
 
     phase a_replayed_or_superseded_compaction_is_refused;

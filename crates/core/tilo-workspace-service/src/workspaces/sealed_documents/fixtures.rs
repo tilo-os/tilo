@@ -592,6 +592,14 @@ impl SealingMember {
             .seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .saturating_add(1);
+        // A checkpoint names the member's own writes before it as what it holds.
+        let payload = if retention == ContentRetention::Checkpoint {
+            collab_types::SealedCheckpoint::new([(author, seq.saturating_sub(1))], payload)
+                .encode()
+                .unwrap()
+        } else {
+            payload
+        };
         let mut envelope = SignedOp::new_unsigned_with_encryption(
             payload,
             artifact,

@@ -396,7 +396,8 @@ fn unseal_with(
     keys: &key_group::ContentKeys,
 ) -> impl FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String> + '_ {
     move |op| {
-        keys.open_content(op.artifact, op.encryption.as_ref().unwrap(), &op.payload)
+        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+        keys.open_content(op.artifact, op.encryption.as_ref().unwrap(), &ciphertext)
             .map(|bytes| bytes.to_vec())
             .map_err(|error| error.to_string())
     }

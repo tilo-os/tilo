@@ -41,7 +41,9 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
             &owner,
             next_seq(&f.replica, &owner),
             OpKind::Change,
-            ciphertext,
+            collab_types::SealedCheckpoint::new([], ciphertext)
+                .encode()
+                .unwrap(),
             Some(metadata),
             now,
         ));

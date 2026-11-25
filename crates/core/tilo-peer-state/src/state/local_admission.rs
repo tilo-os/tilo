@@ -313,6 +313,19 @@ impl StatePeer {
                 "a sealed write is a delta or a checkpoint of the record".into(),
             ));
         }
+        // A checkpoint names each author's last write it holds, so a replica
+        // that founds the record from it waits for none of them.
+        let ciphertext = if retention == collab_types::ContentRetention::Checkpoint {
+            let floors = document
+                .into_iter()
+                .flat_map(|held| held.channel.last_seq_per_author.iter())
+                .map(|(author, seq)| (*author, *seq));
+            collab_types::SealedCheckpoint::new(floors, ciphertext)
+                .encode()
+                .map_err(|error| DraftRefusal::Refused(error.to_string()))?
+        } else {
+            ciphertext
+        };
         let op = SignedOp::new_unsigned_with_encryption(
             ciphertext,
             artifact,

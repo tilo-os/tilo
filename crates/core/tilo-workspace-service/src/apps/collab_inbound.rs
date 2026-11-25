@@ -191,7 +191,7 @@ fn deliver_at(
                 return Delivery::Halted;
             };
             let encryption = document.envelope.encryption.as_ref();
-            if ch.document_order_allowed(&document.cluster_id, artifact, encryption) {
+            if ch.document_write_allowed(&document.cluster_id, encryption) {
                 let state = ch.state_for(artifact);
                 state.workspace.clone_from(&document.cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
@@ -288,9 +288,6 @@ fn accept(
     let unsynced = channels.lock().ok().map(|mut ch| {
         first_of_the_document = !ch.routes.contains_key(&artifact);
         let unsynced = ch.document_history(route, envelope);
-        if envelope.encryption.is_some() {
-            ch.sealed.insert(artifact);
-        }
         let state = ch.state_for(artifact);
         state.record_validated_op((*envelope).clone());
         if envelope.kind == OpKind::Compaction
@@ -512,7 +509,7 @@ mod tests {
             let op = |title: &str| {
                 let (mutation, _) =
                 collab_types::field_edit_mutation("note", "title", title, &EDITOR).unwrap();
-                let mut op = SignedOp::new_unsigned(
+                let mut op = SignedOp::new_unsigned_with_encryption(
                     mutation.encode().unwrap(),
                     document_artifact_id("notes", WORKSPACE, "record"),
                     collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
@@ -520,6 +517,10 @@ mod tests {
                     OpKind::Change,
                     tilo_clock::wall(),
                     1,
+                    collab_types::EncryptionMetadata::content_key(
+                        1,
+                        collab_types::ContentRetention::Delta,
+                    ),
                 );
                 collab_types::sign_op(&mut op, &key).unwrap();
                 op
@@ -662,13 +663,11 @@ mod tests {
             .and_then(|(value, _)| value.into_string().ok())
     }
 
-    /// A record's writes in the clear before its seal are its base, live or
-    /// replayed, though the channel's check has closed: a device away while
-    /// the record sealed reads it only by taking them in. Once a sealed
-    /// write of the record entered, one in the clear is refused however it
-    /// came.
+    /// A workspace's records are sealed under its members' keys: a write in
+    /// the clear is refused, live or replayed, before a sealed write of the
+    /// record entered and after it.
     #[test]
-    fn a_write_in_the_clear_enters_until_its_record_sealed() {
+    fn a_write_in_the_clear_is_refused_before_and_after_its_record_sealed() {
         let [sealed, _] = two_sealed_writes(&ed25519_dalek::SigningKey::from_bytes(&[6; 32]));
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let clear = |seq: u64, title: &str| {
@@ -709,9 +708,15 @@ mod tests {
             );
             window.told() > before
         };
-        assert!(shows(clear(1, "live base"), false), "a live base write");
-        assert!(shows(clear(2, "kept base"), true), "a kept base write");
-        assert!(shows(sealed, false), "the seal");
+        assert!(
+            !shows(clear(1, "before, live"), false),
+            "a live write in the clear"
+        );
+        assert!(
+            !shows(clear(2, "before, kept"), true),
+            "a kept write in the clear"
+        );
+        assert!(shows(sealed, false), "a sealed write");
         assert!(!shows(clear(3, "after, live"), false), "a live downgrade");
         assert!(!shows(clear(4, "after, kept"), true), "a kept downgrade");
     }

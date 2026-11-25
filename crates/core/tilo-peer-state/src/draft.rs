@@ -22,7 +22,7 @@ use crate::{NotAdmitted, SealCheckpoint, StatePeer};
 /// A device's write to one document, as it is drafted: `changes` to `app`'s `document`, the
 /// whole document when `snapshot` (a founding or a checkpoint), a change of it otherwise, kept
 /// for `readers` where only some members read it, sealed under `sealed` (the keys of the
-/// document's group), as made at `now`. A write without keys is refused.
+/// document's group) where the workspace seals its documents, as made at `now`.
 #[derive(Clone, Copy)]
 pub struct LocalWrite<'a> {
     /// The app whose document it is.
@@ -38,7 +38,7 @@ pub struct LocalWrite<'a> {
     /// `changes` is the whole document — a founding, or a checkpoint of one the workspace holds
     /// already — rather than a change of it.
     pub snapshot: bool,
-    /// The keys that seal it: a write without them is refused.
+    /// The keys that seal it, where the workspace seals its documents.
     pub sealed: Option<&'a key_group::ContentKeys>,
     /// The action it is one part of, when that action wrote more than one record: carried inside
     /// the signed write, so every device takes the action's parts together.
@@ -121,9 +121,6 @@ pub fn draft_local_write(
         commit,
         now,
     } = write;
-    let Some(keys) = sealed else {
-        return Err(WriteRefusal::Refused(crate::direct::WRITTEN_CLEAR.into()));
-    };
     if founding && peer.holds_document(app, document) {
         return Err(WriteRefusal::Declined {
             reason: neighbour_wire::RefusalReason::Conflict,
@@ -170,10 +167,12 @@ pub fn draft_local_write(
         mutation.encode_frames()
     }
     .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-    let mut seal = move |plaintext: &[u8]| {
-        keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
-            .map_err(|error| error.to_string())
-    };
+    let mut seal = sealed.map(|keys| {
+        move |plaintext: &[u8]| {
+            keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
+                .map_err(|error| error.to_string())
+        }
+    });
     let envelopes = frames
         .into_iter()
         .zip(0u64..)
@@ -188,7 +187,7 @@ pub fn draft_local_write(
                 (app, document),
                 readers,
                 &frame,
-                Some(&mut seal as &mut SealCheckpoint<'_>),
+                seal.as_mut().map(|seal| seal as &mut SealCheckpoint<'_>),
                 *device,
                 drafted,
                 now,

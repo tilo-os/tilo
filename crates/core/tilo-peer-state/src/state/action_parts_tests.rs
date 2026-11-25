@@ -278,7 +278,8 @@ fn a_commit_naming_more_records_than_can_wait_is_refused_by_name() {
 fn sealed_title(peer: &StatePeer, keys: &ContentKeys, record: &str, now: SystemTime) -> String {
     let open = |op: &SignedOp| {
         let metadata = op.encryption.ok_or("not sealed")?;
-        keys.open_content(op.artifact, &metadata, &op.payload)
+        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+        keys.open_content(op.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
             .map_err(|error| error.to_string())
     };

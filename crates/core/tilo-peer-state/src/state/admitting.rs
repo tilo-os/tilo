@@ -506,18 +506,36 @@ impl StatePeer {
                         },
                     );
                 }
+                // A checkpoint carries each author's last write it holds:
+                // one that does not is no checkpoint.
+                if collab_types::is_sealed_checkpoint(&envelope) {
+                    collab_types::SealedCheckpoint::parse(&envelope)
+                        .map_err(AdmissionError::malformed)?;
+                }
                 // An author's sealed writes are numbered one after another,
-                // from where a compaction left each author's number: a write
-                // past the next one this replica expects builds on writes it
-                // has not seen, and waits for them as history its sender is
-                // asked for. A whole record stands on nothing before it.
-                let expected = candidate
+                // from where a compaction or a checkpoint left each author's
+                // number: a write past the next one this replica expects
+                // builds on writes it has not seen, and waits for them as
+                // history its sender is asked for. A whole record stands on
+                // nothing before it.
+                let seen = candidate
                     .channel
                     .last_seq_per_author
                     .get(&envelope.author)
                     .copied()
-                    .unwrap_or_default()
-                    .saturating_add(1);
+                    .unwrap_or_default();
+                let expected = if envelope.seq > seen.saturating_add(1) {
+                    candidate
+                        .sealed
+                        .iter()
+                        .filter_map(|held| {
+                            collab_types::SealedCheckpoint::floor_of(held, &envelope.author).ok()
+                        })
+                        .fold(seen, u64::max)
+                } else {
+                    seen
+                }
+                .saturating_add(1);
                 if !envelope.is_whole_resource() && envelope.seq > expected {
                     return self.defer(
                         source,

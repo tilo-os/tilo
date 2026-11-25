@@ -1367,12 +1367,7 @@ impl DirectSync {
         let (message, workspace) = {
             let mut peer = self.0.replica.lock();
             let heads = peer.workspace_heads().unwrap_or_default();
-            let before = peer.clone();
             let message = write(&mut peer)?;
-            if written_clear(&message) {
-                *peer = before;
-                return Err(WRITTEN_CLEAR.into());
-            }
             (message, peer.workspace_changes_since(&heads))
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -1556,9 +1551,6 @@ impl DirectSync {
     ///
     /// The frame could not be kept.
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
-        if written_clear(&message) {
-            return Err(WRITTEN_CLEAR.into());
-        }
         // Content goes on each link's own content stream, never kept: one that
         // sends much of it waits for room with [`Self::send_content`].
         if content_frame(&message) {
@@ -3370,10 +3362,13 @@ impl DirectSync {
         let mut messages = vec![hello];
         if bootstraps {
             messages.push(self.0.replica.lock().workspace_message());
+            // A page keeps no store of its own to send history from.
             #[cfg(not(target_arch = "wasm32"))]
             if history {
                 messages.extend(self.kept()?);
             }
+            #[cfg(target_arch = "wasm32")]
+            let _ = history;
         }
         // A frame the store keeps names its own author; one that does not is
         // this device's.
@@ -3982,13 +3977,6 @@ impl DirectSync {
         retained: bool,
         history: bool,
     ) -> Heard {
-        if written_clear(&message) {
-            let refused = crate::AdmissionError::Rejected {
-                reason: neighbour_wire::RefusalReason::Forbidden,
-                detail: WRITTEN_CLEAR.into(),
-            };
-            return heard_of(author, message, Err(refused), retained || history);
-        }
         let origin = if retained || history {
             TransportOrigin::RetainedServerDelta(author)
         } else {
@@ -4506,16 +4494,6 @@ fn arrived_late(error: &crate::AdmissionError) -> bool {
 /// Why a link to a device ends, or is refused: the workspace removed its
 /// person.
 pub const REMOVED: &str = "the workspace removed the device's person";
-
-/// Why a record's write in the clear is refused.
-pub const WRITTEN_CLEAR: &str =
-    "a workspace's records are sealed under its members' keys; a write in the clear is refused";
-
-/// Whether `message` writes a record in the clear: a workspace keeps every
-/// record sealed under its group's keys, and refuses a write that is not.
-fn written_clear(message: &NeighbourMsg) -> bool {
-    matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_none())
-}
 
 /// What a link's one-way stream carries, named by the byte it opens with: its
 /// device's frames, its answers to the other device's writes, and content.

@@ -91,9 +91,6 @@ pub struct BrokerChannels {
     /// The route (app, workspace, record) each artifact's ops were validated on
     /// this session. A history page is only ever answered to that workspace.
     pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
-    /// The records a sealed write of entered here: from it on, a write to
-    /// one in the clear is a downgrade ([`Self::document_order_allowed`]).
-    pub sealed: std::collections::HashSet<ArtifactId>,
 }
 
 impl BrokerChannels {
@@ -127,24 +124,15 @@ impl BrokerChannels {
         self.checks.allows_document(workspace, encryption)
     }
 
-    /// Whether another device's write of `artifact`'s record may enter, by
-    /// its place in the record's order. A record seals from some write on,
-    /// and its cleartext writes before that are the base its sealed writes
-    /// are changes over: a device that was away while the record sealed, or
-    /// joins it later, reads the record only by taking that base in first,
-    /// however it arrives. So a write in the clear enters until a sealed
-    /// write of the record has, and never after; a sealed one enters when
-    /// the channel's check takes its epoch.
-    pub fn document_order_allowed(
+    /// Whether another device's write to a record of `workspace` may enter:
+    /// a workspace's records are sealed under its members' keys, so only a
+    /// sealed write does, when the channel's check takes its epoch.
+    pub fn document_write_allowed(
         &self,
         workspace: &str,
-        artifact: ArtifactId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        match encryption {
-            None => !self.sealed.contains(&artifact),
-            Some(_) => self.checks.allows_document(workspace, encryption),
-        }
+        encryption.is_some() && self.checks.allows_document(workspace, encryption)
     }
 
     /// Bind the record of an op validated on `route` to its workspace, when the op is sealed
