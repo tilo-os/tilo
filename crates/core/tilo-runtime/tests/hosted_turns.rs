@@ -39,6 +39,24 @@ const CORRECTION: &str = "Put revenue and its source first.";
 const CHAT_PROVIDER: &str = "record:so.tilo.chat:";
 /// Chat's one root: the workspace's conversations and skills.
 const CONVERSATIONS: &str = "tl:so.tilo.chat:root-lmdoxbnn";
+/// Chat's package under the tree's `apps/tl`, which the device installs to run it.
+const CHAT_PACKAGE: &str = "chat";
+
+/// Chat started in `workspace` with no window, as the daemon runs its workspace's apps: its
+/// instance opens the record there, so what Chat publishes is what the workspace's record holds.
+async fn start_chat(host: &Host, workspace: &str) {
+    use tilo_actions::remote::{APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION};
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: tilo_actions::remote::workspace_provider(workspace),
+        address: ActionAddress::new(
+            format!("{APPLICATION_RESOURCE_PREFIX}{CHAT}"),
+            APPLICATION_START_ACTION,
+        ),
+    };
+    host::output(host, target, Value::Null)
+        .await
+        .unwrap_or_else(|refused| panic!("the workspace starts Chat: {refused:?}"));
+}
 
 /// What Chat's record publishes, as `person` reads it.
 fn chat_rows(
@@ -70,39 +88,20 @@ fn action(host: &Host, workspace: &str, person: &str, name: &str) -> ActionAddre
         .address
 }
 
-/// `caller` invokes Chat's action `name` with `arguments`, as the daemon's dispatch admits it.
-async fn invoke(
-    host: &Host,
-    caller: &Caller,
-    name: &str,
-    arguments: Value,
-) -> Result<Value, ActionCallError> {
-    let workspace = caller
-        .workspace()
-        .expect("the caller names its workspace")
-        .to_owned();
-    let person = caller
-        .acting()
-        .acted_for_person()
-        .or_else(|| caller.acting().person_id())
-        .expect("the caller acts for a person")
-        .to_owned();
-    let address = action(host, &workspace, &person, name);
-    let receipt = host
-        .dispatch()
-        .invoke(caller, host::call(CHAT_PROVIDER, address, &arguments))
-        .await
-        .expect("the dispatch answers")?;
-    match receipt.status {
-        ReceiptStatus::Completed { output } => {
-            Ok(output.value.expect("the action answers a value"))
-        }
-        ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
-            reason: error.message,
-        }),
-        ReceiptStatus::Rejected { error } => Err(error),
-        other => panic!("the call is done: {other:?}"),
-    }
+/// The person runs Chat's action `name` with `arguments`, through the daemon's dispatch, followed
+/// to its end: what it answered.
+async fn invoke(host: &Host, name: &str, arguments: Value) -> Result<Value, ActionCallError> {
+    let address = action(host, host.workspace(), host.person(), name);
+    let output = host::output(
+        host,
+        tilo_actions::remote::RemoteActionTarget {
+            provider: CHAT_PROVIDER.to_owned(),
+            address,
+        },
+        arguments,
+    )
+    .await?;
+    Ok(output.value.unwrap_or_default())
 }
 
 /// What Chat's record holds of the workspace, as `person` reads it through Chat's own package.
@@ -179,16 +178,12 @@ async fn viewer(host: &Host) -> (Caller, String, host::Member) {
 /// and another workspace has a set of its own.
 #[test]
 fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         let host = host.as_ref();
-        invoke(
-            host,
-            &host.caller(),
-            "new_skill",
-            json!({"name": "Weekly report"}),
-        )
-        .await
-        .expect("the person starts a skill");
+        start_chat(host, host.workspace()).await;
+        invoke(host, "new_skill", json!({"name": "Weekly report"}))
+            .await
+            .expect("the person starts a skill");
         let root = read_root(host, host.workspace(), host.person()).await;
         assert!(
             root.to_string().contains("Weekly report"),
@@ -210,7 +205,7 @@ fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
             .await;
         assert!(refused.is_err(), "a viewer writes no skill: {refused:?}");
         assert!(
-            format!("{refused:?}").contains("may not invoke"),
+            format!("{refused:?}").contains("do not let this device run"),
             "the refusal says the viewer may not invoke it: {refused:?}"
         );
         let after = read_root(host, host.workspace(), host.person()).await;
@@ -227,13 +222,14 @@ fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
             .await
             .expect("a second workspace")
             .workspace;
+        start_chat(host, &other).await;
         let viewer =
             tl::runtime::Actor::Member(tilo_actions::MemberId::person(host.person().to_owned()));
         let acting = tilo_action_policy::Acting::person(host.person().to_owned());
         let invoker = tilo_actions::ActionInvoker::admitted(&acting);
         let context = tilo_actions::ActionContext::default();
         let caller = Caller::local_person(host.person()).in_workspace(&other);
-        let address = action(host, host.workspace(), host.person(), "new_skill");
+        let address = action(host, &other, host.person(), "new_skill");
         let arguments = json!({"name": "Elsewhere's report"})
             .as_object()
             .cloned()
@@ -293,7 +289,7 @@ async fn make_scout(host: &Host) {
 /// A value that mentions the workspace's assistant in Chat's rich text: what fires its trigger.
 fn mentioning(text: &str) -> Value {
     let label = format!("@{SCOUT}");
-    json!({"blocks": [{
+    json!({"rich": [{
         "id": "",
         "kind": "paragraph",
         "text": format!("{label} {text}"),
@@ -301,7 +297,7 @@ fn mentioning(text: &str) -> Value {
             "start": 0,
             "end": label.chars().count(),
             "name": "mention",
-            "value": format!("{{\"agent\":\"{SCOUT_ID}\"}}"),
+            "value": {"Str": format!("{{\"agent\":\"{SCOUT_ID}\"}}")},
         }],
         "attrs": {},
         "children": [],
@@ -423,20 +419,15 @@ async fn skill_path(host: &Host, name: &str, action: &str) -> String {
 /// in the record members read, and the turn goes on after its tool answered.
 #[test]
 fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         let host = host.as_ref();
+        start_chat(host, host.workspace()).await;
         make_scout(host).await;
+        invoke(host, "new_skill", json!({"name": "Weekly report"}))
+            .await
+            .expect("the person starts a skill");
         invoke(
             host,
-            &host.caller(),
-            "new_skill",
-            json!({"name": "Weekly report"}),
-        )
-        .await
-        .expect("the person starts a skill");
-        invoke(
-            host,
-            &host.caller(),
             "correct_skill",
             json!({"work": "Write the weekly report", "how": INSTRUCTIONS}),
         )
@@ -521,8 +512,9 @@ async fn events_of(host: &Host) -> Vec<tilo_actions::remote::workspace_events::E
 #[test]
 fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed() {
     use tilo_actions::remote::workspace_events::{Ended, Sort};
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         let host = host.as_ref();
+        start_chat(host, host.workspace()).await;
         make_scout(host).await;
         let channel = crate::chat::made_channel(&host.agent(), crate::chat::CHANNEL).await;
         let at_ms = tilo_clock::unix_now_ms_i64() + 2_000;
