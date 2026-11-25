@@ -1234,28 +1234,28 @@ mod tests {
             .enter_agent_key((&agent_key, &agent), &workspace, "Scribe")
             .await
             .expect("the viewer's agent comes in");
-        {
-            let hosted = workspaces.workspace(&workspace).await.unwrap();
-            let hosted = hosted.lock().await;
-            let now = tilo_clock::wall();
-            assert_eq!(
-                hosted.peer().role(&agent.device_public_key, now).unwrap(),
-                collab_types::Role::Viewer,
-                "the agent holds its person's place"
-            );
-            let access = hosted
-                .peer()
-                .permissions(agent.device_public_key, now)
-                .unwrap();
-            assert!(
-                !access.allows(
-                    &tilo_action_policy::TreePath::workspace(&workspace),
-                    tilo_action_policy::ActionKind::Undoable,
-                    now
-                ),
-                "a viewer's agent edits nothing"
-            );
-        }
+        let now = tilo_clock::wall();
+        let hosted = workspaces.workspace(&workspace).await.unwrap();
+        let hosted = hosted.lock().await;
+        let role = hosted.peer().role(&agent.device_public_key, now).unwrap();
+        let access = hosted
+            .peer()
+            .permissions(agent.device_public_key, now)
+            .unwrap();
+        drop(hosted);
+        assert_eq!(
+            role,
+            collab_types::Role::Viewer,
+            "the agent holds its person's place"
+        );
+        assert!(
+            !access.allows(
+                &tilo_action_policy::TreePath::workspace(&workspace),
+                tilo_action_policy::ActionKind::Undoable,
+                now
+            ),
+            "a viewer's agent edits nothing"
+        );
         assert!(
             role_of(workspaces, &workspace, viewer.verifying_key().to_bytes())
                 .await
