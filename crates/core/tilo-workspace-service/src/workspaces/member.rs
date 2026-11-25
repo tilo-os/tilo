@@ -1310,15 +1310,16 @@ impl Workspaces {
             }
             // A member copy syncs with the device serving it; a disk copied from that device
             // holds the workspace as its holder, and enters at the holder its governance names.
-            let hint = governed.member.as_ref().map_or_else(
-                || {
-                    peer.governance()
-                        .keeping_devices()
-                        .into_iter()
-                        .find(|hint| hint.host.device_public_key != own)
-                },
-                |member| Some(member.hint.clone()),
-            );
+            let hint = match governed.member.as_ref() {
+                Some(member) => Some(member.hint.clone()),
+                None => peer
+                    .governance()
+                    .keeping_devices()
+                    .into_iter()
+                    .find(|hint| hint.host.device_public_key != own),
+            };
+            drop(peer);
+            drop(governed);
             if let Some(hint) = hint {
                 entering.push((workspace, hint));
             }

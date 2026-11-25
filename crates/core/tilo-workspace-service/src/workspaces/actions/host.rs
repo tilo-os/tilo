@@ -786,7 +786,7 @@ impl Workspaces {
             ServiceOperation::BranchOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                self.branch_own_invoke(device, &args, request_id, now).await
+                Box::pin(self.branch_own_invoke(device, &args, request_id, now)).await
             }
             ServiceOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)

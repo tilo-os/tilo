@@ -213,8 +213,8 @@ impl Copy {
 
     /// How many contents this device pushed to the workspace's holders that none of them said it
     /// keeps yet: what a folder says is only here until it reaches a holder.
-    fn read_host_lacks(&self) -> Option<u32> {
-        Some(u32::try_from(self.workspaces.content_going(&self.name)).unwrap_or(u32::MAX))
+    fn read_host_lacks(&self) -> u32 {
+        u32::try_from(self.workspaces.content_going(&self.name)).unwrap_or(u32::MAX)
     }
 
     /// Answer each record the sync opened that has no answer yet and can have one now.
@@ -452,7 +452,7 @@ async fn follow(
         tokio::select! {
             _ = look.tick() => {
                 let lacks = copy.read_host_lacks();
-                if std::mem::replace(&mut *copy.lacks.lock_recover(), lacks) == lacks {
+                if copy.lacks.lock_recover().replace(lacks) == Some(lacks) {
                     continue;
                 }
                 if wakes.send(Wake::Holders).is_err() {

@@ -130,7 +130,7 @@ impl Workspaces {
         name: &str,
         person: [u8; 32],
     ) -> Result<crate::workspaces::WorkspaceSummary, ActionCallError> {
-        self.branch_own(source, branch, name, person)
+        Box::pin(self.branch_own(source, branch, name, person))
             .await
             .map_err(|not_made| ActionCallError::refused(not_made.refusal()))
     }

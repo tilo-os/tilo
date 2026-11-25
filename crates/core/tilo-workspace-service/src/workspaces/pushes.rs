@@ -184,17 +184,22 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ms();
         let due: Vec<([u8; 32], String, String)> = {
             let mut state = self.inner.content.pushes.state.lock_recover();
-            let Some(going) = state.going.get_mut(workspace) else {
-                return;
-            };
-            going
-                .iter_mut()
-                .filter(|(_, going)| all || now.saturating_sub(going.pushed_ms) >= PUSH_PATIENCE_MS)
-                .map(|(hash, going)| {
-                    going.pushed_ms = now;
-                    (going.host, going.app.clone(), hash.clone())
+            state
+                .going
+                .get_mut(workspace)
+                .map(|going| {
+                    going
+                        .iter_mut()
+                        .filter(|(_, going)| {
+                            all || now.saturating_sub(going.pushed_ms) >= PUSH_PATIENCE_MS
+                        })
+                        .map(|(hash, going)| {
+                            going.pushed_ms = now;
+                            (going.host, going.app.clone(), hash.clone())
+                        })
+                        .collect()
                 })
-                .collect()
+                .unwrap_or_default()
         };
         for (host, app, hash) in due {
             self.send_push(id, host, &app, &hash);
@@ -433,6 +438,7 @@ impl Workspaces {
                     going.remove(hash);
                 }
             }
+            drop(state);
             dropped
         };
         self.going_moved(workspace);

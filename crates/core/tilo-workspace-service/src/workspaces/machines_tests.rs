@@ -95,8 +95,7 @@ mod branching {
         let source = source(workspaces).await;
         let noted = machines(workspaces, Ok(true), Ok(()));
 
-        workspaces
-            .branch_own(&source, BRANCH, "Task", PERSON)
+        Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON))
             .await
             .map_err(|not| not.refusal())
             .unwrap();
@@ -118,8 +117,7 @@ mod branching {
         let source = source(workspaces).await;
         machines(workspaces, Ok(false), Ok(()));
 
-        workspaces
-            .branch_own(&source, BRANCH, "Task", PERSON)
+        Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON))
             .await
             .map_err(|not| not.refusal())
             .expect("nothing to copy is no failure");
@@ -140,7 +138,8 @@ mod branching {
             Ok(()),
         );
 
-        let Err(not) = workspaces.branch_own(&source, BRANCH, "Task", PERSON).await else {
+        let Err(not) = Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON)).await
+        else {
             panic!("a branch whose machine did not come is no branch");
         };
         let refused = not.refusal();
@@ -179,8 +178,7 @@ mod branching {
         let source = source(workspaces).await;
         let refusing = machines(workspaces, Err("no room".into()), Ok(()));
         assert!(
-            workspaces
-                .branch_own(&source, BRANCH, "Task", PERSON)
+            Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON))
                 .await
                 .is_err()
         );
@@ -201,8 +199,7 @@ mod branching {
 
         // Asked again under the same identity, once a machine can come, it is made.
         let noted = machines(workspaces, Ok(true), Ok(()));
-        workspaces
-            .branch_own(&source, BRANCH, "Task", PERSON)
+        Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON))
             .await
             .map_err(|not| not.refusal())
             .unwrap();
@@ -251,8 +248,7 @@ mod branching {
         );
         assert!(workspaces.unfinished_branch(BRANCH));
         let noted = machines(workspaces, Ok(true), Ok(()));
-        workspaces
-            .branch_own(&source, BRANCH, "Task", PERSON)
+        Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON))
             .await
             .map_err(|not| not.refusal())
             .unwrap();
@@ -277,8 +273,7 @@ mod branching {
         let workspaces = server.workspaces();
         let source = source(workspaces).await;
 
-        workspaces
-            .branch_own(&source, BRANCH, "Task", PERSON)
+        Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON))
             .await
             .map_err(|not| not.refusal())
             .unwrap();

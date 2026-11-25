@@ -235,6 +235,28 @@ impl tilo_actions::remote::asked::AskedDispatch for Handed {
     }
 }
 
+/// The answer the workspace's invocations list for the call that waits, found the way a reader
+/// finds it: the call is listed by the id its asked record names, with its own `resolve`.
+fn listed_answer(
+    store: &tilo_actions::remote::asked::AskedStore,
+    workspace: &str,
+    record: &str,
+) -> tilo_actions::ActionAddress {
+    let mut listed = Vec::new();
+    crate::apps::collab_app_broker::with_questions(&mut listed, store.waiting_in(workspace), None);
+    let answering = tilo_actions::remote::workspace_invocations::tree_rows(&listed)
+        .into_iter()
+        .find_map(|row| row.action)
+        .expect("the call that waits is listed with its answer")
+        .address;
+    assert_eq!(
+        answering,
+        tilo_actions::ActionAddress::new(record.to_owned(), tilo_actions::remote::asked::RESOLVE),
+        "the listed answer is the one its asked record names"
+    );
+    answering
+}
+
 /// The person this device acts for answers what their agent asked through the run the device
 /// admits for them, which is on their own device: their approve hands the call back once.
 /// The answer is the one the workspace's invocations list for the call that waits, which the
@@ -289,20 +311,8 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
             })),
         )
         .expect("the agent's call waits for its person");
-    // The answer as a walk of the workspace's invocations finds it: the call that waits is
-    // listed by the id its asked record names, with its own `resolve`.
-    let mut listed = Vec::new();
-    crate::apps::collab_app_broker::with_questions(&mut listed, store.waiting_in(&workspace), None);
-    let answering = tilo_actions::remote::workspace_invocations::tree_rows(&listed)
-        .into_iter()
-        .find_map(|row| row.action)
-        .expect("the call that waits is listed with its answer")
-        .address;
-    assert_eq!(
-        answering,
-        tilo_actions::ActionAddress::new(at.record.clone(), asked::RESOLVE),
-        "the listed answer is the one its asked record names"
-    );
+    // The answer as a walk of the workspace's invocations finds it.
+    let answering = listed_answer(&store, &workspace, &at.record);
     let resolve = || {
         let mut approve = serde_json::Map::new();
         approve.insert("resolution".into(), serde_json::json!("approve"));

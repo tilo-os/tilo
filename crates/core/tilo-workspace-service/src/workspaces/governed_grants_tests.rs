@@ -26,8 +26,7 @@ async fn grants_are_written_into_a_workspace_as_far_as_this_servers_person_admin
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
     let source = workspaces.create("Template").await.unwrap().workspace;
-    let branch = workspaces
-        .branch_own(&source, BRANCH, "Task", PERSON)
+    let branch = Box::pin(workspaces.branch_own(&source, BRANCH, "Task", PERSON))
         .await
         .map_err(|not| not.refusal())
         .unwrap()
