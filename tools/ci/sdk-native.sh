@@ -45,7 +45,8 @@ build() {
   cargo build --locked -p tilo-daemon --bin tilo-runtime -p tilo-runtime --example sdk-daemon
   cargo build --locked -p launcher --bin tilo-launcher
   cargo build --locked -p tilo-runtime-bundle -p tilo-app-package-cli
-  cargo build --locked -p tilolang-cli --bin tilolang -p tilolang-process --bin tilolang-process
+  cargo build --locked -p tilolang-cli --bin tilolang -p tilolang-process --bin tilolang-process \
+    -p tilolang --bin tilolang-std
   local target=${CARGO_TARGET_DIR:-$root/target}
   rm -rf "$out"
   mkdir -p "$out/python/tilo" "$out/typescript"
@@ -108,7 +109,7 @@ app_kit() {
     local version app
     version=$(tilolang_runtime_version "$root")
     tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$bin/tilolang-process" \
-      "$kit/publisher.json" "$kit/runtimes/$version" "$version"
+      "$bin/tilolang-std" "$root" "$kit/publisher.json" "$kit/runtimes/$version" "$version"
     mkdir -p "$kit/apps"
     for app in chat discord; do
       tilolang_build_package "$bin/tilolang" "$root" "apps/tl/$app" "$app" "$kit/apps" \
