@@ -2415,7 +2415,8 @@ tilo_test_env::scenario! {
 /// it; text that keeps its words whole (source code's soft wrap) is clipped, and caught.
 #[test]
 fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
-    use ui::widget::arrange::{Length, Part, Stack};
+    use ui::widget::Length;
+    use ui::widget::arrange::{Part, Stack};
     let clipped = |mode: ui::text_render::TextWrapMode| {
         let text = ui::widget::Text::new("Donaudampfschifffahrtsgesellschaft").with_wrap_mode(mode);
         let mut column = Part::new(Box::new(Stack::stack().push(Box::new(text))));
