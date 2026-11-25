@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from story import Failed, Person, Story, until, walk  # noqa: E402
+from story import Failed, Person, Story, front_name, until, walk  # noqa: E402
 
 FILES = "so.tilo.file-explorer"
 PHOTO = "spring.png"
@@ -38,7 +38,6 @@ SHEET = "budget.csv"
 DOCUMENT = "letter.txt"
 LETTER = "The keys are under the flowerpot"
 CLI = os.environ.get("TILO_CLI_BIN", "")
-SWITCHER = "Switch workspace, now in "
 APPS = "files settings terminal pdf photos activity"
 # The tilolang apps beside them, by their directory under apps/tl.
 TILOLANG = ("sheets", "tasks")
@@ -114,11 +113,10 @@ def steps(story: Story) -> None:
         story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
         until("Ada's shell to hold a workspace", lambda: (
             (ada.session.state_dump() or {}).get("workspace_tree") or {}).get("active"), 60)
-        # The workspace's name, as the shell's top bar says it: the name a person gives the
-        # command is the one their desktop calls the workspace, not the dump's durable id.
-        workspace["name"] = until("the name of the workspace in front", lambda: next(
-            (name.removeprefix(SWITCHER) for name in ada.names()
-             if name.startswith(SWITCHER)), None), 30, 0.2)
+        # The workspace's name, as the shell's bar says it: the name a person gives the command
+        # is the one their desktop calls the workspace, not the dump's durable id.
+        workspace["name"] = until("the name of the workspace in front",
+                                  lambda: front_name(ada), 30, 0.2)
         return {"tookMs": took["tookMs"]}
 
     story.step("Ada opens Tilo", opening, people=[ada])

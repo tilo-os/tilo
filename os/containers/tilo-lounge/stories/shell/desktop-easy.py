@@ -25,37 +25,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mail_provider import press_in, window_named  # noqa: E402
-from story import PROFILE, SWITCHER, Failed, Person, Story, front, until, walk, workspaces  # noqa: E402
+from story import (  # noqa: E402
+    UNNAMED_STRIP, Failed, Person, Story, bar_strip, bar_workspace, front, front_strip_name,
+    strips_in_front, until, walk, workspaces,
+)
 
 SETTINGS = "so.tilo.settings"
-STRIPS = "Show strips, now on "
 APPS = "files settings"
 # The tilolang apps beside them, by their directory under apps/tl.
 TILOLANG = ("tasks",)
 # Settings' page with the look, as Settings names it, and its light-or-dark choice.
 APPEARANCE_PAGE = "Appearance"
-MODE = "Light or dark"
-
-
-def bar_workspace(one: Person) -> str | None:
-    """The workspace the bar says the person is in, as its own control names it."""
-    seen = next((name for name in one.names() if name.startswith(SWITCHER)), None)
-    return seen[len(SWITCHER):] if seen else None
-
-
-def bar_strip(one: Person) -> str | None:
-    """The strip the bar says the person is on, as its own control names it."""
-    seen = next((name for name in one.names() if name.startswith(STRIPS)), None)
-    return seen[len(STRIPS):] if seen else None
-
-
-def press_bar(one: Person, prefix: str, what: str) -> str:
-    """Press the bar's control named `prefix` and after it (`Switch workspace, now in Garden
-    club`: the workspace it names), and answer the name it carried."""
-    found = until(f"{what} in {one.name}'s bar", lambda: next(
-        (label for label in one.names() if label.startswith(prefix)), None), 30, 0.2)
-    one.press(found, what)
-    return found[len(prefix):]
+MODE = "Mode"
 
 
 def drawn(one: Person, app_id: str) -> dict | None:
@@ -80,45 +61,66 @@ def picks_mode(one: Person, mode: str) -> None:
         until(f"the {mode} look among the modes", lambda: one.target(mode), 10, 0.2)
     press_in(one, mode, settings, f"the {mode} look")
     chosen(one, mode, f"the {mode} look")
-    held = appearance(one).get("mode")
-    if held != mode.lower():
-        raise Failed(f"the {mode} look was pressed but the appearance holds the mode {held!r}")
+    holds(one, "mode", mode.lower())
     # The look changes through the shell's motion: the shot is of where it came to rest.
     time.sleep(1.0)
 
 
+def field_on_row(one: Person, row: str, what: str) -> dict:
+    """The field on Settings' row `row`, found where a person reaches it: the control drawn on
+    the same line as the row's name. The rows' fields share one placeholder, so the line they
+    stand on is what tells them apart."""
+    label = until(f"the {row} row", lambda: one.target(row), 30, 0.2)
+    line = label["rect"][1] + label["rect"][3] / 2
+
+    def on_row():
+        return next((target for target in one.targets()
+                     if target.get("name") == "Follow the theme" and target.get("rect")
+                     and abs(target["rect"][1] + target["rect"][3] / 2 - line) <= 20), None)
+
+    return until(what, on_row, 15, 0.2)
+
+
 def picks_accent(one: Person, accent: str) -> None:
-    """Pick the `accent` colour from the swatch row, and read back that the swatch shows itself
-    chosen and the appearance setting holds it."""
-    settings = until("Settings, where the accent is picked, drawn",
-                     lambda: drawn(one, SETTINGS), 30, 0.25)
-    try:
-        until(f"the {accent} swatch", lambda: one.target(accent), 15, 0.2)
-    except Failed:
-        names = [target.get("name") for target in one.targets() if target.get("name")]
-        raise Failed(f"no {accent} swatch; the shell shows {json.dumps(names)[:800]}") from None
-    press_in(one, accent, settings, f"the {accent} accent swatch")
-    chosen(one, accent, f"the {accent} accent")
-    held = appearance(one).get("accent")
-    if held != accent.lower():
-        raise Failed(f"the {accent} accent was pressed but the appearance holds {held!r}")
+    """Type the `accent` colour into Settings' accent field, and read back that the appearance
+    setting holds it."""
+    until("Settings, where the accent is picked, drawn", lambda: drawn(one, SETTINGS), 30, 0.25)
+    field = field_on_row(one, "Accent", f"the accent field on Settings ({accent})")
+    # A field that has just appeared may still be moving into place: it is pressed where it came
+    # to rest, as a person clicks where the control stands.
+    last = field["rect"]
+    for _ in range(20):
+        field = field_on_row(one, "Accent", "the accent field")
+        if field["rect"] == last:
+            break
+        last = field["rect"]
+        time.sleep(0.15)
+    x, y, width, height = field["rect"]
+    one.session.click_at(x + width / 2, y + height / 2)
+    one.session.chord("Control", "a")
+    one.session.type(accent)
+    one.session.key("Enter")
+    holds(one, "accent", accent.lower())
     time.sleep(1.0)
 
 
 def appearance(one: Person) -> dict:
-    """The appearance setting as Settings reads it now: the look's mode and the accent it holds,
-    read from the resource itself rather than from what a press answered."""
-    for row in one.session.actions("inspect-appearance"):
-        address = (row.get("action") or {}).get("address") or {}
-        if address.get("action") != "inspect-appearance":
-            continue
-        answer = one.session.invoke(row["provider"], address["resource"],
-                                    "inspect-appearance", {})
-        value = (answer.get("Completed") or {}).get("output", {}).get("value")
-        if isinstance(value, dict):
-            return value
-        raise Failed(f"Settings' appearance read answered nothing: {json.dumps(answer)[:600]}")
-    raise Failed("Settings offers no reading of the appearance")
+    """The appearance as this computer's own session leaves it for its processes: the look's mode
+    and the accent it holds, from the settings file the session publishes, never from what a
+    press answered."""
+    path = one.state / "config/tilo/settings-published.json"
+    try:
+        left = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    section = (left.get("settings") or {}).get("appearance")
+    return section if isinstance(section, dict) else {}
+
+
+def holds(one: Person, key: str, value: str) -> None:
+    """Wait for the appearance to hold `value` for `key`, as the session publishes it."""
+    until(f"the appearance to hold the {value} {key}",
+          lambda: appearance(one).get(key) == value, 15, 0.2)
 
 
 def chosen(one: Person, name: str, what: str) -> dict:
@@ -143,7 +145,7 @@ def no_sheets(one: Person) -> None:
 
 def steps(story: Story) -> None:
     robin = story.person("Robin")
-    robin.prepare(APPS)
+    robin.prepare(APPS, TILOLANG)
     first: dict = {}
 
     def opens():
@@ -158,10 +160,28 @@ def steps(story: Story) -> None:
     story.step("A newcomer opens their workspace", opens, people=[robin])
 
     def adds_strip():
-        # The New strip button stands at the strip column's foot, at rest: pressing it makes the
-        # strip and asks for its name in place.
-        robin.press("New strip", "the New strip button by the strips")
-        field = until("the new strip's name, asked in place", lambda: robin.target("Strip name"), 20, 0.2)
+        # The bar's strip control opens the workspace's strips, where New strip makes one at the
+        # end, a press goes to it, and the strip in front's Rename asks for its name in place.
+        was = until("the strip in front, named in the bar", lambda: front_strip_name(robin), 30)
+        before = len(strips_in_front(robin))
+        robin.press(bar_strip(robin) or was, "the strip in the bar")
+        robin.press("New strip", "the strip menu's New strip")
+
+        def held():
+            strips = strips_in_front(robin)
+            return strips if len(strips) == before + 1 else None
+
+        strips = until("another strip in the workspace", held, 20, 0.2)
+        made = (strips[-1].get("name") or "").strip() or UNNAMED_STRIP.format(number=len(strips))
+        # The bar stands on the strip they were on: the strip menu lists the one they made, and a
+        # press goes there, as a person does to work in the strip they just made.
+        robin.press(bar_strip(robin) or was, "the strip in the bar")
+        robin.press(made, f"{made} in the strip switcher")
+        until("the new strip in front", lambda: front_strip_name(robin) == made, 20, 0.2)
+        robin.press(made, f"the strip in the bar ({made})")
+        robin.press(f"Rename {made}", f"Rename {made} in the strip menu")
+        field = until("the new strip's name, asked in place", lambda: robin.target("Strip name"),
+                      20, 0.2)
         robin.press("Strip name", "the new strip's name field")
         robin.session.type("Writing")
         robin.session.key("Enter")
@@ -177,7 +197,8 @@ def steps(story: Story) -> None:
     def switches_and_back():
         # The bar's workspace name opens the workspaces: the one they are in, a new one, and a
         # way to make one.
-        made = press_bar(robin, SWITCHER, "the workspace in the bar")
+        made = bar_workspace(robin)
+        robin.press(made, "the workspace in the bar")
         if made != first["workspace"]:
             raise Failed(f"the bar names {made!r}, not the workspace they arrived in "
                          f"({first['workspace']!r})")
@@ -192,7 +213,7 @@ def steps(story: Story) -> None:
         until("the new workspace holding", lambda: len(workspaces(robin)) == 2, 20, 0.25)
         # And back: the bar's name opens the switcher, where the workspace they arrived in is
         # listed by its name.
-        press_bar(robin, SWITCHER, f"the workspace in the bar ({second})")
+        robin.press(second, f"the workspace in the bar ({second})")
         robin.press(first["workspace"], f"{first['workspace']} in the switcher")
         until("the workspace they arrived in, in front again",
               lambda: bar_workspace(robin) == first["workspace"], 15, 0.25)
@@ -201,13 +222,14 @@ def steps(story: Story) -> None:
     story.step("They switch to another workspace and back", switches_and_back, people=[robin])
 
     def finds_settings():
-        # Their own face in the bar opens their card, where Settings leads.
-        robin.press(PROFILE, "their own face in the bar", exact=False)
+        # The Tilo menu on the bar holds Settings, where a newcomer who does not know a chord
+        # looks for it.
+        robin.press("Tilo", "the Tilo menu on the bar")
         took = time.monotonic()
-        robin.press("Settings", "Settings on their own card")
+        robin.press("Settings", "Settings in the Tilo menu")
         until("Settings' window, placed and drawn", lambda: drawn(robin, SETTINGS), 60, 0.25)
         # Its own pages, so what opened is Settings and not a window named after it.
-        until("Settings' own pages", lambda: robin.shows("Settings categories"), 30, 0.25)
+        until("Settings' own pages", lambda: robin.shows(APPEARANCE_PAGE), 30, 0.25)
         story.timing("Settings, from the press to its window", (time.monotonic() - took) * 1000)
 
     story.step("They find their settings", finds_settings, people=[robin])
@@ -216,15 +238,13 @@ def steps(story: Story) -> None:
         # Opening Settings asks nothing: a sheet about a pane they never opened would take the
         # first click instead of the control they meant.
         no_sheets(robin)
-        # The light palette paints two hues as one accent and offers them once, so the Pink
-        # swatch exists while the look is dark.
+        # The accent is the settings' own word for a colour, and it follows the look: picked
+        # dark, the same accent comes along into the light one.
         picks_mode(robin, "Dark")
-        picks_accent(robin, "Pink")
+        picks_accent(robin, "pink")
         story.shot(robin, "the dark look with the pink accent")
         picks_mode(robin, "Light")
-        held = appearance(robin).get("accent")
-        if held != "pink":
-            raise Failed(f"the accent did not follow the look into light: {held!r}")
+        holds(robin, "accent", "pink")
         story.shot(robin, "the light look with the pink accent")
 
     story.step("They pick a light and a dark look", picks_looks, people=[robin])

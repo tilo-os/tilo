@@ -42,14 +42,24 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO / "scripts/headless-examples"))
 
-from real_apps import APPS, BUILD, Failed, Session, prepare, run, until  # noqa: E402,F401
+from real_apps import BUILD, Failed, Session, prepare, run, until  # noqa: E402,F401
 
 BUDGETS = json.loads((HERE.parent / "budgets.json").read_text())
 # How often a running shell is filmed. A snapshot of a software-rendered shell takes a while of
 # its own, so the pace is what a person watching needs, not a screen's frame rate.
 FRAME_SECONDS = 0.4
-# How a person's own face in their top bar is named, after their name.
-PROFILE = " (you): your profile"
+# What a person's computer has before they open Tilo: the shell, which every session runs, and
+# Terminal, the app the nested session's build always installs. Every other package a story's
+# steps open is named by the story (its tilolang apps).
+APPS = "terminal"
+# How the shell names a person's own face on the bar: their name, then what pressing it opens —
+# their own card, or on the canvas the menu that holds the card and the styles.
+FACE_CARD = ": open your card"
+FACE_MENU = ": style and workspaces"
+# What the shell calls a workspace and a strip nobody named (session-core's `names`): the record
+# stores no name for what a person left unnamed, so each person reads its place in their words.
+UNNAMED_WORKSPACE = "Workspace"
+UNNAMED_STRIP = "Strip {number}"
 
 
 def slug(text: str) -> str:
@@ -224,13 +234,13 @@ class Person:
         return target
 
     def name_self(self, name: str) -> None:
-        """Give this person the name `name` as a person does: their own face in the top bar opens
-        their profile card, whose field asks for the name. Read back off the top bar and the
-        identity record the card keeps it in."""
-        def open_card():
-            self.press(PROFILE, f"{self.name}'s own face in their top bar", exact=False)
-            return until(f"the name field on {self.name}'s profile card", lambda: next(
-                (label for label in ("Add your name", "Your name") if self.target(label)), None),
+        """Give this person the name `name` as a person does: the shell opens their own card,
+        whose field asks for the name. Read back off the bar and the identity record the card
+        keeps it in."""
+        def open_card() -> str:
+            self.session.invoke(SHELL, CHROME, "show-self", {})
+            return until(f"the name field on {self.name}'s own card", lambda: next(
+                (label for label in ("Your name", "Add your name") if self.target(label)), None),
                 15, 0.2)
 
         # A person types once the caret is in the field. A shell just started may still be
@@ -240,7 +250,7 @@ class Person:
         field = open_card()
         taken = []
         for attempt in range(3):
-            self.press(field, f"the name field on {self.name}'s profile card")
+            self.press(field, f"the name field on {self.name}'s own card")
             try:
                 until(f"the caret in {self.name}'s name field", lambda: (
                     ((self.session.state_dump() or {}).get("chrome") or {}).get("caret")), 3, 0.1)
@@ -252,15 +262,15 @@ class Person:
                               "shot": shot and shot.name, "controls": self.names()})
                 self.story.note(f"{self.key}-name-presses-taken", taken)
                 if attempt == 2:
-                    raise Failed(f"three presses of the name field on {self.name}'s profile card "
+                    raise Failed(f"three presses of the name field on {self.name}'s own card "
                                  f"put no caret in it (card open after each: "
                                  f"{[t['card_open'] for t in taken]})") from None
-                if not self.target(field):
-                    field = open_card()
+                field = open_card()
         self.session.chord("Control", "a")
         self.session.type(name)
         self.session.key("Enter")
-        until(f"{self.name}'s top bar naming them", lambda: self.shows(f"{name}{PROFILE}"), 15, 0.2)
+        until(f"{self.name}'s bar naming them",
+              lambda: any(self.shows(named) for named in face_names(name)), 15, 0.2)
         record = self.state / "config/tilo/identity/primary.json"
         kept = json.loads(record.read_text()).get("display_name") if record.is_file() else None
         if kept != name:
@@ -300,8 +310,6 @@ class Person:
 
 SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
-# How the top bar's workspace control is named, before the workspace in front.
-SWITCHER = "Switch workspace, now in "
 
 
 def tree(one: Person) -> dict:
@@ -316,10 +324,73 @@ def front(one: Person) -> dict | None:
     active = tree(one).get("active")
     return next((w for w in held if w.get("id") == active), held[0] if held else None)
 
+def workspace_names(one: Person) -> dict[str, str]:
+    """Each workspace this person's computer keeps, by the name their shell calls it. The shell's
+    own layout carries no names (the workspace's record holds the one every device reads), so
+    they are read from the session's answer about what this computer keeps."""
+    answer = (one.session.control({"op": "keeping_devices"}) or {}).get("answer") or {}
+    return {(row.get("workspace") or ""): (row.get("name") or "").strip() or UNNAMED_WORKSPACE
+            for row in answer.get("workspaces") or []}
+
+def front_name(one: Person) -> str | None:
+    """The name this person's bar gives the workspace in front: the workspace control on the bar
+    is named after it. None while the shell holds no workspace."""
+    held = front(one)
+    return workspace_names(one).get(held.get("id")) if held else None
+
+def bar_workspace(one: Person) -> str | None:
+    """The workspace the bar says this person is in, read off the control it draws for it."""
+    name = front_name(one)
+    return name if name and one.target(name) else None
+
 def in_front_named(one: Person, name: str) -> bool:
-    """Whether this person's shell says the workspace in front is `name`: its top bar's workspace
-    control is named after it (the state dump's tree carries no names)."""
-    return one.shows(f"{SWITCHER}{name}")
+    """Whether this person's shell says the workspace in front is `name`: its bar draws the
+    workspace control under that name."""
+    return bar_workspace(one) == name
+
+def strips_in_front(one: Person) -> list[dict]:
+    """Every strip of the workspace in front, by the name it was given and its place."""
+    return (front(one) or {}).get("strips") or []
+
+def front_strip(one: Person) -> dict | None:
+    """The strip in front in the workspace in front, and its place among that workspace's
+    strips."""
+    held = front(one)
+    if not held:
+        return None
+    strips = held.get("strips") or []
+    current = (tree(one).get("active_strip") or {}).get(held.get("id"))
+    at = next((index for index, strip in enumerate(strips) if strip.get("id") == current), None)
+    if at is None:
+        # The strip recorded for the workspace is gone or was never recorded: the shell shows
+        # the first, as the layout's own rule does.
+        if not strips:
+            return None
+        at = 0
+    return {**strips[at], "at": at}
+
+def front_strip_name(one: Person) -> str | None:
+    """The name this person's bar gives the strip in front: the strip control on the bar is named
+    after it, from the name it was given or the place it stands."""
+    strip = front_strip(one)
+    if strip is None:
+        return None
+    return (strip.get("name") or "").strip() or UNNAMED_STRIP.format(number=strip["at"] + 1)
+
+def bar_strip(one: Person) -> str | None:
+    """The strip the bar says this person is on, read off the control it draws for it."""
+    name = front_strip_name(one)
+    return name if name and one.target(name) else None
+
+def face(one: Person) -> str | None:
+    """What this person's own face on the bar is named: their name, then what pressing it
+    opens."""
+    return next((name for name in one.names()
+                 if name.endswith(FACE_CARD) or name.endswith(FACE_MENU)), None)
+
+def face_names(name: str) -> tuple[str, ...]:
+    """What a person's face on the bar is named once they gave themselves `name`."""
+    return (f"{name}{FACE_CARD}", f"{name}{FACE_MENU}")
 
 def peers(one: Person, workspace: str) -> tuple[dict, list[dict]]:
     """This person's own row, and everyone else here in `workspace`, as their shell's people
@@ -347,12 +418,13 @@ def stand_in(one: Person, workspace: str) -> None:
 
 
 def invite_link(one: Person) -> str:
-    """A new link into the workspace in front, made as a person makes one: the top bar's Invite
-    opens the invite sheet, Create link (Create another link, once it made one) makes it, and Copy
-    link puts it on the clipboard, where it is read. The sheet stays open, showing the link, until
-    the person is done with it. Failed, with what the sheet says, when it makes no link."""
+    """A new link into the workspace in front, made as a person makes one: the session's own
+    show-invite opens the invite sheet, Create link (Create another link, once it made one) makes
+    it, and Copy link puts it on the clipboard, where it is read. The sheet stays open, showing
+    the link, until the person is done with it. Failed, with what the sheet says, when it makes
+    no link."""
     if not one.target("Create another link") and not one.target("Create link"):
-        one.press("Invite", f"Invite in {one.name}'s top bar")
+        one.session.invoke(SHELL, "session:invite", "show-invite", {})
 
     def said() -> list[str]:
         shown = [n for n in one.names() if n.startswith("No link") or "can't invite" in n]
@@ -655,11 +727,12 @@ def become_person(out: Path) -> None:
         subprocess.run(["useradd", "--create-home", "--user-group", PERSON_ACCOUNT], check=True)
         account = pwd.getpwnam(PERSON_ACCOUNT)
     # What this run made for whoever uses the machine is the person's: the story's own folder,
-    # the test environment's fresh home, temporary and runtime directories, and the run's
-    # audio endpoint (its socket and cookie).
+    # the test environment's fresh home, temporary and runtime directories, the run's audio
+    # endpoint (its socket and cookie), and the shader cache the session draws its first frame
+    # through (made by the runner as root, so a person's session cannot write it otherwise).
     owned = [Path(out)]
     for name in ("TILO_TEST_ENVIRONMENT", "PULSE_RUNTIME_PATH", "PULSE_STATE_PATH",
-                 "PULSE_COOKIE"):
+                 "PULSE_COOKIE", "MESA_SHADER_CACHE_DIR"):
         if os.environ.get(name):
             owned.append(Path(os.environ[name]))
     for top in owned:
