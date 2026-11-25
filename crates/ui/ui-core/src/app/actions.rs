@@ -3083,6 +3083,20 @@ impl App {
         self.collaboration.manager.is_connected()
     }
 
+    /// Whether the window publishes the action `intent` calls at all, whoever may run it: one
+    /// the person's grants refuse is still theirs to press, and the workspace says why it won't.
+    pub(crate) fn declares(&self, intent: &tilo_actions::ControlInvocation) -> bool {
+        let key = self.ensure_declared_resource_cache();
+        self.actions
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .is_some_and(|cache| {
+                tilo_actions::api::resolve(&cache.declared, &intent.address).is_some()
+            })
+    }
+
     pub(crate) fn locally_offered(&self, intent: &tilo_actions::ControlInvocation) -> bool {
         let (key, generation) = self.ensure_local_resource_cache();
         let cache = self.actions.local_resource_cache.borrow();

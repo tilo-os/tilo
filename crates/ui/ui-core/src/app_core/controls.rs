@@ -374,6 +374,15 @@ impl crate::app::App {
         }
         let acting = on_behalf_of.and_then(|id| self.acting_for_mut().get(&id).cloned());
         if !self.locally_offered(&intent) {
+            // The person pressed what the window shows them but their grants keep from them: the
+            // workspace decides it, and its refusal is said over the window when it answers.
+            if says_refusal && acting.is_none() && self.declares(&intent) {
+                return self.press_through_device(
+                    &LocalResourceTarget::Outer,
+                    &intent.address,
+                    ControlContinuationArguments::Json(intent.arguments),
+                );
+            }
             let error = ApiError::Unknown(intent.address.clone());
             tracing::warn!(
                 resource = %intent.address.resource,
