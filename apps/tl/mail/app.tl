@@ -1015,20 +1015,25 @@ fn quoted_list(items: List<Text>) -> Text {
     "[{items.map(item -> json_text(item)).join(", ")}]"
 }
 
-/// The message as a Markdown file: what a person exports to read it, or keep it, elsewhere.
-action export_markdown(m: Message) -> File (icon: .download, label: "Export as Markdown") {
+/// The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. The
+/// system's one Export… lists it with the message's other formats.
+action export_markdown(m: Message) -> File (
+    icon: .download,
+    label: "Export as Markdown",
+    export: "Markdown",
+) {
     File.of_text("{message_file(m)}.md", message_markdown(m))
 }
 
 /// The message as a JSON file: what a script or an agent reads its record from.
-action export_json(m: Message) -> File (icon: .download, label: "Export as JSON") {
+action export_json(m: Message) -> File (icon: .download, label: "Export as JSON", export: "JSON") {
     File.of_text("{message_file(m)}.json", message_json(m))
 }
 
 /// The message as an `.eml` file, which every mail program opens. A message taken in from outside
 /// an account's server is exported as it was sent; one its server holds is written from what the
 /// workspace keeps of it.
-action export_eml(m: Message) -> File (icon: .download, label: "Export as .eml") {
+action export_eml(m: Message) -> File (icon: .download, label: "Export as .eml", export: ".eml") {
     if m.original.starts_with("tilo-blob://") {
         File.at("{message_file(m)}.eml", m.original)
     } else {

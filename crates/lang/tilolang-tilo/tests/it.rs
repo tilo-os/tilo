@@ -66,6 +66,7 @@ mod library_hits;
 mod link_editor;
 mod links;
 mod logs;
+mod mail_export;
 mod mail_recipients;
 mod make_from;
 mod marks;
