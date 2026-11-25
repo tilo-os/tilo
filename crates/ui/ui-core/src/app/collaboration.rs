@@ -980,6 +980,13 @@ impl App {
             ),
             _ => return,
         };
+        // A call the workspace refused or ended at once never comes back with a yes.
+        #[cfg(feature = "model")]
+        if let BrokerReply::Receipt(invocation) = &reply
+            && !matches!(result, Ok(tilo_actions::InvocationUpdate::Accepted { .. }))
+        {
+            self.actions.asked_calls.remove(invocation);
+        }
         let Some(request_id) = self.actions.broker_requests.remove(&reply) else {
             return;
         };

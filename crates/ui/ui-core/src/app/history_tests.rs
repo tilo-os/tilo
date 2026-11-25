@@ -2481,7 +2481,7 @@ fn held_ask(
     Option<crate::bound_dispatch::ControlObservation>,
 ) {
     let [(invocation, held)] = app.actions.asked_calls.iter().collect::<Vec<_>>()[..] else {
-        panic!("the window holds exactly one asked call");
+        panic!("the window holds exactly one asked call, not {}", app.actions.asked_calls.len());
     };
     (*invocation, held.seen.clone())
 }
@@ -3481,17 +3481,15 @@ tilo_test_env::scenario! {
             };
             let (root, original, _) =
                 component_control_root(&[("component-replaced", confirmation.clone())]);
-            let mut app = app();
-            app.root_widget = root;
-            layout(&mut app);
-            let mut window = asking_window(app);
-            place_on_component_route(&mut window, &original[0].binding);
             original[0]
                 .binding
                 .queued_controls
                 .borrow_mut()
                 .push_back(nested_control("component-replaced", "original", 5));
-            let app = window.app_mut();
+            let mut app = app();
+            app.root_widget = root;
+            layout(&mut app);
+            let app = &mut app;
             palette_history_round_trip(app);
             assert_eq!(app.pending_history_controls().len(), 1, "History holds the queued control");
 
@@ -3546,7 +3544,7 @@ tilo_test_env::scenario! {
                 "stale callback cannot consume either retained item"
             );
             assert!(
-                asked(&mut window).is_none(),
+                app.actions.asked_calls.is_empty(),
                 "delayed {command_kind} asks the person nothing"
             );
         }
@@ -3564,17 +3562,15 @@ tilo_test_env::scenario! {
             };
             let (root, original, _) =
                 component_control_root(&[("callback-owner", confirmation.clone())]);
-            let mut app = app();
-            app.root_widget = root;
-            layout(&mut app);
-            let mut window = asking_window(app);
-            place_on_component_route(&mut window, &original[0].binding);
             original[0]
                 .binding
                 .queued_controls
                 .borrow_mut()
                 .push_back(nested_control("callback-owner", "original", 7));
-            let app = window.app_mut();
+            let mut app = app();
+            app.root_widget = root;
+            layout(&mut app);
+            let app = &mut app;
             palette_history_round_trip(app);
 
             let callback_id = if callback_kind == "cancel" {
@@ -3615,7 +3611,7 @@ tilo_test_env::scenario! {
                 "old {callback_kind} callback cannot mint or consume a current token"
             );
             assert!(
-                asked(&mut window).is_none(),
+                app.actions.asked_calls.is_empty(),
                 "old {callback_kind} callback asks the person nothing"
             );
         }
@@ -3628,18 +3624,19 @@ tilo_test_env::scenario! {
         };
         let (root, original, _) =
             component_control_root(&[("asked-owner", confirmation.clone())]);
-        let mut app = app();
-        app.root_widget = root;
-        layout(&mut app);
-        let mut window = asking_window(app);
-        place_on_component_route(&mut window, &original[0].binding);
         original[0]
             .binding
             .queued_controls
             .borrow_mut()
             .push_back(nested_control("asked-owner", "original", 9));
+        let mut app = app();
+        app.root_widget = root;
+        layout(&mut app);
+        palette_history_round_trip(&mut app);
+        assert_eq!(app.pending_history_controls().len(), 1, "History holds the queued control");
+        let mut window = asking_window(app);
+        place_on_component_route(&mut window, &original[0].binding);
         let app = window.app_mut();
-        palette_history_round_trip(app);
         let command = emit_pending_control_command(app, "history-pending-1");
         app.history
             .as_ref()

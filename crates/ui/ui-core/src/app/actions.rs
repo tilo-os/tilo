@@ -1408,7 +1408,27 @@ impl App {
                 },
             );
         }
-        self.invoke_via_broker(&address, arguments, argument)
+        // The workspace may ask the person before it sends the call back: it is held to the
+        // component it was made for ([`Self::ask_through_device`]).
+        let arguments = match (arguments, argument) {
+            (Some(arguments), _) => {
+                crate::bound_dispatch::ControlContinuationArguments::Json(arguments.clone())
+            }
+            (None, Some(text)) => match text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+                Some(json) => crate::bound_dispatch::ControlContinuationArguments::Json(
+                    serde_json::from_str(json).map_err(|error| {
+                        tilo_actions::ApiError::InvalidArguments(error.to_string())
+                    })?,
+                ),
+                None => crate::bound_dispatch::ControlContinuationArguments::Text(text.to_owned()),
+            },
+            (None, None) => crate::bound_dispatch::ControlContinuationArguments::Immediate,
+        };
+        self.ask_through_device(
+            &crate::bound_dispatch::local_target::LocalResourceTarget::Component(target.clone()),
+            &target.address.address,
+            &arguments,
+        )
     }
 
     #[cfg(feature = "model")]
