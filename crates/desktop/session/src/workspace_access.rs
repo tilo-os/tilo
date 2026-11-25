@@ -62,7 +62,7 @@ impl MountMoves {
         wake: tilo_service::Wake,
     ) -> Self {
         let moves = Self::default();
-        let moved = Arc::clone(&moves.0);
+        let counted = Arc::clone(&moves.0);
         let mut written = feed.follow();
         runtime.spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
@@ -72,13 +72,13 @@ impl MountMoves {
                         // A daemon that missed writes says so with an empty one: every path is
                         // read again, as the mounts may have moved with any of them.
                         if write.workspace.is_empty() || write.app == fs_protocol::tree::FILES_APP {
-                            moved.fetch_add(1, Ordering::AcqRel);
+                            counted.fetch_add(1, Ordering::AcqRel);
                             wake();
                         }
                     }
                     // A write missed is in the tree: every path is read again.
                     Err(RecvError::Lagged(_)) => {
-                        moved.fetch_add(1, Ordering::AcqRel);
+                        counted.fetch_add(1, Ordering::AcqRel);
                         wake();
                     }
                     Err(RecvError::Closed) => return,
@@ -142,9 +142,9 @@ impl Paths {
             self.resolved.clear();
             self.at = Some(mounts);
         }
-        if !self.resolved.contains_key(&record) {
+        if let std::collections::hash_map::Entry::Vacant(hole) = self.resolved.entry(record) {
             let found = tilo_app_launch::downloaded::workspace_resource(record)?;
-            self.resolved.insert(record, Some(found));
+            hole.insert(Some(found));
         }
         self.resolved.get(&record).and_then(Option::as_ref)
     }
@@ -217,7 +217,7 @@ impl Served {
     }
 
     /// The action that takes the grant or the choice `id` back.
-    fn revoke(&mut self, id: &str) -> Result<Started, ApiError> {
+    fn revoke(&self, id: &str) -> Result<Started, ApiError> {
         let id = id.to_owned();
         if let Some((workspace, app, token)) = chosen_id(&id) {
             let table = self
