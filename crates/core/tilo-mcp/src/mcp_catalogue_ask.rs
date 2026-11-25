@@ -36,12 +36,35 @@ impl tilo_actions::tree::Pause for TokioPause {
     }
 }
 
-/// `query` asked of `host` as `caller` the way a bridge asks it. The whole catalogue's rows
+/// `query` asked of `host` as `caller` the way a bridge asks it ([`asked_off_the_runtime`]),
+/// every page the bridge's tree reads: the timing line names what was asked, so a slow listing
+/// says which request it waited for, and what a listing asks can be read from its log.
+pub(crate) fn off_the_runtime<H: ActionProvider + Send + Sync + 'static>(
+    host: &Arc<H>,
+    caller: &Caller,
+    query: CatalogueQuery,
+) -> Pending<Result<CataloguePage, ActionCallError>> {
+    let Some(started) = timing_start() else {
+        return asked_off_the_runtime(host, caller, query);
+    };
+    let what = format!(
+        "provider={} parent={} rows={}",
+        query.provider.as_deref().unwrap_or("-"),
+        query.parent_resource.as_deref().unwrap_or("-"),
+        query.max_results
+    );
+    asked_off_the_runtime(host, caller, query).map(move |answer| {
+        timing_done_saying("ask.catalogue", started, &what);
+        answer
+    })
+}
+
+/// `query` asked of `host` as `caller`. The whole catalogue's rows
 /// and the workspace's own are assembled synchronously by the broker, so they are asked on a
 /// blocking thread: every session of an endpoint shares one current-thread runtime, which
 /// that work would stall for all of them. Who publishes is cheap, and an app's directory
 /// answers later on the broker's own set: asking either costs the runtime nothing.
-pub(crate) fn off_the_runtime<H: ActionProvider + Send + Sync + 'static>(
+fn asked_off_the_runtime<H: ActionProvider + Send + Sync + 'static>(
     host: &Arc<H>,
     caller: &Caller,
     query: CatalogueQuery,
@@ -68,23 +91,10 @@ pub(crate) fn off_the_runtime<H: ActionProvider + Send + Sync + 'static>(
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
-    /// One catalogue page from the action provider, as this bridge's caller: the timing line
-    /// names what was asked, so a slow listing says which request it waited for.
+    /// One catalogue page from the action provider, as this bridge's caller, timed as every
+    /// page its tree reads is ([`off_the_runtime`]).
     pub(crate) async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, BridgeError> {
-        let timed = timing_start();
-        let what = timed.map(|_| {
-            format!(
-                "provider={} parent={} rows={}",
-                query.provider.as_deref().unwrap_or("-"),
-                query.parent_resource.as_deref().unwrap_or("-"),
-                query.max_results
-            )
-        });
-        let asked = self.tree.ask(query).await.map_err(BridgeError::from);
-        if let (Some(started), Some(what)) = (timed, what.as_deref()) {
-            timing_done_saying("ask.catalogue", started, what);
-        }
-        asked
+        self.tree.ask(query).await.map_err(BridgeError::from)
     }
 
     /// The answer `ask` gives the host as this bridge's caller. With
