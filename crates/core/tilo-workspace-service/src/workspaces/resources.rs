@@ -1904,11 +1904,11 @@ pub(super) fn place(owner: bool, administrator: bool, role: Option<&str>) -> Opt
 }
 
 /// The workspace's members as its governance lists them, one row each: their actor, what it calls
-/// them, their role, and whether they own or administer it. `without` is the one person a listing
-/// leaves out where this host runs workspaces of people's own and is no person of theirs.
+/// them, their role, and whether they own or administer it. The host's own person is listed like
+/// anyone: on a person's computer they are its person, and an owner who hands the workspace on
+/// stays in it as an administrator.
 pub(super) fn member_rows(
     peer: &tilo_peer_state::StatePeer,
-    without: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let owner = peer.owner();
     let list = peer.governance().member_list(tilo_clock::wall())?;
@@ -1916,7 +1916,6 @@ pub(super) fn member_rows(
         .members
         .iter()
         .filter(|member| !member.removed)
-        .filter(|member| member.id.person_id() != without)
         .map(|member| {
             let owns = member.root().is_some_and(|root| root == owner);
             let role = member.role.map(tilo_peer_state::join::Role::key);

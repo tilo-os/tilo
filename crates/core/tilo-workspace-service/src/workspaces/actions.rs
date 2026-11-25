@@ -3428,13 +3428,9 @@ impl Workspaces {
     /// The people in `workspace`, one row each, as the members' resource's one builder lists
     /// them ([`crate::workspaces::resources::member_rows`]).
     pub(super) async fn members(&self, workspace: &str) -> Result<Vec<Value>, CollaborationError> {
-        let host = self
-            .own()
-            .map(|_| hex::encode(self.inner.host.cert.user_public_key));
         let hosted = self.workspace(workspace).await?;
         let hosted = hosted.lock().await;
-        crate::workspaces::resources::member_rows(&hosted.peer(), host.as_deref())
-            .map_err(CollaborationError::new)
+        crate::workspaces::resources::member_rows(&hosted.peer()).map_err(CollaborationError::new)
     }
 
     /// An invitation, answered with the link that hands it over.
