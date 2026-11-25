@@ -8,12 +8,11 @@
 //! which writes each change as the shell's parts make it.
 //!
 //! Between the person's devices they travel in their own workspace
-//! ([`crate::PersonResources`]), which carries each of the shell's documents exactly as it
-//! carries every app's own record of theirs — what this device writes is written there, and what
-//! another of their devices wrote is merged here (`Shell::sync_resource`). Each document is named
-//! there as the store names it here, under the shell's app: the name the device's dispatch writes
-//! when it runs the shell's actions (an agent's `shell#show-style`, a press on a desktop page), so
-//! the person's shell is one set of documents, whoever changes it.
+//! ([`crate::PersonResources`]), which the device's daemon keeps: what it holds of the shell's
+//! documents is merged here (`Shell::sync_resource`), and the session never writes it. Each
+//! document is named there as the store names it here, under the shell's app: the name the
+//! device's dispatch writes when it runs the shell's actions (an agent's `shell#show-style`, a
+//! press on a desktop page), so the person's shell is one set of documents, whoever changes it.
 //!
 //! A store this build cannot read is never written over: the session keeps the shell's resources
 //! in memory for that session alone and says so (`ShellRecord::take_refusal`), so a person is
@@ -23,7 +22,6 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use automerge::ChangeHash;
 use tilolang_tilo::resources::{LocalPort, ResourceStore};
 
 /// The app whose resources these are: the shell package the session runs, which declares
@@ -91,26 +89,6 @@ impl ShellRecord {
     /// Why the store on disk was not opened, once: the person is told, and is not told again.
     pub(crate) fn take_refusal(&self) -> Option<String> {
         self.refused.borrow_mut().take()
-    }
-
-    /// Each document of the shell's, with its heads: they change with every write a part makes
-    /// and every change another of the person's devices wrote, merged here.
-    #[must_use]
-    pub(crate) fn heads(&self) -> Vec<(String, Vec<ChangeHash>)> {
-        let mut docs = self.port.documents();
-        docs.sort();
-        docs.into_iter()
-            .map(|doc| {
-                let heads = self.port.heads(&doc);
-                (doc, heads)
-            })
-            .collect()
-    }
-
-    /// The document `doc` whole, for the person's other devices.
-    #[must_use]
-    pub(crate) fn save(&self, doc: &str) -> Option<Vec<u8>> {
-        self.port.save(doc)
     }
 
     /// Take in `theirs`, what another of the person's devices holds of the document `doc`, so

@@ -8,8 +8,6 @@ use std::rc::Rc;
 
 use crate::platform::surfaces::{SessionLink, ShellPart, ShellWork};
 
-/// Each of the shell's documents with its heads ([`crate::shell_document::ShellRecord::heads`]).
-type ShellHeads = Vec<(String, Vec<automerge::ChangeHash>)>;
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
@@ -136,10 +134,9 @@ pub(crate) struct Shell {
     /// The services' revision the platform readings were last read at: they are read again only
     /// when it moved.
     services_seen: Option<u64>,
-    /// Their own workspace's revision the shell's resources were last written at, and their
-    /// documents' heads then: an unchanged pair is neither read from their workspace nor
-    /// written to it, which is what every pass runs.
-    record_synced: std::cell::RefCell<Option<(u64, ShellHeads)>>,
+    /// Their own workspace's revision the shell's resources were last taken in at: an unchanged
+    /// one is not read again, which is what every pass runs.
+    record_synced: std::cell::Cell<Option<u64>>,
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
     theme: ui::Theme,
@@ -242,7 +239,7 @@ impl Shell {
             band: band(),
             wells,
             services_seen: None,
-            record_synced: std::cell::RefCell::new(None),
+            record_synced: std::cell::Cell::new(None),
             theme,
         };
         shell.person = shell.lists.person.clone();
@@ -925,60 +922,25 @@ impl Shell {
         tilolang_tilo::runtime::value::to_json(&value).ok()
     }
 
-    /// Carry the shell's resources to the person's other devices and take in what theirs hold:
-    /// they are the person's, in their own workspace (`store`), which carries each of the shell's
-    /// documents exactly as it carries every app's own record of theirs. What this device arranged
-    /// since the last pass is written there; what another of their devices arranged is merged
-    /// here, so the shell this session draws is the one they have everywhere.
+    /// Take in the shell's resources as the person's own workspace holds them (`store`): what
+    /// another of their devices or the device's dispatch arranged (an agent's `show-style`, a
+    /// press on a desktop page) is merged here, so the shell this session draws is the one they
+    /// have everywhere. The session writes nothing there: a change to the person's workspace is
+    /// an action the daemon records with who made it, never a document this session merges in.
     ///
     /// Cheap when nothing moved, which is what every pass runs.
     pub(crate) fn sync_resource(&self, store: &crate::PersonResources) {
-        let app = self.app.as_str();
-        // The workspace's revision, which moves when it takes a write from any of the person's
-        // devices, and the documents' own heads: an unchanged pair means neither this device's
-        // shell nor their workspace moved since the last look, so nothing is read or written.
         let revision = *store.changes().borrow();
-        let own = self.record_kept.heads();
-        if self
-            .record_synced
-            .borrow()
-            .as_ref()
-            .is_some_and(|(was, heads)| *was == revision && *heads == own)
-        {
+        if self.record_synced.get() == Some(revision) {
             return;
         }
-        // The documents their workspace holds that this device has none of yet: a shell arranged
-        // on another device, or changed by the device's dispatch (an agent's `show-style`, a
-        // press on a desktop page), which this one has not drawn. Each is named there as the
-        // store names it here.
-        let mut docs: std::collections::BTreeSet<String> =
-            own.iter().map(|(doc, _)| doc.clone()).collect();
-        docs.extend(store.documents(app));
-        for doc in &docs {
-            let id = doc.as_str();
-            // What another device of theirs wrote since the last look is taken in first, so what
-            // this device writes next carries it rather than opening a rival branch.
-            let theirs = store.document((app, id));
-            if let Some(bytes) = &theirs {
-                self.record_kept.take_in(doc, bytes);
+        let app = self.app.as_str();
+        for doc in store.documents(app) {
+            if let Some(bytes) = store.document((app, &doc)) {
+                self.record_kept.take_in(&doc, &bytes);
             }
-            let Some(whole) = self.record_kept.save(doc) else {
-                continue;
-            };
-            // What this device arranged of the document, merged into what their workspace holds
-            // of it: the ops it already has leave nothing pending, and nothing is written.
-            store.edit_document((app, id), move |document| {
-                let mut source =
-                    automerge::AutoCommit::load(&whole).map_err(|error| error.to_string())?;
-                tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            });
         }
-        // What was read and written is what the next pass finds unchanged: its own heads, with
-        // the workspace's revision they were written at.
-        let revision = *store.changes().borrow();
-        *self.record_synced.borrow_mut() = Some((revision, self.record_kept.heads()));
+        self.record_synced.set(Some(revision));
     }
 
     /// The shell's package as the session runs it, its compiled module and description: what its
