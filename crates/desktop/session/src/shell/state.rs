@@ -61,7 +61,7 @@ pub const WINDOW_MENU_APP: &str = "desktop";
 /// [`WINDOW_MENU`] reads and the verbs that change it, in the vocabulary a surface file declares
 /// (`tilo_actions::surface`, see `docs/developers/part-views.md` ). A view reads the menu through
 /// this and invokes it through this; the session publishes the same fields and verbs on its API.
-pub const WINDOW_MENU_SURFACE: &str = include_str!("../../window-menu-surface.toml");
+pub const WINDOW_MENU_SURFACE: &str = include_str!("../../window-menu-surface.json");
 
 use tilo_session_core::shell::OVERLAYS;
 
