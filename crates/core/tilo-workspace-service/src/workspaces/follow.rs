@@ -248,6 +248,18 @@ impl GovernedWorkspace {
         }
     }
 
+    /// Whether the copy holds what its workspace file does not name. The link takes a member's
+    /// write into the copy before the governor follows it and marks the copy unkept, so a copy
+    /// can differ from its file with nothing marked. One that cannot be named counts as
+    /// differing: writing it says why.
+    pub(super) fn differs_from_file(&mut self) -> bool {
+        let named = {
+            let peer = self.peer.lock();
+            self.parts.name(&peer)
+        };
+        !named.is_ok_and(|parts| parts == self.record.peer)
+    }
+
     /// What [`Self::keep_followed`] writes, named now, and the files it is
     /// written to: written after the workspace is let go, as a large document
     /// can take the disk seconds, and every read of the workspace and every
@@ -1321,28 +1333,38 @@ impl Workspaces {
         workspace: &GovernedWorkspace,
         kept: &std::collections::HashSet<collab_types::Signature>,
     ) -> Result<(), String> {
-        let peer = workspace.peer();
-        for (app, record) in peer.records() {
-            for op in peer.publication().sealed_history(&app, &record) {
-                if kept.contains(&op.signature) {
-                    continue;
-                }
-                let author = *op.author.as_bytes();
-                let message = neighbour_wire::NeighbourMsg::AppDocument {
-                    peer: tilo_peer_state::peer_handle(&author),
-                    app_id: app.clone(),
-                    cluster_id: workspace.workspace().to_owned(),
-                    document_id: record.clone(),
-                    envelope: Box::new(op),
-                    readers: None,
-                };
-                let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-                self.inner.records.carry(
-                    workspace.workspace_id(),
-                    author,
-                    &crate::workspace_documents::HostCommit { body },
-                )?;
-            }
+        // Read out under the copy's lock and carried after it is let go: the
+        // link keeping a frame reads the same copy.
+        let held: Vec<_> = {
+            let peer = workspace.peer();
+            peer.records()
+                .into_iter()
+                .flat_map(|(app, record)| {
+                    peer.publication()
+                        .sealed_history(&app, &record)
+                        .into_iter()
+                        .filter(|op| !kept.contains(&op.signature))
+                        .map(move |op| (app.clone(), record.clone(), op))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        for (app, record, op) in held {
+            let author = *op.author.as_bytes();
+            let message = neighbour_wire::NeighbourMsg::AppDocument {
+                peer: tilo_peer_state::peer_handle(&author),
+                app_id: app,
+                cluster_id: workspace.workspace().to_owned(),
+                document_id: record,
+                envelope: Box::new(op),
+                readers: None,
+            };
+            let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+            self.inner.records.carry(
+                workspace.workspace_id(),
+                author,
+                &crate::workspace_documents::HostCommit { body },
+            )?;
         }
         Ok(())
     }

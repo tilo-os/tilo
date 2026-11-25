@@ -3105,8 +3105,9 @@ impl Workspaces {
         for workspace in held {
             let mut workspace = workspace.lock().await;
             // A copy kept in the background may still be on its way: this
-            // one, written now, holds all it held.
-            if workspace.unkept || workspace.parts.pending() {
+            // one, written now, holds all it held. A write the link took in
+            // that the governor has not followed yet is in the copy too.
+            if workspace.unkept || workspace.parts.pending() || workspace.differs_from_file() {
                 workspace.keeping = false;
                 workspace.keep_followed();
             }
