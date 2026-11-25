@@ -10,7 +10,31 @@ use tilo_actions::remote::{
     ReceiptStatus, ResourceAddress, ResourceCopy,
 };
 
+use crate::language::chat::said;
 use crate::language::host;
+
+/// Chat's id, as the workspace runs it.
+const CHAT: &str = ui::apps::CHAT;
+/// Chat's package under the tree's `apps/tl`, which the device installs to run it.
+const CHAT_PACKAGE: &str = "chat";
+
+/// The channel `name` made in the workspace's chat by `agent`: the address its posts go to.
+async fn made_channel(agent: &host::Agent, name: &str) -> String {
+    let answer = agent
+        .tool_structured(
+            "tilo_do",
+            &json!({"path": format!("{CHAT}#new_channel"), "args": {"name": name}}),
+        )
+        .await;
+    let (text, failed) = said(&answer);
+    assert!(!failed, "{CHAT}#new_channel: {text}");
+    answer["structuredContent"]["resources"]
+        .as_array()
+        .and_then(|made| made.first())
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("the call names the channel it made: {answer}"))
+        .to_owned()
+}
 
 /// What `/v1` answered for the action at `path`, and the invocation id it named.
 async fn ran(key: &host::Key, path: &str) -> String {
@@ -531,57 +555,41 @@ fn a_caller_neither_its_own_nor_a_writer_of_its_origin_is_refused() {
     });
 }
 
-/// An agent's run that made two writes is taken back whole by its record's `undo`: both writes
-/// go, the record says what it changed was taken back, a caller who may not manage the run is
+/// An agent's run that wrote a message is taken back whole by its record's `undo`: the write
+/// goes, the record says what it changed was taken back, a caller who may not manage the run is
 /// refused, and asking again is refused in words a person reads.
 #[test]
 fn an_agents_run_is_taken_back_whole_through_its_record() {
-    use crate::language::chat::{chat_holds, opens, said};
+    use crate::language::chat::{chat_holds, opens};
 
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
         let agent = host.agent();
-        // The channel the chat opened with is listed before the agent posts into it.
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let (listed, failed) = said(&agent.tool("tilo_ls", &json!({"path": "chat"})).await);
-            if !failed && listed.contains("c_chat") {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the chat is never listed: {listed}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        // The channel the run posts into is the test's, as Chat starts empty.
+        let channel = made_channel(&agent, "general").await;
 
-        // One invocation of the chat's group makes two writes.
+        // One invocation of the chat's send writes the message.
         let run = tilo_actions::InvocationId::new().0.to_string();
-        let posts = [
-            json!({"action": "post", "args": {"channel": "c_chat", "text": "bulk one"}}),
-            json!({"action": "post", "args": {"channel": "c_chat", "text": "bulk two"}}),
-        ];
-        let (grouped, failed) = said(
+        let posted = "bulk one";
+        let (sent, failed) = said(
             &agent
                 .tool(
                     "tilo_do",
-                    &json!({"path": "chat/Messages#group",
-                            "args": {"actions": posts},
+                    &json!({"path": format!("{CHAT}/{channel}#send"),
+                            "args": {"body": posted},
                             "invocation_id": run}),
                 )
                 .await,
         );
-        assert!(!failed, "the batch runs as one invocation: {grouped}");
-        for text in ["bulk one", "bulk two"] {
-            assert!(
-                chat_holds(host.as_ref(), text)
-                    .await
-                    .unwrap_or_else(|error| panic!("{error}")),
-                "the run wrote {text:?}"
-            );
-        }
+        assert!(!failed, "the run writes its message: {sent}");
+        assert!(
+            chat_holds(host.as_ref(), posted)
+                .await
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the run wrote {posted:?}"
+        );
 
         let dispatch = host.dispatch();
         let person = host.caller();
@@ -605,14 +613,12 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
             reason.starts_with("only the caller who made this invocation"),
             "{reason}"
         );
-        for text in ["bulk one", "bulk two"] {
-            assert!(
-                chat_holds(host.as_ref(), text)
-                    .await
-                    .unwrap_or_else(|error| panic!("{error}")),
-                "a refusal wrote nothing: {text:?}"
-            );
-        }
+        assert!(
+            chat_holds(host.as_ref(), posted)
+                .await
+                .unwrap_or_else(|error| panic!("{error}")),
+            "a refusal wrote nothing: {posted:?}"
+        );
 
         // The person its agent works for takes the run back whole.
         let undone = completed(
@@ -625,14 +631,12 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
             .expect("the person takes it back"),
         );
         assert!(undone.is_null(), "the undo answers nothing of its own");
-        for text in ["bulk one", "bulk two"] {
-            assert!(
-                !chat_holds(host.as_ref(), text)
-                    .await
-                    .unwrap_or_else(|error| panic!("{error}")),
-                "the run's write {text:?} is gone"
-            );
-        }
+        assert!(
+            !chat_holds(host.as_ref(), posted)
+                .await
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the run's write {posted:?} is gone"
+        );
         let taken = one(dispatch.as_ref(), &person, &run).await;
         assert_eq!(taken["status"], "undone", "{taken}");
 
