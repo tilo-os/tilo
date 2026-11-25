@@ -657,6 +657,7 @@ cmd_journal() {
   local mapper="tilo-vm-journal-$$" loop part root="" opened="" jdir=""
   as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi; }
   inenv "qemu-img convert -O raw '$TILO_DISK' '$raw'" || die "could not copy $TILO_DISK"
+  as_root modprobe dm_mod 2>/dev/null || true
   loop="$(as_root losetup --find --show --partscan --read-only "$raw")" \
     || { rm -f -- "$raw"; die "could not attach $TILO_DISK on a loop device"; }
   for part in "$loop"p*; do

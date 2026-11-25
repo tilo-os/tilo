@@ -384,7 +384,8 @@ PY
 }
 
 shot_ocr() {
-  local name="$1" image="$run/$name.png" text_file="$out/$name.txt"
+  local name="$1"
+  local image="$run/$name.png" text_file="$out/$name.txt"
   "$vm" shot "$name" >/dev/null
   tesseract "$image" stdout 2>/dev/null > "$text_file"
   printf '%s\n' "$image"
@@ -740,10 +741,11 @@ fi
 
 # The sealed boot has no serial-console test instrumentation.  The installed
 # target consumes its one-boot greetd handoff here, so its first visible surface
-# is OOBE rather than the password greeter.  Send the disk secret only during
-# the early unlock window; do not keep retrying after an OOBE surface could own
-# keyboard focus.
+# is OOBE rather than the password greeter.  The disk secret is typed once, when
+# the unlock prompt is on the screen: typed earlier, its keys reach the boot
+# menu and pick an entry; typed later, an OOBE surface could own the keyboard.
 oobe_started=0
+unlock_sent=0
 for attempt in $(seq 1 60); do
   if image="$(shot_ocr target-observe 2>/dev/null)" \
     && grep -Eqi 'Create[[:space:]]+your[[:space:]]+local' "$out/target-observe.txt"; then
@@ -756,9 +758,12 @@ for attempt in $(seq 1 60); do
     break
   fi
   "$vm" status | grep -q '^running' || die "installed target exited before unlock"
-  if [ "$attempt" -ge 2 ] && [ "$attempt" -le 3 ]; then
-    "$vm" type "$TILO_PASS"
+  if [ "$unlock_sent" -eq 0 ] \
+    && grep -Eqi 'Unlock[[:space:]]+Tilo|passphrase' "$out/target-observe.txt" 2>/dev/null; then
+    cp -f "$run/target-observe.png" "$out/06-unlock-prompt.png"
+    printf '%s' "$TILO_PASS" | "$vm" type -
     "$vm" keys ret
+    unlock_sent=1
   fi
   sleep 5
 done

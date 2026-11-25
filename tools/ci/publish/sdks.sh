@@ -188,7 +188,8 @@ publish_typescript() {
 }
 
 publish_python() {
-  local v=$1 url=https://pypi.org/pypi/$name/$v/json
+  local v=$1
+  local url=https://pypi.org/pypi/$name/$v/json
   if published "$url"; then
     printf '%s@%s is already on PyPI; skipping it\n' "$name" "$v"
     return

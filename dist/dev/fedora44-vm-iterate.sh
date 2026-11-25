@@ -312,7 +312,8 @@ assert_vm_runtime_compatible() {
 }
 
 deploy_one() {
-    local package=$1 binary=$package
+    local package=$1
+    local binary=$package
     safe_name "$binary"
     local source="$repo_root/$target_rel/debug/$binary"
     local transfer
