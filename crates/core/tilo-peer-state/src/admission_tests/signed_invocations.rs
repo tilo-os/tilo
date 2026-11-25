@@ -1313,7 +1313,7 @@ fn seeded_with_files() -> Seeded {
 
 /// The workspace's `open` of Files given `argument`, as `cert`'s device signed it.
 fn files_open(
-    argument: serde_json::Value,
+    argument: &serde_json::Value,
     cert: &DeviceCert,
     key: &SigningKey,
     now: SystemTime,
@@ -1415,7 +1415,7 @@ tilo_test_env::scenario! {
         // The person asked their device to put two files into a new folder; the device that
         // keeps the tree made it as one change of the tree, and another replica takes it in.
         let request = files_open(
-            serde_json::json!({"files": [
+            &serde_json::json!({"files": [
                 {"content": "tilo.content:aa", "name": "a.md", "dir": "Inbox"},
                 {"content": "tilo.content:bb", "name": "b.md", "dir": "Inbox"},
             ]}),
@@ -1433,7 +1433,7 @@ tilo_test_env::scenario! {
     {
         let (mut receiver, a, ac, b, _bc, now) = seeded_with_files();
         let request = files_open(
-            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
             &ac,
             &a,
             now,
@@ -1453,7 +1453,7 @@ tilo_test_env::scenario! {
         // Another member signed the open, and the change names the owner as having asked.
         let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
         let request = files_open(
-            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
             &cert,
             &key,
             now,
@@ -1469,14 +1469,14 @@ tilo_test_env::scenario! {
     {
         let (mut receiver, a, ac, b, _bc, now) = seeded_with_files();
         // A plain open of the app, which starts it, changes no file.
-        let plain = files_open(serde_json::json!({}), &ac, &a, now);
+        let plain = files_open(&serde_json::json!({}), &ac, &a, now);
         let context = tree_change(&plain, caller_invoker(&ac), &["new-file"]);
         let message = tree_written(&receiver, &b, &context, "plain", now);
         let refused = take(&mut receiver, message, now).unwrap_err();
         assert!(refused.reason.contains("another action"), "{}", refused.reason);
         // A put moves nothing to the trash.
         let put = files_open(
-            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
             &ac,
             &a,
             now,
@@ -1520,7 +1520,7 @@ tilo_test_env::scenario! {
         // did, keeping no argument.
         let carried = |invoker: tilo_actions::ActionInvoker, cert: &DeviceCert, key: &SigningKey| {
             let mut request = files_open(
-                serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+                &serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
                 cert,
                 key,
                 now,
@@ -1559,7 +1559,7 @@ tilo_test_env::scenario! {
         // A member who may only read the workspace signed the open: the change is decided by
         // their own grants on the tree's verbs, and they may make no file.
         let request = files_open(
-            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
             &cert,
             &key,
             now,
