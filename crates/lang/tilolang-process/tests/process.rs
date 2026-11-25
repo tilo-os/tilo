@@ -3538,8 +3538,10 @@ default view panel for Panel
 
 view panel(p: Panel) {
     std.page(p) {
-        if let newest = activity.history.feed.entries.first() {
-            ui.Text(newest.summary, role: .title)
+        if let feed = activity.history.feed {
+            if let newest = feed.entries.first() {
+                ui.Text(newest.summary, role: .title)
+            }
         }
         ui.Button("Seen") {
             on press: activity.mark_viewed(activity.history, entries: ["00112233445566778899aabbccddeeff"], later: false)
