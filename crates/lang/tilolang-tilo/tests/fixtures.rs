@@ -698,3 +698,20 @@ pub fn settings_packages() -> Result<Vec<tilolang::PackageMeta>, String> {
     let fleet = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
     tilolang_tilo::catalogue::published_packages(&[fleet])
 }
+
+/// Hand `host` each of Settings' sections, empty: a host with no session publishes none of
+/// them, so a pane that reads a record of one would wait for it forever. A test that exercises
+/// a section sets its own reading over this one.
+pub fn settings_sections(host: &Host) {
+    for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        if !(published.starts_with("settings/") || published.contains("/settings/")) {
+            continue;
+        }
+        let Some(root) = ResourceRef::parse_id(&published, ty.as_str()) else {
+            continue;
+        };
+        if let Err(why) = host.runtime().set_reading(&root, "{}") {
+            panic!("{published} is read: {why}");
+        }
+    }
+}

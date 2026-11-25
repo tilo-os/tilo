@@ -45,6 +45,7 @@ fn settings_with(access: Option<MemberAccess>) -> (Host, tilolang::Compiled) {
     // The platform's packages it uses, as a window's process loads them: what a pane reads of the
     // workspace or the device is a resource their readings and actions come from.
     tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
+    crate::fixtures::settings_sections(&host);
     (host, compiled)
 }
 
