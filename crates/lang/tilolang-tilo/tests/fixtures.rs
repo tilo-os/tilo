@@ -717,7 +717,8 @@ pub fn settings_packages() -> Result<Vec<tilolang::PackageMeta>, String> {
     PACKAGES
         .get_or_init(|| {
             let fleet = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
-            let mut published = tilolang_tilo::catalogue::published_packages(&[fleet.clone()])?;
+            let mut published =
+                tilolang_tilo::catalogue::published_packages(std::slice::from_ref(&fleet))?;
             let settings = fleet.join("settings");
             let dirs = tilolang::source::dependency_order_with(
                 &settings,
@@ -777,23 +778,25 @@ pub fn set_reading(host: &Host, published: &str, reading: &serde_json::Value) {
 /// What the view drew, kind by kind, for a failing assertion to read.
 pub fn drawn(tree: &UiNode) -> String {
     let mut lines = Vec::new();
-    fn walk(node: &UiNode, lines: &mut Vec<String>) {
-        let words: Vec<String> = node
-            .props
-            .iter()
-            .filter_map(|(name, value)| match value {
-                Value::Text(text) => Some(format!("{name}={text:?}")),
-                Value::Bool(flag) => Some(format!("{name}={flag}")),
-                _ => None,
-            })
-            .collect();
-        lines.push(format!("{}{{{}}}", node.kind, words.join(" ")));
-        for child in &node.children {
-            walk(child, lines);
-        }
-    }
-    walk(tree, &mut lines);
+    drawn_lines(tree, &mut lines);
     lines.join("\n")
+}
+
+/// `node` and everything under it, one line each: its kind and the props it carries.
+fn drawn_lines(node: &UiNode, lines: &mut Vec<String>) {
+    let words: Vec<String> = node
+        .props
+        .iter()
+        .filter_map(|(name, value)| match value {
+            Value::Text(text) => Some(format!("{name}={text:?}")),
+            Value::Bool(flag) => Some(format!("{name}={flag}")),
+            _ => None,
+        })
+        .collect();
+    lines.push(format!("{}{{{}}}", node.kind, words.join(" ")));
+    for child in &node.children {
+        drawn_lines(child, lines);
+    }
 }
 
 /// The key of the control of `kind` whose label reads `label`, as a view lays it out.

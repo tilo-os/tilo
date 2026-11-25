@@ -126,12 +126,7 @@ impl Ada {
     }
 
     fn meta(&self) -> tilolang::PackageMeta {
-        self.replica
-            .host
-            .package(APP)
-            .expect("Calendar runs")
-            .meta
-            .clone()
+        self.replica.host.package(APP).expect("Calendar runs").meta
     }
 
     fn ty(&self, name: &str) -> String {
@@ -219,7 +214,7 @@ impl Ada {
     /// An entry her server holds in her Work calendar, as another client of hers left it: it
     /// came from the server, and nobody here put it in. `invites` names the people it invites,
     /// `organizer` who organises it.
-    fn from_her_server(
+    fn entry_from_her_server(
         &self,
         uid: &str,
         title: &str,
@@ -331,7 +326,7 @@ impl Ada {
             .expect("the guard reads")
     }
 
-    fn filing(&self, at: &ResourceRef, categories: &[&str]) -> Vec<Value> {
+    fn filing(at: &ResourceRef, categories: &[&str]) -> Vec<Value> {
         vec![
             Value::resource(at),
             Value::List(categories.iter().map(|c| Value::text(*c)).collect()),
@@ -365,10 +360,14 @@ fn refused(what: &str, outcome: Result<InvokeOutcome, RuntimeError>) -> String {
 
 /// An invitation `organizer` sends, as a message carries it under `method`.
 fn invitation(method: &str, uid: &str, organizer: &str, invited: &[&str]) -> String {
-    let people: String = invited
-        .iter()
-        .map(|address| format!("ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{address}\r\n"))
-        .collect();
+    use std::fmt::Write as _;
+    let people = invited.iter().fold(String::new(), |mut people, address| {
+        let _ = write!(
+            people,
+            "ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{address}\r\n"
+        );
+        people
+    });
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:{method}\r\nBEGIN:VEVENT\r\nUID:{uid}\r\n\
          SUMMARY:Offsite\r\nDTSTART;TZID=Europe/Berlin:20261119T140000\r\nDURATION:PT30M\r\n\
@@ -382,20 +381,20 @@ tilo_test_env::scenario! {
     phase an_agents_change_asks_its_person_and_hers_runs_as_she_makes_it;
     {
         let ada = Ada::new();
-        let board = ada.from_her_server("board-7@example.org", "Board meeting", "", &[]);
+        let board = ada.entry_from_her_server("board-7@example.org", "Board meeting", "", &[]);
         let assistant = assistant_of("ada").actor;
 
         // Her assistant files what she entered herself only once she allowed it: with no
         // answer, or her no, it stays as it was.
-        asked("filing her own entry", ada.call(&assistant, "set_categories", ada.filing(&board, &["Cancelled"])));
+        asked("filing her own entry", ada.call(&assistant, "set_categories", Ada::filing(&board, &["Cancelled"])));
         assert_eq!(ada.asks.count(), 1, "the change asked her");
         assert!(ada.categories(&board).is_empty(), "nothing she did not allow");
-        let done = ada.allowed(&assistant, "set_categories", ada.filing(&board, &["Board", "Quarter"]));
+        let done = ada.allowed(&assistant, "set_categories", Ada::filing(&board, &["Board", "Quarter"]));
         assert!(matches!(done, Ok(InvokeOutcome::Done(_))), "{done:?}");
         assert_eq!(ada.categories(&board), ["Board", "Quarter"]);
 
         // Her own filing asks her nothing.
-        let hers = ada.call(&herself(), "set_categories", ada.filing(&board, &["Board"]));
+        let hers = ada.call(&herself(), "set_categories", Ada::filing(&board, &["Board"]));
         assert!(matches!(hers, Ok(InvokeOutcome::Done(_))), "{hers:?}");
         assert_eq!(ada.categories(&board), ["Board"]);
         assert_eq!(ada.asks.count(), 1, "her own change asks her nothing");
@@ -403,13 +402,13 @@ tilo_test_env::scenario! {
         // Bo's agent asks too: an agent's change reaches the server whoever's agent it is.
         asked(
             "another member's agent filing",
-            ada.call(&assistant_of("bo").actor, "set_categories", ada.filing(&board, &["Bo's"])),
+            ada.call(&assistant_of("bo").actor, "set_categories", Ada::filing(&board, &["Bo's"])),
         );
         assert_eq!(ada.categories(&board), ["Board"]);
 
         // Somebody who is no member of the workspace is nobody to its calendar.
         let stranger = Actor::from(MemberId::person("zed"));
-        let theirs = ada.call(&stranger, "set_categories", ada.filing(&board, &["Zed's"]));
+        let theirs = ada.call(&stranger, "set_categories", Ada::filing(&board, &["Zed's"]));
         assert!(matches!(theirs, Ok(InvokeOutcome::Denied)), "{theirs:?}");
         assert_eq!(ada.categories(&board), ["Board"]);
     }
@@ -417,7 +416,7 @@ tilo_test_env::scenario! {
     phase what_she_entered_herself_is_not_her_assistants_to_change_or_remove;
     {
         let ada = Ada::new();
-        let board = ada.from_her_server("board-7@example.org", "Board meeting", "", &[]);
+        let board = ada.entry_from_her_server("board-7@example.org", "Board meeting", "", &[]);
         let assistant = assistant_of("ada").actor;
         let why = ada
             .refusal("organize", &board, &assistant)
@@ -440,7 +439,7 @@ tilo_test_env::scenario! {
     phase filing_what_she_invites_others_to_is_not_her_assistants;
     {
         let ada = Ada::new();
-        let dinner = ada.from_her_server("dinner-3@example.org", "Dinner", ADDRESS, &["bo@example.test"]);
+        let dinner = ada.entry_from_her_server("dinner-3@example.org", "Dinner", ADDRESS, &["bo@example.test"]);
         let why = ada
             .refusal("set_categories", &dinner, &assistant_of("ada").actor)
             .expect("an entry she invites others to is refused to her assistant");
@@ -485,7 +484,7 @@ tilo_test_env::scenario! {
     {
         let ada = Ada::new();
         // Bo's review, as her calendar server filed it.
-        ada.from_her_server("review-5@example.org", "Review", "bo@example.test", &[ADDRESS]);
+        ada.entry_from_her_server("review-5@example.org", "Review", "bo@example.test", &[ADDRESS]);
         let assistant = assistant_of("ada").actor;
         for method in ["CANCEL", "REQUEST"] {
             let text = invitation(method, "review-5@example.org", "bo@example.test", &[ADDRESS]);

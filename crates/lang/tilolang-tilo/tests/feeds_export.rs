@@ -1,12 +1,9 @@
 //! Feeds publishes a library's subscriptions as an OPML export action on the library. The
 //! system's one Export… lists it; Feeds keeps no export menu of its own.
 
-#[path = "support/export_probe.rs"]
-mod export_probe;
-
 use tilo_render_protocol::patch::Level;
 
-use export_probe::{export_formats, window};
+use crate::export_probe::{export_formats, window};
 
 const FEEDS_APP: &str = "so.tilo.feeds";
 

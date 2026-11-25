@@ -1,12 +1,9 @@
 //! Calendar publishes the whole calendar as an iCalendar export action on the calendar. The
 //! system's one Export… lists it; Calendar keeps no export menu of its own.
 
-#[path = "support/export_probe.rs"]
-mod export_probe;
-
 use tilo_render_protocol::patch::Level;
 
-use export_probe::{export_formats, window};
+use crate::export_probe::{export_formats, window};
 
 const CALENDAR_APP: &str = "so.tilo.calendar";
 
