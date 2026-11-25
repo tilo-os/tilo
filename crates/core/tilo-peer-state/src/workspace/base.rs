@@ -53,15 +53,98 @@ pub fn replaced(doc: &AutoCommit) -> std::collections::BTreeSet<[u8; 4]> {
     }
 }
 
+/// The root key of the list a base keeps of the named changes the history
+/// before it held ([`KeptChange`]): every change whose message names the
+/// action it carries out, in the order it was made, those the bases before it
+/// kept first. A base drops a history's values, which may hold what a later
+/// member must not receive, but never which action was taken, by whom and
+/// when: replay order decides the workspace's administration, and its members
+/// and history read every one of them ([`named_changes`]).
+pub const KEPT_KEY: &str = "base_kept_v1";
+
+/// One named change of a workspace's governance as a reader lists it: the
+/// change's hash, the message naming its action, and the time its commit
+/// carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeptChange {
+    pub change: ChangeHash,
+    pub message: String,
+    pub time: i64,
+}
+
+/// The named changes `doc`'s bases kept ([`KEPT_KEY`]), oldest first.
+fn kept(doc: &AutoCommit) -> Vec<KeptChange> {
+    let Ok(Some((Value::Object(automerge::ObjType::List), list))) = doc.get(ROOT, KEPT_KEY) else {
+        return Vec::new();
+    };
+    let text = |entry: &automerge::ObjId, key: &str| match doc.get(entry, key) {
+        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+            ScalarValue::Str(text) => Some(text.to_string()),
+            _ => None,
+        },
+        _ => None,
+    };
+    (0..doc.length(&list))
+        .filter_map(|index| {
+            let Ok(Some((Value::Object(_), entry))) = doc.get(&list, index) else {
+                return None;
+            };
+            let change = text(&entry, "change")?.parse::<ChangeHash>().ok()?;
+            let message = text(&entry, "message")?;
+            let time = match doc.get(&entry, "time") {
+                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                    ScalarValue::Int(time) => *time,
+                    _ => 0,
+                },
+                _ => 0,
+            };
+            Some(KeptChange {
+                change,
+                message,
+                time,
+            })
+        })
+        .collect()
+}
+
+/// Every named change of `doc`'s governance, oldest first: those its bases
+/// kept, then each change of its history since whose message names one. A
+/// rebase changes none of them.
+#[must_use]
+pub fn named_changes(doc: &AutoCommit) -> Vec<KeptChange> {
+    let mut named = kept(doc);
+    let mut seen: std::collections::HashSet<ChangeHash> =
+        named.iter().map(|kept| kept.change).collect();
+    for change in doc.clone().get_changes(&[]) {
+        let Some(message) = change
+            .message()
+            .filter(|message| collab_types::Stamp::of_message(message).is_some())
+        else {
+            continue;
+        };
+        if seen.insert(change.hash()) {
+            named.push(KeptChange {
+                change: change.hash(),
+                message: message.to_owned(),
+                time: change.timestamp(),
+            });
+        }
+    }
+    named
+}
+
 /// A document holding `doc`'s state as it stands, in one change by `actor`
-/// with no dependencies, at the next base generation.
+/// with no dependencies, at the next base generation. What the history held
+/// is gone from it, but not which actions it took ([`KEPT_KEY`]).
 pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge::AutomergeError> {
     let next = generation(doc).saturating_add(1);
-    let automerge::hydrate::Value::Map(state) = doc.hydrate(ROOT, None)? else {
+    let named = named_changes(doc);
+    let automerge::hydrate::Value::Map(mut state) = doc.hydrate(ROOT, None)? else {
         return Err(automerge::AutomergeError::InvalidOp(
             automerge::ObjType::Map,
         ));
     };
+    state.remove(KEPT_KEY);
     let mut covered = std::collections::BTreeMap::<String, u64>::new();
     let mut heads = replaced(doc);
     for change in doc.clone().get_changes(&[]) {
@@ -83,6 +166,15 @@ pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge:
         REPLACED_KEY,
         ScalarValue::Bytes(heads.into_iter().flatten().collect()),
     )?;
+    if !named.is_empty() {
+        let list = base.put_object(ROOT, KEPT_KEY, automerge::ObjType::List)?;
+        for (index, kept) in named.into_iter().enumerate() {
+            let entry = base.insert_object(&list, index, automerge::ObjType::Map)?;
+            base.put(&entry, "change", kept.change.to_string())?;
+            base.put(&entry, "message", kept.message)?;
+            base.put(&entry, "time", ScalarValue::Int(kept.time))?;
+        }
+    }
     base.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
     Ok(base)
 }
@@ -565,6 +657,62 @@ mod tests {
             .into_iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect()
+    }
+
+    /// A change of `doc` named as the action `verb`, as a governance action
+    /// commits it.
+    fn named(doc: &mut AutoCommit, verb: &str, value: &str, time: i64) {
+        doc.put(ROOT, "members", value).unwrap();
+        let stamp = collab_types::Stamp {
+            verb: verb.to_owned(),
+            ..collab_types::Stamp::default()
+        };
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(stamp.message())
+                .with_time(time),
+        );
+    }
+
+    #[test]
+    fn every_base_keeps_the_actions_the_history_before_it_took() {
+        let mut doc = AutoCommit::new();
+        named(&mut doc, "add-member", "ada", 1);
+        named(&mut doc, "remove-member", "", 2);
+        // Bookkeeping names no action, and no base lists it.
+        doc.put(ROOT, "checkpoints", "kept").unwrap();
+        doc.commit();
+        let mut first = rebase(&doc, ActorId::random()).unwrap();
+        named(&mut first, "add-member", "cy", 3);
+        let second = rebase(&first, ActorId::random()).unwrap();
+        assert_eq!(second.clone().get_changes(&[]).len(), 1);
+        let listed: Vec<(String, i64)> = named_changes(&second)
+            .into_iter()
+            .map(|kept| {
+                let stamp = collab_types::Stamp::of_message(&kept.message).unwrap();
+                (stamp.verb, kept.time)
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("add-member".to_owned(), 1),
+                ("remove-member".to_owned(), 2),
+                ("add-member".to_owned(), 3),
+            ],
+            "each action once, in order, through both bases"
+        );
+        assert_eq!(
+            named_changes(&second)
+                .iter()
+                .map(|kept| kept.change)
+                .collect::<Vec<_>>(),
+            named_changes(&first)
+                .iter()
+                .map(|kept| kept.change)
+                .collect::<Vec<_>>(),
+            "a base names each action by the change that took it"
+        );
     }
 
     tilo_test_env::scenario! {
