@@ -395,11 +395,6 @@ mod tests {
             assert!(resolve_launcher(&missing).is_err());
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     /// A login publishes the display its session's compositor listens on; a daemon started
     /// before it reads that, so a headless session's apps open on the compositor it runs.
