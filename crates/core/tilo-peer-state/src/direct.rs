@@ -931,9 +931,9 @@ impl PairLink {
         links.send_modify(|links| {
             let pair = links.entry(remote).or_default();
             if dialing {
-                pair.dialled += 1;
+                pair.dialled = pair.dialled.saturating_add(1);
             } else {
-                pair.accepted += 1;
+                pair.accepted = pair.accepted.saturating_add(1);
             }
         });
         Self {
@@ -2552,7 +2552,7 @@ impl DirectSync {
                 })
             };
             if pairs.wait_for(other).await.is_err() {
-                return std::future::pending().await;
+                std::future::pending::<()>().await;
             }
         };
         // Subscribed before the ended devices are read: an ending sent
