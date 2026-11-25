@@ -1621,6 +1621,10 @@ impl DirectSync {
     /// # Errors
     ///
     /// `message` is no content frame.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room's permit moves to the one link it was taken on, and is held until then"
+    )]
     pub async fn send_content_in(
         &self,
         room: ContentRoom,
