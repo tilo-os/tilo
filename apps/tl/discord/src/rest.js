@@ -234,6 +234,40 @@ export function memberRole({ tokenItem, origin = API }, guild, user, role, given
   };
 }
 
+/// The slash commands the bridge answers in a server: `/link` and `/unlink`.
+export const COMMANDS = [
+  {
+    name: "link",
+    type: 1,
+    description: "Link your Discord account to your Tilo account, so you show as yourself on both sides",
+  },
+  { name: "unlink", type: 1, description: "Unlink your Discord account from your Tilo account" },
+];
+
+/// Registers the bridge's slash commands in `guild`, replacing whatever it registered before.
+export function registerCommands({ tokenItem, origin = API }, application, guild) {
+  return {
+    url: `${at(origin)}/applications/${application}/guilds/${guild}/commands`,
+    key: tokenItem,
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(COMMANDS),
+    reason: "the bridge's /link and /unlink",
+  };
+}
+
+/// Answers a slash command with `content`, seen only by who ran it.
+export function answerCommand({ tokenItem, origin = API }, command, content) {
+  return {
+    url: `${at(origin)}/interactions/${command.interaction}/${command.token}/callback`,
+    key: tokenItem,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: 4, data: { flags: 64, content } }),
+    reason: "an answer to a slash command",
+  };
+}
+
 /// A bot token's shape: three non-empty dot-separated parts of base64url characters.
 export function looksLikeToken(token) {
   const parts = String(token ?? "").split(".");

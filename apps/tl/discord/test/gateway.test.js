@@ -40,6 +40,7 @@ function fakeGateway() {
                 session_id: "s1",
                 resume_gateway_url: `ws://127.0.0.1:${server.port}`,
                 user: { id: "900", username: "bridge" },
+                application: { id: "950" },
               },
             }),
           );
@@ -331,6 +332,39 @@ test("a member banned from or leaving the server reaches the bridge as their cha
   ).toEqual([
     ["3005", true, false],
     ["3006", false, true],
+  ]);
+  client.destroy();
+  discord.stop();
+});
+
+test("a slash command run in the server reaches the bridge with what answers it", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  expect(client.application).toBe("950");
+  discord.send({
+    op: 0,
+    s: 3,
+    t: "INTERACTION_CREATE",
+    d: {
+      id: "77",
+      token: "itok",
+      type: 2,
+      application_id: "950",
+      guild_id: "123",
+      member: { user: { id: "3001" } },
+      data: { name: "unlink" },
+    },
+  });
+  // A button press is no command.
+  discord.send({ op: 0, s: 4, t: "INTERACTION_CREATE", d: { id: "78", type: 3, data: {} } });
+  await until(() => events.some((event) => event.source === "COMMAND"), "the command");
+  expect(events.filter((event) => event.source === "COMMAND").map((event) => event.payload)).toEqual([
+    { interaction: "77", token: "itok", application: "950", guild_id: "123", name: "unlink", user_id: "3001" },
   ]);
   client.destroy();
   discord.stop();

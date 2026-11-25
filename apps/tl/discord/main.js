@@ -55,6 +55,8 @@ import {
   applyRole,
   setOverwrite,
   memberRole,
+  registerCommands,
+  answerCommand,
   whyRefused,
 } from "./src/rest.js";
 
@@ -289,6 +291,19 @@ export async function openGateway({
     }),
   );
   await carried?.start();
+  // `/link` and `/unlink`, registered once the gateway names the bot's application. A bridge of
+  // one channel adds nothing to the server.
+  if (client?.application && account.guild_id && !account.only_channel) {
+    calls
+      .webCall(
+        registerCommands(
+          { tokenItem: account.token_item, origin: account.api_origin },
+          client.application,
+          account.guild_id,
+        ),
+      )
+      .catch((error) => log(`the bridge's slash commands were not registered: ${error?.message ?? error}`));
+  }
   const carrying = carryFromWorkspace({ calls, current, log, stop }).catch((error) =>
     log(`the workspace's changes stopped reaching Discord: ${error?.message ?? error}`),
   );
@@ -500,6 +515,9 @@ export async function carryFromDiscord({
     const adopted = await adoptServer({ calls, account, layout: event.payload, log });
     await keepRoles({ calls, account: adopted, layout: event.payload, asked, log });
     await readBack({ calls, account: adopted, fetch, log });
+  }
+  if (event.source === "COMMAND" && String(event.payload.guild_id) === String(account.guild_id)) {
+    await answerSlash({ calls, account, command: event.payload, log });
   }
   // A linked member whose Discord roles were changed by hand holds the one their role here
   // gives them again.
@@ -741,6 +759,35 @@ async function followRole({ calls, account, link, current, log }) {
       await calls.webCall(memberRole(rest, account.guild_id, op.user, id, given));
     }
   }
+}
+
+/// A slash command answered, seen only by who ran it. `/unlink` unlinks their account and says
+/// from whom; `/link` says where linking is done: from the workspace, signing in with Discord.
+export async function answerSlash({ calls, account, command, log = () => {} }) {
+  let content;
+  if (command.name === "unlink") {
+    const link = linkOfUser(account, command.user_id);
+    if (link) {
+      await calls.do({ app: SELF, action: "unlink", args: { discord_user: command.user_id } });
+      const person = personOfLink(link);
+      const members = await calls.members().catch(() => []);
+      const name = members.find((member) => member?.person === person)?.name?.trim() || "your Tilo account";
+      content = `Unlinked from ${name}. What you write here shows under your Discord name again.`;
+    } else {
+      content = "This Discord account isn't linked to a Tilo account, so there was nothing to unlink.";
+    }
+  } else if (command.name === "link") {
+    content = account.sign_in_page
+      ? "Link this account from Tilo: open Discord in your workspace and choose Connect. You sign in with Discord there, and what you write here then shows as you."
+      : "Linking isn't set up for this server: its Tilo workspace offers no signing in with Discord.";
+  } else {
+    return;
+  }
+  const op = { op: "answer-interaction", interaction: command.interaction, content };
+  if (!(await carries(calls, "answer_interaction", op, log))) return;
+  await calls.webCall(
+    answerCommand({ tokenItem: account.token_item, origin: account.api_origin }, command, content),
+  );
 }
 
 /// A moderator blocked a Discord account: what was mirrored of it here is removed. The record is

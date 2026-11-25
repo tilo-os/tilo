@@ -922,3 +922,52 @@ test("a linked person given a new role here holds its bridge role in the server"
   workspace.finish();
   await running;
 });
+
+test("/unlink unlinks the account and says from whom, seen only by who ran it; /link says where linking is done", async () => {
+  const done = [];
+  const requests = [];
+  const calls = {
+    do: async (call) => done.push([call.action, call.args]),
+    webCall: async (request) => requests.push(request),
+    members: async () => [{ person: "ada", name: "Ada Lovelace", role: "editor" }],
+  };
+  const command = (name, user = "3001") => ({
+    source: "COMMAND",
+    payload: { interaction: "77", token: "itok", application: "950", guild_id: "123", name, user_id: user },
+  });
+  const answered = () => JSON.parse(requests.at(-1).body);
+
+  await carryFromDiscord({ calls, account: account(), event: command("unlink"), fetch: async () => ({}) });
+  expect(done.slice(0, 2)).toEqual([
+    ["unlink", { discord_user: "3001" }],
+    ["answer_interaction", { op: { op: "answer-interaction", interaction: "77", content: answered().data.content } }],
+  ]);
+  expect(requests.at(-1).url).toBe("https://discord.com/api/v10/interactions/77/itok/callback");
+  expect(answered()).toEqual({
+    type: 4,
+    data: { flags: 64, content: "Unlinked from Ada Lovelace. What you write here shows under your Discord name again." },
+  });
+
+  await carryFromDiscord({ calls, account: account(), event: command("unlink", "4004"), fetch: async () => ({}) });
+  expect(answered().data.content).toContain("isn't linked to a Tilo account");
+
+  await carryFromDiscord({
+    calls,
+    account: account({ sign_in_page: "https://discord.com/oauth2/authorize?client_id=1" }),
+    event: command("link", "4004"),
+    fetch: async () => ({}),
+  });
+  expect(answered().data.content).toContain("choose Connect");
+  await carryFromDiscord({ calls, account: account(), event: command("link", "4004"), fetch: async () => ({}) });
+  expect(answered().data.content).toContain("Linking isn't set up");
+
+  // A command of another server is not this bridge's to answer.
+  const before = requests.length;
+  await carryFromDiscord({
+    calls,
+    account: account(),
+    event: { ...command("unlink"), payload: { ...command("unlink").payload, guild_id: "999" } },
+    fetch: async () => ({}),
+  });
+  expect(requests).toHaveLength(before);
+});

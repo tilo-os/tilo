@@ -47,6 +47,7 @@ export async function connect({ make, token, onEvent, onVoice, watch, url, log =
   );
   client.on("guildMemberUpdate", (_, member, how) => onEvent(discordMember(member, how)));
   client.on("threadCreate", (thread) => onEvent(discordThread(thread)));
+  client.on("command", (command) => onEvent({ source: "COMMAND", payload: command }));
   client.on("layout", (guild) => onEvent(discordLayout(guild)));
   await client.login(token, url);
   if (watch) await watch();
@@ -433,6 +434,8 @@ export class Gateway {
       case "READY":
         this.#session = data?.session_id ?? null;
         this.user = data?.user ?? null;
+        // The bot's application, which its slash commands are registered under.
+        this.application = String(data?.application?.id ?? data?.user?.id ?? "");
         this.#attempt = 0;
         this.#ready?.resolve(this);
         this.#ready = null;
@@ -487,6 +490,18 @@ export class Gateway {
         this.#emit("guildMemberUpdate", null, memberOf(data));
         return;
       }
+      // A slash command someone ran: its name, who ran it, and what answers it.
+      case "INTERACTION_CREATE":
+        if (Number(data?.type) !== 2) return;
+        this.#emit("command", {
+          interaction: String(data?.id ?? ""),
+          token: String(data?.token ?? ""),
+          application: String(data?.application_id ?? ""),
+          guild_id: String(data?.guild_id ?? ""),
+          name: String(data?.data?.name ?? ""),
+          user_id: String(data?.member?.user?.id ?? data?.user?.id ?? ""),
+        });
+        return;
       // A member banned or gone from the server: the planners read it as their change.
       case "GUILD_BAN_ADD":
         this.#emit("guildMemberUpdate", null, memberOf(data), { banned: true });
