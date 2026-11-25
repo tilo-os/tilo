@@ -578,7 +578,8 @@ impl Device {
     /// is: each workspace by its id and the name they last saw it by, in their order, joined with
     /// the membership the workspace holds of them for the role it shows and when it was made, and
     /// with its owner's labels where they own it. A device reads it from the moment it entered
-    /// their workspace with its ticket, while its own copy still fills in behind; a record still
+    /// their workspace with its ticket, while its own copy still fills in behind; a key that has
+    /// not entered it yet enters it at its first read ([`Self::enter_workspace`]); a record still
     /// arriving there is waited for. With `labels`, only the workspaces labelled with every one
     /// of them, and with `workspace` only that one.
     ///
@@ -594,9 +595,11 @@ impl Device {
         use tilo_server_protocol::workspaces::{IDENTITY_LIST, PersonWorkspaces, member_record};
         let person = self.cert.user_public_key;
         let own = tilo_server_protocol::servers::person_workspace_id(&person);
-        let actions = self.actions(WorkspaceId::from(collab_types::person_workspace(&person)));
+        let own_id = WorkspaceId::from(collab_types::person_workspace(&person));
+        let actions = self.actions(own_id);
         let mut after: Option<String> = None;
         let mut found = None;
+        let mut entered = false;
         for _ in 0..PERSON_LIST_READS {
             let read = tilo_actions::remote::ResourceReadRequest {
                 workspace: own.clone(),
@@ -611,6 +614,15 @@ impl Device {
                 Some(Ok(answered)) => answered,
                 Some(Err(ActionCallError::Unanswered)) | None => {
                     return Err(DeviceRefusal::of(&ActionCallError::Unanswered));
+                }
+                // A key that never entered the person's workspace (one issued for a program, not
+                // a device that came in with its ticket) enters it the first time it reads it, as
+                // every key enters a workspace: the host invites it and it redeems the invitation,
+                // so the workspace's own certificates admit it from then on.
+                Some(Err(_)) if !entered && !self.holds(own_id) => {
+                    entered = true;
+                    self.enter_workspace(&own, &self.label).await?;
+                    continue;
                 }
                 // A server that holds nothing for the person says it does not know them, in the
                 // code a person reads: the host never let them in and no invitation brought them.

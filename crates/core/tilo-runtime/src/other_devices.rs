@@ -13,7 +13,7 @@ use collab_types::signer::DeviceSigner;
 use iroh::{EndpointAddr, EndpointId};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationList};
-use tilo_workspace_service::agents::agent_keys::{AgentKeys, AgentSigner};
+use tilo_workspace_service::agents::agent_keys::{AgentKeys, AgentSigner, Signed};
 
 use crate::i18n::{t, t_args};
 
@@ -112,8 +112,10 @@ impl OtherDevices {
                 agent_cert,
                 agent_signer,
             ))?;
+            // Every call the agent's tools make is signed by the agent's own key here, and
+            // carried to the device as it was signed: the device decides it as that agent's.
             let server = tilo_mcp::McpServer::for_agent(
-                session.actions.clone(),
+                Signed::new(session.actions.clone(), Some(signer)),
                 workspace.clone(),
                 &agent,
                 &hex::encode(person),

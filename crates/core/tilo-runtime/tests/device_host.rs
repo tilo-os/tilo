@@ -490,6 +490,55 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_revoked_key_reads_the_persons_workspace_no_more() {
+    let root = SigningKey::from_bytes(&[0x14; 32]);
+    let device = device_host(&root).await;
+    let agent = certified(
+        &root,
+        12,
+        "Visa backend #2",
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let key = session(&device, &agent).await;
+    let labels = tilo_server_protocol::workspaces::WorkspaceLabels::new();
+
+    // The key enters the person's workspace at its first read, and reads their list there.
+    let listed = key.person_workspaces(&labels, None).await.unwrap();
+    assert!(
+        listed
+            .workspaces
+            .iter()
+            .any(|listed| listed.workspace == device.workspace),
+        "{listed:?}"
+    );
+
+    // The person revokes it, and the revocation reaches the device that keeps their workspace.
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: agent.1.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+    device
+        .host
+        .workspaces()
+        .announce_revocations(vec![entry])
+        .await
+        .unwrap();
+
+    // From then on the workspace refuses it: the host answers, and answers no.
+    let refused = key.person_workspaces(&labels, None).await.unwrap_err();
+    assert_ne!(
+        refused.code,
+        tilo_session_client::device::DeviceRefusal::UNANSWERED,
+        "{refused:?}"
+    );
+    key.close();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_grant_for_one_workspace_is_invited_into_that_one_alone() {
     let root = SigningKey::from_bytes(&[0x13; 32]);
     let device = device_host(&root).await;
