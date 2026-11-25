@@ -21,6 +21,9 @@ path = "src/main.rs"
 # beside `tilo`, a server) runs instances and programs alone and links no toolkit.
 app-launch = [
     "dep:ui",
+    # The window link the shell hands each window's patch connection over: the process link,
+    # not the desktop stack, which stays the host's.
+    "ui-core/local-daemons",
     "dep:tilo-app-window",
     "dep:media",
     "dep:tilo-failure",
