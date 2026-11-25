@@ -162,14 +162,16 @@ run_tests() {
   export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$TILO_SDK_APP_KIT/trusted-publishers
 
   # The daemon answers root as the device itself, never as its person: a job that runs as root
-  # runs the daemon and the suites as an ordinary account, which owns the scratch they work in.
+  # runs the daemon and the suites as an ordinary account, which owns the scratch they work in,
+  # its runtime directory included: the job's own is root's.
   local as_person=()
   if [[ $(id -u) == 0 ]]; then
-    mkdir -p "$scratch/home" "$scratch/tmp"
+    mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run"
+    chmod 0700 "$scratch/run"
     chown -R 1000:1000 "$scratch"
     chmod 0755 "$scratch"
     as_person=(setpriv --reuid=1000 --regid=1000 --clear-groups
-      env HOME="$scratch/home" TMPDIR="$scratch/tmp")
+      env HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run")
   fi
   RUST_LOG=${RUST_LOG:-info,tilo_runtime=debug} "${as_person[@]}" "$binaries/sdk-daemon" "$binaries/tilo-runtime" -- bash -euo pipefail -c '
     # Both suites run, so one that fails does not hide what the other says.
