@@ -2455,15 +2455,12 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
     // The item, as Passwords keeps it: the vault takes it from a device of the workspace's,
     // which this computer is.
     let cert = daemon.cert.clone();
-    let device = tilo_actions::remote::Caller::authenticated(
-        cert.user_public_key,
-        cert.device_public_key,
-    )
-    .in_workspace(&workspace);
+    let device =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&workspace);
     let reference = tilo_rt::app()
         .block_on(async {
-            let place =
-                accounts::vault_items::Place::parse("https://bank.example.test").unwrap();
+            let place = accounts::vault_items::Place::parse("https://bank.example.test").unwrap();
             workspaces
                 .keep_account_password(
                     &workspace,
@@ -2538,11 +2535,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
     // Another connection of the person, with Read on what the call addressed, reads the
     // workspace's invocations: neither the listing nor the record holds the secret.
     let member = device;
-    let broker = daemon
-        .broker
-        .fanout
-        .app_broker()
-        .expect("the broker runs");
+    let broker = daemon.broker.fanout.app_broker().expect("the broker runs");
     let listed = broker
         .invocation_listing(
             &workspace,
