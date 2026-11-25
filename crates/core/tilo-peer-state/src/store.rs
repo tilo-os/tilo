@@ -2152,7 +2152,10 @@ const WORKSPACES: &str = "workspaces";
 /// ([`tilo_user_identity::DeviceCapabilities::records`]), which a build of version 7 refuses. Version
 /// 9 is version 8's layout, whose messages may be the content asked for and answered with many at a
 /// time ([`NeighbourMsg::DocumentContentWants`] and [`NeighbourMsg::DocumentContentPieces`]), which
-/// a build of version 8 refuses: a store of version 7 or 8 is relabelled as it opens
+/// a build of version 8 refuses. Version 10 is version 9's layout, whose messages may be the word
+/// that pushed content is kept or let go of ([`NeighbourMsg::DocumentContentKept`] and
+/// [`NeighbourMsg::DocumentContentReleased`]), which a build of version 9 refuses: a store of
+/// version 7 to 9 is relabelled as it opens
 /// ([`RELABELLED_FRAMES`]), its frames left as they are. A build before a version refuses
 /// the store by version instead of reading what it cannot; a store opening an earlier version
 /// moves its frames into segments, each written as today
@@ -2162,7 +2165,7 @@ const WORKSPACES: &str = "workspaces";
 /// bytes that name no call, and this build writes every claim with one. The store drops such a
 /// frame as it opens, and the workspace's devices answer for what it lost on the next replay
 /// ([`gaps`]).
-pub(crate) const FRAMES_VERSION: u32 = 9;
+pub(crate) const FRAMES_VERSION: u32 = 10;
 /// The oldest version whose frames read as this build's: a store of it or a later one records
 /// the newer version and keeps its segments as they are.
 const RELABELLED_FRAMES: u32 = 7;

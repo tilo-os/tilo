@@ -19,17 +19,18 @@ use automerge::transaction::Transactable as _;
 /// stored bumps this: a build refuses state of another version by name
 /// rather than reading it as this one's, except the versions since
 /// [`RELABELLED`], which it brings up ([`brought_up`]).
-pub const DURABLE_VERSION: u32 = 17;
+pub const DURABLE_VERSION: u32 = 18;
 
 /// The version before [`DURABLE_VERSION`]: the same layout, whose waiting writes may not be a
-/// message of a kind this build appends ([`NeighbourMsg::DocumentContentWants`] and
-/// [`NeighbourMsg::DocumentContentPieces`]), so a build that reads neither refuses a state that
+/// message of a kind this build appends ([`NeighbourMsg::DocumentContentKept`] and
+/// [`NeighbourMsg::DocumentContentReleased`]), so a build that reads neither refuses a state that
 /// carries one rather than reading its writes wrong ([`brought_up`]).
-pub(super) const PREVIOUS: u32 = 16;
+pub(super) const PREVIOUS: u32 = 17;
 
-/// The oldest version before [`PREVIOUS`] that has this build's layout: version 15 differs only
-/// in what a certificate it keeps may name, and version 14 only in what a governance row may say
-/// of a device the workspace removed, so each comes up relabelled ([`brought_up`]).
+/// The oldest version before [`PREVIOUS`] that has this build's layout: version 16 differs only
+/// in the content messages a waiting write may be, version 15 only in what a certificate it keeps
+/// may name, and version 14 only in what a governance row may say of a device the workspace
+/// removed, so each comes up relabelled ([`brought_up`]).
 pub(super) const RELABELLED: u32 = 14;
 
 /// The newest version before [`RELABELLED`] that this build brings up ([`brought_up`]).
@@ -40,13 +41,15 @@ fn brings_up(version: u32) -> bool {
     (RELABELLED..=PREVIOUS).contains(&version) || version == BROUGHT_UP
 }
 
-/// `bytes`, a durable state, in this build's layout: versions 16 ([`PREVIOUS`]) to 14
+/// `bytes`, a durable state, in this build's layout: versions 17 ([`PREVIOUS`]) to 14
 /// ([`RELABELLED`]) relabelled, version 13 ([`brings_up`]) brought up to it, any other as it is,
 /// for [`Durable::read`] to read or refuse.
 ///
-/// Version 16 differs from this one only in what a write waiting to be sent may be: this build
-/// appends the messages content is asked for and answered with many at a time, which version
-/// 16's builds refuse, and a message version 16 wrote reads the same here. Version 15 differs
+/// Version 17 differs from this one only in what a write waiting to be sent may be: this build
+/// appends the word that pushed content is kept and that a member lets go of it, which version
+/// 17's builds refuse, and a message version 17 wrote reads the same here. Version 16 differs
+/// from version 17 the same way, by the messages content is asked for and answered with many at
+/// a time. Version 15 differs
 /// from version 16 only in what a certificate it keeps may name: this build's may name a placed
 /// device's records or a placement grant, under binary markers version 15's builds refuse, and a
 /// certificate version 15 wrote reads the same here. Version 14 differs from version 15 only in
