@@ -31,11 +31,11 @@ use zeroize::Zeroizing;
 
 use super::call::LinkEvent;
 use super::dave::{self, Dave, Frame};
-use super::mix::Mixer;
 use super::rtp::{self, Cipher, Sender};
 use crate::Ctx;
 use crate::egress::{Egress, Purpose};
 use crate::gateway::{Socket, connect};
+use tilo_live::mix::Mixer;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);

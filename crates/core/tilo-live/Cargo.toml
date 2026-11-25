@@ -15,7 +15,11 @@ default = []
 live_session = ["dep:moq-net", "dep:hex", "dep:n0-future"]
 # An app's call lane: the call one app's connection carries into a workspace's call, published
 # through the session the device's daemon holds.
-app_call = ["live_session", "dep:tilo-actions", "dep:tokio", "tokio/rt"]
+# A bridged call's speakers are mixed into the one stream its service takes.
+app_call = ["live_session", "mix", "dep:tilo-actions", "dep:tokio", "tokio/rt"]
+# Several speakers' Opus frames as one stream, a frame every 20 ms. libopus is built from source
+# by opusic-sys (cmake).
+mix = ["dep:opus"]
 # The relay: the copying and admitting half, which runs on the device that
 # serves a live session.
 relay = ["live_session", "dep:bytes", "dep:tokio", "dep:serde_json"]
@@ -47,6 +51,7 @@ moq-net = { workspace = true, optional = true }
 # Plain future polling: the client carrier runs in a page as it does natively.
 n0-future = { version = "0.3", optional = true }
 hex = { workspace = true, optional = true }
+opus = { version = "0.4", optional = true }
 # A track is sealed and opened under the scope's channel keys, as a call's
 # frames are: the sealing is this crate's, and the keys are the channel's.
 key-group = { package = "tilo-key-group", version = "0.1.0", path = "../key-group" }

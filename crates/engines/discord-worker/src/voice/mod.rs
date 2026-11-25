@@ -4,12 +4,12 @@
 //! [`call`] decides which channel the bot is in and reports occupancy;
 //! [`connection`] is the voice gateway and UDP path of one join, with
 //! [`rtp`] for transport encryption, [`dave`] for Discord's end-to-end
-//! encryption and [`mix`] for the Tilo speakers mixed into one stream.
+//! encryption, the Tilo speakers mixed into one stream by
+//! [`tilo_live::mix`].
 
 pub mod call;
 pub mod connection;
 pub mod dave;
-pub mod mix;
 pub mod permissions;
 pub mod rtp;
 

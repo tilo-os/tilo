@@ -42,11 +42,11 @@ url.workspace = true
 zeroize.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Voice: transport encryption (Discord's rtpsize AEAD modes, sealed in
-# tilo-seal), DAVE end-to-end encryption, and Opus to mix several Tilo
-# speakers into one stream. libopus is built from source by opusic-sys (cmake).
+# tilo-seal), DAVE end-to-end encryption, and several Tilo speakers mixed into
+# one stream by the live session's mixer.
 davey.workspace = true
 getrandom.workspace = true
-opus = "0.4"
+tilo-live = { path = "../../core/tilo-live", features = ["mix"] }
 tilo-seal = { path = "../../core/tilo-seal" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -59,7 +59,7 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 key-group = { package = "tilo-key-group", path = "../../core/key-group" }
-tilo-live = { path = "../../core/tilo-live", features = ["relay"] }
+tilo-live = { path = "../../core/tilo-live", features = ["mix", "relay"] }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 

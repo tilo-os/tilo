@@ -1,5 +1,5 @@
-//! The Tilo call's speakers as one Opus stream for Discord, a frame every
-//! 20 ms.
+//! A call's speakers as one Opus stream, a frame every 20 ms, for a service
+//! whose call takes one stream from the bridge carrying it.
 //!
 //! Each speaker's frames wait in a short jitter buffer: a speaker starts
 //! playing once two frames are queued and keeps at most three, so a late
@@ -81,6 +81,12 @@ impl Mixer {
 
     /// The frame for the next 20 ms, `None` when nobody is speaking.
     pub fn tick(&mut self) -> Option<Vec<u8>> {
+        self.tick_said().map(|(_, frame)| frame)
+    }
+
+    /// The frame for the next 20 ms and whose it is: the one speaker it came
+    /// from untouched, or `None` for a mix of several.
+    pub fn tick_said(&mut self) -> Option<(Option<String>, Vec<u8>)> {
         let mut frames: Vec<(String, Vec<u8>)> = Vec::new();
         for (name, speaker) in &mut self.speakers {
             if !speaker.playing && speaker.queue.len() >= PREBUFFER {
@@ -105,13 +111,13 @@ impl Mixer {
             .retain(|_, speaker| speaker.idle_ticks < FORGET_AFTER);
         match frames.len() {
             0 => None,
-            1 => frames.pop().map(|(_, frame)| frame),
+            1 => frames.pop().map(|(speaker, frame)| (Some(speaker), frame)),
             _ => {
                 // The mix is encoded anew from what is queued, so what the
                 // receiver gets is continuous: a frame shed from a speaker's
                 // queue is no hole in that stream to conceal.
                 self.shed = 0;
-                self.mix(&frames)
+                self.mix(&frames).map(|frame| (None, frame))
             }
         }
     }

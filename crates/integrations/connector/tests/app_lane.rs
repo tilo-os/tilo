@@ -5,6 +5,7 @@
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
     reason = "in a test these are the assertion, not a hazard"
@@ -29,7 +30,7 @@ use tilo_actions::remote::call::{
     OutsideCall, OutsidePerson,
 };
 use tilo_actions::remote::{ActionCallError, LineClient, RemoteActionFrame, TestProvider};
-use tilo_live::app_call::{AppLane, CallSetup};
+use tilo_live::app_call::{AppLane, CallSetup, MIXED};
 use tilo_live::live::Track;
 use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::presence::{Board, Call, Own};
@@ -44,6 +45,7 @@ const CALL: &str = "voice-tl";
 const OUTSIDE: &str = "458";
 const BRIDGE: [u8; 32] = [7; 32];
 const GRACE: [u8; 32] = [9; 32];
+const ADA: [u8; 32] = [11; 32];
 /// The BLAKE3 hex of the picture the app kept for its outside person.
 const AVATAR: &str = "4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a";
 
@@ -77,7 +79,7 @@ fn setup(relay: &Relay, keys: ContentKeys) -> CallSetup {
             scope: Scope::workspace(WORKSPACE.to_owned()),
             device: BRIDGE,
             keys: keys.clone().into(),
-            roster: Roster::new([GRACE, BRIDGE]),
+            roster: Roster::new([GRACE, ADA, BRIDGE]),
             publish: true,
             presence: true,
         },
@@ -179,12 +181,19 @@ struct Member {
 }
 
 impl Member {
-    fn new(relay: &Relay, keys: &ContentKeys, roster: &Roster) -> Self {
+    /// `device` in the call, shown as `label`.
+    fn new(
+        relay: &Relay,
+        keys: &ContentKeys,
+        roster: &Roster,
+        device: [u8; 32],
+        label: &str,
+    ) -> Self {
         let live = LiveSession::local(
             relay,
             &Join {
                 scope: Scope::workspace(WORKSPACE),
-                device: GRACE,
+                device,
                 keys: keys.clone().into(),
                 roster: roster.clone(),
                 publish: true,
@@ -194,9 +203,9 @@ impl Member {
         .unwrap();
         live.set_calls(BTreeMap::new(), BTreeMap::new());
         live.set_call_keys(CALL, 0, keys.clone());
-        let mut board = Board::new(WORKSPACE, GRACE);
+        let mut board = Board::new(WORKSPACE, device);
         board.say(&Own {
-            label: "Grace".into(),
+            label: label.into(),
             device: "laptop".into(),
             call: Some(Call {
                 call: CallPresence {
@@ -317,7 +326,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     let _entered = runtime.enter();
     let relay = local_relay();
     let keys = keys();
-    let roster = Roster::new([GRACE, BRIDGE]);
+    let roster = Roster::new([GRACE, ADA, BRIDGE]);
     let (server, client) = UnixStream::pair().unwrap();
     let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
     let out: tilo_live::app_call::Out = {
@@ -333,7 +342,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     serve(server, lane, written);
 
     let app = app(client);
-    let mut grace = Member::new(&relay, &keys, &roster);
+    let mut grace = Member::new(&relay, &keys, &roster, GRACE, "Grace");
 
     // The app asks for the pair, and says who is in its outside call: Dana, by her name and the
     // picture it kept in the workspace's content.
@@ -407,7 +416,9 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     let dana_key = collab_types::presence::stand_in(BRIDGE, "discord:7001");
     assert_eq!(heard.0, Some(dana_key), "the voice is Dana's own");
 
-    // What Grace says comes back to the app as one frame, untouched, as hers.
+    // What Grace says comes back to the app untouched, as hers: the device waits for her second
+    // frame before playing the first, so a late frame is waited for, not a gap.
+    grace.speak(&[7, 8, 9]);
     grace.speak(&[7, 8, 9]);
     let said = until(&mut grace, "the workspace's frame reached the app", |_| {
         app.said_call()
@@ -516,5 +527,114 @@ fn a_pair_for_another_call_than_the_one_admitted_is_refused() {
     assert!(
         reason.contains(CALL) && reason.contains("another-call"),
         "the refusal names both calls: {reason}"
+    );
+}
+
+/// A 20 ms Opus frame of a `hz` tone, the `frame`th of it, as a microphone says it.
+fn tone(hz: f32, frame: usize) -> Vec<u8> {
+    let mut encoder =
+        opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+    let samples = FRAME_SAMPLES as usize;
+    let pcm: Vec<i16> = (0..samples)
+        .map(|i| {
+            let t = (frame * samples + i) as f32 / 48_000.0;
+            (f32::sin(t * hz * std::f32::consts::TAU) * 8000.0) as i16
+        })
+        .collect();
+    encoder.encode_vec(&pcm, 1275).unwrap()
+}
+
+#[test]
+fn two_people_speaking_at_once_reach_the_app_as_one_mixed_stream() {
+    let runtime = runtime();
+    let _entered = runtime.enter();
+    let relay = local_relay();
+    let keys = keys();
+    let roster = Roster::new([GRACE, ADA, BRIDGE]);
+    let (server, client) = UnixStream::pair().unwrap();
+    let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
+    let out: tilo_live::app_call::Out = {
+        let written = Arc::clone(&written);
+        Arc::new(move |line: String| {
+            let mut stream = written.lock().unwrap();
+            let _ = writeln!(stream, "{line}");
+            let _ = stream.flush();
+        })
+    };
+    let lane = AppLane::new(Ok(setup(&relay, keys.clone())), out);
+    serve(server, lane, written);
+    let app = app(client);
+    let mut grace = Member::new(&relay, &keys, &roster, GRACE, "Grace");
+    let mut ada = Member::new(&relay, &keys, &roster, ADA, "Ada");
+    app.carry_call(Some(BridgedCall {
+        outside: OUTSIDE.into(),
+        tilo: CALL.into(),
+    }))
+    .expect("the pair was carried");
+    app.report_call(SaidReport {
+        calls: vec![OutsideCall {
+            call: OUTSIDE.into(),
+            people: Vec::new(),
+        }],
+        link: SaidLink::Joined {
+            call: OUTSIDE.into(),
+        },
+        status: String::new(),
+    })
+    .expect("the report was taken");
+
+    // Both are in the call once the device says so to the app.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        grace.pump();
+        ada.pump();
+        let status = app
+            .asked_call()
+            .and_then(|asked| asked.status)
+            .unwrap_or_default();
+        if status.contains("Grace") && status.contains("Ada") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the device never saw both in the call"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Grace and Ada talk at once: the app is handed one stream that is both of them, a frame
+    // every 20 ms, never their frames one after the other.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut said = Vec::new();
+    let mut frame = 0;
+    let mixed = loop {
+        grace.speak(&tone(440.0, frame));
+        ada.speak(&tone(660.0, frame));
+        frame += 1;
+        grace.pump();
+        ada.pump();
+        said.extend(app.said_call());
+        if let Some(mixed) = said.iter().find(|said| said.speaker == MIXED) {
+            break mixed.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no mixed frame reached the app; it was handed {:?}",
+            said.iter().map(|said| &said.speaker).collect::<Vec<_>>()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        said.iter().all(|said| said.speaker == MIXED
+            || said.speaker == hex::encode(GRACE)
+            || said.speaker == hex::encode(ADA)),
+        "every frame is one of theirs or both"
+    );
+    let mut decoder = opus::Decoder::new(48_000, opus::Channels::Stereo).unwrap();
+    let mut pcm = vec![0_i16; FRAME_SAMPLES as usize * 2];
+    assert_eq!(
+        decoder.decode(&mixed.opus, &mut pcm, false).unwrap(),
+        FRAME_SAMPLES as usize,
+        "the mix is one 20 ms frame"
     );
 }

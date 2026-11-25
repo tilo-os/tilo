@@ -34,6 +34,8 @@ workspace-hack = { version = "0.1" }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 blake3.workspace = true
 key-group = { package = "tilo-key-group", path = "../../core/key-group" }
+# Real Opus frames for the speakers a call mixes.
+opus = "0.4"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 tilo-test-env = { path = "../../../tools/test-env" }

@@ -2,8 +2,8 @@
 //
 // This program is the call's outside half: Discord's voice gateway speaks to it, and what it
 // hears is handed to the workspace as the person who said it, by their own name there. What the
-// workspace's people say comes back as one Opus stream, the speaker the workspace's call lets
-// through at a time, and is sent untouched: nothing is decoded, mixed or re-encoded here.
+// workspace's people say comes back as one Opus stream, mixed by the device when several speak at
+// once, and is sent untouched: nothing is decoded, mixed or re-encoded here.
 //
 // The workspace half is one lane, opened by the daemon for this app's own connection
 // (`TILO_SVC_NATIVE_FD`, the SDK's `callLane`): `carry` says which call is bridged, `report` says
