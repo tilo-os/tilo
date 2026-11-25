@@ -47,19 +47,26 @@ const GROUPS: [string, string[]][] = [
   ]],
   ["Invocations", [
     "Invocation", "InvocationGroup", "withinInvocation", "ActionAnswer",
-    "InvocationList", "InvocationInfo", "Event", "ProgramAnswer",
+    "InvocationList", "InvocationInfo", "Event", "EventWhat", "ChangeEvent", "StreamEvent",
+    "OtherEvent", "ProgramAnswer",
   ]],
   ["Files", ["Files", "FileBytes"]],
-  ["Vault", ["Vault", "VaultAsk", "WebCallOptions", "WebCallAnswer"]],
+  ["Vault", [
+    "Vault", "VaultAsk", "VaultFind", "WebCallOptions", "WebCallContent", "WebCallPart", "WebCallAnswer",
+  ]],
   ["Keys", ["WorkspaceKeys", "Key", "MintedKey"]],
   ["Members", ["Members", "Member", "Invitation", "Person"]],
   ["Connection", [
     "Transport", "DaemonTransport", "KeyTransport", "Group", "FetchLike", "Endpoint",
     "NATIVE_PACKAGE", "VERSION",
   ]],
+  ["Calls", [
+    "CallLane", "CarriedCall", "CallAsk", "CallTaken", "CallFrame", "CallReport", "CallLink", "CallPerson",
+  ]],
   ["Errors", [
     "Refused", "AskPending", "ProtocolError",
     "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "Unreachable",
+    "NOT_OFFERED", "UNKNOWN_ACTION",
   ]],
 ];
 
