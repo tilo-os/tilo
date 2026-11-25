@@ -50,7 +50,6 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Keys", ("AccountKeys", "WorkspaceKeys", "Key", "MintedKey")),
     ("Members", ("Members", "Member", "Invitation", "Person")),
     ("Usage", ("Usage", "WorkspaceUsage")),
-    ("Calls", ("CallLane", "CallAsk", "CallFrame")),
     ("Errors", (
         "Refused", "AskPending", "ProtocolError",
         "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "Unreachable",
