@@ -247,11 +247,11 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     // What the daemon keeps of the person's workspace reads as it is kept there: the layout whole,
     // at the heads it stands at, whatever the desktop holds of it already; a note it never kept
     // absent.
-    let DocumentRead::Whole { heads, bytes, .. } = documents
+    let read = documents
         .read(WORKSPACE, "so.tilo.desktop", "layout", None)
-        .unwrap()
-    else {
-        panic!("the daemon reads the layout whole");
+        .unwrap();
+    let DocumentRead::Whole { heads, bytes, .. } = read else {
+        panic!("the daemon reads the layout whole, not {read:?}");
     };
     let read = automerge::AutoCommit::load(&bytes).unwrap();
     assert_eq!(

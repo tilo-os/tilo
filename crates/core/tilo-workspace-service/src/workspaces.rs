@@ -2181,12 +2181,15 @@ impl Workspaces {
     }
 
     /// `app`'s record `record` of `workspace` as the workspace's store holds it, saved; a
-    /// document the store placed ([`collab_types::is_store_document`]) by its own id. `None` for
-    /// a record the store holds none of.
+    /// document the store placed ([`collab_types::is_store_document`]) by its own id. A document
+    /// the workspace keeps outside its store, which the device's own roles write (the desktop's
+    /// layout), reads as this device reads it ([`Self::own_read`]). `None` for a record held in
+    /// neither.
     ///
     /// # Errors
     ///
-    /// The workspace is not held here, or the record's document does not read.
+    /// The workspace is not held here, the record's document does not read, or it is still
+    /// arriving.
     pub async fn resource_document(
         &self,
         workspace: &str,
@@ -2198,9 +2201,26 @@ impl Workspaces {
             return Ok(state.lock().await.store_document(record));
         }
         // A record of a kind its app declares is the store's.
-        self.stored_record_in(workspace, app, record)
+        if let Some(stored) = self
+            .stored_record_in(workspace, app, record)
             .await
-            .map_err(CollaborationError::new)
+            .map_err(CollaborationError::new)?
+        {
+            return Ok(Some(stored));
+        }
+        match self
+            .own_read(workspace, (app, record), &[], usize::MAX)
+            .await
+            .map_err(CollaborationError::new)?
+        {
+            tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. } => {
+                Ok(Some(bytes))
+            }
+            tilo_peer_state::workspace_documents::DocumentRead::Absent => Ok(None),
+            _ => Err(CollaborationError::new(format!(
+                "{record} of {app} is still arriving"
+            ))),
+        }
     }
 
     /// Whether `workspace`'s store holds the resource `id` of `kind` now: false for a workspace
