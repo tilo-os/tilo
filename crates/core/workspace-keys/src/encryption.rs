@@ -2637,15 +2637,15 @@ impl KeyProvider {
         };
         if !create {
             let access = self.get()?;
-            // Asked off the caller's task: the service takes its lock and
-            // reads its state on that thread, never on the host's runtime. A
-            // caller polling this on a thread of its own (a session's main
-            // thread, its search index) holds no runtime to hand it to, and
-            // is that thread already. A runtime of one thread reads on it too:
-            // handing the read off would let the thread's other tasks go on while
-            // the caller holds what it holds (a workspace's lock, as a resource
-            // write does), and one of them waiting on that with the thread
-            // blocked never lets the caller take the answer back.
+            // Read on the caller's thread: the service takes its lock and
+            // reads its state there. The caller may hold a workspace's lock (a
+            // resource write asks this while it does), so the read never waits
+            // for a thread of the runtime's blocking pool: with that pool full
+            // of threads that themselves wait for the same workspace, the read
+            // would never start and the lock would never be let go. A worker of
+            // a runtime of several threads hands its other tasks on while it
+            // reads; a runtime of one thread, or a thread of its own (a
+            // session's main thread, its search index), reads where it is.
             #[cfg(not(target_family = "wasm"))]
             {
                 let read = move || access.record_keys(workspace);
@@ -2654,10 +2654,7 @@ impl KeyProvider {
                         if runtime.runtime_flavor()
                             == tokio::runtime::RuntimeFlavor::MultiThread =>
                     {
-                        runtime
-                            .spawn_blocking(read)
-                            .await
-                            .unwrap_or_else(|error| Some(Err(error.to_string())))
+                        tokio::task::block_in_place(read)
                     }
                     _ => read(),
                 };
