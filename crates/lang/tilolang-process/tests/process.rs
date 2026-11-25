@@ -3107,7 +3107,7 @@ fn a_form_asking_for_a_required_text_takes_it_before_it_answers() {
         tags_of(&host, &note).is_empty(),
         "submitting nothing files nothing"
     );
-    type_into(&mut window, "form~name", "travel");
+    type_into(&mut window, "form~tag", "travel");
     settle(&mut host, &mut window);
     assert!(
         window.form.as_ref().is_some_and(|form| form.ready),
@@ -3439,19 +3439,6 @@ impl tilolang_tilo::platform_apps::Reading for Followed {
     }
 }
 
-/// The first button of the window, its key and the event it fires.
-fn first_button(window: &Window) -> (String, String) {
-    let found = buttons(window);
-    let button = found.first().expect("the window shows its button");
-    let event = button
-        .events
-        .keys()
-        .next()
-        .expect("the button fires")
-        .clone();
-    (button.key.clone(), event)
-}
-
 /// The button `label` words, as the key it fires from and the event it fires.
 fn button_labelled(window: &Window, label: &str) -> (String, String) {
     let button = buttons(window)
@@ -3518,7 +3505,7 @@ fn a_platform_packages_reading_reaches_the_app_and_its_verb_goes_to_the_session(
     );
 
     // The press is the device's verb, asked of the session.
-    let (key, event) = first_button(&window);
+    let (key, event) = button_labelled(&window, "Mute");
     window.send(&[ToApp::Fire {
         level: Level::Root,
         key,
@@ -3584,7 +3571,7 @@ fn the_workspaces_activity_reaches_the_app_that_reads_it() {
         shown(&window)
     );
 
-    let (key, event) = first_button(&window);
+    let (key, event) = button_labelled(&window, "Seen");
     window.send(&[ToApp::Fire {
         level: Level::Root,
         key,
