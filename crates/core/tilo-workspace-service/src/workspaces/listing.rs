@@ -403,15 +403,10 @@ impl Workspaces {
         invites_only: bool,
     ) -> Result<(), CollaborationError> {
         self.settle_entry(workspace, device, |entry| {
+            // The wait list's settings stay on the entry, dormant: only an
+            // entry that takes people by invitation offers or serves one, so
+            // opening the entry and closing it again leaves them in force.
             entry.invitation_only = invites_only;
-            // An entry that takes everyone who asks keeps no requests: there
-            // is nobody to ask, and a wait list it kept made opening it an
-            // entry no one could settle.
-            if !invites_only {
-                entry.wait_list_max = 0;
-                entry.contact = None;
-                entry.mail = None;
-            }
         })
         .await
         .map(drop)
@@ -1952,6 +1947,120 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    }
+
+    /// An entry that takes people by invitation keeps its wait list while it
+    /// is open, dormant, and offers it again once it goes back: the owner
+    /// keeps the contact, sender and templates they configured. Only an entry
+    /// that takes people by invitation offers a wait list, and a settings
+    /// change does change the entry's digest.
+    #[tokio::test]
+    async fn opening_an_entry_leaves_its_owner_contact_and_mail_in_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Coffee and tea".into(),
+                    default_role: Role::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let settled = workspaces
+            .found_entry(
+                &workspace,
+                &owner,
+                EntryPolicy {
+                    listing: Some(ListingPolicy {
+                        description: "Coffee and tea".into(),
+                        default_role: Role::Editor,
+                    }),
+                    invitation_only: true,
+                    wait_list_max: 4,
+                    contact: Some("hello@lounge.example".into()),
+                    mail: Some(tilo_action_policy::EntryMail {
+                        from: "lounge@example.com".into(),
+                        templates: Some("/srv/mail".into()),
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+        let offered = tilo_server_protocol::directory::EntryWaitList {
+            contact: Some("hello@lounge.example".into()),
+            mail: true,
+        };
+        let listed = workspaces
+            .directory(&std::collections::BTreeSet::new())
+            .await;
+        assert_eq!(listed[0].wait_list, Some(offered.clone()));
+        let settled_digest = tilo_peer_state::entry_digest(&settled).unwrap();
+
+        // A settings change is a different entry: what a guest admission
+        // named is the entry it was let in under.
+        workspaces
+            .list_wait_list_max(&workspace, &owner, 5)
+            .await
+            .unwrap();
+        let changed = workspaces.entry_policy(&workspace).await.unwrap();
+        assert_ne!(
+            tilo_peer_state::entry_digest(&changed).unwrap(),
+            settled_digest
+        );
+        workspaces
+            .list_wait_list_max(&workspace, &owner, 4)
+            .await
+            .unwrap();
+
+        // Open: the settings stay, and the entry offers no wait list.
+        workspaces
+            .list_invitation_only(&workspace, &owner, false)
+            .await
+            .unwrap();
+        let open = workspaces.entry_policy(&workspace).await.unwrap();
+        assert!(!open.invitation_only);
+        assert!(!open.keeps_requests());
+        assert_eq!(open.wait_list_max, 4);
+        assert_eq!(open.contact.as_deref(), Some("hello@lounge.example"));
+        assert_eq!(
+            open.mail
+                .as_ref()
+                .map(|mail| (mail.from.as_str(), mail.templates.as_deref())),
+            Some(("lounge@example.com", Some("/srv/mail")))
+        );
+        assert_eq!(workspaces.waiting_offer(&workspace).await, None);
+        let listed = workspaces
+            .directory(&std::collections::BTreeSet::new())
+            .await;
+        assert_eq!(listed[0].wait_list, None);
+
+        // Back to invitation-only: the same settings are in force and the
+        // wait list is offered again, as the entry every admission names.
+        workspaces
+            .list_invitation_only(&workspace, &owner, true)
+            .await
+            .unwrap();
+        let again = workspaces.entry_policy(&workspace).await.unwrap();
+        assert_eq!(again, settled);
+        assert_eq!(
+            tilo_peer_state::entry_digest(&again).unwrap(),
+            settled_digest
+        );
+        assert_eq!(
+            workspaces.waiting_offer(&workspace).await,
+            Some(offered.clone())
+        );
+        let listed = workspaces
+            .directory(&std::collections::BTreeSet::new())
+            .await;
+        assert_eq!(listed[0].wait_list, Some(offered));
+        server.shutdown().await;
     }
 
     /// Someone the host's operator declares an owner comes in through an

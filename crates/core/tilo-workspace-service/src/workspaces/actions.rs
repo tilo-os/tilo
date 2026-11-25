@@ -1175,7 +1175,8 @@ fn publish_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "wait_list_max",
             ParamType::Integer,
-            "How many addresses the entry keeps for whoever may invite. An `open` entry keeps none.",
+            "How many addresses the entry keeps for whoever may invite. An `open` entry offers \
+             no wait list; it keeps the number for when it takes people by invitation again.",
         ),
         ActionParam::optional(
             "contact",

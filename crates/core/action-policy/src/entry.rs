@@ -40,8 +40,6 @@ pub enum EntryError {
     Description,
     /// Moderators are chosen, never handed out at the entry.
     Role,
-    /// A wait list is only kept by an entry that takes people by invitation.
-    WaitList,
     /// A wait list's contact is too long or holds a control character.
     Contact,
     /// A wait list's mail names no sender, or its sender holds a control
@@ -58,9 +56,6 @@ impl std::fmt::Display for EntryError {
             ),
             Self::Role => {
                 f.write_str("people who join on their own become viewers, commenters or editors")
-            }
-            Self::WaitList => {
-                f.write_str("only an entry that takes people by invitation keeps a wait list")
             }
             Self::Contact => f.write_str(
                 "a wait list's contact is at most 280 characters, without control characters",
@@ -87,15 +82,20 @@ pub struct EntryPolicy {
     #[serde(default, skip_serializing_if = "is_false")]
     pub invitation_only: bool,
     /// How many requests left at the entry it keeps for whoever may invite.
-    /// `0`: the entry keeps none.
+    /// `0`: the entry keeps none. Kept while the entry takes everyone who asks
+    /// too, dormant: only an entry that takes people by invitation keeps a
+    /// wait list ([`Self::keeps_requests`]), so opening and closing it again
+    /// leaves the settings in force.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wait_list_max: usize,
     /// Where someone asks to be taken off the wait list, as the entry shows
-    /// it beside a refusal and on its wait-list page.
+    /// it beside a refusal and on its wait-list page. Kept while the entry
+    /// takes everyone who asks, dormant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<String>,
     /// Where the wait list mails an address, when it mails one at all.
-    /// `None` lists an address at once.
+    /// `None` lists an address at once. Kept while the entry takes everyone
+    /// who asks, dormant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<EntryMail>,
 }
@@ -170,7 +170,7 @@ impl EntryPolicy {
     /// # Errors
     ///
     /// [`EntryError`]: what a directory cannot show, a role the entry may not
-    /// hand out, or a wait list no entry takes people by invitation for.
+    /// hand out, or a contact or sender the wait list cannot use.
     pub fn checked(self) -> Result<Self, EntryError> {
         let listing = match self.listing {
             Some(listing) => {
@@ -190,9 +190,6 @@ impl EntryPolicy {
             }
             None => None,
         };
-        if self.wait_list_max > 0 && !self.invitation_only {
-            return Err(EntryError::WaitList);
-        }
         let contact = self
             .contact
             .map(|contact| contact.trim().to_owned())
