@@ -613,6 +613,10 @@ fn checkpoint(kind: CheckpointKind, file: &File) -> io::Result<()> {
     })
 }
 #[cfg(not(feature = "test-support"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the checked build's, whose every call site takes the result"
+)]
 fn checkpoint(_kind: CheckpointKind, _file: &File) -> io::Result<()> {
     Ok(())
 }
