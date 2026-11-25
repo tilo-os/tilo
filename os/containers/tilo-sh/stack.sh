@@ -1276,11 +1276,17 @@ owner_tilo() {
   as_owner "$@"
 }
 
-# A stack has no one to answer the card a `tilo device add` asks the person on: its computers
-# join with the tickets the act that makes the person issued. The add waits up to a ticket's
-# lifetime for an answer, so the stack stops at once, naming why, rather than wait one out.
+# A stack has no one to answer the card a `tilo device add` with no ticket asks the person on:
+# its computers join with the tickets the act that makes the person issued. That add waits up to
+# a ticket's lifetime for an answer, so the stack stops at once, naming why, rather than wait one
+# out. `tilo device add <ticket>` asks no card: it approves the browser (or agent) that showed
+# the ticket, which the person's root here signs, so it runs.
 refuse_device_add() {
   [[ ${1-} == device && ${2-} == add ]] || return 0
+  local arg
+  for arg in "${@:3}"; do
+    [[ $arg == *tilo1* ]] && return 0
+  done
   die "the stack's person's computers join with the tickets their founding act issued: \`tilo device add\` waits for the person to answer a card nobody here can"
 }
 
