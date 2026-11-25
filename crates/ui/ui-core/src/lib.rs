@@ -406,10 +406,14 @@ pub mod webview;
 pub mod widget;
 pub mod window_icon;
 
+/// The model services an app's inference and provider administration travel as.
+#[cfg(feature = "model")]
+#[doc(inline)]
+pub use tilo_process_services::models;
 #[doc(inline)]
 pub use tilo_process_services::{
-    background, capture, clipboard, env, jpeg, location, models, mpris, notify, png, portal,
-    process, secrets, shell_choosers, time, wake,
+    background, capture, clipboard, env, jpeg, location, mpris, notify, png, portal, process,
+    secrets, shell_choosers, time, wake,
 };
 
 /// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate

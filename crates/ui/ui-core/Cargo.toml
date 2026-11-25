@@ -28,7 +28,7 @@ default = ["native", "broker-transport", "model"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -144,7 +144,7 @@ fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
-tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services" }
+tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services", default-features = false }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
 # Brush presets and stroke geometry, so a stroke is previewed while it is
 # drawn by the same code that bakes it.
