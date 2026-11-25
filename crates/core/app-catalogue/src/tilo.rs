@@ -96,9 +96,19 @@ mod tests {
         assert!(!entry.tagline.is_empty(), "the fleet's tag line stands in");
         assert!(
             entry
+                .resource_types
+                .iter()
+                .any(|kind| kind.kind == "tl.so.tilo.calendar.Task" && kind.label == "Task"),
+            "the documents it creates stand in: {:?}",
+            entry.resource_types
+        );
+        assert!(
+            entry
                 .actions
                 .iter()
-                .any(|action| action.label == "Show tasks")
+                .any(|action| action.action == "new_event" && action.label == "New event"),
+            "the actions it offers while closed stand in: {:?}",
+            entry.actions
         );
     }
 }
