@@ -65,9 +65,12 @@ pub fn register_all() {
 pub const API_TESTER_APP: &str = "so.tilo.api-tester";
 
 /// A link a program printed, opened in what the person's device opens that kind with: the
-/// portal the app's grants already reach, never a second opener of this process's own.
+/// portal the app's grants already reach, never a second opener of this process's own. A window
+/// is what a program's link opens into, so this exists only where windows do.
+#[cfg(feature = "app-launch")]
 struct Portal;
 
+#[cfg(feature = "app-launch")]
 impl tilo_terminal::ops::Opener for Portal {
     fn open_uri(&self, url: &str) -> Result<(), String> {
         tilo_dialogs::portal::open_uri(url).map_err(|error| error.to_string())
