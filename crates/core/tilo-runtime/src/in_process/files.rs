@@ -7,6 +7,9 @@ use std::time::Duration;
 use crate::in_process::Device;
 use tilo_workspace_service::files::{Entry, EntryKind, Paths};
 
+/// The watch a file provider holds while it shows a folder: dropping it ends the watch.
+pub use tilo_workspace_service::files::FilesWatch as FileWatch;
+
 /// How long a file ask waits for the person's services to start in the daemon before their
 /// workspaces answer for nothing yet: a daemon starting a person signs in reads its workspaces
 /// after, and a provider asks again.
@@ -137,12 +140,16 @@ impl Device {
         self.paths()?.trash(workspace, path)
     }
 
-    /// A token that changes whenever anything in `workspace`'s files does: what a provider
-    /// compares to know a folder it showed is out of date.
+    /// Watch `workspace`'s files: `changed` is called with the folders whose entries moved —
+    /// made on this device or taken from the workspace — until the returned watch is dropped.
     ///
     /// # Errors
-    /// The workspace is not one this device holds.
-    pub fn files_revision(&self, workspace: &str) -> Result<String, String> {
-        self.paths()?.revision(workspace)
+    /// The workspace is not one this device holds, or its tree does not open.
+    pub fn watch_files(
+        &self,
+        workspace: &str,
+        changed: impl Fn(Vec<String>) + Send + 'static,
+    ) -> Result<FileWatch, String> {
+        self.paths()?.watch(workspace, changed)
     }
 }

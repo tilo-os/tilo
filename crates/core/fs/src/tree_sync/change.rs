@@ -70,13 +70,6 @@ impl TreeSync {
         read(&mut namespace)
     }
 
-    /// What `read` answers of this tree as this device holds it now, without asking the
-    /// workspace for its records first: for a caller that only needs to know whether the tree
-    /// moved. A change made elsewhere is here once the sync took it.
-    pub fn read_now<R>(&self, read: impl FnOnce(&mut crate::namespace::Namespace) -> R) -> R {
-        read(&mut self.namespace.lock_recover())
-    }
-
     /// [`Self::change`] as it is made: the change in the tree this device holds, kept on disk
     /// before this answers. The guard is taken and given back here, never held across an await.
     fn change_now<R>(

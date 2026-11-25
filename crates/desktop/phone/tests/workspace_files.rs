@@ -1,7 +1,8 @@
 //! A phone signed in to the person's workspace offers its files to Android's own pickers, through
 //! the module the provider calls: the person's workspaces are roots, a photo saved on the phone is
 //! written into the workspace, another device of the person's reads it from there, and a change
-//! that device makes is what the phone reads next. Nothing outside the workspace is reachable.
+//! that device makes is what the phone reads next — and what the watch the provider keeps of a
+//! folder it shows hears as it lands. Nothing outside the workspace is reachable.
 //!
 //! The daemon reads its places from the process's environment, so this binary is one test: one
 //! phone, in a home of its own, made before anything starts.
@@ -22,6 +23,7 @@ mod support;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tilo_phone::workspace_files;
 use tilo_runtime::in_process::Device;
@@ -113,10 +115,34 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
     });
     assert_eq!(read, PHOTO, "the bytes are the picture the phone saved");
 
+    // The provider shows the folder it listed, so the phone watches its workspace: a change
+    // another device makes reaches it as it lands, with nothing asking for a revision.
+    let (moved, moves) = std::sync::mpsc::channel();
+    let _watching = workspace_files::watch(&phone, &workspace, move |folders| {
+        let _ = moved.send(folders);
+    })
+    .expect("the phone watches the workspace its provider shows");
+
     // That device changes the picture, and the phone reads the change.
+    let written = std::time::Instant::now();
     kept.files
         .write(&workspace, "Photos/beach.jpg", EDITED, true)
         .expect("the other device changes the picture");
+    let deadline = written + Duration::from_secs(30);
+    let reached = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let folders = moves
+            .recv_timeout(left)
+            .expect("the change reaches the phone's watch");
+        if folders.iter().any(|folder| folder == "Photos") {
+            break folders;
+        }
+    };
+    let took = written.elapsed();
+    assert!(
+        took < Duration::from_secs(5),
+        "the change reached the watch of {reached:?} only after {took:?}"
+    );
     let changed = support::until("the phone reads the change", || {
         let bytes = workspace_files::read(&phone, &workspace, "Photos/beach.jpg")?;
         if bytes == EDITED {

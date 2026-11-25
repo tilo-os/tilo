@@ -3,14 +3,15 @@
 //! whose window stops answering). The window asks; the worker answers into [`Seen`], which the
 //! phone's origin hands the shell's view as its readings.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tilo_actions::remote::person_telling;
 use tilo_process_services::notify::Notifier;
-use tilo_runtime::in_process::{App, Device, Devices};
+use tilo_runtime::in_process::{App, Device, Devices, FileWatch};
 
 use crate::telling::Watching;
 use crate::unified_push;
@@ -23,6 +24,9 @@ const READ_AGAIN: Duration = Duration::from_secs(2);
 /// devices that keep it to take it, and one that took longest still answers here.
 const ANSWER_WITHIN: Duration = Duration::from_secs(90);
 
+/// How long after the last look at a folder the watch of its workspace ends: nobody shows one.
+const WATCHING_FOR: Duration = Duration::from_secs(60);
+
 /// What the phone's view, or a file provider outside it, asks of its device.
 pub enum Ask {
     /// Sign in with a ticket another of the person's devices printed.
@@ -34,6 +38,12 @@ pub enum Ask {
     /// Work on the daemon that another thread waits on, answered where the daemon lives: what a
     /// file provider asks when Android calls it, off the view's own loop.
     Files(Box<dyn FnOnce(&mut Device) + Send>),
+    /// The folders `workspace` holds whose entries moved: what a file provider shows of them is
+    /// out of date.
+    FilesChanged {
+        workspace: String,
+        folders: Vec<String>,
+    },
 }
 
 /// What the worker last read of the device, and how often it changed: the origin writes it
@@ -56,6 +66,8 @@ pub struct Worker {
     seen: Arc<Mutex<Seen>>,
     /// What a tap on a notification asked the view to open, taken on its next frame.
     open: Arc<Mutex<Option<String>>>,
+    /// The workspaces a file provider shows, watched while it does.
+    watches: Arc<Held>,
 }
 
 /// Mount on this process's daemon what the `tilo-runtime` program mounts on its own, once, and
@@ -99,12 +111,29 @@ impl Worker {
         let (asks, asked) = std::sync::mpsc::channel();
         let seen = Arc::new(Mutex::new(Seen::default()));
         let open = Arc::new(Mutex::new(None));
+        let watches = Arc::new(Held::default());
         let serving = Arc::clone(&seen);
         let opened = Arc::clone(&open);
+        let watching = Arc::clone(&watches);
         std::thread::Builder::new()
             .name("tilo-phone".into())
-            .spawn(move || serve(device, &asked, &serving, &opened, notifier.as_ref(), &wake))?;
-        Ok(Self { asks, seen, open })
+            .spawn(move || {
+                serve(
+                    device,
+                    &asked,
+                    &serving,
+                    &opened,
+                    &watching,
+                    notifier.as_ref(),
+                    &wake,
+                );
+            })?;
+        Ok(Self {
+            asks,
+            seen,
+            open,
+            watches,
+        })
     }
 
     /// What a tap on one of the phone's notifications asked to open, once.
@@ -127,6 +156,7 @@ impl Worker {
     pub fn files(&self) -> Files {
         Files {
             asks: self.asks.clone(),
+            watches: Arc::clone(&self.watches),
         }
     }
 
@@ -146,6 +176,7 @@ impl Worker {
 #[derive(Clone)]
 pub struct Files {
     asks: Sender<Ask>,
+    watches: Arc<Held>,
 }
 
 impl Files {
@@ -167,6 +198,75 @@ impl Files {
             .recv_timeout(ANSWER_WITHIN)
             .map_err(|_| "the phone's daemon did not answer in time".to_owned())
     }
+
+    /// Watch `workspace`'s files while a file provider shows a folder of it: the folders whose
+    /// entries move are told to the provider, from the thread that keeps the daemon. A
+    /// workspace already watched has the look noted, so a folder shown again starts no second
+    /// watch.
+    ///
+    /// # Errors
+    /// The phone's daemon is not running, the workspace is not one it holds, or its tree does
+    /// not open.
+    pub fn watch(&self, workspace: &str) -> Result<(), String> {
+        let watches = Arc::clone(&self.watches);
+        let moved = self.asks.clone();
+        let chosen = workspace.to_owned();
+        self.ask(move |device| {
+            {
+                let mut held = watches.0.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(watch) = held.get_mut(&chosen) {
+                    watch.looked = Instant::now();
+                    return Ok(());
+                }
+            }
+            let told = moved;
+            let watched = chosen.clone();
+            // The watch is started with no lock held: opening the workspace's tree takes a while
+            // and a cursor closing meanwhile has no reason to wait for it.
+            let files = crate::workspace_files::watch(device, &chosen, move |folders| {
+                // The worker tells the provider, on the thread Java's calls already run on; an
+                // ask after the worker ended has no one to answer it.
+                let _ = told.send(Ask::FilesChanged {
+                    workspace: watched.clone(),
+                    folders,
+                });
+            })?;
+            let _ = watches
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    chosen,
+                    Watch {
+                        files,
+                        looked: Instant::now(),
+                    },
+                );
+            Ok(())
+        })?
+    }
+
+    /// Nothing shows a folder of `workspace` any more: its watch ends.
+    pub fn unwatch(&self, workspace: &str) {
+        let _ = self
+            .watches
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(workspace);
+    }
+}
+
+/// The workspaces a file provider shows, watched while it does: one watch per workspace, and
+/// when the system last asked for a folder of it.
+#[derive(Default)]
+struct Held(Mutex<HashMap<String, Watch>>);
+
+/// One workspace's watch, and when a folder of it was last shown.
+struct Watch {
+    #[allow(dead_code, reason = "held for its drop, which ends the watch")]
+    files: FileWatch,
+    looked: Instant,
 }
 
 fn serve(
@@ -174,6 +274,7 @@ fn serve(
     asked: &Receiver<Ask>,
     seen: &Mutex<Seen>,
     open: &Mutex<Option<String>>,
+    watches: &Held,
     notifier: &dyn Notifier,
     wake: &dyn Fn(),
 ) {
@@ -181,6 +282,13 @@ fn serve(
     let mut watching = Watching::default();
     let mut tapped: Option<String> = None;
     loop {
+        // Nothing has shown a folder of a workspace for a while: its watch ends. A cursor the
+        // system never closes leaves no other word that the folder went away.
+        watches
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, watch| watch.looked.elapsed() < WATCHING_FOR);
         let mut refused = None;
         match asked.recv_timeout(READ_AGAIN) {
             Ok(Ask::LogIn(ticket)) => {
@@ -197,6 +305,12 @@ fn serve(
             // A file provider's ask is answered here and changes nothing the view shows.
             Ok(Ask::Files(work)) => {
                 work(&mut device);
+                continue;
+            }
+            // A workspace's files moved where this phone holds them: the provider showing its
+            // folders tells the system, which reads them again.
+            Ok(Ask::FilesChanged { workspace, folders }) => {
+                crate::files_changed(&workspace, &folders);
                 continue;
             }
             Err(RecvTimeoutError::Timeout) => {}

@@ -6,14 +6,20 @@
 //! puts the app's directories in the environment and starts the same worker the view asks, and
 //! every other call runs on that worker's thread through [`crate::files`].
 //!
+//! A folder the provider shows is watched while it shows it: the daemon's own change signal
+//! tells this side which folders moved, and the worker calls back into Java, from its own thread
+//! attached to the JVM, so the provider wakes whatever shows them. Nothing asks for a revision on
+//! a timer.
+//!
 //! Every method here answers JSON for what Java reads as an object (a root, a document), and a
 //! thrown `java.io.IOException` for what a person may see as a refusal.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jbyteArray, jstring};
+use jni::{JNIEnv, JavaVM};
 use serde::Serialize;
 
 use crate::files;
@@ -69,6 +75,69 @@ fn json<T: Serialize>(value: &T) -> Result<String, String> {
     serde_json::to_string(value).map_err(|error| error.to_string())
 }
 
+/// The JVM and the provider's class, kept when the provider starts: a change of a workspace's
+/// files is told to the provider from the daemon's thread, where `FindClass` would search the
+/// system loader and find none of the app's classes.
+struct Java {
+    vm: JavaVM,
+    class: GlobalRef,
+}
+
+static JAVA: OnceLock<Java> = OnceLock::new();
+
+/// Keep how to reach the provider from a thread that Java did not start.
+fn reachable(env: &mut JNIEnv<'_>, class: &JClass<'_>) {
+    if JAVA.get().is_some() {
+        return;
+    }
+    let (Ok(vm), Ok(class)) = (env.get_java_vm(), env.new_global_ref(class)) else {
+        tracing::warn!("the file provider is not reachable from the daemon's thread");
+        return;
+    };
+    let _ = JAVA.set(Java { vm, class });
+}
+
+/// A watched workspace's folders whose entries moved: the provider tells the system, which reads
+/// whatever shows them again. Attached here because the daemon's thread was not started by Java.
+pub(crate) fn files_changed(workspace: &str, folders: &[String]) {
+    let Some(java) = JAVA.get() else {
+        return;
+    };
+    let Ok(mut env) = java.vm.attach_current_thread_permanently() else {
+        tracing::warn!("the file provider is not told: this thread does not attach to the JVM");
+        return;
+    };
+    let told: jni::errors::Result<()> = env.with_local_frame(8, |env| {
+        let workspace = env.new_string(workspace)?;
+        let length = i32::try_from(folders.len()).unwrap_or(i32::MAX);
+        let array = env.new_object_array(length, "java/lang/String", JObject::null())?;
+        for (index, folder) in folders.iter().enumerate() {
+            let Ok(index) = i32::try_from(index) else {
+                break;
+            };
+            if index >= length {
+                break;
+            }
+            let written = env.new_string(folder)?;
+            env.set_object_array_element(&array, index, &written)?;
+            env.delete_local_ref(written)?;
+        }
+        let class: &JClass<'_> = java.class.as_obj().into();
+        env.call_static_method(
+            class,
+            "moved",
+            "(Ljava/lang/String;[Ljava/lang/String;)V",
+            &[JValue::Object(&workspace), JValue::Object(&array)],
+        )?;
+        Ok(())
+    });
+    if let Err(error) = told {
+        // A Java exception left pending would end every later call into the JVM on this thread.
+        let _ = env.exception_clear();
+        tracing::warn!(%error, "the file provider is not told a workspace's folders moved");
+    }
+}
+
 /// The phone's device, asked for the answer `work` gives on its own thread.
 fn ask<T: Send + 'static>(
     work: impl FnOnce(&mut Device) -> T + Send + 'static,
@@ -119,7 +188,7 @@ fn files_dir(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<PathBuf, Str
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeStart(
     mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
+    class: JClass<'_>,
     context: JObject<'_>,
 ) -> jboolean {
     let started = (|| -> Result<(), String> {
@@ -132,7 +201,10 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeStart(
         files().map(drop)
     })();
     match started {
-        Ok(()) => jboolean::from(true),
+        Ok(()) => {
+            reachable(&mut env, &class);
+            jboolean::from(true)
+        }
         Err(why) => {
             tracing::error!(%why, "the phone's device did not start for its file provider");
             jboolean::from(false)
@@ -400,22 +472,37 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeRename(
     }
 }
 
-/// A token that changes whenever the workspace's files do, for the provider's change watch.
+/// A file provider shows the folder `folder_document_id`: watch its workspace's files until
+/// nothing shows one ([`Java_so_tilo_android_TiloWorkspaceFiles_nativeUnwatch`]) or nobody has
+/// looked for a while. A change then reaches the provider's Java `moved`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeRevision(
+pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeWatch(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    folder_document_id: JString<'_>,
+) {
+    let watching = (|| -> Result<(), String> {
+        let id = text(&mut env, &folder_document_id)?;
+        let (workspace, _) = workspace_files::split_document_id(&id)?;
+        crate::files()?.watch(&workspace)
+    })();
+    if let Err(why) = watching {
+        tracing::warn!(%why, "a folder the provider shows is not watched for changes");
+    }
+}
+
+/// Nothing shows a folder of `workspace_id` any more: the watch of it ends.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeUnwatch(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     workspace_id: JString<'_>,
-) -> jstring {
-    let revision = (|| -> Result<String, String> {
+) {
+    let unwatched = (|| -> Result<(), String> {
         let workspace = text(&mut env, &workspace_id)?;
-        ask(move |device| workspace_files::revision(device, &workspace))?
+        crate::files().map(|files| files.unwatch(&workspace))
     })();
-    match revision {
-        Ok(token) => env
-            .new_string(token)
-            .map_or_else(|_| std::ptr::null_mut(), JString::into_raw),
-        // A workspace not read yet, or the device still starting: the provider watches again.
-        Err(_) => std::ptr::null_mut(),
+    if let Err(why) = unwatched {
+        tracing::warn!(%why, "a folder the provider no longer shows stays watched");
     }
 }

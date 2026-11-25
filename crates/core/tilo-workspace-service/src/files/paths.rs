@@ -20,7 +20,7 @@ use tilo_fs::node::FileType;
 use tilo_fs::tree_sync::FILES_APP;
 use tilo_server_protocol::WorkspaceId;
 
-use super::WorkspaceSource;
+use super::{FilesWatch, WorkspaceSource};
 use crate::content::{CrdtRoute, RouteContent};
 use crate::workspaces::Workspaces;
 
@@ -300,21 +300,20 @@ impl<'a> Paths<'a> {
         })
     }
 
-    /// A token that changes whenever anything in `workspace`'s tree does: what a provider
-    /// compares to know a folder it showed is out of date. It is read where this device holds the
-    /// tree, without asking the workspace for its records.
+    /// Watch `workspace`'s tree: `changed` is called with the folders whose entries moved, made
+    /// here or taken from the workspace, until the returned watch is dropped. A provider that
+    /// shows a folder this way reads it again when it moved, instead of asking on a timer.
     ///
     /// # Errors
     /// The workspace is not held by this device, or its tree does not open.
-    pub fn revision(&self, workspace: &str) -> Result<String, String> {
+    pub fn watch(
+        &self,
+        workspace: &str,
+        changed: impl Fn(Vec<String>) + Send + 'static,
+    ) -> Result<FilesWatch, String> {
         let id = workspace_id(workspace)?;
         let puts = self.workspaces.puts();
-        let heads = self.runtime.block_on(puts.state(id, &mut |tree| {
-            let heads: Vec<String> = tree.heads().iter().map(ToString::to_string).collect();
-            Ok(serde_json::to_value(heads).map_err(|error| error.to_string())?)
-        }))?;
-        let heads: Vec<String> = serde_json::from_value(heads).map_err(|e| e.to_string())?;
-        Ok(heads.join(","))
+        self.runtime.block_on(puts.watch(id, changed))
     }
 
     /// What `read` answers of `workspace`'s tree, as the workspace has it now.

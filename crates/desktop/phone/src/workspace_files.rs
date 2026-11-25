@@ -1,9 +1,11 @@
 //! The person's workspace files as a phone's own Files app and every other app's file picker see
 //! them: each of the person's workspaces is a root, and every folder and file below it a document
 //! whose id is `<workspace>:<path in the workspace>`. The provider behind Android's documents API
-//! asks these, and every phone with a file provider asks the same ones of its device daemon.
+//! asks these, and every phone with a file provider asks the same ones of its device daemon. A
+//! folder it shows is watched ([`watch`]) while it shows it, so a change another device makes
+//! reaches it as the workspace takes it, and nothing asks for a revision on a timer.
 
-use tilo_runtime::in_process::{Device, FileEntry, FileKind, Workspace};
+use tilo_runtime::in_process::{Device, FileEntry, FileKind, FileWatch, Workspace};
 
 /// The type Android gives a folder.
 pub const DIRECTORY_MIME: &str = "vnd.android.document/directory";
@@ -159,13 +161,18 @@ pub fn delete(device: &Device, workspace: &str, path: &str) -> Result<(), String
         .map_err(|error| format!("{error:#}"))
 }
 
-/// A token that changes whenever anything in `workspace`'s files does.
+/// Watch `workspace`'s files: `changed` is called with the folders whose entries moved — made on
+/// this phone or taken from the workspace — until the returned watch is dropped.
 ///
 /// # Errors
-/// The workspace is not one this device holds.
-pub fn revision(device: &Device, workspace: &str) -> Result<String, String> {
+/// The workspace is not one this device holds, or its tree does not open.
+pub fn watch(
+    device: &Device,
+    workspace: &str,
+    changed: impl Fn(Vec<String>) + Send + 'static,
+) -> Result<FileWatch, String> {
     device
-        .files_revision(workspace)
+        .watch_files(workspace, changed)
         .map_err(|error| format!("{error:#}"))
 }
 

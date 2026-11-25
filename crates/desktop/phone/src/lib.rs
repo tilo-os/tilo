@@ -27,6 +27,13 @@ pub mod workspace_files;
 
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "android")]
+pub(crate) use android::files_changed;
+
+/// The folders of a watched workspace whose entries moved: what the provider showing them is
+/// told, so the system reads them again. A phone off Android shows no workspace files to one.
+#[cfg(not(target_os = "android"))]
+pub(crate) fn files_changed(_workspace: &str, _folders: &[String]) {}
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

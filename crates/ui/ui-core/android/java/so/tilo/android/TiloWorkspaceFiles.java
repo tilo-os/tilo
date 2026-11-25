@@ -18,6 +18,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -34,7 +35,8 @@ import org.json.JSONObject;
  * {@code <workspace id>:<path>}. The bytes and the tree are the device daemon's, run in this
  * process by {@code tilo-phone}: a file opened for reading is read from the workspace, and one
  * opened for writing is written back to it when the caller closes it, so it syncs to the person's
- * other devices. A workspace change made elsewhere refreshes the folder being looked at.
+ * other devices. While a folder is shown the daemon watches its workspace, and a change made
+ * elsewhere reaches {@link #moved}, which wakes whatever shows that folder.
  *
  * <p>Rust answers the methods here: {@code Java_so_tilo_android_TiloWorkspaceFiles_<method>}
  * in the app's library.
@@ -61,16 +63,13 @@ public final class TiloWorkspaceFiles extends DocumentsProvider {
                 Document.COLUMN_FLAGS,
             };
 
-    /** How often the provider looks whether a workspace's files moved. */
-    private static final long WATCH_EVERY_MS = 3000;
-
-    /** How long after the last look at a folder the watch stops asking: nobody is showing one. */
-    private static final long WATCHING_FOR_MS = 60_000;
-
     private String authority;
-    private volatile long lastLook;
+    /** The folders a query has served, by document id: what a change tells the system to read. */
     private final Set<String> served = new HashSet<>();
-    private final Map<String, String> revisions = new HashMap<>();
+    /** How many cursors the system holds open on each workspace's folders, by workspace. */
+    private final Map<String, Integer> openCursors = new HashMap<>();
+    /** This provider, so Rust can tell it what moved from a thread of the daemon's. */
+    private static volatile WeakReference<TiloWorkspaceFiles> instance;
 
     @Override
     public boolean onCreate() {
@@ -91,13 +90,12 @@ public final class TiloWorkspaceFiles extends DocumentsProvider {
             return false;
         }
         authority = context.getPackageName() + ".tilo.workspace";
-        watch();
+        instance = new WeakReference<>(this);
         return true;
     }
 
     @Override
     public Cursor queryRoots(String[] projection) {
-        lastLook = System.currentTimeMillis();
         String[] columns = projection != null ? projection : DEFAULT_ROOT_PROJECTION;
         MatrixCursor cursor = new MatrixCursor(columns);
         String[] roots = nativeRoots();
@@ -130,7 +128,6 @@ public final class TiloWorkspaceFiles extends DocumentsProvider {
 
     @Override
     public Cursor queryDocument(String documentId, String[] projection) throws FileNotFoundException {
-        lastLook = System.currentTimeMillis();
         String[] columns = projection != null ? projection : DEFAULT_DOCUMENT_PROJECTION;
         MatrixCursor cursor = new MatrixCursor(columns, 1);
         JSONObject document = read(nativeDocument(documentId));
@@ -144,16 +141,25 @@ public final class TiloWorkspaceFiles extends DocumentsProvider {
     @Override
     public Cursor queryChildDocuments(String parentDocumentId, String[] projection, String sortOrder)
             throws FileNotFoundException {
-        lastLook = System.currentTimeMillis();
         String[] columns = projection != null ? projection : DEFAULT_DOCUMENT_PROJECTION;
-        MatrixCursor cursor = new MatrixCursor(columns);
         synchronized (served) {
             served.add(parentDocumentId);
+        }
+        // Watching before the folder is read: a change that lands while it reads is still told,
+        // and the system reads the folder again.
+        nativeWatch(parentDocumentId);
+        ChildrenCursor cursor = new ChildrenCursor(columns, parentDocumentId);
+        Context context = getContext();
+        if (context != null) {
+            cursor.setNotificationUri(
+                    context.getContentResolver(),
+                    DocumentsContract.buildChildDocumentsUri(authority, parentDocumentId));
         }
         String[] children;
         try {
             children = nativeChildren(parentDocumentId);
         } catch (IOException e) {
+            cursor.close();
             throw notFound(e);
         }
         if (children == null) {
@@ -305,54 +311,112 @@ public final class TiloWorkspaceFiles extends DocumentsProvider {
         return target;
     }
 
-    /** Look whether each workspace's files moved, and wake the folders that showed them. */
-    private void watch() {
-        Thread watcher =
-                new Thread(
-                        () -> {
-                            while (!Thread.currentThread().isInterrupted()) {
-                                try {
-                                    Thread.sleep(WATCH_EVERY_MS);
-                                } catch (InterruptedException e) {
-                                    return;
-                                }
-                                if (System.currentTimeMillis() - lastLook > WATCHING_FOR_MS) {
-                                    // Nothing has shown a folder for a minute: nothing to refresh.
-                                    continue;
-                                }
-                                String[] roots = nativeRoots();
-                                if (roots == null) {
-                                    continue;
-                                }
-                                for (String row : roots) {
-                                    String workspace = workspaceOf(row);
-                                    if (workspace.isEmpty()) {
-                                        continue;
-                                    }
-                                    String revision = nativeRevision(workspace);
-                                    if (revision == null || revision.isEmpty()) {
-                                        continue;
-                                    }
-                                    String last;
-                                    synchronized (revisions) {
-                                        last = revisions.put(workspace, revision);
-                                    }
-                                    if (last != null && !last.equals(revision)) {
-                                        changed(workspace);
-                                    }
-                                }
-                            }
-                        },
-                        "tilo-documents-watch");
-        watcher.setDaemon(true);
-        watcher.start();
+    /**
+     * Rust watches the workspaces this provider shows and calls this, from the daemon's thread,
+     * when folders of one moved: whatever shows them reads them again.
+     */
+    private static void moved(String workspace, String[] changed) {
+        WeakReference<TiloWorkspaceFiles> known = instance;
+        TiloWorkspaceFiles provider = known == null ? null : known.get();
+        if (provider != null) {
+            provider.refresh(workspace, changed);
+        }
     }
 
-    private static String workspaceOf(String rootRow) {
-        try {
-            return new JSONObject(rootRow).optString("id", "");
-        } catch (JSONException e) {
-            return "";
+    /** Tell whoever shows a folder of `workspace` that the entries of `changed` moved. */
+    private void refresh(String workspace, String[] changed) {
+        Context context = getContext();
+        if (context == null) {
+            return;
+        }
+        ContentResolver resolver = context.getContentResolver();
+        Set<String> shown;
+        synchronized (served) {
+            shown = new HashSet<>(served);
+        }
+        for (String id : shown) {
+            if (!workspace.equals(workspaceOf(id))) {
+                continue;
+            }
+            String path = pathOf(id);
+            for (String folder : changed) {
+                if (touches(folder, path)) {
+                    resolver.notifyChange(
+                            DocumentsContract.buildChildDocumentsUri(authority, id), null);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Note one more or one fewer cursor open on a folder's workspace, answering whether any is
+     * still open: the last one closed is no one showing the workspace any more.
+     */
+    private boolean count(String folder, int delta) {
+        String workspace = workspaceOf(folder);
+        if (workspace.isEmpty()) {
+            return false;
+        }
+        boolean held;
+        synchronized (openCursors) {
+            int open = openCursors.getOrDefault(workspace, 0) + delta;
+            if (open > 0) {
+                openCursors.put(workspace, open);
+                held = true;
+            } else {
+                openCursors.remove(workspace);
+                held = false;
+            }
+        }
+        if (!held) {
+            nativeUnwatch(workspace);
+        }
+        return held;
+    }
+
+    /** Whether a folder whose entries moved, `changed`, is `path`'s listing, below it or above. */
+    private static boolean touches(String changed, String path) {
+        return path.isEmpty()
+                || changed.isEmpty()
+                || changed.equals(path)
+                || changed.startsWith(path + "/")
+                || path.startsWith(changed + "/");
+    }
+
+    /** The workspace a document id names: the id itself where it names a workspace. */
+    private static String workspaceOf(String documentId) {
+        int separator = documentId.indexOf(':');
+        return separator >= 0 ? documentId.substring(0, separator) : documentId;
+    }
+
+    /** The path in its workspace a document id names: empty for the workspace itself. */
+    private static String pathOf(String documentId) {
+        int separator = documentId.indexOf(':');
+        return separator >= 0 ? documentId.substring(separator + 1) : "";
+    }
+
+    /**
+     * A folder's listing: the watch of its workspace is held while the system shows it, and ended
+     * as the system closes the cursor, which is when nothing shows the folder any more.
+     */
+    private final class ChildrenCursor extends MatrixCursor {
+        private final String folder;
+        private boolean counted;
+
+        ChildrenCursor(String[] columns, String folder) {
+            super(columns);
+            this.folder = folder;
+            this.counted = count(folder, 1);
+        }
+
+        @Override
+        public void close() {
+            if (counted) {
+                counted = false;
+                count(folder, -1);
+            }
+            super.close();
         }
     }
 
@@ -363,11 +427,7 @@ public final class TiloWorkspaceFiles extends DocumentsProvider {
             return;
         }
         ContentResolver resolver = context.getContentResolver();
-        String workspace = documentId;
-        int separator = documentId.indexOf(':');
-        if (separator >= 0) {
-            workspace = documentId.substring(0, separator);
-        }
+        String workspace = workspaceOf(documentId);
         resolver.notifyChange(DocumentsContract.buildDocumentUri(authority, documentId), null);
         resolver.notifyChange(DocumentsContract.buildChildDocumentsUri(authority, documentId), null);
         if (!workspace.equals(documentId)) {
@@ -457,5 +517,7 @@ public final class TiloWorkspaceFiles extends DocumentsProvider {
 
     private static native String nativeRename(String documentId, String name) throws IOException;
 
-    private static native String nativeRevision(String workspaceId);
+    private static native void nativeWatch(String folderDocumentId);
+
+    private static native void nativeUnwatch(String workspaceId);
 }

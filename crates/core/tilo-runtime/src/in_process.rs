@@ -7,7 +7,7 @@
 
 mod files;
 
-pub use files::{FileEntry, FileKind};
+pub use files::{FileEntry, FileKind, FileWatch};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

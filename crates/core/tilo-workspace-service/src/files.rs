@@ -51,7 +51,7 @@ pub mod socket;
 pub use folders::{FOLDERS_APP, Folder, FolderList, Folders};
 pub use opened::OpenedFiles;
 pub use paths::{Entry, EntryKind, Paths};
-pub use puts::Puts;
+pub use puts::{FilesWatch, Puts};
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the
 /// writes it decides on: one it keeps while it waits for something it lacks gets no word, so a

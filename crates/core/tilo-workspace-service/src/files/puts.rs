@@ -10,14 +10,20 @@
 //! The tree of each workspace is opened when the first file is put into it, and kept while this
 //! service runs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tilo_fs::tree_sync::TreeSync;
+use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 use crate::workspaces::Workspaces;
+
+/// How long the changes of a burst — a folder copied in, a sync's pass — are gathered before the
+/// folders they moved are told once.
+const SETTLE: Duration = Duration::from_millis(150);
 
 /// The trees this service puts files into, by workspace.
 pub struct Puts {
@@ -25,6 +31,17 @@ pub struct Puts {
     /// Where each workspace's tree is kept between runs.
     root: PathBuf,
     held: Arc<tokio::sync::Mutex<HashMap<WorkspaceId, Arc<TreeSync>>>>,
+}
+
+/// A watch of a workspace's files ([`Puts::watch`]): the watch ends when this is dropped.
+pub struct FilesWatch {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for FilesWatch {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl Puts {
@@ -69,28 +86,6 @@ impl Puts {
         tree.change(acting, change).await
     }
 
-    /// What `read` answers of `workspace`'s tree as this device holds it now, without asking the
-    /// workspace for its records first: for a caller that only needs to know whether the tree
-    /// moved, as a file provider watching a folder does. A remote change is here once the sync
-    /// took it, which it does as the change arrives.
-    ///
-    /// # Errors
-    /// This device does not hold the workspace, or its tree does not open.
-    #[allow(
-        clippy::future_not_send,
-        reason = "the read runs on the thread that asks for it, through the host's block_on"
-    )]
-    pub async fn state(
-        &self,
-        workspace: WorkspaceId,
-        read: &mut dyn FnMut(
-            &mut tilo_fs::namespace::Namespace,
-        ) -> Result<serde_json::Value, String>,
-    ) -> Result<serde_json::Value, String> {
-        let tree = self.held_tree(workspace).await?;
-        tree.read_now(read)
-    }
-
     /// What `read` answers of `workspace`'s tree, as the workspace has it now.
     ///
     /// # Errors
@@ -108,6 +103,50 @@ impl Puts {
     ) -> Result<serde_json::Value, String> {
         let tree = self.held_tree(workspace).await?;
         tree.read(read).await
+    }
+
+    /// Watch `workspace`'s tree where this device holds it: `changed` is called with the folders
+    /// whose entries moved — an entry made, renamed or taken away, here or by the workspace's
+    /// sync — until the returned watch is dropped. The changes themselves come from the tree's
+    /// own signal, so nothing asks the tree again on a timer.
+    ///
+    /// # Errors
+    /// This device does not hold the workspace, or its tree does not open.
+    pub async fn watch(
+        &self,
+        workspace: WorkspaceId,
+        changed: impl Fn(Vec<String>) + Send + 'static,
+    ) -> Result<FilesWatch, String> {
+        let tree = self.held_tree(workspace).await?;
+        let namespace = Arc::clone(&tree.namespace);
+        // Subscribed before the heads are read, so a change made in between is announced.
+        let (mut changes, mut seen) = {
+            let mut namespace = namespace.lock_recover();
+            (namespace.subscribe_changes(), namespace.heads())
+        };
+        let task = tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                // A folder copied in is one change of many: the folders it moved are told once.
+                tokio::time::sleep(SETTLE).await;
+                changes.borrow_and_update();
+                let folders = {
+                    let mut namespace = namespace.lock_recover();
+                    let moved = namespace.kernel_changes_since(&seen);
+                    seen = namespace.heads();
+                    let mut folders = BTreeSet::new();
+                    for ino in &moved.directories {
+                        if let Some(path) = namespace.kernel_path_for(*ino) {
+                            folders.insert(path.to_string_lossy().into_owned());
+                        }
+                    }
+                    folders
+                };
+                if !folders.is_empty() {
+                    changed(folders.into_iter().collect());
+                }
+            }
+        });
+        Ok(FilesWatch { task })
     }
 
     /// The tree `workspace`'s files are changed and read through, holding the workspace here,
