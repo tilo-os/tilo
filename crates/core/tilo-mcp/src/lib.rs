@@ -1454,8 +1454,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 self.call_named(parse::<ToolCall>(params), structured),
             ),
         );
-        let started = self
-            .records_tools
+        // A step that calls actions or asks its person is those calls' invocation already: it is
+        // listed as each one runs, and a record here would make one call into two.
+        let records_it =
+            self.records_tools && !matches!(tool.as_str(), "tilo_do" | "tilo" | "tilo_ask");
+        let started = records_it
             .then(|| {
                 self.host
                     .tool_started(&self.caller(), &tilo_actions::InvocationId::new(), &tool)

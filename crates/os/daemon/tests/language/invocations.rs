@@ -268,7 +268,7 @@ fn the_workspace_publishes_its_invocations_beside_its_apps() {
             &format!("/v1/workspaces/{workspace}/resources/devices/actions/info"),
         )
         .await;
-        let page = dispatch
+        let tree = dispatch
             .query(
                 &caller,
                 CatalogueQuery {
@@ -279,6 +279,25 @@ fn the_workspace_publishes_its_invocations_beside_its_apps() {
             .await
             .expect("the invocations' tree")
             .expect("the tree is answered");
+        assert!(
+            tree.rows.iter().any(|row| {
+                row.resource.id == workspace_invocations::RESOURCE && row.has_children
+            }),
+            "the tree stands at its root: {:?}",
+            tree.rows
+        );
+        let page = dispatch
+            .query(
+                &caller,
+                CatalogueQuery {
+                    provider: Some("tilo.invocations".into()),
+                    parent_resource: Some(workspace_invocations::RESOURCE.to_owned()),
+                    ..CatalogueQuery::default()
+                },
+            )
+            .await
+            .expect("the invocations' page")
+            .expect("the page is answered");
         assert!(
             page.rows.iter().any(|row| row.resource.id == invocation),
             "the invocation is a row of the tree: {:?}",

@@ -6283,7 +6283,18 @@ impl ActionProvider for RuntimeActionProvider {
                 .may_write_origin(caller, &self.workspace, origin)
         };
         if let Some(answered) = self.invocations.answer(caller, &request, &origin_writes) {
-            return answered;
+            // A record's own refusal is the call's answer, as a provider's refusal is: the
+            // caller reads the words in a rejected receipt, never a dispatch that failed to
+            // answer at all.
+            let invocation = request.invocation;
+            return answered.then(move |answer| match answer {
+                Some(Ok(receipt)) => Ok(receipt),
+                Some(Err(error)) => Ok(InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Rejected { error },
+                }),
+                None => Err(ActionCallError::Unanswered),
+            });
         }
         // An approve only the device hands back: one a caller writes into its own call is
         // refused whole, nothing of it run.

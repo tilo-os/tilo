@@ -15,7 +15,7 @@ use crate::language::host;
 const CHAT: &str = ui::apps::CHAT;
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it: the start a
 /// test makes reaches the app's windowless instance.
-const CHAT_PACKAGE: &str = "chat";
+pub(crate) const CHAT_PACKAGE: &str = "chat";
 /// The channel a test makes in the workspace's chat, and posts into.
 pub(crate) const CHANNEL: &str = "chat";
 /// The app's own resource: where it publishes its history verbs, which is how a page reads who
@@ -118,7 +118,7 @@ pub(crate) async fn opens(host: &host::Host) -> Result<(), String> {
 }
 
 /// What `result`, a tool's answer to a call that made something, names it by.
-fn made(result: &Value) -> String {
+pub(crate) fn made(result: &Value) -> String {
     let made = field(result, "resources");
     made.as_array()
         .and_then(|made| made.first())
