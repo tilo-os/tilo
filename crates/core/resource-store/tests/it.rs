@@ -775,6 +775,42 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
     );
 }
 
+// A store judges an app's call by what the app declares its action as: by the name a call offers
+// it by or its own, each app's apart from another's of the same name, and nothing for an action no
+// app declares.
+#[test]
+fn a_store_keeps_what_each_app_declares_its_actions_as() {
+    let mut store = tilo_resource_store::Store::new();
+    store.declare(Schema::of_app("so.tilo.tasks", &tracker_surface()));
+    let notes: tilo_actions::surface::Surface = toml_like(serde_json::json!({
+        "kind": "notes.note",
+        "label": "Note",
+        "version": 1,
+        "verbs": [
+            {"id": "rename", "kind": "outside"},
+            {"id": "q7k2", "name": "peek", "kind": "read"},
+        ],
+    }));
+    store.declare(Schema::of_app("so.tilo.notes", &notes));
+    let declared = |app: &str, action: &str| store.schema().declared_kind(app, action);
+    use tilo_actions::ActionKind;
+    assert_eq!(declared("so.tilo.tasks", "rename"), Some(ActionKind::Undoable));
+    assert_eq!(
+        declared("so.tilo.notes", "rename"),
+        Some(ActionKind::Outside),
+        "another app's verb of the same name is its own"
+    );
+    assert_eq!(declared("so.tilo.notes", "peek"), Some(ActionKind::Read));
+    assert_eq!(declared("so.tilo.notes", "q7k2"), Some(ActionKind::Read));
+    assert_eq!(declared("so.tilo.tasks", "peek"), None, "tasks declares no peek");
+    assert_eq!(declared("so.tilo.notes", "melt"), None);
+    assert_eq!(
+        Schema::from_surface(&notes).declared_kind("so.tilo.notes", "peek"),
+        None,
+        "a surface no app named declares nothing a call is judged by"
+    );
+}
+
 /// A tracker whose issues are part of it and whose comments are a storage unit of their own.
 fn tracker_surface() -> tilo_actions::surface::Surface {
     toml_like(serde_json::json!({

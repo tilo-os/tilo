@@ -155,6 +155,21 @@ pub struct Verb {
     /// A verb the platform writes under ([`PLATFORM_VERBS`]): it writes any field and content of
     /// a declared kind, as the move places one of any kind.
     pub platform: bool,
+    /// What each app whose surface declares it declares it as, by the app's id
+    /// ([`Schema::of_app`]): a call of it is judged at the kind it declares. The platform's verbs
+    /// are no app's and declare none.
+    pub declared: BTreeMap<String, Declared>,
+}
+
+/// What one app declares a verb as: the kind of action it is, and the name the action API offers
+/// it by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Declared {
+    /// What it is able to do, as its declaration says. Where two of the app's resources declare
+    /// it apart, the most it is able to do.
+    pub kind: tilo_actions::ActionKind,
+    /// The name a call names it by ([`tilo_actions::surface::VerbSurface::offered`]).
+    pub offered: String,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -401,6 +416,39 @@ impl Schema {
                 .map(|rule| (surface.kind.clone(), rule.clone()))
                 .collect(),
         }
+    }
+
+    /// [`Self::from_surface`] of `app`'s `surface`, each verb it declares recorded as `app`'s
+    /// ([`Verb::declared`]): what a call of one of the app's actions is judged by.
+    #[must_use]
+    pub fn of_app(app: &str, surface: &Surface) -> Self {
+        let mut schema = Self::from_surface(surface);
+        for verb in &mut schema.verbs {
+            if let Some(declared) = surface.verbs.iter().find(|declared| declared.id == verb.name)
+            {
+                verb.declared.insert(
+                    app.to_owned(),
+                    Declared {
+                        kind: declared.kind,
+                        offered: declared.offered().to_owned(),
+                    },
+                );
+            }
+        }
+        schema
+    }
+
+    /// The kind `app`'s action `action` is declared as, by the name a call offers it by or the
+    /// verb's own: `None` when `app` declares no such action.
+    #[must_use]
+    pub fn declared_kind(&self, app: &str, action: &str) -> Option<tilo_actions::ActionKind> {
+        self.verbs
+            .iter()
+            .filter_map(|verb| {
+                let declared = verb.declared.get(app)?;
+                (verb.name == action || declared.offered == action).then_some(declared.kind)
+            })
+            .max()
     }
 
     /// What the verb `name` writes, when it is declared.

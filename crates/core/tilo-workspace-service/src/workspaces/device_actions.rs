@@ -82,6 +82,9 @@ pub(crate) struct DeviceWork {
     /// The workspaces this device holds, as the action service decides them:
     /// who may ask is what each workspace's members say.
     workspaces: Arc<WorkspacesMap>,
+    /// The app surfaces this device knows: what a call of an app's action is judged by the kind
+    /// its declaration names.
+    surfaces: Arc<collab_types::app_surface::Surfaces>,
     /// The workspaces a turn is claimed in, once they are open.
     turns: std::sync::OnceLock<super::WeakWorkspaces>,
     log: std::sync::Mutex<InvocationLog<InvocationState>>,
@@ -288,7 +291,10 @@ impl DeviceWork {
     /// # Panics
     ///
     /// Outside a runtime context, where there is nothing to answer on.
-    fn new(workspaces: Arc<WorkspacesMap>) -> Arc<Self> {
+    fn new(
+        workspaces: Arc<WorkspacesMap>,
+        surfaces: Arc<collab_types::app_surface::Surfaces>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             content: std::sync::RwLock::default(),
             answers: std::sync::OnceLock::default(),
@@ -299,6 +305,7 @@ impl DeviceWork {
             agents: std::sync::RwLock::new(None),
             connections: std::sync::RwLock::new(None),
             workspaces,
+            surfaces,
             turns: std::sync::OnceLock::new(),
             log: std::sync::Mutex::default(),
             governance: std::sync::OnceLock::new(),
@@ -720,16 +727,17 @@ fn settled_output(
 }
 
 /// The device action service of the workspaces in `workspaces`, as the device
-/// whose signing key is `device`.
+/// whose signing key is `device` and that knows the app surfaces `surfaces`.
 ///
 /// # Panics
 ///
 /// Outside a runtime context, where there is nothing to answer on.
 pub(crate) fn action_service(
     workspaces: Arc<WorkspacesMap>,
+    surfaces: Arc<collab_types::app_surface::Surfaces>,
     device: Arc<dyn collab_types::signer::DeviceSigner>,
 ) -> (ActionService, Arc<DeviceWork>, Arc<Answers>) {
-    let work = DeviceWork::new(Arc::clone(&workspaces));
+    let work = DeviceWork::new(Arc::clone(&workspaces), surfaces);
     let answers = Answers::over(Arc::clone(&work));
     let action_service = ActionService::over(
         device,
@@ -1097,17 +1105,25 @@ impl super::Workspaces {
             .await
     }
 
-    /// Whether `device` may run `action` (app, resource, action) in `workspace` now.
+    /// Whether `device` may run `action` (app, resource, action) in `workspace` now, judged at
+    /// the kind its app declares it as. An action its app declares no kind for is not run.
     pub(crate) async fn permits_action(
         &self,
         device: [u8; 32],
         workspace: &str,
         (app, resource, action): (&str, &str, &str),
     ) -> bool {
-        self.reads_peer(workspace, |peer| {
-            peer.permits_app_action(device, app, resource, action, tilo_clock::wall())
-        })
-        .await
+        let kept = self.inner.workspaces.lock().await.get(workspace).cloned();
+        let Some(kept) = kept else {
+            return false;
+        };
+        let mut kept = kept.lock().await;
+        let Some(kind) = kept.call_kind(&self.inner.host.surfaces, app, action) else {
+            return false;
+        };
+        kept.peer()
+            .permits_app_action(device, (app, resource, action), kind, tilo_clock::wall())
+            .unwrap_or(false)
     }
 
     /// Whether `device` may open `app`'s record `resource` in `workspace` now.
@@ -1387,7 +1403,12 @@ impl Answers {
             return self
                 .work
                 .providers
-                .device_call(caller, request, &self.work.workspaces, &self.work.runtime)
+                .device_call(
+                    caller,
+                    request,
+                    (&self.work.workspaces, &self.work.surfaces),
+                    &self.work.runtime,
+                )
                 .expect("a provider that serves the call takes it");
         }
         // An address a provider registered on this device publishes is that provider's, whichever
@@ -1403,7 +1424,12 @@ impl Answers {
             return self
                 .work
                 .providers
-                .device_call(caller, request, &self.work.workspaces, &self.work.runtime)
+                .device_call(
+                    caller,
+                    request,
+                    (&self.work.workspaces, &self.work.surfaces),
+                    &self.work.runtime,
+                )
                 .expect("a provider that publishes the call takes it");
         }
         if let Some(served) = self.apps() {

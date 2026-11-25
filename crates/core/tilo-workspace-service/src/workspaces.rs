@@ -1550,7 +1550,7 @@ impl Workspaces {
         // hand whoever asks the certificate of that key.
         let (signer, answering) = host.endpoint_identity();
         let (action_service, jobs, answers) =
-            device_actions::action_service(Arc::clone(&workspaces), signer);
+            device_actions::action_service(Arc::clone(&workspaces), Arc::clone(&host.surfaces), signer);
         action_service.answer_under(answering);
         // The apps this host serves answer on the same action service its workspaces' devices
         // reach it on, beside the work and governance it answers itself. The workspace's accounts

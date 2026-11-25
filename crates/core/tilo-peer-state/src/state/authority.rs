@@ -907,8 +907,9 @@ impl StatePeer {
             .map_err(|error| error.to_string())
     }
     /// Whether the device `source` may run `action` of `resource` in `app`
-    /// here now: the workspace's per-action permission for whatever its
-    /// actor is decides it, never the kind of member a device belongs to.
+    /// here now, an action its app declares as `kind`: the workspace's
+    /// per-action permission for whatever its actor is decides it at that
+    /// kind, never the kind of member a device belongs to.
     ///
     /// # Errors
     ///
@@ -917,9 +918,8 @@ impl StatePeer {
     pub fn permits_app_action(
         &self,
         source: [u8; 32],
-        app: &str,
-        resource: &str,
-        action: &str,
+        (app, resource, action): (&str, &str, &str),
+        kind: ActionKind,
         now: SystemTime,
     ) -> Result<bool, MembershipError> {
         let member = self.permissions(source, now)?;
@@ -929,7 +929,7 @@ impl StatePeer {
             .resource(resource)
             .rest()
             .action(action);
-        Ok(member.allows(&node, ActionKind::Undoable, now))
+        Ok(member.allows(&node, kind, now))
     }
 
     /// Whether the device `source` may open `resource` of `app` here now: read

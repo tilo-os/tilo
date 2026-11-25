@@ -2448,12 +2448,21 @@ impl Store {
                 .schema
                 .verbs
                 .iter_mut()
-                .find(|held| held.name == verb.name)
+                .find(|known| known.name == verb.name)
             {
-                Some(held) => {
-                    held.writes.extend(verb.writes);
-                    held.outside.extend(verb.outside);
-                    held.notice |= verb.notice;
+                Some(known) => {
+                    known.writes.extend(verb.writes);
+                    known.outside.extend(verb.outside);
+                    known.notice |= verb.notice;
+                    for (app, declared) in verb.declared {
+                        match known.declared.get_mut(&app) {
+                            // One app's resources declaring it apart: the most it is able to do.
+                            Some(was) => was.kind = was.kind.max(declared.kind),
+                            None => {
+                                known.declared.insert(app, declared);
+                            }
+                        }
+                    }
                 }
                 None => self.schema.verbs.push(verb),
             }

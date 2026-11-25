@@ -13,6 +13,7 @@
 use web_time::SystemTime;
 
 use tilo_action_policy::MemberAccess;
+use tilo_resource_store::Schema;
 
 /// The grant lookup for one proposal batch: the author's access at the governance the batch's
 /// write names, and the app whose kinds its verbs are judged on.
@@ -38,6 +39,17 @@ impl VerbGrants {
             author,
             now,
         }
+    }
+
+    /// The kind a call of `app`'s action `action` is judged at: what the app's declaration of it,
+    /// as `schema` keeps it, says it is able to do. `None` when no declaration of `app` names it:
+    /// such a call is refused, never judged at a kind it was given.
+    pub(super) fn call_kind(
+        schema: &Schema,
+        app: &str,
+        action: &str,
+    ) -> Option<tilo_action_policy::ActionKind> {
+        schema.declared_kind(app, action)
     }
 
     /// Whether `author` may invoke `verb` on a record of `kind`, at the batch's basis: the grant

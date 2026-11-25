@@ -144,10 +144,15 @@ impl tilo_actions::remote::ActionProvider for Photos {
 
 /// Photos' thumbnails of one photograph, as a device asks for them.
 fn job(input: [u8; 32]) -> Job {
+    job_of(THUMBNAILS, input)
+}
+
+/// Photos' action `action` over one photograph, as a device asks for it.
+fn job_of(action: &str, input: [u8; 32]) -> Job {
     Job {
-        app: "so.tilo.photos".into(),
+        app: PHOTOS.into(),
         resource: "photos.library".into(),
-        action: "make-thumbnails".into(),
+        action: action.into(),
         argument: tilo_actions::remote::InvokeArgument::Json(
             serde_json::json!({
                 "photos": [hex::encode(input)],
@@ -164,6 +169,31 @@ fn job(input: [u8; 32]) -> Job {
         },
         inputs: vec![input],
     }
+}
+
+/// The app whose actions the turns run.
+const PHOTOS: &str = "so.tilo.photos";
+/// Photos' thumbnails: it reads the pictures it is given, as the thumbnail engine declares it.
+const THUMBNAILS: &str = "make-thumbnails";
+/// A change of a picture, which a viewer's role does not reach.
+const RETOUCH: &str = "retouch";
+
+/// Photos' surface as the host knows it: what a call of each of its actions is judged by.
+fn declare_photos(host: &super::fixtures::TestHost) {
+    let surface = collab_types::surface::canonical(&serde_json::json!({
+        "format": 2,
+        "resources": [{
+            "kind": "photos.library",
+            "label": "Photos",
+            "version": 1,
+            "fields": [],
+            "verbs": [
+                { "id": THUMBNAILS, "kind": "read" },
+                { "id": RETOUCH, "kind": "undoable" },
+            ],
+        }],
+    }));
+    super::fixtures::declare_app(host, PHOTOS, surface.as_bytes());
 }
 
 /// The person's entry for `device` among their servers, offering compute when
@@ -208,6 +238,7 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
+    declare_photos(&host);
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Photos").await.unwrap().workspace;
     let (editor_key, editor) = guest_device();
@@ -267,7 +298,13 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     workspaces.run_jobs(Arc::new(Keeps(false)));
     unclaimed(&turn(&editor), Ineligible::InputsElsewhere).await;
     workspaces.run_jobs(Arc::new(Keeps(true)));
-    unclaimed(&turn(&viewer), Ineligible::NotPermitted).await;
+    // A viewer reads the pictures and changes none of them.
+    let retouch = Turn::Invocation {
+        id: tilo_actions::InvocationId::new(),
+        requester: viewer.device_public_key,
+        job: job_of(RETOUCH, [7; 32]),
+    };
+    unclaimed(&retouch, Ineligible::NotPermitted).await;
 
     let turn = turn(&editor);
     let lease = turn.lease();
@@ -382,6 +419,7 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();
     let host = test_host(dir.path(), &key, &cert).await;
+    declare_photos(&host);
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Photos").await.unwrap().workspace;
     offer_compute(&host, &cert, true).await;
@@ -418,13 +456,19 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
         );
         let remote = Arc::new(actions.remote(&endpoint, &address, &workspace));
         let id = tilo_actions::InvocationId::new();
+        // The viewer asks for a change of a picture, which its role does not reach.
+        let action = if role == Role::Viewer {
+            RETOUCH
+        } else {
+            THUMBNAILS
+        };
         let ask = || {
             let remote = Arc::clone(&remote);
             async move {
                 tokio::time::timeout(
                     Duration::from_secs(20),
                     remote.invoke_until_settled(
-                        job([seed; 32]).take_request(id),
+                        job_of(action, [seed; 32]).take_request(id),
                         Duration::from_secs(20),
                     ),
                 )
@@ -470,6 +514,130 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
     for endpoint in endpoints {
         endpoint.close().await;
     }
+    host.shutdown().await;
+}
+
+/// `device`'s ask, over the device action service, that the host run Photos' `action` over the
+/// picture `seed`: what the host answered.
+async fn ask_turn(
+    host: &super::fixtures::TestHost,
+    workspace: &str,
+    (device_key, endpoint): (&ed25519_dalek::SigningKey, &iroh::Endpoint),
+    action: &str,
+    seed: u8,
+) -> Result<InvocationUpdate, ActionCallError> {
+    let actions = tilo_peer_state::actions::ActionService::new(
+        device_key.clone(),
+        Arc::new(tilo_actions::remote::TestProvider::new()),
+    );
+    let remote = Arc::new(actions.remote(endpoint, &host.node_addr(), workspace));
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        remote.invoke_until_settled(
+            job_of(action, [seed; 32]).take_request(tilo_actions::InvocationId::new()),
+            Duration::from_secs(20),
+        ),
+    )
+    .await
+    .expect("the host answers")
+    .expect("the host answered")
+}
+
+// A guest of a workspace runs what their grants reach at the kind each action is declared as: a
+// viewer has a read run for them and is refused a change until a member grants them changes of
+// the app, and an action the app declares nothing of is refused whoever asks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_is_judged_at_the_kind_its_action_declares() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let host = test_host(dir.path(), &key, &cert).await;
+    declare_photos(&host);
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Photos").await.unwrap().workspace;
+    offer_compute(&host, &cert, true).await;
+    let photos = Arc::new(Photos::default());
+    workspaces.run_jobs(Arc::new(Keeps(true)));
+    workspaces.providers().provide(
+        "test/photos",
+        PHOTOS,
+        crate::workspaces::providers::Reach::Devices,
+        Arc::clone(&photos) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    );
+    let (viewer_key, viewer) = guest_device();
+    entry_join_as(
+        workspaces,
+        &cert,
+        &workspace,
+        (&viewer_key, &viewer),
+        81,
+        Role::Viewer,
+    )
+    .await;
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&viewer_key.to_bytes()))
+        .bind()
+        .await
+        .unwrap();
+    let ask = |action: &'static str, seed: u8| {
+        let (host, workspace, viewer_key, endpoint) = (&host, &workspace, &viewer_key, &endpoint);
+        async move { ask_turn(host, workspace, (viewer_key, endpoint), action, seed).await }
+    };
+    let refused = |answer: &Result<InvocationUpdate, ActionCallError>| {
+        matches!(answer, Err(ActionCallError::Refused { reason }) if reason.contains("does not let"))
+    };
+
+    // A read is the viewer's to run.
+    let read = ask(THUMBNAILS, 1).await;
+    assert!(
+        matches!(read, Ok(InvocationUpdate::Succeeded { .. })),
+        "a viewer has a read run for them: {read:?}"
+    );
+
+    // A change is not, until the owner grants the viewer changes of Photos.
+    let change = ask(RETOUCH, 2).await;
+    assert!(refused(&change), "a viewer is refused a change: {change:?}");
+    super::fixtures::answer_grant(
+        workspaces,
+        &workspace,
+        tilo_action_policy::Grant::new(
+            "viewer-retouches",
+            tilo_action_policy::Grantee::person(hex::encode(viewer.user_public_key)),
+            tilo_action_policy::TreePath::workspace(&workspace).app(PHOTOS),
+            tilo_action_policy::KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+        ),
+    )
+    .await
+    .expect("the owner grants the viewer changes of Photos");
+    let granted = ask(RETOUCH, 3).await;
+    assert!(
+        matches!(granted, Ok(InvocationUpdate::Succeeded { .. })),
+        "the change the viewer was granted runs: {granted:?}"
+    );
+
+    // An action Photos declares nothing of is refused, granted kinds or not.
+    let undeclared = ask("melt", 4).await;
+    assert!(
+        refused(&undeclared),
+        "an action no declaration names is refused: {undeclared:?}"
+    );
+    let ran: Vec<serde_json::Value> = photos
+        .ran
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(|(_, pictures)| pictures.clone())
+        .collect();
+    assert_eq!(
+        ran,
+        vec![
+            serde_json::json!(hex::encode([1; 32])),
+            serde_json::json!(hex::encode([3; 32])),
+        ],
+        "only the read and the granted change ran"
+    );
+    endpoint.close().await;
     host.shutdown().await;
 }
 

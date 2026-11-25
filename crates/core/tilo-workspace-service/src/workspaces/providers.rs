@@ -674,7 +674,10 @@ impl Providers {
         &self,
         caller: &Caller,
         request: InvokeRequest,
-        workspaces: &Arc<super::device_actions::WorkspacesMap>,
+        (workspaces, surfaces): (
+            &Arc<super::device_actions::WorkspacesMap>,
+            &Arc<collab_types::app_surface::Surfaces>,
+        ),
         runtime: &tokio::runtime::Handle,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let registered = self
@@ -690,6 +693,7 @@ impl Providers {
         let app = Arc::clone(&registered.app);
         let providers = self.clone();
         let workspaces = Arc::clone(workspaces);
+        let surfaces = Arc::clone(surfaces);
         let caller = caller.clone();
         let (completer, answer) = tilo_actions::remote::pending();
         // A device a host placed has no grants of its own: it reaches the provider registered for
@@ -710,7 +714,7 @@ impl Providers {
             if placed.is_none()
                 && !placing_host
                 && let Err(refused) = permits(
-                    &workspaces,
+                    (&workspaces, &surfaces),
                     device,
                     &workspace,
                     &app,
@@ -792,9 +796,14 @@ fn record_of(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<
 }
 
 /// Whether `workspace`'s grants let `device` run `action` on `resource` of the application `app`
-/// now; the refusal its caller reads when they do not.
+/// now, judged at the kind `app` declares the action as (`surfaces` names what this device knows
+/// of the declarations); the refusal its caller reads when they do not. An action `app` declares
+/// no kind for is refused: nothing says what it is able to do.
 async fn permits(
-    workspaces: &super::device_actions::WorkspacesMap,
+    (workspaces, surfaces): (
+        &super::device_actions::WorkspacesMap,
+        &collab_types::app_surface::Surfaces,
+    ),
     device: [u8; 32],
     workspace: &str,
     app: &str,
@@ -807,13 +816,15 @@ async fn permits(
             reason: "this device does not keep that workspace".into(),
         });
     };
-    let permitted = kept.lock().await.peer().permits_app_action(
-        device,
-        app,
-        resource,
-        action,
-        tilo_clock::wall(),
-    );
+    let mut kept = kept.lock().await;
+    let Some(kind) = kept.call_kind(surfaces, app, action) else {
+        return Err(ActionCallError::Refused {
+            reason: format!("{app} declares no action {resource}#{action}"),
+        });
+    };
+    let permitted =
+        kept.peer()
+            .permits_app_action(device, (app, resource, action), kind, tilo_clock::wall());
     match permitted {
         Ok(true) => Ok(()),
         Ok(false) => Err(ActionCallError::Refused {

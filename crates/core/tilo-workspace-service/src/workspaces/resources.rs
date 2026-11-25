@@ -781,8 +781,8 @@ impl HostedWorkspace {
             self.resources.declared = named;
             {
                 let mut store = self.resources.store_mut();
-                for (_, surface) in surfaces.resources() {
-                    store.declare(Schema::from_surface(&surface));
+                for (app, surface) in surfaces.resources() {
+                    store.declare(Schema::of_app(&app, &surface));
                 }
             }
             // A type that says when it is live lists what the store held before it said so.
@@ -1100,6 +1100,18 @@ impl HostedWorkspace {
                     .map(|leave| (doc, leave))
             })
             .collect()
+    }
+
+    /// The kind a call of `app`'s action `action` is judged at, as the app's declaration of it in
+    /// this workspace's store says ([`VerbGrants::call_kind`]), with every surface this device
+    /// knows (`surfaces`) declared. `None` for an action no declaration names.
+    pub(crate) fn call_kind(
+        &mut self,
+        surfaces: &collab_types::app_surface::Surfaces,
+        app: &str,
+        action: &str,
+    ) -> Option<tilo_action_policy::ActionKind> {
+        VerbGrants::call_kind(self.store_with_surfaces(surfaces).schema(), app, action)
     }
 
     /// The grant lookup for a write of `app` by `author`: what the governance the write names
