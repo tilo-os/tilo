@@ -303,6 +303,40 @@ fn a_founding_call_asked_for_tickets_is_followed_after_its_person_serves() {
         }),
         "the founding call answered no server ticket: {followed}"
     );
+    // The device the person was founded on lists itself among their devices: a server handed
+    // their workspace admits every change it makes by that record, and this device keeps it
+    // whether it holds their workspace itself or hands it to the server.
+    let person = followed["result"]["person"]
+        .as_str()
+        .and_then(|person| hex::decode(person).ok())
+        .and_then(|person| <[u8; 32]>::try_from(person).ok())
+        .expect("the founding names the person");
+    let own = tilo_device_identity::persist::load_device_key(&keys)
+        .expect("the founder's device key")
+        .verifying_key()
+        .to_bytes();
+    let daemon = running
+        .services(Duration::from_secs(120))
+        .expect("the person's services");
+    let copies = daemon.workspaces().clone();
+    tilo_rt::app().handle().block_on(tilo_test_env::within(
+        "the founding device to list itself in the person's devices",
+        async move {
+            loop {
+                let listed = tilo_workspace_service::workspaces::person_workspace::devices::of(
+                    &copies, &person,
+                )
+                .await
+                .listed(&person)
+                .iter()
+                .any(|entry| entry.cert.device_public_key == own);
+                if listed {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        },
+    ));
     running.stop().unwrap();
     drop(environment);
 }

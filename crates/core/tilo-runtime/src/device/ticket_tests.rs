@@ -1141,6 +1141,79 @@ async fn a_ticket_that_names_a_server_leaves_its_entry() {
     host.server.shutdown().await;
 }
 
+/// A device of the person's that keeps a member copy of their own workspace is not the device
+/// that holds it: it writes itself into the person's devices record through the server that
+/// does, and the server admits the write. What a device whose founding handed their workspace
+/// to a server does, and what the server decides its later writes against.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_keeping_a_member_copy_lists_itself_through_the_server_that_holds_it() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = servers_host(&root).await;
+    let admin =
+        tilo_server_protocol::servers::person_workspace_id(&root.verifying_key().to_bytes());
+    let login = login_to(&host.server, &admin, (&host.issuer_cert, &host.server_cert));
+    let state = tempfile::tempdir().unwrap();
+    let address = tilo_api::daemon::enter::server_of(&login).await.unwrap();
+    let service = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("laptop"),
+        &host.issuer_key,
+        &host.issuer_cert,
+        &address,
+    )
+    .await
+    .expect("the device's service opens");
+    let entered = tilo_test_env::within(
+        "the device to enter its person's workspace",
+        tilo_api::daemon::enter::connect(&host.issuer_key, &login, Some(service.lent())),
+    )
+    .await
+    .expect("the device enters");
+    tilo_test_env::within("the device to hold it", service.hold(&entered)).await;
+    let person = host.issuer_cert.user_public_key;
+    let listed =
+        |record: tilo_workspace_service::workspaces::person_workspace::devices::Devices| {
+            record
+                .listed(&person)
+                .iter()
+                .any(|entry| entry.cert.device_public_key == host.issuer_cert.device_public_key)
+        };
+    assert!(
+        !listed(
+            tilo_workspace_service::workspaces::person_workspace::devices::of(
+                &host.hosted,
+                &person
+            )
+            .await
+        ),
+        "the server's record does not have the device yet"
+    );
+
+    // The device lists itself as its daemon does on each start: a member copy writes through
+    // the server that holds the workspace.
+    tilo_workspace_service::workspaces::person_workspace::devices::keep(
+        service.copies(),
+        &host.issuer_cert,
+    )
+    .await
+    .expect("the server takes the device's own entry");
+    tilo_test_env::within("the server's record to list the device", async {
+        loop {
+            let record = tilo_workspace_service::workspaces::person_workspace::devices::of(
+                &host.hosted,
+                &person,
+            )
+            .await;
+            if listed(record) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    entered.close();
+    host.server.shutdown().await;
+}
+
 /// A logged-in issuer asks its host to write the entry: `tilo device add --server` on one of the
 /// person's laptops leaves the server's entry in the Servers document their server holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
