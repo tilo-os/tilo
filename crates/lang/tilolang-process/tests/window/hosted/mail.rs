@@ -4321,3 +4321,91 @@ fn a_message_that_went_with_no_copy_in_sent_says_so() {
         "and its status says what the server said: {shown:#?}"
     );
 }
+
+/// The id of the composer's text field drawn `order`th from the top: To, then Cc, Bcc and the
+/// subject once they show, in the order a person fills them.
+fn composer_field(session: &mut Session, order: usize) -> ui::accesskit::NodeId {
+    let mut fields: Vec<(f64, ui::accesskit::NodeId)> = session
+        .window
+        .a11y()
+        .into_iter()
+        .filter(|(_, node)| node.role() == ui::accesskit::Role::TextInput)
+        .filter_map(|(id, node)| node.bounds().map(|rect| (rect.y0, id)))
+        .collect();
+    fields.sort_by(|a, b| a.0.total_cmp(&b.0));
+    fields
+        .get(order)
+        .unwrap_or_else(|| {
+            panic!(
+                "the composer draws {} fields, not {}",
+                fields.len(),
+                order.saturating_add(1)
+            )
+        })
+        .1
+}
+
+/// Give the composer's field drawn `order`th from the top the keyboard, as Tab or an assistive
+/// technology does: the window's own accessible action, not a press at a place.
+fn into_composer_field(session: &mut Session, order: usize) {
+    let node = composer_field(session, order);
+    session.window.a11y_action(node, &ui::a11y::Action::Focus);
+    session.settle();
+}
+
+// USER REQUIREMENT: a recipient field says whose address it writes and which account the message
+// goes from, and says when the name typed cannot be a recipient.
+#[test]
+fn the_recipient_field_says_the_address_the_account_and_what_conflicts() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    // What the field offers: the person's address, and the account the message goes from.
+    let root = session.mail_root();
+    let draft = session.made("new_draft", &root, &json!({}));
+    session.open_showing(&draft);
+    session.settle();
+
+    into_composer_field(&mut session, 0);
+    session.window.type_text("Ada");
+    session.settle();
+    session.settle();
+    let shown = session.shown();
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "ada@analytical.example · sends from sam@rivera.example"),
+        "the offer names her address and the account: {shown:#?}"
+    );
+
+    // The person's own address cannot be a recipient.
+    let own = session.made("new_draft", &root, &json!({}));
+    session.open_showing(&own);
+    into_composer_field(&mut session, 0);
+    session.window.type_text("sam@rivera.example");
+    session.settle();
+    let shown = session.shown();
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "It is one of your own addresses"),
+        "the field says why: {shown:#?}"
+    );
+
+    // Nor can one the message already writes to in another field.
+    let twice = session.made("new_draft", &root, &json!({}));
+    session.open_showing(&twice);
+    into_composer_field(&mut session, 0);
+    session.window.type_text("ada@analytical.example");
+    session.settle();
+    session.window.press_named("Cc/Bcc");
+    session.settle();
+    into_composer_field(&mut session, 1);
+    session.window.type_text("ada@analytical.example");
+    session.settle();
+    let shown = session.shown();
+    assert!(
+        shown.iter().any(|text| text == "It is a recipient already"),
+        "the field says it is written already: {shown:#?}"
+    );
+}

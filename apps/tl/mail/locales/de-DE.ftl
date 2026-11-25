@@ -705,6 +705,14 @@ d-llqqdcy5 = Anhang-Chip
     .w-save = Speichern
     .w-not-downloaded = { $name }, nicht heruntergeladen
 
+d-s3nkvp7c = Empfängerangabe
+    .w-no-account-to-send-from = kein Konto zum Senden
+    .w-sends-from = sendet von { $from }
+
+d-b4uwyjpl = Empfängerkonflikt
+    .w-it-is-one-of-your-own = Es ist eine deiner eigenen Adressen
+    .w-it-is-a-recipient-already = Sie ist schon ein Empfänger
+
 d-nxayphhi = Nachrichtendatei
     .w-message = Nachricht
 

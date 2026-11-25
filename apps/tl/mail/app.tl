@@ -931,6 +931,56 @@ fn recipient_taken(field: Text, name: Text, address: Text) -> Text {
     if before == "" { "{one}, " } else { "{before} {one}, " }
 }
 
+/// The address the message `d` goes from, as a person reads it: the address of the workspace
+/// account it is sent from, or empty when it names none of them.
+fn sending_address(m: Mail, d: Draft) -> Text {
+    m.accounts.find(a -> a.key == d.from)?.address ?? ""
+}
+
+/// What a recipient field says of the person it offers, under their name: their address, and the
+/// account the message goes from, so a person reads whom it writes to and from which of their own
+/// addresses it goes.
+fn recipient_detail(m: Mail, d: Draft, person: Text) -> Text {
+    let from = sending_address(m, d)
+    if from == "" {
+        "{sender_address(person)} · {std.say("no account to send from")}"
+    } else {
+        "{sender_address(person)} · {std.say("sends from {from}")}"
+    }
+}
+
+/// The addresses a recipient `header` lists, each in lower case: none when it names none.
+fn addresses_in(header: Text) -> List<Text> {
+    people_in(header).map(person -> sender_address(person).lower()).filter(address -> address != "")
+}
+
+/// Why the recipient at the end of `field` cannot be one, in words: it is one of the person's own
+/// addresses, or it already stands in `beside`, the message's other recipient fields. Empty while
+/// it is a recipient as written, and while it does not name an address yet.
+fn recipient_conflict(m: Mail, field: Text, beside: Text) -> Text {
+    let written = sender_address(recipient_typed(field)).lower()
+    if not written.contains("@") {
+        return ""
+    }
+    if own_addresses(m).any(own -> own == written) {
+        std.say("It is one of your own addresses")
+    } else if addresses_in(beside).any(address -> address == written) {
+        std.say("It is a recipient already")
+    } else { "" }
+}
+
+/// What a recipient field says of the name typed at its end, where it cannot be one: shown under
+/// the field, so the person reads it before the message goes.
+template view recipient_notice(m: Mail, field: Text, beside: Text) {
+    let conflict = recipient_conflict(m, field, beside)
+    if conflict != "" {
+        row(gap: .tight, align: .center) {
+            ui.Icon(.triangle_alert, size: .small)
+            ui.Text(conflict, role: .caption, secondary: true)
+        }
+    }
+}
+
 /// The name a message's export is written under: its subject with the characters a file name
 /// cannot hold taken out, and "Message" for one that names nothing.
 fn message_file(m: Message) -> Text {
@@ -3088,7 +3138,9 @@ view editor(d: Draft) {
         // Each recipient field is a field of its own binding, so the three are written out: what
         // the person types there is offered the workspace's address book and the people the
         // mailbox's own mail went to and came from, and taking one writes the address with
-        // their name beside the recipients already typed.
+        // their name beside the recipients already typed. Each offer says whose address it writes
+        // and which account the message goes from, and a name the person typed that cannot be a
+        // recipient says why.
         let people = ranked_recipients(mail, contacts.book)
         field("To") {
             ui.Autocomplete(
@@ -3102,11 +3154,12 @@ view editor(d: Draft) {
                     ui.Suggestion(
                         recipient_taken(d.to, sender_name(person), sender_address(person)),
                         label: sender_name(person),
-                        detail: sender_address(person),
+                        detail: recipient_detail(mail, d, person),
                         icon: .user,
                     )
                 }
             }
+            recipient_notice(mail, d.to, "{d.cc}, {d.bcc}")
         }
         if headers_open or d.cc != "" or d.bcc != "" {
             field("Cc") {
@@ -3115,11 +3168,12 @@ view editor(d: Draft) {
                         ui.Suggestion(
                             recipient_taken(d.cc, sender_name(person), sender_address(person)),
                             label: sender_name(person),
-                            detail: sender_address(person),
+                            detail: recipient_detail(mail, d, person),
                             icon: .user,
                         )
                     }
                 }
+                recipient_notice(mail, d.cc, "{d.to}, {d.bcc}")
             }
             field("Bcc") {
                 ui.Autocomplete(
@@ -3133,11 +3187,12 @@ view editor(d: Draft) {
                         ui.Suggestion(
                             recipient_taken(d.bcc, sender_name(person), sender_address(person)),
                             label: sender_name(person),
-                            detail: sender_address(person),
+                            detail: recipient_detail(mail, d, person),
                             icon: .user,
                         )
                     }
                 }
+                recipient_notice(mail, d.bcc, "{d.to}, {d.cc}")
             }
         } else {
             row(gap: .tight) {
