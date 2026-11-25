@@ -952,7 +952,8 @@ impl HostedWorkspace {
         // asked once, of the workspace's one permission check, and so is who they are.
         let now = tilo_clock::wall();
         let permitted = self.may_start(author, (app, doc), now).is_ok();
-        let author_person = match self.peer().permissions(author, now) {
+        let permissions = self.peer().permissions(author, now);
+        let author_person = match permissions {
             Ok(member) => member
                 .acting
                 .by
@@ -2865,13 +2866,14 @@ fn platform_verb_of(command: &collab_types::store::wire::Command) -> Option<&str
 /// The person `person`, a member's id, as the key the workspace knows them by.
 fn person_bytes(person: &str) -> Option<[u8; 32]> {
     match hex::decode(person) {
-        Ok(bytes) => match bytes.try_into() {
-            Ok(person) => Some(person),
-            Err(_) => {
+        Ok(bytes) => {
+            if let Ok(person) = bytes.try_into() {
+                Some(person)
+            } else {
                 tracing::warn!(person, "a member's person id is not 32 bytes");
                 None
             }
-        },
+        }
         Err(error) => {
             tracing::warn!(person, %error, "a member's person id is not hex");
             None

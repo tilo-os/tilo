@@ -362,6 +362,10 @@ pub(super) fn answer(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
 }
 
 /// `answer`, saying what it asked every time it ran as long again as it had.
+#[expect(
+    clippy::future_not_send,
+    reason = "a shell's answer runs on the broker's local set, as `ShellAnswer` says"
+)]
 async fn watched(mut answer: ShellAnswer, asking: String) -> Result<Reply, String> {
     let started = tilo_clock::now();
     let mut patience = SLOW_CALL;
