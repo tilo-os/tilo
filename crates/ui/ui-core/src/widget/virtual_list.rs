@@ -1819,6 +1819,10 @@ impl Widget for VirtualRows {
         // A model that follows the app's state has its changes in the pass that changed it:
         // taken here, the rows it moved are placed in this frame, not the next.
         self.take_model_changes();
+        // The rows a host renders may arrive with no change to report (its first page of them
+        // fills the model): a choice held for a row that is not there yet is taken here, as
+        // soon as the model can answer for every item it names.
+        self.chosen_held();
         self.take_reveal_asked();
         let scrolled_only = !self.structure_dirty
             && !self.request_dirty

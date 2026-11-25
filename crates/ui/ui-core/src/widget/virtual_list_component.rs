@@ -2916,8 +2916,6 @@ mod tests {
     /// collection an app reads page by page holds no row until its first page comes.
     struct Arriving {
         keys: Rc<RefCell<Vec<String>>>,
-        landed: Rc<Cell<bool>>,
-        told: Cell<bool>,
     }
 
     impl crate::component::RowSource for Arriving {
@@ -2961,29 +2959,25 @@ mod tests {
                 .cloned()
         }
 
+        /// The host's first page fills the model without a change to report: a list given its
+        /// rows for the first time hears nothing.
         fn take_changes(&mut self) -> Vec<ListModelChange<String>> {
-            if self.landed.get() && !self.told.replace(true) {
-                vec![ListModelChange::Reset]
-            } else {
-                Vec::new()
-            }
+            Vec::new()
         }
 
         fn has_changes(&self) -> bool {
-            self.landed.get() && !self.told.get()
+            false
         }
     }
 
     /// A list whose host renders its rows as they show takes the host's choice once the row it
-    /// names arrives, though it was built while there was no row to choose.
+    /// names arrives, though it was built while there was no row to choose and its host reports
+    /// no change when the rows come.
     #[test]
     fn a_hosts_choice_is_taken_when_the_row_it_names_arrives() {
         let keys = Rc::new(RefCell::new(Vec::new()));
-        let arriving = Rc::new(Cell::new(false));
         let rendered: SharedRows = Rc::new(RefCell::new(Arriving {
             keys: Rc::clone(&keys),
-            landed: Rc::clone(&arriving),
-            told: Cell::new(false),
         }));
         let props = VirtualListProps {
             in_column: true,
@@ -3006,7 +3000,6 @@ mod tests {
         }
         // The host's first page of rows arrives.
         keys.borrow_mut().push("row-0".to_owned());
-        arriving.set(true);
         let inner = list.list_mut().expect("the list stands");
         lay_out(inner, 400.0);
         assert_eq!(
