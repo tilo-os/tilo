@@ -865,7 +865,9 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
     );
     drop(agent);
     running.stop().unwrap();
-    let PersonServer { server, serving, .. } = home;
+    let PersonServer {
+        server, serving, ..
+    } = home;
     serving.block_on(server.shutdown());
     drop(environment);
 }
@@ -1052,7 +1054,9 @@ fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
     );
     wait_for_the_person_serving(&socket);
     running.stop().unwrap();
-    let PersonServer { server, serving, .. } = home;
+    let PersonServer {
+        server, serving, ..
+    } = home;
     serving.block_on(server.shutdown());
     drop(environment);
 }
@@ -1101,6 +1105,9 @@ fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
     wait_for_the_person_part(&socket);
     let first = {
         let services = running.services(Duration::from_secs(120)).unwrap();
+        // Which servers keep a workspace changes only on the device that keeps its person's
+        // root: the computer that founded Ada does, once her root marks it so in her devices.
+        wait_until_it_keeps_the_root(&services);
         Arc::downgrade(&services)
     };
     // A server of the person's keeps their own workspace from now on.
@@ -1144,6 +1151,25 @@ fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
     running.stop().unwrap();
     serving.block_on(server.shutdown());
     drop(environment);
+}
+
+/// Wait until the person's devices record marks this device, the one the person was founded on,
+/// as the one that keeps their root.
+fn wait_until_it_keeps_the_root(services: &crate::device::services::Daemon) {
+    let workspaces = services.workspaces();
+    let started = std::time::Instant::now();
+    while !tilo_rt::app().handle().block_on(
+        tilo_workspace_service::workspaces::person_workspace::devices::keeps_root(
+            workspaces,
+            workspaces.device_cert(),
+        ),
+    ) {
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "the root never marked the device it was founded on as the one that keeps it"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// A server on this machine the person's root certifies, keeping workspaces: its runtime, its
