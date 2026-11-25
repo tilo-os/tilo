@@ -1,6 +1,6 @@
 //! A part of the shell whose view is a tilolang package, run by the session itself.
 //!
-//! A part is a region of the shell the person binds a view to (`settings:shell-views`). The view
+//! A part is a region of the shell the person binds a view to (`settings/shell-views`). The view
 //! the session ships with, and most replacements, are programs of their own; a tilolang package
 //! is run here instead, in the session's process, by a [`PartView`]: one tilolang instance
 //! ([`tilolang_tilo::instance`]) over the package, and the toolkit's widget tree it shows,

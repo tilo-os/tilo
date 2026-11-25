@@ -1,6 +1,6 @@
 //! The part host: which view draws each swappable part of the shell.
 //! A part is swappable: the person binds each one to a view in
-//! `settings:shell-views` — an app and one of the views it publishes. The session starts that view
+//! `settings/shell-views` — an app and one of the views it publishes. The session starts that view
 //! in the place of the one it ships with, and starts another when the person binds another: the
 //! view runs for the session's life, drawing the reading the session publishes for the part, so
 //! opening the part costs no start.
@@ -21,7 +21,7 @@ use settings_model::DeviceClass;
 use crate::surfaces;
 
 /// The resource that binds a part to a view.
-pub const BINDINGS: &str = "settings:shell-views";
+pub const BINDINGS: &str = "settings/shell-views";
 
 /// The view bound to a part: an app, and the view it publishes.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

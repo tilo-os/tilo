@@ -1,5 +1,5 @@
 //! The view bound to each swappable part of the shell: the person's setting
-//! (`settings:shell-views`), kept wherever the session runs the shell, so an
+//! (`settings/shell-views`), kept wherever the session runs the shell, so an
 //! agent or a script binds a part the way a person does.
 
 use std::collections::BTreeMap;

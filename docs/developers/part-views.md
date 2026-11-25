@@ -49,7 +49,7 @@ stack (`desktop:overlays`). What your view draws is the content.
 
 ## Bind the part
 
-The binding is a setting of the person's, `settings:shell-views`, saved with
+The binding is a setting of the person's, `settings/shell-views`, saved with
 what made it and who, and it follows them to their other devices:
 
 ```json
@@ -59,7 +59,7 @@ what made it and who, and it follows them to their other devices:
 Bind it through the session's action API, as an app, an agent or a script does:
 
 ```rust
-let views = ui::collaboration::SessionResource::open("settings:shell-views")?;
+let views = ui::collaboration::SessionResource::open("settings/shell-views")?;
 views.invoke(
     "bind",
     &json!({ "part": "window-menu", "app": "so.tilo.example.menu", "view": "menu" }),
