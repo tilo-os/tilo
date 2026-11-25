@@ -382,17 +382,13 @@ COPY --from=browser-payload /etc/tilo/runtime-bundle-trusted-publishers.txt /etc
 COPY --chmod=0755 os/hosted-guest/headless-session /usr/libexec/tilo/headless-session
 COPY --chmod=0755 os/hosted-guest/browser-session /usr/libexec/tilo/browser-session
 COPY --chmod=0755 os/hosted-guest/apps-session /usr/libexec/tilo/apps-session
+COPY --chmod=0755 os/hosted-guest/vm-daemon /usr/libexec/tilo/vm-daemon
 COPY --chmod=0755 os/hosted-guest/browser-smoke.sh /usr/libexec/tilo/browser-smoke
 # The session's own user: no sudo, no shell, and none of the tenant's files, so
 # a page that gets out of Chromium's sandbox lands in an account that can do
-# nothing to the VM. The tenant starts it (the agent runs everything as the
-# tenant) through the one rule below, which keeps its input, output and marks.
-RUN useradd --create-home --uid 1001 --user-group --shell /usr/sbin/nologin tilo-browser \
- && printf '%s\n' \
-      'Defaults!/usr/libexec/tilo/browser-session !use_pty, env_keep += "TILO_HOSTED_BROWSER TILO_BROWSER_SESSION_CONFIG TILO_SESSION_ARGS"' \
-      'tilo ALL=(tilo-browser) NOPASSWD: /usr/libexec/tilo/browser-session' \
-      > /etc/sudoers.d/tilo-browser \
- && chmod 0440 /etc/sudoers.d/tilo-browser
+# nothing to the VM. The VM's daemon (vm-daemon, root) starts its session, and
+# browser-session drops to it.
+RUN useradd --create-home --uid 1001 --user-group --shell /usr/sbin/nologin tilo-browser
 # Everything the guest starts must load on this root filesystem: the session and
 # its surface apps, the launcher, the store's tools, the engine host and CEF
 # itself. A missing library fails the build here, by name.

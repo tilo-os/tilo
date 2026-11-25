@@ -40,13 +40,18 @@ impl PeerGovernanceMut<'_> {
         let person = hex::encode(user_public_key);
         // Work on a clone: a refused block must not leave the removal applied.
         let mut candidate = self.peer.clone();
-        let removed = candidate
-            .governance_mut()
-            .remove_member(user_public_key, key, now)?;
+        // The removal and the block are the one ban.
+        let stamp = candidate.own_action(roles::governance::BAN, key, now);
         let block = roles::block_grant(&self.peer.core.workspace, &person, by);
-        let blocked = candidate
-            .governance_mut()
-            .put_governed_grants(&[block], key, now)?;
+        let (removed, blocked) = candidate.naming(stamp, |peer| {
+            let removed = peer
+                .governance_mut()
+                .remove_member(user_public_key, key, now)?;
+            let blocked = peer
+                .governance_mut()
+                .put_governed_grants(&[block], key, now)?;
+            Ok::<_, String>((removed, blocked))
+        })?;
         *self.peer = candidate;
         Ok(removed || blocked)
     }
@@ -62,8 +67,10 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         let id = roles::block_grant_id(&hex::encode(user_public_key));
-        self.peer
-            .governance_mut()
-            .remove_governed_grants(&[id], key, now)
+        let stamp = self.peer.own_action(roles::governance::UNBAN, key, now);
+        self.peer.naming(stamp, |peer| {
+            peer.governance_mut()
+                .remove_governed_grants(&[id], key, now)
+        })
     }
 }

@@ -673,15 +673,19 @@ impl Held {
         !self.assignee.is_empty() && self.assignee.contains(&triggered::names(member))
     }
 
-    /// The agent doing it, by its id, when an agent is.
-    pub(super) fn agent(&self) -> Option<String> {
-        /// The id under `agent` anywhere in `value`.
-        fn agent_in(value: &Value) -> Option<String> {
+    /// The agent doing it, when an agent is.
+    pub(super) fn agent(&self) -> Option<tilo_action_policy::MemberId> {
+        /// The agent under `agent` anywhere in `value`.
+        fn agent_in(value: &Value) -> Option<tilo_action_policy::MemberId> {
             match value {
                 Value::Object(fields) => fields
                     .get("agent")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .and_then(|agent| {
+                        Some(tilo_action_policy::MemberId::agent(
+                            agent.get("id")?.as_str()?,
+                            agent.get("person")?.as_str()?,
+                        ))
+                    })
                     .or_else(|| fields.values().find_map(agent_in)),
                 _ => None,
             }

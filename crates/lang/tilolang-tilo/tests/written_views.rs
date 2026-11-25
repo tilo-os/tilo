@@ -34,7 +34,7 @@ fn person(id: &str) -> Actor {
 }
 
 fn agent(id: &str) -> Actor {
-    tilolang_runtime::ids::MemberId::agent(id).into()
+    tilolang_runtime::ids::MemberId::agent(id, "ada").into()
 }
 
 /// What a host sends its calls to: every call is kept for the test to read, and a call that

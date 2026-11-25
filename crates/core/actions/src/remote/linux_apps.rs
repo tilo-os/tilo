@@ -15,18 +15,15 @@
 //!
 //! - [`target`] names an open, an action of the workspace's environment
 //!   ([`super::browser::RESOURCE`]); the argument is an [`OpenApp`]. It
-//!   succeeds with a [`super::browser::OpenedBrowser`] once the session is up
-//!   in the workspace and was told to start the app; the app's window joins
-//!   the shell as it maps.
-//! - [`STOP`] ends the session and every app in it.
+//!   succeeds with a [`super::browser::OpenedBrowser`] once the VM's daemon
+//!   logged in, and the app is then launched on that daemon
+//!   ([`super::environment_window`]); the app's window joins the shell as it
+//!   maps.
+//! - [`STOP`] ends the VM's daemon and every app in it.
 //!
-//! The session in the VM is started with [`MARK`] in its environment and
-//! reads its standard input a line at a time: the first line is the
-//! workspace's material (the server's, the same as Browser's),
-//! and every later one is an [`AppLaunch`] in JSON, one app to start. It
-//! reports on its standard output as Browser's does
-//! ([`super::browser::Report`]): `ready`, `up linux` once it has joined, and
-//! `used` while its windows are open.
+//! The session the daemon starts for the apps carries [`MARK`] in its
+//! environment, takes each app to start from the daemon, and says it is in use
+//! while its windows are open.
 //!
 //! A Linux app is a Linux action: it needs a card on a host that sells VMs,
 //! and an account with none is refused before anything starts.
@@ -45,14 +42,10 @@ pub const TITLE: &str = "Linux apps";
 /// Start a Linux app in a workspace's VM, starting its apps session first
 /// when none runs.
 pub const OPEN: &str = "open-linux-app";
-/// End the apps session in a workspace's VM, and every app in it.
-pub const STOP: &str = "stop-linux-apps";
-/// Set in the apps session's own environment: it serves a workspace's Linux
-/// apps, reads what to start from its standard input and reports on its
-/// standard output.
+/// Set in the environment of the session a workspace VM's daemon starts for its Linux apps.
 pub const MARK: &str = "TILO_HOSTED_APPS";
-/// The provider an apps session reports itself up with: it holds no one
-/// window, so nothing is addressed to it.
+/// The provider an apps session is up under: it holds no one window, so
+/// nothing is addressed to it.
 pub const UP_PROVIDER: &str = "linux";
 /// The argument of `app.so.tilo.linux#open` naming the app's desktop file.
 pub const APP_ARGUMENT: &str = "app";
@@ -67,15 +60,6 @@ pub fn target() -> RemoteActionTarget {
     RemoteActionTarget {
         provider: PROVIDER.to_owned(),
         address: ActionAddress::new(RESOURCE, OPEN),
-    }
-}
-
-/// What [`STOP`] is invoked on.
-#[must_use]
-pub fn stop_target() -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: PROVIDER.to_owned(),
-        address: ActionAddress::new(RESOURCE, STOP),
     }
 }
 
@@ -121,23 +105,10 @@ impl AppLaunch {
             desktop_id: desktop_id.to_owned(),
         })
     }
-
-    /// The line the apps session reads it from.
-    #[must_use]
-    pub fn line(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
-    }
-
-    /// The launch `line` names, when it names one.
-    #[must_use]
-    pub fn parse(line: &str) -> Option<Self> {
-        let read: Self = serde_json::from_str(line.trim()).ok()?;
-        Self::new(&read.desktop_id).ok()
-    }
 }
 
-/// A workspace's Linux app to open, and what its apps session joins the
-/// workspace with when none runs yet.
+/// A workspace VM to start for its Linux apps, with the placement its daemon logs in with: the
+/// apps themselves are launched on that daemon.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenApp {
     /// The workspace whose VM runs it: the caller's.
@@ -145,11 +116,9 @@ pub struct OpenApp {
     /// Who the machine's time is booked to, as the server knows the account.
     #[serde(default)]
     pub account: String,
-    /// What the session joins the workspace with, opaque to the host running
-    /// it and to the VM service: the first line of the session's input.
+    /// The host's placement, as [`super::browser::OpenBrowser::material`]
+    /// carries it.
     pub material: String,
-    /// The app to start.
-    pub launch: AppLaunch,
 }
 
 #[cfg(test)]
@@ -180,18 +149,6 @@ mod tests {
             ] {
                 assert!(AppLaunch::new(refused).is_err(), "{refused:?}");
             }
-        }
-
-        phase a_launch_travels_as_one_line_and_reads_back;
-        {
-            let launch = AppLaunch::new("org.gnome.TextEditor").unwrap();
-            let line = launch.line();
-            assert!(!line.contains('\n'));
-            assert_eq!(AppLaunch::parse(&line), Some(launch));
-            // A line that names something other than a desktop file starts
-            // nothing.
-            assert_eq!(AppLaunch::parse(r#"{"desktop_id":"sh -c id"}"#), None);
-            assert_eq!(AppLaunch::parse("xterm"), None);
         }
     }
 }

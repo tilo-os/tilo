@@ -77,7 +77,7 @@ impl OwnDeviceActions for AnotherDevice {
         let signed = tilo_server_protocol::invocation::sign_invocation_now(
             workspace,
             &forwarded,
-            self.workspaces.device_cert(),
+            &self.workspaces.device_cert(),
             self.workspaces.signer().as_ref(),
             tilo_clock::unix_now_ns(),
         )

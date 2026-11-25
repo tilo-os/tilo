@@ -66,9 +66,11 @@ impl BrokerActor {
         Self::of_actor(MemberId::person(id).into())
     }
 
+    /// The agent `id` of `person`.
+    #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
-        Self::of_actor(MemberId::agent(id).into())
+    pub fn agent(id: impl Into<String>, person: impl Into<tilo_action_policy::PersonId>) -> Self {
+        Self::of_actor(MemberId::agent(id, person).into())
     }
 
     /// App `app` acting by itself: no person is behind it, so it holds only the grants that
@@ -117,8 +119,8 @@ impl BrokerActor {
     /// The actor `caller` is, before any ceiling.
     fn actor_of(caller: &Caller) -> Self {
         let acting = caller.acting();
-        if let Some(agent) = acting.agent_id() {
-            let agent = Self::agent(agent);
+        if let Some(agent) = acting.member_id().filter(|member| member.is_agent()) {
+            let agent = Self::of_actor(agent.clone().into());
             // A person's own device handed this connection to the agent
             // (`Caller::delegated_to`); an agent member the host admitted
             // acts for the person who admitted it, with no more than the
@@ -622,7 +624,7 @@ mod tests {
     #[test]
     fn an_agent_sessions_change_names_the_session() {
         let session = format!("{}s1", crate::services::AGENT_SESSION_PREFIX);
-        let acting = BrokerActor::agent("a1")
+        let acting = BrokerActor::agent("a1", "p1")
             .for_person("p1")
             .in_session(session.clone())
             .acting();

@@ -66,11 +66,11 @@ mod tests {
         assert_eq!(name_of(&ada), None);
         know([
             (ada.clone(), " Ada ".to_owned()),
-            (MemberId::agent("x"), " ".to_owned()),
+            (MemberId::agent("x", "ada"), " ".to_owned()),
         ]);
         assert_eq!(name_of(&ada).as_deref(), Some("Ada"));
         assert_eq!(
-            name_of(&MemberId::agent("x")).as_deref(),
+            name_of(&MemberId::agent("x", "ada")).as_deref(),
             Some(""),
             "a member nobody named is listed with no name"
         );

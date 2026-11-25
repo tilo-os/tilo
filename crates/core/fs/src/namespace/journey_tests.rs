@@ -622,7 +622,7 @@ fn a_folder_reads_as_changed_with_its_newest_entry() {
 #[test]
 fn a_write_names_its_file_actions_and_the_invoker_that_made_it() {
     let agent = tilo_actions::ActionInvoker::admitted(
-        &tilo_actions::Acting::agent("claude").in_session("s1"),
+        &tilo_actions::Acting::agent("claude", "ada").in_session("s1"),
     )
     .named(Some("Tidy the notes".into()));
     let mut ns = Namespace::new("ada").unwrap();
@@ -655,7 +655,7 @@ fn a_write_names_its_file_actions_and_the_invoker_that_made_it() {
 
     // The tree's own document changes only as part of making a folder or a file.
     let agent = tilo_actions::ActionInvoker::admitted(
-        &tilo_actions::Acting::agent("claude").in_session("s1"),
+        &tilo_actions::Acting::agent("claude", "ada").in_session("s1"),
     )
     .named(Some("Tidy the notes".into()));
     let mut ns = Namespace::new("ada").unwrap();
@@ -716,7 +716,7 @@ fn a_persons_mount_names_them_on_each_change_it_makes() {
     {
         let _acting = acting_as(Some(
             tilo_actions::ActionContext::default()
-                .with_invoker(tilo_actions::ActionInvoker::agent("claude")),
+                .with_invoker(tilo_actions::ActionInvoker::agent("claude", "ada")),
         ));
         assert!(ns.set_content(ino, Some(&h(2)), 5, 2));
     }
@@ -724,7 +724,10 @@ fn a_persons_mount_names_them_on_each_change_it_makes() {
     let ada = Some(tilo_actions::Acting::member(person));
     assert_eq!(
         invokers(&ns.doc.doc_mut(chunk).unwrap().save()),
-        vec![ada.clone(), Some(tilo_actions::Acting::agent("claude"))],
+        vec![
+            ada.clone(),
+            Some(tilo_actions::Acting::agent("claude", "ada"))
+        ],
     );
     assert_eq!(
         invokers(&ns.doc.doc_mut(0).unwrap().save()),

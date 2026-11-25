@@ -97,6 +97,19 @@ impl Frames {
         })
     }
 
+    /// A workspace VM's tenant, in each workspace a frame names
+    /// ([`Daemon::tenant_tree_in`]): the person's unnamed agent, never the person, so an asked
+    /// action still asks.
+    pub(crate) fn of_the_tenant(daemon: &Arc<Daemon>) -> Self {
+        let daemon = Arc::downgrade(daemon);
+        Self::new(move |workspace| {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            daemon.tenant_tree_in(workspace)
+        })
+    }
+
     /// An app the daemon started, in `workspace`: the workspace's broker decides its calls with
     /// the app's grants, never the person's own rights ([`Daemon::app_tree`]). The app acts in
     /// that workspace alone; a frame naming another is refused. A release, a find or a web call
@@ -288,4 +301,4 @@ pub(crate) fn refuse(mut stream: Stream, why: &str) {
 
 #[cfg(test)]
 #[path = "local_tests.rs"]
-mod tests;
+pub(crate) mod tests;

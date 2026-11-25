@@ -60,7 +60,7 @@ fn admit_scribe(env: &Environment) {
     let workspace = tree.workspaces.first_mut().unwrap();
     workspace.allow_agent("scribe", KindSet::ALL);
     workspace.allow_app(
-        tilo_action_policy::Grantee::agent("scribe"),
+        tilo_action_policy::Grantee::agent("scribe", "ada"),
         &env.route.app_id,
         KindSet::ALL,
     );
@@ -291,7 +291,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             let rig = Rig::new(&env).await;
             env.membership.write().workspaces[0].allow_agent("scribe", KindSet::READ);
             env.membership.write().workspaces[0].allow_app(
-                tilo_action_policy::Grantee::agent("scribe"),
+                tilo_action_policy::Grantee::agent("scribe", "ada"),
                 &env.route.app_id,
                 KindSet::ALL,
             );
@@ -314,7 +314,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(
                 delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
             );
             let request = crate::apps::collab_app_broker::InvocationRequest {
                 wire_id: delivered.id,
@@ -329,7 +329,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             assert!(observe(&agent.handle, invocation).await.unwrap().is_some());
             assert!(
                 rig.state
-                    .invocation_statuses(&tilo_actions::MemberId::agent("scribe").into())
+                    .invocation_statuses(&tilo_actions::MemberId::agent("scribe", "ada").into())
                     .is_empty(),
                 "an actor name alone discloses no authenticated invocation"
             );
@@ -369,7 +369,7 @@ async fn an_application_reaches_another_applications_action_only_as_a_granted_ac
             let agent_grant =
                 env.membership.write().workspaces[0].allow_agent("scribe", KindSet::ALL);
             env.membership.write().workspaces[0].allow_app(
-                tilo_action_policy::Grantee::agent("scribe"),
+                tilo_action_policy::Grantee::agent("scribe", "ada"),
                 &env.route.app_id,
                 KindSet::ALL,
             );
@@ -415,9 +415,13 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 use crate::apps::test_support::{Grantee, Grants as _, KindSet, TreePath};
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                workspace.allow_app(
+                    Grantee::agent("scribe", "ada"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
                 workspace.deny(
-                    Grantee::agent("scribe"),
+                    Grantee::agent("scribe", "ada"),
                     &TreePath::root()
                         .app(env.route.app_id.clone())
                         .any(tilo_action_policy::Level::Kind)
@@ -434,7 +438,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(
                 delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
             );
 
             let continued = rig
@@ -443,9 +447,11 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 .expect("the durable invocation's caller");
             assert_eq!(
                 continued,
-                tilo_actions::remote::Caller::local_agent("scribe")
-                    .acting_for(person_id_for_root(env.cert.user_public_key))
-                    .in_workspace(workspace.clone()),
+                tilo_actions::remote::Caller::local_agent(
+                    "scribe",
+                    person_id_for_root(env.cert.user_public_key)
+                )
+                .in_workspace(workspace.clone()),
                 "the invocation's caller names the agent and the person it acts for"
             );
             assert!(rig.state.continuing_caller(904, invocation).is_none());
@@ -502,7 +508,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             ));
             assert_eq!(
                 app.try_recv().unwrap().actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
             );
             assert!(!matches!(
                 rig.state

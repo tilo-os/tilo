@@ -55,7 +55,7 @@ fn workspace() -> (Replica, Value) {
 
 fn agent(who: &str) -> Caller {
     Caller {
-        actor: tilolang_tilo::runtime::ids::MemberId::agent(who).into(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent(who, "ada").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
         handed: false,
@@ -82,7 +82,7 @@ fn suggest(ada: &Replica, who: &str, source: &str) -> (ResourceRef, InvocationEn
         .host
         .runtime()
         .run_agent_block(
-            &tilolang_tilo::runtime::ids::MemberId::agent(who).into(),
+            &tilolang_tilo::runtime::ids::MemberId::agent(who, "ada").into(),
             source,
         )
         .unwrap()
@@ -134,7 +134,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             proposed(&ada, &task),
-            [tilolang_tilo::runtime::ids::MemberId::agent("scout").into()]
+            [tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada").into()]
         );
         let due = ada
             .host
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
         assert!(ada.host.runtime().proposals_of(&target(&task)).is_empty());
         assert_eq!(
             proposed(&ada, &task),
-            [tilolang_tilo::runtime::ids::MemberId::agent("scout").into()]
+            [tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada").into()]
         );
     }
 
@@ -279,7 +279,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             card.props.get("author"),
-            Some(&Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("scout")))),
+            Some(&Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada")))),
             "who proposes it"
         );
         // The row of the task says it quietly, on a line of its own, in the same sentence.

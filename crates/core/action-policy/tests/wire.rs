@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
     {
         let cases: &[(Grantee, &[u8])] = &[
             (Grantee::person("p"), &[0x00, 0x00, 0x01, b'p']),
-            (Grantee::agent("a"), &[0x00, 0x01, 0x01, b'a']),
+            (Grantee::agent("a", "p"), &[0x00, 0x01, 0x01, b'a', 0x01, b'p']),
             (Grantee::bot("b"), &[0x00, 0x02, 0x01, b'b']),
             (Grantee::role(Role::Editor), &[0x01, 0x02]),
             (Grantee::app("n"), &[0x02, 0x01, b'n']),

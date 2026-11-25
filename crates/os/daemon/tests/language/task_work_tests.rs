@@ -430,7 +430,10 @@ mod session_tests {
     ) -> (Host, TaskWork, Arc<Broker>) {
         let host = Host::new().await;
         let id = host
-            .new_task("Book the venue", json!({"assignee": {"agent": "scout"}}))
+            .new_task(
+                "Book the venue",
+                json!({"assignee": {"agent": {"id": "scout", "person": host.person}}}),
+            )
             .await;
         for (action, arguments) in before {
             host.act(&triggered::published(TASKS, &id), action, arguments.clone())

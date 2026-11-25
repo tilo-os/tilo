@@ -194,6 +194,19 @@ pub trait Workspaces: Send + Sync {
         let _ = (asker, placement);
         self.read(workspace, read)
     }
+
+    /// Take in `certificate`, which the device it names presented over the link it dialled this
+    /// one on, as a device placed for records of `workspace`, by the admission that device's
+    /// state link is taken in by: whether the workspace now decides it as placed. A view that
+    /// admits no placed devices takes in nothing.
+    fn admit_placed<'a>(
+        &'a self,
+        workspace: &'a str,
+        certificate: &'a tilo_user_identity::DeviceCert,
+    ) -> ReadFuture<'a> {
+        let _ = (workspace, certificate);
+        Box::pin(std::future::ready(false))
+    }
 }
 
 /// What a [`Workspaces`] view answers a read with: a future of its own,
@@ -340,6 +353,9 @@ struct Inner {
     /// proves the key at its other end and nothing more: a request is passed on over one only
     /// to a device of the workspace it names.
     dialled_in: Mutex<std::collections::HashSet<[u8; 32]>>,
+    /// The host that placed this device for records of one workspace, and that workspace, when
+    /// it is such a device ([`ActionService::answer_only`]): the one device it answers.
+    placed_by: Mutex<Option<([u8; 32], String)>>,
     /// The invocation ids each workspace's requests admitted within their
     /// freshness window, checked before anything is dispatched.
     invocations: Mutex<HashMap<String, InvocationReplay>>,
@@ -360,6 +376,14 @@ impl ActionService {
     /// ([`RemoteDevice::certificate`]): until it is named, they are answered nothing.
     pub fn answer_under(&self, certificate: tilo_user_identity::DeviceCert) {
         *self.0.certificate.lock_recover() = Some(certificate);
+    }
+
+    /// Answer `host` alone from now on, in `workspace` alone: this device is placed for records
+    /// of that workspace, keeps no copy of it and knows none of its person's devices, so the host
+    /// that placed it, the one its login named, is the one device whose requests it takes. Every
+    /// other device's request is refused, naming it.
+    pub fn answer_only(&self, host: [u8; 32], workspace: String) {
+        *self.0.placed_by.lock_recover() = Some((host, workspace));
     }
 
     /// Admit the approves `store` hands back from now on: until it is named, a request carrying
@@ -411,6 +435,7 @@ impl ActionService {
             callers: Mutex::default(),
             held: Mutex::default(),
             dialled_in: Mutex::default(),
+            placed_by: Mutex::default(),
             invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -446,6 +471,7 @@ impl ActionService {
             callers: Mutex::default(),
             held: Mutex::default(),
             dialled_in: Mutex::default(),
+            placed_by: Mutex::default(),
             invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -900,6 +926,29 @@ impl ActionService {
         if signed.verify(&source).is_err() {
             return Err(not_permitted(source, "its signature does not verify"));
         }
+        // A device placed for records takes requests from the host that placed it alone, in its
+        // one workspace, and the providers they reach decide what it asks.
+        let placed_by = self.0.placed_by.lock_recover().clone();
+        if let Some((host, workspace)) = placed_by {
+            if source != host {
+                return Err(ActionCallError::Refused {
+                    reason: format!(
+                        "device {} is not the host that placed this device",
+                        hex::encode(&source[..8])
+                    ),
+                });
+            }
+            if action.workspace != workspace || action.target != self.device() {
+                return Err(ActionCallError::Refused {
+                    reason: "this device answers in the one workspace it is placed in".into(),
+                });
+            }
+            self.admit_replay(signed)?;
+            return Ok(Decided::Serve(Box::new(Admitted {
+                caller: carrying(Caller::visitor(source).in_workspace(workspace)),
+                dispatcher: Arc::clone(&self.0.dispatcher),
+            })));
+        }
         if let Some(provider) = uncertified {
             self.admit_replay(signed)?;
             return Ok(Decided::Serve(Box::new(Admitted {
@@ -940,82 +989,112 @@ impl ActionService {
             )
         });
         // The invocation the request carries, when it carries one, is checked against the
-        // workspace's revocations and its own signature, here, before it names who asks.
-        let decided = self
-            .read_workspace_for(
-                Some((source, placement.as_ref())),
-                &action.workspace,
-                |peer| -> Result<(_, _, _, _, _, _), ActionCallError> {
-                    let revocations = revocations_of(peer);
-                    let mut acting = source;
-                    if let RemoteActionMessage::Invoke(request) = &action.message
-                        && request.signed.is_some()
-                    {
-                        let certificate =
-                            invocation_signer(&action.workspace, request, &revocations, now_ns())?;
-                        if certificate.device_public_key != source {
-                            // Another key's signed call runs as that key, never as the device
-                            // that brought it. A transport that names no device of its own
-                            // carries it to the one its opener reaches. One that names a device
-                            // carries it only from a device of this workspace, which forwards
-                            // the calls of the people, agents and visitors it serves.
-                            if remote.is_some() && peer.permissions(source, now).is_err() {
-                                return Err(ActionCallError::Refused {
-                                    reason: "a device outside the workspace forwards nobody's call"
-                                        .into(),
-                                });
+        // workspace's revocations and its own signature, here, before it names who asks. A device
+        // the workspace's copy knows nothing of, asking over the link it dialled, may be one
+        // placed for records whose certificate this copy has not taken in yet (its state link
+        // has not said hello since this device started): it proves the certificate on this link
+        // as on that one ([`Self::prove_placed`]), and the request is decided again once.
+        let mut proved = false;
+        let decided = loop {
+            let decided = self
+                .read_workspace_for(
+                    Some((source, placement.as_ref())),
+                    &action.workspace,
+                    |peer| -> Result<(_, _, _, _, _, _, _), ActionCallError> {
+                        let revocations = revocations_of(peer);
+                        let mut acting = source;
+                        if let RemoteActionMessage::Invoke(request) = &action.message
+                            && request.signed.is_some()
+                        {
+                            let certificate = invocation_signer(
+                                &action.workspace,
+                                request,
+                                &revocations,
+                                now_ns(),
+                            )?;
+                            if certificate.device_public_key != source {
+                                // Another key's signed call runs as that key, never as the device
+                                // that brought it. A transport that names no device of its own
+                                // carries it to the one its opener reaches. One that names a device
+                                // carries it only from a device of this workspace, which forwards
+                                // the calls of the people, agents and visitors it serves.
+                                if remote.is_some() && peer.permissions(source, now).is_err() {
+                                    return Err(ActionCallError::Refused {
+                                        reason:
+                                            "a device outside the workspace forwards nobody's call"
+                                                .into(),
+                                    });
+                                }
+                                acting = certificate.device_public_key;
                             }
-                            acting = certificate.device_public_key;
                         }
-                    }
-                    let target_certified = peer
-                        .certificates()
-                        .iter()
-                        .any(|certificate| certificate.device_public_key == action.target);
-                    let authority = peer.permissions(acting, now);
-                    let certificate = peer
-                        .certificates()
-                        .into_iter()
-                        .find(|certificate| certificate.device_public_key == acting);
-                    let opened = certificate.is_none()
-                        && visitor_may(peer, &action.workspace, acting, &action.message);
-                    // An agent's key the workspace's roster lists and has not retired: the
-                    // delegation its person's root signed for this device in this workspace
-                    // ([`crate::PeerGovernance::governed_agent`]) is what the caller built
-                    // below is bound to (`Caller::on_roster`), so the certificate's
-                    // delegation reaches it inside the workspace's own grants.
-                    let roster = authority
-                        .as_ref()
-                        .ok()
-                        .filter(|access| access.acting.is_agent())
-                        .zip(certificate.as_ref())
-                        .and_then(|(_, certificate)| {
-                            let (_, delegation, withdrawn) =
-                                peer.governance().governed_agent(&acting)?;
-                            (withdrawn.is_none()
-                                && delegation.user_public_key == certificate.user_public_key)
-                                .then(|| {
-                                    let created_at =
-                                        i64::try_from(delegation.issued_at_ns / 1_000_000)
-                                            .unwrap_or(i64::MAX);
-                                    (created_at, delegation.user_public_key)
-                                })
+                        let target_certified = peer
+                            .certificates()
+                            .iter()
+                            .any(|certificate| certificate.device_public_key == action.target);
+                        let authority = peer.permissions(acting, now);
+                        // A certificate placed for records is no member's, whatever roster lists it.
+                        let certificate = peer.certificates().into_iter().find(|certificate| {
+                            certificate.device_public_key == acting
+                                && certificate.capabilities.records.is_none()
                         });
-                    Ok((
-                        acting,
-                        authority,
-                        certificate,
-                        opened,
-                        target_certified,
-                        roster,
-                    ))
-                },
-            )
-            .await
-            .ok_or_else(|| ActionCallError::Refused {
-                reason: "this device does not hold that workspace".into(),
-            })??;
-        let (acting, authority, certificate, opened, target_certified, roster) = decided;
+                        // A placed device is decided by its certificate, as its state link is
+                        // ([`crate::StatePeer::placed_device`]).
+                        let placed = peer.placed_device(&acting, now);
+                        let opened = certificate.is_none()
+                            && placed.is_none()
+                            && visitor_may(peer, &action.workspace, acting, &action.message);
+                        // An agent's key the workspace's roster lists and has not retired: the
+                        // delegation its person's root signed for this device in this workspace
+                        // ([`crate::PeerGovernance::governed_agent`]) is what the caller built
+                        // below is bound to (`Caller::on_roster`), so the certificate's
+                        // delegation reaches it inside the workspace's own grants.
+                        let roster = authority
+                            .as_ref()
+                            .ok()
+                            .filter(|access| access.acting.is_agent())
+                            .zip(certificate.as_ref())
+                            .and_then(|(_, certificate)| {
+                                let (_, delegation, withdrawn) =
+                                    peer.governance().governed_agent(&acting)?;
+                                (withdrawn.is_none()
+                                    && delegation.user_public_key == certificate.user_public_key)
+                                    .then(|| {
+                                        let created_at =
+                                            i64::try_from(delegation.issued_at_ns / 1_000_000)
+                                                .unwrap_or(i64::MAX);
+                                        (created_at, delegation.user_public_key)
+                                    })
+                            });
+                        Ok((
+                            acting,
+                            authority,
+                            certificate,
+                            opened,
+                            target_certified,
+                            roster,
+                            placed,
+                        ))
+                    },
+                )
+                .await
+                .ok_or_else(|| ActionCallError::Refused {
+                    reason: "this device does not hold that workspace".into(),
+                })??;
+            let (acting, _, certificate, opened, _, _, placed) = &decided;
+            let unknown = certificate.is_none() && placed.is_none() && !opened;
+            if !proved
+                && unknown
+                && *acting == source
+                && remote == Some(source)
+                && self.prove_placed(source, &action.workspace).await
+            {
+                proved = true;
+                continue;
+            }
+            break decided;
+        };
+        let (acting, authority, certificate, opened, target_certified, roster, placed) = decided;
         // A call its device makes for someone else carries their signature: one that names
         // another caller and carries none runs as nobody, and never as the device that sent it.
         let own_call = |caller: Caller| -> Result<Caller, ActionCallError> {
@@ -1065,6 +1144,21 @@ impl ActionService {
         // A key the workspace holds no certificate for is a visitor: it acts for nobody, and is
         // admitted only to what the workspace's grants to any key open, decided here, so no
         // dispatcher behind this one ever meets a caller off the roster it did not open to.
+        // A placed device acts in its one workspace, on the records its certificate names, as its
+        // own key: never as its person, whose root only names it in history, and never as a
+        // visitor the workspace's open grants would admit.
+        if let Some(placed) = placed {
+            let placed = placed.map_err(|error| refusal_of(&error))?;
+            return Ok(Decided::Serve(Box::new(Admitted {
+                caller: forwarded(own_call(carrying(Caller::placed(
+                    acting,
+                    placed.person,
+                    action.workspace.clone(),
+                    placed.records.channels().iter().copied(),
+                )))?),
+                dispatcher: Arc::clone(&self.0.dispatcher),
+            })));
+        }
         let Some(certificate) = certificate else {
             if !opened {
                 return Err(not_permitted(
@@ -1091,7 +1185,7 @@ impl ActionService {
         // The device is its own actor when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
-            Actor::Member(MemberId::Agent(agent)) => {
+            Actor::Member(MemberId::Agent { id: agent, .. }) => {
                 let caller =
                     Caller::delegated_agent(agent.clone(), certificate.user_public_key, acting);
                 // The roster's own word: the agent's key its person's root certified for this
@@ -1112,6 +1206,31 @@ impl ActionService {
                 .from_foreign_device(authority.acting.foreign_device),
             dispatcher: Arc::clone(&self.0.dispatcher),
         })))
+    }
+
+    /// Ask `device`, which dialled this one, for the certificate it answers under, over the link
+    /// it dialled, and hand one placed for records to the workspaces this device holds, which
+    /// take it in by their own admission ([`Workspaces::admit_placed`]): whether `workspace`
+    /// now decides the device as placed.
+    ///
+    /// Its future is boxed: asking the device dials a link this service then answers on, so the
+    /// future would otherwise name itself.
+    fn prove_placed<'a>(&'a self, device: [u8; 32], workspace: &'a str) -> ReadFuture<'a> {
+        Box::pin(async move {
+            let Some(workspaces) = self.0.workspaces.clone() else {
+                return false;
+            };
+            let Some(remote) = self.remote_held(device, workspace) else {
+                return false;
+            };
+            let Ok(certificate) = remote.certificate().await else {
+                return false;
+            };
+            if certificate.capabilities.records.is_none() {
+                return false;
+            }
+            workspaces.admit_placed(workspace, &certificate).await
+        })
     }
 
     /// Take `signed` into the replay window this device keeps for its requests,
@@ -1785,6 +1904,7 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
             reason: "the device's certificate has run out".into(),
         },
         MembershipError::UnknownDevice
+        | MembershipError::OutsideItsRecords
         | MembershipError::Absent
         | MembershipError::MalformedIdentity(_)
         | MembershipError::CertificateMismatch
@@ -2534,6 +2654,38 @@ impl ActionProvider for RemoteDevice {
                 _ => Err(unexpected()),
             },
         )
+    }
+
+    /// Records read on the device: each read is asked of it, as this device, and its reading
+    /// answered as it comes.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(Arc::new(self.clone()))
+    }
+}
+
+impl tilo_actions::remote::ResourceReads for RemoteDevice {
+    fn answer_read(
+        self: Arc<Self>,
+        _caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::ReadingAnswer {
+        let asked = self.ask_message(RemoteActionMessage::ResourceRead {
+            correlation,
+            on_behalf_of: None,
+            read,
+        });
+        Box::pin(async move {
+            let result = match asked.await {
+                Some(Ok(RemoteActionMessage::ResourceReading { result, .. })) => result,
+                Some(Ok(_)) | None => Err(tilo_actions::remote::ActionCallError::Unanswered),
+                Some(Err(error)) => Err(error),
+            };
+            RemoteActionMessage::ResourceReading {
+                correlation,
+                result,
+            }
+        })
     }
 }
 

@@ -2014,10 +2014,14 @@ impl Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let Some(agent) = caller.acting().agent_id() else {
+        let Some(agent) = caller
+            .acting()
+            .member_id()
+            .filter(|member| member.is_agent())
+        else {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         };
-        let actor = tilo_actions::MemberId::agent(agent).into();
+        let actor = agent.clone().into();
         self.invoke_step_at(actor, request, caller.turn())
     }
 

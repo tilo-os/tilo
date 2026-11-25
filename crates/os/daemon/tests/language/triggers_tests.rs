@@ -19,29 +19,6 @@ use tilo_workspace_service::workspaces::fixtures::{
 
 use super::{Device, Write, mount, write};
 
-/// Let the installed app `app` write and change the records it keeps in `workspace`, as the
-/// person whose device `cert` names grants it: what a workspace grants an app it runs, so its
-/// origin's writes are its own rather than one person's.
-pub(super) async fn let_app_write(
-    workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    workspace: &str,
-    app: &str,
-    cert: &tilo_user_identity::DeviceCert,
-) {
-    let grant = tilo_action_policy::Grant::new(
-        format!("{app}-keeps-its-records"),
-        tilo_action_policy::Grantee::app(app),
-        tilo_action_policy::TreePath::workspace(workspace),
-        tilo_action_policy::KindSet::UNDOABLE,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
-    );
-    workspaces
-        .put_workspace_grants(workspace, cert, [23; 32], vec![grant])
-        .await
-        .unwrap();
-}
-
 /// An app's write of a record a saved shortcut watches fires it once, on the device that wrote
 /// it; looking again at the same record fires nothing more. A write whose resource the
 /// trigger's filter does not match, by the fields the write left it with, fires nothing.
@@ -374,7 +351,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", "Scout"),
+        triggered::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
         (&key, &cert),
     )
     .await;
@@ -414,7 +391,10 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     let mut writes = workspaces.document_writes();
 
     let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
-    let scout = Who::member(MemberId::agent("scout"));
+    let scout = Who::member(MemberId::agent(
+        "scout",
+        hex::encode(cert.user_public_key).clone(),
+    ));
     let bridge = Who::member(MemberId::bot("bridge"));
     // The id Chat's declaration keeps for `send`: what a change its program makes claims.
     let send = tilolang_workspace::records::built_in(CHAT)
@@ -750,11 +730,14 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         workspaces.join_keys(&workspace).await,
         "the workspace's keys open what its records are kept in"
     );
-    let_app_write(workspaces, &workspace, MAIL, &cert).await;
+    // Installed as a member installs it, Mail keeps its own records: nothing else lets it.
+    tilo_workspace_service::workspaces::fixtures::install_app(workspaces, &workspace, MAIL)
+        .await
+        .expect("the member installs Mail");
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", "Scout"),
+        triggered::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
         (&key, &cert),
     )
     .await;
@@ -968,11 +951,14 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
         workspaces.join_keys(&workspace).await,
         "the workspace's keys open what its records are kept in"
     );
-    let_app_write(workspaces, &workspace, MAIL, &cert).await;
+    // Installed as a member installs it, Mail keeps its own records: nothing else lets it.
+    tilo_workspace_service::workspaces::fixtures::install_app(workspaces, &workspace, MAIL)
+        .await
+        .expect("the member installs Mail");
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", "Scout"),
+        triggered::triggers("scout", &hex::encode(cert.user_public_key), "Scout"),
         (&key, &cert),
     )
     .await;
@@ -1116,7 +1102,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     save_signed(
         workspaces,
         &workspace,
-        triggered::moderates("scout", "Scout"),
+        triggered::moderates("scout", &hex::encode(cert.user_public_key), "Scout"),
         (&key, &cert),
     )
     .await;
@@ -1130,7 +1116,10 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     let mut writes = workspaces.document_writes();
 
     let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
-    let scout = Who::member(MemberId::agent("scout"));
+    let scout = Who::member(MemberId::agent(
+        "scout",
+        hex::encode(cert.user_public_key).clone(),
+    ));
     // The id Chat's declaration keeps for `send`: what a change its program makes claims.
     let send = tilolang_workspace::records::built_in(CHAT)
         .expect("the built-in packages compile")
@@ -1174,7 +1163,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     let record = collab_types::workspace_document_id(MODERATION);
     let report = async |id: &str, by: &Who, reason: &str| {
         let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
-        let acted_for = matches!(by, Who::Member(MemberId::Agent(_)))
+        let acted_for = matches!(by, Who::Member(MemberId::Agent { .. }))
             .then(|| hex::encode(cert.user_public_key));
         let stamp = Stamp {
             verb: "report-message".into(),
@@ -1245,7 +1234,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(
         firings[0].trigger,
-        triggered::moderates("scout", "Scout").triggers[0],
+        triggered::moderates("scout", &hex::encode(cert.user_public_key), "Scout").triggers[0],
         "the watch's message trigger fired"
     );
     assert_eq!(firings[0].saver, hex::encode(cert.user_public_key));
@@ -1314,7 +1303,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     assert_eq!(firings.len(), 1, "{firings:?}");
     assert_eq!(
         firings[0].trigger,
-        triggered::moderates("scout", "Scout").triggers[1],
+        triggered::moderates("scout", &hex::encode(cert.user_public_key), "Scout").triggers[1],
         "the watch's report trigger fired"
     );
     let event: DocumentEvent =
@@ -1393,17 +1382,18 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     let workspace = workspaces.create("Chat").await.unwrap().workspace;
     let route = super::record_route(&workspace, CHAT);
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let person = hex::encode(cert.user_public_key);
     save_signed(
         workspaces,
         &workspace,
-        triggered::triggers("scout", "Scout"),
+        triggered::triggers("scout", &person, "Scout"),
         (&key, &cert),
     )
     .await;
+    let mention = json!({ "agent": { "id": "scout", "person": person } }).to_string();
 
     // The record makes the agent whose words a reply carries: its name and its picture, made
     // through the record's own action.
-    let person = hex::encode(cert.user_public_key);
     workspaces
         .author_agents(&workspace, |doc| {
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
@@ -1465,7 +1455,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
                 edits: vec![Edit::Set {
                     field: "body".into(),
                     value: json!({"blocks": [{"text": "Scout, look at this", "marks": [
-                        {"start": 0, "end": 5, "name": "mention", "value": {"Str": "{\"agent\":\"scout\"}"}}
+                        {"start": 0, "end": 5, "name": "mention", "value": {"Str": mention}}
                     ]}]}),
                 }],
                 stamp,

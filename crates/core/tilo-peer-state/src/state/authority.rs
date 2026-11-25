@@ -212,6 +212,16 @@ fn access_of(
     access
 }
 
+/// What a placed device reaches in a workspace ([`StatePeer::placed_device`]): the
+/// person it acts as, and the records its certificate names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlacedDevice {
+    /// The root key of the person the device acts as: whom history names.
+    pub person: [u8; 32],
+    /// The records of this workspace it reaches, and nothing else.
+    pub records: tilo_user_identity::PlacedRecords,
+}
+
 /// What [`StatePeer::authorize_document`] decided of a change.
 pub(super) enum Authorized {
     /// It is its author's to make, under `member`. `history` when its
@@ -467,6 +477,14 @@ impl StatePeer {
                         .certificates
                         .iter()
                         .map(|(key, cert)| (key, cert.as_ref()))))
+            && ours
+                .placed_devices
+                .iter()
+                .map(|(key, cert)| (key, cert.as_ref()))
+                .eq(theirs
+                    .placed_devices
+                    .iter()
+                    .map(|(key, cert)| (key, cert.as_ref())))
             && self.revocations() == other.revocations()
     }
 
@@ -655,6 +673,11 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Option<Written>, MembershipError> {
         let author = write.author.as_bytes();
+        if self.core.placed_devices.contains_key(author) {
+            return self
+                .placed_access(author, app, document, now)
+                .map(|member| Some((member, false)));
+        }
         match self.permissions(*author, now) {
             Ok(member) => Ok(Some((member, false))),
             Err(MembershipError::Revoked) => {
@@ -691,6 +714,51 @@ impl StatePeer {
             }
             Err(error) => Err(error),
         }
+    }
+    /// What `source`, a device placed for records of this workspace, may do
+    /// writing or reading `document` of `app`: what its person may from a device that is not
+    /// theirs ([`tilo_action_policy::Cap::FOREIGN_DEVICE`]: content, never the
+    /// workspace's members or settings), when the record is one its
+    /// certificate names, and nothing otherwise. Its certificate alone decides,
+    /// on every device that keeps the workspace: no roster row lists it, and
+    /// history names its person.
+    ///
+    /// # Errors
+    /// The record is none its certificate names
+    /// ([`MembershipError::OutsideItsRecords`]), its certificate has run out or
+    /// is revoked, or its person is no member here.
+    pub(super) fn placed_access(
+        &self,
+        source: &[u8; 32],
+        app: &str,
+        document: &str,
+        now: SystemTime,
+    ) -> Result<MemberAccess, MembershipError> {
+        let placed = self
+            .placed_device(source, now)
+            .ok_or(MembershipError::UnknownDevice)??;
+        if !placed
+            .records
+            .reaches(&neighbour_wire::app_document_group(app, document))
+        {
+            return Err(MembershipError::OutsideItsRecords);
+        }
+        let policy = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or(MembershipError::RulesMissing)?
+            .workspace_policy(&self.core.workspace)
+            .clone();
+        Ok(access_of(
+            policy,
+            (
+                hex::encode(placed.person),
+                true,
+                None,
+                Some(self.core.workspace.clone()),
+            ),
+        ))
     }
     /// What the author of `write`, a write to `document` of `app`, may do, for
     /// whoever hands the write to an app: what its device may now, or, for a
@@ -778,6 +846,55 @@ impl StatePeer {
                     .then(|| (crate::coverage::route_key(app, document_id), held))
             })
             .collect()
+    }
+    /// What `device` reaches here when it was placed for records of this workspace
+    /// ([`tilo_user_identity::DeviceCapabilities::records`]): `None` for any other
+    /// device. The one admission both of the workspace's links ask, its state link and its
+    /// actions link: the confinement is read from the certificate this copy verified, and the
+    /// device is admitted while that certificate is valid and unrevoked, the host that issued
+    /// it unrevoked, and the person it acts as a member here. It is in no roster and no list of
+    /// the workspace's devices.
+    ///
+    /// # Errors
+    /// Inside the `Some`: why the placed device reaches nothing now.
+    pub fn placed_device(
+        &self,
+        device: &[u8; 32],
+        now: SystemTime,
+    ) -> Option<Result<PlacedDevice, MembershipError>> {
+        if !self.core.placed_devices.contains_key(device) {
+            return None;
+        }
+        let decided = || {
+            let (cert, records) = self.core.placed_certificate(device, now)?;
+            let policy = self
+                .core
+                .workspace_doc
+                .as_ref()
+                .ok_or(MembershipError::RulesMissing)?
+                .workspace_policy(&self.core.workspace);
+            backend::member::role_in(
+                policy,
+                &self.core.workspace,
+                &hex::encode(cert.user_public_key),
+            )
+            .ok_or(MembershipError::NoMembership)?;
+            Ok(PlacedDevice {
+                person: cert.user_public_key,
+                records: records.clone(),
+            })
+        };
+        Some(decided())
+    }
+    /// The certificate `device` proved itself with, when this replica knows it as a placed
+    /// device ([`Self::placed_device`]): what a host decides its link by once it said hello,
+    /// whether or not it is admitted now.
+    #[must_use]
+    pub fn placed_device_certificate(&self, device: &[u8; 32]) -> Option<DeviceCert> {
+        self.core
+            .placed_devices
+            .get(device)
+            .map(|verified| verified.as_ref().clone())
     }
     /// [`Self::permissions`] as the text refusal the workspace's own write paths
     /// report to the app that asked.
@@ -913,7 +1030,14 @@ impl StatePeer {
         document: &str,
         now: SystemTime,
     ) -> Result<(), String> {
-        let member = self.membership(device, now)?;
+        // A device confined to one record reads that record alone, as its person may: its
+        // certificate decides, as it does what it writes.
+        let member = if self.core.placed_devices.contains_key(&device) {
+            self.placed_access(&device, app, document, now)
+                .map_err(|error| error.to_string())?
+        } else {
+            self.membership(device, now)?
+        };
         self.check_read_as(&member, (app, document), now)
     }
 

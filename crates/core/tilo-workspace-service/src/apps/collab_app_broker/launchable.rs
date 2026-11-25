@@ -1103,7 +1103,7 @@ mod tests {
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::READ);
             for app in [APP, NOTES] {
-                workspace.allow_app(Grantee::agent("scribe"), app, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe", "owner"), app, KindSet::ALL);
             }
             let (state, workspace) = broker(&workspace);
             state.launchable.retain(&surface(7, &workspace));
@@ -1119,7 +1119,7 @@ mod tests {
             invoke(&state, &agent, "5", "write", None).expect("the agent works in Notes");
             assert_eq!(
                 notes_stream.try_recv().expect("delivered").actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner"))
             );
             let provider = offered_provider(&state, &agent, "new-window")
                 .expect("the closed app's action is offered to the agent");
@@ -1136,7 +1136,7 @@ mod tests {
                 "the agent's view opens beside the one it works in"
             );
             let mut stream = streams.try_recv().expect("the app came up");
-            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
+            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
 
             state.publishers.surfaces.lock().expect("surfaces").remove(&8);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
@@ -1155,7 +1155,7 @@ mod tests {
             use crate::apps::test_support::{Grantee, Grants as _, KindSet};
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::READ);
-            workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::ALL);
+            workspace.allow_app(Grantee::agent("scribe", "owner"), APP, KindSet::ALL);
             let (state, workspace) = broker(&workspace);
             state.launchable.retain(&surface(7, &workspace));
             let (streams, launches, places) = app_comes_up_placed(&state, 8);
@@ -1171,7 +1171,7 @@ mod tests {
                 "the agent's first view opens aside"
             );
             let mut stream = streams.try_recv().expect("the app came up");
-            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
+            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
         }
 
         phase a_persons_call_opens_where_they_are_and_an_apps_beside_it;
@@ -1331,7 +1331,7 @@ mod tests {
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::READ);
             workspace.answer(
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "owner"),
                 &TreePath::root().app(APP),
                 KindSet::UNDOABLE,
                 Answer::Ask,
@@ -1407,7 +1407,7 @@ mod tests {
                     .unwrap()
             };
             let first = call(&request).expect("the person's confirmation admits the call");
-            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
             assert_eq!(
                 call(&request).unwrap(),
                 first,
@@ -1442,7 +1442,7 @@ mod tests {
             use crate::apps::test_support::{Grantee, Grants as _, KindSet};
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::UNDOABLE);
-            workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
+            workspace.allow_app(Grantee::agent("scribe", "owner"), APP, KindSet::UNDOABLE);
             let (state, workspace, fanout) = broker_with_fanout(&workspace);
             state
                 .publishers.surfaces
@@ -1477,7 +1477,7 @@ mod tests {
                 None,
             )
             .expect("the agent acts");
-            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
                 payload: collaboration::PresencePayload::Interaction(interaction),
                 ..
@@ -1505,7 +1505,7 @@ mod tests {
             use crate::apps::test_support::{Grantee, Grants as _, KindSet};
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::UNDOABLE);
-            workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
+            workspace.allow_app(Grantee::agent("scribe", "owner"), APP, KindSet::UNDOABLE);
             let (state, workspace, fanout) = broker_with_fanout(&workspace);
             state
                 .publishers.surfaces
@@ -1533,7 +1533,7 @@ mod tests {
                 .in_workspace(&workspace)
                 .delegated_to("scribe");
             invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
-            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
                 member,
                 key,
@@ -1542,14 +1542,14 @@ mod tests {
             else {
                 panic!("the agent's action shows in its view");
             };
-            assert_eq!(member, collab_types::MemberId::agent("scribe"));
+            assert_eq!(member, collab_types::MemberId::agent("scribe", "owner"));
             assert_eq!(
                 key,
                 collab_types::presence::PresenceKey::resource(APP, "files.app", "files.app")
             );
             assert_eq!(
                 interaction.actor,
-                tilo_actions::Acting::agent("scribe")
+                tilo_actions::Acting::agent("scribe", "owner")
                     .handed()
                     .acting_for(tilo_actions::Acting::person("owner"))
             );
@@ -1608,7 +1608,7 @@ mod tests {
 
             invoke(&state, &client, "5", "new-window", None).expect("within the delegation");
             let delivered = app.try_recv().expect("delivered");
-            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("mcp-1")));
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("mcp-1", "owner")));
             let invoker = delivered
                 .context()
                 .and_then(|context| context.invoker.clone())
@@ -1624,7 +1624,7 @@ mod tests {
             };
             assert_eq!(
                 interaction.actor,
-                tilo_actions::Acting::agent("mcp-1")
+                tilo_actions::Acting::agent("mcp-1", "owner")
                     .handed()
                     .acting_for(tilo_actions::Acting::person("owner"))
             );
@@ -1670,7 +1670,7 @@ mod tests {
         let accepted = events.try_recv().unwrap();
         assert_eq!(
             accepted.actor,
-            tilo_actions::Actor::from(tilo_actions::MemberId::agent("mcp-1"))
+            tilo_actions::Actor::from(tilo_actions::MemberId::agent("mcp-1", "owner"))
         );
         assert!(matches!(
             heard.try_recv().unwrap(),
@@ -1709,7 +1709,7 @@ mod tests {
                 CollabEvent::RemotePresenceUpdate {
                     payload: PresencePayload::Interaction(interaction), ..
                 } if interaction.invocation == delivered.invocation
-                    && interaction.actor.by == tilo_actions::Actor::member(tilo_actions::MemberId::agent("mcp-1"))
+                    && interaction.actor.by == tilo_actions::Actor::member(tilo_actions::MemberId::agent("mcp-1", "owner"))
                     && interaction.phase == tilo_actions::InteractionPhase::Committed
             ),
             "the view receives the running action's actual outcome"

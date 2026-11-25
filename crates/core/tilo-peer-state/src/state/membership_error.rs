@@ -24,6 +24,11 @@ pub enum MembershipError {
     /// nothing here.
     #[error("this device reaches another workspace alone")]
     OtherWorkspace,
+    /// The device was placed for records of this workspace, and the write,
+    /// read or action is of anything else
+    /// ([`tilo_user_identity::DeviceCapabilities::records`]).
+    #[error("this device reaches the records it was placed for alone")]
+    OutsideItsRecords,
     /// The workspace's rules (its members, roles and grants) are not here
     /// to decide against yet.
     #[error("the workspace's rules are not here yet")]
@@ -74,9 +79,10 @@ impl MembershipError {
             | Self::Revocation(_)
             | Self::UnreadableAccess
             | Self::MalformedIdentity(_) => RefusalReason::Malformed,
-            Self::Delegate(_) | Self::NoMembership | Self::OtherWorkspace => {
-                RefusalReason::Forbidden
-            }
+            Self::Delegate(_)
+            | Self::NoMembership
+            | Self::OtherWorkspace
+            | Self::OutsideItsRecords => RefusalReason::Forbidden,
         }
     }
 }

@@ -635,7 +635,7 @@ fn answers_of(session: &Session, agent: &str) -> Vec<tilo_action_policy::Grant> 
             .iter()
             .filter(|grant| {
                 tilo_action_policy::agent_answers::is_answer(grant)
-                    && grant.grantee == tilo_action_policy::Grantee::agent(agent)
+                    && grant.grantee == tilo_action_policy::Grantee::agent(agent, PERSON)
             })
             .cloned()
             .collect()
@@ -1502,7 +1502,7 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     for (agent, admitted_by) in [("helper", PERSON), ("analyst", "ada")] {
         front.policy.grants.push(tilo_action_policy::Grant::new(
             format!("agent-member:{agent}:observer"),
-            tilo_action_policy::Grantee::agent(agent),
+            tilo_action_policy::Grantee::agent(agent, admitted_by.to_owned()),
             front.policy.node(),
             tilo_action_policy::KindSet::READ,
             tilo_action_policy::Answer::Allow,

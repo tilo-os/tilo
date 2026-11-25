@@ -138,6 +138,33 @@ pub(super) async fn ask_device(
     ask_on(tickets, (RESOURCE, action), args).await
 }
 
+/// The receipt of `action` asked of `tickets` by `caller`, with no arguments.
+async fn asked_as(
+    tickets: &Tickets,
+    caller: &tilo_actions::remote::Caller,
+    action: &str,
+) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, action),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::new()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    tickets
+        .invoke(&request, caller)
+        .await
+        .expect("the action is answered")
+}
+
 /// [`ask_device`], of `action` on `resource`.
 pub(super) async fn ask_on(
     tickets: &Tickets,
@@ -782,6 +809,26 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         actions.clone(),
     );
     let router = serve(&issuer, actions);
+
+    // A device a host placed for a record of the workspace, certified by that host,
+    // asks for a ticket as nobody: it is refused, and no ticket is served.
+    let placed = tilo_actions::remote::Caller::placed(
+        [0x77; 32],
+        issuer_cert.user_public_key,
+        workspace.to_string(),
+        [[0x33; 32]],
+    );
+    for action in [
+        ISSUE,
+        tilo_actions::remote::device_tickets::RENAME,
+        tilo_actions::remote::device_tickets::REVOKE,
+    ] {
+        assert_eq!(
+            asked_as(&tickets, &placed, action).await,
+            Err(ActionCallError::NotPermitted),
+            "a placed device asks for no {action}"
+        );
+    }
 
     let printed = ask_device(&tickets, ISSUE, json!({}))
         .await
@@ -2393,5 +2440,41 @@ async fn a_tab_the_root_signs_in_is_listed_with_the_persons_devices() {
     assert!(
         tilo_user_identity::verify_device_cert(&signed.cert).is_ok(),
         "the listed certificate is the root's own"
+    );
+}
+
+/// A device its person's root confined to one workspace issues no ticket: adding a computer is
+/// the person's own act on a device that keeps their root, and a confined device keeps none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_confined_to_one_workspace_issues_no_tickets() {
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let (issuer, state, key, cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+    let mut confined = cert.clone();
+    confined.capabilities = DeviceCapabilities::workspace_device(workspace.as_uuid().into_bytes());
+    sign_device_cert(
+        &mut confined,
+        &root_in(state.path().to_path_buf())().unwrap().unwrap(),
+    )
+    .unwrap();
+    let tickets = Tickets::new(
+        (key, confined),
+        issuer.endpoint(),
+        None,
+        root_in(state.path().to_path_buf()),
+        None,
+        Some(Arc::clone(&issuer)),
+        tilo_device_identity::login::Place::at(
+            state.path().join("vm"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("vm-keys")),
+        ),
+        issuer.copies().action_service(),
+    );
+    let refused = ask_device(&tickets, ISSUE, json!({}))
+        .await
+        .expect_err("a confined device issues no ticket");
+    assert!(
+        refused.contains("confined to one workspace"),
+        "it is told why it issues none: {refused}"
     );
 }

@@ -590,8 +590,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// own means takes it: the agent is the actor, for the person ([`Self::for_delegated`]).
     #[must_use]
     pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {
-        let caller = Caller::local_agent(agent_id)
-            .acting_for(person)
+        let caller = Caller::local_agent(agent_id, person)
             .in_workspace(workspace.clone())
             .in_new_execution();
         Self::from_caller(host, workspace, caller)

@@ -83,8 +83,16 @@ impl PreparedEffect {
                 Some(tilo_actions::MemberId::person(super::super::person_id_for_root(*root)).into())
             }
             InvocationOwner::AuthenticatedLocal {
-                agent: Some(agent), ..
-            } => Some(tilo_actions::MemberId::agent(agent.clone()).into()),
+                root,
+                agent: Some(agent),
+                ..
+            } => Some(
+                tilo_actions::MemberId::agent(
+                    agent.clone(),
+                    super::super::person_id_for_root(*root),
+                )
+                .into(),
+            ),
         };
         let context: tilo_actions::ActionContext =
             serde_json::from_value(record.intent.get("context").cloned().unwrap_or_default())

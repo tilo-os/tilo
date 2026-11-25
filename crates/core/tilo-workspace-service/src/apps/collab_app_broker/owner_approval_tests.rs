@@ -221,9 +221,9 @@ tilo_test_env::scenario! {
     phase an_owners_approve_does_not_replace_current_policy_or_ownership;
     {
         let (state, service, owner, mut request) = broker(true);
-        // The grant the fixture gives names the agent, and a grant naming an agent reaches it
-        // only as the person who gave it: the agent acts for that person here.
-        let agent = Caller::local_agent("limited")
+        // The grant the fixture gives names the agent, the pair of its id and its person, so it
+        // reaches it; the agent acts for the owner here.
+        let agent = Caller::local_agent("limited", "ada")
             .acting_for("owner")
             .in_workspace(owner.workspace().unwrap());
         request.confirmation = Some(approval(&request));

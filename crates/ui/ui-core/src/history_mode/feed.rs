@@ -149,13 +149,15 @@ fn author(author: &wire::Author) -> HistoryAuthor {
         });
     by.for_reader = author.for_reader;
     by.task.clone_from(&author.task);
-    if let Some(person) = author
-        .on_behalf_of
-        .as_ref()
-        .filter(|_| author.relation == wire::Relation::Software)
-    {
+    if let (Some(person), Some(member)) = (
+        author
+            .on_behalf_of
+            .as_ref()
+            .filter(|_| author.relation == wire::Relation::Software),
+        &author.member,
+    ) {
         let mut attribution = crate::widget::history::HistoryAttribution::new(
-            crate::tilo_actions::Acting::agent(author.identity.clone()),
+            crate::tilo_actions::Acting::member(member.clone()),
         );
         attribution.on_behalf_of_name = Some(person.clone());
         by.attribution = Some(attribution);

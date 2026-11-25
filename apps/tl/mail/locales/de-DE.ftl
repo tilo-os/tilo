@@ -320,12 +320,15 @@ d-grphua5j-parts = Teile
 d-grphua5j-attachments = Anhänge
 
 d-tr43xnyj = Als Markdown exportieren
+    .export = Markdown
     .doc = Die Nachricht als Markdown-Datei: was eine Person exportiert, um sie anderswo zu lesen oder zu behalten.
 
 d-shpafbd7 = Als JSON exportieren
+    .export = JSON
     .doc = Die Nachricht als JSON-Datei: woraus ein Skript oder ein Agent ihren Datensatz liest.
 
 d-ydo5gq5e = Als .eml exportieren
+    .export = .eml
     .doc = Die Nachricht als `.eml`-Datei, die jedes Mailprogramm öffnet.
 
 d-3vrmj56n = Eine Nachrichtendatei öffnen

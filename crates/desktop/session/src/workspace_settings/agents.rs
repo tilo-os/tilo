@@ -406,13 +406,14 @@ impl Agents {
         let status = added_by(names, workspace, record, &kept.acts_for);
         // What the turn admits it to, before the answers the workspace keeps for it: what the
         // approval of the person it acts for gives it.
+        let pair = (agent, kept.acts_for.as_str());
         let admission = tilo_action_policy::roles::certified_agent(
             &workspace.policy.workspace,
-            agent,
+            pair,
             kept.acts_for.as_str(),
         );
-        let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
-        let exceptions = agent_access::agent_exceptions(workspace, agent, apps);
+        let rows = agent_access::agent_access_rows(workspace, pair, &admission, apps);
+        let exceptions = agent_access::agent_exceptions(workspace, pair, apps);
         // What it plans with, what it may spend and what it may do are the record's: whoever the
         // workspace's grants let change the record changes them, and nobody else.
         let offered = agent_access::agent_models(config, agent);
@@ -556,7 +557,7 @@ impl Agents {
             return;
         }
         let config = agent_provider_config::ProviderConfig::load();
-        self.record_admitted(workspace, &record, &config);
+        self.record_admitted(workspace, person, &record, &config);
         *self.settled.borrow_mut() = Some((workspace_id, record.revision()));
     }
 
@@ -573,14 +574,23 @@ impl Agents {
     fn record_admitted(
         &self,
         workspace: &Workspace,
+        person: &str,
         record: &FollowedResource<Record>,
         config: &agent_provider_config::ProviderConfig,
     ) {
         let state = record.get();
         let mut taken: Vec<String> = state.active().map(|agent| agent.name.clone()).collect();
         let mut number: u64 = 0;
-        for (agent, _) in workspace.policy.agent_members_at(tilo_clock::unix_now()) {
-            if state.get(&Id::from_raw(agent.clone())).is_some() {
+        for (member, _) in workspace.policy.agent_members_at(tilo_clock::unix_now()) {
+            // The record this person asks for is of their own agents: one admitted for another
+            // person is theirs to record.
+            let Some((agent, _)) = member
+                .as_agent()
+                .filter(|(_, of)| of.as_str().eq_ignore_ascii_case(person))
+            else {
+                continue;
+            };
+            if state.get(&Id::from_raw(agent.to_owned())).is_some() {
                 continue;
             }
             // A person admitted it: a service's membership is no agent here.
@@ -608,7 +618,7 @@ impl Agents {
                 continue;
             };
             taken.push(name.as_str().to_owned());
-            let model = agent_access::agent_models(config, &agent)
+            let model = agent_access::agent_models(config, agent)
                 .and_then(|models| models.chosen.map(|chosen| chosen.key()));
             // Asked of the workspace's service off the loop: the next pass reads what it wrote.
             // Until it does, or where the workspace's grants refuse the person, the tab still
@@ -616,7 +626,7 @@ impl Agents {
             let request = AgentsChange::Create(actions::CreateAgent {
                 avatar: None,
                 name,
-                id: Some(agent.clone()),
+                id: Some(agent.to_owned()),
                 model,
                 mcp_client: None,
             })
@@ -747,6 +757,21 @@ impl Agents {
             .active()
             .find(|agent| agent.acts_for == *person && agent.mcp_client.as_deref() == Some(client))
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
+    }
+
+    /// The member the agent `agent` of the list of `workspace` is, as `person` reads the list:
+    /// its id and the person it acts for. `None` for an agent the list does not keep.
+    pub(crate) fn member(
+        &self,
+        workspace: Option<&Workspace>,
+        person: &str,
+        agent: &str,
+    ) -> Option<MemberId> {
+        let record = self.record(workspace, person)?;
+        let state = record.get();
+        state
+            .get(&Id::from_raw(agent.to_owned()))
+            .map(tilo_app::tilo_workspace_agent::Agent::member)
     }
 
     /// Retire the agent `agent`: it takes no new work, and what it did stays

@@ -324,7 +324,7 @@ mod tests {
     /// Write `action` into `doc` as the executor does for the call of agent `agent`: one
     /// change, named.
     fn apply_as_agent(doc: &mut AutoCommit, action: &FileAction, agent: &str) {
-        let invoker = ActionInvoker::agent(agent);
+        let invoker = ActionInvoker::agent(agent, "ada");
         let context = fs_protocol::file_action::change_context("tree", action.described(), None)
             .with_invoker(invoker);
         let encoded = tilo_actions::EncodedAction {

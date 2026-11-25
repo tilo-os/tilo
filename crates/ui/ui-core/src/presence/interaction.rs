@@ -1089,7 +1089,7 @@ pub(crate) mod tests {
             version: INTERACTION_VERSION,
             invocation: InvocationId(Uuid::from_u128(invocation)),
             sequence,
-            actor: Acting::agent("quill"),
+            actor: Acting::agent("quill", "ada"),
             phase,
             action: InteractionAction {
                 id: "rename".into(),
@@ -1782,11 +1782,11 @@ pub(crate) mod tests {
             let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
             presence.set_display_name(MemberId::person("ada"), "Ada");
-            presence.set_display_name(MemberId::agent("quill"), "Claude");
+            presence.set_display_name(MemberId::agent("quill", "ada"), "Claude");
             let mut agent = interaction(30, 1, InteractionPhase::Applying);
             agent.actor.acted_for = vec![tilo_actions::Acting::person("ada")];
             assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
-            let claude = MemberId::agent("quill");
+            let claude = MemberId::agent("quill", "ada");
             assert_eq!(presence.display_name(&claude), "Claude");
             assert_eq!(presence.acting_for(&claude), Some(&MemberId::person("ada")));
             assert!(!claude.is_person());
@@ -1829,10 +1829,10 @@ pub(crate) mod tests {
             let at = crate::time::now();
             let theme = Theme::default();
             let mut presence = PresenceCtx::empty();
-            presence.set_display_name(MemberId::agent("quill"), "Claude Code");
+            presence.set_display_name(MemberId::agent("quill", "ada"), "Claude Code");
             let agent = interaction(40, 1, InteractionPhase::Applying);
             presence.apply_interaction_at(agent.clone(), at).unwrap();
-            let claude = MemberId::agent("quill");
+            let claude = MemberId::agent("quill", "ada");
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             presence.draw_peer_caret_labeled_in(
@@ -1874,10 +1874,10 @@ pub(crate) mod tests {
             let at = crate::time::now();
             let theme = Theme::default();
             let mut presence = PresenceCtx::empty();
-            presence.set_display_name(MemberId::agent("quill"), "Claude Code");
+            presence.set_display_name(MemberId::agent("quill", "ada"), "Claude Code");
             let agent = interaction(41, 1, InteractionPhase::Applying);
             presence.apply_interaction_at(agent.clone(), at).unwrap();
-            let claude = MemberId::agent("quill");
+            let claude = MemberId::agent("quill", "ada");
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             // Its caret stands in another field, far from the button it acts on.
@@ -1970,7 +1970,7 @@ pub(crate) mod tests {
                 let mut presence = PresenceCtx::empty();
                 presence
                     .names
-                    .insert(MemberId::agent("quill"), "Release Notes Agent".into());
+                    .insert(MemberId::agent("quill", "ada"), "Release Notes Agent".into());
                 assert_eq!(
                     presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
                     "Release Notes Agent: Working in Draft.md"
@@ -1989,9 +1989,9 @@ pub(crate) mod tests {
             }
             // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
             {
-                let user = MemberId::agent("opaque-runtime-id");
+                let user = MemberId::agent("opaque-runtime-id", "ada");
                 let mut agent = interaction(13, 1, InteractionPhase::Applying);
-                agent.actor = Acting::agent("opaque-runtime-id");
+                agent.actor = Acting::agent("opaque-runtime-id", "ada");
                 let mut presence = PresenceCtx::empty();
                 assert_eq!(actor_label(&presence, &agent), "Agent");
                 presence.names.insert(user.clone(), "Quill".into());
@@ -2000,7 +2000,7 @@ pub(crate) mod tests {
                 // key's device it works through: a key label and an address name no one.
                 presence.names.insert(user.clone(), "API key \u{201c}Local stack\u{201d} via localhost:37710".into());
                 let mut named = interaction(14, 1, InteractionPhase::Applying);
-                named.actor = Acting::agent("opaque-runtime-id");
+                named.actor = Acting::agent("opaque-runtime-id", "ada");
                 named.group = Some(tilo_actions::WorkGroup {
                     id: "agent-session:1".into(),
                     label: None,
@@ -2024,7 +2024,7 @@ pub(crate) mod tests {
                     presence.interaction_status_label(&keyed),
                     "Member: Working in Draft.md"
                 );
-                let agent = MemberId::agent("quill");
+                let agent = MemberId::agent("quill", key);
                 presence.set_display_name(agent.clone(), "Claude");
                 presence.set_acting_for(agent.clone(), Some(user));
                 assert_eq!(
@@ -2038,7 +2038,7 @@ pub(crate) mod tests {
                 let mut presence = PresenceCtx::empty();
                 presence
                     .names
-                    .insert(MemberId::agent("quill"), "Quill".into());
+                    .insert(MemberId::agent("quill", "ada"), "Quill".into());
                 let applying = interaction(11, 1, InteractionPhase::Applying);
                 assert_eq!(
                     presence.interaction_announcement(&applying).as_deref(),
@@ -2079,9 +2079,9 @@ pub(crate) mod tests {
             let mut presence = PresenceCtx::empty();
             presence
                 .names
-                .insert(MemberId::agent("helper"), "Helper".into());
+                .insert(MemberId::agent("helper", "ada"), "Helper".into());
             let mut renamed = interaction(94, 1, InteractionPhase::Applying);
-            renamed.actor = Acting::agent("helper");
+            renamed.actor = Acting::agent("helper", "ada");
             renamed.action = InteractionAction {
                 id: "rename".into(),
                 label: "Rename".into(),
@@ -2104,7 +2104,7 @@ pub(crate) mod tests {
             );
 
             let mut inserted = interaction(95, 1, InteractionPhase::Applying);
-            inserted.actor = Acting::agent("helper");
+            inserted.actor = Acting::agent("helper", "ada");
             inserted.action = InteractionAction {
                 id: "replace-range".into(),
                 label: "Replace text at a place".into(),

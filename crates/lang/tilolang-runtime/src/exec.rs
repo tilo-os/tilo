@@ -3528,7 +3528,7 @@ impl Core {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;
                 let who = if imp == Imp::AgentNamed {
-                    self.named_agent(&name)
+                    self.named_agent(&name)?
                 } else {
                     self.named_person(&name)?
                 };

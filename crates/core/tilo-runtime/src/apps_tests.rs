@@ -1393,8 +1393,8 @@ int main(void) {
     let probe = package.payload_root.join("probe");
     std::fs::set_permissions(&probe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    let collab = UnixListener::bind(root.join(COLLAB_SOCKET)).unwrap();
-    let _identity = UnixListener::bind(root.join(IDENTITY_SOCKET)).unwrap();
+    let collab = UnixListener::bind(root.join(crate::COLLAB_SOCKET)).unwrap();
+    let _identity = UnixListener::bind(root.join(crate::IDENTITY_SOCKET)).unwrap();
     let apps = apps(&store, &root, Vec::new());
     let launch = apps.start(VIEWER, WORKSPACE).unwrap();
     assert!(apps.attest_process(launch.pid, VIEWER, WORKSPACE));
@@ -1554,6 +1554,7 @@ fn a_daemon_with_no_session_starts_an_apps_origin_connector_and_refuses_one_it_m
 
 /// A launch starts the package this computer has installed, through the launcher and with the
 /// sandbox, grants and program its manifest declares — never a program the caller names.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
     let (_temp, root) = canonical_temp();

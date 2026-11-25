@@ -712,7 +712,7 @@ tilo_test_env::scenario! {
         assert_eq!(row.activity.as_deref(), Some("New note"));
         assert_eq!(
             row.member,
-            Some(collab_types::MemberId::agent("claude-code")),
+            Some(collab_types::MemberId::agent("claude-code", "ada")),
             "the run is the agent it is, never the run's own id"
         );
 

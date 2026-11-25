@@ -2850,14 +2850,16 @@ class Walk:
         return next((a for a in self.session.actions("") if of(a)), None)
 
     def op_choose(self, value) -> dict:
-        """Choose the fixture file a person's chooser offers: the sheet the app's
-        request opens is answered by its own steps. The file is selected through
-        the chooser's published step, which waits for it to have listed the file;
+        """Choose the file a person's chooser offers: the sheet the app's request
+        opens is answered by its own steps. `{"name": ..}` names a fixture under
+        the person's home; `{"path": ..}` names a file anywhere the chooser
+        reaches, such as a workspace's own tree. The file is selected through the
+        chooser's published step, which waits for it to have listed the file;
         then its confirm button is pressed as a person's pointer does. Giving an
         app a file is the person's alone: the chooser refuses its confirm step to
         any caller that is not at the computer, so the walk never invokes it."""
-        name = value["name"]
-        path = (self.state / "home" / name).resolve()
+        path = Path(value["path"]).resolve() if "path" in value \
+            else (self.state / "home" / value["name"]).resolve()
         question = until_value("the file chooser to ask for a file",
                                self.chooser_question, 60)
         handle = question["handle"]
@@ -2904,7 +2906,7 @@ class Walk:
             time.sleep(0.1)
         answered = self.chooser_question() is None
         if not (selected and (used or answered)):
-            raise Failed(f"the chooser did not take {name!r} "
+            raise Failed(f"the chooser did not take {path.name!r} "
                          f"(selected: {selected}, used: {used}, answered: {answered}; "
                          f"it said: {said})")
         return {"chose": str(path), "question": handle}

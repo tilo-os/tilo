@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
         let workspace = workspace(&[(CAROL, Role::Editor)], CAROL);
         let foreign = workspace.person_on_device(CAROL, true);
         let delegation = Acting::handed_agent("scribe", CAROL).handed_preset("r");
-        let acting = Acting::agent("scribe").acting_for(Acting::person(CAROL));
+        let acting = Acting::agent("scribe", CAROL).acting_for(Acting::person(CAROL));
         let agent = Authority::of_acting(&acting, &workspace, &delegation);
         for action in governance::ALL {
             assert!(

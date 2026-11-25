@@ -135,8 +135,11 @@ mod search;
 mod shared_workspace;
 #[path = "shell_link.rs"]
 mod shell_link;
+// ush's shell is Linux's, so the daemon's shell runs are tested where it builds.
+#[cfg(target_os = "linux")]
 #[path = "shell_runtime.rs"]
 mod shell_runtime;
+#[cfg(target_os = "linux")]
 #[path = "terminal_streams.rs"]
 mod terminal_streams;
 #[path = "throughput.rs"]

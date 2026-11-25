@@ -83,6 +83,52 @@ impl tilo_actions::remote::ActionProvider for RecordingHost {
     }
 }
 
+/// What applies the typed actions of every workspace record on this device, as the resource
+/// provider every workspace service registers does: it keeps what it was asked.
+struct AppliesRecords(Arc<RecordingHost>);
+
+impl tilo_actions::remote::ActionProvider for AppliesRecords {
+    fn serves(&self, provider: &str) -> bool {
+        tilo_actions::remote::is_resource_provider(provider)
+    }
+
+    fn query(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        self.0.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        self.0.invoke(caller, request)
+    }
+
+    fn observe(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        self.0.observe(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        self.0.cancel(caller, id)
+    }
+}
+
 /// The one workspace another device hosts, and its host.
 struct HostedElsewhere {
     workspace: String,
@@ -286,7 +332,10 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
 
 // The device's one dispatch sends a call of a typed action of a record of a workspace placed on a
 // host to that host, and follows it there: what the person's shell asks of the daemon reaches the
-// host the way the broker's own forwarding does.
+// host the way the broker's own forwarding does. On a device that keeps no copy of the workspace
+// (one confined to it) the provider here that applies records' actions answers none of the placed
+// workspace's in the host's place. A device that keeps a copy applies them to it, its host
+// reached or not, and its copy carries the change there.
 #[test]
 fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
     use tilo_actions::remote::{
@@ -299,9 +348,19 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
         workspace: hosted.to_owned(),
         provider: Arc::clone(&provider),
     };
-    providers.place_on_hosts(Arc::new(move |workspace: &str| {
-        crate::apps::services::HostedWorkspaces::host_actions(&elsewhere, workspace)
-    }));
+    providers.place_on_hosts(
+        Arc::new(move |workspace: &str| {
+            crate::apps::services::HostedWorkspaces::host_actions(&elsewhere, workspace)
+        }),
+        crate::workspaces::providers::HostsAnswer::Every,
+    );
+    let applied_here = Arc::new(RecordingHost::default());
+    providers.provide(
+        tilo_actions::remote::RESOURCE_PROVIDER,
+        tilo_actions::remote::RESOURCE_PROVIDER,
+        crate::workspaces::providers::Reach::Devices,
+        Arc::new(AppliesRecords(Arc::clone(&applied_here))),
+    );
     let request = || InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
@@ -351,13 +410,68 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
         .expect("the host tells where it stands");
     assert!(state.is_terminal(), "it is followed on the host: {state:?}");
 
-    // A workspace no host takes the work of, and a call that names no record, are none of the
-    // host's.
+    assert!(
+        applied_here.asked.lock().unwrap().is_empty(),
+        "nothing here applies a placed workspace's record in its host's place"
+    );
+
+    // A workspace no host takes the work of is this device's to apply, and a call that names no
+    // record is none of the host's.
     let here = Caller::local_person("fixture-owner")
         .in_workspace("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned());
-    assert!(providers.invoke(&here, request()).is_none());
+    assert!(providers.invoke(&here, request()).is_some());
+    assert_eq!(applied_here.asked.lock().unwrap().len(), 1);
     let mut not_a_record = request();
     not_a_record.target.provider = "so.tilo.elsewhere".to_owned();
     assert!(providers.invoke(&person, not_a_record).is_none());
     assert_eq!(provider.asked.lock().unwrap().len(), 1);
+
+    // What a workspace's VM device holds no keys for (its media keys, a window's share) is asked
+    // of the host that placed it, through the same forwarding.
+    let mut media_keys = request();
+    media_keys.target = tilo_actions::remote::environment_device::target(
+        tilo_actions::remote::environment_device::MEDIA_KEYS,
+    );
+    assert!(providers.invoke(&person, media_keys.clone()).is_some());
+    let asked = provider.asked.lock().unwrap();
+    assert_eq!(asked.len(), 2, "the host is asked for the VM's media keys");
+    assert_eq!(asked[1].1.target, media_keys.target);
+    drop(asked);
+
+    // A member device that keeps a copy of the placed workspace applies the record's action to
+    // it here: the host is not asked, so the change is made while it cannot be reached.
+    let unreached = Arc::new(RecordingHost::default());
+    let member = crate::workspaces::providers::Providers::default();
+    let elsewhere = HostedElsewhere {
+        workspace: hosted.to_owned(),
+        provider: Arc::clone(&unreached),
+    };
+    member.place_on_hosts(
+        Arc::new(move |workspace: &str| {
+            crate::apps::services::HostedWorkspaces::host_actions(&elsewhere, workspace)
+        }),
+        crate::workspaces::providers::HostsAnswer::Unapplied,
+    );
+    let kept_here = Arc::new(RecordingHost::default());
+    member.provide(
+        tilo_actions::remote::RESOURCE_PROVIDER,
+        tilo_actions::remote::RESOURCE_PROVIDER,
+        crate::workspaces::providers::Reach::Devices,
+        Arc::new(AppliesRecords(Arc::clone(&kept_here))),
+    );
+    let sent = request();
+    assert!(
+        member.invoke(&person, sent.clone()).is_some(),
+        "the member's own copy takes the record's action"
+    );
+    let applied = kept_here.asked.lock().unwrap();
+    let [(caller, applied)] = applied.as_slice() else {
+        panic!("the member applies it once: {applied:?}");
+    };
+    assert_eq!(caller, &person);
+    assert_eq!(applied.invocation, sent.invocation);
+    assert!(
+        unreached.asked.lock().unwrap().is_empty(),
+        "a member's change waits for no host"
+    );
 }

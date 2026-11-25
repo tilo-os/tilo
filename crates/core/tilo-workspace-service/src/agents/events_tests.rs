@@ -89,7 +89,7 @@ fn a_reminder_is_a_moment_and_one_instruction_handed_to_the_persons_assistant() 
     );
     assert_eq!(
         args.get(WHO),
-        Some(&Binding::Literal(json!(MemberId::agent("scout")))),
+        Some(&Binding::Literal(json!(MemberId::agent("scout", PERSON)))),
         "written to the person's assistant, in their own conversation with it"
     );
     // The instruction is the input's default, with which event this is and its note.

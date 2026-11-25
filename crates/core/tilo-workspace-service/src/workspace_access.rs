@@ -50,12 +50,14 @@
 //! revocations (a minted grant's issuer included) are step 1, checked at
 //! every handshake and audit.
 //!
-//! A hosted browser environment's device is certified as a member device of
-//! the workspace's person, and is no member: a page that escapes Chromium
-//! holds its key, so its rule replaces steps 4 to 6 as an agent's does. After
-//! step 1, it is admitted iff the server registered it for this workspace
-//! ([`crate::environment`]), on the protocols a window's session works on — and
-//! its one record is what it reaches within them: the state protocol's replay,
+//! A device a host placed (a hosted Browser environment's) is certified,
+//! by the host that placed it, with its own key, for records of one workspace
+//! ([`tilo_user_identity::DeviceCapabilities::records`]), and is no member: a
+//! page that escapes Chromium has its key, so its rule replaces steps 4 to 6
+//! as an agent's does. After step 1, it is admitted iff its certificate names
+//! this workspace and its person is a member here, on the protocols a window's
+//! session works on — and
+//! its records are what it reaches within them: the state protocol's replay,
 //! live fan-out, opening and changes ask its scope what a frame's record is,
 //! and the live session offers it no namespace but its own. A device whose
 //! environment stopped is refused by step 1 on every protocol, as a revoked one
@@ -590,18 +592,38 @@ pub(crate) fn decide_in(
         // other refusal (an expired or revoked certificate, a blocked key, an agent outside its
         // delegation, a stopped environment) still denies: in particular a block is never read
         // as the policy's refusal and bypassed.
-        if reason != DenyReason::NotTrusted || !person_device(&peer.cert) {
+        // A device placed for records of this workspace comes in on the same rule: its
+        // certificate, decided below, is what admits it.
+        let placed_here = peer
+            .cert
+            .capabilities
+            .placed_in(&workspace.workspace_id().to_string())
+            .is_some();
+        if reason != DenyReason::NotTrusted || !(person_device(&peer.cert) || placed_here) {
             return Decision::Deny(reason);
         }
     }
-    match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
-        Some(crate::environment::Environment::Placed(scope)) => {
-            return environment_decision(workspace, scope, op);
+    let environment =
+        crate::environment::environment_of(trust.environments, &peer.device_public_key);
+    if let Some(crate::environment::Environment::Stopped { .. }) = environment {
+        return Decision::Deny(DenyReason::EnvironmentStopped);
+    }
+    // A placed device is decided by its certificate alone: the workspace it names, the protocols
+    // a placed device works on, and its person a member here. The register only says whether the
+    // host stopped it.
+    if let Some(records) = &peer.cert.capabilities.records {
+        if WorkspaceId::parse(&records.workspace_name()) != Some(workspace.workspace_id())
+            || !crate::environment::placed_protocol(op)
+        {
+            return Decision::Deny(DenyReason::OutOfEnvironmentScope);
         }
-        Some(crate::environment::Environment::Stopped { .. }) => {
-            return Decision::Deny(DenyReason::EnvironmentStopped);
+        if !workspace.person_member(&peer.user_public_key) {
+            return Decision::Deny(DenyReason::NotAMember);
         }
-        None => {}
+        return Decision::Admit;
+    }
+    if let Some(crate::environment::Environment::Placed(scope)) = environment {
+        return environment_decision(workspace, scope, op);
     }
     if let Some(scope) = peer.cert.capabilities.agent {
         return grant_decision(workspace, peer, scope, op);
@@ -635,12 +657,14 @@ pub(crate) fn decide_in(
 /// one minted, acts for the person and is no device of theirs: it comes in by
 /// the delegation that bounds it, never as the person. Nor is the stand-in
 /// itself, which approves devices and reaches no workspace, nor a device's
-/// workspace service.
+/// workspace service, nor a placed device, which is no member's device and is
+/// never enrolled.
 pub fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
     let capabilities = &cert.capabilities;
     capabilities.agent.is_none()
         && !capabilities.stand_in
         && !capabilities.workspace_service
+        && capabilities.records.is_none()
         && cert
             .issuer
             .as_ref()

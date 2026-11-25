@@ -1129,7 +1129,7 @@ impl ServerAgents {
                         continue;
                     }
                     let save = tilo_automation::ShortcutChange::Save(Box::new(
-                        triggered::triggers(&agent.id.0, &agent.name),
+                        triggered::triggers(&agent.id.0, &agent.acts_for, &agent.name),
                     ));
                     if let Err(error) = self.workspaces.change_own_shortcuts(&id, save).await {
                         tracing::warn!(workspace = %id, agent = %agent.id.0, %error, "a new agent's triggers were not saved");
@@ -1219,7 +1219,7 @@ impl ServerAgents {
         let asker = triggered::asker(&event);
         let person = asker.clone().unwrap_or_else(|| saver.clone());
         let saved_by = asker.filter(|asker| asker != &saver).map(|_| saver.clone());
-        let agent_id = agent.id.0.clone();
+        let member = agent.member();
         let turn = Turn {
             agent,
             person: person.clone(),
@@ -1232,7 +1232,7 @@ impl ServerAgents {
             invocation: Some(invocation.to_string()),
             typed: true,
             saved_by,
-            private: triggered::alone_with(&event, &agent_id, &person),
+            private: triggered::alone_with(&event, &member, &person),
             line,
             task,
         };

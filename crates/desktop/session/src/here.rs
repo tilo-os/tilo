@@ -84,7 +84,13 @@ fn workspace_here(
             .iter()
             .find(|here| here.member == member.id);
         PersonHere {
-            id: member.id.id().to_owned(),
+            // An agent by whose it is as well as which: another person's agent of the same id
+            // is another member.
+            id: if member.id.is_agent() {
+                crate::search::recipient_id(&member.id)
+            } else {
+                member.id.id().to_owned()
+            },
             name: member.name.clone(),
             colour: collab_types::presence::identity_rgb(member.colour),
             agent: !member.id.is_person(),

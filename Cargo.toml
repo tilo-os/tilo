@@ -84,7 +84,6 @@ members = [
     "crates/integrations/tilo-messaging",
     "crates/core/broker-core",
     "crates/core/workspace-keys",
-    "crates/core/identity-authority",
     "crates/desktop/lock-screen",
     "crates/core/tilo-peer-state",
     "crates/core/tilo-browser-runtime",

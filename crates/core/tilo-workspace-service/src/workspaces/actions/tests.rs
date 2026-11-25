@@ -2212,7 +2212,7 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
 
     let person = hex::encode(ada.user_public_key);
     let agents = [
-        Caller::local_agent("assistant"),
+        Caller::local_agent("assistant", "ada"),
         Caller::local_bot("bot"),
         Caller::local_app("so.tilo.chat").acting_for(person),
     ];

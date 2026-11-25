@@ -249,9 +249,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
                 println!("A device asks to run your agent: \"{label}\" ({capability}).");
             }
             Some(tilo_device_identity::login::KeyFor::Workspace(_)) => {
-                println!(
-                    "A workspace's computer asks to be one of yours: \"{label}\" ({capability})."
-                );
+                bail!(tilo_device_identity::login::TabCertError::PlacedByItsHost)
             }
             None => {
                 println!(
@@ -281,15 +279,8 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     })?;
     if json {
         println!("{}", json!({"label": label, "device": device}));
-    } else if let Some(key_for) = &key_for {
-        match key_for {
-            tilo_device_identity::login::KeyFor::Agent(_) => {
-                println!("Approved: \"{label}\" runs your agent from now on.");
-            }
-            tilo_device_identity::login::KeyFor::Workspace(_) => {
-                println!("Approved: \"{label}\" is one of your devices, in that workspace alone.");
-            }
-        }
+    } else if let Some(tilo_device_identity::login::KeyFor::Agent(_)) = &key_for {
+        println!("Approved: \"{label}\" runs your agent from now on.");
     } else if answer
         .get("signed")
         .and_then(Value::as_bool)

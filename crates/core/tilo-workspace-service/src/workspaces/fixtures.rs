@@ -388,6 +388,77 @@ pub fn declare_built_in_app(host: &TestHost, app: &str) {
     declare_app(host, app, &surface);
 }
 
+/// Install `app` in `workspace` as the person this service's device acts for, at the version
+/// whose surface this device declares for it ([`declare_app`]), as the workspace's `install`
+/// action records one: the workspace runs that version, so the app's writes name it, and
+/// installing gives the app its own records.
+///
+/// # Errors
+/// This device declares no surface for `app`, or the workspace refused the install.
+pub async fn install_app(workspaces: &Workspaces, workspace: &str, app: &str) -> Result<(), String> {
+    let surface = collab_types::app_surface::hash_of(app)
+        .ok_or_else(|| format!("this device declares no surface for {app}"))?;
+    let release = tilo_peer_state::workspace_membership::AppRelease {
+        app: app.into(),
+        version: "1.0.0".into(),
+        surface: hex::encode(surface),
+        package: "00".repeat(32),
+        publisher: "00".repeat(32),
+        file: None,
+        dev: true,
+        pinned: false,
+        payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
+    };
+    workspaces
+        .commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallApp(release),
+            None,
+        )
+        .await
+}
+
+/// Uninstall `app` from `workspace` as the person this service's device acts for.
+///
+/// # Errors
+/// The workspace refused it.
+pub async fn uninstall_app(
+    workspaces: &Workspaces,
+    workspace: &str,
+    app: &str,
+) -> Result<(), String> {
+    workspaces
+        .commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::UninstallApp {
+                app: app.into(),
+            },
+            None,
+        )
+        .await
+}
+
+/// Revoke the grant `id` in `workspace` as the person this service's device acts for, as the
+/// workspace's Permissions tab does: the workspace's grants decide whether they may.
+///
+/// # Errors
+/// Why the workspace refused the revocation.
+pub async fn revoke_grant(
+    workspaces: &Workspaces,
+    workspace: &str,
+    id: tilo_action_policy::GrantId,
+) -> Result<(), String> {
+    workspaces
+        .commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Revoke(id),
+            },
+            None,
+        )
+        .await
+}
+
 /// Take `grant` into `workspace`'s policy as the person this service's device acts for: the
 /// answer they give for an agent of theirs, which the policy then decides that agent's calls by.
 ///

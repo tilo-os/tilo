@@ -814,6 +814,9 @@ impl StatePeer {
                 owner,
                 origin: owner_device.device_public_key,
                 certificates: verified_certificates.into(),
+                // A placed device proves itself again each time it links: its certificate is
+                // short-lived and no part of the workspace's kept state.
+                placed_devices: Shared::default(),
                 revocations: RevocationList::new(),
                 receipts: Shared::default(),
                 workspace_doc: None,

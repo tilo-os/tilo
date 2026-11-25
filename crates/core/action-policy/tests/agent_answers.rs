@@ -18,7 +18,7 @@ fn grants(extra: Vec<Grant>) -> Vec<Grant> {
     let grant = |id: &str, kinds, answer| {
         Grant::new(
             id.to_owned(),
-            Grantee::agent(AGENT),
+            Grantee::agent(AGENT, PERSON),
             TreePath::workspace(WORKSPACE),
             kinds,
             answer,
@@ -60,7 +60,7 @@ fn mail_action(action: &str) -> TreePath {
 fn answer(scope: &AnswerScope, kind: ActionKind, answer: Answer) -> Grant {
     agent_answers::grant(
         WORKSPACE,
-        AGENT,
+        (AGENT, PERSON),
         (scope, kind),
         answer,
         Grantee::person(PERSON),
@@ -286,7 +286,7 @@ fn an_answer_for_one_action_is_its_persons_answer_given_in_advance() {
             Grantee::person(PERSON),
         ));
         let authority = Authority::person(Party::new(vec![Grantee::person(PERSON)], &all))
-            .bounded_by(Party::new(vec![Grantee::agent(AGENT)], &all));
+            .bounded_by(Party::new(vec![Grantee::agent(AGENT, PERSON)], &all));
         (
             authority
                 .decide(&command, ActionKind::Outside, &cx())
@@ -312,7 +312,7 @@ fn an_answer_for_one_action_is_its_persons_answer_given_in_advance() {
     );
     let by_somebody_else = agent_answers::grant(
         WORKSPACE,
-        AGENT,
+        (AGENT, "b0b"),
         (&one, ActionKind::Outside),
         Answer::Allow,
         Grantee::person("b0b"),
@@ -364,13 +364,13 @@ fn policy_with(grants: Vec<Grant>) -> WorkspacePolicy {
 /// specific grant of the agent lifts, until the person takes the answer back.
 #[test]
 fn a_stop_denies_everything_and_no_grant_of_the_agent_lifts_it() {
-    let stop = agent_answers::stop_grant(WORKSPACE, AGENT, Grantee::person(PERSON));
+    let stop = agent_answers::stop_grant(WORKSPACE, AGENT, PERSON);
     let mut all = grants(vec![
         stop,
         // Its certificate's rights, and an answer its person gave it earlier.
         Grant::new(
             "agent-owned",
-            Grantee::agent(AGENT),
+            Grantee::agent(AGENT, PERSON),
             mail_action("send"),
             KindSet::ALL,
             Answer::Allow,
@@ -378,7 +378,7 @@ fn a_stop_denies_everything_and_no_grant_of_the_agent_lifts_it() {
         ),
         agent_answers::grant(
             WORKSPACE,
-            AGENT,
+            (AGENT, PERSON),
             (&AnswerScope::app("so.tilo.mail"), ActionKind::Outside),
             Answer::Allow,
             Grantee::person(PERSON),
@@ -428,7 +428,7 @@ fn a_person_answers_for_their_own_agent_without_governing() {
     let person = Acting::person(PERSON);
     let read = policy.clone();
     let authority = Authority::of_acting(&person, &read, &[]);
-    let stop = || agent_answers::stop_grant(WORKSPACE, AGENT, Grantee::person(PERSON));
+    let stop = || agent_answers::stop_grant(WORKSPACE, AGENT, PERSON);
     assert!(
         policy
             .apply(PERSON, &authority, Change::Grant(stop()), &cx(), false)
@@ -452,10 +452,10 @@ fn a_person_answers_for_their_own_agent_without_governing() {
     let bob = Authority::of_acting(&bob_acting, &read, &[]);
     // Bob's stop and an answer keeping the agent from reading mail are his own, for his own
     // agent of that id: admitted, and inert for the agent acting for the person.
-    let bobs_stop = agent_answers::stop_grant(WORKSPACE, AGENT, Grantee::person("b0b"));
+    let bobs_stop = agent_answers::stop_grant(WORKSPACE, AGENT, "b0b");
     let bobs_deny = agent_answers::grant(
         WORKSPACE,
-        AGENT,
+        (AGENT, "b0b"),
         (&AnswerScope::app("so.tilo.mail"), ActionKind::Read),
         Answer::Deny,
         Grantee::person("b0b"),
@@ -507,7 +507,7 @@ fn a_person_answers_for_their_own_agent_without_governing() {
     );
     // Nor may Bob write under the person's name for their agent: a stop named as theirs but
     // given by him replaces or takes back nothing of theirs.
-    let mut posing = agent_answers::stop_grant(WORKSPACE, AGENT, Grantee::person("b0b"));
+    let mut posing = agent_answers::stop_grant(WORKSPACE, AGENT, "b0b");
     posing.id = agent_answers::stop_grant_id(AGENT, PERSON);
     assert!(
         policy
@@ -536,6 +536,7 @@ fn a_person_answers_for_their_own_agent_without_governing() {
 /// A rule of the workspace's own that denies an agent keeps it from what the rule names, whoever
 /// the agent acts for: the vault and the mail alike are refused, never put to its person. The
 /// workspace's Allow for the agent is no person's answer, and leaves the agent's part undecided.
+/// The agent's part is its own, the pair's, whichever person its acting names beside it.
 #[test]
 fn the_workspaces_denial_of_an_agent_reaches_it_for_every_person() {
     const OWNER: &str = "0be7";
@@ -549,7 +550,7 @@ fn the_workspaces_denial_of_an_agent_reaches_it_for_every_person() {
     let rule = |id: &str, node: &TreePath, answer| {
         Grant::new(
             id.to_owned(),
-            Grantee::agent(AGENT),
+            Grantee::agent(AGENT, PERSON),
             node.clone(),
             KindSet::ALL,
             answer,
@@ -569,26 +570,34 @@ fn the_workspaces_denial_of_an_agent_reaches_it_for_every_person() {
         custom_roles: std::collections::BTreeMap::default(),
         assigned_roles: std::collections::BTreeMap::default(),
     };
-    let agent_part = |person: &str, node: &TreePath, kind| {
+    let agent_part = |node: &TreePath, kind| {
         let mut verdict =
-            Authority::person(policy.party_of_agent(AGENT, person)).decide(node, kind, &cx());
+            Authority::person(policy.party_of_agent(AGENT, PERSON)).decide(node, kind, &cx());
         verdict.parts.remove(0)
     };
-    for person in [PERSON, "b0b"] {
-        for node in [vault.clone().action("add"), mail.clone().action("send")] {
-            for kind in [ActionKind::Read, ActionKind::Undoable, ActionKind::Outside] {
-                let decision = agent_part(person, &node, kind);
-                assert_eq!(decision.answer, Answer::Deny, "{person} at {node} {kind:?}");
-                assert!(
-                    matches!(decision.basis, tilo_action_policy::Basis::Grant(_)),
-                    "the workspace's rule refuses it, not the want of one: {decision:?}"
-                );
-            }
+    for node in [vault.clone().action("add"), mail.action("send")] {
+        for kind in [ActionKind::Read, ActionKind::Undoable, ActionKind::Outside] {
+            let decision = agent_part(&node, kind);
+            assert_eq!(decision.answer, Answer::Deny, "at {node} {kind:?}");
+            assert!(
+                matches!(decision.basis, tilo_action_policy::Basis::Grant(_)),
+                "the workspace's rule refuses it, not the want of one: {decision:?}"
+            );
         }
-        let reading = agent_part(person, &files, ActionKind::Read);
-        assert!(
-            matches!(reading.basis, tilo_action_policy::Basis::NoGrant),
-            "the workspace's Allow is no answer for {person}'s agent: {reading:?}"
-        );
     }
+    let reading = agent_part(&files, ActionKind::Read);
+    assert!(
+        matches!(reading.basis, tilo_action_policy::Basis::NoGrant),
+        "the workspace's Allow is no answer for the agent: {reading:?}"
+    );
+    // Another person's agent of the same id is another agent: the rule names none of it.
+    let other = Authority::person(policy.party_of_agent(AGENT, "b0b")).decide(
+        &vault.action("add"),
+        ActionKind::Read,
+        &cx(),
+    );
+    assert!(
+        matches!(other.parts[0].basis, tilo_action_policy::Basis::NoGrant),
+        "{other:?}"
+    );
 }

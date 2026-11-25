@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
 /// the person it acted for.
 #[test]
 fn an_agents_write_is_served_as_the_agent_for_its_person() {
-    let agent = tilo_actions::MemberId::agent("agent-key-1234abcd");
+    let agent = tilo_actions::MemberId::agent("agent-key-1234abcd", "ben");
     let mut authors = ui::AuthorDirectory::new();
     authors.register_member(
         &tilo_actions::MemberId::person("ben"),
@@ -390,7 +390,7 @@ fn an_agents_write_is_served_as_the_agent_for_its_person() {
         ui::history_source::author_coloured("Planner", "agent", (1, 2, 3)),
     );
     let invoker = tilo_actions::ActionInvoker::admitted(
-        &tilo_actions::Acting::agent(agent.id())
+        &tilo_actions::Acting::agent(agent.id(), "ben")
             .in_session("s1")
             .acting_for(tilo_actions::Acting::person("ben")),
     )

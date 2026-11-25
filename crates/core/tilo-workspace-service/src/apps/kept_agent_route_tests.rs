@@ -17,8 +17,10 @@ async fn a_kept_agent_joins_its_own_route_in_a_journaled_session() {
             // The workspace keeps `AGENT` for its owner: the roster the broker
             // asks before it admits an agent's join (`admit_listed_agent`).
             services.agents = Some(Arc::new(
-                crate::apps::test_support::KeptAgents::default()
-                    .listing(&env.route.cluster_id, AGENT),
+                crate::apps::test_support::KeptAgents::default().listing(
+                    &env.route.cluster_id,
+                    (AGENT, &person_id_for_root(env.cert.user_public_key)),
+                ),
             ));
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),

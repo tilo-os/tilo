@@ -55,6 +55,16 @@ pub fn system_daemon() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new(DAEMON_SYSTEM_UNIT).is_file()
 }
 
+/// What Tilo's guest OS starts a workspace's VM with: only that image ships it.
+pub const HOSTED_GUEST_INIT: &str = "/usr/libexec/tilo/hosted-init";
+
+/// Whether this computer is a workspace's VM running Tilo's guest OS, whose daemon its keeper
+/// starts once the VM woke rather than a system unit at boot.
+#[must_use]
+pub fn hosted_guest() -> bool {
+    cfg!(target_os = "linux") && std::path::Path::new(HOSTED_GUEST_INIT).is_file()
+}
+
 /// Where this computer's daemon keeps its sockets: the system unit's runtime directory under
 /// Tilo OS; else, for the account `uid` runs it as, `$XDG_RUNTIME_DIR/tilo` (the one systemd
 /// names by the account when the variable is not said, over ssh or from cron) on Linux, and the

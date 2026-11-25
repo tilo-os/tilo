@@ -427,7 +427,10 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         Caller::authenticated([9; 32], cert.device_public_key),
         Caller::authenticated(cert.user_public_key, [9; 32]),
         Caller::local_person(hex::encode(cert.user_public_key)),
-        Caller::local_agent("agent-with-no-delegation"),
+        Caller::local_agent(
+            "agent-with-no-delegation",
+            hex::encode(cert.user_public_key).clone(),
+        ),
         Caller::local_app("so.tilo.chat"),
     ] {
         assert_view_reader_refused(&workspaces, created.workspace_id, &denied, &source).await;
@@ -492,7 +495,7 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
     for stranger in [
         Caller::authenticated([9; 32], member.device_public_key),
         Caller::authenticated(member.user_public_key, [9; 32]),
-        Caller::local_agent("agent-with-no-delegation"),
+        Caller::local_agent("agent-with-no-delegation", "ada"),
         Caller::local_app("so.tilo.chat"),
     ] {
         assert!(

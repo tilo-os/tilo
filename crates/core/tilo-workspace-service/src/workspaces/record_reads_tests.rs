@@ -262,13 +262,13 @@ impl Host {
             vec![
                 reads_all(
                     "agent:scribe",
-                    Grantee::agent("scribe"),
+                    Grantee::agent("scribe", self.person.clone()),
                     &self.kitchen,
                     &self.person,
                 ),
                 Grant::new(
                     "agent:scribe:private",
-                    Grantee::agent("scribe"),
+                    Grantee::agent("scribe", &self.person),
                     TreePath::workspace(&self.kitchen)
                         .app(NOTES)
                         .resource("private"),
@@ -283,8 +283,7 @@ impl Host {
 
     /// The agent `agent` acting for the person, admitted in `workspace`.
     fn agent(&self, agent: &str, workspace: &str) -> Caller {
-        Caller::local_agent(agent)
-            .acting_for(self.person.clone())
+        Caller::local_agent(agent, self.person.clone())
             .in_workspace(workspace.to_owned())
             .in_new_execution()
     }
@@ -414,7 +413,7 @@ async fn a_grant_revoked_mid_read_cuts_the_copy_under_way_and_the_reads_that_fol
     // The workspace takes the grant back before the copy is handed out.
     let grant = reads_all(
         "agent:scribe",
-        Grantee::agent("scribe"),
+        Grantee::agent("scribe", "bo"),
         &h.kitchen,
         &h.person,
     )
@@ -458,7 +457,7 @@ async fn a_person_and_who_acts_for_them_read_here_and_nobody_acting_for_nobody()
     assert!(document(&h.read(&scribe, &h.kitchen, "").await));
     assert!(not_read(&h.read(&scribe, &h.kitchen, "private").await));
     for caller in [
-        Caller::local_agent("a-stranger")
+        Caller::local_agent("a-stranger", "bo")
             .in_workspace(h.kitchen.clone())
             .in_new_execution(),
         Caller::local_app("so.tilo.messages").in_workspace(h.kitchen.clone()),
@@ -492,7 +491,7 @@ async fn a_watched_record_wakes_its_reader_on_its_next_write_alone() {
     tilo_test_env::within("the write wakes the reader", woken).await;
     assert!(!wake.waiting());
     // Nobody acting for nobody watches it.
-    let alone = Caller::local_agent("scribe")
+    let alone = Caller::local_agent("scribe", "bo")
         .in_workspace(h.kitchen.clone())
         .in_new_execution();
     let (stranger, _) = tilo_actions::remote::ResourceWake::new();
@@ -510,7 +509,7 @@ async fn a_read_is_decided_in_the_workspace_its_address_names() {
         &h.garden,
         vec![reads_all(
             "agent:scribe",
-            Grantee::agent("scribe"),
+            Grantee::agent("scribe", "bo"),
             &h.garden,
             &h.person,
         )],
@@ -607,9 +606,7 @@ async fn before_sign_in_the_device_reads_the_workspace_founded_on_it_alone() {
     let read = read_with(std::sync::Arc::clone(&reads), &settings, &h.garden, "").await;
     assert!(not_read(&read), "{read:?}");
     // Nothing reads as this device but what runs on it: no agent, and no other person.
-    let agent = Caller::local_agent("scribe")
-        .acting_for(h.person.clone())
-        .in_workspace(h.kitchen.clone());
+    let agent = Caller::local_agent("scribe", h.person.clone()).in_workspace(h.kitchen.clone());
     assert!(
         read_with(std::sync::Arc::clone(&reads), &agent, &h.kitchen, "")
             .await
@@ -959,9 +956,7 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
         refusal.to_string().contains("Only this device's person"),
         "the refusal says who reads them: {refusal}"
     );
-    let agent = Caller::local_agent("bob-agent")
-        .acting_for(bob.clone())
-        .in_workspace(h.kitchen.clone());
+    let agent = Caller::local_agent("bob-agent", bob.clone()).in_workspace(h.kitchen.clone());
     assert!(
         reads.read(&agent, &setting("server")).await.is_err(),
         "an administrator's agent reads none of them"

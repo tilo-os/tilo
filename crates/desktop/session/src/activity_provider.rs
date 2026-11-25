@@ -28,7 +28,6 @@ use tilo_broker_core::BrokerActor;
 use tilo_session_core::desktop::activity::{is_read, refused_to_agent};
 use tilo_session_core::desktop::i18n::t;
 use tilo_session_core::desktop::session::ActivityRequests;
-use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// The broker's API to the activity the shell's model serves.
 pub(crate) struct ActivityWire {
@@ -50,12 +49,6 @@ impl ActivityWire {
     pub(crate) fn changed(&self) {
         self.changes
             .send_modify(|revision| *revision = revision.wrapping_add(1));
-    }
-
-    /// Answer the activity's actions from now on, admitted by the grants of the app that shows
-    /// them, for the person at this device.
-    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(wire::PROVIDER, wire::APP_ID, Reach::ThisDevice, self);
     }
 }
 
@@ -93,7 +86,9 @@ fn caller_of(caller: &Caller, workspace: &str) -> Caller {
     // it reaches the activity as itself, never through a person's id.
     use tilo_actions::policy::{Actor, MemberId};
     let caller = match member.actor() {
-        Actor::Member(MemberId::Agent(agent)) => Caller::local_agent(agent.as_str()),
+        Actor::Member(MemberId::Agent { id: agent, person }) => {
+            Caller::local_agent(agent.as_str(), person.clone())
+        }
         Actor::Member(MemberId::Bot(bot)) => Caller::local_bot(bot.as_str()),
         Actor::Member(MemberId::Person(person)) => Caller::local_person(person.clone()),
         // An app acting by itself reaches the activity as itself, as its daemon attested it.

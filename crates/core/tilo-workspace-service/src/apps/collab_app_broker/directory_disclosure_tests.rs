@@ -835,7 +835,7 @@ fn a_read_of_the_record_discloses_it_to_agents_and_a_private_view_does_not() {
             }),
         }
     };
-    let agent = BrokerActor::agent("claude-code");
+    let agent = BrokerActor::agent("claude-code", "ada");
     let read = row(&[tilo_actions::RESOURCE_READ_TAG]);
     let question = directory_row_question(&read).unwrap();
     assert!(question.disclosed_to(&agent, Some("publisher")));
@@ -870,7 +870,7 @@ fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is()
             }),
         }
     };
-    let agent = BrokerActor::agent("claude-code");
+    let agent = BrokerActor::agent("claude-code", "ada");
     let publisher = BrokerActor::person("publisher");
     let write = ActionContract {
         kind: tilo_actions::ActionKind::Undoable,

@@ -2057,7 +2057,7 @@ mod tests {
                 let mut renderer = OffscreenRenderer::new(80, 80);
                 renderer.render(&scene, Color::BLACK)
             };
-            let agent_pixels = render(&MemberId::agent("peer"));
+            let agent_pixels = render(&MemberId::agent("peer", "peer"));
             let person_pixels = render(&MemberId::person("peer"));
 
             // Three pixels above the ordinary caret, only the agent's processor

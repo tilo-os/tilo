@@ -459,10 +459,14 @@ impl<R: Resource> Fixture<R> {
         self.members.push(Shown::Member(name.to_owned(), at));
     }
 
-    /// An agent (`id`, shown as `name`) whose own view of the window stands
+    /// The agent `member` (shown as `name`) whose own view of the window stands
     /// at `place`, where its action left it.
-    pub fn agent(&mut self, id: &str, name: &str, place: tilo_resource::Place) {
-        let member = tilo_resource::MemberId::agent(id);
+    pub fn agent(
+        &mut self,
+        member: &tilo_resource::MemberId,
+        name: &str,
+        place: tilo_resource::Place,
+    ) {
         let id = String::from_utf8_lossy(&member.actor_bytes()).into_owned();
         let presence = match tilo_actions::PresenceId::new(id) {
             Ok(presence) => presence,
@@ -473,7 +477,7 @@ impl<R: Resource> Fixture<R> {
         };
         self.members.push(Shown::Agent(super::Landing {
             presence,
-            member: Some(member),
+            member: Some(member.clone()),
             name: Some(name.to_owned()),
             place,
         }));

@@ -218,7 +218,10 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
                 resource: "window".into(),
                 action: "close".into(),
                 argument: None,
-                actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent("assistant")),
+                actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent(
+                    "assistant",
+                    "ada",
+                )),
                 context: None,
             })
             .unwrap();

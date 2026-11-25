@@ -2,6 +2,7 @@
 //! the one it links: the agents and triggers that read and change the records of the built-in
 //! apps are driven here, and the packages those records are of compile from their sources.
 
+mod app_records_tests;
 mod calendar_bridge_tests;
 mod hosted_own_agent_tests;
 mod mail_bridge_tests;
@@ -285,7 +286,7 @@ pub(crate) async fn write(
     mut write: Write<'_>,
 ) {
     let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
-    let acted_for = matches!(write.by, Who::Member(tilo_actions::MemberId::Agent(_)))
+    let acted_for = matches!(write.by, Who::Member(tilo_actions::MemberId::Agent { .. }))
         .then(|| hex::encode(cert.user_public_key));
     let stamp = Stamp {
         verb: write.verb.to_owned(),

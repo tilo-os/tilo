@@ -12,6 +12,11 @@
 //!
 //! A workspace this device hosts itself, or one only desktops keep (which run no workers), is
 //! decided here.
+//!
+//! A device its person's root confined to one workspace (a workspace's VM) keeps no copy of it
+//! and holds none of its keys: every typed action of that workspace's records is sent to the
+//! host its login entered through, which decides it, runs it and seals the change, and no other
+//! workspace is reached from it at all ([`super::confined`]).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -26,6 +31,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::RemoteDevice;
 use tilo_workspace_service::apps::services::{ConnectionActions, HostedWorkspaces};
 use tilo_workspace_service::work::{self, ConnectionCall};
+use tilo_workspace_service::workspaces::providers::HostsAnswer;
 use tilo_workspace_service::workspaces::standing;
 
 use super::workspaces::ServiceWorkspaces;
@@ -48,14 +54,45 @@ impl Hosts {
         })
     }
 
+    /// [`Self::of`], which `workspaces`'s one dispatch sends a call of a
+    /// typed action of one of their records to from now on, as the broker sends its apps'
+    /// invocations. A device that keeps a copy of a placed workspace still applies the actions a
+    /// provider here applies to that copy, which carries them to the host whenever it is
+    /// reached, so a change made offline waits for no one. A device confined to one workspace
+    /// keeps no copy, and its host answers every one.
+    pub(crate) fn placed(workspaces: &Arc<ServiceWorkspaces>) -> Arc<Self> {
+        let hosts = Self::of(workspaces);
+        let placed = Arc::clone(&hosts);
+        let answer = if workspaces.confined().is_some() {
+            HostsAnswer::Every
+        } else {
+            HostsAnswer::Unapplied
+        };
+        workspaces.copies().providers().place_on_hosts(
+            Arc::new(move |workspace: &str| placed.host_actions(workspace)),
+            answer,
+        );
+        hosts
+    }
+
     /// The device serving `workspace` when another device than this one does, and where it is
     /// reached.
     pub(crate) fn serving(&self, workspace: &str) -> Option<([u8; 32], EndpointAddr)> {
         let id = WorkspaceId::parse(workspace)?;
         let workspaces = self.workspaces.upgrade()?;
-        let own = workspaces.device_cert().device_public_key;
-        let host = standing::host_elsewhere(&workspaces.peer(id)?, &own)?;
-        Some((host.device, host.address))
+        let (device, address) = match workspaces.confined() {
+            Some(confined) if confined != id => return None,
+            Some(_) => {
+                let host = workspaces.confined_host()?;
+                (host.device, host.address.clone())
+            }
+            None => {
+                let own = workspaces.device_cert().device_public_key;
+                let host = standing::host_elsewhere(&workspaces.peer(id)?, &own)?;
+                (host.device, host.address)
+            }
+        };
+        Some((device, address))
     }
 }
 

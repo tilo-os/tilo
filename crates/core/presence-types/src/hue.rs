@@ -238,12 +238,14 @@ pub fn agent_client(name: &str) -> &str {
         .trim()
 }
 
-/// The agent `member`'s identity, with the run instance its admission gave it taken off:
-/// `agent:helper@host#2` is `helper@host`. One agent the person admits again wears the colour of
-/// what it is, not of the run that carried it; its name still numbers the runs apart.
+/// The agent `member`'s identity, with its person and the run instance its admission gave it
+/// taken off: `agent:<person>/helper@host#2` is `helper@host`. One agent the person admits again
+/// wears the colour of what it is, not of the run that carried it; its name still numbers the
+/// runs apart.
 #[must_use]
 pub fn agent_identity(member: &str) -> &str {
     let bare = member.strip_prefix("agent:").unwrap_or(member);
+    let bare = bare.split_once('/').map_or(bare, |(_, id)| id);
     bare.rsplit_once('#')
         .filter(|(stem, instance)| {
             !stem.is_empty() && !instance.is_empty() && instance.bytes().all(|b| b.is_ascii_digit())
@@ -284,7 +286,7 @@ impl PresenceHue {
     pub fn of_member(member: &tilo_action_policy::MemberId) -> Self {
         use tilo_action_policy::MemberId;
         match member {
-            MemberId::Agent(id) | MemberId::Bot(id) => Self::of_agent(id),
+            MemberId::Agent { id, .. } | MemberId::Bot(id) => Self::of_agent(id),
             MemberId::Person(person) => Self::of_identity(person.as_str()),
         }
     }

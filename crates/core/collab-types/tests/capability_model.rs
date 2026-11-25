@@ -338,7 +338,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             decide(
-                &Acting::agent("agent:scribe").acting_for(Acting::person("ada")),
+                &Acting::agent("agent:scribe", "ada").acting_for(Acting::person("ada")),
                 &path,
                 Access::Read,
                 &caps
@@ -351,7 +351,7 @@ tilo_test_env::scenario! {
             CapDecision::NotGranted
         );
         assert_eq!(
-            decide(&Acting::agent("agent:scribe"), &path, Access::Read, &caps),
+            decide(&Acting::agent("agent:scribe", "ada"), &path, Access::Read, &caps),
             CapDecision::NotGranted,
             "an agent acting for nobody reaches nothing"
         );
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
     phase a_capability_round_trips_through_json;
     {
         let cap = CapOverride::grant(
-            Grantee::Member(MemberId::agent("helper")),
+            Grantee::Member(MemberId::agent("helper", "ada")),
             Scope::FsPath("/var/workspace/design".into()),
             Access::Write,
         )

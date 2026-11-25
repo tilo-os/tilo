@@ -138,8 +138,8 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     .expect("a runtime to read on");
     assert!(
         matches!(&read, Err(ActionCallError::Unavailable { reason })
-            if reason == "this desktop keeps no records of its own"),
-        "answered from the broker, which this shell has none of: {read:?}"
+            if reason == tilo_actions::remote::RESOURCE_READS_UNAVAILABLE),
+        "answered by the device's daemon, which this session reaches none of: {read:?}"
     );
     assert!(started.elapsed() < WAIT, "nothing waited on the session");
     assert!(records.session.asks.lock_recover().is_empty());
@@ -511,9 +511,10 @@ fn a_live_reading_that_changes_reaches_its_follower() {
     assert_ne!(changed.revision, first.revision);
 }
 
-/// A program's reading of a resource the session publishes is decided for its caller, as every
-/// read of a record is: the person reads their own device, and an agent reads it only where the
-/// broker lets it read the resource. With no broker to decide it, an agent reads none of it.
+/// A program's reading of a resource the session publishes is the session's to answer only for the
+/// person at this device, who reads their own: an agent's read goes to the device's daemon, which
+/// decides it as the agent, and never to the session's copy. With no daemon to reach, the agent
+/// reads none of it, and the session is never asked.
 #[test]
 fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     use tilo_actions::remote::ResourceReads as _;
@@ -557,38 +558,31 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     };
     // A reading published under no kind has no node to decide it at: nobody reads it, the
     // person included, rather than anyone reading it unchecked.
-    for caller in [
-        Caller::local_person("person"),
-        Caller::local_agent("helper").in_workspace("studio"),
-    ] {
-        assert_eq!(
-            read_as(&caller, None),
-            Ok(tilo_actions::remote::ResourceCopy::Absent),
-            "no kind, no reading"
-        );
-    }
-    for (caller, theirs) in [
-        (Caller::local_person("person"), true),
-        (Caller::local_agent("helper").in_workspace("studio"), false),
-    ] {
-        let read = read_as(&caller, Some("session.styles"));
-        if theirs {
-            assert_eq!(
-                read,
-                Ok(tilo_actions::remote::ResourceCopy::reading(
-                    offered.clone(),
-                    None
-                )),
-                "the person's own device"
-            );
-        } else {
-            assert!(
-                matches!(
-                    read,
-                    Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
-                ),
-                "an agent no broker lets read it reads none of it: {read:?}"
-            );
-        }
-    }
+    assert_eq!(
+        read_as(&Caller::local_person("person"), None),
+        Ok(tilo_actions::remote::ResourceCopy::Absent),
+        "no kind, no reading"
+    );
+    assert_eq!(
+        read_as(&Caller::local_person("person"), Some("session.styles")),
+        Ok(tilo_actions::remote::ResourceCopy::reading(
+            offered.clone(),
+            None
+        )),
+        "the person's own device"
+    );
+    let read = tilo_rt::block_on(records.read(
+        &Caller::local_agent("helper", "person").in_workspace("studio"),
+        &address,
+    ))
+    .expect("a runtime to read on");
+    assert!(
+        matches!(&read, Err(ActionCallError::Unavailable { reason })
+            if reason == tilo_actions::remote::RESOURCE_READS_UNAVAILABLE),
+        "an agent's read goes to the device's daemon, which this session reaches none of: {read:?}"
+    );
+    assert!(
+        session.asks.lock_recover().is_empty(),
+        "the session's copy is never asked for an agent"
+    );
 }

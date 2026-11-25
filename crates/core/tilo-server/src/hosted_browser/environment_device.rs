@@ -88,24 +88,21 @@ impl HostedBrowsers {
         Some(crate::app_serving::Routing::Answer(answered))
     }
 
-    /// The device `caller` is, when it is the device this host placed for
-    /// `workspace_id`'s Browser or Linux apps, with what answering it needs.
+    /// The device `caller` is, when it is `workspace_id`'s VM device, as the person's devices
+    /// record lists and confines it to that workspace, with what answering it needs.
     fn asking_device(&self, workspace_id: WorkspaceId, caller: &Caller) -> Option<Asked> {
         let device = *caller.device_public_key()?;
-        let placed =
-            |sessions: &std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, super::Open>>| {
-                sessions
-                    .lock_recover()
-                    .get(&workspace_id)
-                    .filter(|up| up.device.device_public_key == device)
-                    .map(|up| (up.device.clone(), up.workspace.clone()))
-            };
-        let (device, workspace) = placed(&self.open).or_else(|| placed(&self.apps))?;
-        let workspaces = self.authority.lock_recover().as_ref()?.workspaces.clone();
+        let authority = self.authority.lock_recover();
+        let authority = authority.as_ref()?;
+        let scope =
+            crate::environment::environment_of(&authority.environments, &device)?.placed()?;
+        if scope.workspace != workspace_id {
+            return None;
+        }
         Some(Asked {
-            device,
-            workspace,
-            workspaces,
+            device: authority.environments.certificate(&device)?,
+            workspace: workspace_id.to_string(),
+            workspaces: authority.workspaces.clone(),
         })
     }
 }

@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import real_apps as ra
 
-APPS = "notes file-explorer"
+APPS = "notes files"
 TARGET = "0-target"
 COPIED = "the file the person copied\n"
 CUT = "the file the person cut\n"

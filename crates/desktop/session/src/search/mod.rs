@@ -632,13 +632,16 @@ impl SessionSearch {
     /// The agent `workspace` keeps for the person here, by its id and name, as the pass read it:
     /// whom a send goes to, and a new one where the workspace keeps none.
     #[cfg(target_os = "linux")]
-    pub(crate) fn kept_agent(&self, workspace: &str) -> Option<(String, String)> {
+    pub(crate) fn kept_agent(
+        &self,
+        workspace: &str,
+    ) -> Option<(tilo_action_policy::MemberId, String)> {
         self.agents
             .borrow()
             .as_ref()?
             .iter()
             .find(|agent| agent.workspace == workspace)
-            .map(|agent| (agent.id.clone(), agent.name.clone()))
+            .map(|agent| (agent.member.clone(), agent.name.clone()))
     }
 
     /// Record every agent each workspace's record lists, whoever keeps it: what a box that sends
@@ -660,14 +663,14 @@ impl SessionSearch {
         self.moved_recipients();
     }
 
-    /// What the workspaces' lists of agents call the agent `id`, whether it works or was retired:
-    /// a conversation or a mention names it by the name its workspace knows.
-    pub(crate) fn agent_name(&self, id: &str) -> Option<String> {
+    /// What the workspaces' lists of agents call the agent `agent`, whether it works or was
+    /// retired: a conversation or a mention names it by the name its workspace knows.
+    pub(crate) fn agent_name(&self, agent: &tilo_action_policy::MemberId) -> Option<String> {
         self.listed_agents
             .borrow()
             .iter()
-            .find(|agent| agent.id == id)
-            .map(|agent| agent.name.clone())
+            .find(|listed| listed.member == *agent)
+            .map(|listed| listed.name.clone())
     }
 
     /// The workspaces this device shows, by id and the name the shell gives it: what a row says of a
@@ -1293,17 +1296,26 @@ impl SessionSearch {
             .iter()
             .filter(|here| here.workspace == workspace)
             .flat_map(|here| &here.people)
-            .map(|person| (person.agent, person.id.as_str(), person.name.as_str()))
-            .chain(
-                governed
-                    .clone()
-                    .map(|member| (!member.id.is_person(), member.id.id(), member.name.as_str())),
-            )
+            .map(|person| (person.agent, person.id.clone(), person.name.as_str()))
+            .chain(governed.clone().map(|member| {
+                let id = if member.id.is_agent() {
+                    crate::search::recipient_id(&member.id)
+                } else {
+                    member.id.id().to_owned()
+                };
+                (!member.id.is_person(), id, member.name.as_str())
+            }))
             .chain(
                 listed
                     .iter()
                     .filter(|agent| agent.workspace == workspace && !agent.retired)
-                    .map(|agent| (true, agent.id.as_str(), agent.name.as_str())),
+                    .map(|agent| {
+                        (
+                            true,
+                            crate::search::recipient_id(&agent.member),
+                            agent.name.as_str(),
+                        )
+                    }),
             )
             .map(|(agent, id, name)| {
                 Recipient::found(if agent { Agent } else { Person }, id, name)
@@ -1693,7 +1705,7 @@ fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFee
         let kept = agents
             .iter()
             .find(|agent| agent.workspace == workspace)
-            .map(|agent| (agent.id.clone(), agent.name.clone()));
+            .map(|agent| (agent.member.clone(), agent.name.clone()));
         sources.push(Held::new(crate::search_agent::AskAgent::new(
             workspace,
             crate::agents::agent_recipient(kept),
@@ -2612,12 +2624,13 @@ mod tests {
             collab_types::Member::of_person(&collab_types::Person::new(root, ""), None)
         };
         search.set_members(vec![(ws.clone(), vec![member(&ada), member(&ben)])]);
-        let (id, name) = ("helper".to_owned(), "Helper".to_owned());
+        let helper = tilo_action_policy::MemberId::agent("helper", ben.clone());
+        let (id, name) = (crate::search::recipient_id(&helper), "Helper".to_owned());
         let workspace = ws.clone();
         search.set_listed_agents(&[ListedAgent {
             avatar: None,
             workspace,
-            id: id.clone(),
+            member: helper,
             name: name.clone(),
             retired: false,
         }]);
@@ -2683,24 +2696,29 @@ mod tests {
             None,
             None,
         );
+        let person = "ad".repeat(32);
+        let (working, old) = (
+            tilo_action_policy::MemberId::agent("video-agent", person.clone()),
+            tilo_action_policy::MemberId::agent("old-video", person),
+        );
         search.set_listed_agents(&[
             ListedAgent {
                 avatar: None,
                 workspace: ws.clone(),
-                id: "video-agent".to_owned(),
+                member: working.clone(),
                 name: "Video agent".to_owned(),
                 retired: false,
             },
             ListedAgent {
                 avatar: None,
                 workspace: ws.clone(),
-                id: "old-video".to_owned(),
+                member: old.clone(),
                 name: "Old video".to_owned(),
                 retired: true,
             },
         ]);
         assert_eq!(
-            search.agent_name("old-video").as_deref(),
+            search.agent_name(&old).as_deref(),
             Some("Old video"),
             "a message it wrote is still under its name"
         );
@@ -2712,10 +2730,16 @@ mod tests {
             .collect();
         assert_eq!(
             offered,
-            ["video-agent"],
+            [crate::search::recipient_id(&working)],
             "only the working agent takes work"
         );
     }
+}
+
+/// How a recipient names the agent `member`: its actor's bytes, `agent:<person>/<id>`, which say
+/// whose agent it is as well as which.
+pub(crate) fn recipient_id(member: &tilo_action_policy::MemberId) -> String {
+    String::from_utf8_lossy(&member.actor_bytes()).into_owned()
 }
 
 /// An agent a workspace's list names, as a box that sends a message addresses it and as the
@@ -2723,7 +2747,8 @@ mod tests {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ListedAgent {
     pub workspace: String,
-    pub id: String,
+    /// The member it is: its id, of the person it acts for.
+    pub member: tilo_action_policy::MemberId,
     pub name: String,
     /// The picture it wears wherever an author is shown, as a `data:` URL; none shows its
     /// initials.

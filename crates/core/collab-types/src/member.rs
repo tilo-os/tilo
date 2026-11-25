@@ -204,11 +204,11 @@ mod tests {
                     .colour,
                 PresenceHue::Violet
             );
-            let helper = Member::of_software(MemberId::agent("helper"), "Helper");
+            let helper = Member::of_software(MemberId::agent("helper", "ada"), "Helper");
             assert_eq!(helper.colour, PresenceHue::of_member(&helper.id));
             assert_eq!(
                 helper.colour,
-                Member::of_software(MemberId::agent("helper"), "Helper").colour,
+                Member::of_software(MemberId::agent("helper", "ada"), "Helper").colour,
                 "the same agent is one colour however often it is worked out"
             );
         }

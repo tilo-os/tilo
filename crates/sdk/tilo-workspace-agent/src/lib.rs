@@ -219,10 +219,17 @@ impl Identified for Agent {
 }
 
 impl Agent {
-    /// The identity its actor is derived from: `agent:<id>`.
+    /// The member it is: its id and the person it acts for.
+    #[must_use]
+    pub fn member(&self) -> tilo_action_policy::MemberId {
+        tilo_action_policy::MemberId::agent(self.id.0.clone(), self.acts_for.as_str())
+    }
+
+    /// The identity its actor is derived from: its actor's bytes, `agent:<person>/<id>`, whose
+    /// agent it is as well as which.
     #[must_use]
     pub fn identity(&self) -> String {
-        format!("agent:{}", self.id.0)
+        String::from_utf8_lossy(&self.member().actor_bytes()).into_owned()
     }
 
     #[must_use]

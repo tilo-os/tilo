@@ -426,7 +426,10 @@ tilo_test_env::scenario! {
         };
 
         let workspace_id = tree.workspaces[0].id().to_string();
-        let kept = crate::apps::test_support::KeptAgents::default().listing(&workspace_id, "scribe");
+        let kept = crate::apps::test_support::KeptAgents::default().listing(
+            &workspace_id,
+            ("scribe", &person_id_for_root(root.verifying_key().to_bytes())),
+        );
 
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
         assert_eq!(admitted.role, CapRole::Owner);
@@ -494,12 +497,16 @@ tilo_test_env::scenario! {
         tree.workspaces.push(workspace);
 
         let workspace_id = tree.workspaces[0].id().to_string();
-        let kept = crate::apps::test_support::KeptAgents::default().listing(&workspace_id, "scribe");
+        let kept =
+            crate::apps::test_support::KeptAgents::default().listing(&workspace_id, ("scribe", &actor));
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("the member is admitted before the agent they run is");
         admit_listed_agent(&kept, &workspace_id, &mut admitted, "scribe")
             .expect("the record lists the agent the member runs");
-        assert_eq!(admitted.broker_actor().actor(), &tilo_actions::Actor::from(tilo_actions::MemberId::agent("scribe")));
+        assert_eq!(
+            admitted.broker_actor().actor(),
+            &tilo_actions::Actor::from(tilo_action_policy::MemberId::agent("scribe", actor.clone()))
+        );
         assert!(admitted.broker_actor().is_agent());
         let answer = |kind| {
             admitted
@@ -574,17 +581,17 @@ tilo_test_env::scenario! {
             roles::governance_action(&workspace_id, governance::GRANT),
             crate::apps::test_support::KindSet::OUTSIDE,
             Answer::Allow,
-            crate::apps::test_support::Grantee::person(owner),
+            crate::apps::test_support::Grantee::person(owner.clone()),
         ));
         // The bounds the agents' own records keep: scribe may change what is
         // there, reader may only read.
         use crate::apps::test_support::{Grants as _, KindSet, TreePath};
         workspace.allow(
-            Grantee::agent("scribe"),
+            Grantee::agent("scribe", owner.clone()),
             &TreePath::root(),
             KindSet::READ_UNDOABLE,
         );
-        workspace.allow(Grantee::agent("reader"), &TreePath::root(), KindSet::READ);
+        workspace.allow(Grantee::agent("reader", owner.clone()), &TreePath::root(), KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let notes = workspace.policy.node().app("so.tilo.notes");
         let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
@@ -593,9 +600,9 @@ tilo_test_env::scenario! {
 
         let workspace_id = tree.workspaces[0].id().to_string();
         let kept = crate::apps::test_support::KeptAgents::default()
-            .listing(&workspace_id, "scribe")
-            .listing(&workspace_id, "reader")
-            .listing(&workspace_id, "bobs-scribe");
+            .listing(&workspace_id, ("scribe", &owner))
+            .listing(&workspace_id, ("reader", &bob))
+            .listing(&workspace_id, ("bobs-scribe", &bob));
         let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
             let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
             admit_listed_agent(&kept, &workspace_id, &mut admitted, agent).map(|()| admitted)
@@ -641,14 +648,11 @@ tilo_test_env::scenario! {
             Answer::Deny,
             "a commenter's agent changes nothing"
         );
-        // The workspace's agents are its own: Bob runs the one its owner added, and it acts at
-        // Bob's role, not at the role of whoever added it.
-        let owners_for_bob = delegate(&bob_root, "scribe", &tree).unwrap();
-        assert_eq!(owners_for_bob.role, Role::Commenter, "the role of the member running it");
-        assert_eq!(
-            answer(&owners_for_bob, &tree, &notes, ActionKind::Undoable),
-            Answer::Deny,
-            "run by a commenter, it changes nothing"
+        // An agent is its person's: Bob running `scribe` would be Bob's scribe, an agent the
+        // record names for nobody, never the owner's of the same id.
+        assert!(
+            delegate(&bob_root, "scribe", &tree).is_err(),
+            "the record lists scribe for the owner, not for Bob"
         );
         let bobs = delegate(&bob_root, "bobs-scribe", &tree).unwrap();
         assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");

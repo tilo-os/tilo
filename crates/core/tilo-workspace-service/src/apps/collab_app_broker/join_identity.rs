@@ -135,7 +135,8 @@ impl AdmittedJoinIdentity {
     pub(super) fn broker_actor(&self) -> BrokerActor {
         let actor = match &self.agent_id {
             Some(agent) => {
-                let actor = BrokerActor::agent(agent.clone()).for_person(self.actor_key.clone());
+                let actor = BrokerActor::agent(agent.clone(), self.actor_key.clone())
+                    .for_person(self.actor_key.clone());
                 if self.session_delegated {
                     actor.session_delegated()
                 } else {
@@ -157,8 +158,9 @@ impl AdmittedJoinIdentity {
             // The agent acts for the person whose device this session is
             // ([`tilo_actions::remote::Caller::acting_for_person`]): every op it
             // makes and everything presence says about it names that person.
-            Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone())
-                .acting_for(self.actor_key.clone()),
+            Some(agent) => {
+                tilo_actions::remote::Caller::local_agent(agent.clone(), self.actor_key.clone())
+            }
             None => tilo_actions::remote::Caller::local_person(self.actor_key.clone()),
         }
         .in_workspace(workspace)

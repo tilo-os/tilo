@@ -47,7 +47,7 @@ pub fn is_unnamed_person(name: &str) -> bool {
 pub fn unnamed_label(user: &crate::permissions::MemberId) -> String {
     match user {
         crate::permissions::MemberId::Person(_) => unnamed_person_label(),
-        crate::permissions::MemberId::Agent(id) | crate::permissions::MemberId::Bot(id) => {
+        crate::permissions::MemberId::Agent { id, .. } | crate::permissions::MemberId::Bot(id) => {
             id.clone()
         }
     }

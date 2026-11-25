@@ -270,6 +270,7 @@ impl StatePeer {
                 owner,
                 origin: self.core.origin,
                 certificates: self.core.certificates.clone(),
+                placed_devices: self.core.placed_devices.clone(),
                 revocations: self.core.revocations.clone(),
                 receipts: self.core.receipts.clone(),
                 workspace_doc: Some(judged),

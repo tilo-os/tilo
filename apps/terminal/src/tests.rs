@@ -1646,7 +1646,10 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     };
     assert!(
         matches!(
-            app.effect_by(&ui::tilo_resource::MemberId::agent("paste-test"), &paste),
+            app.effect_by(
+                &ui::tilo_resource::MemberId::agent("paste-test", "someone-else"),
+                &paste
+            ),
             Err(ui::tilo_actions::ApiError::ConfirmationRequired)
         ),
         "an agent's paste waits for confirmation"
@@ -4119,7 +4122,7 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
         ),
         "not following moves nothing"
     );
-    let agent = ui::permissions::MemberId::agent("agent");
+    let agent = ui::permissions::MemberId::agent("agent", "someone-else");
     assert!(app.harness().follow_view(&agent, &mut followed));
     assert!(!app.harness().follow_view(&agent, &mut followed));
     let audit = app.harness().native_app_audit();

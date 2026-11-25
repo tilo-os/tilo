@@ -1194,7 +1194,7 @@ mod tests {
         // The grant an agent's turn gives it, on Mail.
         let mail = [Grant::new(
             "turn:helper:0",
-            Grantee::agent("helper"),
+            Grantee::agent("helper", &editor),
             TreePath::workspace(WORKSPACE).app(MAIL),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -1202,14 +1202,14 @@ mod tests {
         )];
         assert_eq!(
             answer(
-                &Acting::agent("helper").acting_for(Acting::person(&editor)),
+                &Acting::agent("helper", &editor).acting_for(Acting::person(&editor)),
                 &mail
             ),
             Answer::Allow
         );
         assert_eq!(
             answer(
-                &Acting::agent("helper").acting_for(Acting::person(&viewer)),
+                &Acting::agent("helper", &viewer).acting_for(Acting::person(&viewer)),
                 &mail
             ),
             Answer::Deny

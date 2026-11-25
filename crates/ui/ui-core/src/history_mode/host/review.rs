@@ -438,7 +438,7 @@ fn check_restore_authority(
         .filter_map(|node| node.by.member_id())
         .any(|member| match member {
             MemberId::Person(id) => member == author || id == crate::permissions::LOCAL_USER,
-            MemberId::Agent(_) | MemberId::Bot(_) => false,
+            MemberId::Agent { .. } | MemberId::Bot(_) => false,
         });
     if !mapped
         || !current.check(&crate::permissions::PermissionScope::app(

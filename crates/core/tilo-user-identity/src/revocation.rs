@@ -215,12 +215,22 @@ pub fn cert_refused(
     // own devices: what it issued before its revocation stays theirs. A
     // grant's minted grants are the grant itself, narrowed, and a device's
     // workspace service is the device's own: neither outlives what issued it.
+    // A placed device is the host's work for its person, and a placement grant
+    // the device that signed it speaking for them: neither outlives the host,
+    // the grant or that device.
+    let placed_or_granted =
+        cert.capabilities.records.is_some() || cert.capabilities.placing.is_some();
     let issuer = cert.issuer.as_ref().is_some_and(|issuer| {
         revoked_at(&issuer.user_public_key, &issuer.device_public_key).is_some_and(|revoked| {
             issuer.capabilities.agent.is_some()
                 || cert.capabilities.workspace_service
+                || placed_or_granted
                 || cert.issued_at_ns >= revoked
-        })
+        }) || (placed_or_granted
+            && issuer
+                .issuer
+                .as_ref()
+                .is_some_and(|by| revoked_at(&by.user_public_key, &by.device_public_key).is_some()))
     });
     device || issuer
 }

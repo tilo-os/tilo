@@ -59,6 +59,23 @@ impl AppBrokerState {
         workspace: &str,
     ) -> Result<Caller, ActionCallError> {
         super::action_provider::check_execution(caller)?;
+        // A placed device's caller is decided by its certificate where records are read
+        // ([`crate::workspaces::RecordReads`]), never as anyone here.
+        if caller.placed_records().is_some() {
+            return Err(ActionCallError::Refused {
+                reason: RESOURCE_READ_REFUSED.into(),
+            });
+        }
+        // A visitor reads as the visitor it is, reaching what the workspace opens to any key,
+        // whether or not anyone is signed in here: it names nobody, and is never this device's
+        // person.
+        if caller.acting().visitor_key().is_some() {
+            return Ok(match caller.workspace() {
+                Some(admitted) if admitted != workspace => caller.clone().in_workspace(workspace),
+                Some(_) => caller.clone(),
+                None => caller.clone().in_workspace(workspace),
+            });
+        }
         if self.services.local_person.is_none() && names_nobody(caller) {
             return self.device_reader(caller, workspace);
         }
@@ -284,7 +301,7 @@ fn apply_document_change(
         .clone()
         .ok_or_else(|| unavailable("this host has no origin for its records".into()))?;
     drop(state);
-    let invoker = tilo_actions::ActionInvoker::agent(agent)
+    let invoker = tilo_actions::ActionInvoker::agent(agent, person)
         .acting_for(person)
         .named(name.map(str::to_owned));
     origin

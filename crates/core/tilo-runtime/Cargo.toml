@@ -221,10 +221,8 @@ tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] 
 [target.'cfg(target_os = "linux")'.dependencies]
 app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet", features = ["surfaces"] }
 fuser.workspace = true
-
 # The desktop's daemon runs the checks its projects' hosts approved, and a check's commands are
-# ush's own: a phone's daemon has no shell to run them with, and carries none of it.
-[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
+# ush's own: a device with no Linux shell to run them with carries none of it.
 ush = { path = "../../vm/ush", features = ["quic"] }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.

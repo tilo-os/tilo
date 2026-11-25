@@ -651,8 +651,8 @@ impl WorkspacePolicy {
     /// The workspace's grants naming a delegation grantee (a bot, an app, a
     /// visitor's key), for bounding a person's authority. An answer a person
     /// gave one agent session is not among them: it decides that session alone
-    /// ([`crate::is_session_answer`]). An agent is no grantee by its id alone:
-    /// it is the person it acts for as well, whose grants alone reach it
+    /// ([`crate::is_session_answer`]). An agent is the pair of its id and the
+    /// person it acts for, and only the grants naming that pair reach it
     /// ([`Self::party_of_agent`]), so no grant naming an agent is among these.
     #[must_use]
     pub fn party_of(&self, grantee: Grantee) -> Party<'_> {
@@ -664,22 +664,23 @@ impl WorkspacePolicy {
     }
 
     /// The workspace's grants reaching the agent `agent` acting for `person`,
-    /// for bounding that person's authority. An agent is the pair: a grant
-    /// naming `agent` reaches it only where `person` gave it, so another
-    /// member's grant or answer for an agent of the same id is theirs, for
-    /// their own agent, and reaches this one not at all. An answer a person
-    /// gave one agent session is not among them ([`crate::is_session_answer`]).
-    /// An agent its person stopped ([`crate::agent_answers::stop_grant`]) is
-    /// refused everything, as a banned person is: no more specific grant lifts
-    /// the stop, not the rights its certificate carries nor an answer its
-    /// person gave it before. A rule of the workspace's own that denies an
-    /// agent id (one governance admitted, never a person's answer for their
-    /// agent, [`crate::agent_answers::is_answer`]) holds off every agent of that
-    /// id from what it names the same way, whoever it acts for: what the
-    /// workspace keeps from an agent is refused, never put to its person.
+    /// for bounding that person's authority. An agent is the pair: only a grant
+    /// naming the pair reaches it, so another person's grant or answer for
+    /// their agent of the same id reaches this one not at all. An answer a
+    /// person gave one agent session is not among them
+    /// ([`crate::is_session_answer`]). An agent its person stopped
+    /// ([`crate::agent_answers::stop_grant`]) is refused everything, as a
+    /// banned person is: no more specific grant lifts the stop, not the rights
+    /// its certificate carries nor an answer its person gave it before. A rule
+    /// of the workspace's own that denies the agent (one governance admitted,
+    /// never a person's answer for their agent,
+    /// [`crate::agent_answers::is_answer`]) holds it off from what it names the
+    /// same way, whoever it acts for: what the workspace keeps from an agent is
+    /// refused, never put to its person.
     #[must_use]
+    #[track_caller]
     pub fn party_of_agent(&self, agent: &str, person: &str) -> Party<'_> {
-        let grantee = Grantee::agent(agent);
+        let grantee = Grantee::agent(agent, person);
         let stop = crate::agent_answers::stop_grant_id(agent, person);
         let held_off: Vec<&Grant> = self
             .grants
@@ -706,17 +707,18 @@ impl WorkspacePolicy {
             .held_off_by(held_off)
     }
 
-    /// The grants naming the agent `agent` acting for `person`: those `person`
-    /// gave it, and the workspace's own denials of that agent id, as
-    /// [`Self::party_of_agent`] reads them. Another member's grant or answer for
-    /// an agent of that id is for their own agent and is not among them.
+    /// The grants naming the agent `agent` of `person`: those `person` gave it, and the
+    /// workspace's own denials of it, as [`Self::party_of_agent`] reads them.
     pub fn grants_of_agent<'a>(
         &'a self,
         agent: &str,
         person: &str,
     ) -> impl Iterator<Item = &'a Grant> {
         self.grants.iter().filter(move |grant| {
-            grant.grantee.agent_id() == Some(agent)
+            grant
+                .grantee
+                .as_agent()
+                .is_some_and(|(id, of)| id == agent && of.as_str() == person)
                 && (grant.granted_by.person_id() == Some(person)
                     || (grant.answer == Answer::Deny && !crate::agent_answers::is_answer(grant)))
         })
@@ -1072,12 +1074,12 @@ impl WorkspacePolicy {
 
     /// Whether `change` is an answer `actor_person` writes, or takes back,
     /// about an agent acting for them: their own say about their agent, which
-    /// needs no governance grant in the workspace. Whatever agent id it names,
-    /// it reaches only that agent acting for `actor_person`
-    /// ([`Self::party_of_agent`]): their own agent by definition, which
-    /// acts with no more than they may themselves. An answer for one agent
-    /// session is not among these: it decides the whole tree that session
-    /// caused, so it is the workspace's grants' to admit.
+    /// needs no governance grant in the workspace. It names the agent as the
+    /// pair of its id and `actor_person`, so it reaches only their own agent
+    /// ([`Self::party_of_agent`]), which acts with no more than they may
+    /// themselves. An answer for one agent session is not among these: it
+    /// decides the whole tree that session caused, so it is the workspace's
+    /// grants' to admit.
     fn answers_for_own_agent(&self, actor_person: &str, change: &Change) -> bool {
         let grant = match change {
             Change::Grant(grant) => grant,
@@ -1089,17 +1091,18 @@ impl WorkspacePolicy {
             }
             _ => return false,
         };
-        let Some(agent) = grant.grantee.agent_id() else {
+        let Some((agent, person)) = grant.grantee.as_agent() else {
             return false;
         };
         // Named as the pair's own answer, so it neither replaces nor takes back
-        // another person's answer for an agent of the same id.
+        // another agent's answer.
         let own = format!(
             "{}{}:",
             crate::agent_answers::PREFIX,
             crate::agent_answers::agent_key(agent, actor_person)
         );
-        grant.granted_by.person_id() == Some(actor_person)
+        person.as_str() == actor_person
+            && grant.granted_by.person_id() == Some(actor_person)
             && !crate::is_session_answer(grant)
             && crate::agent_answers::is_answer(grant)
             && grant.id.as_str().starts_with(&own)

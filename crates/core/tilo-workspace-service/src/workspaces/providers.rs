@@ -85,6 +85,10 @@ pub struct Registered {
     pub answers: Arc<dyn ActionProvider + Send + Sync>,
     /// The resources it publishes at fixed addresses.
     pub published: Vec<ResourceSpec>,
+    /// The device a host placed whose own calls this provider answers ([`Providers::serve_placed`]):
+    /// a placed device reaches no provider but the one registered for it, beside the records its
+    /// certificate names.
+    pub placed_for: Option<[u8; 32]>,
 }
 
 /// How many invocations from other devices a registered provider took are remembered for routing
@@ -116,7 +120,7 @@ struct Inner {
     taken: std::sync::Mutex<HashMap<InvocationId, Taker>>,
     /// The hosts of the workspaces placed on another device, once the embedder says where they
     /// are reached.
-    hosts: std::sync::RwLock<Option<HostsOf>>,
+    hosts: std::sync::RwLock<Option<(HostsOf, HostsAnswer)>>,
     /// What answers for the seat while a person's shell serves it ([`Providers::serve_seat`]):
     /// held apart from the providers a call names, so no caller reaches it.
     seat: std::sync::RwLock<Option<ServedSeat>>,
@@ -125,6 +129,9 @@ struct Inner {
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     invocations:
         std::sync::RwLock<Option<std::sync::Weak<crate::apps::collab_app_broker::AppBrokerState>>>,
+    /// The host that placed this device for records of one workspace, when it is such a device:
+    /// the action service admitted its requests already ([`Providers::answer_placing_host`]).
+    placing_host: std::sync::OnceLock<[u8; 32]>,
 }
 
 /// How a call of the seat hands the shell that serves it a file: queued on its link ahead of the
@@ -142,6 +149,17 @@ pub struct ServedSeat {
 /// The actions of the host a workspace is placed on, by workspace: `None` for one this device
 /// hosts itself or holds alone.
 pub type HostsOf = Arc<dyn Fn(&str) -> Option<Arc<dyn ActionProvider + Send + Sync>> + Send + Sync>;
+
+/// Which typed actions of a placed workspace's records its host answers rather than this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostsAnswer {
+    /// Those no provider here applies: a device that keeps a copy of the workspace applies the
+    /// rest to it, and its copy carries them to the host.
+    Unapplied,
+    /// Every one: a device that keeps no copy of the workspace (one confined to it) has nothing
+    /// to apply them to, so none is answered here in its host's place.
+    Every,
+}
 
 /// What took an invocation: a provider registered here, by name (one withdrawn since is asked no
 /// more), or the host of the workspace it was asked in.
@@ -196,6 +214,7 @@ impl Providers {
                 reach,
                 answers,
                 published,
+                placed_for: None,
             },
         );
     }
@@ -283,6 +302,58 @@ impl Providers {
         publishers
     }
 
+    /// Take the requests of `host`, the host that placed this device for records of one
+    /// workspace, as the action service admitted them: this device keeps no copy of that
+    /// workspace whose grants could decide them, and its action service takes no other device's
+    /// (`tilo_peer_state::actions::ActionService::answer_only`).
+    pub fn answer_placing_host(&self, host: [u8; 32]) {
+        let _ = self.0.placing_host.set(host);
+    }
+
+    /// The catalogue a device placed for records reads here, as `caller`: the rows and
+    /// publishers of the providers registered for `device` alone ([`Self::serve_placed`]), each
+    /// answering at once. Nothing else this device answers is that device's to call, so nothing
+    /// else is listed to it.
+    #[must_use]
+    pub fn placed_catalogue(
+        &self,
+        caller: &Caller,
+        device: [u8; 32],
+        query: &CatalogueQuery,
+    ) -> CataloguePage {
+        let answers: Vec<Arc<dyn ActionProvider + Send + Sync>> = self
+            .0
+            .provided
+            .read_recover()
+            .values()
+            .filter(|registered| {
+                registered.placed_for == Some(device)
+                    && query
+                        .provider
+                        .as_deref()
+                        .is_none_or(|named| named == &*registered.provider)
+            })
+            .map(|registered| Arc::clone(&registered.answers))
+            .collect();
+        let mut page = CataloguePage {
+            revision: "placed".to_owned(),
+            exhausted: true,
+            ..CataloguePage::default()
+        };
+        // One page holds them all: a cursor into it asks for nothing more.
+        if !query.cursor.is_empty() {
+            return page;
+        }
+        for answers in answers {
+            let mut answer = answers.query(caller, query.clone());
+            if let PendingPoll::Ready(Ok(listed)) = answer.poll_ready() {
+                page.rows.extend(listed.rows);
+                page.providers.extend(listed.providers);
+            }
+        }
+        page
+    }
+
     /// What each registered provider publishes at fixed addresses, as the package an app's code
     /// calls it by.
     #[must_use]
@@ -309,6 +380,35 @@ impl Providers {
         reach: Reach,
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) -> Result<(), String> {
+        self.serve_for(provider, app, reach, answers, None)
+    }
+
+    /// [`Self::serve`] for the calls of `device`, a device this host placed: what it asks of
+    /// `provider`, the window it was placed for, reaches `answers`, which decides it as that
+    /// device's. Every other device's calls are decided by the workspace's grants, as for any
+    /// provider.
+    ///
+    /// # Errors
+    ///
+    /// Another provider is served under `provider` already.
+    pub fn serve_placed(
+        &self,
+        provider: &str,
+        app: &str,
+        device: [u8; 32],
+        answers: Arc<dyn ActionProvider + Send + Sync>,
+    ) -> Result<(), String> {
+        self.serve_for(provider, app, Reach::Devices, answers, Some(device))
+    }
+
+    fn serve_for(
+        &self,
+        provider: &str,
+        app: &str,
+        reach: Reach,
+        answers: Arc<dyn ActionProvider + Send + Sync>,
+        placed_for: Option<[u8; 32]>,
+    ) -> Result<(), String> {
         let mut served = self.0.provided.write_recover();
         if let Some(registered) = served.get(provider)
             && !Arc::ptr_eq(&registered.answers, &answers)
@@ -323,6 +423,7 @@ impl Providers {
                 reach,
                 published: answers.published(),
                 answers,
+                placed_for,
             },
         );
         Ok(())
@@ -405,22 +506,27 @@ impl Providers {
     }
 
     /// Send the typed actions of the records of each workspace `hosts` places on another device
-    /// to that host from now on ([`Self::invoke`]).
-    pub fn place_on_hosts(&self, hosts: HostsOf) {
-        *self.0.hosts.write_recover() = Some(hosts);
+    /// to that host from now on, those `answer` says ([`Self::invoke`]).
+    pub fn place_on_hosts(&self, hosts: HostsOf, answer: HostsAnswer) {
+        *self.0.hosts.write_recover() = Some((hosts, answer));
     }
 
     /// The actions of the host the workspace `caller` asks in is placed on, for `request` when it
-    /// names a typed action of one of that workspace's records.
+    /// names a typed action of one of that workspace's records, or asks the host for what a
+    /// workspace's VM device holds no keys for itself
+    /// ([`tilo_actions::remote::environment_device`]: its media keys, a window's share, a vault
+    /// item's text for a fill), which the host that placed it answers.
     fn host_of(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
-        if !tilo_actions::remote::is_resource_provider(&request.target.provider) {
+        if !tilo_actions::remote::is_resource_provider(&request.target.provider)
+            && tilo_actions::remote::environment_device::action_of(&request.target).is_none()
+        {
             return None;
         }
-        let hosts = self.0.hosts.read_recover().clone()?;
+        let (hosts, _) = self.0.hosts.read_recover().clone()?;
         hosts(caller.workspace()?)
     }
 
@@ -428,6 +534,32 @@ impl Providers {
     /// observation and cancellation reach while the call it runs goes on.
     pub fn took(&self, id: InvocationId, provider: &str) {
         self.take(id, Taker::Registered(provider.into()));
+    }
+
+    /// The actions of the host `workspace` is placed on, when this device keeps no copy of it and
+    /// every call made in it here is its host's ([`HostsAnswer::Every`]): a device placed for
+    /// records of that one workspace, which admits nothing itself. `None` for any other device or
+    /// workspace, and while the host is not known yet.
+    #[must_use]
+    pub fn host_answering_every(
+        &self,
+        workspace: &str,
+    ) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
+        let (hosts, answer) = self.0.hosts.read_recover().clone()?;
+        if answer != HostsAnswer::Every {
+            return None;
+        }
+        hosts(workspace)
+    }
+
+    /// Whether the hosts answer every typed action of a placed workspace's records
+    /// ([`HostsAnswer::Every`]).
+    fn hosts_answer_every(&self) -> bool {
+        self.0
+            .hosts
+            .read_recover()
+            .as_ref()
+            .is_some_and(|(_, answer)| *answer == HostsAnswer::Every)
     }
 
     /// Remember that `taker` took invocation `id`.
@@ -443,7 +575,9 @@ impl Providers {
     /// registered under that name, or the one applying the typed actions of the resource it names
     /// (registered under [`tilo_actions::remote::RESOURCE_PROVIDER`]); else, for a record of a
     /// workspace placed on a host ([`Self::place_on_hosts`]), that host, which runs its records'
-    /// actions; else the one registered for its app. `None` when none is.
+    /// actions; else the one registered for its app. `None` when none is. On a device that keeps
+    /// no copy of its placed workspace ([`HostsAnswer::Every`]) the host takes such a record's
+    /// call first, before any provider here.
     #[must_use]
     pub fn invoke(
         &self,
@@ -454,7 +588,7 @@ impl Providers {
         let named = self.0.provided.read_recover().get(provider).cloned();
         let registered =
             named.or_else(|| resources(&self.0.provided.read_recover(), provider).cloned());
-        if registered.is_none()
+        if (registered.is_none() || self.hosts_answer_every())
             && let Some(host) = self.host_of(caller, &request)
         {
             self.take(request.invocation, Taker::Host(Arc::clone(&host)));
@@ -540,17 +674,32 @@ impl Providers {
         let workspaces = Arc::clone(workspaces);
         let caller = caller.clone();
         let (completer, answer) = tilo_actions::remote::pending();
+        // A device a host placed has no grants of its own: it reaches the provider registered for
+        // it and the records its certificate names, nothing else.
+        let placed = caller.placed_records().map(|placed| {
+            registered.placed_for == Some(device)
+                || placed.reaches(&crate::environment::document_channel(
+                    &app,
+                    &request.target.address.resource,
+                ))
+        });
+        if placed == Some(false) {
+            return Some(Pending::ready(Err(ActionCallError::NotPermitted)));
+        }
+        let placing_host = self.0.placing_host.get() == Some(&device);
         runtime.spawn(async move {
             let address = &request.target.address;
-            if let Err(refused) = permits(
-                &workspaces,
-                device,
-                &workspace,
-                &app,
-                &address.resource,
-                &address.action,
-            )
-            .await
+            if placed.is_none()
+                && !placing_host
+                && let Err(refused) = permits(
+                    &workspaces,
+                    device,
+                    &workspace,
+                    &app,
+                    &address.resource,
+                    &address.action,
+                )
+                .await
             {
                 completer.complete(Err(refused));
                 return;

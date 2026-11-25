@@ -902,10 +902,12 @@ mod tests {
             "Studio",
         );
         tilo_test_env::wait_for("the daemon to read the session's agents", || {
-            (agents.acts_for(WORKSPACE, "scribe").as_deref() == Some("ada")
-                && agents
-                    .going(WORKSPACE, "scribe", session.as_str())
-                    .is_some())
+            (agents.lists(
+                WORKSPACE,
+                &tilo_action_policy::MemberId::agent("scribe", "ada"),
+            ) && agents
+                .going(WORKSPACE, "scribe", session.as_str())
+                .is_some())
             .then_some(())
         });
         assert!(
@@ -928,7 +930,7 @@ mod tests {
         .node();
         let allowed = tilo_action_policy::Grant::new(
             "session-answer:scribe",
-            tilo_action_policy::Grantee::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe", "ada".to_owned()),
             node,
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Allow,

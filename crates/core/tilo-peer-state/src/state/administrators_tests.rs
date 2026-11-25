@@ -173,7 +173,7 @@ tilo_test_env::scenario! {
                 &editor,
                 SettingsChange::AssignPreset {
                     preset: "Readers".into(),
-                    subject: tilo_action_policy::Grantee::agent("scribe"),
+                    subject: tilo_action_policy::Grantee::agent("scribe", "ada"),
                     lifetime: tilo_action_policy::Lifetime::UntilRevoked,
                 },
                 now,
@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
             policy
                 .grants
                 .iter()
-                .any(|grant| grant.grantee == tilo_action_policy::Grantee::agent("scribe"))
+                .any(|grant| grant.grantee == tilo_action_policy::Grantee::agent("scribe", "ada"))
         );
         assert!(
             change_settings(
@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let assign = SettingsChange::AssignPreset {
             preset: "Readers".into(),
-            subject: tilo_action_policy::Grantee::agent("scribe"),
+            subject: tilo_action_policy::Grantee::agent("scribe", "ada"),
             lifetime: tilo_action_policy::Lifetime::UntilRevoked,
         };
         assert!(change_settings(&mut peer.clone(), &editor, assign.clone(), now).is_err());

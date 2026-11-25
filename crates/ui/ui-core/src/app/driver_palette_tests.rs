@@ -33,7 +33,7 @@ fn agent_acting(
     action: &str,
 ) -> tilo_actions::SemanticInteraction {
     let mut event = crate::headless::agent_acting(resource, action);
-    event.actor = tilo_actions::Acting::agent("scribe");
+    event.actor = tilo_actions::Acting::agent("scribe", "someone-else");
     let at = crate::time::now()
         .checked_sub(crate::time::Duration::from_secs(1))
         .expect("the clock is later than a second ago");
@@ -42,7 +42,7 @@ fn agent_acting(
 }
 
 fn scribe() -> MemberId {
-    MemberId::agent("scribe")
+    MemberId::agent("scribe", "someone-else")
 }
 
 /// A long document whose one `edit` control sits far below the first screen, and how often an

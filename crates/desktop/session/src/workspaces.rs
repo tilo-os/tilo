@@ -1540,6 +1540,10 @@ impl crate::Shared {
     /// this device did since the last pass.
     pub(crate) fn follow_records(&self) {
         self.follow_data_usage();
+        #[cfg(target_os = "linux")]
+        {
+            self.follow_nearby();
+        }
         self.follow_personal();
     }
 
@@ -1551,6 +1555,13 @@ impl crate::Shared {
             &self.handle,
             self.engine.as_deref(),
         );
+    }
+
+    /// Answer what a Nearby Send asked of the seat's shell since the last pass: the thread that
+    /// reads the files a send hands over cannot touch the shell, so it asks the loop here.
+    #[cfg(target_os = "linux")]
+    fn follow_nearby(&self) {
+        self.nearby.answer(&self.handle, self.view.as_deref());
     }
 
     /// The name the shell holds for `workspace`, or none when it holds none.

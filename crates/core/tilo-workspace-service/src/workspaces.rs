@@ -95,7 +95,7 @@ pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owner, work_takes};
 mod links;
 mod member;
 pub use member::describe;
-pub use member::{AdmittedWrite, MemberDevice, MemberMaterial};
+pub use member::{AdmittedWrite, CONFINED_HOLDS_NONE, MemberDevice, MemberMaterial, holds_copies};
 mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
 mod carried;

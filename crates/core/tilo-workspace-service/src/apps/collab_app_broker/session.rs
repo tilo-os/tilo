@@ -669,6 +669,11 @@ pub(super) fn display_authority(
         if command.len() > 64 * 1024 {
             return Err("The display request exceeds its wire bound.".into());
         }
+        let mutates = tilo_failure::ignored!(
+            "a request that is no display command is held to what a change is held to, and the seat refuses it as invalid",
+            serde_json::from_slice::<settings_store::display_control::DisplayCommand>(command).ok()
+        )
+        .is_none_or(|command| command.mutates());
         let certificate = match origin {
             runtime_collab::settings::DisplayOrigin::LocalHost => registration.certificate.clone(),
             runtime_collab::settings::DisplayOrigin::Published(bytes) => {
@@ -702,18 +707,22 @@ pub(super) fn display_authority(
                     drop(pending);
                     (peer, original)
                 };
-                original.display_caller(
-                    &state,
-                    peer,
-                    &registration,
-                    serde_json::from_slice::<settings_store::display_control::DisplayCommand>(
-                        command,
-                    )
-                    .map_err(|_| "The display command is invalid.")?
-                    .mutates(),
-                )?
+                serde_json::from_slice::<settings_store::display_control::DisplayCommand>(command)
+                    .map_err(|_| "The display command is invalid.")?;
+                original.display_caller(&state, peer, &registration, mutates)?
             }
         };
+        // A computer's displays change only from its own Settings: a Settings worker another
+        // device runs, or one acting for another device's caller, reads them and changes nothing.
+        if mutates
+            && state
+                .certificate_authority
+                .get()
+                .and_then(|authority| authority.device())
+                != Some(certificate.device_public_key)
+        {
+            return Err("Only this computer's own Settings changes its displays.".into());
+        }
         Ok(crate::apps::services::DisplayControlContext {
             workspace: route.cluster_id.clone(),
             root: certificate.user_public_key,

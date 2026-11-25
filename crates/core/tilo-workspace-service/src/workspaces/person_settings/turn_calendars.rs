@@ -115,7 +115,7 @@ impl Workspaces {
         let signing = Signing {
             vault: self.vault_for(&using.workspace, &asker).serving(request),
             root: &root,
-            by: &using.agent,
+            by: using.by(),
         };
         // The sign-in is released for the account's server alone and written down as its use: the
         // same path Settings takes, with the arguments checked the same way.

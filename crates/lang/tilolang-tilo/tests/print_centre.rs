@@ -656,7 +656,6 @@ fn first_page(app: &Installed) -> ResourceRef {
 
 /// The pictures the window draws.
 fn pictures<'a>(tree: &'a UiNode) -> Vec<&'a UiNode> {
-    let mut found = Vec::new();
     fn walk<'a>(node: &'a UiNode, found: &mut Vec<&'a UiNode>) {
         if node.kind == "ui.Image" {
             found.push(node);
@@ -665,6 +664,7 @@ fn pictures<'a>(tree: &'a UiNode) -> Vec<&'a UiNode> {
             walk(child, found);
         }
     }
+    let mut found = Vec::new();
     walk(tree, &mut found);
     found
 }

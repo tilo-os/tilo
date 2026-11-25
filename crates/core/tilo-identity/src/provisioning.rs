@@ -239,7 +239,8 @@ impl DeviceClass {
 }
 
 /// Whether this computer runs Tilo OS, whose system unit runs the device's
-/// daemon, rather than an operating system Tilo does not control: what a
+/// daemon, or Tilo's guest OS in a workspace's VM, rather than an operating
+/// system Tilo does not control: what a
 /// computer logging in with a ticket reports, so the root certifies it
 /// native or foreign. A test build plays the platform
 /// [`TEST_PLATFORM_ENV`] names.
@@ -249,7 +250,7 @@ pub fn runs_tilo_os() -> bool {
     if let Some(platform) = std::env::var_os(TEST_PLATFORM_ENV) {
         return platform == TILO_OS_PLATFORM;
     }
-    tilo_paths::machine::system_daemon()
+    tilo_paths::machine::system_daemon() || tilo_paths::machine::hosted_guest()
 }
 
 /// The platform a test plays, for the class of the device it certifies

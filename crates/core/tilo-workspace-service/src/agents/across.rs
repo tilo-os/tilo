@@ -154,22 +154,21 @@ impl TurnElsewhere {
         else {
             return Err(Refusal::Unknown);
         };
-        let owner = caller
-            .user_public_key()
-            .map(hex::encode)
-            .unwrap_or_default();
+        let Some((agent, owner)) = asked.agent.as_agent() else {
+            return Err(Refusal::Unknown);
+        };
         let policy = self
             .workspaces
-            .agent_policy(&self.workspace, &asked.agent, &owner)
+            .agent_policy(&self.workspace, agent, owner.as_str())
             .await;
         let target = RemoteActionTarget {
             provider: PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(MINE, action),
         };
-        if asked.agent != self.agent.id.0
+        if asked.agent != self.agent.member()
             || !agent_policy_allows(
                 policy.as_ref(),
-                Some((asked.agent.as_str(), owner.as_str())),
+                Some((agent, owner.as_str())),
                 &self.workspace,
                 &target,
             )
@@ -259,7 +258,7 @@ impl TurnElsewhere {
                 .workspaces
                 .granted(
                     &self.workspace,
-                    &self.agent.id.0,
+                    &self.agent.member(),
                     &self.reading_in(&summary.workspace),
                 )
                 .await

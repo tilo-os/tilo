@@ -27,7 +27,7 @@ pub trait Grants {
     fn allow_in_workspace(&mut self, subject: Grantee, workspace: &str, kinds: KindSet) -> GrantId;
     /// Let the agent `agent` take actions of `kinds` in the workspace.
     fn allow_agent(&mut self, agent: &str, kinds: KindSet) -> GrantId {
-        self.allow(Grantee::agent(agent), &TreePath::root(), kinds)
+        self.allow(Grantee::agent(agent, "ada"), &TreePath::root(), kinds)
     }
     /// Let `subject` take actions of `kinds` anywhere in the app `app`.
     fn allow_app(&mut self, subject: Grantee, app: &str, kinds: KindSet) -> GrantId {
@@ -150,14 +150,15 @@ impl WorkspaceAuthority for WorkspaceTreeHandle {
 /// names, by workspace.
 #[derive(Clone, Default)]
 pub struct KeptAgents {
-    listed: Vec<(String, String)>,
+    listed: Vec<(String, String, String)>,
 }
 
 impl KeptAgents {
-    /// The record of `workspace` naming `agent`.
+    /// The record of `workspace` naming the agent `agent` of `person`.
     #[must_use]
-    pub fn listing(mut self, workspace: &str, agent: &str) -> Self {
-        self.listed.push((workspace.to_owned(), agent.to_owned()));
+    pub fn listing(mut self, workspace: &str, (agent, person): (&str, &str)) -> Self {
+        self.listed
+            .push((workspace.to_owned(), agent.to_owned(), person.to_owned()));
         self
     }
 }
@@ -166,12 +167,12 @@ impl crate::apps::services::AgentRoster for KeptAgents {
     fn listed(&self, workspace: &str) -> Vec<crate::apps::services::ListedAgent> {
         self.listed
             .iter()
-            .filter(|(held, _)| held == workspace)
-            .map(|(_, agent)| crate::apps::services::ListedAgent {
+            .filter(|(held, ..)| held == workspace)
+            .map(|(_, agent, person)| crate::apps::services::ListedAgent {
                 avatar: None,
                 id: agent.clone(),
                 name: agent.clone(),
-                acts_for: String::new(),
+                acts_for: person.clone(),
             })
             .collect()
     }
@@ -186,14 +187,14 @@ impl crate::apps::services::AgentRoster for TreeAgents {
         Vec::new()
     }
 
-    fn lists(&self, workspace: &str, agent: &str) -> bool {
+    fn lists(&self, workspace: &str, agent: &tilo_action_policy::MemberId) -> bool {
         let tree = self.0.read();
         crate::apps::services::workspace_in(&tree.desktop, workspace).is_some_and(|held| {
             let node = held.policy.node();
             held.policy.grants.iter().any(|grant| {
                 grant.node == node
                     && grant.answer == Answer::Allow
-                    && grant.grantee.agent_id() == Some(agent)
+                    && grant.grantee.as_member() == Some(agent)
             })
         })
     }

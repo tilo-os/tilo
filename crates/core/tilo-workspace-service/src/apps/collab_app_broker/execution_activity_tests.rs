@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
         let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
             vec![tilo_action_policy::Grant::new(
                 "agent-member:scribe",
-                tilo_action_policy::Grantee::agent("scribe"),
+                tilo_action_policy::Grantee::agent("scribe", &owner),
                 tilo_action_policy::TreePath::workspace(workspace),
                 tilo_action_policy::KindSet::READ,
                 tilo_action_policy::Answer::Allow,
@@ -342,8 +342,7 @@ tilo_test_env::scenario! {
             .workspace()
             .expect("the fixture's workspace")
             .to_owned();
-        let member = Caller::local_agent("scribe")
-            .acting_for(owner.clone())
+        let member = Caller::local_agent("scribe", owner.clone())
             .in_workspace(workspace.clone())
             .in_new_execution();
         assert_eq!(member.acting_for_person(), Some(owner.as_str()));
@@ -398,7 +397,7 @@ tilo_test_env::scenario! {
         let actor = super::BrokerActor::for_caller(&handed);
         assert_eq!(actor.turn(), Some(&turn), "the broker keeps the cause");
 
-        let alone = super::BrokerActor::for_caller(&Caller::local_agent("scribe").in_workspace("w"));
+        let alone = super::BrokerActor::for_caller(&Caller::local_agent("scribe", "ada").in_workspace("w"));
         assert!(alone.turn().is_none(), "no turn carries it");
     }
 }
@@ -940,10 +939,14 @@ fn continuation_fixture() -> (
     workspace.policy.set_owner("a1".repeat(32));
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);
-    workspace.allow_app(Grantee::agent("scribe"), "so.tilo.test", KindSet::ALL);
+    workspace.allow_app(
+        Grantee::agent("scribe", "ada"),
+        "so.tilo.test",
+        KindSet::ALL,
+    );
     workspace.policy.add_member("b2".repeat(32), Role::Editor);
     workspace.deny(
-        Grantee::agent("scribe"),
+        Grantee::agent("scribe", "ada"),
         &TreePath::root()
             .app("so.tilo.test")
             .any(tilo_action_policy::Level::Kind)
@@ -995,7 +998,7 @@ fn continuation_fixture() -> (
         live: true,
     }]);
     let app = state.capture_invocations_for_test(7);
-    let agent = Caller::local_agent("scribe").in_workspace(workspace_id);
+    let agent = Caller::local_agent("scribe", "ada").in_workspace(workspace_id);
     (state, agent, app)
 }
 
@@ -1022,7 +1025,7 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
     let running = app.try_recv().unwrap();
     assert_eq!(
         running.actor,
-        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
     );
 
     // The app's connection names the effect it runs; nobody else's does.
@@ -1042,7 +1045,7 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
     ));
     assert_eq!(
         app.try_recv().unwrap().actor,
-        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
     );
     let refused = state
         .action_invoke(&continued, Some(7), None, &invoke("erase"))
@@ -1514,7 +1517,7 @@ fn agent_answered(
             .handed_preset(workspace);
         grants.push(agent_answers::grant(
             workspace,
-            "scribe",
+            ("scribe", owner.as_str()),
             (
                 &AnswerScope::app("so.tilo.test"),
                 tilo_action_policy::ActionKind::Undoable,
@@ -1594,7 +1597,8 @@ async fn an_app_taking_another_apps_action_waits_for_its_person_or_is_refused() 
             .expect_err("never served unasked")
             .to_string()
     };
-    let nobody = Caller::local_agent("scribe").in_workspace(person.workspace().unwrap());
+    let nobody =
+        Caller::local_agent("scribe", "a1".repeat(32)).in_workspace(person.workspace().unwrap());
     assert!(refusal(&nobody, &request()).contains("no person"));
     let nowhere = Caller::local_person("a1".repeat(32));
     assert!(refusal(&nowhere, &request()).contains("no workspace"));
@@ -1642,7 +1646,7 @@ async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
         .grants
         .push(tilo_action_policy::agent_answers::grant(
             &id,
-            "scribe",
+            ("scribe", owner.as_str()),
             (
                 &AnswerScope::app("so.tilo.test"),
                 tilo_action_policy::ActionKind::Undoable,

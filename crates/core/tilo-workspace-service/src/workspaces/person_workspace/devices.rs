@@ -286,13 +286,18 @@ pub enum KeyKind {
     Agent,
     /// A key the person made for their own script or backend.
     Script,
+    /// A host's placement grant: the host, none of their devices, places devices for the
+    /// records it names ([`tilo_user_identity::DeviceCapabilities::placing`]).
+    Placing,
 }
 
 impl KeyKind {
     /// What `cert` certifies.
     #[must_use]
     pub fn of(cert: &DeviceCert) -> Self {
-        if cert.capabilities.server_key {
+        if cert.capabilities.placing.is_some() {
+            Self::Placing
+        } else if cert.capabilities.server_key {
             Self::Script
         } else if cert.capabilities.agent.is_some() {
             Self::Agent
@@ -578,8 +583,66 @@ impl Devices {
     pub fn revocations(&self, person: &[u8; 32]) -> Vec<RevocationEntry> {
         self.listed(person)
             .into_iter()
+            .chain(self.placing_grants(person))
             .filter_map(|listed| listed.device.revocation(&listed.cert))
             .collect()
+    }
+
+    /// The placement grants `person` gave hosts that are none of their devices, as each entry
+    /// holds it: an entry whose grant does not read, or that another root's chain signed, is left
+    /// out. Revoked ones are listed, marked, as a revoked device is.
+    #[must_use]
+    pub fn placing_grants(&self, person: &[u8; 32]) -> Vec<Listed> {
+        self.devices
+            .iter()
+            .filter_map(|(id, device)| {
+                let cert = device.cert()?;
+                if cert.user_public_key != *person
+                    || tilo_user_identity::verify_placing_grant(&cert).is_err()
+                {
+                    return None;
+                }
+                Some(Listed {
+                    key: id.as_str().to_owned(),
+                    cert,
+                    device: device.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// The placement grant `person` gave the host `host` that lets it place a device for
+    /// `records` at `now_ns`: live then, naming those records, and refused by none of the
+    /// revocations this record holds (its own, or that of the device of theirs that signed it).
+    #[must_use]
+    pub fn placing_grant(
+        &self,
+        person: &[u8; 32],
+        host: &[u8; 32],
+        records: &tilo_user_identity::PlacedRecords,
+        now_ns: u64,
+    ) -> Option<DeviceCert> {
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for entry in self.revocations(person) {
+            tilo_failure::ignored!(
+                "each revocation the record lists verified against its root as it was read",
+                revocations.insert(entry).ok()
+            );
+        }
+        self.placing_grants(person)
+            .into_iter()
+            .map(|listed| listed.cert)
+            .filter(|grant| {
+                grant.device_public_key == *host
+                    && grant
+                        .capabilities
+                        .placing
+                        .as_ref()
+                        .is_some_and(|granted| records.within(granted))
+                    && tilo_user_identity::verify_placing_grant_at(grant, now_ns).is_ok()
+                    && !revocations.refuses(grant)
+            })
+            .max_by_key(|grant| grant.issued_at_ns)
     }
 
     /// The devices `person`'s root certified, as each entry holds it: an entry

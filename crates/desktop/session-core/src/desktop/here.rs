@@ -189,22 +189,19 @@ pub struct Person {
 }
 
 impl Person {
-    /// The member this is: an agent by its workspace key, a person by the root their device's
-    /// certificate names. `None` for a device whose person is not known yet.
+    /// The member this is: an agent by its workspace key and its person, a person by the root
+    /// their device's certificate names. `None` for a device whose person is not known yet.
     #[must_use]
     pub fn member_id(&self) -> Option<MemberId> {
+        let user = self.user.as_deref().filter(|user| !user.is_empty());
         if self.agent {
-            return Some(
-                self.member
-                    .clone()
-                    .filter(|member| !member.is_person())
-                    .unwrap_or_else(|| MemberId::agent(&self.id)),
-            );
+            return self
+                .member
+                .clone()
+                .filter(|member| !member.is_person())
+                .or_else(|| Some(MemberId::agent(&self.id, user?)));
         }
-        self.user
-            .as_deref()
-            .filter(|user| !user.is_empty())
-            .map(MemberId::person)
+        user.map(MemberId::person)
     }
 
     /// The app following them brings forward where no window here shows their record: the app their
@@ -746,10 +743,12 @@ impl HereState {
             .chain(self.own.as_ref())
             .filter_map(|member| {
                 let id = if member.kind == "agent" {
-                    member
-                        .member
-                        .clone()
-                        .unwrap_or_else(|| MemberId::agent(&member.publisher))
+                    member.member.clone().or_else(|| {
+                        Some(MemberId::agent(
+                            &member.publisher,
+                            self.user_of(&member.publisher)?,
+                        ))
+                    })?
                 } else {
                     MemberId::person(self.user_of(&member.publisher)?)
                 };
@@ -1113,9 +1112,8 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
             Some(row)
         })
         .collect();
-    for (agent, _) in workspace.policy.agent_members_at(now) {
-        let id = MemberId::agent(agent.clone());
-        let mut row = Member::of_software(id.clone(), agent);
+    for (id, _) in workspace.policy.agent_members_at(now) {
+        let mut row = Member::of_software(id.clone(), id.id());
         if let Some(person) = here(&id) {
             row.name.clone_from(&person.label);
             row.colour = hue_of(person.rgb);

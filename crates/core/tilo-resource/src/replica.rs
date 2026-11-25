@@ -225,7 +225,8 @@ impl<R: Resource, A> Replica<R, A> {
     #[must_use]
     pub fn as_agent_for(self, agent: &str, person: &str) -> Self {
         self.as_acting(
-            tilo_actions::Acting::agent(agent).acting_for(tilo_actions::Acting::person(person)),
+            tilo_actions::Acting::agent(agent, person)
+                .acting_for(tilo_actions::Acting::person(person)),
         )
     }
 

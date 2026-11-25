@@ -60,14 +60,14 @@ mod turn_session_tests {
         let caller = on_turn("scribe", turn.clone())
             .in_workspace("w")
             .in_agent_session("so.tilo.session/agent-session/s1");
-        let connection = BrokerActor::agent("scribe").for_person("person");
+        let connection = BrokerActor::agent("scribe", "person").for_person("person");
         let acting = in_turn_session(connection.clone(), &caller);
         assert_eq!(acting.session(), Some("so.tilo.session/agent-session/s1"));
         assert_eq!(acting.actor().agent_id(), Some("scribe"));
         // On the turn it answers: the session stands what the step opens beside that turn.
         assert_eq!(acting.turn(), Some(&turn));
 
-        let other = BrokerActor::agent("other").for_person("person");
+        let other = BrokerActor::agent("other", "person").for_person("person");
         let other = in_turn_session(other, &caller);
         assert_eq!(other.session(), None);
         assert_eq!(

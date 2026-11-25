@@ -132,9 +132,15 @@ fn edit(
         signed: SignedCall::of(&request).map(Box::new),
         ..ActionContext::for_resource("tab:1", "fixture", "fixture")
     }
-    .with_invoker(ActionInvoker::agent(AGENT).acting_for(
-        tilo_action_policy::PersonId::from_root(cert.user_public_key),
-    ));
+    .with_invoker(
+        ActionInvoker::agent(
+            AGENT,
+            tilo_action_policy::PersonId::from_root(cert.user_public_key),
+        )
+        .acting_for(tilo_action_policy::PersonId::from_root(
+            cert.user_public_key,
+        )),
+    );
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(context.change_message().unwrap()),

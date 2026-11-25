@@ -81,7 +81,7 @@ fn a_screen_effect_places_its_invoker_at_the_row_it_is_offered_on() {
     };
     let agent = tilo_actions::PresenceId::new("agent-alpha-view").unwrap();
     app.call_by(
-        tilo_actions::ActionInvoker::agent("card-helper").with_presence(agent.clone()),
+        tilo_actions::ActionInvoker::agent("card-helper", "ada").with_presence(agent.clone()),
         ROW,
         show.id(),
         serde_json::json!({ "card": "alpha" }),

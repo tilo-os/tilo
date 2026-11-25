@@ -486,7 +486,7 @@ async fn whoever_is_neither_a_member_nor_their_agent_is_answered_nothing() {
     let person = hex::encode(ada.user_public_key);
     let (as_cy, as_stranger) = (caller(&cy), caller(&stranger));
     let bot = Caller::local_bot("bot");
-    let local = Caller::local_agent("assistant").acting_for(person.clone());
+    let local = Caller::local_agent("assistant", person.clone());
     let app = Caller::local_app("so.tilo.chat").acting_for(person);
     let nobody: [(&str, &DeviceCert, &Caller); 5] = [
         ("a bot nobody installed for her", &ada, &bot),

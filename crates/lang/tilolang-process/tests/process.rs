@@ -1837,7 +1837,7 @@ fn agent_step(
     tilo_actions::Actor,
     Option<Box<tilo_actions::ActionContext>>,
 ) {
-    let invoker = tilo_actions::ActionInvoker::agent(agent).acting_for(person);
+    let invoker = tilo_actions::ActionInvoker::agent(agent, person).acting_for(person);
     let by = invoker
         .acting
         .by

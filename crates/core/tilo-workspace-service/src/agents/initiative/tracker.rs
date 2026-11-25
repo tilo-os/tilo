@@ -109,12 +109,11 @@ impl Tracker {
     /// Tasks did not take it, or does not show it.
     pub(super) async fn file(
         &self,
-        assistant: &str,
+        assistant: &tilo_action_policy::MemberId,
         title: &str,
         why: &str,
     ) -> Result<ProposedTask, String> {
-        let assignee = serde_json::to_value(tilo_action_policy::MemberId::agent(assistant))
-            .map_err(|error| error.to_string())?;
+        let assignee = serde_json::to_value(assistant).map_err(|error| error.to_string())?;
         let mut arguments = Map::new();
         arguments.insert("title".to_owned(), json!(title));
         arguments.insert("assignee".to_owned(), assignee);
@@ -177,8 +176,7 @@ impl Tracker {
         let agent = task
             .agent()
             .ok_or_else(|| "the task is no longer the assistant's in Tasks".to_owned())?;
-        let assignee = serde_json::to_value(tilo_action_policy::MemberId::agent(agent))
-            .map_err(|error| error.to_string())?;
+        let assignee = serde_json::to_value(agent).map_err(|error| error.to_string())?;
         let mut nobody = Map::new();
         nobody.insert("who".to_owned(), Value::Null);
         self.on(&task, "assign", nobody).await?;

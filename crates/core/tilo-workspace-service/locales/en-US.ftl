@@ -36,6 +36,11 @@ tilo-servers-ask-retirement = Ask a server to retire
 # their language when they found it.
 workspace-default-name = My workspace
 
+# Said in an app's window when the workspace refuses what the app wrote by itself
+# (a trigger, an update of its records) because a member took back the
+# permission installing it gave: it keeps nothing until that is given back.
+app-records-taken-back = { $app } can't keep its records in this workspace any more, so it stopped. A member took back its permission; installing { $app } again, or giving it back under the workspace's Permissions, lets it carry on.
+
 # Why a person's own model gave no answer to work done for them, said where
 # they read it, with what they can do about it.
 model-none-linked = No model is linked for this kind of work. Choose one in Settings, under Agent models.

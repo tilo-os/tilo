@@ -145,7 +145,7 @@ pub(super) async fn gather(
         assistant: own
             .assistant
             .as_deref()
-            .map(tilo_action_policy::MemberId::agent),
+            .map(|assistant| tilo_action_policy::MemberId::agent(assistant, own.person.as_str())),
         seen,
         now_ms,
     };

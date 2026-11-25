@@ -385,7 +385,7 @@ mod tests {
         use ui::tilo_actions::ActionInvoker;
 
         let mut app = TestApp::<RemoteShell>::new().unwrap();
-        let agent = ActionInvoker::agent("claude").acting_for("ada");
+        let agent = ActionInvoker::agent("claude", "ada").acting_for("ada");
         let lab = sample(Uuid::new_v4(), "Lab");
         let id = Remote::item(lab.id);
         app.call_by(

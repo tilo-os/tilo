@@ -39,7 +39,8 @@ pub struct DocumentEvent {
     pub after: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<Cause>,
-    /// The member whose change this one copies, as their actor bytes read (`agent:<id>`), when
+    /// The member whose change this one copies, as their actor bytes read
+    /// (`agent:<person>/<id>`), when
     /// a writer copied one ([`tilo_actions::ORIGIN_FACET`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,

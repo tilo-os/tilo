@@ -1248,11 +1248,11 @@ mod tests {
                     None,
                 )
             };
-            let scout = for_person(Acting::agent("scout"));
+            let scout = for_person(Acting::agent("scout", person.clone()));
             assert_eq!(kept(&by_agent, &scout, true), Ok(Some(agent.clone())));
             // The agent's key never stands for its person, nor for a key's agent it is not.
-            let keyed = for_person(Acting::agent(tilo_action_policy::key_agent_id(&[9; 32])));
-            let critic = for_person(Acting::agent("critic"));
+            let keyed = for_person(Acting::agent(tilo_action_policy::key_agent_id(&[9; 32]), person.clone()));
+            let critic = for_person(Acting::agent("critic", person.clone()));
             for invoker in [Acting::person(person.clone()), keyed, critic] {
                 assert_eq!(kept(&by_agent, &invoker, true), Err(InvocationError::NotInvoker));
             }
@@ -1274,7 +1274,7 @@ mod tests {
             let by_key = signed(&request(), &server_key, &program, NOW);
             let itself = for_person(Acting::agent(tilo_action_policy::key_agent_id(
                 &program.verifying_key().to_bytes(),
-            )));
+            ), "ada"));
             assert_eq!(kept(&by_key, &itself, true), Ok(Some(server_key)));
             assert_eq!(kept(&by_key, &scout, true), Err(InvocationError::NotAgentSigned));
             assert_eq!(kept(&by_key, &itself, false), Err(InvocationError::NotAgentSigned));
@@ -1395,7 +1395,7 @@ mod tests {
             filling.target = person_vault::page_target();
             let asked = signed(&filling, &host, &host_key, NOW);
             let ada = hex::encode([3; 32]);
-            let agent = Acting::agent("assistant").acting_for(Acting::person(ada.clone()));
+            let agent = Acting::agent("assistant", ada.clone()).acting_for(Acting::person(ada.clone()));
             let passwords = tilo_action_policy::roles::WORKSPACE_VAULT_KIND;
             let step = |verb: &str, acting: &Acting| tilo_actions::ActionContext {
                 source_invocation: Some(asked.invocation),

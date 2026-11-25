@@ -881,10 +881,6 @@
       "libraries": 478298,
       "tests": 3289728
     },
-    "tilo-identity-authority": {
-      "libraries": 285646,
-      "tests": 146795168
-    },
     "tilo-identity-client": {
       "libraries": 3481897,
       "tests": 19151696

@@ -292,23 +292,6 @@ impl TestWorkspace {
         self.peer.governance().governed_access(now)
     }
 
-    /// The ids of the grants naming the agent `agent` in this fixture's
-    /// admitted workspace policy.
-    pub fn agent_grants(&self, agent: &str) -> Result<Vec<String>, String> {
-        let workspace = self
-            .peer
-            .admitted_workspace()
-            .ok_or("fixture workspace policy is absent")?;
-        let (_, policy) = crate::workspace::extract_governed_fields(workspace);
-        let agent = tilo_action_policy::Grantee::agent(agent);
-        Ok(policy
-            .grants
-            .into_iter()
-            .filter(|grant| grant.grantee == agent)
-            .map(|grant| grant.id.as_str().to_owned())
-            .collect())
-    }
-
     /// Let `person` exercise the governance `action` of this workspace, as an
     /// administrator may: a key holder a test needs to govern something
     /// without giving it the workspace's owner role.

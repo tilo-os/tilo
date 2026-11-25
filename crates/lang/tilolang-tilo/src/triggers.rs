@@ -169,6 +169,9 @@ fn run(host: &Host, schedule: &Schedule, now: i64) -> (usize, bool) {
                     %refused,
                     "the workspace refused what a trigger wrote"
                 );
+                // The app tells the person why, in the workspace's words: a revoked grant on its
+                // own records is said as that, never left to a log.
+                host.say_refused(refused);
             }
             Ok(Ok(InvokeOutcome::Done(answer))) => {
                 ran = ran.saturating_add(1);

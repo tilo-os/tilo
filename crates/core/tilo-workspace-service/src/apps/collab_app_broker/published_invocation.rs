@@ -893,8 +893,8 @@ fn agent_actor(
 ) -> Result<super::BrokerActor, String> {
     let certificate = certificate
         .map_err(|error| format!("the agent's person could not be verified: {error}"))?;
-    Ok(super::BrokerActor::agent(agent)
-        .for_person(super::person_id_for_root(certificate.user_public_key)))
+    let person = super::person_id_for_root(certificate.user_public_key);
+    Ok(super::BrokerActor::agent(agent, person.clone()).for_person(person))
 }
 
 #[cfg(test)]
@@ -931,7 +931,7 @@ mod agent_actor_tests {
             let actor = agent_actor("one", Ok(&cert)).expect("the agent's person is verified");
             assert_eq!(
                 actor,
-                BrokerActor::agent("one").for_person(person_id_for_root(cert.user_public_key))
+                BrokerActor::agent("one", person_id_for_root(cert.user_public_key)).for_person(person_id_for_root(cert.user_public_key))
             );
         }
 

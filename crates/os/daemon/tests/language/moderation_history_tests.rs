@@ -207,7 +207,7 @@ async fn grant_scout(
 ) {
     let grant = Grant::new(
         "scout-chat",
-        Grantee::agent(SCOUT.to_owned()),
+        Grantee::agent(SCOUT.to_owned(), owner.to_owned()),
         TreePath::workspace(workspace.to_owned()),
         KindSet::READ_UNDOABLE,
         tilo_action_policy::Answer::Allow,

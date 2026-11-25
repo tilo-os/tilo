@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use tilo_action_policy::{MemberAccess, Role, WorkspacePolicy};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
@@ -23,7 +24,6 @@ fn settings() -> Host {
     let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
     let compiled =
         tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
-    use tilo_action_policy::{MemberAccess, Role, WorkspacePolicy};
     let mut policy = WorkspacePolicy::new("team", "ada");
     policy.members.insert("ada".to_owned(), Role::Owner);
     let owner = MemberAccess::person(policy, "ada");

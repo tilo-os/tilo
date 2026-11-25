@@ -7,6 +7,7 @@ app so.tilo.file-explorer "Files" (
 
 use so.tilo.device as device
 use so.tilo.session as session
+use tilo.workspace as workspace
 
 /// How a folder's entries read.
 enum SortBy {
@@ -2176,6 +2177,14 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
                     ui.Property("Came from", e.original, copyable: true)
                 }
             }
+            ui.Section("Access") {
+                access_list(
+                    entries: access_reaching(e.path),
+                    empty: if e.folder {
+                        "No app or person was given this folder."
+                    } else { "No app or person was given this file." },
+                )
+            }
             if let picture = s.preview {
                 ui.Image(src: picture.url, alt: e.name, fit: .contain)
             }
@@ -2187,6 +2196,14 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
         stack(gap: .group) {
             text(name_of(s.here), role: .title)
             text("Select a file to see what it is.", role: .caption, secondary: true)
+            if folder_place(s.here) {
+                ui.Section("Access") {
+                    access_list(
+                        entries: access_reaching(s.here),
+                        empty: "No app or person was given this folder.",
+                    )
+                }
+            }
         }
     }
 }

@@ -77,7 +77,7 @@ pub const PERSON: &str = "Pat";
 
 /// The agent `id`, as the one who acts.
 pub fn agent(id: &str) -> ui::tilo_actions::Actor {
-    ui::tilo_actions::MemberId::agent(id).into()
+    ui::tilo_actions::MemberId::agent(id, "ada").into()
 }
 
 /// The person `id`, as the one who acts.

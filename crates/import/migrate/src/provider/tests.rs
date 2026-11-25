@@ -833,7 +833,7 @@ fn item_of(review: &Value, kind: &str) -> String {
 fn the_person_and_their_agent_drive_one_migration_and_a_stopped_run_resumes_as_itself() {
     let (device, migrations) = device();
     let person = Caller::local_person("ada");
-    let agent = Caller::local_agent("agent:ada-helper").acting_for("ada");
+    let agent = Caller::local_agent("agent:ada-helper", "ada");
 
     // The agent reviews Thunderbird and chooses its address book only.
     let reviewed = run_as(

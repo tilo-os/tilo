@@ -1,6 +1,9 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
 use crate::device::presence::Presence;
-use crate::device::{local::Frames, services::Daemon};
+use crate::device::{
+    local::Frames,
+    services::{Daemon, UNNAMED_AGENT},
+};
 use crate::seats::{AppAt, Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
@@ -146,6 +149,96 @@ fn service_sockets_at(own: &Path, system: bool, account: Option<u32>) -> io::Res
     Ok(dir)
 }
 
+/// The account a workspace VM's tenant runs as: what the VM's keeper names this daemon's tenant
+/// socket with.
+pub const TENANT_UID_ENV: &str = "TILO_VM_TENANT_UID";
+/// The directory the daemon serves its tenant's socket in: made by the VM's keeper for the
+/// tenant's group, which is the first gate, and what a client of the daemon whose sockets are in
+/// a named profile looks in ([`tilo_paths::machine::DAEMON_PROFILE_VAR`]).
+pub const TENANT_SOCKETS_ENV: &str = "TILO_VM_TENANT_SOCKETS";
+
+/// The tenant a workspace VM's keeper hands this daemon: the account its socket serves, and the
+/// directory the socket is in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Tenant {
+    pub(crate) uid: u32,
+    pub(crate) sockets: PathBuf,
+}
+
+impl Tenant {
+    /// The tenant's native endpoint, in its directory.
+    fn native(&self) -> PathBuf {
+        self.sockets.join(tilo_paths::machine::DAEMON_NATIVE)
+    }
+}
+
+/// The tenant this daemon serves a socket for, as its VM's keeper named it; `None` when it named
+/// none, and on a computer that runs no workspace VM.
+#[cfg(unix)]
+fn tenant_of_environment() -> io::Result<Option<Tenant>> {
+    let Some(sockets) = std::env::var_os(TENANT_SOCKETS_ENV) else {
+        return Ok(None);
+    };
+    let named = |error: std::env::VarError| invalid(format!("{TENANT_UID_ENV}: {error}"));
+    let uid = std::env::var(TENANT_UID_ENV)
+        .map_err(named)?
+        .trim()
+        .parse()
+        .map_err(|_| invalid(format!("{TENANT_UID_ENV} is not an account's number")))?;
+    let sockets = PathBuf::from(sockets);
+    if !sockets.is_absolute() {
+        return Err(invalid(format!(
+            "{TENANT_SOCKETS_ENV} is not an absolute path"
+        )));
+    }
+    tilo_api::daemon::socket_fits(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+        .map_err(io::Error::other)?;
+    Ok(Some(Tenant { uid, sockets }))
+}
+
+/// A workspace VM's tenant socket is a Unix account's: a computer with none serves no tenant.
+#[cfg(not(unix))]
+fn tenant_of_environment() -> io::Result<Option<Tenant>> {
+    Ok(None)
+}
+
+/// Bind the tenant's native endpoint in its directory, which the VM's keeper made for the
+/// tenant's group: the socket is that group's and `0660`, so only the account the kernel names
+/// on each connection ever reaches a place where the daemon can refuse it.
+#[cfg(unix)]
+fn bind_tenant(tenant: &Tenant) -> io::Result<Listener> {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
+    let path = tenant.native();
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if !metadata.file_type().is_socket() => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} exists and is not a socket", path.display()),
+            ));
+        }
+        Ok(_) => match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let group = std::fs::metadata(&tenant.sockets)?.gid();
+    let listener = tilo_socket::bind(&path)?;
+    std::os::unix::fs::chown(&path, None, Some(group))?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
+    Ok(listener)
+}
+
+/// A workspace VM's tenant is a Unix account's: a computer with none serves no tenant socket.
+#[cfg(not(unix))]
+fn bind_tenant(_: &Tenant) -> io::Result<Listener> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "a tenant's socket is a Unix account's",
+    ))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Status {
@@ -237,7 +330,8 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     // Heard from the daemon's first moment: before there is a person, waiting for one is all it
     // does, and a signal the caller had ignored is inherited across exec.
     let stop = crate::device::serve::Stop::default();
-    crate::device::serve::hear_stops(stop.clone(), crate::device::serve::STOPPED_WITHIN)
+    let native = native_socket(profile)?;
+    crate::device::serve::hear_stops(stop.clone(), crate::device::serve::STOPPED_WITHIN, native)
         .map_err(|error| io::Error::other(format!("{error:#}")))?;
     Running::start_serving(profile, dev, stop)?.wait()
 }
@@ -252,6 +346,9 @@ pub struct Running {
     /// The native endpoint, which takes no connection once it is closing.
     endpoint: Arc<Native>,
     accepting: Option<std::thread::JoinHandle<()>>,
+    /// A workspace VM's tenant socket, and the thread taking its connections.
+    tenant: Option<PathBuf>,
+    tenant_accepting: Option<std::thread::JoinHandle<()>>,
     serving: Option<std::thread::JoinHandle<io::Result<()>>>,
     /// The person's services while they run: what starts their shell.
     person: Arc<Person>,
@@ -315,6 +412,16 @@ impl Running {
         dev: bool,
         stop: crate::device::serve::Stop,
     ) -> io::Result<Self> {
+        Self::start_serving_tenant(profile, dev, stop, tenant_of_environment()?.as_ref())
+    }
+
+    /// [`Self::start_serving`] with the tenant socket its VM's keeper named, if it named one.
+    fn start_serving_tenant(
+        profile: &Path,
+        dev: bool,
+        stop: crate::device::serve::Stop,
+        tenant: Option<&Tenant>,
+    ) -> io::Result<Self> {
         validate_profile(profile)?;
         let device = crate::device::unclaimed::ThisDevice::lock(profile.to_path_buf())?;
         // Who each connection is: root and this daemon's own account act as the device, and
@@ -357,6 +464,28 @@ impl Running {
                 })?
         };
         tracing::info!("answering this device's actions on its native endpoint");
+        // The socket a workspace VM's tenant reaches: its keeper made the directory for the
+        // tenant's group, and every connection is admitted by the account the kernel names.
+        let (tenant_socket, tenant_accepting) = match tenant {
+            Some(tenant) => {
+                let listener = bind_tenant(tenant)?;
+                let serving = TenantServing::new(tenant.uid);
+                native.serve_tenant_socket(Arc::clone(&serving));
+                let accepting = {
+                    let serving = Arc::clone(&serving);
+                    std::thread::Builder::new()
+                        .name("tilo-tenant".into())
+                        .spawn(move || {
+                            if let Err(error) = serving.accept(&listener) {
+                                tracing::debug!(%error, "the tenant's endpoint stopped taking connections");
+                            }
+                        })?
+                };
+                tracing::info!("answering the workspace's tenant at its own endpoint");
+                (Some(tenant.native()), Some(accepting))
+            }
+            None => (None, None),
+        };
         let person = Arc::new(Person::default());
         let serving = {
             let (profile, stop, person) = (profile.to_owned(), stop.clone(), Arc::clone(&person));
@@ -369,6 +498,8 @@ impl Running {
             stop,
             endpoint,
             accepting: Some(accepting),
+            tenant: tenant_socket,
+            tenant_accepting,
             serving: Some(serving),
             person,
         })
@@ -497,6 +628,20 @@ impl Running {
             let _ = accepting.join();
         }
         let _ = std::fs::remove_file(&self.native);
+        // The tenant's socket closes with the daemon's, and no connection it takes serves the
+        // device's own actions in the person's place.
+        if let Some(tenant) = self.endpoint.tenant.get() {
+            tenant.closing.store(true, Ordering::Relaxed);
+        }
+        if let Some(socket) = &self.tenant {
+            drop(tilo_socket::connect(socket));
+        }
+        if let Some(accepting) = self.tenant_accepting.take() {
+            let _ = accepting.join();
+        }
+        if let Some(socket) = &self.tenant {
+            let _ = std::fs::remove_file(socket);
+        }
     }
 }
 
@@ -615,14 +760,31 @@ fn serve_device(
         if stop.told() {
             return Ok(());
         }
+        stop.waiting_on("the wait between its person's parts");
+        // In a build that is not a release, a test can hold the daemon between its parts, where
+        // a step of the part that ended does not return: what a folder that will not unmount
+        // does. The stop must still end the daemon there.
+        #[cfg(debug_assertions)]
+        {
+            if !stop.told()
+                && let Some(block) = std::env::var_os("TILO_TEST_HOLD_BETWEEN_PARTS_MS")
+                    .and_then(|ms| ms.to_str().and_then(|ms| ms.parse::<u64>().ok()))
+            {
+                tracing::info!(
+                    ms = block,
+                    "a test holds the daemon between its person's parts"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(block));
+            }
+        }
         // Each stage is the work under way until the next begins: a start that hangs is named
         // by the stage it hangs in, in the stall's report.
         let mut watched = None;
         let mut stage = |stage: &str| {
             tracing::debug!(stage, "starting the person's services");
-            watched = Some(tilo_rt::stall::doing(format!(
-                "starting the person's services: {stage}"
-            )));
+            let what = format!("starting the person's services: {stage}");
+            stop.waiting_on(what.clone());
+            watched = Some(tilo_rt::stall::doing(what));
         };
         let session = match Daemon::start_locked(
             profile,
@@ -677,31 +839,56 @@ fn serve_device(
         native
             .seats
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
+        // A workspace VM's tenant reaches the same workspace as the person's unnamed agent, at
+        // the socket its keeper made for it alone.
+        if let Some(tenant) = native.tenant.get() {
+            tenant.serve(the_tenant(&session));
+        }
         native.serve_the_person(the_persons(&session, search));
         native.serve_keys(key_endpoint(&session));
+        // A workspace VM's daemon runs the VM's sessions as its shells.
+        #[cfg(target_os = "linux")]
+        crate::device::vm_environment::serve(&session, stop);
         person.set(Some(&session));
+        // A part serves from here: a stop told now is the part's to take up, with its folders to
+        // unmount and its trees to keep.
+        stop.serving(true);
         // The device is served until the daemon is told to stop, another takes the device over,
         // or this computer logs in with a ticket: its person's part starts again as that device,
         // the device's own part (the native endpoint, the device's lock) staying up meanwhile.
         let held = crate::device::hold(&session, stop);
+        // Between parts from here: a stop told now has nothing of a part's to let go of, and
+        // ends the daemon rather than wait for the start that follows to take it up.
+        stop.serving(false);
         person.set(None);
         native.forget_the_person();
+        if stop.told() {
+            // The part ended because it was told to stop: what it served is let go by the
+            // process ending, as a kill would let go of it, rather than closed for a start that
+            // will not come.
+            drop(session);
+            return Ok(());
+        }
         let closed = session.connections().end();
         tracing::info!(closed, "the person's part closed the connections it served");
         // Its workspace service stops answering and saves what it took in, and its endpoint
         // closes, before the next part opens the same stores and enters as the same device.
         let workspaces = Arc::clone(session.serving());
+        let left = Arc::downgrade(&session);
         crate::device::serve::ending_step(
+            Some(stop),
             "the person's part's workspace service",
             CLOSING_WORKSPACES,
             move || {
                 crate::device::workspaces::block_on_owned(async move {
                     workspaces.shutdown().await;
                 });
+                // What the part kept of its folders lets go here, on this step's own thread: a
+                // mount that will not unmount blocks this step alone, never the daemon that
+                // has to hear its stop.
+                drop(session);
             },
         );
-        let left = Arc::downgrade(&session);
-        drop(session);
         match held.map_err(|error| io::Error::other(format!("{error:#}")))? {
             crate::device::Ended::Stopped => return Ok(()),
             crate::device::Ended::LoggedIn(device) => entered = Some(*device),
@@ -1017,6 +1204,20 @@ pub(crate) fn serve_for_test(
     Ok(())
 }
 
+/// Serve `session`'s tenant endpoint at the socket `tenant` names, admitting only its account, as
+/// the daemon does for the socket its VM's keeper names: what a test of the tenant's connection
+/// reaches.
+#[cfg(all(test, unix))]
+pub(crate) fn serve_tenant_for_test(session: &Arc<Daemon>, tenant: &Tenant) -> io::Result<PathBuf> {
+    let serving = TenantServing::new(tenant.uid);
+    serving.serve(the_tenant(session));
+    let listener = bind_tenant(tenant)?;
+    std::thread::Builder::new()
+        .name("tilo-native-tenant-test".into())
+        .spawn(move || serving.accept(&listener))?;
+    Ok(tenant.native())
+}
+
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
 type Take = Box<dyn Fn(Stream, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
 
@@ -1055,6 +1256,8 @@ struct Native {
     /// The endpoint of the other people signed in on the computer, each as their own key, while
     /// the person's services run.
     keys: Mutex<Option<Arc<KeyTake>>>,
+    /// The socket a workspace VM's tenant reaches this daemon at, when its keeper named one.
+    tenant: OnceLock<Arc<TenantServing>>,
     /// Told when [`Self::person`] is set.
     started: (Mutex<()>, Condvar),
     /// Set as the daemon stops: the endpoint takes no more connections.
@@ -1077,8 +1280,14 @@ impl Native {
             person: Mutex::new(None),
             apps: Mutex::new(None),
             keys: Mutex::new(None),
+            tenant: OnceLock::new(),
             closing: AtomicBool::new(false),
         }
+    }
+
+    /// Serve the tenant's socket with `serving` from now on, when this daemon has one.
+    fn serve_tenant_socket(&self, serving: Arc<TenantServing>) {
+        let _ = self.tenant.set(serving);
     }
 
     /// Serve `stream` the device's own actions, as the account `seated` asks them.
@@ -1147,6 +1356,9 @@ impl Native {
         self.person.lock_recover().take();
         self.apps.lock_recover().take();
         self.keys.lock_recover().take();
+        if let Some(tenant) = self.tenant.get() {
+            tenant.forget();
+        }
     }
 
     /// The person's endpoint, while their services run.
@@ -1255,6 +1467,152 @@ impl Native {
 /// How long a connection waits for the person's part to take it before it is told why it is not
 /// served. The agents' endpoint bounds its own handoff by the same name.
 const WAITED_WITHIN: Duration = Duration::from_secs(120);
+
+/// What serves a workspace VM's tenant at the socket its keeper made: one account, the person's
+/// unnamed agent, and every other account refused by name.
+struct TenantServing {
+    /// The account the socket serves: the VM's tenant, whose group is the first gate and whose
+    /// uid the kernel names on each connection.
+    uid: u32,
+    /// The endpoint the tenant is served with, while the person's services run.
+    endpoint: Mutex<Option<Endpoint<<Daemon as RuntimeServices>::ActionProvider>>>,
+    /// Told when [`Self::endpoint`] is set.
+    started: (Mutex<()>, Condvar),
+    /// Set as the daemon stops: the socket takes no more connections.
+    closing: AtomicBool,
+}
+
+impl TenantServing {
+    fn new(uid: u32) -> Arc<Self> {
+        Arc::new(Self {
+            uid,
+            endpoint: Mutex::new(None),
+            started: (Mutex::new(()), Condvar::new()),
+            closing: AtomicBool::new(false),
+        })
+    }
+
+    /// Serve every connection from now on with `endpoint`, the person's unnamed agent.
+    fn serve(&self, endpoint: Endpoint<<Daemon as RuntimeServices>::ActionProvider>) {
+        *self.endpoint.lock_recover() = Some(endpoint);
+        let _told = self.started.0.lock_recover();
+        self.started.1.notify_all();
+    }
+
+    /// Serve no connection from now on, while the person's services start again.
+    fn forget(&self) {
+        self.endpoint.lock_recover().take();
+    }
+
+    fn endpoint(&self) -> Option<Endpoint<<Daemon as RuntimeServices>::ActionProvider>> {
+        self.endpoint.lock_recover().clone()
+    }
+
+    /// Take each connection: the tenant's account is served once the person's services run, as
+    /// the person's unnamed agent, and every other account is told this socket is not theirs.
+    fn accept(self: &Arc<Self>, listener: &Listener) -> io::Result<()> {
+        accept(listener, |stream, slot| {
+            if self.closing.load(Ordering::Relaxed) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "the tenant's endpoint closed",
+                ));
+            }
+            let peer = match crate::seats::Peer::of(&stream) {
+                Ok(peer) => peer.uid,
+                Err(error) => {
+                    tracing::debug!(%error, "a tenant connection's account is not known");
+                    refuse_tenant(&stream, self.uid, None);
+                    return Ok(());
+                }
+            };
+            if peer != self.uid {
+                refuse_tenant(&stream, self.uid, Some(peer));
+                return Ok(());
+            }
+            self.take(stream, slot);
+            Ok(())
+        })
+    }
+
+    /// Serve `stream` once the person's services run: one that comes while they start waits for
+    /// them, as the native endpoint's own connections do.
+    fn take(self: &Arc<Self>, stream: Stream, slot: ConnectionSlot) {
+        let serving = Arc::clone(self);
+        let served = std::thread::Builder::new()
+            .name("tilo-native-tenant".into())
+            .spawn(move || {
+                let deadline = Instant::now()
+                    .checked_add(WAITED_WITHIN)
+                    .unwrap_or_else(Instant::now);
+                let mut told = serving.started.0.lock_recover();
+                let endpoint = loop {
+                    if let Some(endpoint) = serving.endpoint() {
+                        break Some(endpoint);
+                    }
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break None;
+                    }
+                    told = serving
+                        .started
+                        .1
+                        .wait_timeout(told, left)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
+                };
+                drop(told);
+                let Some(endpoint) = endpoint else {
+                    crate::device::serve::refuse(
+                        &stream,
+                        "this computer's Tilo has not started its person's part yet: run `tilo \
+                         status` to see how it stands, then try again",
+                    );
+                    return;
+                };
+                if let Err(error) = endpoint.take(stream, slot, None) {
+                    tracing::debug!(%error, "a tenant connection was not served");
+                }
+            });
+        if let Err(error) = served {
+            tracing::warn!(%error, "a connection to the tenant's socket could not be served");
+        }
+    }
+}
+
+/// Tell the account at `stream` why the tenant's socket serves it nothing, then close it.
+fn refuse_tenant(stream: &Stream, tenant: u32, peer: Option<u32>) {
+    let why = match peer {
+        Some(uid) => format!(
+            "this socket is the workspace's tenant's alone: uid {uid} is not the account it \
+             serves (uid {tenant})"
+        ),
+        None => "this socket is the workspace's tenant's alone: the kernel does not name the \
+                 account connecting"
+            .to_owned(),
+    };
+    crate::device::serve::refuse(stream, &why);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// What a workspace VM's tenant is served with: the person's unnamed agent, over the action wire
+/// and MCP alike, so an asked action still asks and nothing here is the person.
+fn the_tenant(session: &Arc<Daemon>) -> Endpoint<<Daemon as RuntimeServices>::ActionProvider> {
+    Endpoint {
+        session_factory: session.agent_sessions(UNNAMED_AGENT),
+        status: status_of(session),
+        search: Arc::new(OnceLock::new()),
+        media: session.media(),
+        other_devices: None,
+        agents: None,
+        frames: Frames::of_the_tenant(session),
+        to_agents: None,
+        // The tenant starts no app of the daemon's: what it runs, it runs in its own account.
+        launch: None,
+        // The tenant is served for the person's part, and closed with it.
+        connections: Some(Arc::clone(session.connections())),
+    }
+}
 
 /// Hand each connection to `listener` to `take`, at most [`MAX_CONNECTIONS`] at once. One more
 /// is told there is no room and closed ([`refuse_busy`]).
@@ -2173,6 +2531,10 @@ fn default_launch_guard(
 #[cfg(test)]
 #[path = "daemon_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "daemon_tenant_tests.rs"]
+mod tenant_tests;
 
 #[cfg(test)]
 #[path = "daemon_limits_tests.rs"]

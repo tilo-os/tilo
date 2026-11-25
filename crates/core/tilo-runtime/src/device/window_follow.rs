@@ -217,7 +217,7 @@ mod tests {
             wire::request(
                 wire::FOLLOW,
                 &wire::Follow {
-                    peer: Some(tilo_actions::MemberId::Agent("helper".into())),
+                    peer: Some(tilo_actions::MemberId::agent("helper", "ada")),
                 },
             )
         };
@@ -245,7 +245,7 @@ mod tests {
             assert_eq!(heard.len(), 1, "{heard:?}");
             assert!(matches!(
                 &heard[0],
-                (_, CollabEvent::FollowChanged { peer_id: Some(tilo_actions::MemberId::Agent(agent)) })
+                (_, CollabEvent::FollowChanged { peer_id: Some(tilo_actions::MemberId::Agent { id: agent, .. }) })
                     if agent == "helper"
             ));
             drop(heard);
@@ -255,7 +255,7 @@ mod tests {
         // hears of it.
         for stranger in [
             Caller::local_app("so.tilo.writer").in_workspace(WORKSPACE),
-            Caller::local_agent("helper").in_workspace(WORKSPACE),
+            Caller::local_agent("helper", "ada").in_workspace(WORKSPACE),
             person().from_foreign_device(true),
         ] {
             assert!(matches!(

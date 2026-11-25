@@ -276,7 +276,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     let collision = workspace.allow_agent(&person, crate::apps::test_support::KindSet::READ);
     workspace.allow_agent(tide, crate::apps::test_support::KindSet::READ);
     workspace.allow_in_workspace(
-        crate::apps::test_support::Grantee::agent("wrong-workspace"),
+        crate::apps::test_support::Grantee::agent("wrong-workspace", "person-in-other-workspace"),
         &uuid::Uuid::new_v4().to_string(),
         crate::apps::test_support::KindSet::READ,
     );
@@ -341,21 +341,22 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
         roster.iter().find(|row| row.is_self).unwrap().joined_at,
         Some(0)
     );
-    assert_eq!(joined(collab_types::MemberId::agent(tide)), None);
+    assert_eq!(
+        joined(collab_types::MemberId::agent(tide, other_person)),
+        None
+    );
+    assert!(roster.iter().any(|row| row.id
+        == collab_types::MemberId::agent(person.clone(), other_person)
+        && !row.is_self));
     assert!(
         roster
             .iter()
-            .any(|row| row.id == collab_types::MemberId::agent(person.clone()) && !row.is_self)
+            .any(|row| row.id == collab_types::MemberId::agent(tide, "fixture-owner"))
     );
     assert!(
         roster
             .iter()
-            .any(|row| row.id == collab_types::MemberId::agent(tide))
-    );
-    assert!(
-        roster
-            .iter()
-            .all(|row| row.id != collab_types::MemberId::agent("wrong-workspace")),
+            .all(|row| row.id != collab_types::MemberId::agent("wrong-workspace", "fixture-owner")),
         "a grant for another workspace is not native membership here"
     );
     assert!(
@@ -394,8 +395,10 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
         stream.try_recv(),
         Ok(ContextUpdate::Snapshot { .. })
     ));
-    let forged =
-        collab_types::Member::of_software(collab_types::MemberId::agent("forged"), "forged");
+    let forged = collab_types::Member::of_software(
+        collab_types::MemberId::agent("forged", "fixture-owner"),
+        "forged",
+    );
     {
         let mut channels = state.channels.lock().unwrap();
         AppBrokerState::fanout_context(
@@ -436,7 +439,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
+            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), other_person))
     );
     assert!(
         members
@@ -454,7 +457,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
+            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), person.clone()))
     );
     membership.write().workspaces[0].allow_agent(reed, crate::apps::test_support::KindSet::READ);
     state.refresh_workspace_context_services().unwrap();
@@ -464,7 +467,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .any(|row| row.id == collab_types::MemberId::agent(reed))
+            .any(|row| row.id == collab_types::MemberId::agent(reed, "fixture-owner"))
     );
     let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
         panic!("every mounted root must receive membership addition");
@@ -472,7 +475,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .any(|row| row.id == collab_types::MemberId::agent("reed"))
+            .any(|row| row.id == collab_types::MemberId::agent("reed", "fixture-owner"))
     );
 
     let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
@@ -1138,7 +1141,7 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
     );
     let scout = roster
         .iter()
-        .find(|row| row.id == collab_types::MemberId::agent("scout"))
+        .find(|row| row.id == collab_types::MemberId::agent("scout", "fixture-owner"))
         .expect("Scout's row");
     assert_eq!(scout.name, "Scout", "the audience reads its persona's name");
     assert_eq!(

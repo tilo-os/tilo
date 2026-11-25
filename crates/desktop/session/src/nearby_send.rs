@@ -15,16 +15,17 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use collab_types::caps::{Access, CapDecision, ResourceRef, Scope};
+use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, Scope};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, ApiError, InvocationId, ResourceSpec};
-use tilo_broker_core::services::WorkspaceAuthority;
 use tilo_capture_studio::{Refusal, Sent};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, Wake, reading};
 use tilo_session_client::daemon_documents::{DaemonShell, whole};
+use tilo_session_client::workspace_view::WorkspaceView;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_workspace_service::apps::nearby_send::{
     AirDrops, HELPER_TIMEOUT, Host, NearbySendAction, Reading, TransferState,
 };
@@ -48,9 +49,12 @@ struct Inner {
     /// Where a file the person hands over is staged: the device's one content shelf, through the
     /// scope its Files grants let this session reach.
     content: Arc<RecordContent>,
-    /// The workspaces' files as this session knows them: what Files grants a read or a write,
-    /// attached once the app wire decides against the shell.
-    layout: Arc<Mutex<Option<Arc<dyn WorkspaceAuthority>>>>,
+    /// The seat's shell on the loop: which workspace is in front, where a send is made and a
+    /// received file lands.
+    handle: DesktopHandle,
+    /// The folders a workspace's Files grants, asked of the loop from the threads that read the
+    /// files a send hands over.
+    grants: Arc<FilesGrants>,
     /// How a resource is shared: the session opens its invitation sheet.
     share: Box<dyn Fn(&str) -> Result<(), String>>,
     /// The receiver no device of the person's is, and the question its certificate puts to them.
@@ -92,18 +96,21 @@ impl Served {
     pub(crate) fn new(
         daemon: DaemonShell,
         content: Arc<RecordContent>,
+        handle: DesktopHandle,
         continuity: Continuity,
         share: Box<dyn Fn(&str) -> Result<(), String>>,
         wake: Wake,
     ) -> Self {
         Self {
-            inner: Rc::new(Inner::new(daemon, content, continuity, share, wake)),
+            inner: Rc::new(Inner::new(daemon, content, handle, continuity, share, wake)),
         }
     }
 
-    /// Decide the grants against `authority`, this session's workspaces as its shell shows them.
-    pub(crate) fn attach_authority(&self, authority: Arc<dyn WorkspaceAuthority>) {
-        self.inner.attach_authority(authority);
+    /// Answer the Files grants a send asked for since the last pass, from the shell `handle` shows
+    /// or, for a workspace the shell does not show (the person's own), from the daemon's `view`.
+    /// On the loop's pass only.
+    pub(crate) fn answer(&self, handle: &DesktopHandle, view: Option<&WorkspaceView>) {
+        self.inner.grants.answer(handle, view);
     }
 
     /// The receiver no device of the person's is, for its question to reach their sheets
@@ -140,17 +147,22 @@ impl Inner {
     fn new(
         daemon: DaemonShell,
         content: Arc<RecordContent>,
+        handle: DesktopHandle,
         continuity: Continuity,
         share: Box<dyn Fn(&str) -> Result<(), String>>,
         wake: Wake,
     ) -> Self {
-        let layout: Arc<Mutex<Option<Arc<dyn WorkspaceAuthority>>>> = Arc::default();
-        let air_drop = air_drops(&content, &layout, &continuity, &wake);
+        let grants = Arc::new(FilesGrants {
+            asks: Mutex::new(Vec::new()),
+            wake: wake.clone(),
+        });
+        let air_drop = air_drops(&content, &grants, &continuity, &wake);
         let permitting = continuity.clone();
         Self {
             daemon,
             content,
-            layout,
+            handle,
+            grants,
             share,
             air_drop,
             permitted: Arc::new(move || permitting.file_transfer_permitted()),
@@ -161,31 +173,14 @@ impl Inner {
         }
     }
 
-    /// Decide the grants against `authority`, this session's workspaces as its shell shows them.
-    fn attach_authority(&self, authority: Arc<dyn WorkspaceAuthority>) {
-        *self
-            .layout
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(authority);
-    }
-
     /// The workspace in front, as the shell shows it: where a send is made and a received file
-    /// lands.
+    /// lands. `None` while this session reads no daemon of its own, which serves neither.
     fn workspace(&self) -> Option<String> {
-        let layout = self.workspace_grant()?;
-        let mut active = String::new();
-        layout
-            .with_tree(&mut |tree| active = tree.active.to_string())
-            .ok()?;
+        if !self.has_link() {
+            return None;
+        }
+        let active = self.handle.read(|tree| tree.active.to_string());
         (!active.is_empty()).then_some(active)
-    }
-
-    /// The workspaces' grants, once they are attached.
-    fn workspace_grant(&self) -> Option<Arc<dyn WorkspaceAuthority>> {
-        self.layout
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
     }
 
     /// The receiver no device of the person's is, for its question to reach their sheets
@@ -347,12 +342,12 @@ impl Inner {
         };
         let daemon = self.daemon.clone();
         let content = Arc::clone(&self.content);
-        let layout = Arc::clone(&self.layout);
+        let grants = Arc::clone(&self.grants);
         let wake = self.wake.clone();
         let items = items.to_vec();
         let device = device.to_owned();
         std::thread::spawn(move || {
-            match stage(&content, &layout, &workspace, &items) {
+            match stage(&content, &grants, &workspace, &items) {
                 Err(reason) => tracing::warn!(%reason, "a nearby send is refused"),
                 Ok(staged) => {
                     let arguments = json!({"items": staged, "device": device});
@@ -395,7 +390,7 @@ impl Inner {
         };
         let daemon = self.daemon.clone();
         let content = Arc::clone(&self.content);
-        let layout = Arc::clone(&self.layout);
+        let grants = Arc::clone(&self.grants);
         let wake = self.wake.clone();
         let id = id.to_owned();
         std::thread::spawn(move || {
@@ -405,7 +400,7 @@ impl Inner {
                     .ok_or("the file has no name")?
                     .to_string_lossy()
                     .into_owned();
-                let path = read_for(&layout, &workspace, &path)?;
+                let path = read_for(&grants, &workspace, &path)?;
                 let size = std::fs::metadata(&path)
                     .map_err(|error| error.to_string())?
                     .len();
@@ -542,13 +537,13 @@ fn request(action: &str, arguments: Value) -> InvokeRequest {
 /// content: its address, name and size.
 fn stage(
     content: &RecordContent,
-    layout: &Arc<Mutex<Option<Arc<dyn WorkspaceAuthority>>>>,
+    grants: &Arc<FilesGrants>,
     workspace: &str,
     items: &[String],
 ) -> Result<Vec<Value>, String> {
     let mut staged = Vec::with_capacity(items.len());
     for item in items {
-        let path = read_for(layout, workspace, Path::new(item))?;
+        let path = read_for(grants, workspace, Path::new(item))?;
         let name = path
             .file_name()
             .ok_or_else(|| format!("{item} is not a file"))?
@@ -564,15 +559,11 @@ fn stage(
 }
 
 /// `path`, canonical, once a folder `workspace`'s Files grants it: what a send stages.
-fn read_for(
-    layout: &Arc<Mutex<Option<Arc<dyn WorkspaceAuthority>>>>,
-    workspace: &str,
-    path: &Path,
-) -> Result<PathBuf, String> {
-    let grants = grants(layout, workspace);
+fn read_for(grants: &Arc<FilesGrants>, workspace: &str, path: &Path) -> Result<PathBuf, String> {
+    let granted = grants.folders(workspace);
     let requested =
         std::fs::canonicalize(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let Some(grant) = grants
+    let Some(grant) = granted
         .iter()
         .filter(|grant| requested.starts_with(grant))
         .max_by_key(|grant| grant.components().count())
@@ -590,36 +581,80 @@ fn read_for(
     Ok(requested)
 }
 
-/// The folders Files may read in `workspace`, as its sandbox decides it now.
-fn grants(
-    layout: &Arc<Mutex<Option<Arc<dyn WorkspaceAuthority>>>>,
-    workspace: &str,
-) -> Vec<PathBuf> {
-    let Some(layout) = layout
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-    else {
-        return Vec::new();
-    };
-    let mut folders = Vec::new();
-    let read = layout.with_workspace(workspace, &mut |workspace| {
-        let Some(workspace) = workspace else {
-            return;
-        };
-        folders = files_folders(workspace, Access::Read);
-    });
-    if let Err(error) = read {
-        tracing::warn!(%error, "a workspace's files are not read for a send");
-        return Vec::new();
-    }
-    folders
+/// How long a send waits for the loop to read a workspace's Files grants: the loop answers on its
+/// next pass, so this only bounds a frozen session.
+const GRANTS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A workspace whose Files folders a send asked the loop for, and where the answer goes.
+type Ask = (
+    String,
+    tilo_actions::remote::Completer<Option<Vec<PathBuf>>>,
+);
+
+/// The folders a workspace's Files grants, asked of the loop from the threads that read the files
+/// a send hands over ([`Self::answer`]).
+struct FilesGrants {
+    asks: Mutex<Vec<Ask>>,
+    wake: Wake,
 }
 
-/// The folders the workspace lets Files reach with `access`, as its sandbox decides it now.
-fn files_folders(workspace: &tilo_desktop_model::Workspace, access: Access) -> Vec<PathBuf> {
+impl FilesGrants {
+    /// Answer what the sends asked since the last pass: the folders the seat's shell shows for
+    /// `workspace`, or for one the shell does not show (the person's own) the folders the daemon's
+    /// `view` keeps for it. On the loop's pass only.
+    fn answer(&self, handle: &DesktopHandle, view: Option<&WorkspaceView>) {
+        let asks = std::mem::take(
+            &mut *self
+                .asks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for (workspace, done) in asks {
+            let shown = handle.read(|tree| {
+                tilo_broker_core::services::workspace_in(tree, &workspace)
+                    .map(|shown| folders_in(&shown.sandbox, Access::Read))
+            });
+            done.complete(shown.or_else(|| view.and_then(|view| via_daemon(view, &workspace))));
+        }
+    }
+
+    /// The folders Files may read in `workspace`, as the loop answers on its next pass.
+    fn folders(&self, workspace: &str) -> Vec<PathBuf> {
+        let (done, answered) = tilo_actions::remote::pending();
+        self.asks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((workspace.to_owned(), done));
+        (self.wake)();
+        match answered.wait_timeout(GRANTS_WAIT) {
+            Ok(Some(Some(folders))) => folders,
+            Ok(Some(None)) => Vec::new(),
+            Ok(None) => {
+                tracing::warn!("a workspace's files are not read for a send");
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::warn!("the session did not answer a workspace's files for a send");
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// The folders the daemon's `view` keeps for `workspace`, a workspace the shell does not show.
+/// `None` for one this device does not hold, or whose governance has not arrived.
+fn via_daemon(view: &WorkspaceView, workspace: &str) -> Option<Vec<PathBuf>> {
+    let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+    let sandbox = view
+        .reading(id, |reading| reading.sandbox.clone())
+        .flatten()?;
+    Some(folders_in(&sandbox, Access::Read))
+}
+
+/// The folders `sandbox` lets Files reach with `access`, as it decides it now.
+fn folders_in(sandbox: &[CapOverride], access: Access) -> Vec<PathBuf> {
     let now = tilo_clock::unix_now();
-    collab_types::caps::sandbox::of_app_at(&workspace.sandbox, wire::APP, now)
+    collab_types::caps::sandbox::of_app_at(sandbox, wire::APP, now)
         .into_iter()
         .filter_map(|capability| match &capability.scope {
             Scope::FsPath(path) => Some(path),
@@ -630,7 +665,7 @@ fn files_folders(workspace: &tilo_desktop_model::Workspace, access: Access) -> V
                 wire::APP,
                 &ResourceRef::FsPath((*path).clone()),
                 access,
-                &workspace.sandbox,
+                sandbox,
                 Some(now.saturating_mul(1000)),
             ) == CapDecision::Allow
         })
@@ -642,21 +677,21 @@ fn files_folders(workspace: &tilo_desktop_model::Workspace, access: Access) -> V
 /// the person: the seat's own, since it needs a sheet and an address no fabric reaches.
 fn air_drops(
     content: &Arc<RecordContent>,
-    layout: &Arc<Mutex<Option<Arc<dyn WorkspaceAuthority>>>>,
+    grants: &Arc<FilesGrants>,
     continuity: &Continuity,
     wake: &Wake,
 ) -> Arc<AirDrops> {
     let _ = content;
-    let grants_of = Arc::clone(layout);
+    let grants_of = Arc::clone(grants);
     let permitting = continuity.clone();
     let changing = wake.clone();
     Arc::new(AirDrops::new(Host {
         enabled: tilo_workspace_service::apps::nearby_send::lab(),
         open: Box::new(move |workspace, requested| {
-            let grants = grants(&grants_of, workspace);
+            let granted = grants_of.folders(workspace);
             let path = std::fs::canonicalize(requested)
                 .map_err(|error| format!("{}: {error}", requested.display()))?;
-            if !grants.iter().any(|grant| path.starts_with(grant)) || !path.is_file() {
+            if !granted.iter().any(|grant| path.starts_with(grant)) || !path.is_file() {
                 return Err("that file is not one of the files Files may hand over".to_owned());
             }
             let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
@@ -681,5 +716,75 @@ fn refused(reason: String) -> ApiError {
     ApiError::Refused {
         code: "nearby-send".to_owned(),
         reason,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    use collab_types::caps::Effect;
+    use tilo_action_policy::Grantee;
+
+    /// A send stages the files it hands over only beneath a folder its workspace's Files grants:
+    /// its thread asks the loop, which answers from the seat's shell, and a file outside the grant
+    /// is refused.
+    #[test]
+    fn a_send_reads_a_granted_folder_and_refuses_another() {
+        let home = tempfile::tempdir().expect("a directory for the files");
+        let root = std::fs::canonicalize(home.path()).expect("the directory's real path");
+        let granted = root.join("shared");
+        std::fs::create_dir_all(&granted).expect("the folder the workspace shares");
+        let staged = granted.join("note.txt");
+        std::fs::write(&staged, b"what the send carries").expect("a file in the shared folder");
+        let elsewhere = root.join("private");
+        std::fs::create_dir_all(&elsewhere).expect("a folder the workspace does not share");
+        let refused = elsewhere.join("secret.txt");
+        std::fs::write(&refused, b"not for a send").expect("a file outside the shared folder");
+
+        let id = tilo_desktop_model::WorkspaceId::new();
+        let mut workspace = tilo_desktop_model::Workspace::new(id, "Probe".to_owned());
+        workspace.sandbox = vec![CapOverride {
+            app: Some(tilo_app_id::AppId::new(wire::APP)),
+            ..CapOverride::new(
+                Grantee::App(wire::APP.to_owned()),
+                Scope::FsPath(granted.to_string_lossy().into_owned()),
+                Effect::Grant,
+                Access::Read,
+            )
+        }];
+        let mut tree = tilo_desktop_model::Layout::default();
+        tree.active = id;
+        tree.workspaces.push(workspace);
+        let handle = DesktopHandle::new(tree, 1);
+        let workspace = id.to_string();
+
+        let (woken, woke) = mpsc::channel();
+        let grants = Arc::new(FilesGrants {
+            asks: Mutex::new(Vec::new()),
+            wake: Arc::new(move || {
+                let _ = woken.send(());
+            }),
+        });
+
+        // The send reads on a thread of its own, as staging does; the loop answers here.
+        let read = |path: &Path| {
+            let asking = Arc::clone(&grants);
+            let name = workspace.clone();
+            let path = path.to_owned();
+            let reading = std::thread::spawn(move || read_for(&asking, &name, &path));
+            woke.recv().expect("the send asks the loop");
+            grants.answer(&handle, None);
+            reading.join().expect("the send's thread")
+        };
+
+        let kept = read(&staged).expect("a file the workspace shares is read");
+        assert_eq!(
+            std::fs::read(&kept).expect("the file the send keeps"),
+            b"what the send carries"
+        );
+        let refusal = read(&refused).expect_err("a file the workspace does not share is refused");
+        assert!(refusal.contains("shared with Files"), "{refusal}");
     }
 }

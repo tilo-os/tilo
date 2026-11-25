@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
     // the person can reach at a phone's width.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.member = tilo_action_policy::MemberId::agent("claude");
+        agent.member = tilo_action_policy::MemberId::agent("claude", "ada");
         let rows = vec![row("ada", "Ada"), agent];
         let mut overlay = PeopleOverlay::default();
         paint_in(&mut overlay, &rows, Rect::new(0.0, 0.0, 390.0, 844.0));
@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
     // its name alone leaves a person watching it no knowing whether it works or idles.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.member = tilo_action_policy::MemberId::agent("claude");
+        agent.member = tilo_action_policy::MemberId::agent("claude", "ada");
         agent.activity = None;
         agent.working_in = Some((7, "Launch notes".into()));
         agent.status = Some(RosterStatus {
@@ -226,7 +226,7 @@ tilo_test_env::scenario! {
     // Launch notes in…" even on a wide panel.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.member = tilo_action_policy::MemberId::agent("claude");
+        agent.member = tilo_action_policy::MemberId::agent("claude", "ada");
         agent.activity = None;
         let doing = "Reading Launch notes in Notes";
         agent.status = Some(RosterStatus {
@@ -296,7 +296,7 @@ tilo_test_env::scenario! {
     // the window it works in instead, and pressing that line brings the window forward.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.member = tilo_action_policy::MemberId::agent("claude");
+        agent.member = tilo_action_policy::MemberId::agent("claude", "ada");
         agent.working_in = Some((7, "Lounge notes".into()));
         let rows = vec![row("ada", "Ada"), agent];
         let screens = [("ada".to_owned(), Some(screen("Notes")))];
@@ -405,7 +405,7 @@ tilo_test_env::scenario! {
     // it has one, the record's name alone where it has none.
     {
         let mut agent = row("cc", "Claude Code");
-        agent.member = tilo_action_policy::MemberId::agent("claude");
+        agent.member = tilo_action_policy::MemberId::agent("claude", "ada");
         agent.working_in = Some((7, "Lounge notes".into()));
         assert_eq!(working_in_line(&agent), ("Lounge notes".into(), None));
         agent.status = Some(RosterStatus {
@@ -429,7 +429,7 @@ tilo_test_env::scenario! {
         use tilo_desktop_model::{Workspace, WorkspaceId};
 
         let mut workspace = Workspace::new(WorkspaceId::from_u128(73), "Lounge");
-        let agent = Member::named(collab_types::MemberId::agent("claude"), "Claude Code");
+        let agent = Member::named(collab_types::MemberId::agent("claude", "ada"), "Claude Code");
         workspace.member_here(agent.clone());
         workspace.place_presence(Present {
             device: "claude".into(),
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
     // People, then agents, each with Follow on its row and Wave for people; Invite at the bottom; a press on a row's controls is that control's, on its body opens what they changed.
     {
         let mut agent = row("scribe", "Release Notes Agent");
-        agent.member = tilo_action_policy::MemberId::agent("claude");
+        agent.member = tilo_action_policy::MemberId::agent("claude", "ada");
         let rows = vec![agent, row("ada", "Ada"), row("ben", "Ben")];
         let mut overlay = PeopleOverlay::default();
         paint(&mut overlay, &rows);

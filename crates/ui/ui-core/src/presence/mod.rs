@@ -271,8 +271,8 @@ mod color_tests {
                 ("agent:helper@box", "helper@box"),
             ] {
                 assert_eq!(
-                    member_color(&MemberId::agent(first)),
-                    member_color(&MemberId::agent(second)),
+                    member_color(&MemberId::agent(first, "alice")),
+                    member_color(&MemberId::agent(second, "ada")),
                     "{first} and {second} are one agent, so one colour"
                 );
             }
@@ -281,7 +281,7 @@ mod color_tests {
         phase software_wears_the_hue_of_what_it_is;
         {
             assert_eq!(
-                member_color(&MemberId::agent("claude-code@box")),
+                member_color(&MemberId::agent("claude-code@box", "ada")),
                 identity_rgb(crate::tokens::PresenceHue::Orange)
             );
             assert_eq!(member_color(&MemberId::person("ada")), user_color("ada"));
@@ -2385,7 +2385,7 @@ mod string_id_wrapper_tests {
             // phase: an_agent_stays_one_when_renamed
             {
                 let mut ctx = PresenceCtx::empty();
-                let scribe = MemberId::agent("scribe");
+                let scribe = MemberId::agent("scribe", "ab".repeat(32).clone());
                 ctx.set_display_name(scribe.clone(), "Scribe");
                 assert_eq!(ctx.display_name(&scribe), "Scribe");
                 ctx.set_display_name(scribe.clone(), "Editorial helper");
@@ -2462,8 +2462,8 @@ mod string_id_wrapper_tests {
         {
             let ada = MemberId::person("key-a");
             let other_ada = MemberId::person("key-b");
-            let helper = MemberId::agent("helper");
-            let other_helper = MemberId::agent("helper-bea");
+            let helper = MemberId::agent("helper", "key-b");
+            let other_helper = MemberId::agent("helper-bea", "key-b");
             let mut mine = PresenceCtx::empty();
             mine.upsert_remote_cursor(other_ada.clone(), [1.0, 1.0], Some("ada"));
             mine.set_self_member(ada.clone(), "Ada");
@@ -3044,7 +3044,7 @@ mod own_identity_tests {
             // phase: an_agent_is_named_as_one
             {
                 let mut ctx = PresenceCtx::empty();
-                let agent = MemberId::agent("peer@agent-7");
+                let agent = MemberId::agent("peer@agent-7", "alice");
                 ctx.set_display_name(agent.clone(), "Release assistant");
                 ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
                 assert_eq!(ctx.display_name(&agent), "Release assistant");

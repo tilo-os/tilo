@@ -29,9 +29,17 @@ printed and who ran it. History keeps it as that person's or agent's run.
               their own browser and types a command into it, and the file
               the command wrote is read back from the VM; the app runs as
               the tenant, never as Browser's account, and what it costs in
-              the VM's memory is measured.
+              the VM's memory is measured;
+  --restart-change, --restart-back
+              the VM session's wallpaper and what it shows come back after
+              the VM restarts, from the environment's one record and never
+              from the VM's disk: the first changes the wallpaper with the
+              Linux app's window shown and reads both in the record, the
+              second, once check.sh stopped the VM, wakes it and finds both
+              again; the person's own settings records are unchanged by
+              either.
 
-usage: hosted-terminal.py API_URL SERVER_KEY OUT_DIR [--refused|--card|--terminal|--agent|--isolated|--gui]
+usage: hosted-terminal.py API_URL SERVER_KEY OUT_DIR [--refused|--card|--terminal|--agent|--isolated|--gui|--restart-change|--restart-back]
 
 SERVER_KEY is the startup's own key (`tilo do account/keys#create`, named for the backend
 that asked for it). OUT_DIR is the hosted Browser's work directory: its
@@ -158,6 +166,36 @@ GUI_MEMORY_COMMAND = (
 GUI_ISOLATION_COMMAND = (
     "ps -o user=,comm= -C xterm ; ps -o user=,comm= -C Xwayland"
     " ; ls /home/tilo-browser >/dev/null 2>&1 && echo browser-home-readable || echo browser-home-closed"
+)
+# The workspace environment's one record, which the VM's certificate lets its
+# session write and nothing else. What the session keeps for its next one is
+# there, by the name it has on any device (`settings`, each record under its
+# own name), so the VM's disk keeps nothing a restart needs.
+RESTART_RECORD = "record:so.tilo.browser:environment"
+# The session's kept wallpapers and what it shows, as every device's session
+# names those records (crates/desktop/session/src/wallpapers.rs, device_state.rs).
+RESTART_WALLPAPERS = "so.tilo.session-wallpapers"
+RESTART_SHOWN = "so.tilo.session-shown"
+# The picture the VM session's wallpaper changes to: one the guest's image
+# ships, other than the one a session starts with. It is changed the way it is
+# on any device, by the device's own `settings#set`, asked of the VM's daemon
+# by an agent's run in the VM through the `tilo` command; and what it shows
+# changes by the shell's own verb, the Linux app's window made to cover the
+# display. Where both land is the device's to choose by where its session
+# runs: in a VM, the environment's record.
+RESTART_WALLPAPER = "dunes"
+RESTART_CHANGE_COMMAND = (
+    f"tilo do settings#set name={RESTART_WALLPAPERS}"
+    f" value='{{\"default\":\"{RESTART_WALLPAPER}\"}}'"
+    " && tilo do desktop:chrome#fullscreen"
+)
+# After the restart: the wallpaper the VM session shows, as its shell publishes
+# it, and whether its tenant's home holds a session store of its own (it must
+# not).
+RESTART_COMMAND = (
+    "tilo read session:wallpaper"
+    " ; find /home/tilo/.local/state /home/tilo/.config -path '*tilo*' -name '*.json' 2>/dev/null"
+    " | grep -E 'wallpaper|layout|shown|device-state' || echo no-kept-store"
 )
 # The person in their own browser: the site, and the server it enters through.
 SITE = os.environ.get("HOSTED_TERMINAL_SITE", "")
@@ -765,6 +803,142 @@ async def gui() -> dict[str, object]:
         await agent.aclose()
 
 
+async def own_settings(backend: AsyncTilo) -> dict[str, object]:
+    """The person's own settings records in each workspace that is theirs, as
+    they read now: what the VM's session must never write."""
+    listed = await backend._workspace_list()
+    found: dict[str, object] = {}
+    for one in listed.workspaces:
+        if one.role != "owner":
+            continue
+        try:
+            found[one.id] = await backend.workspace(one.id)._read("settings")
+        except ProtocolError as error:
+            found[one.id] = {"unread": str(error)}
+    return found
+
+
+async def kept_in_environment(ows: object) -> dict[str, object]:
+    """What the VM session keeps for its next one, as the environment's record
+    holds it (each record by its name), as the host sealed it."""
+    record = await ows._read(RESTART_RECORD)  # type: ignore[attr-defined]
+    write_json("restart-record.json", record)
+    fields = record.get("fields") if isinstance(record, dict) else None
+    settings = fields.get("settings") if isinstance(fields, dict) else None
+    return dict(settings) if isinstance(settings, dict) else {}
+
+
+def wallpaper_of(kept: dict[str, object]) -> object:
+    wallpapers = kept.get(RESTART_WALLPAPERS)
+    return wallpapers.get("default") if isinstance(wallpapers, dict) else None
+
+
+def covering_of(kept: dict[str, object]) -> object:
+    shown = kept.get(RESTART_SHOWN)
+    return shown.get("fullscreen") if isinstance(shown, dict) else None
+
+
+async def restart_change() -> dict[str, object]:
+    """Before the VM restarts: an agent's run in the VM changes its session's
+    wallpaper and has the Linux app's window cover the display, both landing in
+    the environment's record, and the person's own settings records are read
+    to hold them to after."""
+    kept = await state()
+    workspace = str(kept["workspace"])
+    backend = client(SERVER_KEY)
+    try:
+        ows = backend.workspace(workspace)
+        one = person()
+        settings_before = await own_settings(backend)
+        say("an agent's run in the VM changes its session's wallpaper and what it shows", RESTART_CHANGE_COMMAND)
+        changed, _ = await asked(one, outcome(ows.do("terminal#run", command=RESTART_CHANGE_COMMAND)))
+        check(
+            isinstance(changed, dict) and changed.get("exit") == 0,
+            f"the VM's daemon took the ordinary settings and shell actions ({json.dumps(changed, default=str)[:300]})",
+        )
+        held: dict[str, object] = {}
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            held = await kept_in_environment(ows)
+            if wallpaper_of(held) == RESTART_WALLPAPER and covering_of(held):
+                break
+            await asyncio.sleep(1)
+        check(
+            wallpaper_of(held) == RESTART_WALLPAPER,
+            f"the environment's record holds the VM session's wallpaper ({held.get(RESTART_WALLPAPERS)!r})",
+        )
+        check(
+            covering_of(held),
+            f"the environment's record holds the window covering the VM session's display ({held.get(RESTART_SHOWN)!r})",
+        )
+        # The change is the VM's, made on the person's behalf: History names the
+        # person, never a device of its own.
+        versions = await history_named(ows, PERSON_KEY_NAME)
+        report = {
+            "wallpaper": RESTART_WALLPAPER,
+            "covering": covering_of(held),
+            "history_versions": len(versions),
+            "own_settings": settings_before,
+        }
+        write_json("restart.json", report)
+        return report
+    finally:
+        await backend.aclose()
+
+
+async def restart_back() -> dict[str, object]:
+    """After the VM stopped and woke again, its disk holding no store of its
+    session's: the session shows the wallpaper the record holds, what it shows
+    is the record's still, and the person's own settings records are as they
+    were."""
+    kept = await state()
+    workspace = str(kept["workspace"])
+    with open(os.path.join(OUT, "restart.json")) as saved:
+        before = json.load(saved)
+    backend = client(SERVER_KEY)
+    try:
+        ows = backend.workspace(workspace)
+        one = person()
+        # The VM wakes for this command, and its session takes up the record.
+        said = ""
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            answer, _ = await asked(one, outcome(ows.do("terminal#run", command=RESTART_COMMAND)))
+            said = str((answer or {}).get("output") or "")
+            if RESTART_WALLPAPER in said:
+                break
+            await asyncio.sleep(2)
+        check(
+            RESTART_WALLPAPER in said,
+            f"the VM session shows the wallpaper its record holds after the restart ({said.strip()[:300]!r})",
+        )
+        check(
+            "no-kept-store" in said,
+            f"the VM keeps no store of its session's on its disk: what came back came from the record ({said.strip()[:300]!r})",
+        )
+        held = await kept_in_environment(ows)
+        check(wallpaper_of(held) == before["wallpaper"], f"the record still holds the wallpaper ({held.get(RESTART_WALLPAPERS)!r})")
+        # A session that started without taking up what it showed writes what it
+        # shows now over it: the window still covering the display is the
+        # session having read it back.
+        check(
+            covering_of(held) == before["covering"],
+            f"the VM session shows what it showed before the restart ({held.get(RESTART_SHOWN)!r})",
+        )
+        settings_after = await own_settings(backend)
+        check(
+            settings_after == before["own_settings"],
+            "the person's own settings records are unchanged by the VM session's wallpaper and what it shows",
+        )
+        say("after the restart", f"wallpaper {wallpaper_of(held)!r}, covering {covering_of(held)!r}")
+        report = {**before, "own_settings_unchanged": True}
+        report.pop("own_settings", None)
+        write_json("restart.json", report)
+        return report
+    finally:
+        await backend.aclose()
+
+
 async def main() -> int:
     os.makedirs(OUT, exist_ok=True)
     phase = PHASE
@@ -780,10 +954,14 @@ async def main() -> int:
         "--agent": agent,
         "--isolated": isolated,
         "--gui": gui,
+        "--restart-change": restart_change,
+        "--restart-back": restart_back,
     }
     if phase == "--all":
+        # The restart's two halves need check.sh to stop the VM between them.
         for name, one in phases.items():
-            report[name.lstrip("-")] = await one()
+            if not name.startswith("--restart"):
+                report[name.lstrip("-")] = await one()
     else:
         if phase not in phases:
             raise SystemExit(f"usage: hosted-terminal.py API_URL SERVER_KEY OUT [{'|'.join(phases)}]")

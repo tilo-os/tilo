@@ -373,7 +373,7 @@ async fn nobody_else_reaches_it(
     // An agent no person stands behind, and an app.
     let person = hex::encode(ada.user_public_key);
     let nobodied = [
-        Caller::local_agent(SCOUT),
+        Caller::local_agent(SCOUT, "ada"),
         Caller::local_app("so.tilo.chat").acting_for(person),
     ];
     for agent in &nobodied {

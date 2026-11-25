@@ -1524,7 +1524,7 @@ mod tests {
                 Caller::authenticated([7; 32], [8; 32]),
                 Caller::visitor([9; 32]),
                 Caller::local_person(String::from("person")),
-                Caller::local_agent(String::from("an-agent")),
+                Caller::local_agent(String::from("an-agent"), String::from("person")),
             ] {
                 assert!(
                     super::dev_build_admitted(&refused, personal).is_err(),

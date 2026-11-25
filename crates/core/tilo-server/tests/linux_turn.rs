@@ -114,6 +114,8 @@ impl VmHost {
 
 /// A workspace served by a server whose person's VM hosts take its Linux work.
 pub(super) struct Placed {
+    /// The person the host and the workspace are; a VM placed for them is a device of theirs.
+    pub(super) operator: TestUser,
     pub(super) workspace: String,
     pub(super) shells: Arc<Environments>,
     pub(super) vm_hosts: Vec<VmHost>,
@@ -187,6 +189,7 @@ pub(super) async fn placed_with(count: usize, browsers: Option<std::path::PathBu
         tokio::runtime::Handle::current(),
     );
     Arc::new(Placed {
+        operator,
         workspace,
         shells,
         vm_hosts,

@@ -412,7 +412,7 @@ mod tests {
             version: INTERACTION_VERSION,
             invocation: InvocationId::new(),
             sequence: 2,
-            actor: Acting::agent("scribe"),
+            actor: Acting::agent("scribe", "ada"),
             phase: InteractionPhase::Applying,
             action: InteractionAction {
                 id: "format-range".into(),
@@ -486,8 +486,8 @@ mod tests {
 
     fn broker_normalization_replaces_claimed_attribution_and_sequence() {
         let claimed = example(InteractionAnchor::Resource);
-        let normalized = claimed.normalized_by_broker(Acting::agent("reviewer"), 17);
-        assert_eq!(normalized.actor, Acting::agent("reviewer"));
+        let normalized = claimed.normalized_by_broker(Acting::agent("reviewer", "ada"), 17);
+        assert_eq!(normalized.actor, Acting::agent("reviewer", "ada"));
         assert_eq!(normalized.sequence, 17);
     }
 

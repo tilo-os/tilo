@@ -24,20 +24,22 @@ use tilo_peer_state::actions::testing::duplex;
 use tilo_peer_state::actions::{ActionService, RemoteDevice};
 use tilo_peer_state::direct::{Heard, Replica};
 use tilo_server::hosted_browser::{
-    BrowserMeter, BrowserSessions, HostedBrowsers, Material, Window, no_payment_method,
+    BrowserMeter, BrowserSessions, HostedBrowsers, Material, Started, Window, no_payment_method,
 };
 use tilo_server::{Server, WorkspaceId};
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, RevocationList, prepare_stand_in_cert,
-    sign_device_cert,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
 };
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT};
+use collab_types::CommitNamed as _;
 
 use crate::common::{Linked, TestDevice, TestServer, TestUser, spawn_server};
 use tilo_server::hosted_browser::APP;
 use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
+use tilo_workspace_service::environment::vm_placed_records;
+use tilo_workspace_service::workspaces::person_workspace::devices;
 
 const WS: WorkspaceId = WorkspaceId::from_u128(0x1111_1111_1111_4111_8111_1111_1111_1111);
 const OTHER_WS: WorkspaceId = WorkspaceId::from_u128(0x2222_2222_2222_4222_8222_2222_2222_2222);
@@ -47,11 +49,13 @@ const WINDOW: &str = "browser@42";
 const HOST_PROVIDER: &str = "workspace:11111111-1111-4111-8111-111111111111";
 /// The revision the window's own listing answers at.
 const WINDOW_REVISION: &str = "window";
-/// The record the window was opened on.
-const WINDOW_RECORD: &str = "record-1";
+/// The record the window was opened on: the workspace's one Browser record, which its VM is
+/// confined to.
+const WINDOW_RECORD: &str = tilo_server::environment::VM_RECORD;
 
-/// Places environments in-process: each "environment" is the device the
-/// server certified, which the test's client then joins the workspace as.
+/// Places environments in-process: each "environment" is the workspace's VM daemon, which
+/// makes its own key and logs in with the ticket the server served for it, as the daemon in the
+/// VM does; the test's client then joins the workspace as that device.
 #[derive(Default)]
 struct InProcessEnvironments {
     starts: Mutex<Vec<Material>>,
@@ -59,6 +63,32 @@ struct InProcessEnvironments {
     /// While set, a start waits until it is taken: a session whose VM is
     /// still waking.
     waking: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// The server's tickets, where a VM's daemon logs in.
+    tickets: std::sync::OnceLock<tilo_peer_state::new_device::Tickets>,
+    /// The server's register of the workspaces' VM devices: where the certificate a VM's
+    /// daemon was given is read back.
+    registry: std::sync::OnceLock<tilo_server::environment::EnvironmentRegistry>,
+    /// The certificates handed to the workspaces' VMs as they were certified again.
+    renewals: Mutex<Vec<(String, DeviceCert)>>,
+}
+
+/// A workspace's VM as it joined: what it was started with, and the device its daemon is.
+#[derive(Clone)]
+struct Joined {
+    workspace: String,
+    workspace_id: WorkspaceId,
+    record: String,
+    ticket: tilo_device_identity::login::Ticket,
+    /// The certificate the person's root gave the daemon's key.
+    device: DeviceCert,
+    key: ed25519_dalek::SigningKey,
+}
+
+/// The key the daemon in `workspace_id`'s VM makes for itself: one per workspace.
+fn vm_key(workspace_id: WorkspaceId) -> ed25519_dalek::SigningKey {
+    let mut seed = [0x5e; 32];
+    seed[..16].copy_from_slice(workspace_id.as_uuid().as_bytes());
+    ed25519_dalek::SigningKey::from_bytes(&seed)
 }
 
 impl InProcessEnvironments {
@@ -70,26 +100,93 @@ impl InProcessEnvironments {
         self.stops.lock().unwrap().len()
     }
 
-    fn material(&self) -> Material {
-        self.starts.lock().unwrap()[0].clone()
+    /// The first VM placed, as it joined.
+    fn material(&self) -> Joined {
+        let material = self.starts.lock().unwrap()[0].clone();
+        let key = vm_key(material.workspace_id);
+        let device = self
+            .registry
+            .get()
+            .expect("the fixture names the server's register")
+            .certificate(&key.verifying_key().to_bytes())
+            .expect("the VM's daemon was certified and confined");
+        Joined {
+            workspace: material.workspace,
+            workspace_id: material.workspace_id,
+            record: material.record,
+            ticket: material.ticket,
+            device,
+            key,
+        }
+    }
+
+    /// Log the daemon of the VM `material` starts in with its ticket, as `tilo login` does.
+    fn log_in(&self, material: &Material) -> [u8; 32] {
+        use tilo_device_identity::login::{CERTIFY, CertifyInput, PROVIDER, RESOURCE};
+        let key = vm_key(material.workspace_id);
+        let device = key.verifying_key().to_bytes();
+        let input = CertifyInput {
+            secret: material.ticket.secret_hex(),
+            device_public_key: hex::encode(device),
+            agent: "tilo".into(),
+            label: Some("Workspace computer".into()),
+            tilo_os: true,
+        };
+        let serde_json::Value::Object(argument) = serde_json::to_value(&input).unwrap() else {
+            panic!("the input is an object");
+        };
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: ActionAddress::new(RESOURCE, CERTIFY),
+            },
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        // The certify call is taken at once; the person's root answers it in its own time.
+        drop(ActionProvider::invoke(
+            &*self
+                .tickets
+                .get()
+                .expect("the fixture names the server's tickets")
+                .uncertified(),
+            &Caller::authenticated([0; 32], device),
+            request,
+        ));
+        device
     }
 }
 
 impl BrowserSessions for InProcessEnvironments {
-    fn start(&self, material: &Material) -> Result<Window, String> {
+    fn start(&self, material: &Material) -> Result<Started, String> {
         let waking = self.waking.lock().unwrap().take();
         if let Some(woken) = waking {
             let _ = woken.recv();
         }
         self.starts.lock().unwrap().push(material.clone());
-        Ok(Window {
-            device: material.device.device_public_key,
+        self.log_in(material);
+        Ok(Started {
             provider: WINDOW.into(),
         })
     }
 
     fn stop(&self, workspace: &str) {
         self.stops.lock().unwrap().push(workspace.to_owned());
+    }
+
+    fn renewed(&self, workspace: &str, cert: &DeviceCert) -> Result<(), String> {
+        self.renewals
+            .lock()
+            .unwrap()
+            .push((workspace.to_owned(), cert.clone()));
+        Ok(())
     }
 }
 
@@ -268,7 +365,7 @@ async fn questions(
     let items = readings["records"][0]["value"]["items"].clone();
     let person = caller.user_public_key().map(hex::encode);
     serde_json::from_value::<Vec<Invocation>>(items)
-        .expect("the items read as invocations")
+        .unwrap_or_else(|error| panic!("the items read as invocations: {error}: {readings}"))
         .into_iter()
         .filter(|item| item.status == InvocationStatus::Waiting && item.person == person)
         .filter_map(|item| item.asked.map(|asked| *asked))
@@ -505,11 +602,7 @@ impl ActionProvider for WindowActions {
 
 /// The window's device, serving the page actions the host hands it over the
 /// link it holds open to the host, and the page actions it was handed.
-async fn window_actions(
-    server: &Server,
-    material: &Material,
-    asks: Asks,
-) -> Arc<Mutex<Vec<Handed>>> {
+async fn window_actions(server: &Server, material: &Joined, asks: Asks) -> Arc<Mutex<Vec<Handed>>> {
     window_served(server, material, asks).await.0
 }
 
@@ -517,7 +610,7 @@ async fn window_actions(
 /// other link a device holds open to it.
 async fn window_served(
     server: &Server,
-    material: &Material,
+    material: &Joined,
     asks: Asks,
 ) -> (Arc<Mutex<Vec<Handed>>>, ActionService) {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -559,14 +652,13 @@ async fn window_served(
     (seen, actions)
 }
 
-/// The test device a material names: what the session in the environment
-/// joins as.
+/// The test device a VM joined as: what the daemon in the environment is.
 struct DeviceIdentity;
 
 impl DeviceIdentity {
-    fn of(material: &Material) -> TestDevice {
+    fn of(material: &Joined) -> TestDevice {
         TestDevice {
-            sk: material.key().unwrap(),
+            sk: material.key.clone(),
             cert: material.device.clone(),
         }
     }
@@ -584,6 +676,9 @@ struct Fixture {
     browsers: Arc<HostedBrowsers>,
     environments: Arc<InProcessEnvironments>,
     meter: Arc<Counting>,
+    /// The device this host places workspace VMs as, which signs their certificates: the host's
+    /// own, one of the person's devices, unless the fixture runs as an operator's.
+    placing: TestDevice,
 }
 
 async fn fixture(meter: Arc<Counting>) -> Fixture {
@@ -593,24 +688,35 @@ async fn fixture(meter: Arc<Counting>) -> Fixture {
 /// A fixture that gives a disconnected environment device `reconnect` to come
 /// back before its environment stops.
 async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
+    let fixture = unplaced(meter, reconnect, false).await;
+    fixture.place(WS).await.expect("the environment was placed");
+    fixture
+}
+
+/// A host whose Browser places workspace VMs as a device of an operator's, none of the person's:
+/// it places one only under a grant the person gave it. Nothing is placed yet.
+async fn operated() -> Fixture {
+    unplaced(
+        Arc::new(Counting::default()),
+        tilo_server::hosted_browser::RECONNECT,
+        true,
+    )
+    .await
+}
+
+/// The fixture before it places anything: its host places as the person's own device, or, where
+/// `operated`, as a device of an operator's.
+async fn unplaced(meter: Arc<Counting>, reconnect: Duration, operated: bool) -> Fixture {
     let user = TestUser::fresh("Ada");
     let host = user.enrol("home", DeviceCapabilities::member());
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
     let agent = user.enrol("agent", DeviceCapabilities::member());
     let home = host.device_pubkey();
-    let host_key = host.sk.clone();
     let host_device = host.clone();
-    let server_cert = {
-        let now = tilo_clock::unix_now_ns();
-        let mut stand_in = prepare_stand_in_cert(
-            user.user_pk,
-            host_key.verifying_key().to_bytes(),
-            "Ada's host",
-            now,
-            now.saturating_add(24 * 60 * 60 * 1_000_000_000),
-        );
-        sign_device_cert(&mut stand_in, &user.user_sk).unwrap();
-        stand_in
+    let placing = if operated {
+        TestUser::fresh("Operator").enrol("hosting", DeviceCapabilities::member())
+    } else {
+        host.clone()
     };
     let environments = Arc::new(InProcessEnvironments::default());
     let browsers = Arc::new(
@@ -643,18 +749,29 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
             .await
             .expect("the person's own device enters it");
     }
+    // The person's own workspace, where their devices record is, is on their server too.
+    if !tilo_server::servers::holds_person_workspace(workspaces).await {
+        tilo_server::servers::found(workspaces)
+            .await
+            .expect("the person's own workspace is founded on their server");
+    }
     // The host answers the workspace's open of Browser and the page actions of the window it
     // places through its one dispatch, as production registers it.
     browsers.provide_in(&workspaces.providers());
+    let _ = environments
+        .tickets
+        .set(workspaces.action_service().tickets());
+    let _ = environments.registry.set(server.server.environments());
     browsers.serve_from(tilo_server::hosted_browser::Authority {
         user_public_key: user.user_pk,
-        cert: server_cert,
-        key: host_key,
+        host: placing.cert.clone(),
+        host_key: placing.sk.clone(),
         server: server.server.node_addr(),
         workspaces: server.server.workspaces().cloned(),
         environments: server.server.environments(),
         runtime: tokio::runtime::Handle::current(),
         hand: server.server.hand(),
+        actions: workspaces.action_service(),
     });
     // The server keeps one store for every call that waits for a person's yes here; the
     // Browser window's own questions wait in it, and the person's answer comes back to the
@@ -663,9 +780,6 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
         .asked_store()
         .expect("the server keeps the calls that wait");
     browsers.keep_asked_in(&asked);
-    browsers
-        .place(WS_NAME, WS, WINDOW_RECORD)
-        .expect("the environment was placed");
     Fixture {
         user,
         host_device,
@@ -676,6 +790,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
         browsers,
         environments,
         meter,
+        placing,
     }
 }
 
@@ -693,6 +808,25 @@ impl BrowserMeter for SharedMeter {
 }
 
 impl Fixture {
+    /// Place `workspace`'s VM, opened on its Browser record, as an open of Browser does: it
+    /// waits for the VM's daemon to be certified, which the runtime carries meanwhile.
+    async fn place(&self, workspace: WorkspaceId) -> Result<Window, String> {
+        let browsers = Arc::clone(&self.browsers);
+        tokio::task::spawn_blocking(move || {
+            browsers.place(&workspace.to_string(), workspace, WINDOW_RECORD)
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Certify `workspace`'s VM device again, as this host does before its certificate ends.
+    async fn renew(&self, workspace: WorkspaceId) -> Result<DeviceCert, String> {
+        let browsers = Arc::clone(&self.browsers);
+        tokio::task::spawn_blocking(move || browsers.renew_placed(workspace))
+            .await
+            .unwrap()
+    }
+
     /// The person's approving device, linked to the server: where a page action
     /// that asks first is put to them, and where they answer it.
     async fn approving_device(&self) -> Linked {
@@ -733,26 +867,32 @@ async fn opening_browser_places_an_environment_whose_session_holds_the_window() 
     assert_eq!(material.workspace, WS_NAME);
     assert_eq!(material.workspace_id, WS);
     assert_eq!(
+        material.ticket.issuer.endpoint,
+        *fixture.server.server.node_addr().id.as_bytes(),
+        "the VM joins with a ticket the host serves, and is handed no key"
+    );
+    assert_eq!(
         material.device.capabilities,
-        DeviceCapabilities::member(),
-        "the device is an ordinary member device of the workspace's person"
+        DeviceCapabilities::placed(vm_placed_records(WS)),
+        "the device is certified for its VM's records and nothing else, no member device"
     );
     assert_eq!(
         material.device.user_public_key, fixture.user.user_pk,
         "of the person the workspace belongs to"
     );
-    assert!(
-        material.device.issuer.is_some(),
-        "certified by the host's stand-in, not by the root"
-    );
     assert_eq!(
-        material.device.expires_at_ns.unwrap() - material.device.issued_at_ns,
-        u64::try_from(tilo_server::hosted_browser::DEVICE_LIFETIME.as_nanos()).unwrap(),
-        "it lasts as long as the environment may run"
+        material.device.issuer.as_deref(),
+        Some(&fixture.host_device.cert),
+        "certified by this host, one of the person's devices, with its own key"
+    );
+    assert!(
+        material.device.expires_at_ns.is_some_and(|ends| ends
+            <= material.device.issued_at_ns + tilo_user_identity::MAX_PLACED_DEVICE_LIFETIME_NS),
+        "it lasts two hours at most, and the host certifies it again meanwhile"
     );
     assert_eq!(
         material.device.device_public_key, window.device,
-        "the window is the device the server certified"
+        "the window is the device the host certified"
     );
     // A second open attaches to the window already up.
     let again = fixture.browsers.place(WS_NAME, WS, WINDOW_RECORD).unwrap();
@@ -972,8 +1112,10 @@ async fn a_listing_is_answered_while_another_window_is_placed() {
     }
 
     wake.send(()).unwrap();
-    placing
-        .join()
+    // Placing waits for the VM's daemon to be certified, which this runtime carries meanwhile.
+    tokio::task::spawn_blocking(move || placing.join())
+        .await
+        .unwrap()
         .unwrap()
         .expect("the other window was placed");
 }
@@ -1670,20 +1812,45 @@ async fn heard(linked: &mut Linked, within: std::time::Duration) -> Vec<Heard> {
 
 /// `linked`'s device writes `marker` into `record` of `app`, through the link.
 fn publish_record(linked: &Linked, device: &TestDevice, app: &str, record: &str, marker: &str) {
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "marker", marker).unwrap();
-    let bytes = document.save();
     linked
-        .publish(move |peer| {
-            peer.publication_mut().publish_document(
-                app,
-                record,
-                bytes,
-                &device.sk,
-                std::time::SystemTime::now(),
-            )
-        })
+        .publish(|peer| written(peer, device, app, record, marker))
         .unwrap();
+}
+
+/// `device`'s change setting `marker` in `record` of `app`, signed in `peer`, a copy of the
+/// workspace, as a window's engine writes one: changes over the record as the copy has it, or the
+/// record itself where the copy has none, naming the person, as every change does.
+fn written(
+    peer: &mut tilo_peer_state::StatePeer,
+    device: &TestDevice,
+    app: &str,
+    record: &str,
+    marker: &str,
+) -> Result<neighbour_wire::NeighbourMsg, String> {
+    let kept = peer.document(app, record);
+    let mut document = match &kept {
+        Some(bytes) => AutoCommit::load(bytes).map_err(|error| error.to_string())?,
+        None => AutoCommit::new(),
+    };
+    let heads = document.get_heads();
+    document
+        .put(ROOT, "marker", marker)
+        .map_err(|error| error.to_string())?;
+    document.commit_edit("window", "marker", &device.cert.user_public_key);
+    let now = tilo_clock::wall();
+    match kept {
+        Some(_) => peer.publication_mut().publish_incremental(
+            app,
+            record,
+            document.save_after(&heads),
+            &device.sk,
+            now,
+        ),
+        None => {
+            peer.publication_mut()
+                .publish_document(app, record, document.save(), &device.sk, now)
+        }
+    }
 }
 
 /// What the host made of `linked`'s next own write.
@@ -1695,9 +1862,11 @@ async fn next_answer(
         .expect("the link stays open")
 }
 
-/// A device's copy of the workspace as the host holds it, without any of its
-/// records: what a device links with when it holds none of the workspace yet.
-async fn workspace_seed(fixture: &Fixture, device: &TestDevice) -> tilo_peer_state::StatePeer {
+/// A device's copy of the workspace as the host keeps it, without any of its
+/// records: what a device links with when it has none of the workspace yet. A
+/// device the roster does not list proves itself by the certificate it was placed
+/// with ([`tilo_peer_state::direct::DirectSync::placed`]), never by a row of its own.
+async fn workspace_seed(fixture: &Fixture) -> tilo_peer_state::StatePeer {
     let workspaces = fixture
         .server
         .server
@@ -1708,13 +1877,7 @@ async fn workspace_seed(fixture: &Fixture, device: &TestDevice) -> tilo_peer_sta
         .state(WS_NAME)
         .await
         .expect("the server holds the workspace");
-    let mut roster = state.certificates();
-    if !roster
-        .iter()
-        .any(|cert| cert.device_public_key == device.device_pubkey())
-    {
-        roster.push(device.cert.clone());
-    }
+    let roster = state.certificates();
     let now = tilo_clock::wall();
     let mut peer = tilo_peer_state::StatePeer::new(
         WS_NAME,
@@ -1737,6 +1900,44 @@ async fn workspace_seed(fixture: &Fixture, device: &TestDevice) -> tilo_peer_sta
     )
     .expect("the seed lands");
     peer
+}
+
+/// A write `device` signs to `record` of `app`, made in a copy of `linked`'s replica: one the
+/// replica has every dependency of, so taking it in is decided by admission alone.
+fn forged_in(
+    linked: &Linked,
+    device: &TestDevice,
+    app: &str,
+    record: &str,
+    marker: &str,
+) -> neighbour_wire::NeighbourMsg {
+    let mut author = linked.read(Clone::clone);
+    written(&mut author, device, app, record, marker)
+        .expect("the forger's own copy takes what it forged")
+}
+
+/// The hello a device opens each link with: its certificate.
+fn hello_of(device: &TestDevice) -> neighbour_wire::NeighbourMsg {
+    neighbour_wire::NeighbourMsg::IdentityHello {
+        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+        cert: Box::new(device.cert.clone()),
+        revocations: Vec::new(),
+    }
+}
+
+/// The marker `record` of `app` has in `linked`'s copy, if that copy has the record.
+fn marker_in(linked: &Linked, app: &str, record: &str) -> Option<String> {
+    linked.read(|peer| {
+        let bytes = peer.document(app, record)?;
+        let document = AutoCommit::load(&bytes).ok()?;
+        match automerge::ReadDoc::get(&document, ROOT, "marker").ok()?? {
+            (automerge::Value::Scalar(scalar), _) => match scalar.as_ref() {
+                automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    })
 }
 
 impl Fixture {
@@ -1768,10 +1969,14 @@ async fn the_server_confines_an_environments_device_to_the_record_it_placed() {
 async fn a_server_that_restarts_still_confines_the_environment_it_placed() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let device = fixture.environments.material().device.device_public_key;
-    // What a server that starts again reads: its own register, not the
-    // workspace's listing, which still has the device in it.
+    // What a server that starts again reads: its own register, kept with its
+    // workspace service's state, not the workspace's listing.
     let restarted = tilo_server::environment::EnvironmentRegistry::at(
-        fixture.server.state_root.join("environments.json"),
+        fixture
+            .server
+            .state_root
+            .join("service")
+            .join("environments.json"),
     );
     assert_eq!(
         tilo_server::environment::environment_of(&restarted, &device),
@@ -1786,8 +1991,31 @@ async fn a_server_that_restarts_still_confines_the_environment_it_placed() {
 #[tokio::test]
 async fn an_environment_hears_its_own_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let mut environment = fixture.environment_session().await;
     let writer = member_link(&fixture.server.server, &fixture.agent).await;
+    // Written before the environment joins: what its link is sent of the
+    // workspace's history.
+    publish_record(
+        &writer,
+        &fixture.agent,
+        NOTES,
+        NOTES_RECORD,
+        "before it joined",
+    );
+    publish_record(
+        &writer,
+        &fixture.agent,
+        APP,
+        WINDOW_RECORD,
+        "the window's first state",
+    );
+    let material = fixture.environments.material();
+    let environment_device = DeviceIdentity::of(&material);
+    let seed = workspace_seed(&fixture).await;
+    let mut environment =
+        Linked::open_seeded(&fixture.server.server, &environment_device, WS, seed)
+            .await
+            .expect("the host that placed the environment admits its link");
+    // Written while it is linked: what its link is sent live.
     publish_record(
         &writer,
         &fixture.agent,
@@ -1802,16 +2030,100 @@ async fn an_environment_hears_its_own_record_and_no_other() {
         WINDOW_RECORD,
         "the window's own state",
     );
-    let heard = heard(&mut environment, std::time::Duration::from_millis(500)).await;
-    assert_eq!(
-        changed(&heard),
-        [window_channel()],
-        "a page that escapes Chromium reads no other record of the workspace"
+    let heard = heard(&mut environment, std::time::Duration::from_millis(700)).await;
+    let records = changed(&heard);
+    assert!(
+        records.contains(&window_channel()),
+        "its own record reaches it: {records:?}"
+    );
+    let notes: Vec<_> = heard
+        .iter()
+        .filter(|heard| changed(std::slice::from_ref(heard)) == [notes_channel()])
+        .map(|heard| (heard.retained, hex::encode(heard.author)))
+        .collect();
+    assert!(
+        notes.is_empty(),
+        "a page that escapes Chromium reads no other record of the workspace, from its history \
+         or live; it was sent (retained, author): {notes:?}"
+    );
+    assert!(
+        records.iter().all(|record| *record == window_channel()),
+        "only its own record reaches it: {records:?}"
+    );
+    let keys: Vec<_> = heard
+        .iter()
+        .filter(|heard| {
+            matches!(
+                heard.message,
+                neighbour_wire::NeighbourMsg::MlsGovernance { .. }
+                    | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
+                    | neighbour_wire::NeighbourMsg::MlsGovernanceWanted { .. }
+            )
+        })
+        .map(|heard| format!("{:?}", heard.message))
+        .collect();
+    assert!(
+        keys.is_empty(),
+        "no key of the workspace's, nor a share of one, goes to its link: {keys:?}"
     );
     assert!(
         environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
         "no other record of the workspace is its to read"
     );
+    // The person's own devices read the workspace's devices from its roster
+    // and its member list: the environment is in neither, so none of them
+    // admits it or hands it a key.
+    let laptop = member_link(&fixture.server.server, &fixture.laptop).await;
+    let device = environment_device.device_pubkey();
+    let now = tilo_clock::wall();
+    for (whose, (certified, member)) in [
+        (
+            "the person's laptop",
+            laptop.read(|peer| {
+                (
+                    peer.certificates()
+                        .iter()
+                        .any(|cert| cert.device_public_key == device),
+                    peer.governance()
+                        .governed_access(now)
+                        .expect("the member list reads")
+                        .member_devices
+                        .contains(&device),
+                )
+            }),
+        ),
+        ("the host", {
+            let state = fixture
+                .server
+                .server
+                .workspaces()
+                .expect("the server keeps workspaces")
+                .state(WS_NAME)
+                .await
+                .expect("the server keeps the workspace");
+            (
+                state
+                    .certificates()
+                    .iter()
+                    .any(|cert| cert.device_public_key == device),
+                state
+                    .governance()
+                    .governed_access(now)
+                    .expect("the member list reads")
+                    .member_devices
+                    .contains(&device),
+            )
+        }),
+    ] {
+        assert!(
+            !certified,
+            "{whose} knows no certificate of the environment's device"
+        );
+        assert!(
+            !member,
+            "{whose} lists the environment's device as no member's"
+        );
+    }
 }
 
 /// What the workspace's store keeps that `device` wrote, as each write's
@@ -1836,18 +2148,93 @@ async fn written_by(server: &tilo_server::Server, device: [u8; 32]) -> Vec<([u8;
 #[tokio::test]
 async fn an_environment_writes_its_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let environment = fixture.environment_session().await;
     let environment_device = DeviceIdentity::of(&fixture.environments.material());
     let device = environment_device.device_pubkey();
-    // The link's scope is the one record it placed: a write of another record
-    // is not admitted, and the session stays, as for any frame its device may
-    // not send.
-    publish_record(
-        &environment,
+    // A page that escapes Chromium signs writes its copy would refuse. They are signed in a copy
+    // of the person's laptop made before the environment's link said who it is, so that copy
+    // checks nothing of them, and the laptop lacks nothing either builds on.
+    let laptop = member_link(&fixture.server.server, &fixture.laptop).await;
+    let forged_notes = forged_in(
+        &laptop,
         &environment_device,
         NOTES,
         NOTES_RECORD,
         "overwritten by a page",
+    );
+    let own = forged_in(
+        &laptop,
+        &environment_device,
+        APP,
+        WINDOW_RECORD,
+        "the window, as the laptop hears it",
+    );
+    let environment = fixture.environment_session().await;
+    // Its own copy makes no write of another record: its certificate places it for its window's
+    // record alone, there as on every device.
+    assert!(
+        environment
+            .publish(|peer| {
+                let mut document = AutoCommit::new();
+                document
+                    .put(ROOT, "marker", "overwritten by a page")
+                    .unwrap();
+                document.commit_edit("window", "marker", &environment_device.cert.user_public_key);
+                peer.publication_mut().publish_document(
+                    NOTES,
+                    NOTES_RECORD,
+                    document.save(),
+                    &environment_device.sk,
+                    std::time::SystemTime::now(),
+                )
+            })
+            .is_err(),
+        "the environment's own copy refuses to write another record"
+    );
+    // The page sends its forged write anyway: the link's scope is the one record it was placed
+    // for, so the host does not admit it, and the session stays, as for any frame its device may
+    // not send.
+    environment
+        .send(forged_notes.clone())
+        .expect("the link carries what the page sends");
+    // A member device that hears of the environment refuses the same write by its certificate:
+    // the person's laptop, handed the device's hello and the forged write directly.
+    let now = tilo_clock::wall();
+    let origin = tilo_peer_state::TransportOrigin::ServerDelta(device);
+    laptop
+        .sync
+        .replica()
+        .write(|peer| peer.receive_from(origin, hello_of(&environment_device), now))
+        .expect("the laptop takes in the placed device's certificate");
+    let refused = laptop
+        .sync
+        .replica()
+        .write(|peer| peer.receive_from(origin, forged_notes, now));
+    assert!(
+        refused.is_err(),
+        "the laptop refuses the environment's write of a record it was not placed for"
+    );
+    assert_ne!(
+        marker_in(&laptop, NOTES, NOTES_RECORD).as_deref(),
+        Some("overwritten by a page"),
+        "the laptop's copy of the other record is untouched"
+    );
+    let admitted = laptop
+        .sync
+        .replica()
+        .write(|peer| peer.receive_from(origin, own, now))
+        .expect("the laptop admits the environment's write of its own record");
+    assert_eq!(
+        marker_in(&laptop, APP, WINDOW_RECORD).as_deref(),
+        Some("the window, as the laptop hears it"),
+        "the laptop's copy shows the environment's write: {admitted:?}"
+    );
+    assert!(
+        laptop.read(|peer| {
+            peer.placed_device(&device, now).is_some_and(|placed| {
+                placed.is_ok_and(|placed| placed.person == fixture.user.user_pk)
+            })
+        }),
+        "the laptop names the person for what the environment writes"
     );
     // Its own record is its to write, on the same link.
     publish_record(
@@ -1883,6 +2270,14 @@ async fn an_environment_writes_its_record_and_no_other() {
 async fn an_environment_opens_its_own_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let environment = fixture.environment_session().await;
+    // A record is opened on a link that caught up with the host's history.
+    let mut caught_up = environment.sync.caught_up();
+    tilo_test_env::within(
+        "the environment's link catches up",
+        caught_up.wait_for(|in_hand| *in_hand),
+    )
+    .await
+    .expect("the link stays up");
     environment
         .sync
         .open_record(notes_channel())
@@ -1922,7 +2317,7 @@ async fn an_environments_replay_is_its_own_record_and_no_other() {
     // record.
     let material = fixture.environments.material();
     let environment_device = DeviceIdentity::of(&material);
-    let seed = workspace_seed(&fixture, &environment_device).await;
+    let seed = workspace_seed(&fixture).await;
     let mut environment =
         Linked::open_seeded(&fixture.server.server, &environment_device, WS, seed)
             .await
@@ -1974,9 +2369,11 @@ async fn an_environment_answers_a_page_action_and_never_calls_one() {
     .await
     .expect("the host answers")
     .expect_err("a window's device calls no entry of the workspace");
-    assert!(
-        matches!(refused, ActionCallError::Unavailable { .. }),
-        "a window's device calls no entry of the workspace: {refused:?}"
+    assert_eq!(
+        refused,
+        ActionCallError::NotPermitted,
+        "a window's device calls no entry of the workspace: the host refuses it before any app \
+         is asked"
     );
     assert!(seen.lock().unwrap().is_empty());
 }
@@ -1992,7 +2389,7 @@ async fn a_stopped_environment_reaches_nothing() {
     assert_eq!(
         tilo_server::environment::environment_of(&fixture.server.server.environments(), &device),
         Some(tilo_server::environment::Environment::Stopped {
-            until_ns: material.device.expires_at_ns.unwrap()
+            until_ns: material.device.expires_at_ns.unwrap_or(u64::MAX)
         }),
         "a stopped environment's device is refused until its certificate expires"
     );
@@ -2039,7 +2436,7 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
             .environments()
             .of(&device, tilo_clock::unix_now_ns())
             == Some(tilo_server::environment::Environment::Stopped {
-                until_ns: material.device.expires_at_ns.unwrap(),
+                until_ns: material.device.expires_at_ns.unwrap_or(u64::MAX),
             })
         {
             break;
@@ -2060,7 +2457,7 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
 /// The device holding the workspace's window, linked: what the session in
 /// the VM is, reporting the departures its page holds to the server. Its
 /// actions are asked over its link, as every device asks its host's.
-async fn window_device(fixture: &Fixture, material: &Material) -> (Linked, RemoteDevice) {
+async fn window_device(fixture: &Fixture, material: &Joined) -> (Linked, RemoteDevice) {
     let device = DeviceIdentity::of(material);
     let linked = member_link(&fixture.server.server, &device).await;
     let remote = asking(&linked, WS_NAME).await;
@@ -2411,7 +2808,7 @@ async fn an_environment_shares_no_window_it_did_not_mint() {
 #[tokio::test]
 async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays() {
     let fixture = fixture(Arc::new(Counting::default())).await;
-    let mut environment = fixture.environment_session().await;
+    let environment = fixture.environment_session().await;
     let environment_device = DeviceIdentity::of(&fixture.environments.material());
     let device = environment_device.device_pubkey();
     environment
@@ -2514,7 +2911,7 @@ async fn a_live_session_keeps_the_window_running_past_the_reconnect_wait() {
 /// [`Connected`](tilo_live::admit::Connected) are kept alive.
 async fn live_session(
     server: &tilo_server::Server,
-    material: &Material,
+    material: &Joined,
 ) -> (iroh::endpoint::Endpoint, tilo_live::admit::Connected) {
     let endpoint = crate::common::device_endpoint(&DeviceIdentity::of(material)).await;
     let scope = tilo_live::scope::Scope::workspace(&material.workspace);
@@ -2827,5 +3224,192 @@ async fn an_environment_redeeming_an_invitation_is_refused() {
         listed_by_workspace(&fixture, material.device.device_public_key).await,
         Vec::<&str>::new(),
         "no member row, on the host or on another device of the person's"
+    );
+}
+
+impl Fixture {
+    /// The server's workspaces, where the person's devices record is.
+    fn workspaces(&self) -> &tilo_server::workspaces::Workspaces {
+        self.server
+            .server
+            .workspaces()
+            .expect("the server holds workspaces")
+    }
+
+    /// The grant the person gives this host to place `workspace`'s VM, kept among their devices
+    /// as the one record every host of theirs reads it from.
+    async fn grant_placing(&self, workspace: WorkspaceId) -> DeviceCert {
+        let mut grant = tilo_user_identity::prepare_placing_grant(
+            self.user.user_pk,
+            self.placing.device_pubkey(),
+            vm_placed_records(workspace),
+            "Hosting",
+            tilo_clock::unix_now_ns(),
+            None,
+        );
+        sign_device_cert(&mut grant, &self.user.user_sk).expect("the person's root signs it");
+        devices::keep(self.workspaces(), &grant)
+            .await
+            .expect("the person's devices record keeps the grant");
+        grant
+    }
+
+    /// The person takes back the grant `grant`, as they revoke a device of theirs.
+    async fn revoke(&self, grant: &DeviceCert) {
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: self.user.user_pk,
+            revoked_device_public_key: grant.device_public_key,
+            revoked_at_ns: tilo_clock::unix_now_ns(),
+            reason: tilo_user_identity::RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &self.user.user_sk)
+            .expect("the person's root signs the revocation");
+        devices::revoke(self.workspaces(), &self.user.user_pk, &entry)
+            .await
+            .expect("the person's devices record keeps the revocation");
+    }
+}
+
+/// A host that is one of the person's devices certifies a workspace's VM with its own key at
+/// once, for the VM's records alone, and places it in its register, which confines it there; the
+/// person's devices record lists it nowhere, since a workspace's computer is none of theirs.
+#[tokio::test]
+async fn a_host_that_is_the_persons_device_places_the_vm_at_once_and_lists_it_among_none() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let material = fixture.environments.material();
+    let device = material.device.device_public_key;
+    let person = fixture.user.user_pk;
+    assert_eq!(
+        material.device.capabilities,
+        DeviceCapabilities::placed(vm_placed_records(WS)),
+        "its certificate reaches the VM's records of the workspace it was placed for alone"
+    );
+    let scope = tilo_server::environment::EnvironmentScope::of_workspace_device(WS);
+    assert_eq!(
+        tilo_server::environment::environment_of(&fixture.server.server.environments(), &device),
+        Some(tilo_server::environment::Environment::Placed(scope)),
+        "the server confines it to its workspace's records"
+    );
+    let record = devices::of(fixture.workspaces(), &person).await;
+    assert!(
+        record
+            .listed(&person)
+            .iter()
+            .chain(record.placing_grants(&person).iter())
+            .all(|listed| listed.cert.device_public_key != device),
+        "the person's devices record does not list the workspace's computer"
+    );
+}
+
+/// A host that is none of the person's devices, and holds no grant of theirs, refuses to place
+/// their workspace's VM in words that say what lets it, and starts nothing.
+#[tokio::test]
+async fn a_host_that_is_neither_the_persons_device_nor_granted_refuses_in_words() {
+    let fixture = operated().await;
+    let refused = fixture
+        .place(WS)
+        .await
+        .expect_err("a host the person never allowed places nothing");
+    assert_eq!(refused, tilo_server::hosted_browser::NOT_ALLOWED_TO_PLACE);
+    assert_eq!(fixture.environments.starts(), 0, "no VM was started");
+    assert!(fixture.browsers.window(WS).is_none());
+}
+
+/// A host the person granted placement for a workspace's VM records places that VM under the
+/// grant, and certifies it again before it ends; once the person revokes the grant, the host
+/// neither places another nor certifies this one again.
+#[tokio::test]
+async fn a_granted_host_places_and_renews_until_the_grant_is_revoked() {
+    let fixture = operated().await;
+    let grant = fixture.grant_placing(WS).await;
+    let window = fixture
+        .place(WS)
+        .await
+        .expect("the grant lets the host place it");
+    let material = fixture.environments.material();
+    assert_eq!(
+        material.device.issuer.as_deref(),
+        Some(&grant),
+        "the host certified it under the person's grant"
+    );
+    assert_eq!(
+        material.device.capabilities,
+        DeviceCapabilities::placed(vm_placed_records(WS))
+    );
+    assert_eq!(material.device.device_public_key, window.device);
+    let renewed = fixture
+        .renew(WS)
+        .await
+        .expect("the host certifies it again");
+    assert_eq!(renewed.device_public_key, window.device, "the same device");
+    assert!(renewed.issued_at_ns >= material.device.issued_at_ns);
+    assert_eq!(
+        fixture
+            .server
+            .server
+            .environments()
+            .certificate(&window.device),
+        Some(renewed),
+        "the register holds the renewed certificate"
+    );
+
+    fixture.revoke(&grant).await;
+    assert_eq!(
+        fixture
+            .renew(WS)
+            .await
+            .expect_err("a revoked grant renews nothing"),
+        tilo_server::hosted_browser::NOT_ALLOWED_TO_PLACE
+    );
+    let other = fixture.grant_placing(OTHER_WS).await;
+    fixture.revoke(&other).await;
+    assert_eq!(
+        fixture
+            .place(OTHER_WS)
+            .await
+            .expect_err("a revoked grant places nothing"),
+        tilo_server::hosted_browser::NOT_ALLOWED_TO_PLACE
+    );
+    assert_eq!(fixture.environments.starts(), 1, "no second VM was started");
+}
+
+/// The host certifies a placed VM again before its certificate ends, while the placement is up,
+/// and no more once it stopped.
+#[tokio::test]
+async fn the_vm_is_certified_again_before_it_ends_and_no_more_once_stopped() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let material = fixture.environments.material();
+    let renewed = fixture
+        .renew(WS)
+        .await
+        .expect("the host certifies it again");
+    assert_eq!(renewed.device_public_key, material.device.device_public_key);
+    assert_eq!(renewed.capabilities, material.device.capabilities);
+    assert!(
+        renewed.expires_at_ns >= material.device.expires_at_ns,
+        "it lasts from now on"
+    );
+    assert_eq!(
+        fixture
+            .environments
+            .renewals
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, cert)| cert.clone())
+            .collect::<Vec<_>>(),
+        [renewed],
+        "the renewed certificate is handed to the VM"
+    );
+    fixture.browsers.stopped(WS);
+    assert!(
+        fixture.renew(WS).await.is_err(),
+        "a stopped placement is certified no more"
+    );
+    assert_eq!(
+        fixture.environments.renewals.lock().unwrap().len(),
+        1,
+        "nothing is handed to a stopped placement's VM"
     );
 }

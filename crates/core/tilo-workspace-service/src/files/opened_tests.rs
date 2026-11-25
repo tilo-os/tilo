@@ -149,7 +149,11 @@ fn opened(
                 .to_vec(),
             _ => stored,
         };
-        assert_eq!(clear.len(), part.len as usize, "a chunk is its clear length");
+        assert_eq!(
+            clear.len(),
+            usize::try_from(part.len).unwrap_or(usize::MAX),
+            "a chunk is its clear length"
+        );
         file.extend_from_slice(&clear);
     }
     file

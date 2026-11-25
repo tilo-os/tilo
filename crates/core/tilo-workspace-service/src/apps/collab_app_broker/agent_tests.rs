@@ -45,23 +45,23 @@ impl crate::apps::services::AgentRoster for Native {
         self.listed.lock().unwrap().clone()
     }
 
-    fn lists(&self, workspace: &str, agent: &str) -> bool {
+    fn lists(&self, workspace: &str, agent: &tilo_action_policy::MemberId) -> bool {
         let mut granted = false;
         let read = self.with_tree(&mut |tree| {
             granted = crate::apps::services::workspace_in(tree, workspace).is_some_and(|held| {
                 held.policy.grants.iter().any(|grant| {
                     grant.node == held.policy.node()
                         && grant.answer == Answer::Allow
-                        && grant.grantee.agent_id() == Some(agent)
+                        && grant.grantee.as_member() == Some(agent)
                 })
             });
         });
         read.is_ok()
             && (granted
-                || self
-                    .listed(workspace)
-                    .iter()
-                    .any(|listed| listed.id == agent))
+                || self.listed(workspace).iter().any(|listed| {
+                    Some((listed.id.as_str(), listed.acts_for.as_str()))
+                        == agent.as_agent().map(|(id, person)| (id, person.as_str()))
+                }))
     }
 }
 
@@ -337,7 +337,10 @@ impl Fixture {
         let command = WorkspaceMembershipCommand::Grant {
             grant: tilo_action_policy::Grant::new(
                 AGENT_GRANT,
-                tilo_action_policy::Grantee::agent("scribe"),
+                tilo_action_policy::Grantee::agent(
+                    "scribe",
+                    hex::encode(native.certificate.user_public_key),
+                ),
                 tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
                 tilo_action_policy::KindSet::READ,
                 tilo_action_policy::Answer::Allow,
@@ -423,7 +426,7 @@ impl Fixture {
         let route = CrdtRoute::record(app, workspace, "main");
         if agent {
             let kept = crate::apps::test_support::KeptAgents::default()
-                .listing(&route.cluster_id, "scribe");
+                .listing(&route.cluster_id, ("scribe", &admitted.actor_key));
             admit_listed_agent(&kept, &route.cluster_id, &mut admitted, "scribe").unwrap();
         }
         self.admitted_handle(peer, &route, admitted)
@@ -757,7 +760,8 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
             assert_eq!(
                 steps.taken.lock().unwrap().as_slice(),
                 [tilo_actions::Actor::from(tilo_actions::MemberId::agent(
-                    "scribe"
+                    "scribe",
+                    person.clone()
                 ))],
                 "the step ran once, as the session's agent"
             );
@@ -831,7 +835,7 @@ fn grant_the_layout(f: &Fixture, may: bool) {
             } else {
                 "fixture-layout-deny"
             },
-            Grantee::agent("scribe"),
+            Grantee::agent("scribe", hex::encode(f.native.certificate.user_public_key)),
             node,
             if may { KindSet::UNDOABLE } else { KindSet::ALL },
             if may { Answer::Allow } else { Answer::Deny },

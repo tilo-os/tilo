@@ -11,7 +11,7 @@
 //! concurrent move on another device would make it name something else.
 
 use automerge::transaction::Transactable as _;
-use automerge::{ObjId, ObjType, ReadDoc as _};
+use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValue};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionError, ActionKind};
 use tilo_automerge::read::ReadTyped as _;
@@ -174,26 +174,39 @@ impl FileAction {
             return Ok(());
         };
         check_name(name)?;
-        let obj = doc.put_object(nodes, node.as_str(), ObjType::Map)?;
-        doc.put(&obj, PARENT_KEY, parent.as_str())?;
-        doc.put(&obj, PREV_PARENT_KEY, parent.as_str())?;
-        doc.put(&obj, NAME_KEY, name.0.clone())?;
-        doc.put(&obj, PLACEMENT_NAME_KEY, name.0.clone())?;
-        doc.put(
-            &obj,
-            KIND_KEY,
-            match kind {
-                FileNodeKind::Directory => "dir",
-                FileNodeKind::File => "file",
-            },
-        )?;
+        // The node and its fields go into the document as one object: a put per field cost
+        // a file ten times what making the whole node at once does, and a folder of ten
+        // thousand files spent over a second on them.
+        let field = |value: ScalarValue| automerge::hydrate::Value::Scalar(value);
+        let mut fields = std::collections::HashMap::from([
+            (PARENT_KEY, field(parent.as_str().into())),
+            (PREV_PARENT_KEY, field(parent.as_str().into())),
+            (NAME_KEY, field(name.0.clone().into())),
+            (PLACEMENT_NAME_KEY, field(name.0.clone().into())),
+            (
+                KIND_KEY,
+                field(
+                    match kind {
+                        FileNodeKind::Directory => "dir",
+                        FileNodeKind::File => "file",
+                    }
+                    .into(),
+                ),
+            ),
+            (SIZE_KEY, field((*size).into())),
+            (MTIME_KEY, field((*mtime).into())),
+            (AUTHOR_KEY, field(author.as_str().into())),
+            (DOCUMENT_ID_KEY, field(document_id.0.to_string().into())),
+        ]);
         if let Some(hash) = hash {
-            doc.put(&obj, HASH_KEY, hash.as_str())?;
+            fields.insert(HASH_KEY, field(hash.as_str().into()));
         }
-        doc.put(&obj, SIZE_KEY, *size)?;
-        doc.put(&obj, MTIME_KEY, *mtime)?;
-        doc.put(&obj, AUTHOR_KEY, author.as_str())?;
-        doc.put(&obj, DOCUMENT_ID_KEY, document_id.0.to_string())?;
+        doc.batch_create_object(
+            nodes,
+            node.as_str(),
+            &automerge::hydrate::Value::Map(fields.into()),
+            false,
+        )?;
         Ok(())
     }
 

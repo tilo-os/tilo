@@ -73,7 +73,7 @@ pub(super) async fn dispatched(
         listed(workspaces, &workspace, &hex::encode(person), agent, &[]).await;
         // A turn given no policy leaves the workspace's grants as the test set them.
         if let Some(policy) = turn.policy {
-            let named = tilo_action_policy::Grantee::agent(agent.to_owned());
+            let named = tilo_action_policy::Grantee::agent(agent.to_owned(), "owner");
             let answers: Vec<_> = policy
                 .grants
                 .iter()
@@ -197,7 +197,7 @@ pub(super) async fn listed(
         .map(|(index, rule)| {
             tilo_action_policy::Grant::new(
                 format!("test-narrowing:{index}"),
-                tilo_action_policy::Grantee::agent(agent.to_owned()),
+                tilo_action_policy::Grantee::agent(agent.to_owned(), person.to_owned()),
                 rule.node.clone(),
                 rule.kinds,
                 rule.answer,
@@ -353,7 +353,7 @@ pub(super) async fn always(
         .action(&target.address.action);
     let grant = Grant::new(
         format!("test:always:{agent}:{id}"),
-        Grantee::agent(agent),
+        Grantee::agent(agent, hex::encode(ada.user_public_key)),
         node,
         KindSet::of(ActionKind::Outside),
         Answer::Allow,
@@ -652,7 +652,7 @@ pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'stat
         .in_agent_session("agent-session:test");
     let bot =
         Caller::bot("bot", ada.user_public_key, ada.device_public_key).in_workspace(workspace);
-    let member = Caller::local_agent("scout").acting_for(hers.clone());
+    let member = Caller::local_agent("scout", hers.clone());
     let app = Caller::local_app("so.tilo.chat").acting_for(hers);
     vec![
         ("the person themselves", session().in_workspace(workspace)),
@@ -772,7 +772,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
 
     let kept_from_vault = tilo_action_policy::Grant::new(
         "test:scout-kept-from-vault",
-        tilo_action_policy::Grantee::agent("scout"),
+        tilo_action_policy::Grantee::agent("scout", hex::encode(owner.user_public_key)),
         TreePath::workspace(&workspace)
             .app(tilo_app_id::apps::PASSWORDS)
             .kind("passwords.workspace-vault"),
@@ -1075,10 +1075,10 @@ pub(super) fn narrowing(
         for kind in rule.kinds.iter() {
             let answer = agent_answers::grant(
                 workspace,
-                agent,
+                (agent, person),
                 (&scope, kind),
                 rule.answer,
-                tilo_action_policy::Grantee::person(person.clone()),
+                tilo_action_policy::Grantee::person(person),
             );
             policy.grants.retain(|given| given.id != answer.id);
             policy.grants.push(answer);

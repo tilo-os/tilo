@@ -1787,24 +1787,24 @@ d-cyhcwuuf = Downloadzeile
     .w-cancelled = Abgebrochen
     .w-waiting-to-start = Wartet auf den Start
 
-d-mbgqkffs = Adressangebot
-    .doc = Die Erweiterungsseite, die das Fenster der Seite neben dieser zeigt, wie es sie zuletzt meldete: die Seitenleiste der Erweiterung oder die Seite, auf der sie die Person anmelden wollte.
+d-mbgqkffs = Seite daneben
+    .doc = Die Seite, die das Fenster der Seite neben dieser zeigt, wie es sie zuletzt meldete: die Seitenleiste einer Erweiterung, die Seite, auf der sie die Person anmelden wollte, oder ein Popup, das ein Skript öffnete.
 
 d-osrvi5lh = Adressangebot
     .doc = Die Erweiterung, die die Adresse adressiert, und was sie für das anbietet, was auf ihr Stichwort folgt.
 
-d-c6qztmpv = Seitenleiste
-    .doc = Eine eigene Seite einer Erweiterung, neben der Seite gezeigt, die die Person browsierte: ihre Seitenleiste oder die Seite, auf der sie die Person anmelden wollte.
+d-c6qztmpv = Seite daneben
+    .doc = Eine Seite, neben der Seite gezeigt, die die Person browsierte: die Seitenleiste einer Erweiterung, die Seite, auf der sie die Person anmelden wollte, oder ein Popup, das ein Skript öffnete.
     .noun = { $count ->
-        [one] Seitenleiste
-       *[other] Seitenleisten
+        [one] Seite daneben
+       *[other] Seiten daneben
     }
 
 d-52ms3sap = Art
-    .doc = `side` für die Seitenleiste einer Erweiterung, `sign-in` für die Seite, auf der sie die Person anmelden wollte.
+    .doc = `side` für die Seitenleiste einer Erweiterung, `sign-in` für die Seite, auf der sie die Person anmelden wollte, `popup` für eine Seite, die ein Skript in einem Fenster öffnete, das die Seite bemessen hat.
 
 d-sgn42dz6 = Erweiterung
-    .doc = Die Kennung des Motors für die Erweiterung, deren Seite es ist.
+    .doc = Die Kennung des Motors für die Erweiterung, deren Seite es ist, oder für das Popup.
 
 d-uzhylkwp = Adresse
     .doc = Die Adresse, die die Seite zeigt.
@@ -1883,11 +1883,11 @@ d-2wbdw2yd = Seitenleiste der Erweiterung öffnen
 
 d-2wbdw2yd-e = E
 
-d-64aoinoc = Seite der Erweiterung schließen
-    .doc = Schließt die Seite der Erweiterung, die das Fenster der Seite neben oder über dieser zeigte: ihre Seitenleiste oder die Seite, auf der sie die Person anmelden wollte, die als abgelehnt endet.
+d-64aoinoc = Die Seite daneben schließen
+    .doc = Schließt die Seite, die das Fenster der Seite neben oder über dieser zeigte: die Seitenleiste einer Erweiterung, die Seite, auf der sie die Person anmelden wollte, oder ein Popup, das ein Skript öffnete.
 
-d-j3frffti = Seitenleiste vermerken
-    .doc = Schreibt die Seite der Erweiterung, die das Fenster der Seite neben dieser zeigt, in ihren Datensatz oder nimmt sie weg.
+d-j3frffti = Seite daneben vermerken
+    .doc = Schreibt die Seite, die das Fenster der Seite neben dieser zeigt, in ihren Datensatz oder nimmt sie weg.
 
 d-j3frffti-open = Offen
 

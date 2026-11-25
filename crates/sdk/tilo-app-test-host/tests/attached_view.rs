@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<TallyApp>::new().unwrap();
         let definition = definition::<TallyApp>();
-        let agent = tilo_actions::ActionInvoker::agent(AGENT)
+        let agent = tilo_actions::ActionInvoker::agent(AGENT, "ada")
             .acting_for("ada");
         let mut view = AttachedView::open_for(
             definition,

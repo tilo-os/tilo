@@ -259,7 +259,7 @@ fn an_agent_s_job_stops_when_its_caller_cancels_it() {
     let mut driver = worker_driver(Worker::default());
     let (invocation, _) = driver
         .start_bound_job_for(
-            Some(tilo_actions::ActionInvoker::agent("scribe")),
+            Some(tilo_actions::ActionInvoker::agent("scribe", "ada")),
             &address("wait"),
             &no_arguments(),
             None,
@@ -711,7 +711,7 @@ fn a_job_started_within_a_run_keeps_the_run_s_invocation_and_is_awaited_to_its_e
     };
     let (invocation, _) = driver
         .start_bound_job_within(
-            Some(tilo_actions::ActionInvoker::agent("scribe")),
+            Some(tilo_actions::ActionInvoker::agent("scribe", "ada")),
             Some(&ambient),
             &crate::bound_dispatch::BoundActionAddress {
                 instance_id: 1,

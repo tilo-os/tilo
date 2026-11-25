@@ -174,7 +174,7 @@ fn an_agents_field_edit_of_the_status_is_set_status() {
 fn agent_work_lists_the_tasks_agents_are_given() {
     use tilolang_tilo::runtime::ids::{MemberId, actor_text};
     let (ada, root) = workspace();
-    let scout = Value::Actor(Actor::from(MemberId::agent("scout")));
+    let scout = Value::Actor(Actor::from(MemberId::agent("scout", "ada")));
     let me = Actor::from(MemberId::person("ada"));
     let mut args = create(&root, "Sort the inbox");
     args[5] = Value::some(scout);

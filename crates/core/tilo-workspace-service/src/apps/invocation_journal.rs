@@ -443,10 +443,16 @@ pub(super) fn evidence_facts(
             .owner
             .verified_actor()
             .ok_or("legacy actor cannot attest a user")?,
-        actor_id: tilo_actions::MemberId::deserialize(
+        // The admission names its actor as the broker decided it; only a member's call carries
+        // attested evidence.
+        actor_id: match tilo_actions::Actor::deserialize(
             intent.get("actor").ok_or("admission actor missing")?,
         )
-        .map_err(|_| "admission actor missing")?,
+        .map_err(|_| "admission actor missing")?
+        {
+            tilo_actions::Actor::Member(member) => member,
+            _ => return Err("attested admission names no member".into()),
+        },
         app_id: text("app_id")?,
         document_id: text("document_id")?,
         resource: text("resource")?,

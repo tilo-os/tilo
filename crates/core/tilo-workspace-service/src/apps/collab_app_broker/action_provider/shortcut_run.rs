@@ -237,7 +237,11 @@ impl AppBrokerState {
         )
         .is_some_and(|saver| match &saver.agent {
             Some(agent) => {
-                caller.acting().agent_id() == Some(agent.as_str())
+                caller.acting().member_id()
+                    == Some(&tilo_action_policy::MemberId::agent(
+                        agent.as_str(),
+                        saver.person.clone(),
+                    ))
                     && caller.acting_for_person() == Some(saver.person.as_str())
             }
             None => actor.actor().person_id() == Some(saver.person.as_str()),

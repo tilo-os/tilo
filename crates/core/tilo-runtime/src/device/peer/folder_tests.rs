@@ -144,7 +144,14 @@ async fn put_in_tree(
 ) {
     let records = server_records(workspaces, workspace).await;
     let held: BTreeSet<TreeChunk> = records.keys().copied().collect();
-    let mut tree = tilo_fs::Namespace::new("home-server").unwrap();
+    // The server is a device of the person's, and a mount acts as the person who mounted it:
+    // every change of the tree names them.
+    let device = workspaces.device_cert();
+    let mut tree = tilo_fs::Namespace::new(tilo_fs::namespace::MountAuthor::person(
+        hex::encode(device.device_public_key),
+        tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(device.user_public_key)),
+    ))
+    .unwrap();
     if !records.is_empty() {
         tree.take_documents(records.into_iter().collect()).unwrap();
     }
@@ -526,6 +533,14 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
 /// gives it a folder, and the folder syncs both ways.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_workspace_made_elsewhere_gets_a_folder_that_syncs() {
+    tilo_test_env::require_capability!(
+        Fuse,
+        tilo_fs::fuse_session::mountable(
+            Path::new("/dev/fuse"),
+            std::env::var_os("PATH").as_deref()
+        ),
+        "a workspace's folder is a FUSE mount"
+    );
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());

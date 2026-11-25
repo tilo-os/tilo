@@ -900,7 +900,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     );
     let agent_grant = tilo_action_policy::Grant::new(
         "person-agent",
-        tilo_action_policy::Grantee::agent("helper"),
+        tilo_action_policy::Grantee::agent("helper", root_hex.clone()),
         tilo_workspace_service::workspaces::server_controls::settings_node(
             &own,
             &laptop_cert.device_public_key,

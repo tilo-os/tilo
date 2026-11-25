@@ -1136,7 +1136,7 @@ mod tests {
     #[test]
     fn an_agents_row_says_the_window_it_works_in() {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(2), "Studio");
-        let fieldwork = MemberId::agent("fieldwork");
+        let fieldwork = MemberId::agent("fieldwork", "ada");
         workspace.member_here(tilo_desktop_model::Member::named(
             fieldwork.clone(),
             "Fieldwork",
@@ -1212,7 +1212,7 @@ mod tests {
         });
         let mut workspace = Workspace::new(WorkspaceId::from_u128(5), "Design");
         workspace.strips = vec![main];
-        let claude = MemberId::agent("claude");
+        let claude = MemberId::agent("claude", "ada");
         workspace.member_here(tilo_desktop_model::Member::named(
             claude.clone(),
             "Claude Code",

@@ -434,7 +434,7 @@ impl OpenedFiles {
             stream
                 .push(&piece, &mut keep)
                 .map_err(|error| error.to_string())?;
-            offset = offset.saturating_add(piece.len() as u64);
+            offset = offset.saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
         }
         let (manifest, _) = stream
             .finish(&mut keep)

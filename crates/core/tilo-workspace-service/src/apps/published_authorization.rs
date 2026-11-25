@@ -204,7 +204,7 @@ mod tests {
         {
             let mut w = workspace();
             let agent = || {
-                BrokerActor::agent("scribe")
+                BrokerActor::agent("scribe", OWNER)
                     .for_person(OWNER)
                     .session_delegated()
             };
@@ -229,7 +229,7 @@ mod tests {
             assert_eq!(asks(&w, &choose), Ok(true));
             w.policy.grant(Grant::new(
                 "scribe-everything",
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", OWNER),
                 w.policy.node().app(WRITER),
                 KindSet::ALL,
                 tilo_action_policy::Answer::Allow,

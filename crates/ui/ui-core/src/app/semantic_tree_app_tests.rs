@@ -997,7 +997,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
 
         let address = tilo_actions::ActionAddress::new("test.counter", "bump");
         let admitted_invocation = tilo_actions::InvocationId::new();
-        let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
+        let scribe =
+            tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe", "restricted"));
         let request = ResourceInvocation::new(&address, &scribe)
             .approval(Some(&crate::app_core::TEST_APPROVAL))
             .broker_admitted(true)
@@ -1036,7 +1037,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.source_invocation, Some(admitted_invocation));
         assert_eq!(
             app.state.peek_last_undo().and_then(|entry| entry.author),
-            Some(crate::permissions::MemberId::agent("Scribe")),
+            Some(crate::permissions::MemberId::agent("Scribe", "restricted")),
             "undo attribution and durable history use the same actor"
         );
     }
@@ -1064,7 +1065,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             resource: "test.counter".into(),
             action: "bump".into(),
             argument: None,
-            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent(
+                "Scribe",
+                "restricted",
+            )),
             context: None,
         });
 
@@ -1101,7 +1105,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             resource: "test.counter".into(),
             action: "async-bump".into(),
             argument: None,
-            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent(
+                "Scribe",
+                "restricted",
+            )),
             context: None,
         });
         assert_eq!(counter(&app), 0, "admission alone does not mutate");
@@ -1176,7 +1183,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             ),
             (
                 "inspect",
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe", "restricted")),
             ),
             (
                 "missing",
@@ -1222,7 +1229,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert!(local.is_err(), "an unbrokered client must fail closed");
         assert_eq!(counter(&app), 0);
 
-        let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
+        let scribe =
+            tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe", "restricted"));
         let request = ResourceInvocation::new(&address, &scribe)
             .approval(Some(&crate::app_core::TEST_APPROVAL))
             .broker_admitted(true)
@@ -1232,7 +1240,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(counter(&app), 1);
         assert_eq!(
             app.state.peek_last_undo().and_then(|entry| entry.author),
-            Some(crate::permissions::MemberId::agent("Scribe"))
+            Some(crate::permissions::MemberId::agent("Scribe", "restricted"))
         );
     }
 
@@ -1243,7 +1251,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             .invoke_resource_action(
                 ResourceInvocation::new(
                     &tilo_actions::ActionAddress::new("test.counter", "inspect"),
-                    &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::agent(
+                        "Scribe",
+                        "restricted",
+                    )),
                 )
                 .approval(Some(&crate::app_core::TEST_APPROVAL))
                 .broker_admitted(true)
@@ -1796,13 +1807,13 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
         "test.counter".into(),
         "ping".into(),
         None,
-        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe", "restricted")),
         None,
     );
     assert_eq!(counter(&app), 1, "the effect's edit was applied");
     assert_eq!(
         app.state.peek_last_undo().and_then(|entry| entry.author),
-        Some(crate::permissions::MemberId::agent("Scribe")),
+        Some(crate::permissions::MemberId::agent("Scribe", "restricted")),
         "by the effect's invoker, not the person at the device"
     );
     assert!(
@@ -1817,7 +1828,7 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
         "test.counter".into(),
         "peek".into(),
         None,
-        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Viewer")),
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Viewer", "restricted")),
         None,
     );
     assert_eq!(counter(&app), 1, "the viewer's effect wrote nothing");
@@ -1866,7 +1877,7 @@ fn with_a_broker_an_effects_edit_is_admitted_there_for_its_invoker() {
             "test.counter".into(),
             "ping".into(),
             None,
-            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe", "restricted")),
             None,
         );
         assert_eq!(

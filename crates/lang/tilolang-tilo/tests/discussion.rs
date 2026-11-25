@@ -374,7 +374,9 @@ fn an_agent_comments_through_the_same_action() {
     // a person's is.
     let said = comment(
         &ada,
-        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("scout")),
+        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+            "scout", "ada",
+        )),
         &task,
         "The van place is held until Friday noon.",
     );
@@ -391,7 +393,7 @@ fn an_agent_comments_through_the_same_action() {
     assert_eq!(
         made.who,
         Some(tilolang_tilo::runtime::Actor::from(
-            tilolang_tilo::runtime::ids::MemberId::agent("scout")
+            tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada")
         ))
     );
     assert_eq!(made.from.map(|r| r.id_string()), Some(task.id_string()));
@@ -406,7 +408,7 @@ fn an_agent_comments_through_the_same_action() {
             .iter()
             .any(|avatar| avatar.props.get("who")
                 == Some(&Value::Actor(Actor::from(
-                    tilolang_tilo::runtime::ids::MemberId::agent("scout")
+                    tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada")
                 )))),
         "the thread shows who said it"
     );

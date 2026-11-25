@@ -246,7 +246,7 @@ mod tests {
                 PresenceHue::of_identity("u_alan"),
             ),
             MentionCandidate::new(
-                MemberId::agent("tide"),
+                MemberId::agent("tide", "u_alan"),
                 "Tide",
                 PresenceHue::of_identity("agent:tide"),
             ),

@@ -162,29 +162,29 @@ fn author_of(handle: &DesktopHandle, tab: u64) -> Option<Author> {
             identity: person.clone(),
             kind: "person".to_owned(),
             name: String::new(),
-            colour: author_colour(
-                MemberId::parsed_person(&person).unwrap_or(MemberId::Agent(person)),
-            ),
+            colour: author_colour(MemberId::parsed_person(&person).map_or_else(
+                || ui::tokens::PresenceHue::of_agent(&person),
+                |member| ui::tokens::PresenceHue::of_member(&member),
+            )),
             agent: String::new(),
             run: String::new(),
             title: String::new(),
         }),
         (_, Some(run)) => Some(Author {
-            identity: run.agent.clone(),
+            identity: String::from_utf8_lossy(&run.agent.actor_bytes()).into_owned(),
             kind: "agent".to_owned(),
             name: run.label.clone(),
-            colour: author_colour(MemberId::Agent(run.agent.clone())),
-            agent: run.agent,
+            colour: author_colour(ui::tokens::PresenceHue::of_member(&run.agent)),
+            agent: String::from_utf8_lossy(&run.agent.actor_bytes()).into_owned(),
             run: run.run,
             title: run.title,
         }),
     }
 }
 
-/// The presence colour `member` wears, as `#rrggbb`: the one every surface draws them in.
-fn author_colour(member: tilo_action_policy::MemberId) -> String {
-    let (red, green, blue) =
-        ui::presence::identity_rgb(ui::tokens::PresenceHue::of_member(&member));
+/// The presence colour `hue` is, as `#rrggbb`: the one every surface draws its member in.
+fn author_colour(hue: ui::tokens::PresenceHue) -> String {
+    let (red, green, blue) = ui::presence::identity_rgb(hue);
     format!("#{red:02x}{green:02x}{blue:02x}")
 }
 

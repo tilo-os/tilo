@@ -8,7 +8,7 @@ pub(crate) const RUN: &str = "issue-7@8000000000000001";
 /// The agent's run of issue 7, acting for `ada`, as the broker stamps it.
 pub(crate) fn run() -> (ActionInvoker, ActionContext) {
     (
-        ActionInvoker::agent("helper").acting_for("ada"),
+        ActionInvoker::agent("helper", "ada").acting_for("ada"),
         ActionContext::default().with_group(
             RUN,
             "Tidy the notes",

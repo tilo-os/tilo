@@ -268,7 +268,7 @@ fn chain() -> Chain {
         "grace",
         on_board("ask", vec![text("summarise")]).made_from(Some(&post)),
     ));
-    let scout = Actor::from(MemberId::agent("scout"));
+    let scout = Actor::from(MemberId::agent("scout", "cy"));
     let reply = match ada
         .host
         .runtime()

@@ -149,6 +149,10 @@ pub struct Source {
 /// One entry in a snapshot's file index, as the restore preview shows it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SnapFile {
+    /// The entry's path inside the snapshot: what tells a folder from another of its name, and
+    /// what a window folds a folder's contents away by.
+    #[serde(default)]
+    pub path: String,
     pub depth: usize,
     pub name: String,
     /// The file's size; zero for a folder.

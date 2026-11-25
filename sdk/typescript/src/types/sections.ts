@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@a90eafad61e6b88d";
+export const SURFACE = "so.tilo.settings.sections@dd5b19053ee5860b";
 
 export interface Ink {
   primary: number;
@@ -822,6 +822,11 @@ export interface SetDefaultAppHandlerArgs {
 /** The arguments of `request`. */
 export interface RequestArgs {
   change: DisplayTransaction;
+}
+
+/** The arguments of `set-used`. */
+export interface SetUsedArgs {
+  used: string;
 }
 
 /** The arguments of `set-layouts`. */
@@ -1835,6 +1840,25 @@ export const DISPLAYCHANGE_ACTIONS = ["request", "requestMany"] as const;
 /** The `settings.display-change` kind at `path`. */
 export function displayChange(ws: tilo.Workspace, path: string): DisplayChange {
   return resourceProxy(ws, path, SURFACE, DISPLAYCHANGE_ACTIONS, true) as unknown as DisplayChange;
+}
+
+/** Emoji — `settings.emoji`. */
+export interface Emoji extends tilo.Resource {
+  readonly used: string;
+  setUsed(args: {
+    used: string;
+  }): Promise<void>;
+  /** Runs `set-used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setUsedMany(items: SetUsedArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Emoji` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const EMOJI_ACTIONS = ["setUsed", "setUsedMany"] as const;
+
+/** The `settings.emoji` kind at `path`. */
+export function emoji(ws: tilo.Workspace, path: string): Emoji {
+  return resourceProxy(ws, path, SURFACE, EMOJI_ACTIONS, true) as unknown as Emoji;
 }
 
 /** On-screen keyboard layouts — `settings.osk-sources`. */

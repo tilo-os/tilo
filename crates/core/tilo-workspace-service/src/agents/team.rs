@@ -170,7 +170,7 @@ impl TurnTeam {
             .workspaces
             .asked_turn_of(self.workspace_id, caller)
             .await?;
-        if asked.agent == self.agent.id.0 {
+        if asked.agent == self.agent.member() {
             Ok(())
         } else {
             Err(NotTaken::UnknownAction)
@@ -183,8 +183,11 @@ impl TurnTeam {
     /// its own team and no other. Reading a team is part of steering it: it is decided as a
     /// note is.
     fn lets(&self, caller: &Caller, verb: &str, on: Option<&str>) -> bool {
-        let (Some(agent), Some(person)) = (
-            caller.acting().agent_id(),
+        let (Some((agent, own)), Some(person)) = (
+            caller
+                .acting()
+                .member_id()
+                .and_then(tilo_action_policy::MemberId::as_agent),
             caller.acting().acted_for_person(),
         ) else {
             return false;
@@ -202,10 +205,14 @@ impl TurnTeam {
         };
         // Only a turn this server carries out reaches here ([`Self::asker`]): its agent works
         // for the turn's person as one handed to them, held to what the list keeps for it.
-        let grants =
-            tilo_action_policy::Acting::handed_agent(agent, person).handed_preset(&self.workspace);
+        let grants = tilo_action_policy::Acting::agent(agent, own.clone())
+            .handed()
+            .acting_for(tilo_action_policy::Acting::member(
+                tilo_action_policy::MemberId::person(person),
+            ))
+            .handed_preset(&self.workspace);
         // Its grants hold until they are taken back: no time decides them.
-        let decided = Party::new(vec![Grantee::agent(agent.to_owned())], &grants).decide(
+        let decided = Party::new(vec![Grantee::agent(agent, own.clone())], &grants).decide(
             &node,
             tilo_action_policy::ActionKind::Undoable,
             &Context::at(0),
@@ -393,6 +400,12 @@ impl TurnTeam {
         let Some((provider, caller, place)) = &self.telling else {
             return Err("only a turn asked in a conversation tells a sub-agent".to_owned());
         };
+        let member = self
+            .list()
+            .await?
+            .get(&Id::from_raw(id.to_owned()))
+            .map(Agent::member)
+            .ok_or("the workspace keeps no such sub-agent")?;
         let rich_text = self
             .workspaces
             .tilolang()
@@ -403,7 +416,7 @@ impl TurnTeam {
             &*rich_text,
             &self.workspace,
             place,
-            (id, name),
+            (&member, name),
             text,
         )
         .await

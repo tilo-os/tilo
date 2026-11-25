@@ -1,13 +1,12 @@
 #!/bin/sh
 # A workspace VM's Browser session: one headless Tilo desktop, drawn on the
-# CPU, that joins its workspace as a device of it (docs/hosted-browser.md).
+# CPU, the VM's daemon's client (docs/hosted-browser.md).
 #
-# The guest agent runs this, as the tenant, at the workspace's first browser
-# action (`crates/vm/linux-vm/src/hosted/browser.rs`, "The session in the
-# guest"): it becomes the image's own unprivileged browser user, then runs the
-# VM's headless session (headless-session) as that user, with no X11, and the
-# session knows it holds a hosted Browser from `TILO_HOSTED_BROWSER`. What workspace it joins arrives on its standard input,
-# as one line of material, and what it reports goes to its standard output.
+# The VM's daemon (vm-daemon) starts this, as root, at the workspace's first
+# browser window, with `TILO_HOSTED_BROWSER` marking what it holds and the link to
+# the daemon on file descriptor 3. It runs the VM's headless session
+# (headless-session) as the image's own unprivileged browser user, with no X11;
+# the session asks the daemon which records to open.
 #
 # Every setting here has a default the image needs; an operator or the build's
 # smoke test may name a shell-compatible KEY=VALUE file to override them, and
@@ -15,51 +14,54 @@
 #
 # Usage: browser-session [CONFIG]
 #   CONFIG  default: $TILO_BROWSER_SESSION_CONFIG, when it names one
-#   TILO_BROWSER_STORE names the folder of the workspace's files the profile
-#   is kept in between runs, when the workspace keeps it.
+#   The folder of the workspace's files the profile is kept in between runs,
+#   when the workspace keeps it, is what `vm-daemon --browser-store` named.
 #
-# The process it starts is the sandbox's own: nothing here runs as root, and
-# SIGTERM to this script ends the session and the bus beside it, and the script
-# once they have.
+# SIGTERM to this script ends the session and the bus beside it, saves the
+# profile, and ends the script once they have.
 set -eu
 
 # Never the tenant: the tenant has sudo in their VM, and a page that got out of
-# Chromium's sandbox must not. The sudoers rule the image ships allows this one
-# hop and keeps the input, the output and the marks.
+# Chromium's sandbox must not. setpriv, not sudo: sudo closes every descriptor
+# but the standard three, and the link is the session's one way to its daemon.
 user=tilo-browser
-as_browser() { sudo -n -u "$user" -- "$0" "$@"; }
-if [ "$(id -un)" != "$user" ]; then
-    store=${TILO_BROWSER_STORE:-}
-    [ -n "$store" ] || exec sudo -n -u "$user" -- "$0" "$@"
-    # The profile (cookies, storage) is kept among the workspace's own files
-    # between runs: restored before the session starts, written back once it
-    # ended, and replaced whole, so a save cut short keeps the last one.
+tenant=tilo
+as() { who=$1; shift; setpriv --reuid="$who" --regid="$who" --init-groups -- "$@"; }
+if [ "$(id -u)" = 0 ]; then
+    store=
+    [ -r /run/tilo/vm/browser-store ] && store=$(cat /run/tilo/vm/browser-store)
+    # The daemon's link is handed on by name each time (`3<&3`): a session
+    # started without it fails here, and nothing else this script runs holds it.
+    [ -n "$store" ] || exec setpriv --reuid="$user" --regid="$user" --init-groups -- "$0" "$@" 3<&3
+    # The profile (cookies, storage) is kept among the workspace's own files,
+    # which are the tenant's, between runs: restored before the session starts,
+    # written back once it ended, and replaced whole, so a save cut short keeps
+    # the last one.
     profile=$store/profile.tar.gz
-    if [ -s "$profile" ]; then
-        as_browser --restore < "$profile" || echo 'browser-session: the saved profile did not restore' >&2
+    if as "$tenant" test -s "$profile"; then
+        as "$tenant" cat "$profile" 3<&- | as "$user" "$0" --restore 3<&- \
+            || echo 'browser-session: the saved profile did not restore' >&2
     fi
-    # A background job's input is /dev/null unless named: the material is on 3.
-    # sudo itself, not a function in a subshell, so SIGTERM reaches it, and
-    # sudo hands it on.
-    exec 3<&0
-    sudo -n -u "$user" -- "$0" "$@" <&3 &
+    # setpriv itself, not a function in a subshell, so SIGTERM reaches the
+    # session.
+    setpriv --reuid="$user" --regid="$user" --init-groups -- "$0" "$@" 3<&3 &
     session=$!
     trap 'kill -TERM "$session" 2>/dev/null || true' TERM INT
     status=0
     wait "$session" || status=$?
     # A signal ends the first wait; the session is still writing its profile.
     wait "$session" 2>/dev/null || true
-    if as_browser --save > "$profile.new"; then
-        mv -f "$profile.new" "$profile"
+    if as "$user" "$0" --save 3>&- | as "$tenant" sh -c 'cat > "$1.new" && mv -f "$1.new" "$1"' sh "$profile"; then
+        :
     else
-        rm -f "$profile.new"
+        as "$tenant" rm -f "$profile.new"
         echo 'browser-session: the profile was not saved' >&2
     fi
     exit "$status"
 fi
 
-# What a device is (its identity and secrets, handed fresh at every start), its
-# runtime directory, and what Chromium fetches again (caches) are never saved.
+# What a device is (its identity and secrets), its runtime directory, and what
+# Chromium fetches again (caches) are never saved.
 case ${1:-} in
     --restore)
         cd "$(getent passwd "$(id -u)" | cut -d: -f6)" && exec tar -xzf - ;;

@@ -137,8 +137,7 @@ pub(crate) struct Beside {
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
-/// once it is, the relays it holds back until something needs it dialable, and
-/// where it was given and reached hosts.
+/// once it is, and the relays it holds back until something needs it dialable.
 #[derive(Clone)]
 pub(crate) struct Bound {
     pub(crate) endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
@@ -147,7 +146,6 @@ pub(crate) struct Bound {
     pub(crate) lan: tilo_endpoint_reachability::Nearby,
     /// The devices the workspaces it is in admit, whom that discovery answers too.
     pub(crate) workspace_devices: WorkspaceDevices,
-    pub(crate) reached: Reached,
 }
 
 /// The devices each workspace this device is in admitted, as the session last handed the peer
@@ -227,8 +225,8 @@ impl tilo_endpoint_reachability::Fleet for LanFleet {
 }
 
 impl Bound {
-    /// The endpoint to bind, filled in once it is, holding back `relays`, hearing the local
-    /// network into `lan`, and dialling each host where this device reached it ([`Reached`]).
+    /// The endpoint to bind, filled in once it is, holding back `relays` and hearing the local
+    /// network into `lan`.
     pub(crate) fn new(
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
         relays: tilo_endpoint_reachability::EndpointRelays,
@@ -239,52 +237,7 @@ impl Bound {
             relays,
             lan,
             workspace_devices: WorkspaceDevices::default(),
-            reached: Reached::default(),
         }
-    }
-}
-
-/// Where this device was given a host's address and reached the host there, by the host's id.
-///
-/// The address a host advertises for itself is the one it sees from its own network: behind a NAT,
-/// a port forward or a VM's network, that is its loopback or a private address, which from here is
-/// nobody or this machine itself. The address this device was handed (a VM's host rewrites the
-/// server's to the one the VM reaches it at) and reached the host at is the one that works, so it is
-/// kept apart from everything heard about the host: an invitation, a join's answer or a host's
-/// signed address adds paths beside it, and never replaces it. The endpoint dials every address it
-/// knows of a host at once, so the one that answers carries the connection.
-#[derive(Clone, Debug)]
-pub(crate) struct Reached(iroh::address_lookup::memory::MemoryLookup);
-
-impl Default for Reached {
-    fn default() -> Self {
-        Self(iroh::address_lookup::memory::MemoryLookup::with_provenance(
-            "reached",
-        ))
-    }
-}
-
-impl Reached {
-    /// This device was given `addr` for its host and reached the host there: from now on it dials
-    /// the host there too, whatever the host says of itself. A later address it reached the same
-    /// host at replaces this one.
-    pub(crate) fn note(&self, addr: &EndpointAddr) {
-        if addr.addrs.is_empty() {
-            return;
-        }
-        self.0.set_endpoint_info(addr.clone());
-    }
-
-    /// The endpoint `builder` makes, resolving a host's id through `lookup` (what the session hears
-    /// of hosts) and, beside it, where this device reached the host.
-    pub(crate) fn resolving(
-        &self,
-        builder: iroh::endpoint::Builder,
-        lookup: &iroh::address_lookup::memory::MemoryLookup,
-    ) -> iroh::endpoint::Builder {
-        builder
-            .address_lookup(lookup.clone())
-            .address_lookup(self.0.clone())
     }
 }
 
@@ -509,9 +462,8 @@ async fn listening(
             return None;
         }
     };
-    let endpoint = match bound
-        .reached
-        .resolving(builder, &lookup)
+    let endpoint = match builder
+        .address_lookup(lookup.clone())
         .transport_config(tilo_network_actor::transport_config())
         .bind()
         .await

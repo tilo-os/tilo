@@ -191,8 +191,20 @@ mod cases {
                     "status": "complete",
                     "failure": "",
                     "files": [
-                        { "depth": 0, "name": "Documents", "size": 0, "is_dir": true },
-                        { "depth": 1, "name": "plan.md", "size": 4200, "is_dir": false },
+                        {
+                            "path": "Documents",
+                            "depth": 0,
+                            "name": "Documents",
+                            "size": 0,
+                            "is_dir": true,
+                        },
+                        {
+                            "path": "Documents/plan.md",
+                            "depth": 1,
+                            "name": "plan.md",
+                            "size": 4200,
+                            "is_dir": false,
+                        },
                     ],
                 },
                 {
@@ -665,5 +677,98 @@ mod cases {
             rows.iter().any(|row| row == "Projects"),
             "the picker lists the folders: {rows:?}"
         );
+    }
+
+    /// The snapshot's file index folds a folder's contents away and opens them again, through
+    /// the published action the window's fold control runs.
+    #[test]
+    fn a_snapshots_folders_fold_their_contents_away() {
+        let s = Backups::new();
+        s.set_up();
+        s.done("refresh", vec![Value::resource(&s.root)]);
+        let snapshots = s.records(&s.root, "snapshots");
+        let snapshot = snapshots
+            .first()
+            .expect("the fixture holds a snapshot")
+            .clone();
+        let rows = || titles(s.window().tree());
+        assert!(
+            rows().iter().any(|row| row == "plan.md"),
+            "the file is in the index: {:?}",
+            rows()
+        );
+
+        s.done(
+            "fold_folder",
+            vec![
+                Value::resource(&s.root),
+                Value::resource(&snapshot),
+                Value::text("Documents"),
+                Value::Bool(true),
+            ],
+        );
+        let folded = rows();
+        assert!(
+            folded.iter().any(|row| row == "Documents"),
+            "the folder stays: {folded:?}"
+        );
+        assert!(
+            !folded.iter().any(|row| row == "plan.md"),
+            "the folder's contents are folded away: {folded:?}"
+        );
+
+        s.done(
+            "fold_folder",
+            vec![
+                Value::resource(&s.root),
+                Value::resource(&snapshot),
+                Value::text("Documents"),
+                Value::Bool(false),
+            ],
+        );
+        assert!(
+            rows().iter().any(|row| row == "plan.md"),
+            "opening the folder shows its contents again: {:?}",
+            rows()
+        );
+    }
+
+    /// The timeline says when the next backup is due, read from the schedule the device
+    /// reports: nothing runs it but the person when it has none, and one cadence after the
+    /// newest whole snapshot when it has one.
+    #[test]
+    fn the_next_run_follows_the_schedule() {
+        let s = Backups::new();
+        s.set_up();
+        s.done("refresh", vec![Value::resource(&s.root)]);
+        assert_eq!(s.number(&s.root, "next_run"), 0, "nothing schedules a run");
+        let window = s.window();
+        let tile = of_kind(window.tree(), "ui.StatTile")
+            .into_iter()
+            .find(|tile| prop(tile, "label") == "Next run")
+            .expect("the timeline says when the next run is");
+        assert_eq!(prop(tile, "value"), "By hand");
+
+        // The same repository, with the source's schedule saying it runs every day.
+        let mut daily: serde_json::Value =
+            serde_json::from_str(&catalog_json()).expect("the catalog is JSON");
+        daily["sources"][0]["schedule"] = serde_json::json!("daily");
+        s.done(
+            "keep_catalog",
+            vec![Value::resource(&s.root), Value::text(daily.to_string())],
+        );
+        assert_eq!(
+            s.number(&s.root, "next_run"),
+            1_795_080_000 + 86_400,
+            "one day after the newest whole snapshot"
+        );
+        let window = s.window();
+        let tile = of_kind(window.tree(), "ui.StatTile")
+            .into_iter()
+            .find(|tile| prop(tile, "label") == "Next run")
+            .expect("the timeline says when the next run is");
+        let value = prop(tile, "value");
+        assert!(value.contains(':'), "the next run reads as a time: {value}");
+        assert_ne!(value, "By hand");
     }
 }

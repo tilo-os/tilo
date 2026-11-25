@@ -451,16 +451,16 @@ fn recipient(person: &str, found: &Found) -> Option<ui::floating_surface::Recipi
     let who = found.people.first();
     let recipient = match found.about? {
         IndexKind::Agent => {
-            let agent = who?.identity.strip_prefix("agent:")?;
+            let agent = who?.identity.as_str();
+            agent.starts_with("agent:").then_some(())?;
             Recipient::found(RecipientKind::Agent, agent, &found.label)
         }
         IndexKind::Person => {
             let who = who?;
-            let id = bare_identity(&who.identity);
-            if id == person {
+            if who.identity == person {
                 return None;
             }
-            Recipient::found(party_kind(who), id, &found.label)
+            Recipient::found(party_kind(who), &who.identity, &found.label)
                 .with_detail(found.subtitle.clone().unwrap_or_default())
         }
         IndexKind::Conversation => {
@@ -469,13 +469,13 @@ fn recipient(person: &str, found: &Found) -> Option<ui::floating_surface::Recipi
             let others: Vec<&IndexPerson> = found
                 .people
                 .iter()
-                .filter(|other| bare_identity(&other.identity) != person)
+                .filter(|other| other.identity != person)
                 .collect();
             if let ([_, _], [other]) = (found.people.as_slice(), others.as_slice()) {
                 let name = Some(other.name.as_str()).filter(|name| !name.is_empty());
                 return Some(Recipient::found(
                     party_kind(other),
-                    bare_identity(&other.identity),
+                    &other.identity,
                     name.unwrap_or(&found.label),
                 ));
             }
@@ -498,12 +498,6 @@ fn recipient(person: &str, found: &Found) -> Option<ui::floating_surface::Recipi
         IndexKind::Message => return None,
     };
     Some(recipient)
-}
-
-/// A person's or an agent's identity as the app that keeps them spells it: a person's bare root
-/// key, an agent's `agent:<id>` with the prefix the index adds to say what it is taken off.
-fn bare_identity(identity: &str) -> &str {
-    identity.strip_prefix("agent:").unwrap_or(identity)
 }
 
 /// Whether a message to `person` goes to an agent or a person.
@@ -808,7 +802,7 @@ mod tests {
                         IndexKind::Agent,
                         vec![person(
                             "Ada",
-                            "agent:a_ada",
+                            "agent:u_ada/a_ada",
                             "chat.agent/agents/a_ada",
                             true,
                         )],
@@ -816,12 +810,12 @@ mod tests {
                     shaped(
                         note("chat.workspace/channels/c_crit", "Ada's design crit", false),
                         IndexKind::Conversation,
-                        vec![person("Ada", "agent:a_ada", "", true)],
+                        vec![person("Ada", "agent:u_ada/a_ada", "", true)],
                     ),
                     shaped(
                         note("chat.workspace/messages/m_1", "Ada, can you look?", false),
                         IndexKind::Message,
-                        vec![person("Ada", "agent:a_ada", "", true)],
+                        vec![person("Ada", "agent:u_ada/a_ada", "", true)],
                     ),
                 ],
             );
@@ -856,7 +850,7 @@ mod tests {
                 IndexKind::Agent,
                 vec![person(
                     "Ada",
-                    "agent:a_ada",
+                    "agent:u_ada/a_ada",
                     "chat.agent/agents/a_ada",
                     true,
                 )],
@@ -875,7 +869,7 @@ mod tests {
             };
             assert_eq!(
                 row.avatar,
-                Some(ui::search::RowFace::of_member("Ada", "agent:a_ada", true))
+                Some(ui::search::RowFace::of_member("Ada", "agent:u_ada/a_ada", true))
             );
         }
 
@@ -891,7 +885,7 @@ mod tests {
                     IndexKind::Conversation,
                     vec![
                         person("Aria", "u_aria", "", false),
-                        person("Ada", "agent:a_ada", "", true),
+                        person("Ada", "agent:u_ada/a_ada", "", true),
                     ],
                 )],
             );
@@ -922,7 +916,7 @@ mod tests {
                 IndexKind::Agent,
                 vec![person(
                     "Ada",
-                    "agent:a_ada",
+                    "agent:u_ada/a_ada",
                     "chat.agent/agents/a_ada",
                     true,
                 )],
@@ -933,7 +927,7 @@ mod tests {
                 IndexKind::Conversation,
                 vec![
                     person("Me", "u_me", "", false),
-                    person("Ada", "agent:a_ada", "", true),
+                    person("Ada", "agent:u_ada/a_ada", "", true),
                 ],
             );
             conversation.when = Some(30);
@@ -983,7 +977,7 @@ mod tests {
             assert_eq!(
                 listed,
                 [
-                    (RecipientKind::Agent, "a_ada"),
+                    (RecipientKind::Agent, "agent:u_ada/a_ada"),
                     (RecipientKind::Person, "u_ada"),
                 ],
                 "the direct conversation with the agent is the agent, listed once"
@@ -999,7 +993,7 @@ mod tests {
             assert_eq!(
                 all,
                 [
-                    (RecipientKind::Agent, "a_ada"),
+                    (RecipientKind::Agent, "agent:u_ada/a_ada"),
                     (RecipientKind::Person, "u_ada"),
                 ]
             );
@@ -1015,7 +1009,7 @@ mod tests {
                 let mut entry = shaped(
                     note(&format!("chat.agent/agents/{id}"), name, false),
                     IndexKind::Agent,
-                    vec![person(name, &format!("agent:{id}"), "", true)],
+                    vec![person(name, &format!("agent:u_me/{id}"), "", true)],
                 );
                 entry.when = Some(when);
                 entries.push(entry);
@@ -1042,13 +1036,13 @@ mod tests {
             };
             assert_eq!(
                 ids("Digest")[..3],
-                ["a_digest", "a_digester", "a_weekly"]
+                ["agent:u_me/a_digest", "agent:u_me/a_digester", "agent:u_me/a_weekly"]
             );
             assert_eq!(
                 ids("helper 7").first().map(String::as_str),
-                Some("a_7")
+                Some("agent:u_me/a_7")
             );
-            assert_eq!(ids("helper 4")[0], "a_4");
+            assert_eq!(ids("helper 4")[0], "agent:u_me/a_4");
         }
 
         phase a_message_says_who_said_it_where_and_when;

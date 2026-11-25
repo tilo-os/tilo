@@ -601,7 +601,8 @@ fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
 impl Feeding<'_> {
     /// Make an agent called `name` in the workspace `workspace_id` names (the
     /// one in front when it names none), kept by the person: the record is
-    /// the agent's admission, and Chat's grants decide who may make one.
+    /// the agent's admission, and Chat's grants decide who may make one. It
+    /// answers the member made: the agent, of the person.
     ///
     /// # Errors
     /// The workspace is not open here, or Chat's grants refuse the record.
@@ -610,12 +611,12 @@ impl Feeding<'_> {
         workspace_id: Option<&str>,
         name: &str,
         model: &str,
-    ) -> Result<String, String> {
+    ) -> Result<tilo_action_policy::MemberId, String> {
         let workspace = self.workspace(workspace_id)?;
         self.tabs
             .agents
             .create(Some(&workspace), self.person, (name, None), model)
-            .map(|(id, _)| id)
+            .map(|(id, _)| tilo_action_policy::MemberId::agent(id, self.person))
     }
 
     /// The person's agent for the MCP client `client` in the workspace `workspace_id` names: the
@@ -678,9 +679,14 @@ fn agent_ask(
     };
     match answered {
         agents::Answered::Show(review) => {
-            if let sheet::WorkspaceSettingsEffect::RemoveAgent { agent } = effect {
+            if let sheet::WorkspaceSettingsEffect::RemoveAgent { agent } = effect
+                && let Some(member) = fed
+                    .tabs
+                    .agents
+                    .member(workspace.as_ref(), fed.person, agent)
+            {
                 edit(fed.handle, fed.person, |ws, actor| {
-                    domain::remove_agent(ws, actor, agent)
+                    domain::remove_agent(ws, actor, &member)
                 });
             }
             show(state, fed, state.settings().tab, review.as_deref());
@@ -741,10 +747,24 @@ fn agent_answers(
         _ => return,
     };
     let shown = agent.clone();
-    let agent = agent.clone();
+    let Some((agent, of)) = fed
+        .tabs
+        .agents
+        .member(workspace_in_front(fed).as_ref(), fed.person, agent)
+        .and_then(|member| {
+            let (agent, of) = member.as_agent()?;
+            Some((agent.to_owned(), of.as_str().to_owned()))
+        })
+    else {
+        tracing::debug!(%agent, "no such agent: nothing changed");
+        return;
+    };
     govern(state, fed, move |workspace, person| {
         Ok(domain::agent_access::answers_set(
-            workspace, &agent, person, &answers,
+            workspace,
+            (&agent, &of),
+            person,
+            &answers,
         ))
     });
     show(state, fed, state.settings().tab, Some(&shown));

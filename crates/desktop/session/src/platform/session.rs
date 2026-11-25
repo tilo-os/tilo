@@ -53,8 +53,6 @@ pub use crate::vpn::Vpn;
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
-#[cfg(test)]
-use crate::app_wire::AppWire;
 use crate::search::SessionSearch;
 use crate::services::app_wire::{mount_services, start_app_wire};
 use crate::shell::mount::{KeyContext, mount_controls, mount_setup};
@@ -179,8 +177,7 @@ impl Session {
                             daemon_link.clone(),
                             tilo_rt::app().handle().clone(),
                         ),
-                        collab_types::person_workspace(&identity.device_cert.user_public_key)
-                            .to_string(),
+                        records_place(&identity.device_cert),
                     )
                 });
         }
@@ -850,6 +847,7 @@ impl Session {
         let nearby = crate::nearby_send::Served::new(
             daemon.clone(),
             std::sync::Arc::clone(&record_content),
+            handle.clone(),
             continuity.clone(),
             Box::new(move |resource: &str| {
                 sharing.borrow_mut().push(resource.to_owned());
@@ -997,15 +995,6 @@ impl Session {
             std::sync::Arc::new(crate::task_programs_host::TaskProgramHost::new(
                 std::sync::Arc::clone(&session_services),
             ));
-        let task_programs = Some(std::sync::Arc::new(
-            tilo_workspace_service::workspaces::task_programs::TaskPrograms::new(
-                std::sync::Arc::clone(&task_program_host)
-                    as std::sync::Arc<
-                        dyn tilo_workspace_service::workspaces::task_programs::Programs,
-                    >,
-                ui::i18n::preferred_language,
-            ),
-        ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // layout, its undo, the windows and the notices, which the REPL already calls.
         // Each is answered on the loop's pass, where the layout is. The shell's styles, read
@@ -1249,25 +1238,18 @@ impl Session {
         let app_wire = start_app_wire(
             &options,
             &live_activities,
-            &handle,
             &activity,
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions)),
             },
             crate::services::app_wire::Collaboration {
-                revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 daemon: daemon_link.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 view: view.clone(),
-                sealed: crate::app_wire::Sealed {
-                    broker: std::sync::Arc::clone(&channels_broker),
-                    keys: engine.as_ref().map(|engine| engine.keys()),
-                },
                 records: resource_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
-                task_programs,
                 session_actions: Some(std::sync::Arc::clone(&session_actions)),
                 settings_steps: Some(std::sync::Arc::clone(&settings_steps)),
             },
@@ -1293,17 +1275,10 @@ impl Session {
         }
         // A session in a workspace's VM is started for one workspace, and everything it does
         // of what a person's session does is the window it holds: it is told here what wakes its
-        // loop when the server answers, and what the broker admits of its window's page.
+        // loop when its daemon launches something, and the dispatch it asks its daemon through.
         if let Some(hosted) = &mut options.hosted_browser {
             hosted.waking(options.wake.handle());
             hosted.wired(app_wire.as_ref(), &options.person);
-        }
-        // What Files may read, and where a received file may land, is what
-        // this session's workspaces grant it: read off the shell the broker
-        // decides against.
-        if let Some(app_wire) = &app_wire {
-            nearby.attach_authority(std::sync::Arc::clone(&app_wire.layout)
-                as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>);
         }
         // The MCP server: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
@@ -1341,7 +1316,7 @@ impl Session {
         if let (Some(desktop), Some(records)) = (options.desktop.as_ref(), options.records.as_ref())
         {
             desktop.chosen().bind(std::sync::Arc::new(
-                crate::chosen_records::DeviceStore::new(records.clone()),
+                crate::chosen_records::DeviceStore::new(records.clone(), options.wake.handle()),
             ));
         }
         // Every service this session serves, from the one table that says who serves each: the
@@ -1350,14 +1325,8 @@ impl Session {
         let mut table = crate::services::start(crate::services::Serving {
             handle: handle.clone(),
             serves_apps: app_wire.is_some(),
-            shell: app_wire
-                .as_ref()
-                .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
             person: options.person.clone(),
             render_node: compositor.render_node(),
-            keys: engine
-                .as_ref()
-                .map_or_else(Default::default, |engine| engine.keys()),
             questions: questions.clone(),
             consents: options
                 .desktop
@@ -1651,12 +1620,26 @@ impl Session {
             .borrow_mut()
             .add(Box::new(crate::input_devices::Served::new(inputs.clone())));
         // What the workspaces' apps, people and agents were given beyond their own documents, as
-        // the workspace settings list them: Settings reads one summary, and changes nothing here.
+        // the workspace settings list them, and the one action that takes a grant back: the view
+        // Files and Settings draw reads this, and a revoke written here reaches the workspace's
+        // governance the way a chosen file's grant does. It is read again as the governance and
+        // the device's choices move, and as the mounts' record index does.
+        let mounts = crate::workspace_access::MountMoves::follow(
+            &daemon_writes,
+            &tilo_rt::app().handle().clone(),
+            options.wake.handle(),
+        );
         services
             .borrow_mut()
             .add(Box::new(crate::workspace_access::Served::new(
                 handle.clone(),
                 options.person.clone(),
+                view.clone(),
+                options
+                    .desktop
+                    .as_ref()
+                    .map(|desktop| std::sync::Arc::clone(desktop.chosen())),
+                mounts,
             )));
         // The layouts this machine installs and the keys of the one inspected, drawn for a pane.
         services
@@ -1839,6 +1822,7 @@ impl Session {
             services,
             sends,
             nearby_shares,
+            nearby: nearby.clone(),
             table,
             window_shares,
             pages: crate::page_track::PageTracks::new(),
@@ -2148,7 +2132,6 @@ impl Session {
             control,
             liveness,
             automation,
-            layout_published: None,
             automation_runtime,
             screen_locked: false,
             desktop: options.desktop,
@@ -2615,18 +2598,6 @@ impl Session {
         self.shared.layout_reading()
     }
 
-    /// The broker this session's apps and agents reach its actions through, while it serves
-    /// one: what a test asks for the catalogue an agent working a turn is offered, and invokes
-    /// a step of it through, as the MCP server does.
-    #[cfg(test)]
-    #[must_use]
-    pub fn action_broker(
-        &self,
-    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>
-    {
-        self.app_wire.as_ref().and_then(AppWire::agent_broker)
-    }
-
     /// `record` of `app` in `workspace` as the workspace holds it: what a test reads back of
     /// Chat's resources the session changes (its agents, its emoji).
     #[must_use]
@@ -3083,22 +3054,6 @@ impl Session {
         self.app_wire.as_ref().and_then(|wire| wire.seat.as_ref())
     }
 
-    /// Bring the app wire's layout level with the shell as the pass leaves it, once per change of
-    /// the shell: the workspaces the pass opened, and whose each of them is.
-    pub(crate) fn publish_layout(&mut self) {
-        let Some(app_wire) = &self.app_wire else {
-            return;
-        };
-        let revision = self.shared.handle.revision();
-        if self.layout_published == Some(revision) {
-            return;
-        }
-        app_wire
-            .layout
-            .publish(self.shared.handle.read(Clone::clone));
-        self.layout_published = Some(revision);
-    }
-
     /// Start the shortcuts whose triggers fired since the last pass.
     pub(crate) fn follow_automation(&mut self) {
         self.automation.settle();
@@ -3232,6 +3187,23 @@ impl Drop for Session {
 
 /// Every resource of `resource` and its children: what an app publishes is found among these,
 /// as the app own search action and the kinds it holds are read off its records.
+/// Where the session on the device `cert` certifies keeps what it needs for its next one: a
+/// device placed for records of one workspace (a workspace's VM) keeps it in that workspace's
+/// environment record, which its host seals; every other device in its person's own workspace.
+fn records_place(
+    cert: &tilo_user_identity::DeviceCert,
+) -> tilo_session_client::device_records::Place {
+    use tilo_session_client::device_records::Place;
+    match &cert.capabilities.records {
+        Some(placed) => Place::Environment(tilo_actions::remote::ResourceAddress {
+            workspace: placed.workspace_name(),
+            app: tilo_workspace_service::environment::VM_APP.to_owned(),
+            record: tilo_workspace_service::environment::ENVIRONMENT_RECORD.to_owned(),
+        }),
+        None => Place::Own(collab_types::person_workspace(&cert.user_public_key).to_string()),
+    }
+}
+
 fn leaves_of(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceSpec> {
     let mut out = vec![resource];
     for child in &resource.children {
@@ -3271,6 +3243,48 @@ fn windowed_shortcuts(shortcuts: &mut ui::shortcut_table::ShortcutConfig) {
         if let Err(error) = shortcuts.set(action, chord) {
             tracing::warn!(?action, %error, "a windowed session keeps the binding it has");
         }
+    }
+}
+
+#[cfg(test)]
+mod records_place_tests {
+    use super::records_place;
+    use tilo_session_client::device_records::Place;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+    fn cert(capabilities: DeviceCapabilities) -> DeviceCert {
+        DeviceCert {
+            user_public_key: [5; 32],
+            device_public_key: [1; 32],
+            device_label: "VM".into(),
+            capabilities,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        }
+    }
+
+    /// A workspace VM's session keeps what it needs for its next one in the environment record
+    /// of the workspace its certificate places it in; a person's own device in their workspace.
+    #[test]
+    fn a_placed_devices_session_keeps_its_records_in_the_environment_record() {
+        let workspace = tilo_server_protocol::WorkspaceId::new();
+        let placed = cert(DeviceCapabilities::placed(
+            tilo_workspace_service::environment::vm_placed_records(workspace),
+        ));
+        assert_eq!(
+            records_place(&placed),
+            Place::Environment(tilo_actions::remote::ResourceAddress {
+                workspace: workspace.to_string(),
+                app: tilo_workspace_service::environment::VM_APP.to_owned(),
+                record: tilo_workspace_service::environment::ENVIRONMENT_RECORD.to_owned(),
+            })
+        );
+        assert_eq!(
+            records_place(&cert(DeviceCapabilities::member())),
+            Place::Own(collab_types::person_workspace(&[5; 32]).to_string())
+        );
     }
 }
 

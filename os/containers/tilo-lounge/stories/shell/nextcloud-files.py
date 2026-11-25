@@ -30,7 +30,7 @@ from story import Failed, Story, until, walk  # noqa: E402
 
 # What Ada's computer has: Settings to connect the account with, Files to see
 # the folder in, and the Browser the sign-in opens the server's page in.
-APPS = "settings file-explorer browser"
+APPS = "settings files browser"
 # A file the seed put in Ada's Nextcloud, and what a change to it says.
 HELD = "plan.txt"
 CHANGED = f"Spring planting, changed {int(time.time()) % 100000:05d}"

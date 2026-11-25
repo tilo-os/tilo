@@ -103,8 +103,11 @@ pub(super) fn change_through(
     change: &tilo_actions::remote::ResourceChange,
 ) -> Option<Result<serde_json::Value, ActionCallError>> {
     // Who the change is attributed to: the agent acting for its person, or the person.
-    let invoker = if let Some(agent) = actor.agent_id() {
-        tilo_actions::ActionInvoker::agent(agent)
+    let invoker = if let Some((agent, person)) = actor
+        .member_id()
+        .and_then(tilo_action_policy::MemberId::as_agent)
+    {
+        tilo_actions::ActionInvoker::agent(agent, person.clone())
     } else {
         tilo_actions::ActionInvoker::person(actor.person_id()?.to_owned())
     };

@@ -6936,7 +6936,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "name"
+              "name",
+              "path"
             ],
             "type": "string"
           },
@@ -6970,6 +6971,55 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.backups.Entry.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.backups.Folded.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.backups.Folded.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "path"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.backups.Folded.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.backups.Folded.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -7526,6 +7576,55 @@
         "properties": {},
         "required": [],
         "description": "Allow overwrite"
+      },
+      "tl.so.tilo.backups.Backups.fold_folder.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.backups.Snapshot",
+            "type": "object"
+          },
+          "path": {
+            "type": "string"
+          },
+          "folded": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "s",
+          "path",
+          "folded"
+        ],
+        "description": "Folds a folder of the snapshot's file index away, or opens it again."
       },
       "tl.so.tilo.backups.CatalogAsk.$create.Arguments": {
         "type": "object",
@@ -9004,7 +9103,7 @@
           "url",
           "popup"
         ],
-        "description": "Keeps a page the page opened in a window of its own as a page of this browser, as its window\nhands it over: a popup a site sized, or a plain new tab."
+        "description": "Keeps a page the page opened in a window of its own as a page of this browser, as its window\nhands it over: a plain new tab, or a popup a window could not show beside the page."
       },
       "tl.so.tilo.browser.Page.remember_history.Arguments": {
         "type": "object",
@@ -10183,7 +10282,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Closes the extension's page the page's window showed beside or over this one: its side panel,\nor the page it asked the person to sign in on, which ends as turned down."
+        "description": "Closes the page the page's window showed beside or over this one: an extension's side panel,\nthe page it asked the person to sign in on, or a popup a script opened."
       },
       "tl.so.tilo.browser.Page.remember_panel.Arguments": {
         "type": "object",
@@ -10211,7 +10310,7 @@
           "url",
           "interactive"
         ],
-        "description": "Writes the extension's page the page's window shows beside this one into its record, or takes\nit away. The window raises it; a person, agent or script never does."
+        "description": "Writes the page the page's window shows beside this one into its record, or takes it away.\nThe window raises it; a person, agent or script never does."
       },
       "tl.so.tilo.browser.Page.remember_omnibox.Arguments": {
         "type": "object",
@@ -78718,7 +78817,8 @@
               "runtime",
               "runtime_registry",
               "job",
-              "trouble"
+              "trouble",
+              "failed"
             ],
             "type": "string"
           },
@@ -78991,6 +79091,8 @@
             "enum": [
               "status",
               "trouble",
+              "flathub_trouble",
+              "command_trouble",
               "reading",
               "flatpak_trouble",
               "reviewed_root",
@@ -92892,6 +92994,7 @@
             "enum": [
               "wanted",
               "asked",
+              "pending",
               "note"
             ],
             "type": "string"
@@ -93093,6 +93196,21 @@
         ],
         "description": "Moves a place to the top of the list."
       },
+      "tl.so.tilo.weather.Locations.move_place.Arguments": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "description": "Moves the place a person dragged, before the one it was dropped on: the list's reorder\nreports the two ids in that order."
+      },
       "tl.so.tilo.weather.Locations.rename_place.Arguments": {
         "type": "object",
         "properties": {
@@ -93276,6 +93394,12 @@
         "properties": {},
         "required": [],
         "description": "Takes what the last read found: a place's reading and its hours and days land together, and\nthe search's rows beside the field. What an update reads is nobody's step of their own, so\nlanding it says nothing and offers no undo of its own. A second read of the same place\nreplaces the first."
+      },
+      "tl.so.tilo.weather.Locations.look_for_place.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Looks for what the person typed once it has stopped changing: the query waits one look, and\nthe device is asked for the last query only."
       },
       "tl.so.tilo.weather.Locations.begin_search.Arguments": {
         "type": "object",
@@ -95554,6 +95678,18 @@
         ],
         "description": ""
       },
+      "settings.emoji.set-used.Arguments": {
+        "type": "object",
+        "properties": {
+          "used": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "used"
+        ],
+        "description": ""
+      },
       "settings.osk-sources.set-layouts.Arguments": {
         "type": "object",
         "properties": {
@@ -97222,6 +97358,30 @@
     },
     {
       "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
       "resource": "tl.so.tilo.backups.Snapshot",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.backups.Snapshot.$create.Arguments"
@@ -97465,6 +97625,12 @@
       "resource": "tl.so.tilo.backups.Backups",
       "action": "allow_overwrite",
       "arguments": "#/components/schemas/tl.so.tilo.backups.Backups.allow_overwrite.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Backups",
+      "action": "fold_folder",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Backups.fold_folder.Arguments"
     },
     {
       "app": "so.tilo.backups",
@@ -129107,6 +129273,12 @@
     {
       "app": "so.tilo.weather",
       "resource": "tl.so.tilo.weather.Locations",
+      "action": "move_place",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.move_place.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Locations",
       "action": "rename_place",
       "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.rename_place.Arguments"
     },
@@ -129145,6 +129317,12 @@
       "resource": "tl.so.tilo.weather.Locations",
       "action": "poll_weather",
       "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.poll_weather.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Locations",
+      "action": "look_for_place",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.look_for_place.Arguments"
     },
     {
       "app": "so.tilo.weather",
@@ -130099,6 +130277,12 @@
       "resource": "settings.display-change",
       "action": "request",
       "arguments": "#/components/schemas/settings.display-change.request.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.emoji",
+      "action": "set-used",
+      "arguments": "#/components/schemas/settings.emoji.set-used.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

@@ -1550,7 +1550,7 @@ mod cases {
         let at = m.found()[0].clone();
         // Another window's view at the place: who is there comes from the system's presence, and
         // the map docks them on the place's marker.
-        let scout = Actor::from(MemberId::agent("scout"));
+        let scout = Actor::from(MemberId::agent("scout", "ada"));
         m.rt.set_lenses(&at.id_string(), &[(scout, false, false)]);
         let presence = |m: &Maps| {
             let window = m.window();
@@ -1572,13 +1572,13 @@ mod cases {
         };
         assert_eq!(
             who.and_then(Actor::member_id),
-            Some(&MemberId::agent("scout")),
+            Some(&MemberId::agent("scout", "ada")),
             "the window docks the agent the lens names: {at_the_place:?}"
         );
         // The person's own view is not someone else at the place.
         m.rt.set_lenses(
             &at.id_string(),
-            &[(Actor::from(MemberId::agent("scout")), true, false)],
+            &[(Actor::from(MemberId::agent("scout", "ada")), true, false)],
         );
         let own = presence(&m);
         assert!(

@@ -617,10 +617,9 @@ fn start(
     // file is written beside them.
     tilo_startup_metrics::start_writer();
     tilo_startup_metrics::mark("services-start");
-    // A session in a workspace's VM takes the device identity its host handed it before it
-    // reads anything of itself: the workspace, the record whose window it opens and the key it acts
-    // with are the server's placement record, the first line of its standard input
-    // (`docs/hosted-browser.md`, "What the session in the VM is handed").
+    // A session in a workspace's VM is one of the VM daemon's shells: what it holds and the
+    // workspace it serves are what its daemon set in its environment, and it asks the daemon what
+    // to open (`docs/hosted-browser.md`).
     let hosted_browser = match tilo_session::hosted_browser::handed() {
         Ok(hosted) => hosted,
         Err(said) => {

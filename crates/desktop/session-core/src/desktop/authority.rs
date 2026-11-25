@@ -6,7 +6,7 @@ use collab_types::caps::{
     Access, CapDecision, CapOverride, ResourceRef, decide_capability, sandbox,
 };
 use collab_types::role::Role as CapRole;
-use tilo_action_policy::{Acting, ActionKind, Answer, Grant, KindSet, TreePath, roles};
+use tilo_action_policy::{Acting, ActionKind, Answer, Grant, TreePath, roles};
 use tilo_clock::unix_now;
 use tilo_desktop_model::{Workspace, WorkspaceDefaultError};
 
@@ -43,8 +43,6 @@ pub trait WorkspaceAuthority {
     /// The acting a person is in this workspace.
     fn acting_for_person(&self, user: &str) -> Acting;
     fn roster(&self) -> Vec<(String, CapRole)>;
-    /// Agents admitted to the workspace, with the kinds of action their workspace grants allow.
-    fn agent_members(&self) -> Vec<(String, KindSet)>;
     /// The grants naming one person each that reach `node` .
     fn shares_of(&self, node: &TreePath) -> Vec<&Grant>;
 }
@@ -101,9 +99,6 @@ impl WorkspaceAuthority for Workspace {
     }
     fn roster(&self) -> Vec<(String, CapRole)> {
         self.policy.people()
-    }
-    fn agent_members(&self) -> Vec<(String, KindSet)> {
-        self.policy.agent_members_at(unix_now())
     }
     fn shares_of(&self, node: &TreePath) -> Vec<&Grant> {
         self.policy.shares_at(node, unix_now())

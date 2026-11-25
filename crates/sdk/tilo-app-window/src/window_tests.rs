@@ -1092,8 +1092,8 @@ fn a_key_that_presses_a_control_says_where_the_control_stands() {
     let (_app, mut harness) = drawn(&bound_page("ui.TextInput", &[], Value::text("hello")));
     harness.click_named("field").expect("the field is drawn");
     harness.relayout();
-    let field = rect_of(drawn_window(&mut harness).body.as_ref(), "field")
-        .expect("the field is laid out");
+    let field =
+        rect_of(drawn_window(&mut harness).body.as_ref(), "field").expect("the field is laid out");
     ui::press::note(FOCUSED);
     harness.key("Enter");
     assert_eq!(
@@ -3444,7 +3444,7 @@ fn what_the_app_heard_of_people_reaches_the_toolkit_once() {
     use ui::component_lifecycle::Heard;
     let (mut app, mut window) = window();
     let members = Heard::Members(vec![ui::collaboration::Member::named(
-        ui::permissions::MemberId::agent("scout"),
+        ui::permissions::MemberId::agent("scout", "bo"),
         "Scout",
     )]);
     let heard = |heard: &Heard| ToUi::Heard(serde_json::to_vec(heard).expect("encodes"));

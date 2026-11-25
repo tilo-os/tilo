@@ -644,7 +644,11 @@ impl Shared {
                         named => named,
                     };
                     let made = feed.make_agent(Some(workspace), name, "")?;
-                    resolved.push(Recipient::found(RecipientKind::Agent, made, name));
+                    resolved.push(Recipient::found(
+                        RecipientKind::Agent,
+                        crate::search::recipient_id(&made),
+                        name,
+                    ));
                 }
                 RecipientKind::Agent
                 | RecipientKind::Person
@@ -891,14 +895,22 @@ fn send_targets(
                 )
                 .with_argument("who", serde_json::json!({ "person": recipient.id }))
                 .with_argument("body", body.clone()),
-                RecipientKind::Agent => InvokeTarget::action(
-                    CHAT,
-                    workspace,
-                    tilo_app_id::chat::CONVERSATIONS,
-                    tilo_app_id::chat::WRITE_TO,
-                )
-                .with_argument("who", serde_json::json!({ "agent": recipient.id }))
-                .with_argument("body", body.clone()),
+                RecipientKind::Agent => {
+                    // An agent recipient names whose agent it is (`agent:<person>/<id>`), as
+                    // Chat's member is the pair.
+                    let agent =
+                        tilo_action_policy::MemberId::of_actor_bytes(recipient.id.as_bytes())
+                            .filter(tilo_action_policy::MemberId::is_agent)
+                            .ok_or_else(|| format!("{} names no agent", recipient.name))?;
+                    InvokeTarget::action(
+                        CHAT,
+                        workspace,
+                        tilo_app_id::chat::CONVERSATIONS,
+                        tilo_app_id::chat::WRITE_TO,
+                    )
+                    .with_argument("who", serde_json::json!(agent))
+                    .with_argument("body", body.clone())
+                }
                 RecipientKind::Conversation => {
                     InvokeTarget::action(CHAT, workspace, &recipient.id, tilo_app_id::chat::SEND)
                         .with_argument("body", body.clone())
@@ -1036,7 +1048,12 @@ mod tests {
         {
             let ada =
                 Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada").with_detail("online");
-            let helper = Recipient::found(RecipientKind::Agent, "a_helper", "Helper");
+            let helper_member = tilo_action_policy::MemberId::agent("a_helper", "ad".repeat(32));
+            let helper = Recipient::found(
+                RecipientKind::Agent,
+                crate::search::recipient_id(&helper_member),
+                "Helper",
+            );
             let general = Recipient::found(
                 RecipientKind::Conversation,
                 "tl:so.tilo.chat:root-lmdoxbnn/c1",
@@ -1070,7 +1087,7 @@ mod tests {
             );
             assert_eq!(
                 invoked[1].arguments.get("who"),
-                Some(&serde_json::json!({ "agent": "a_helper" }))
+                Some(&serde_json::json!({ "agent": { "id": "a_helper", "person": "ad".repeat(32) } }))
             );
             assert_eq!(invoked[2].address.resource, "tl:so.tilo.chat:root-lmdoxbnn/c1");
             assert_eq!(invoked[2].address.action, tilo_app_id::chat::SEND);

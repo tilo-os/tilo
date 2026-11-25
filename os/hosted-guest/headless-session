@@ -1,15 +1,15 @@
 #!/bin/sh
-# One headless Tilo desktop in a workspace's VM, drawn on the CPU, that joins
-# its workspace as a device of it (docs/hosted-browser.md). Both of the VM's
+# One headless Tilo desktop in a workspace's VM, drawn on the CPU, a client of
+# the VM's daemon, the workspace's device (docs/hosted-browser.md). Both of the VM's
 # sessions run it: Browser's (browser-session, as the image's unprivileged
 # browser user, with no X11) and the Linux apps' (apps-session, as the tenant,
 # with Xwayland for X11 programs). It runs as whoever started it: who that is
 # is the caller's to decide.
 #
-# The session knows what it holds from the mark its host set
-# (`TILO_HOSTED_BROWSER`, `TILO_HOSTED_APPS`). What workspace it joins arrives
-# on its standard input as one line of material, and what it reports goes to its
-# standard output.
+# The session knows what it holds from the mark the daemon set
+# (`TILO_HOSTED_BROWSER` or `TILO_HOSTED_APPS`, and `TILO_VM_WORKSPACE`), and reaches the daemon through
+# the link the daemon handed it on a descriptor of its own, which every process
+# here passes on.
 #
 # Every setting here has a default the image needs; an operator or the build's
 # smoke test may name a shell-compatible KEY=VALUE file to override them, and
@@ -73,37 +73,54 @@ for icd in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.
 done
 export WGPU_ADAPTER_NAME=llvmpipe TILO_DMABUF_DEVICE=
 
-# The device's identity is the session's own, under $XDG_CONFIG_HOME, and its
-# secrets go to the sealed file store a machine without a Secret Service uses.
-# The identity is the one the material hands it at every start, which is what
-# the server certifies for each session; the image holds none.
-# The device's keys and certificate live where TILO_IDENTITY_ROOT names; unset,
-# that is the system's /var/lib/tilo, which this unprivileged account may not
-# write, and the session ends before it joins its workspace. A directory of
-# their own, apart from the person's records beside it, and inside what a
-# saved Browser profile leaves out.
+# The device's identity is the daemon's, never the session's. What the session
+# keeps of its own (its secrets, in the sealed file store a machine without a
+# Secret Service uses) is under this account's home, inside what a saved Browser
+# profile leaves out, and TILO_IDENTITY_ROOT names a directory of its own there
+# rather than the system's /var/lib/tilo, which this account may not write.
 mkdir -p -m 700 "$home/.config/tilo/identity/device" "$home/.local/share/tilo/secrets"
 export TILO_IDENTITY_ROOT=$home/.config/tilo/identity/device
 export TILO_SECRETS_DIR=${TILO_SECRETS_DIR:-$home/.local/share/tilo/secrets}
 
 size=${TILO_HEADLESS_SIZE:-1280x800}
-# The session and its bus are a process group of their own (setsid does not
-# fork here: a background job of this shell leads no group), because
-# dbus-run-session ends on SIGTERM without handing it on. SIGTERM goes to the
-# whole group, and this script ends once every process in it has, so whatever
+# The session's own bus, started here rather than through dbus-run-session: the
+# link to the daemon goes to the session by this script's own redirection below,
+# never by what another program happens to leave open, and the bus holds none of
+# it.
+bus=$(dbus-daemon --session --fork --print-address=1 --print-pid=1 3<&-) \
+    || { echo 'headless-session: the session bus did not start' >&2; exit 1; }
+DBUS_SESSION_BUS_ADDRESS=$(printf '%s\n' "$bus" | sed -n 1p)
+bus_pid=$(printf '%s\n' "$bus" | sed -n 2p)
+export DBUS_SESSION_BUS_ADDRESS
+# The session is a process group of its own (setsid does not fork here: a
+# background job of this shell leads no group), so SIGTERM reaches it and every
+# program it started, and this script ends once every process in it has: whatever
 # the caller does after the session ended (Browser saves its profile) sees a
 # session that wrote its last. Word splitting is the point below:
 # TILO_SESSION_ARGS carries the session's own arguments as written in the
 # configuration file.
-exec 3<&0
-# shellcheck disable=SC2086
-setsid dbus-run-session -- /usr/bin/tilo-session --backend headless $x11 \
-    --size "$size" ${TILO_SESSION_ARGS:-} <&3 &
-group=$!
+start() {
+    # shellcheck disable=SC2086
+    setsid /usr/bin/tilo-session --backend headless $x11 \
+        --size "$size" ${TILO_SESSION_ARGS:-} &
+    group=$!
+}
+if [ -n "${TILO_SHELL_FD:-}" ]; then
+    # The daemon hands its link on descriptor 3 and names it: handed on here by
+    # name, so a link that is not there fails now, not in the session.
+    [ "$TILO_SHELL_FD" = 3 ] || {
+        echo "headless-session: the daemon's link is on descriptor $TILO_SHELL_FD, not 3" >&2
+        exit 1
+    }
+    start 3<&3
+else
+    start 3<&-
+fi
 trap 'kill -TERM -"$group" 2>/dev/null || true' TERM INT
 status=0
 wait "$group" || status=$?
 while kill -0 -"$group" 2>/dev/null; do
     sleep 0.1
 done
+kill -TERM "$bus_pid" 2>/dev/null || true
 exit "$status"

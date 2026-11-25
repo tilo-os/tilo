@@ -35,10 +35,11 @@ impl Member {
         }
     }
 
+    /// The agent `id` of `person`.
     #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
+    pub fn agent(id: impl Into<String>, person: impl Into<tilo_actions::policy::PersonId>) -> Self {
         Self {
-            id: MemberId::agent(id),
+            id: MemberId::agent(id, person),
             role: None,
         }
     }
@@ -158,9 +159,15 @@ impl Core {
     }
 
     /// A scenario named software (`agent("Scout")`): it is a member of the workspace it stages,
-    /// as an agent of it is, and views offer it beside the people and mark it as software.
-    pub(crate) fn named_agent(&self, name: &str) -> Actor {
-        self.named_member(MemberId::agent(format!("scenario:{name}")))
+    /// as an agent of it is, and views offer it beside the people and mark it as software. It is
+    /// an agent of the person the scenario runs as.
+    pub(crate) fn named_agent(&self, name: &str) -> HResult<Actor> {
+        let Actor::Member(MemberId::Person(person) | MemberId::Agent { person, .. }) =
+            self.looking()?
+        else {
+            return trap("agent: a scenario names an agent of the person it runs as");
+        };
+        Ok(self.named_member(MemberId::agent(format!("scenario:{name}"), person)))
     }
 
     /// Adds the member `id` to the workspace, unless it is one already, and names them.

@@ -3,15 +3,16 @@
 //!
 //! The member device answers the server's ask by asking this host's hosted-VM
 //! service (`linux_vm::hosted`, the one that runs the workspace's VM) over
-//! its socket ([`Request::OpenBrowser`]) to start the browser session in that
-//! VM, and waits while it says the host is full.
+//! its socket ([`Request::OpenBrowser`]) to start the device daemon in that
+//! VM, and waits while it says the host is full. What runs in the VM is then
+//! the daemon's: the machine asks it to open its windows.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use linux_vm::hosted::control::{self, Reply, Request};
 use tilo_actions::remote::browser::{OpenBrowser, OpenedBrowser};
-use tilo_actions::remote::linux_apps::{OpenApp, UP_PROVIDER};
+use tilo_actions::remote::linux_apps::OpenApp;
 use tilo_actions::remote::server_account::Refusal;
 use tilo_server_protocol::hosted_vm::VmSize;
 
@@ -41,9 +42,9 @@ impl BrowserHost {
         Self { socket, size }
     }
 
-    /// Open `asked`'s workspace's Browser, or attach to the session already
-    /// running, waiting while the host has no room. The session keeps its
-    /// profile in `store`.
+    /// Start `asked`'s workspace's VM daemon for its Browser, or find it
+    /// running, waiting while the host has no room. Browser keeps its profile
+    /// in `store`.
     pub fn open(&self, asked: &OpenBrowser, store: PathBuf) -> Result<OpenedBrowser, String> {
         let request = Request::OpenBrowser {
             browser: control::OpenBrowser {
@@ -58,14 +59,8 @@ impl BrowserHost {
         loop {
             let reply = self.ask(&request)?;
             match reply {
-                Reply::Opened {
-                    opened_ms,
-                    provider,
-                } => {
-                    return Ok(OpenedBrowser {
-                        opened_ms,
-                        provider,
-                    });
+                Reply::Opened { opened_ms, device } => {
+                    return Ok(OpenedBrowser { opened_ms, device });
                 }
                 // Every machine is full: a VM going idle, or another machine
                 // starting, makes room. A browser is never refused for it.
@@ -81,9 +76,8 @@ impl BrowserHost {
         }
     }
 
-    /// Start the Linux app `asked` names in its workspace's VM, starting the
-    /// workspace's apps session first when none runs, waiting while the host
-    /// has no room. An account the plans do not let run Linux is refused in
+    /// Start `asked`'s workspace's VM daemon for its Linux apps, or find it
+    /// running, waiting while the host has no room. An account the plans do not let run Linux is refused in
     /// the plans' own words.
     pub fn open_app(&self, asked: &OpenApp) -> Result<OpenedBrowser, AppRefused> {
         let request = Request::OpenApp {
@@ -92,17 +86,13 @@ impl BrowserHost {
                 account: asked.account.clone(),
                 size: self.size,
                 material: asked.material.clone(),
-                launch: asked.launch.clone(),
             },
         };
         let started = Instant::now();
         loop {
             match self.ask(&request).map_err(AppRefused::Error)? {
-                Reply::Opened { opened_ms, .. } => {
-                    return Ok(OpenedBrowser {
-                        opened_ms,
-                        provider: UP_PROVIDER.to_owned(),
-                    });
+                Reply::Opened { opened_ms, device } => {
+                    return Ok(OpenedBrowser { opened_ms, device });
                 }
                 Reply::Refused(refusal) => return Err(AppRefused::Refused(refusal)),
                 Reply::Busy(words) => {
@@ -118,26 +108,6 @@ impl BrowserHost {
                     )));
                 }
             }
-        }
-    }
-
-    pub fn stop_apps(&self, workspace: &str) -> Result<(), String> {
-        match self.ask(&Request::StopApps {
-            workspace: workspace.to_owned(),
-        })? {
-            Reply::Done => Ok(()),
-            Reply::Error(message) => Err(message),
-            other => Err(format!("the hosted-VM service answered {other:?}")),
-        }
-    }
-
-    pub fn stop(&self, workspace: &str) -> Result<(), String> {
-        match self.ask(&Request::StopBrowser {
-            workspace: workspace.to_owned(),
-        })? {
-            Reply::Done => Ok(()),
-            Reply::Error(message) => Err(message),
-            other => Err(format!("the hosted-VM service answered {other:?}")),
         }
     }
 

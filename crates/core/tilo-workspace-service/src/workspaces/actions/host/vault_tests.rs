@@ -648,7 +648,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         (
             "an agent the server admitted itself, acting for her",
             &ada,
-            Caller::local_agent("assistant").acting_for(person),
+            Caller::local_agent("assistant", person),
         ),
         ("her key on another person's device", &bo, caller(&ada)),
     ];
@@ -725,7 +725,10 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
             &owner,
             [62; 32],
             vec![
-                everything("test:agent-everywhere", Grantee::agent("assistant")),
+                everything(
+                    "test:agent-everywhere",
+                    Grantee::agent("assistant", hex::encode(stranger.user_public_key).clone()),
+                ),
                 everything(
                     "test:stranger-everywhere",
                     Grantee::person(hex::encode(stranger.user_public_key)),
@@ -1442,7 +1445,7 @@ async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
             right.clone(),
         ),
         (
-            Caller::local_agent("assistant").acting_for(person),
+            Caller::local_agent("assistant", person),
             from_item,
             right.clone(),
         ),
@@ -2191,7 +2194,7 @@ async fn an_agents_vault_write_is_the_allowed_calls_declared_step_alone() {
     .await
     .expect("Ada keeps a login");
     let hers = hex::encode(ada.user_public_key);
-    let agent = tilo_action_policy::Acting::agent("assistant")
+    let agent = tilo_action_policy::Acting::agent("assistant", hers.clone())
         .acting_for(tilo_action_policy::Acting::person(hers.clone()));
     let fill = request_of(
         person_vault::page_target(),

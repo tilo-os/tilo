@@ -338,12 +338,12 @@ impl WorkspacePolicy {
     /// The agents the workspace admits at `now`: those with a live grant on
     /// the workspace itself, with what it allows them.
     #[must_use]
-    pub fn agent_members_at(&self, now: u64) -> Vec<(String, KindSet)> {
+    pub fn agent_members_at(&self, now: u64) -> Vec<(crate::MemberId, KindSet)> {
         let cx = Context::at_secs(now);
         let workspace_node = self.node();
-        let mut agents: Vec<(String, KindSet)> = Vec::new();
+        let mut agents: Vec<(crate::MemberId, KindSet)> = Vec::new();
         for grant in &self.grants {
-            let Some(agent) = grant.grantee.agent_id() else {
+            let Some(agent) = grant.grantee.as_member().filter(|member| member.is_agent()) else {
                 continue;
             };
             if grant.node != workspace_node || grant.answer == Answer::Deny || !grant.is_live(&cx) {
@@ -351,7 +351,7 @@ impl WorkspacePolicy {
             }
             match agents.iter_mut().find(|(listed, _)| listed == agent) {
                 Some((_, kinds)) => *kinds = kinds.union(grant.kinds),
-                None => agents.push((agent.to_owned(), grant.kinds)),
+                None => agents.push((agent.clone(), grant.kinds)),
             }
         }
         agents
@@ -554,7 +554,7 @@ mod tests {
         }
         policy.grant(Grant::new(
             "scribe-assigns-reviewer",
-            Grantee::agent("scribe"),
+            Grantee::agent("scribe", "owner"),
             roles::preset_assign_node(&workspace_id, "Reviewer"),
             KindSet::OUTSIDE,
             Answer::Allow,
@@ -562,7 +562,7 @@ mod tests {
         ));
         policy.grant(Grant::new(
             "scribe-reads-notes",
-            Grantee::agent("scribe"),
+            Grantee::agent("scribe", "owner"),
             TreePath::workspace(&workspace_id).app("so.tilo.notes"),
             KindSet::READ,
             Answer::Allow,
@@ -571,8 +571,10 @@ mod tests {
         let ada = Grantee::person("ada");
         let assign = |policy: &mut WorkspacePolicy, name: &str| {
             let snapshot = policy.clone();
-            let scribe = Authority::person(snapshot.party("owner"))
-                .bounded_by(Party::new(vec![Grantee::agent("scribe")], &snapshot.grants));
+            let scribe = Authority::person(snapshot.party("owner")).bounded_by(Party::new(
+                vec![Grantee::agent("scribe", "owner")],
+                &snapshot.grants,
+            ));
             policy.assign_preset_at(
                 &presets,
                 "owner",

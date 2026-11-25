@@ -64,7 +64,7 @@ pub fn agent_acting(resource: &str, action: &str) -> tilo_actions::SemanticInter
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,
-        actor: tilo_actions::Acting::agent("agent"),
+        actor: tilo_actions::Acting::agent("agent", "ada"),
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {
             id: action.into(),

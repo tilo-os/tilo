@@ -1513,6 +1513,13 @@ impl Runtime {
         *self.core.notices.borrow_mut() = Some(Box::new(host));
     }
 
+    /// Say `said` in the app's window as its code would (`notice(...)`): what the host tells the
+    /// person of a run it made for the app with nobody's window to say it, such as a trigger the
+    /// workspace refused.
+    pub fn say(&self, said: crate::notice::Said) {
+        self.core.said.borrow_mut().push(said);
+    }
+
     /// What the code said in passing (`notice(...)`) since last asked, for the window the actions
     /// ran from to show in its bar, oldest first.
     pub fn take_said(&self) -> Vec<crate::notice::Said> {

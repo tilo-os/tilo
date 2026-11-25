@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 
-use tilo_action_policy::MemberId;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::{
@@ -45,7 +44,12 @@ impl AppBrokerState {
         };
         // A person asks nobody: the question is an agent's, to the person it
         // works for on this device, whose session handed it to the agent.
-        let Some(agent) = caller.acting().agent_id().map(str::to_owned) else {
+        let Some(agent) = caller
+            .acting()
+            .member_id()
+            .filter(|member| member.is_agent())
+            .cloned()
+        else {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         if caller.device_public_key().is_some()
@@ -116,7 +120,7 @@ impl AppBrokerState {
         self.record_completion(
             job,
             InvocationOwner::Local {
-                actor: tilo_actions::Actor::from(MemberId::agent(agent)),
+                actor: tilo_actions::Actor::from(agent),
             },
             InvocationUpdate::Succeeded {
                 invocation,

@@ -376,13 +376,13 @@ type ExtensionNotice (title: title) {
     }
 }
 
-/// An extension's own page shown beside the page the person browsed: its side panel, or the page
-/// it asked them to sign in on.
+/// A page shown beside the page the person browsed: an extension's side panel, the page it
+/// asked them to sign in on, or a popup a script opened.
 type Panel (title: ext) {
     /// `side` for an extension's side panel, `sign-in` for the page it asked the person to sign in
-    /// on.
+    /// on, `popup` for a page a script opened in a window the site sized.
     kind: Text
-    /// The engine's identifier of the extension whose page it is.
+    /// The engine's identifier of the extension whose page it is, or of the popup.
     ext: Text
     /// The address the page shows.
     url: Text
@@ -933,7 +933,7 @@ action submit_page(
 }
 
 /// Keeps a page the page opened in a window of its own as a page of this browser, as its window
-/// hands it over: a popup a site sized, or a plain new tab.
+/// hands it over: a plain new tab, or a popup a window could not show beside the page.
 action open_from_page(p: Page, url: Text, popup: Bool) {
     let url = normalized(url)
     if url != "" {
@@ -1752,14 +1752,17 @@ action open_side_panel(p: Page, e: Extension) -> Answer uses page (
     ask_page(p, json.encode(Ask(op: "open_side_panel", extension: .some(e.key))))
 }
 
-/// Closes the extension's page the page's window showed beside or over this one: its side panel,
-/// or the page it asked the person to sign in on, which ends as turned down.
-action close_panel(p: Page) -> Answer uses page (icon: .x, label: "Close the extension’s page") {
+/// Closes the page the page's window showed beside or over this one: an extension's side panel,
+/// the page it asked the person to sign in on, or a popup a script opened.
+action close_panel(p: Page) -> Answer uses page (
+    icon: .x,
+    label: "Close the page beside this one",
+) {
     ask_page(p, json.encode(Ask(op: "panel_close")))
 }
 
-/// Writes the extension's page the page's window shows beside this one into its record, or takes
-/// it away. The window raises it; a person, agent or script never does.
+/// Writes the page the page's window shows beside this one into its record, or takes it away.
+/// The window raises it; a person, agent or script never does.
 action remember_panel(p: Page, open: Bool, kind: Text, id: Text, url: Text, interactive: Bool) {
     p.panel = if open {
         .some(Panel(kind: kind, ext: id, url: url, interactive: interactive))
@@ -2880,6 +2883,14 @@ fn panel_site(url: Text) -> Text {
     origin.split("://").last() ?? origin
 }
 
+/// What the window's second page is called: the site a sign-in or a page a script opened
+/// shows, or the extension whose panel it is.
+fn panel_name(b: Browser, panel: Panel) -> Text {
+    if panel.kind == "sign-in" or panel.kind == "popup" {
+        panel_site(panel.url)
+    } else { extension_named(b, panel.ext) }
+}
+
 /// The site the page last reported, when it reported one.
 fn site_of(value: json.Value) -> Option<SiteInfo> {
     match json_field(value, "site") {
@@ -3447,9 +3458,7 @@ view page_view(p: Page) {
                                 stack(min: 18rem, max: 30rem, fill: 0.0, gap: .tight) {
                                     row(gap: .related, align: .center) {
                                         text(
-                                            if panel.kind == "sign-in" {
-                                                panel_site(panel.url)
-                                            } else { extension_named(b, panel.ext) },
+                                            panel_name(b, panel),
                                             role: .label,
                                             truncate: true,
                                             fill: 1.0,
@@ -3459,12 +3468,7 @@ view page_view(p: Page) {
                                         }
                                     }
                                     layers(fill: 1.0) {
-                                        ui.WebView(
-                                            title: if panel.kind == "sign-in" {
-                                                panel_site(panel.url)
-                                            } else { extension_named(b, panel.ext) },
-                                            surface: "panel",
-                                        ) {
+                                        ui.WebView(title: panel_name(b, panel), surface: "panel") {
                                         }
                                     }
                                 }

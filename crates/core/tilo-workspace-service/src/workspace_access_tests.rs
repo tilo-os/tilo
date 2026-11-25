@@ -515,8 +515,9 @@ fn decide_matrix() {
 }
 
 /// A browser environment's device reaches the protocols a window's session
-/// works on in its one workspace, and reaches nothing at all once its
-/// environment stopped — however the workspace lists it.
+/// works on in its one workspace, by the certificate its host placed it with
+/// and no member row, and reaches nothing at all once its environment
+/// stopped.
 #[test]
 fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     let server = Server::new();
@@ -525,27 +526,38 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     let now = tilo_clock::unix_now_ns();
     let until = now.saturating_add(60 * 1_000_000_000);
     let device = [80; 32];
-    let environment = peer(server.owner, device, false, Some(until));
-    // The workspace lists it as a member device of the person, as it does
-    // while the session runs: what it reaches is the register's to say.
-    list_device(&mut runtime, device);
-    let scope = crate::environment::EnvironmentScope::for_resource(
-        WorkspaceId::parse(WORKSPACE).unwrap(),
-        "so.tilo.browser",
-        "record-1",
+    let workspace_id = WorkspaceId::parse(WORKSPACE).unwrap();
+    let mut environment = peer(server.owner, device, false, Some(until));
+    environment.cert.capabilities = DeviceCapabilities::placed(
+        tilo_user_identity::PlacedRecords::new(
+            workspace_id.as_uuid().into_bytes(),
+            [crate::environment::document_channel(
+                "so.tilo.browser",
+                "record-1",
+            )],
+        )
+        .unwrap(),
     );
+    // Its person is a member; the device itself is listed nowhere.
+    list_person(&mut runtime, server.owner);
     let letters = |runtime: &WorkspaceRuntime| -> String {
         OPS.iter()
             .map(|op| letter(decide_in(runtime, &server.trust(), &environment, *op, now)))
             .collect()
     };
-    server.environments.place(device, scope, until).unwrap();
+    // Its certificate reaches this one workspace, and the host that placed it confines it in
+    // its register: what it reaches is the register's to say.
+    let mut vm = environment.cert.clone();
+    vm.capabilities = DeviceCapabilities::workspace_device(
+        *WorkspaceId::parse(WORKSPACE).unwrap().as_uuid().as_bytes(),
+    );
+    server.environments.confine(&vm).unwrap();
     assert_eq!(
         letters(&runtime),
-        "AAAAbbbAbAA",
+        "AAAAbbbAbAb",
         "subscribe, state, replay and live; discovery, compute, environment and \
-         governance are another device's; its record's actions, publishing and \
-         channel access"
+         governance are another device's; its record's actions and publishing; no \
+         channel's keys, which the host answers for it"
     );
     server.environments.stop(device, until).unwrap();
     assert_eq!(

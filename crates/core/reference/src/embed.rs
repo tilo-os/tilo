@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(ada.mark_value(), r#"{"person":"u-ada"}"#);
         assert!(!names_resource(&ada.mark_value()));
         assert_eq!(Embed::of_mark(&ada.mark_value()), Some(ada));
-        let tide = Embed::Member(MemberId::agent("tide"));
+        let tide = Embed::Member(MemberId::agent("tide", "ada"));
         assert_eq!(Embed::of_mark(&tide.mark_value()), Some(tide));
         assert_eq!(Embed::of_mark("u-ada"), None);
         assert_eq!(Embed::of_mark(""), None);

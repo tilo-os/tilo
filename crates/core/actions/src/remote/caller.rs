@@ -96,6 +96,40 @@ pub struct Caller {
     // (`Self::launched`): the one caller that acts as that app itself. No payload, kept caller or
     // shell link carries it.
     launched_app: Option<tilo_app_id::AppId>,
+    // The person and records a placed device's certificate names (`Self::placed`): set only by
+    // the transport that read them from the verified certificate.
+    placed: Option<PlacedCaller>,
+}
+
+/// What a placed device's certificate says of the caller ([`Caller::placed`]): the person whose
+/// host placed it, whom history names, and the records of its workspace it reaches. The
+/// person is no authority: a placed caller acts as its device's key alone, decided by the
+/// records it reaches.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PlacedCaller {
+    person: [u8; 32],
+    channels: Vec<[u8; 32]>,
+}
+
+impl PlacedCaller {
+    /// The root key of the person whose host placed the device: whom history names for
+    /// what it writes. Never whom it acts as.
+    #[must_use]
+    pub const fn person(&self) -> &[u8; 32] {
+        &self.person
+    }
+
+    /// The channel of each record it reaches, in ascending order.
+    #[must_use]
+    pub fn channels(&self) -> &[[u8; 32]] {
+        &self.channels
+    }
+
+    /// Whether the record told by `channel` is one it reaches.
+    #[must_use]
+    pub fn reaches(&self, channel: &[u8; 32]) -> bool {
+        self.channels.binary_search(channel).is_ok()
+    }
 }
 
 /// The authority an invitation carries ([`Caller::invited`]): the signed invitation, and the
@@ -132,6 +166,7 @@ impl Caller {
             forwarded_by: None,
             granted: Vec::new(),
             launched_app: None,
+            placed: None,
         }
     }
 
@@ -155,6 +190,32 @@ impl Caller {
         let mut caller = Self::admitted(Acting::visitor(&device_public_key), None);
         caller.device_public_key = Some(device_public_key);
         caller
+    }
+
+    /// A device placed for records of `workspace`, the `channels` its certificate names, by
+    /// a host for `person`: the transport read them from that verified certificate. It acts as
+    /// its device's key alone, never as the person and never as a member's device: it has no
+    /// person, no user key and nobody it acts for, so nothing that decides by those reaches it,
+    /// and what it may do is decided by the records it reaches ([`Self::placed_records`]).
+    #[must_use]
+    pub fn placed(
+        device_public_key: [u8; 32],
+        person: [u8; 32],
+        workspace: impl Into<String>,
+        channels: impl IntoIterator<Item = [u8; 32]>,
+    ) -> Self {
+        let mut channels: Vec<[u8; 32]> = channels.into_iter().collect();
+        channels.sort_unstable();
+        channels.dedup();
+        let mut caller = Self::visitor(device_public_key).in_workspace(workspace);
+        caller.placed = Some(PlacedCaller { person, channels });
+        caller
+    }
+
+    /// What a placed device's certificate says of this caller ([`Self::placed`]).
+    #[must_use]
+    pub const fn placed_records(&self) -> Option<&PlacedCaller> {
+        self.placed.as_ref()
     }
 
     /// A visitor redeeming `invited`: the device `device_public_key` its connection proved,
@@ -223,10 +284,19 @@ impl Caller {
         self.system
     }
 
-    /// A delegated agent on a connection the provider admitted itself.
+    /// A delegated agent of `person` on a connection the provider admitted itself, acting for
+    /// them.
     #[must_use]
-    pub fn local_agent(agent_id: impl Into<String>) -> Self {
-        Self::admitted(Acting::agent(agent_id.into()), None)
+    #[track_caller]
+    pub fn local_agent(
+        agent_id: impl Into<String>,
+        person: impl Into<tilo_action_policy::PersonId>,
+    ) -> Self {
+        let person = person.into();
+        Self::admitted(
+            Acting::agent(agent_id, person.clone()).acting_for(Acting::person(person)),
+            None,
+        )
     }
 
     /// An installed bot on a connection the provider admitted itself, by its
@@ -275,7 +345,8 @@ impl Caller {
         device_public_key: [u8; 32],
     ) -> Self {
         Self::admitted(
-            Acting::agent(agent_id.into()).acting_for(Acting::person(hex::encode(user_public_key))),
+            Acting::agent(agent_id, hex::encode(user_public_key))
+                .acting_for(Acting::person(hex::encode(user_public_key))),
             Some((user_public_key, device_public_key)),
         )
     }
@@ -298,17 +369,17 @@ impl Caller {
         )
     }
 
-    /// An agent acting inside a turn: `person`'s message in `turn`'s conversation caused it, and
-    /// the agent takes part there. It may do exactly what that person may, held to the bound its
-    /// own record carries, and its reads are decided inside the turn, so a conversation's own
-    /// rules apply to them. Set only by the host that admitted the turn.
+    /// The agent `agent_id` of `own` acting inside a turn: `person`'s message in `turn`'s
+    /// conversation caused it, and the agent takes part there. It may do exactly what that person
+    /// may, held to the bound its own record carries, and its reads are decided inside the turn,
+    /// so a conversation's own rules apply to them. Set only by the host that admitted the turn.
     #[must_use]
     pub fn agent_turn(
-        agent_id: impl Into<String>,
+        (agent_id, own): (impl Into<String>, impl Into<tilo_action_policy::PersonId>),
         person: impl Into<tilo_action_policy::PersonId>,
         turn: tilo_action_policy::turn::Turn,
     ) -> Self {
-        let acting = Acting::agent(agent_id.into()).acting_for(Acting::person(person.into()));
+        let acting = Acting::agent(agent_id, own).acting_for(Acting::person(person));
         Self {
             turn: Some(turn),
             ..Self::admitted(acting, None)
@@ -467,9 +538,7 @@ impl Caller {
             return self;
         };
         self.session_delegated = true;
-        self.acting = Acting::agent(agent_id)
-            .handed()
-            .acting_for(Acting::person(person));
+        self.acting = Acting::handed_agent(agent_id, person);
         self
     }
 
@@ -611,7 +680,10 @@ impl Caller {
         if self.acting.acted_for_person().is_none() {
             return self;
         }
-        self.acting = self.acting.handed_on(agent_id);
+        let Some(acting) = self.acting.clone().handed_on(agent_id) else {
+            return self;
+        };
+        self.acting = acting;
         self.approved_as = Some(approved);
         self.agent_name = None;
         self.named(name)
@@ -717,8 +789,12 @@ impl Caller {
     /// session and no roster, and is offered nothing.
     #[must_use]
     pub fn certified(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
-        let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
-        else {
+        let (Some((agent, own)), Some(person)) = (
+            self.acting
+                .member_id()
+                .and_then(tilo_action_policy::MemberId::as_agent),
+            self.acting.acted_for_person(),
+        ) else {
             return Vec::new();
         };
         if self.device_public_key.is_none()
@@ -726,7 +802,7 @@ impl Caller {
         {
             return Vec::new();
         }
-        tilo_action_policy::roles::certified_agent(workspace, agent, person)
+        tilo_action_policy::roles::certified_agent(workspace, (agent, own.as_str()), person)
     }
 
     /// The grants made for this caller's software: its certificate's ([`Self::certified`]),
@@ -836,6 +912,25 @@ impl Caller {
     /// kept: it ended with the process.
     #[must_use]
     pub fn kept(&self) -> KeptCaller {
+        // A placed caller is kept as the key it is and nothing more: restored, it is a visitor,
+        // never its person.
+        if self.placed.is_some() {
+            return KeptCaller {
+                acting: Acting::visitor(&self.device_public_key.unwrap_or_default()),
+                user_public_key: None,
+                device_public_key: self.device_public_key,
+                workspace: self.workspace.clone(),
+                session_delegated: false,
+                within: None,
+                turn: None,
+                roster_created_at: None,
+                approved_as: None,
+                turn_person: None,
+                agent_name: None,
+                asked: None,
+                system: false,
+            };
+        }
         KeptCaller {
             acting: self.acting.clone(),
             user_public_key: self.user_public_key,
@@ -916,6 +1011,7 @@ impl KeptCaller {
             // Only the daemon's own attestation of the process it launched makes a caller the
             // app itself; a kept or carried caller is never that.
             launched_app: None,
+            placed: None,
         }
     }
 }
@@ -998,7 +1094,7 @@ mod tests {
         use tilo_action_policy::Grantee;
         let (ada, device) = ([1; 32], [3; 32]);
         let person = hex::encode(ada);
-        let expected = tilo_action_policy::roles::certified_agent("w", "scout", &person);
+        let expected = tilo_action_policy::roles::certified_agent("w", ("scout", &person), &person);
         assert!(!expected.is_empty());
         // An agent its workspace's roster bound carries the certificate's delegation.
         let bound = Caller::delegated_agent("scout", ada, device)
@@ -1009,7 +1105,7 @@ mod tests {
         assert!(
             expected
                 .iter()
-                .all(|grant| grant.grantee == Grantee::agent("scout"))
+                .all(|grant| grant.grantee == Grantee::agent("scout", person.as_str()))
         );
         assert!(
             expected
@@ -1035,14 +1131,18 @@ mod tests {
         );
         // A person, and an agent no certificate names, hold nothing of their own.
         assert!(Caller::local_person("ada").certified("w").is_empty());
-        assert!(Caller::local_agent("scout").certified("w").is_empty());
+        assert!(
+            Caller::local_agent("scout", "ada")
+                .certified("w")
+                .is_empty()
+        );
     }
 
     /// An agent goes by the name of the session its client named for the call, and by its own
     /// name where none was named; a person is named by no session.
     #[test]
     fn an_agent_goes_by_its_sessions_name() {
-        let claude = || Caller::local_agent("claude-code").named("Claude Code");
+        let claude = || Caller::local_agent("claude-code", "ada").named("Claude Code");
         let named = |caller: Caller, request| {
             caller
                 .in_session_of(&request)
@@ -1071,7 +1171,7 @@ mod tests {
     /// only, so both continue the same invocations. Another session borrows none of them.
     #[test]
     fn an_agents_session_name_does_not_change_who_continues_its_invocations() {
-        let caller = || Caller::local_agent("claude-code").named("Claude Code");
+        let caller = || Caller::local_agent("claude-code", "ada").named("Claude Code");
         let named = caller().in_session_of(&call_in(AGENT_SESSION_GROUP, Some("Release prep")));
         assert_eq!(named.agent_called(), Some("Release prep"));
         assert!(
@@ -1079,7 +1179,7 @@ mod tests {
             "the connection follows what it started"
         );
         assert!(named.continues(&caller()));
-        let another = Caller::local_agent("claude-code")
+        let another = Caller::local_agent("claude-code", "ada")
             .in_new_execution()
             .named("Claude Code");
         assert!(
@@ -1092,7 +1192,7 @@ mod tests {
     /// asked nothing.
     #[test]
     fn an_agent_sessions_label_is_what_it_was_asked_else_the_agents_name() {
-        let session = Caller::local_agent("claude-code")
+        let session = Caller::local_agent("claude-code", "ada")
             .in_new_execution()
             .named("Claude Code")
             .in_agent_session("visit-1");
@@ -1100,6 +1200,40 @@ mod tests {
         assert_eq!(label(&session).as_deref(), Some("Claude Code"));
         let asked = session.asked("Fill Jane's application");
         assert_eq!(label(&asked).as_deref(), Some("Fill Jane's application"));
+    }
+
+    /// A placed device's caller is its key and nothing more: no person it acts as, no user key,
+    /// nobody it acts for, and nothing whose decisions read the person reaches it. Its person is
+    /// only named, for history. Kept and restored, it is a plain visitor.
+    #[test]
+    fn a_placed_device_is_never_its_person() {
+        let (device, person) = ([7; 32], [1; 32]);
+        let placed = Caller::placed(device, person, "w", [[3; 32], [2; 32], [3; 32]]);
+        assert_eq!(placed.user_public_key(), None);
+        assert_eq!(placed.acting().person_id(), None);
+        assert_eq!(placed.acting_for_person(), None);
+        assert_eq!(placed.acting().visitor_key(), Some(device));
+        assert_eq!(placed.device_public_key(), Some(&device));
+        assert_eq!(placed.workspace(), Some("w"));
+        assert!(!placed.is_system());
+        assert_eq!(placed.approved_agent(), None);
+        assert_eq!(placed.turn_person(), None);
+        let records = placed
+            .placed_records()
+            .expect("the placed records are said");
+        assert_eq!(records.person(), &person);
+        assert_eq!(records.channels(), &[[2; 32], [3; 32]]);
+        assert!(records.reaches(&[2; 32]) && records.reaches(&[3; 32]));
+        assert!(!records.reaches(&[4; 32]));
+        assert_ne!(
+            placed,
+            Caller::authenticated(person, device).in_workspace("w")
+        );
+        let restored = placed.kept().restored();
+        assert_eq!(restored.placed_records(), None);
+        assert_eq!(restored.user_public_key(), None);
+        assert_eq!(restored.acting().person_id(), None);
+        assert_eq!(restored.acting().visitor_key(), Some(device));
     }
 
     /// One person's agent under one name is one agent, however the name is typed; another name

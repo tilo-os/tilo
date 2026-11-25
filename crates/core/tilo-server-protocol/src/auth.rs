@@ -251,7 +251,8 @@ impl HelloRefusal {
     /// person has are never said; when and why only to a device its person
     /// retired ([`HelloRefused::revocation`]).
     ///
-    /// A person an endpoint of the workspaces' members ([`HandshakeTrust::Live`])
+    /// A person an endpoint of the workspaces' members ([`HandshakeTrust::Live`],
+    /// or [`HandshakeTrust::LiveHolders`] where it admits their holders too)
     /// does not admit hears only that: whoever is turned
     /// away works it out from the closed link anyway, and a copy they kept of
     /// a workspace that removed them learns to let it go. Their removed
@@ -273,7 +274,10 @@ impl HelloRefusal {
                 Some(Self::DeviceRevoked)
             }
             AuthError::Revoked | AuthError::PolicyReject
-                if matches!(trust, HandshakeTrust::Live(_)) =>
+                if matches!(
+                    trust,
+                    HandshakeTrust::Live(_) | HandshakeTrust::LiveHolders(..)
+                ) =>
             {
                 Some(Self::NotAdmitted)
             }
@@ -1657,6 +1661,13 @@ mod tests {
             assert_eq!(said, Some(HelloRefusal::NotAdmitted));
             let (error, said) = refused(HandshakeTrust::Live(&nobody), &stranger, &strangers);
             assert!(matches!(error, AuthError::Revoked));
+            assert_eq!(said, Some(HelloRefusal::NotAdmitted));
+            // The members' endpoint that admits the workspaces' holders too tells them the same:
+            // naming holders takes nothing from what a person no workspace has any more hears.
+            let no_holders = std::collections::HashSet::new();
+            let holders = HandshakeTrust::LiveHolders(&nobody, &no_holders);
+            let (error, said) = refused(holders, &member, &revocations);
+            assert!(matches!(error, AuthError::PolicyReject));
             assert_eq!(said, Some(HelloRefusal::NotAdmitted));
             // Where that person is admitted, the removal alone refuses the device, and it is told.
             let admitting = TrustPolicy::AllowList {

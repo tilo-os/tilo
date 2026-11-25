@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
     {
         let people = program(vec![watch_chat(ActorFilter::People)]);
         let not_bots = program(vec![watch_chat(ActorFilter::NotBots)]);
-        let agent = Acting::agent("a").acting_for(Acting::person("ada"));
+        let agent = Acting::agent("a", "ada").acting_for(Acting::person("ada"));
         let cases = [
             (person("bob"), true, true),
             (agent, false, true),
@@ -754,7 +754,7 @@ fn a_filter_narrows_a_change_by_what_it_holds_and_where_it_came_from() {
     // Its own answer in its direct conversation, and a copy of it mirrored back by whatever
     // carries the conversation elsewhere, fire nothing.
     let answer = said(
-        Acting::agent("scout").acting_for(person("bob")),
+        Acting::agent("scout", "ada").acting_for(person("bob")),
         "chat.direct",
         json!("done: agent:scout here"),
         json!({"person": "agent:scout"}),

@@ -78,7 +78,7 @@ fn ada() -> String {
 
 /// An agent the host admitted for Ada.
 fn her_agent() -> tilo_actions::ActionInvoker {
-    tilo_actions::ActionInvoker::agent("eve").acting_for(ada())
+    tilo_actions::ActionInvoker::agent("eve", ada()).acting_for(ada())
 }
 
 /// The actions the API offers on the record.
@@ -180,7 +180,7 @@ fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
         authors,
         [
             MemberId::person(ada()).into(),
-            MemberId::agent("eve").into()
+            MemberId::agent("eve", ada()).into()
         ]
     );
     // It is still housekeeping: nothing of the person's to take back.

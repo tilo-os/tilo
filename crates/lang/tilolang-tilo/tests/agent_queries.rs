@@ -98,7 +98,7 @@ impl World {
         self.task.run(
             source,
             &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-                "task-1",
+                "task-1", "ada",
             )),
         )
     }
@@ -462,7 +462,7 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
         task.run(
             source,
             &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-                "task-1",
+                "task-1", "ada",
             )),
         )
     };

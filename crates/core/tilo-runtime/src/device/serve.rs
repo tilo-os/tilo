@@ -223,7 +223,7 @@ pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<s
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
     // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
     // were kept, above.
-    ending_step("the person's part's runtime", SHUTDOWN, move || {
+    ending_step(None, "the person's part's runtime", SHUTDOWN, move || {
         runtime.shutdown_timeout(SHUTDOWN);
     });
     drop(watching);
@@ -232,7 +232,7 @@ pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<s
     // part in this process opens them too, and finds them held while this peer is.
     let peer = PEER.lock_recover().take();
     if let Some(peer) = peer {
-        ending_step("the workspaces' files", RELEASING, move || {
+        ending_step(None, "the workspaces' files", RELEASING, move || {
             let Ok(releasing) = bridge_runtime() else {
                 tracing::error!(
                     "the workspaces' files cannot be closed: no runtime to close them on"
@@ -262,6 +262,7 @@ pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<s
 /// most `within` and a moment: one that takes longer is left behind and named in the log, so
 /// the part that starts next is never held by it, and a step that hangs says which it is.
 pub(crate) fn ending_step(
+    until: Option<&Stop>,
     what: &'static str,
     within: Duration,
     step: impl FnOnce() + Send + 'static,
@@ -280,23 +281,54 @@ pub(crate) fn ending_step(
         return;
     }
     let bound = within.saturating_add(ENDING_SLACK);
-    if finished.recv_timeout(bound).is_ok() {
-        tracing::debug!(
-            step = what,
-            took_ms = started.elapsed().as_millis(),
-            "a step of the person's part ending finished"
-        );
-    } else {
-        tracing::error!(
-            step = what,
-            waited_ms = bound.as_millis(),
-            "a step of the person's part ending did not finish in time; it is left behind"
-        );
+    let deadline = Instant::now()
+        .checked_add(bound)
+        .unwrap_or_else(Instant::now);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            tracing::error!(
+                step = what,
+                waited_ms = bound.as_millis(),
+                "a step of the person's part ending did not finish in time; it is left behind"
+            );
+            return;
+        }
+        match finished.recv_timeout(left.min(ENDING_POLL)) {
+            Ok(()) => {
+                tracing::debug!(
+                    step = what,
+                    took_ms = started.elapsed().as_millis(),
+                    "a step of the person's part ending finished"
+                );
+                return;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        // A stop told while this closes is not waited on when the caller says so: the daemon
+        // ends, and this step is left behind as it would be past its bound.
+        if until.is_some_and(Stop::told) {
+            tracing::info!(
+                step = what,
+                "a step of the person's part ending stops with the daemon"
+            );
+            return;
+        }
     }
 }
 
+/// How often a step of the person's part ending looks whether the daemon was told to stop while
+/// it waits for the step.
+const ENDING_POLL: Duration = Duration::from_millis(100);
+
 /// What a step of the person's part ending is given past its own bound before it is left behind.
 const ENDING_SLACK: Duration = Duration::from_secs(1);
+
+/// How long a daemon between its person's parts takes to end when it is told to stop: there is
+/// nothing to unmount or keep there, and the start that follows may wait on something that
+/// never answers.
+const BETWEEN_PARTS: Duration = Duration::from_secs(2);
 
 /// What tells a daemon running in this process to stop ([`crate::daemon::Running::stop`]): heard
 /// by its holder's loop, and by its wait for a person to claim the device.
@@ -309,6 +341,10 @@ struct StopState {
     told: std::sync::Mutex<(bool, Option<&'static str>)>,
     waiting: std::sync::Condvar,
     heard: tokio::sync::Notify,
+    /// Whether a person's part serves in this process now, or the daemon is between parts.
+    serving: std::sync::atomic::AtomicBool,
+    /// What the daemon is doing now, for a stop that is told to say what it waited on.
+    step: std::sync::Mutex<Option<String>>,
 }
 
 impl Stop {
@@ -344,6 +380,33 @@ impl Stop {
     /// The signal that told the daemon to stop, while one did.
     fn signal(&self) -> Option<&'static str> {
         self.0.told.lock_recover().1
+    }
+
+    /// Say whether a person's part serves now: one that does may have folders to unmount and
+    /// trees to keep, where between parts there is nothing to let go of.
+    pub(crate) fn serving(&self, serving: bool) {
+        self.0
+            .serving
+            .store(serving, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether a person's part serves now.
+    fn part_serves(&self) -> bool {
+        self.0.serving.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Say what the daemon is doing now, for a stop that is told to say what it waited on.
+    pub(crate) fn waiting_on(&self, what: impl Into<String>) {
+        *self.0.step.lock_recover() = Some(what.into());
+    }
+
+    /// What the daemon was doing when a stop was told.
+    fn waited_on(&self) -> String {
+        self.0
+            .step
+            .lock_recover()
+            .clone()
+            .unwrap_or_else(|| "its next step".to_owned())
     }
 
     /// Return once the daemon is told to stop.
@@ -683,11 +746,16 @@ pub(crate) const STOPPED_WITHIN: Duration = STOPPING
 /// It is installed before the daemon binds anything, so a computer started before its person
 /// exists hears a stop too: until then it only waited for one, and a signal a caller had ignored
 /// is inherited across exec, which left that daemon running with nothing of its own to hear it.
+///
+/// A part that serves gets the whole of a stop to unmount its folders and keep its trees. A
+/// daemon between parts has nothing to let go of, and the start that follows the part that ended
+/// may wait on something that never answers: a stop heard there ends the daemon itself, taking
+/// `native` away with it, rather than leave a process nobody can stop but with a kill.
 #[expect(
     clippy::exit,
     reason = "a daemon told to stop whose workers do not take the stop up cannot end through them"
 )]
-pub(crate) fn hear_stops(stop: Stop, within: Duration) -> Result<()> {
+pub(crate) fn hear_stops(stop: Stop, within: Duration, native: PathBuf) -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
     std::thread::Builder::new()
         .name("tilo-signals".to_owned())
@@ -723,14 +791,34 @@ pub(crate) fn hear_stops(stop: Stop, within: Duration) -> Result<()> {
                 drop(signalled);
                 if let Some(name) = heard.recv().await {
                     stop.told_by(name);
-                    tokio::time::sleep(within).await;
-                    tracing::error!(
-                        signal = name,
-                        "this daemon ends: it was told to stop ({name}) {}s ago and its stop did \
-                         not finish, so its workers never took it up",
-                        within.as_secs()
-                    );
-                    std::process::exit(1);
+                    if !stop.part_serves() {
+                        tokio::time::sleep(BETWEEN_PARTS).await;
+                    }
+                    if stop.part_serves() {
+                        tokio::time::sleep(within).await;
+                    }
+                    let serving = stop.part_serves();
+                    if serving {
+                        tracing::error!(
+                            signal = name,
+                            waited_on = %stop.waited_on(),
+                            "this daemon ends: it was told to stop ({name}) {}s ago and its \
+                             stop did not finish, so its workers never took it up",
+                            within.as_secs()
+                        );
+                    } else {
+                        tracing::error!(
+                            signal = name,
+                            waited_on = %stop.waited_on(),
+                            "this daemon ends: it was told to stop ({name}) between its person's \
+                             parts and no part started to take it up; its endpoint goes with it"
+                        );
+                        // The endpoint is the daemon's own: one that ends without closing it
+                        // leaves the next start a socket nobody listens on, so it is taken away
+                        // here as its own close would.
+                        let _ = std::fs::remove_file(&native);
+                    }
+                    std::process::exit(if serving { 1 } else { 0 });
                 }
             });
         })?;
@@ -1117,7 +1205,16 @@ mod tests {
         if std::env::var_os(CHILD_STOPPED).is_none() {
             return;
         }
-        hear_stops(Stop::default(), CHILD_STOPPED_WITHIN).unwrap();
+        // A part serves, as the bound this child is held to is a serving part's: the process
+        // ends here once that bound went by, with the status a stop that was never taken up has.
+        let stop = Stop::default();
+        stop.serving(true);
+        hear_stops(
+            stop,
+            CHILD_STOPPED_WITHIN,
+            std::env::temp_dir().join("tilo-test-never-bound.sock"),
+        )
+        .unwrap();
         // The signal thread's handlers are in place well before this: a SIGTERM before them
         // would end the child by the signal, which the parent tells apart.
         std::thread::sleep(Duration::from_millis(500));

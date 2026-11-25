@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<ReadingApp>::new().unwrap();
         let answer = app
             .call_by(
-                ActionInvoker::agent("reader"),
+                ActionInvoker::agent("reader", "ada"),
                 Counter::KIND,
                 "read-row",
                 serde_json::json!({ "row": "row-7" }),

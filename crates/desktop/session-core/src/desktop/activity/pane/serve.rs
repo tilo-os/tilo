@@ -36,6 +36,10 @@ pub(super) fn author(author: &ui::widget::history::HistoryAuthor) -> wire::Autho
             ui::widget::history::AuthorRelation::Software => wire::Relation::Software,
         },
         on_behalf_of: attribution.and_then(|who| who.on_behalf_of_name.clone()),
+        member: attribution
+            .and_then(|who| who.acting.member_id())
+            .filter(|member| !member.is_person())
+            .cloned(),
         for_reader: author.for_reader,
         task: author.task.clone(),
     }

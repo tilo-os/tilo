@@ -74,6 +74,11 @@ use uuid::Uuid;
 /// connects.
 const MCP_CLIENT: &str = "mcp";
 
+/// The name a workspace VM's tenant connection goes by: no app and no agent was named, so the
+/// device gives it one of its own, the person's unnamed agent, which may do only what both an
+/// agent and the person may. An asked action still asks.
+pub(crate) const UNNAMED_AGENT: &str = "agent";
+
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
@@ -985,6 +990,21 @@ impl Daemon {
         Ok(link)
     }
 
+    /// Each action this daemon's broker runs, as it is admitted and as it ends: `None` while it
+    /// runs no broker.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn execution_activity(
+        &self,
+    ) -> Option<
+        tokio::sync::broadcast::Receiver<
+            Arc<tilo_workspace_service::apps::collab_app_broker::ExecutionActivity>,
+        >,
+    > {
+        self.broker
+            .app_action_broker()
+            .map(|broker| broker.state().subscribe_execution_activity())
+    }
+
     /// The links this daemon made, for a test that shows a secret admits one connection and no
     /// second: [`Self::shell_link`] takes its own secret as it connects.
     #[cfg(test)]
@@ -1199,11 +1219,12 @@ impl Daemon {
     /// account (the seats admit it before a connection reaches here) and this device is one of
     /// theirs that reaches every workspace.
     ///
-    /// A device this person's root confined to one record (a workspace's VM, a hosted browser's
-    /// environment) is that record's tenant, never the person's own connection: a same-account
-    /// peer there is no more their own act than a program is, so its calls ask.
+    /// A device confined to one workspace, by a certificate for that workspace or one placed for
+    /// records of it (a workspace's VM, a hosted browser's environment), is no device of the
+    /// person's own connection: a same-account peer there is no more their own act than a
+    /// program is, so its calls ask.
     fn connection_caller(&self, workspace: Option<&str>) -> Caller {
-        let person = if self.cert.capabilities.workspace.is_none() {
+        let person = if self.cert.capabilities.workspace_name().is_none() {
             Caller::own_person(&self.actor)
         } else {
             Caller::local_person(&self.actor)
@@ -1212,6 +1233,53 @@ impl Daemon {
             Some(workspace) => person.in_workspace(workspace),
             None => person,
         }
+    }
+
+    /// The tree a workspace VM's tenant reaches in `workspace` (none: the one this daemon
+    /// serves), and the caller it is admitted as there: the person's unnamed agent, never the
+    /// person, so an asked action still asks.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now, or the device cannot make the agent's key.
+    pub(crate) fn tenant_tree_in(
+        self: &Arc<Self>,
+        workspace: Option<&str>,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        // A device placed for records of one workspace admits nothing itself: the tenant's calls
+        // go to the workspace's host over the link this device dialled, which decides each as
+        // this placed device.
+        if let Some(placed) = self.workspaces.confined() {
+            let named = placed.to_string();
+            let host = super::confined::forwarded(&self.workspaces, workspace)
+                .map_err(io::Error::other)?;
+            let api = self.api()?;
+            let caller = Caller::visitor(self.cert.device_public_key).in_workspace(&named);
+            let joined = block_on_owned(async move { api.joined(&named, host).await })
+                .map_err(io::Error::other)?;
+            return Ok((joined, caller));
+        }
+        let workspace = workspace.unwrap_or(&self.workspace);
+        let time = self.policy_origin.capture().map_err(io::Error::other)?;
+        let base = self.provider_for(workspace)?;
+        let (provider, _) = base.agent_session(workspace, &self.actor, &time, |person| {
+            (
+                device_agent_id(person, UNNAMED_AGENT),
+                UNNAMED_AGENT.to_owned(),
+            )
+        })?;
+        // The connection is that agent's: the caller it acts as here is the agent itself, which
+        // the workspace decides with the delegation its person gave it and nothing more.
+        let caller = provider
+            .session
+            .as_ref()
+            .map(|session| session.acting())
+            .cloned()
+            .ok_or_else(|| io::Error::other("this device made no agent for the connection"))?;
+        let api = self.api()?;
+        let named = workspace.to_owned();
+        let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
+            .map_err(io::Error::other)?;
+        Ok((joined, caller))
     }
 
     /// The tree a plain connection from the person's own account reaches in `workspace` (none:
@@ -1234,6 +1302,12 @@ impl Daemon {
         self: &Arc<Self>,
         workspace: Option<&str>,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        // A confined device never treats a connection as the person: its own connection acts as
+        // the person's unnamed agent at the one workspace its certificate reaches, as the socket
+        // its tenant reaches does, so an asked action asks.
+        if super::confined::workspace_of(&self.cert).is_some() {
+            return self.tenant_tree_in(workspace);
+        }
         match workspace {
             Some(workspace) => self.admitted_connection_tree(workspace),
             None => self.person_connection_tree(),
@@ -1378,6 +1452,10 @@ impl Daemon {
             let Some(own_workspace) = WorkspaceId::parse(&person) else {
                 return;
             };
+            // A device confined to one workspace keeps no copy of its person's own.
+            if own.confined().is_some() {
+                return;
+            }
             if own.keeps(own_workspace).await {
                 return;
             }
@@ -1531,6 +1609,10 @@ impl Daemon {
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let joined = identity.joined();
+        // A device its person's root confined to one workspace (a workspace's VM) holds no keys:
+        // it lists nothing of its person's, marks no root and keeps no copy of any workspace,
+        // and reaches its one workspace through the host its login entered through.
+        let confined = super::confined::workspace_of(&identity.cert).is_some();
         let (workspace_id, founded) = if joined {
             (
                 tilo_server_protocol::servers::person_workspace_id(&identity.cert.user_public_key),
@@ -1610,6 +1692,14 @@ impl Daemon {
         #[cfg(target_os = "macos")]
         apps.keep_chosen_records(Arc::clone(&records));
         workspaces.hold_device_records(Arc::clone(&records));
+        // A device placed for records of one workspace reaches it through the host its ticket's
+        // login entered through on this start: it keeps no copy to find its host in.
+        if let Some(host) = entered
+            .as_ref()
+            .and_then(|login| super::confined::ConfinedHost::of_login(&identity.cert, login))
+        {
+            workspaces.confine_to(host);
+        }
         workspaces.copies().publish_own(
             tilo_actions::remote::DEVICE_SETTINGS,
             tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
@@ -1870,21 +1960,27 @@ impl Daemon {
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
         // The person's devices, as the record of their own workspace holds them, each revocation
         // the root's own signature: what `tilo-identity` admits a device by, and the one copy of it.
-        // Each start of the daemon reads them from its own workspaces.
-        devices_trust().reading({
-            let workspaces = std::sync::Arc::downgrade(&workspaces);
-            move || {
-                workspaces
-                    .upgrade()
-                    .map(|workspaces| super::signing::devices_seen(&workspaces))
-            }
-        });
+        // Each start of the daemon reads them from its own workspaces; a confined device, which
+        // keeps none and reads none of its person's records, knows itself alone.
+        if confined {
+            super::confined::trust_own(devices_trust(), identity.cert.clone());
+        } else {
+            devices_trust().reading({
+                let workspaces = std::sync::Arc::downgrade(&workspaces);
+                move || {
+                    workspaces
+                        .upgrade()
+                        .map(|workspaces| super::signing::devices_seen(&workspaces))
+                }
+            });
+        }
         // This device is one of the person's, listed with their others: what every host admits
         // it by, and where a revocation of it is marked. The device whose ticket made this one
         // listed it before it answered the certificate, so what is left here is a record that
         // does not have it yet: it is written where this device holds their own workspace and
-        // may write.
-        {
+        // may write. A confined device was listed by the root that certified it, in the same
+        // step.
+        if !confined {
             let (copies, own) = (workspaces.copies().clone(), identity.cert.clone());
             if let Err(error) = block_on_owned(async move {
                 use tilo_workspace_service::workspaces::person_workspace;
@@ -2072,7 +2168,7 @@ impl Daemon {
         // A device that keeps the person's root says so in their devices record, signed by that
         // root, and answers what their devices without it hand on; every device follows the
         // calls kept for one, to take them up or to show how its own ended.
-        let held_root = self::root().ok().flatten();
+        let held_root = self::root().ok().flatten().filter(|_| !confined);
         let (copies, cert) = (workspaces.copies().clone(), identity.cert.clone());
         let (serving, following) = (Tickets::clone(&tickets), Arc::downgrade(&asked));
         tilo_rt::app().handle().spawn(async move {
@@ -2296,7 +2392,8 @@ impl Daemon {
         // A person founded while this daemon serves has their root marked in their devices record
         // and their root-only asks served here from then on, without the person's services
         // starting again: the first person a fresh computer founds and every account after it.
-        {
+        // A confined device founds nobody.
+        if !confined {
             let (asked, tickets, serving) = (
                 Arc::downgrade(&daemon.asked),
                 Arc::downgrade(&daemon.tickets),
@@ -2845,10 +2942,10 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
 /// The checks a project's host approved: this device's work, kept as its jobs at
 /// `devices/<device>/jobs` and read through the one record API. What runs comes from this
 /// device's own `checks` setting, so a check an app names never brings its own commands. A
-/// check's commands are ush's own, which a phone's app carries none of. An app runs one as a
+/// check's commands are ush's own, which runs only on Linux. An app runs one as a
 /// step its own `run-approved-check` declares, for an invocation the dispatch delivered to it:
 /// that invocation names the project the check is for.
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(target_os = "linux")]
 fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
     let jobs = Arc::new(super::approved_checks::CheckJobs::at(
         parts.root,
@@ -2876,7 +2973,7 @@ fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
 }
 
 /// Elsewhere, a host approves no checks.
-#[cfg(not(all(unix, not(target_os = "android"))))]
+#[cfg(not(target_os = "linux"))]
 fn approved_checks(_parts: &BrokerParts<'_>) -> io::Result<()> {
     Ok(())
 }
@@ -3089,16 +3186,8 @@ fn broker_services(
         ))));
     // The hosts of the workspaces placed on another device: the one dispatch sends a call of a
     // typed action of one of their records there, as the broker sends its apps' invocations.
-    let hosts = super::hosts::Hosts::of(parts.workspaces);
+    let hosts = super::hosts::Hosts::placed(parts.workspaces);
     parts.workspaces.hold_hosts(Arc::clone(&hosts));
-    let placed = Arc::clone(&hosts);
-    parts
-        .workspaces
-        .copies()
-        .providers()
-        .place_on_hosts(Arc::new(move |workspace: &str| {
-            placed.host_actions(workspace)
-        }));
     let PublishedHere {
         seat,
         forwarded,
@@ -4700,13 +4789,17 @@ impl RuntimeActionProvider {
     /// ([`Self::session_factory`]), never a run of an agent elsewhere, of a roster turn, or of
     /// another person's key.
     fn is_own_client(&self, caller: &Caller) -> bool {
-        let own = device_agent_id(&self.workspaces.operator(), MCP_CLIENT);
+        let operator = self.workspaces.operator();
+        let own = tilo_action_policy::MemberId::agent(
+            device_agent_id(&operator, MCP_CLIENT),
+            hex::encode(operator),
+        );
         self.session.as_ref().is_some_and(|session| {
             session.admits(caller)
                 && session
                     .agent
                     .as_ref()
-                    .is_some_and(|agent| agent.acting().agent_id() == Some(own.as_str()))
+                    .is_some_and(|agent| agent.acting().member_id() == Some(&own))
         })
     }
 
@@ -4840,6 +4933,7 @@ impl RuntimeActionProvider {
         // this device holds; going on takes it back where it stands. The answer syncs with the
         // workspace, so a host running the agent elsewhere refuses its next call.
         let operator_person = hex::encode(operator);
+        let member = tilo_action_policy::MemberId::agent(agent.clone(), operator_person.clone());
         let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
         let targets: Vec<String> = self
             .workspaces
@@ -4883,7 +4977,8 @@ impl RuntimeActionProvider {
                     let origin_writes = |caller: &Caller, origin: &Origin| {
                         broker.state().may_write_origin(caller, target, origin)
                     };
-                    for cancelled in invocations.stop_agent(&person, target, &agent, &origin_writes)
+                    for cancelled in
+                        invocations.stop_agent(&person, target, &member, &origin_writes)
                     {
                         let _ = cancelled.await;
                     }
@@ -5573,6 +5668,17 @@ impl ActionProvider for RuntimeActionProvider {
             && request.target.address.resource == super::records::RESOURCE
             && let Some(records) = self.workspaces.device_records()
         {
+            // A device placed for records of one workspace keeps no settings of its own: its
+            // host keeps them in the workspace's environment record, deciding the write as this
+            // placed device.
+            if self.workspaces.confined().is_some() {
+                return match super::confined::forwarded(&self.workspaces, None) {
+                    Ok(host) => host.invoke(caller, request),
+                    Err(reason) => Pending::ready(Err(ActionCallError::Unavailable {
+                        reason: reason.into(),
+                    })),
+                };
+            }
             // The device's own person, on the dispatch this device admitted them to, writes as the
             // device their certificate names: what their desktop keeps for its next session.
             let cert = self.workspaces.device_cert();
@@ -5953,20 +6059,49 @@ impl Certificates {
     /// is asked, by its certificate and by its entry among the person's devices.
     fn admitted(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         let name = workspace.to_string();
+        let held = self.held()?;
+        if let Some(confined) = held.confined() {
+            return confined_admits(&held, confined, &name, cert);
+        }
         if !cert.capabilities.reaches_workspace(&name)
-            || !super::signing::devices_seen(&*self.held()?).reaches(&cert.device_public_key, &name)
+            || !super::signing::devices_seen(&held).reaches(&cert.device_public_key, &name)
         {
             return Err("this device reaches another workspace alone".to_owned());
         }
         let id = WorkspaceId::parse(&name).ok_or("invalid exact workspace")?;
-        let peer = self
-            .held()?
+        let peer = held
             .peer(id)
             .ok_or("this device does not hold that workspace")?;
         peer.permissions(cert.device_public_key, tilo_clock::wall())
             .map(drop)
             .map_err(|error| error.to_string())
     }
+}
+
+/// Whether a device confined to `confined` admits `cert` in the workspace `name` names: its own
+/// device alone, in its one workspace, as what it knows of its person's devices lists it
+/// ([`super::confined::trust_own`]). It keeps no copy whose member list could say more, and every call it sends there
+/// is decided again by the host.
+fn confined_admits(
+    held: &ServiceWorkspaces,
+    confined: WorkspaceId,
+    name: &str,
+    cert: &DeviceCert,
+) -> Result<(), String> {
+    use tilo_identity::sources::DeviceTrust as _;
+    if WorkspaceId::parse(name) != Some(confined) {
+        return Err("this device reaches another workspace alone".to_owned());
+    }
+    if cert.device_public_key != held.device_cert().device_public_key {
+        return Err("a device confined to one workspace admits only its own apps there".to_owned());
+    }
+    let trust = devices_trust();
+    if trust.reaches(cert, name) != Some(true)
+        || trust.revoked(&cert.user_public_key, &cert.device_public_key) != Some(false)
+    {
+        return Err("the person's devices do not list this device in this workspace".to_owned());
+    }
+    Ok(())
 }
 
 impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority for Certificates {
@@ -5996,6 +6131,10 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
 
     fn authorize(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         self.admitted(workspace, cert)
+    }
+
+    fn device(&self) -> Option<[u8; 32]> {
+        Some(self.held().ok()?.device_cert().device_public_key)
     }
 
     fn authorize_join(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
@@ -6505,7 +6644,7 @@ fn serve_key_sessions(
     key_sessions.serve(
         Arc::new(PersonalDevices::new(
             workspaces.copies().clone(),
-            workspaces.device_cert(),
+            &workspaces.device_cert(),
         )),
         sessions,
     );

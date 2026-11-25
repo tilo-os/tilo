@@ -55,9 +55,9 @@ fn fixture() -> Fixture {
     workspace.policy.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);
-    workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);
+    workspace.allow_app(Grantee::agent("scribe", "ada"), NOTES, KindSet::ALL);
     workspace.deny(
-        Grantee::agent("scribe"),
+        Grantee::agent("scribe", "ada"),
         &TreePath::root().app(MAIL),
         KindSet::UNDOABLE,
     );
@@ -81,8 +81,7 @@ fn fixture() -> Fixture {
 impl Fixture {
     /// The agent `agent` acting for the person, as the desktop's api admits it.
     fn agent(&self, agent: &str) -> Caller {
-        Caller::local_agent(agent)
-            .acting_for(self.person.clone())
+        Caller::local_agent(agent, self.person.clone())
             .in_workspace(self.workspace.clone())
             .in_new_execution()
     }
@@ -114,7 +113,7 @@ tilo_test_env::scenario! {
         assert_eq!(applied, &change(NOTES));
         assert_eq!(
             invoker.acting.by,
-            tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe"))
+            tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe", "ada"))
         );
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some(f.person.as_str()));

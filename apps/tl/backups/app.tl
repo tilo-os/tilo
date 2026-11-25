@@ -56,11 +56,19 @@ enum Trouble {
 /// One entry of a snapshot's file index, as the restore preview shows it.
 type Entry (title: name) {
     name: Text
+    /// Its path inside the snapshot: what a folder's contents are folded away by.
+    path: Text = ""
     /// How deep in the snapshot it sits.
     depth: Int
     /// Its size in bytes; zero for a folder.
     size: Int
     folder: Bool
+}
+
+/// A folder of a snapshot's file index the person folded away.
+type Folded (title: path) {
+    /// The folder's path inside the snapshot.
+    path: Text
 }
 
 /// One stored snapshot of the folder this device protects.
@@ -78,10 +86,13 @@ type Snapshot (title: label, untitled: "Snapshot") {
     /// Why it failed, when it did.
     failure: Text = ""
     files: Collection<Entry>
+    /// The folders of its file index the person folded away.
+    folded: Collection<Folded>
 
     search {
         sort at newest
         hide files
+        hide folded
         hide failure
     }
 }
@@ -114,6 +125,8 @@ type Backups (untitled: "Backups") {
     source_origin: Origin = .custom
     source_cadence: Cadence = .on_demand
     source_failing: Bool = false
+    /// When the next backup runs, counted from 1970; zero when nothing schedules one.
+    next_run: Int = 0
     /// The name the destination folder goes by, and what it holds.
     destination_name: Text = ""
     used_bytes: Int = 0
@@ -178,7 +191,7 @@ primary action refresh(b: Backups) uses time, files (icon: .refresh, label: "Loo
 
 /// Keeps what the device answered about its repository, so the window and an agent read the
 /// same snapshots.
-action keep_catalog(b: Backups, answer: Text) {
+action keep_catalog(b: Backups, answer: Text) uses time {
     match json.parse(answer) {
         .err(why) => {
             b.trouble = why
@@ -239,6 +252,7 @@ action keep_catalog(b: Backups, answer: Text) {
                     snapshot.files.insert(
                         Entry(
                             name: text_at(file, "name"),
+                            path: text_at(file, "path"),
                             depth: int_at(file, "depth"),
                             size: int_at(file, "size"),
                             folder: flag_at(file, "is_dir"),
@@ -246,6 +260,14 @@ action keep_catalog(b: Backups, answer: Text) {
                     )
                 }
             }
+            // The schedule says when the next run is due: at once for a source nothing has
+            // backed up yet, and one cadence after the newest whole snapshot otherwise.
+            let step = cadence_seconds(b.source_cadence)
+            b.next_run = if step == 0 {
+                0
+            } else if let last = last_complete(b) {
+                last.at + step
+            } else { (now - moment(0)).seconds() }
         }
     }
 }
@@ -831,12 +853,31 @@ fn latest(b: Backups) -> Option<Snapshot> {
     b.snapshots.sort_by(s -> s.at, desc).first()
 }
 
+/// The newest snapshot that finished whole, or nothing yet.
+fn last_complete(b: Backups) -> Option<Snapshot> {
+    b.snapshots.filter(s -> s.health == .complete).sort_by(s -> s.at, desc).first()
+}
+
+/// How many seconds apart a cadence's runs are; zero when nothing runs them.
+fn cadence_seconds(c: Cadence) -> Int {
+    if c == .hourly {
+        3600
+    } else if c == .daily { 86400 } else if c == .weekly { 604800 } else { 0 }
+}
+
 fn failed_count(b: Backups) -> Int {
     b.snapshots.count(s -> s.health == .failed)
 }
 
 fn last_backup_line(b: Backups) -> Text {
     if let s = latest(b) { when(s.at) } else { "Never" }
+}
+
+/// When the next backup is due, or that the person runs each one.
+fn next_run_line(b: Backups) -> Text {
+    if b.source_cadence == .on_demand {
+        "By hand"
+    } else if b.next_run == 0 { "Not known" } else { when(b.next_run) }
 }
 
 fn protected_bytes(b: Backups) -> Int {
@@ -1118,6 +1159,7 @@ view working_line(b: Backups) {
 view timeline(b: Backups) {
     ui.StatGroup {
         ui.StatTile("Last backup", last_backup_line(b))
+        ui.StatTile("Next run", next_run_line(b))
         ui.StatTile("Snapshots", "{b.snapshots.len()}")
         ui.StatTile("Protected", size_text(protected_bytes(b)))
         if failed_count(b) > 0 {
@@ -1204,8 +1246,28 @@ view snapshot_sheet(b: Backups, s: Snapshot) {
                 } else {
                     ui.VirtualList(in_column: true, name: "The snapshot's files") {
                         for entry in s.files {
-                            ui.ListItem(item: entry) {
-                                file_row(entry)
+                            if not folded_away(s, entry) {
+                                ui.ListItem(item: entry) {
+                                    if entry.folder {
+                                        ui.ListRow(
+                                            title: entry.name,
+                                            prefix: if entry.depth > 0 { "└" } else { "" },
+                                            icon: if is_folded(s, entry.path) {
+                                                .folder
+                                            } else { .folder_open },
+                                            dense: true,
+                                        ) {
+                                            on activate: fold_folder(
+                                                b,
+                                                s,
+                                                entry.path,
+                                                not is_folded(s, entry.path),
+                                            )
+                                        }
+                                    } else {
+                                        file_row(entry)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1261,6 +1323,25 @@ view file_row(entry: Entry) {
         meta: if entry.folder { .none } else { .some(size_text(entry.size)) },
         dense: true,
     )
+}
+
+/// Folds a folder of the snapshot's file index away, or opens it again.
+action fold_folder(b: Backups, s: Snapshot, path: Text, folded: Bool) {
+    s.folded.remove_where(f -> f.path == path)
+    if folded and path != "" { s.folded.insert(Folded(path: path)) }
+}
+
+/// Whether the person folded `path` away.
+fn is_folded(s: Snapshot, path: Text) -> Bool {
+    s.folded.find(f -> f.path == path) != .none
+}
+
+/// Whether `entry` stands inside a folder the person folded away.
+fn folded_away(s: Snapshot, entry: Entry) -> Bool {
+    s.folded.find(
+        f -> f.path != "" and entry.path != f.path and entry.path.starts_with("{f.path}/"),
+    )
+        != .none
 }
 
 /// This device: the folder it protects and the snapshots of it.

@@ -1028,7 +1028,11 @@ impl SessionNotifications {
         // What the person's other devices show, and what they answered of this device's
         // notifications, comes in before the banners age.
         self.follow_devices();
-        // Banners whose time on screen ran out leave first.
+        // What the person chose is answered before the pass settles what left the stack: choosing a
+        // banner retires it into the centre like an expiring one, and closing its sender first
+        // would take the choice with it — the app would hear only that its notification expired.
+        self.answer_chosen(token);
+        // Banners whose time on screen ran out leave next.
         self.desktop.expire(ui::time::now());
         self.settle(CloseReason::Expired);
         // Whether fresh banners are held, for the bar's bell and the centre header, before they are
@@ -1040,7 +1044,6 @@ impl SessionNotifications {
         for arrival in self.daemon.drain() {
             self.arrive(arrival);
         }
-        self.answer_chosen(token);
         self.settle(CloseReason::Dismissed);
         // What the shell no longer shows of this device's notifications leaves the person's other
         // devices with it.

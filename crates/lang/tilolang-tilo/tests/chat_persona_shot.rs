@@ -92,12 +92,12 @@ fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
     names.tell(
         "Ada".to_owned(),
         vec![
-            (MemberId::agent("scout"), "Scout".to_owned()),
+            (MemberId::agent("scout", "leo"), "Scout".to_owned()),
             (MemberId::person("leo"), "Leo".to_owned()),
         ],
         Vec::new(),
         vec![
-            (MemberId::agent("scout"), PERSONA.to_owned()),
+            (MemberId::agent("scout", "leo"), PERSONA.to_owned()),
             (MemberId::person("leo"), MEMBER.to_owned()),
         ],
     );
@@ -119,7 +119,7 @@ fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
     instance.sync();
     let ada = Actor::from(MemberId::person("ada"));
     let leo = Actor::from(MemberId::person("leo"));
-    let scout = Actor::from(MemberId::agent("scout"));
+    let scout = Actor::from(MemberId::agent("scout", "leo"));
     let root = instance
         .host()
         .expect("the host")

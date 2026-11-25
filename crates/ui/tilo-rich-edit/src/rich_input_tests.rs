@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
             people: vec![
                 person(&MemberId::person("u_ada"), "Ada Lovelace"),
                 person(&MemberId::person("u_bo"), "Bo"),
-                person(&MemberId::agent("planner"), "Planner"),
+                person(&MemberId::agent("planner", "u_bo"), "Planner"),
             ],
             submit: Event::None,
         };
@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
                             Some("Members".to_owned()),
                             vec![
                                 reference(&MemberId::person("u_ada")),
-                                reference(&MemberId::agent("planner"))
+                                reference(&MemberId::agent("planner", "u_ada"))
                             ]
                         ),
                     ]
@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
         let rich = last_value(&edits).expect("the pick reported the rich text");
         assert_eq!(
             rich.blocks[0].marks[0].value,
-            Attr::Text(reference(&MemberId::agent("planner")))
+            Attr::Text(reference(&MemberId::agent("planner", "u_ada")))
         );
     }
 

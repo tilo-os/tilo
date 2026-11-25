@@ -147,7 +147,7 @@ fn history_names_a_keys_agent_by_the_name_it_was_minted_with() {
         let colour = |agent: &str| {
             let (red, green, blue) = collab_types::presence::identity_rgb(
                 collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(
-                    agent,
+                    agent, "ada",
                 )),
             );
             format!("#{red:02x}{green:02x}{blue:02x}")

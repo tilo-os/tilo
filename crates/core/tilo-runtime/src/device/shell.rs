@@ -135,6 +135,25 @@ impl ShellActions for Actions {
                 person,
             ))));
         };
+        // A device placed for records of one workspace admits nothing itself: its session's calls
+        // there, its `settings#set` among them, go to the workspace's host over the link this
+        // device dialled, which decides each as this placed device.
+        if kept.workspaces.confined().is_some() {
+            let cert = kept.workspaces.device_cert();
+            let device = Caller::visitor(cert.device_public_key).in_workspace(workspace.clone());
+            return Box::pin(std::future::ready(
+                super::confined::forwarded(&kept.workspaces, Some(&workspace)).map(|host| {
+                    (
+                        Arc::new(Shell {
+                            kept,
+                            caller: shell,
+                            workspace: Some(host),
+                        }) as Arc<dyn ActionProvider + Send + Sync>,
+                        device,
+                    )
+                }),
+            ));
+        }
         let Some(person) = self.dispatching.0.get().cloned() else {
             return Box::pin(std::future::ready(Err(
                 "this device's dispatch is not up yet".to_owned(),
@@ -224,10 +243,25 @@ impl ActionProvider for Shell {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        match self.in_workspace() {
-            Ok(dispatch) => dispatch.query(caller, query),
-            Err(refused) => Pending::ready(Err(refused)),
+        let dispatch = match self.in_workspace() {
+            Ok(dispatch) => dispatch,
+            Err(refused) => return Pending::ready(Err(refused)),
+        };
+        if self.kept.workspaces.confined().is_none() || !query.cursor.is_empty() {
+            return dispatch.query(caller, query);
         }
+        // A device placed for records sends its own settings actions to its host, which keeps
+        // them where its certificate says: they lead what the host lists of what this device may
+        // call there, so `tilo do settings#set` finds them as on any device.
+        let own = super::ticket::settings_catalogue(&query);
+        dispatch.query(caller, query).map(move |answered| {
+            answered.map(|mut page| {
+                let mut rows = own.rows;
+                rows.append(&mut page.rows);
+                page.rows = rows;
+                page
+            })
+        })
     }
 
     fn invoke(
@@ -477,7 +511,7 @@ async fn listed(
                     .to_string(),
                 None => uuid::Uuid::new_v4().to_string(),
             };
-            let device = workspaces.device_cert();
+            let device = &workspaces.device_cert();
             let made = super::services::branch_here(
                 workspaces,
                 device,
@@ -493,7 +527,7 @@ async fn listed(
         }
         DELETE => {
             let workspace = text("workspace")?.to_owned();
-            let device = workspaces.device_cert();
+            let device = &workspaces.device_cert();
             super::services::delete_here(workspaces, device, device, &workspace)
                 .await
                 .map_err(|error| error.to_string())?;

@@ -70,7 +70,7 @@ pub(super) fn policy(writes: Option<Answer>) -> WorkspacePolicy {
         ] {
             policy.grants.push(Grant::new(
                 id,
-                Grantee::agent(AGENT),
+                Grantee::agent(AGENT, "ada"),
                 files.clone(),
                 kinds,
                 answer,
@@ -151,7 +151,7 @@ pub(super) fn received(
 
 /// The agent a person's computer handed its session to, as the mount names it.
 pub(super) fn mount_agent() -> Acting {
-    Acting::agent(AGENT).handed().in_session("session-1")
+    Acting::agent(AGENT, "ada").handed().in_session("session-1")
 }
 
 pub(super) fn person(policy: &WorkspacePolicy, person: &str) -> MemberAccess {
@@ -233,7 +233,7 @@ tilo_test_env::scenario! {
         // device.
         let agent_key = MemberAccess::new(
             policy(None),
-            Acting::agent(AGENT).acting_for(Acting::person("ada")),
+            Acting::agent(AGENT, "ada").acting_for(Acting::person("ada")),
         );
         assert_eq!(received(&op, &agent_key), Ok(Receipt::Admit));
         // A device that is not Ada's own holds what such a device may.
@@ -245,7 +245,7 @@ tilo_test_env::scenario! {
         // The owner's server signs what it carries out for itself: a change
         // it names another member made is refused, whoever that member is.
         let server = person(&policy(Some(Answer::Allow)), "owner");
-        let agent_device = Acting::agent(AGENT).acting_for(Acting::person("ada"));
+        let agent_device = Acting::agent(AGENT, "ada").acting_for(Acting::person("ada"));
         for (invoker, admitted) in [
             (Acting::person("owner"), true),
             (Acting::person("ada"), false),
@@ -366,7 +366,7 @@ fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
         std::time::SystemTime::UNIX_EPOCH,
         1,
     );
-    let agent = Acting::agent(AGENT);
+    let agent = Acting::agent(AGENT, "ada");
     let asked = std::cell::RefCell::new(Vec::new());
     let allows = |invoker: Option<&Acting>, _: &TreePath, _: ActionKind| {
         asked.borrow_mut().push(invoker.cloned());

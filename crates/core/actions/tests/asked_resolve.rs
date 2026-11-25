@@ -407,7 +407,7 @@ fn approve_and_grant_writes_the_grant_then_approves() {
     };
     assert_eq!(workspace, WORKSPACE);
     assert_eq!(*person, hex::encode(ADA));
-    assert_eq!(grant.grantee, Grantee::agent("scout"));
+    assert_eq!(grant.grantee, Grantee::agent("scout", hex::encode(ADA)));
     assert_eq!(grant.answer, Answer::Allow);
     assert_eq!(grant.kinds, KindSet::of(ActionKind::Undoable));
     assert_eq!(grant.granted_by, Grantee::person(hex::encode(ADA)));

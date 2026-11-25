@@ -38,6 +38,7 @@
 
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::fs::DirBuilderExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -1463,6 +1464,13 @@ impl Device {
         let control = self.control.clone();
         let logs = self.logs_dir();
         std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
+        // The machine's boot makes its runtime directory, as a login's manager does: a copied
+        // disk never carries one, and without it the daemon would bind its sockets elsewhere.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(root.join("runtime"))
+            .expect("the device's runtime directory");
         // A device started again keeps what it said when it stopped: what it answered last, a
         // crash included, is what a step that fails after the restart reads. The daemon and the
         // session the daemon starts write here, as a device's journal holds both.
@@ -1500,7 +1508,10 @@ impl Device {
             .join(tilo_paths::machine::DAEMON_NATIVE);
         let label = self.label.clone();
         let logged = logs.join("session.log");
-        tilo_test_env::wait_for(
+        // A daemon that never answers is read where it waits: what it logged, and each of its
+        // threads' stacks. This wait's bound ends just before the one around it.
+        let deadline = tilo_test_env::hang_deadline();
+        let answered = tilo_test_env::wait_for(
             format!("{label}'s daemon to answer at {}", native.display()),
             || {
                 if let Some(daemon) = self.daemon.as_mut()
@@ -1511,9 +1522,23 @@ impl Device {
                         std::fs::read_to_string(&logged).unwrap_or_default()
                     );
                 }
-                UnixStream::connect(&native).ok()
+                if UnixStream::connect(&native).is_ok() {
+                    return Some(true);
+                }
+                (Instant::now() >= deadline).then_some(false)
             },
         );
+        if !answered {
+            let pid = self.daemon.as_ref().map(Child::id);
+            panic!(
+                "{label}'s daemon did not answer at {} within {:?}; it looks hung.\n\
+                 its threads:\n{}\nwhat it logged:\n{}",
+                native.display(),
+                tilo_test_env::hang_bound(),
+                pid.map(stacks).unwrap_or_default(),
+                std::fs::read_to_string(&logged).unwrap_or_default()
+            );
+        }
 
         let mut command = Command::new(&program);
         if self.seeds.get() {
@@ -2303,6 +2328,24 @@ const INVITATION_ENV: &str = "TILO_SHELL_JOIN_INVITATION_FILE";
 /// stop of the group reaches everything it started, and ending with the test, so a test that ends
 /// without its destructors (the runner killing it for running past its bound) leaves nothing of
 /// its own running on the machine.
+/// Every thread's stack of the process `pid`, as gdb reads them where the machine has gdb.
+fn stacks(pid: u32) -> String {
+    let read = Command::new("gdb")
+        .args([
+            "-batch",
+            "-p",
+            &pid.to_string(),
+            "-ex",
+            "thread apply all bt",
+        ])
+        .stdin(Stdio::null())
+        .output();
+    match read {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+        Err(error) => format!("(gdb did not read them: {error})"),
+    }
+}
+
 fn spawn_group(mut command: Command, name: &str) -> Child {
     command.process_group(0).dies_with_the_test();
     command.spawn_locked().unwrap_or_else(|error| {

@@ -125,8 +125,12 @@ impl StatePeer {
                 )
             }
             Change::TransferOwnership { person: who } => {
-                self.governance_mut()
-                    .transfer_ownership(person(who)?, key, now)
+                let who = person(who)?;
+                self.as_action(
+                    roles::governance::TRANSFER_OWNERSHIP,
+                    caller.user_public_key,
+                    |peer| peer.governance_mut().transfer_ownership(who, key, now),
+                )
             }
             Change::Ban { person: who } => {
                 let who = person(who)?;
@@ -183,11 +187,14 @@ impl StatePeer {
             Change::RetiredSetMemberRoles { .. } => {
                 Err("roles are assigned one at a time".to_owned())
             }
-            Change::DefineRole { .. }
-            | Change::RemoveRole { .. }
-            | Change::SetMemberCustomRole { .. } => {
-                self.governance_mut()
-                    .change_member_list(change.clone(), key, now)
+            Change::DefineRole { .. } | Change::RemoveRole { .. } => self
+                .governance_mut()
+                .change_member_list(change.clone(), key, now),
+            Change::SetMemberCustomRole { .. } => {
+                self.as_action(roles::governance::SET_ROLE, caller.user_public_key, |peer| {
+                    peer.governance_mut()
+                        .change_member_list(change.clone(), key, now)
+                })
             }
         }
     }

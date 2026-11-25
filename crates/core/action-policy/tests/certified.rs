@@ -14,10 +14,10 @@ const AGENT: &str = "scout";
 /// undoable changes allowed, outside effects asked first, and never the workspace's own actions.
 #[test]
 fn a_certificate_gives_its_agent_the_default_delegation_and_the_workspace_is_not_its_to_change() {
-    let grants = certified_agent(WORKSPACE, AGENT, PERSON);
+    let grants = certified_agent(WORKSPACE, (AGENT, PERSON), PERSON);
     assert!(!grants.is_empty());
     for grant in &grants {
-        assert_eq!(grant.grantee, Grantee::agent(AGENT), "{grant:?}");
+        assert_eq!(grant.grantee, Grantee::agent(AGENT, PERSON), "{grant:?}");
         assert_eq!(grant.granted_by, Grantee::person(PERSON), "{grant:?}");
         assert!(
             grant.node.workspace_id() == Some(WORKSPACE),
@@ -25,7 +25,7 @@ fn a_certificate_gives_its_agent_the_default_delegation_and_the_workspace_is_not
         );
     }
     let policy = WorkspacePolicy::new(WORKSPACE, PERSON);
-    let acting = tilo_action_policy::Acting::agent(AGENT)
+    let acting = tilo_action_policy::Acting::agent(AGENT, PERSON)
         .acting_for(tilo_action_policy::Acting::person(PERSON));
     let authority = Authority::of_acting(&acting, &policy, &grants);
     let cx = Context::at(1_000);

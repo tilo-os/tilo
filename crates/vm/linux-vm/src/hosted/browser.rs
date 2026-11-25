@@ -1,127 +1,79 @@
-//! Browser in a workspace's VM: the headless Tilo session that holds the
-//! workspace's Browser window, run in the same VM as its Linux programs. The host
-//! starts it through the guest agent and relays its stdio: argv is the guest
-//! image's own entry ([`SESSION`]), stdout reports one line each (`ready`, `up
-//! <provider>`, `used`), and stdin is handed one line of material. The session ends
-//! after [`Limits::idle_stop`] without page activity, or at [`Limits::lifetime`].
+//! The daemon in a workspace's VM: one device of the person that reaches the workspace alone, and
+//! runs the VM's Browser and Linux apps sessions as its shells (`docs/hosted-browser.md`). The host
+//! starts it through the guest agent with the ticket the placement carries ([`DAEMON`],
+//! [`TICKET`]), learns the device it logged in as, and is done: the sessions are launched and read
+//! on that device through the workspace's dispatch
+//! ([`tilo_actions::remote::environment_window`]). The daemon ends once its last session ended,
+//! and the VM sleeps.
 
 use std::fmt;
-use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use iroh_base::{EndpointAddr, TransportAddr};
 use linux_vm_protocol::client::{self, LaunchIo, LaunchSignals};
 use linux_vm_protocol::link::{AgentLink, AgentStream};
 use linux_vm_protocol::{AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio};
 use thiserror::Error;
-use tilo_actions::remote::browser::{MARK, Report, UP};
 use tilo_server_protocol::hosted::Material;
 
 use super::network::Endpoint;
 
-/// The browser session's entry, as the guest image ships it.
-pub const SESSION: &str = "/usr/libexec/tilo/browser-session";
+/// The VM daemon's entry, as the guest image ships it: started with [`TICKET`] it runs the daemon;
+/// `--device` prints the device it is, and `--browser-store PATH` names where Browser keeps its
+/// profile.
+pub const DAEMON: &str = "/usr/libexec/tilo/vm-daemon";
 
-/// The Linux apps session's entry, as the guest image ships it: the same
-/// headless session, run as the workspace's tenant with Xwayland, holding the
-/// windows of the Linux apps the workspace opened
-/// ([`tilo_actions::remote::linux_apps`]).
-pub const APPS_SESSION: &str = "/usr/libexec/tilo/apps-session";
+/// Names, in the daemon's environment, the ticket it logs in with.
+pub const TICKET: &str = "TILO_VM_TICKET";
 
-/// Which session of a workspace's VM: the one holding its Browser, or the one holding its Linux
-/// apps' windows. Both join the workspace as a device, run as different accounts and are never the
-/// same process.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Kind {
-    /// Browser, as the image's unprivileged browser user.
-    Browser,
-    /// The workspace's Linux apps, as its tenant: each later line of the
-    /// session's input is one app to start.
-    Apps,
-}
+/// The log the daemon and its sessions write, in the VM's state directory.
+pub const LOG: &str = "vm-daemon.log";
 
-impl Kind {
-    #[must_use]
-    pub const fn entry(self) -> &'static str {
-        match self {
-            Self::Browser => SESSION,
-            Self::Apps => APPS_SESSION,
-        }
-    }
-
-    #[must_use]
-    pub const fn mark(self) -> &'static str {
-        match self {
-            Self::Browser => MARK,
-            Self::Apps => tilo_actions::remote::linux_apps::MARK,
-        }
-    }
-
-    #[must_use]
-    pub const fn log(self) -> &'static str {
-        match self {
-            Self::Browser => "browser.log",
-            Self::Apps => "apps.log",
-        }
-    }
-}
-
-/// Names, in the session's environment, the folder it keeps its profile in.
-pub const STORE: &str = "TILO_BROWSER_STORE";
-
-/// How long the guest agent is given to start a session it was asked for.
+/// How long the guest agent is given to start the daemon.
 pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 
-/// How long a session is given to report `up` after the material was handed
-/// to it.
+/// How long the daemon is given to log in with its ticket.
 pub const UP_PATIENCE: Duration = Duration::from_secs(60);
 
-/// The line a session is handed at hand-off: the server's material, with the address the session
-/// dials replaced by one this VM reaches it at. The endpoint's id stays, so it joins the same
-/// server at the one address this VM dials.
+/// How often the device the daemon logged in as is looked for while it logs in.
+const LOGIN_LOOK: Duration = Duration::from_millis(100);
+
+/// The placement as the VM's daemon is handed it: the host's material, with the address its ticket
+/// names the issuing host at replaced by the one this VM reaches it at. The host's endpoint id
+/// stays, so the daemon logs in at the same host at the one address this VM dials.
 ///
 /// # Errors
 ///
-/// The material is not the server's, or names no endpoint.
-pub fn hand_off(material: &str, server: Endpoint) -> Result<String, String> {
+/// The material is not the host's.
+pub fn hand_off(material: &str, server: Endpoint) -> Result<Material, String> {
     let mut material: Material = serde_json::from_str(material.trim())
         .map_err(|error| format!("the material is not the server's: {error}"))?;
-    material.server =
-        EndpointAddr::from_parts(material.server.id, [TransportAddr::Ip(server.socket())]);
-    serde_json::to_string(&material).map_err(|error| error.to_string())
+    material.ticket.issuer.relay = None;
+    material.ticket.issuer.direct = vec![server.socket()];
+    Ok(material)
 }
 
 #[cfg(test)]
-use tilo_server_protocol::WorkspaceId;
-
-#[cfg(test)]
-/// The material the server writes a session, joining the workspace at
-/// `relay`: what the tests of a hand-off start from.
+/// The material a host writes for a workspace's VM, its ticket naming the host at `server`: what
+/// the tests of a hand-off start from.
 pub fn test_material(server: &str) -> String {
-    let cert = tilo_user_identity::DeviceCert {
-        user_public_key: [1; 32],
-        device_public_key: [2; 32],
-        device_label: "Browser".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: 1_000,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
     let material = Material {
         workspace: "ws1".into(),
-        workspace_id: WorkspaceId::from_u128(7),
+        workspace_id: tilo_server_protocol::WorkspaceId::from_u128(7),
         record: "browser-1".into(),
-        device: cert,
-        secret: [2; 32],
-        server: EndpointAddr::from_parts(
-            test_server_id(),
-            [TransportAddr::Ip(server.parse().unwrap())],
-        ),
+        ticket: tilo_device_identity::login::Ticket {
+            issuer: tilo_device_identity::login::Reached {
+                endpoint: test_server_id(),
+                relay: Some("https://relay.example".into()),
+                direct: vec![server.parse().unwrap()],
+            },
+            direction: tilo_device_identity::login::Direction::Login,
+            secret: [3; 32],
+        },
         user_public_key: [1; 32],
         account: "acct-1".into(),
     };
@@ -129,277 +81,53 @@ pub fn test_material(server: &str) -> String {
 }
 
 #[cfg(test)]
-fn test_server_id() -> iroh_base::EndpointId {
-    iroh_base::SecretKey::from_bytes(&[7; 32]).public()
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Limits {
-    pub idle_stop: Duration,
-    pub lifetime: Duration,
-}
-
-impl Default for Limits {
-    /// Ten minutes idle, two hours alive.
-    fn default() -> Self {
-        Self {
-            idle_stop: Duration::from_secs(600),
-            lifetime: Duration::from_secs(2 * 60 * 60),
-        }
-    }
-}
-
-/// Why a browser session ended.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum End {
-    Idle,
-    Lifetime,
-    Session,
-}
-
-impl fmt::Display for End {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Idle => "no page activity",
-            Self::Lifetime => "alive for its lifetime",
-            Self::Session => "its session ended",
-        })
-    }
+fn test_server_id() -> [u8; 32] {
+    *iroh_base::SecretKey::from_bytes(&[7; 32])
+        .public()
+        .as_bytes()
 }
 
 #[derive(Debug, Error)]
 pub enum SessionError {
     #[error(transparent)]
     Agent(#[from] ProtocolError),
-    #[error("the session did not start within {0:?}")]
+    #[error("the daemon did not start within {0:?}")]
     Silent(Duration),
     #[error(transparent)]
     Io(#[from] io::Error),
-}
-
-/// One browser session's life, as it reports it: when it started, when it was last used, and
-/// whether it is up or ended.
-#[derive(Debug, Default)]
-pub struct Life {
-    state: Mutex<State>,
-    moved: Condvar,
-}
-
-#[derive(Debug, Default)]
-struct State {
-    started_ms: u64,
-    ready_ms: Option<u64>,
-    used_ms: u64,
-    up: bool,
-    /// The provider token of the window its session opened, once it is up.
-    provider: Option<String>,
-    opening: bool,
-    ended: Option<String>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-impl Life {
-    #[must_use]
-    pub fn new(started_ms: u64) -> Self {
-        Self {
-            state: Mutex::new(State {
-                started_ms,
-                used_ms: started_ms,
-                ..State::default()
-            }),
-            moved: Condvar::new(),
-        }
-    }
-
-    pub fn report(&self, report: Report, now_ms: u64) {
-        {
-            let mut state = lock(&self.state);
-            match report {
-                Report::Ready => {
-                    state.ready_ms.get_or_insert(now_ms);
-                    state.used_ms = state.used_ms.max(now_ms);
-                }
-                Report::Up { provider } => {
-                    state.up = true;
-                    state.opening = false;
-                    state.provider = Some(provider);
-                    state.used_ms = state.used_ms.max(now_ms);
-                }
-                Report::Used => {
-                    if state.up {
-                        state.used_ms = state.used_ms.max(now_ms);
-                    }
-                }
-            }
-        }
-        self.moved.notify_all();
-    }
-
-    /// The session ended: it serves the workspace no more.
-    pub fn ended(&self, why: String) {
-        lock(&self.state).ended = Some(why);
-        self.moved.notify_all();
-    }
-
-    #[must_use]
-    pub fn ready(&self) -> bool {
-        lock(&self.state).ready_ms.is_some()
-    }
-
-    /// Whether its session reported a page used since the report last counted one: `used` is one of
-    /// its reports, and reads as such.
-    #[must_use]
-    pub const fn used() -> Report {
-        Report::Used
-    }
-
-    #[must_use]
-    pub fn up(&self) -> bool {
-        lock(&self.state).up
-    }
-
-    /// Whether its session is still running: it started and has not ended. A
-    /// session alive between commands is what keeps its VM awake
-    /// (`docs/hosted-browser.md`, "Where it runs").
-    #[must_use]
-    pub fn alive(&self) -> bool {
-        lock(&self.state).ended.is_none()
-    }
-
-    #[must_use]
-    pub fn provider(&self) -> Option<String> {
-        lock(&self.state).provider.clone()
-    }
-
-    #[must_use]
-    pub fn ended_because(&self) -> Option<String> {
-        lock(&self.state).ended.clone()
-    }
-
-    /// Take the hand-off if nobody else has: whether this caller hands the
-    /// session the workspace's material.
-    fn begin_opening(&self) -> bool {
-        let mut state = lock(&self.state);
-        if state.up || state.opening {
-            return false;
-        }
-        state.opening = true;
-        true
-    }
-
-    fn wait_for(
-        &self,
-        patience: Duration,
-        report: &dyn Fn(&State) -> bool,
-        what: &str,
-    ) -> Result<(), String> {
-        let started = Instant::now();
-        let mut state = lock(&self.state);
-        loop {
-            if report(&state) {
-                return Ok(());
-            }
-            if let Some(why) = &state.ended {
-                return Err(why.clone());
-            }
-            let Some(left) = patience
-                .checked_sub(started.elapsed())
-                .filter(|left| !left.is_zero())
-            else {
-                return Err(format!(
-                    "the browser session did not report {what} within {patience:?}"
-                ));
-            };
-            let (again, _) = self
-                .moved
-                .wait_timeout(state, left)
-                .unwrap_or_else(PoisonError::into_inner);
-            state = again;
-        }
-    }
-
-    pub fn wait_up(&self, patience: Duration) -> Result<(), String> {
-        self.wait_for(patience, &|state| state.up, UP)
-    }
-
-    #[must_use]
-    pub fn expired(&self, now_ms: u64, limits: Limits) -> Option<End> {
-        let (ended, up, used_ms, started_ms) = {
-            let state = lock(&self.state);
-            (
-                state.ended.is_some(),
-                state.up,
-                state.used_ms,
-                state.started_ms,
-            )
-        };
-        if ended {
-            return Some(End::Session);
-        }
-        let millis = |duration: Duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-        if up && now_ms.saturating_sub(used_ms) >= millis(limits.idle_stop) {
-            return Some(End::Idle);
-        }
-        if now_ms.saturating_sub(started_ms) >= millis(limits.lifetime) {
-            return Some(End::Lifetime);
-        }
-        None
-    }
-}
-
-/// The session running in a workspace's VM, driven through the guest agent: its stdin is where the
-/// material goes, its stdout what it reports, and its stderr its log.
+/// The daemon's process in the VM, driven through the guest agent.
 pub struct Session {
     signals: Option<LaunchSignals<AgentStream>>,
-    /// Its standard input, a line at a time: the material went first.
-    input: Option<mpsc::Sender<String>>,
     ended: Arc<AtomicBool>,
 }
 
 impl Session {
-    /// Start the session in the guest `link` reaches for the workspace `material` names, reporting
-    /// into `life`, logging to `log`, timed by `clock`: the material is the first thing its input
-    /// is told.
-    pub fn start(
-        link: &AgentLink,
-        kind: Kind,
-        material: &str,
-        store: Option<&std::path::Path>,
-        life: Arc<Life>,
-        log: PathBuf,
-        clock: super::vm::Clock,
-    ) -> Result<Self, SessionError> {
+    /// Start the daemon in the guest `link` reaches, logging in with `ticket`, logging to `log`.
+    pub fn start(link: &AgentLink, ticket: &str, log: PathBuf) -> Result<Self, SessionError> {
         let stream = link.connect(AGENT_PORT)?;
-        let mut env = vec![(kind.mark().to_owned(), "1".to_owned())];
-        if let Some(store) = store {
-            env.push((STORE.to_owned(), store.display().to_string()));
-        }
         let launch = Launch {
-            argv: vec![kind.entry().to_owned()],
+            argv: vec![DAEMON.to_owned()],
             cwd: None,
-            env,
+            env: vec![(TICKET.to_owned(), ticket.to_owned())],
             stdio: Stdio::Pump,
             display: Display::None,
         };
-        let (input, lines) = mpsc::channel::<String>();
-        let _ = input.send(material.trim_end().to_owned());
         let (telling, told) = mpsc::channel::<LaunchSignals<AgentStream>>();
         let ended = Arc::new(AtomicBool::new(false));
         let ending = Arc::clone(&ended);
         std::thread::spawn(move || {
-            let mut out = Reporter::new(&log, Arc::clone(&life), clock);
-            let mut err = Log::new(&log);
+            let (mut out, mut err) = (Log::new(&log), Log::new(&log));
             let result = client::launch(
                 stream,
                 &launch,
                 LaunchIo {
-                    stdin: Some(Box::new(Lines {
-                        lines,
-                        pending: Vec::new(),
-                    })),
+                    stdin: None,
                     stdout: &mut out,
                     stderr: &mut err,
                     started: &mut |_| {},
@@ -409,26 +137,19 @@ impl Session {
                 },
             );
             ending.store(true, Ordering::SeqCst);
-            life.ended(match result {
-                Ok(status) => format!("its session exited ({})", status.shell_code()),
-                Err(error) => format!("its session ended: {error}"),
-            });
+            let ended = match result {
+                Ok(status) => format!("the VM's daemon exited ({})\n", status.shell_code()),
+                Err(error) => format!("the VM's daemon ended: {error}\n"),
+            };
+            let _ = err.write_all(ended.as_bytes());
         });
         let signals = told
             .recv_timeout(READY_PATIENCE)
             .map_err(|_| SessionError::Silent(READY_PATIENCE))?;
         Ok(Self {
             signals: Some(signals),
-            input: Some(input),
             ended,
         })
-    }
-
-    fn tell(&self, line: &str) -> Result<(), String> {
-        self.input
-            .as_ref()
-            .and_then(|input| input.send(line.trim_end().to_owned()).ok())
-            .ok_or_else(|| "the session reads no more input".to_owned())
     }
 
     fn signal(&self, signal: Signal) {
@@ -453,75 +174,55 @@ impl Drop for Session {
     }
 }
 
-/// A session's stdin, fed a line at a time.
-struct Lines {
-    lines: mpsc::Receiver<String>,
-    pending: Vec<u8>,
-}
-
-impl Read for Lines {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        while self.pending.is_empty() {
-            match self.lines.recv() {
-                Ok(line) => {
-                    self.pending = line.into_bytes();
-                    self.pending.push(b'\n');
-                }
-                // Nothing more to hand it: its stdin closes.
-                Err(_) => return Ok(0),
-            }
-        }
-        let read = buf.len().min(self.pending.len());
-        if let (Some(into), Some(from)) = (buf.get_mut(..read), self.pending.get(..read)) {
-            into.copy_from_slice(from);
-        }
-        self.pending.drain(..read);
-        Ok(read)
+/// Run the daemon's entry with `args` in the guest `link` reaches, as a command that ends: what it
+/// printed, once it exited with success.
+fn run_entry(link: &AgentLink, args: &[&str], log: &Path) -> Result<Vec<u8>, String> {
+    let stream = link
+        .connect(AGENT_PORT)
+        .map_err(|error| error.to_string())?;
+    let launch = Launch {
+        argv: std::iter::once(DAEMON)
+            .chain(args.iter().copied())
+            .map(str::to_owned)
+            .collect(),
+        cwd: None,
+        env: Vec::new(),
+        stdio: Stdio::Pump,
+        display: Display::None,
+    };
+    let (mut out, mut err) = (Vec::new(), Log::new(log));
+    let status = client::launch(
+        stream,
+        &launch,
+        LaunchIo {
+            stdin: None,
+            stdout: &mut out,
+            stderr: &mut err,
+            started: &mut |_| {},
+        },
+        |_| {},
+    )
+    .map_err(|error| error.to_string())?;
+    match status.shell_code() {
+        0 => Ok(out),
+        code => Err(format!("{DAEMON} {} exited ({code})", args.join(" "))),
     }
 }
 
-struct Reporter {
-    log: Log,
-    line: Vec<u8>,
-    life: Arc<Life>,
-    now: super::vm::Clock,
-}
-
-impl Reporter {
-    fn new(path: &std::path::Path, life: Arc<Life>, now: super::vm::Clock) -> Self {
-        Self {
-            log: Log::new(path),
-            line: Vec::new(),
-            life,
-            now,
-        }
+/// The device a `--device` answer names, once a person's certificate names it: the daemon has
+/// logged in.
+fn logged_in(answer: &[u8]) -> Option<[u8; 32]> {
+    #[derive(serde::Deserialize)]
+    struct Device {
+        device: String,
+        #[serde(default)]
+        people: Vec<String>,
     }
-
-    fn take_line(&mut self) {
-        let line = String::from_utf8_lossy(&self.line).into_owned();
-        self.line.clear();
-        if let Some(report) = Report::parse(&line) {
-            self.life.report(report, (self.now)());
-        }
+    let device: Device = serde_json::from_slice(answer).ok()?;
+    if device.people.is_empty() {
+        return None;
     }
-}
-
-impl Write for Reporter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.log.write_all(buf)?;
-        for byte in buf {
-            if *byte == b'\n' {
-                self.take_line();
-            } else if self.line.len() < 4096 {
-                self.line.push(*byte);
-            }
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.log.flush()
-    }
+    hex::decode(device.device).ok()?.try_into().ok()
 }
 
 struct Log {
@@ -529,7 +230,7 @@ struct Log {
 }
 
 impl Log {
-    fn new(path: &std::path::Path) -> Self {
+    fn new(path: &Path) -> Self {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -558,152 +259,177 @@ impl Write for Log {
     }
 }
 
-/// What starts the session in a workspace's VM, once the workspace's material
-/// is handed to it.
+/// What starts and asks the daemon in a workspace's VM.
 pub trait Starts: Send + Sync {
-    /// Start the session with `material` as the first line of its input.
+    /// Start the daemon, logging in with `ticket`.
     ///
     /// # Errors
     ///
-    /// Why no session started: the guest agent refused it, or did not answer.
-    fn start(&self, material: &str) -> Result<Session, SessionError>;
+    /// Why it did not start: the guest agent refused it, or did not answer.
+    fn start(&self, ticket: &str) -> Result<Session, SessionError>;
+
+    /// The device the daemon logged in as, once it has.
+    ///
+    /// # Errors
+    ///
+    /// The guest could not be asked.
+    fn device(&self) -> Result<Option<[u8; 32]>, String>;
+
+    /// Name `store` as where Browser keeps its profile between runs.
+    ///
+    /// # Errors
+    ///
+    /// The guest could not be told.
+    fn keep_store(&self, store: &Path) -> Result<(), String>;
 }
 
 pub struct Launcher {
     link: AgentLink,
-    kind: Kind,
-    /// Where the session keeps its profile, when the workspace keeps one.
-    store: Option<PathBuf>,
-    life: Arc<Life>,
     log: PathBuf,
-    clock: super::vm::Clock,
 }
 
 impl Launcher {
     #[must_use]
-    pub fn new(
-        link: AgentLink,
-        kind: Kind,
-        store: Option<PathBuf>,
-        life: Arc<Life>,
-        log: PathBuf,
-        clock: super::vm::Clock,
-    ) -> Self {
-        Self {
-            link,
-            kind,
-            store,
-            life,
-            log,
-            clock,
-        }
+    pub const fn new(link: AgentLink, log: PathBuf) -> Self {
+        Self { link, log }
     }
 }
 
 impl Starts for Launcher {
-    fn start(&self, material: &str) -> Result<Session, SessionError> {
-        Session::start(
-            &self.link,
-            self.kind,
-            material,
-            self.store.as_deref(),
-            Arc::clone(&self.life),
-            self.log.clone(),
-            Arc::clone(&self.clock),
-        )
+    fn start(&self, ticket: &str) -> Result<Session, SessionError> {
+        Session::start(&self.link, ticket, self.log.clone())
+    }
+
+    fn device(&self) -> Result<Option<[u8; 32]>, String> {
+        // Before the daemon made its key there is no device to read yet.
+        Ok(run_entry(&self.link, &["--device"], &self.log)
+            .ok()
+            .and_then(|answer| logged_in(&answer)))
+    }
+
+    fn keep_store(&self, store: &Path) -> Result<(), String> {
+        let store = store.to_string_lossy();
+        run_entry(&self.link, &["--browser-store", &store], &self.log).map(drop)
     }
 }
 
-/// A workspace's browser session as the host holds it: its life, what starts
-/// it, and the session once the workspace's material was handed to it.
-pub struct Browser {
-    life: Arc<Life>,
-    launcher: Mutex<Option<Box<dyn Starts>>>,
+/// A workspace VM's daemon as the host holds it: what starts it, the process once it was started,
+/// and the device it logged in as.
+pub struct Daemon {
+    launcher: Option<Box<dyn Starts>>,
     session: Mutex<Option<Session>>,
+    device: Mutex<Option<[u8; 32]>>,
+    /// Held while one open starts it, so a second waits for that one.
+    opening: Mutex<()>,
 }
 
-impl fmt::Debug for Browser {
+impl fmt::Debug for Daemon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Browser")
-            .field("up", &self.life.up())
-            .field("session", &lock(&self.session).is_some())
+        f.debug_struct("Daemon")
+            .field("alive", &self.alive())
+            .field("device", &lock(&self.device).map(hex::encode))
             .finish_non_exhaustive()
     }
 }
 
-impl Browser {
-    /// A session that cannot start: its VM's agent was never reached.
+impl Daemon {
+    /// A daemon that cannot start: its VM's agent was never reached.
     #[must_use]
-    pub fn new(started_ms: u64) -> Self {
+    pub const fn new() -> Self {
         Self {
-            life: Arc::new(Life::new(started_ms)),
-            launcher: Mutex::new(None),
+            launcher: None,
             session: Mutex::new(None),
+            device: Mutex::new(None),
+            opening: Mutex::new(()),
         }
     }
 
     #[must_use]
-    pub fn booted(life: Arc<Life>, starts: Box<dyn Starts>) -> Self {
+    pub fn booted(starts: Box<dyn Starts>) -> Self {
         Self {
-            life,
-            launcher: Mutex::new(Some(starts)),
-            session: Mutex::new(None),
+            launcher: Some(starts),
+            ..Self::new()
         }
     }
 
+    /// Whether its process runs: what keeps its VM awake between the commands run in it.
     #[must_use]
-    pub fn life(&self) -> &Arc<Life> {
-        &self.life
+    pub fn alive(&self) -> bool {
+        lock(&self.session)
+            .as_ref()
+            .is_some_and(|session| !session.ended())
     }
 
-    /// Hand the session `material` and wait until it reports it is up; the session starts here,
-    /// with the material as the first line of its input. `None` when it was already up.
-    pub fn open(&self, material: &str, patience: Duration) -> Result<Option<u64>, String> {
-        if !self.life.begin_opening() {
-            self.life.wait_up(patience)?;
-            return Ok(None);
-        }
-        let started = Instant::now();
-        let handed = match lock(&self.launcher).as_ref() {
-            Some(starts) => starts.start(material).map_err(|error| error.to_string()),
-            None => Err("the workspace's VM has no browser session".to_owned()),
-        };
-        match handed {
-            Ok(session) => *lock(&self.session) = Some(session),
-            Err(error) => {
-                // It is at its end, and the next open starts a fresh one.
-                self.life.ended(error.clone());
-                return Err(error);
-            }
-        }
-        if let Err(error) = self.life.wait_up(patience) {
-            self.life.ended(error.clone());
-            return Err(error);
-        }
-        Ok(Some(
-            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        ))
-    }
-
-    /// Tell the running session `line` on its standard input: what an apps session is asked to
-    /// start, after it was handed its workspace.
+    /// The daemon logged in with `material`'s ticket, started here when it does not run, with
+    /// `store` named as Browser's: the device it logged in as, and how long starting it took
+    /// when this call started it.
     ///
     /// # Errors
     ///
-    /// No session runs, or it reads no more input.
-    pub fn tell(&self, line: &str) -> Result<(), String> {
-        lock(&self.session)
+    /// It could not be started, did not log in within `patience`, or the store was not named.
+    pub fn open(
+        &self,
+        material: &Material,
+        store: Option<&Path>,
+        patience: Duration,
+    ) -> Result<(Option<u64>, [u8; 32]), String> {
+        let _opening = lock(&self.opening);
+        let starts = self
+            .launcher
             .as_ref()
-            .ok_or_else(|| "the workspace's VM runs no such session".to_owned())?
-            .tell(line)
+            .ok_or_else(|| "the workspace's VM has no daemon".to_owned())?;
+        let running = self.alive().then(|| *lock(&self.device)).flatten();
+        let (started, device) = if let Some(device) = running {
+            (None, device)
+        } else {
+            let began = Instant::now();
+            let session = starts
+                .start(&material.ticket.encode())
+                .map_err(|error| error.to_string())?;
+            *lock(&self.session) = Some(session);
+            let device = loop {
+                match starts.device() {
+                    Ok(Some(device)) => break device,
+                    Ok(None) if self.alive() && began.elapsed() < patience => {
+                        std::thread::sleep(LOGIN_LOOK);
+                    }
+                    Ok(None) if self.alive() => {
+                        self.kill();
+                        return Err(format!(
+                            "the VM's daemon did not log in within {patience:?}"
+                        ));
+                    }
+                    Ok(None) => return Err("the VM's daemon ended before it logged in".into()),
+                    Err(error) => {
+                        self.kill();
+                        return Err(error);
+                    }
+                }
+            };
+            *lock(&self.device) = Some(device);
+            let took = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+            (Some(took), device)
+        };
+        if let Some(store) = store {
+            starts.keep_store(store)?;
+        }
+        Ok((started, device))
     }
 
-    /// End the session in the guest: asked with `SIGTERM`, so Chromium writes its profile to the
-    /// VM's disk, and killed when it has not ended within `grace`.
+    fn kill(&self) {
+        let session = lock(&self.session).take();
+        if let Some(session) = session {
+            session.kill();
+        }
+        *lock(&self.device) = None;
+    }
+
+    /// End the daemon in the guest: asked with `SIGTERM`, so its sessions end and Browser writes its
+    /// profile to the VM's disk, and killed when it has not ended within `grace`.
     pub fn end(&self, grace: Duration) {
         let session = lock(&self.session).take();
+        *lock(&self.device) = None;
         let Some(session) = session else {
-            self.life.ended("its VM stopped".to_owned());
             return;
         };
         session.signal(Signal::Terminate);
@@ -713,24 +439,21 @@ impl Browser {
         }
         session.kill();
     }
+}
 
-    #[must_use]
-    pub fn expired(&self, now_ms: u64, limits: Limits) -> Option<End> {
-        self.life.expired(now_ms, limits)
+impl Default for Daemon {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const LIMITS: Limits = Limits {
-        idle_stop: Duration::from_secs(600),
-        lifetime: Duration::from_secs(7_200),
-    };
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
-    fn the_line_handed_to_a_session_keeps_the_servers_id_and_its_dialable_address() {
+    fn the_ticket_handed_to_a_daemon_names_the_host_at_its_dialable_address() {
         let handed = hand_off(
             &test_material("203.0.113.9:7704"),
             Endpoint {
@@ -739,19 +462,20 @@ mod tests {
             },
         )
         .unwrap();
-        let line: Material = serde_json::from_str(&handed).unwrap();
-        assert_eq!(line.server.id, test_server_id(), "the same server");
         assert_eq!(
-            line.server.addrs,
-            [TransportAddr::Ip("10.0.2.4:7704".parse().unwrap())]
-                .into_iter()
-                .collect(),
+            handed.ticket.issuer.endpoint,
+            test_server_id(),
+            "the same host"
+        );
+        assert_eq!(
+            handed.ticket.issuer.direct,
+            ["10.0.2.4:7704".parse().unwrap()],
             "at the one address this VM dials"
         );
-        assert_eq!(line.workspace, "ws1");
-        assert_eq!(line.record, "browser-1");
-        assert_eq!(line.device.device_label, "Browser");
-        assert_eq!(line.account, "acct-1");
+        assert_eq!(handed.ticket.issuer.relay, None);
+        assert_eq!(handed.ticket.secret, [3; 32], "the ticket's own secret");
+        assert_eq!(handed.workspace, "ws1");
+        assert_eq!(handed.record, "browser-1");
         for wrong in ["{}", r#"{"relay": "an address"}"#, "not json"] {
             assert!(
                 hand_off(
@@ -768,229 +492,116 @@ mod tests {
     }
 
     #[test]
-    fn a_session_reports_ready_up_and_use() {
-        let life = Life::new(1_000);
-        assert!(
-            life.alive(),
-            "a session that started and has not ended is alive: it keeps its VM awake"
-        );
-        assert!(!life.ready() && life.expired(1_000, LIMITS).is_none());
-        life.report(Report::Ready, 2_000);
-        life.report(Report::Used, 3_000);
-        assert!(life.ready());
-        assert!(!life.up(), "not up until its window is");
+    fn a_daemon_has_logged_in_once_a_persons_certificate_names_its_device() {
+        let device = hex::encode([9_u8; 32]);
         assert_eq!(
-            life.expired(8_000_000, LIMITS),
-            Some(End::Lifetime),
-            "a session that never came up still ends when its lifetime is up"
+            logged_in(format!(r#"{{"device":"{device}","people":["ab"]}}"#).as_bytes()),
+            Some([9; 32])
         );
-        life.report(
-            Report::Up {
-                provider: "42".into(),
-            },
-            5_000,
-        );
-        assert!(life.up());
-        assert_eq!(life.provider().as_deref(), Some("42"));
-        assert_eq!(life.expired(4_000, LIMITS), None);
-        assert_eq!(life.expired(604_999, LIMITS), None);
-        assert_eq!(life.expired(605_000, LIMITS), Some(End::Idle));
-        life.report(Report::Used, 700_000);
-        assert_eq!(life.expired(1_200_000, LIMITS), None, "use resets it");
-        life.ended("its session exited (1)".into());
-        assert!(!life.alive(), "an ended session is no reason to keep a VM");
-        assert_eq!(life.expired(1_200_000, LIMITS), Some(End::Session));
-        assert_eq!(
-            life.ended_because().as_deref(),
-            Some("its session exited (1)")
-        );
-    }
-
-    struct FakeGuest {
-        told: Mutex<Option<mpsc::Sender<String>>>,
-        input: Option<mpsc::Sender<String>>,
-        life: Arc<Life>,
-        up: bool,
-    }
-
-    impl Starts for FakeGuest {
-        fn start(&self, material: &str) -> Result<Session, SessionError> {
-            let told = lock(&self.told).take();
-            if let Some(told) = told {
-                let _ = told.send(material.to_owned());
-            }
-            if self.up {
-                let life = Arc::clone(&self.life);
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(30));
-                    life.report(Report::Ready, 2_500);
-                    life.report(
-                        Report::Up {
-                            provider: "42".into(),
-                        },
-                        3_000,
-                    );
-                });
-            }
-            Ok(Session {
-                signals: None,
-                input: self.input.clone(),
-                ended: Arc::new(AtomicBool::new(false)),
-            })
+        for not_yet in [
+            format!(r#"{{"device":"{device}","people":[]}}"#),
+            format!(r#"{{"device":"{device}"}}"#),
+            r#"{"device":"nothex","people":["ab"]}"#.to_owned(),
+            String::new(),
+        ] {
+            assert_eq!(logged_in(not_yet.as_bytes()), None, "{not_yet}");
         }
     }
 
-    #[test]
-    fn one_hand_off_starts_the_session_with_the_material_and_the_second_attaches() {
-        let life = Arc::new(Life::new(1_000));
-        let (told, handed) = mpsc::channel();
-        let browser = Arc::new(Browser::booted(
-            Arc::clone(&life),
-            Box::new(FakeGuest {
-                told: Mutex::new(Some(told)),
-                input: None,
-                life: Arc::clone(&life),
-                up: true,
-            }),
-        ));
-        let opening = {
-            let browser = Arc::clone(&browser);
-            std::thread::spawn(move || browser.open("{\"workspace\":\"ws1\"}", UP_PATIENCE))
-        };
-        assert_eq!(
-            handed.recv_timeout(Duration::from_secs(10)).unwrap(),
-            "{\"workspace\":\"ws1\"}",
-            "the session starts with the material as its first line"
-        );
-        let attaching = {
-            let browser = Arc::clone(&browser);
-            std::thread::spawn(move || browser.open("{\"workspace\":\"ws1\"}", UP_PATIENCE))
-        };
-        let opened = opening.join().unwrap().unwrap();
-        assert!(
-            opened.is_some(),
-            "this request started the session and handed it the workspace"
-        );
-        assert_eq!(
-            life.provider().as_deref(),
-            Some("42"),
-            "the window it holds is what the provider names"
-        );
-        assert_eq!(attaching.join().unwrap(), Ok(None), "this one attached");
-        assert!(
-            handed.try_recv().is_err(),
-            "the material is handed once, never again"
-        );
-        assert_eq!(
-            browser.open("{\"workspace\":\"ws1\"}", Duration::from_millis(1)),
-            Ok(None)
-        );
-        assert_eq!(browser.life().expired(3_100, LIMITS), None);
+    /// A guest whose daemon logs in after `logs_in_after` looks.
+    struct FakeGuest {
+        tickets: Arc<Mutex<Vec<String>>>,
+        looks: AtomicUsize,
+        logs_in_after: usize,
+        stores: Arc<Mutex<Vec<PathBuf>>>,
     }
 
-    /// A Linux apps session is handed its workspace once, and each app after that is a line of its
-    /// input, to the session already running.
-    #[test]
-    fn an_apps_session_is_told_each_app_after_its_material() {
-        let life = Arc::new(Life::new(1_000));
-        let (told, handed) = mpsc::channel();
-        let (input, lines) = mpsc::channel();
-        let apps = Browser::booted(
-            Arc::clone(&life),
-            Box::new(FakeGuest {
-                told: Mutex::new(Some(told)),
-                input: Some(input),
-                life: Arc::clone(&life),
-                up: true,
-            }),
-        );
-        assert!(
-            apps.tell("{}").is_err(),
-            "nothing is told a session that was never started"
-        );
-        assert!(
-            apps.open("{\"workspace\":\"ws1\"}", UP_PATIENCE)
-                .unwrap()
-                .is_some()
-        );
-        apps.tell("{\"desktop_id\":\"xterm\"}\n").unwrap();
-        apps.tell("{\"desktop_id\":\"org.gnome.TextEditor\"}")
-            .unwrap();
-        assert_eq!(handed.try_recv().unwrap(), "{\"workspace\":\"ws1\"}");
-        assert_eq!(
-            lines.try_iter().collect::<Vec<_>>(),
-            [
-                "{\"desktop_id\":\"xterm\"}",
-                "{\"desktop_id\":\"org.gnome.TextEditor\"}"
-            ],
-            "each app is one line, after the material"
-        );
-        assert_eq!(Kind::Apps.entry(), APPS_SESSION);
-        assert_ne!(Kind::Apps.mark(), Kind::Browser.mark());
+    impl Starts for FakeGuest {
+        fn start(&self, ticket: &str) -> Result<Session, SessionError> {
+            lock(&self.tickets).push(ticket.to_owned());
+            Ok(Session {
+                signals: None,
+                ended: Arc::new(AtomicBool::new(false)),
+            })
+        }
+
+        fn device(&self) -> Result<Option<[u8; 32]>, String> {
+            let looked = self.looks.fetch_add(1, Ordering::SeqCst);
+            Ok((looked >= self.logs_in_after).then_some([5; 32]))
+        }
+
+        fn keep_store(&self, store: &Path) -> Result<(), String> {
+            lock(&self.stores).push(store.to_owned());
+            Ok(())
+        }
     }
 
-    /// A session that never comes up is at its end, so the next open starts a fresh one instead of
-    /// waiting for a wedged one.
+    /// What the fake guest was handed: the tickets it started with, and the stores it was named.
+    type Handed<T> = Arc<Mutex<Vec<T>>>;
+
+    fn guest(logs_in_after: usize) -> (Daemon, Handed<String>, Handed<PathBuf>) {
+        let tickets: Arc<Mutex<Vec<String>>> = Arc::default();
+        let stores: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let daemon = Daemon::booted(Box::new(FakeGuest {
+            tickets: Arc::clone(&tickets),
+            looks: AtomicUsize::new(0),
+            logs_in_after,
+            stores: Arc::clone(&stores),
+        }));
+        (daemon, tickets, stores)
+    }
+
+    /// The first open starts the daemon with the ticket and waits for it to log in; the next finds
+    /// it running and names Browser's store, and the ticket is handed once.
     #[test]
-    fn a_session_that_never_reports_up_is_at_its_end() {
-        let life = Arc::new(Life::new(1_000));
-        let browser = Browser::booted(
-            Arc::clone(&life),
-            Box::new(FakeGuest {
-                told: Mutex::new(None),
-                input: None,
-                life: Arc::clone(&life),
-                up: false,
-            }),
+    fn one_open_starts_the_daemon_with_its_ticket_and_the_next_finds_it() {
+        let (daemon, tickets, stores) = guest(2);
+        let material: Material = serde_json::from_str(&test_material("10.0.2.2:7704")).unwrap();
+        assert!(!daemon.alive());
+        let (started, device) = daemon.open(&material, None, UP_PATIENCE).unwrap();
+        assert!(started.is_some(), "this open started it");
+        assert_eq!(device, [5; 32], "the device it logged in as");
+        assert!(daemon.alive(), "a daemon that runs keeps its VM awake");
+        assert_eq!(*lock(&tickets), [material.ticket.encode()]);
+        let store = Path::new("/workspace/.browser");
+        assert_eq!(
+            daemon.open(&material, Some(store), UP_PATIENCE).unwrap(),
+            (None, [5; 32]),
+            "the second finds it running"
         );
-        let error = browser
-            .open("{}", Duration::from_millis(20))
-            .expect_err("nothing came up");
-        assert!(error.contains("up"), "{error}");
-        assert_eq!(life.expired(1_100, LIMITS), Some(End::Session));
+        assert_eq!(lock(&tickets).len(), 1, "the ticket is spent once");
+        assert_eq!(*lock(&stores), [store.to_owned()]);
+        daemon.end(Duration::from_millis(1));
+        assert!(!daemon.alive(), "an ended daemon is no reason to keep a VM");
+    }
+
+    /// A daemon that does not log in in time is ended, so the next open starts a fresh one.
+    #[test]
+    fn a_daemon_that_never_logs_in_is_ended() {
+        let (daemon, tickets, _) = guest(usize::MAX);
+        let material: Material = serde_json::from_str(&test_material("10.0.2.2:7704")).unwrap();
+        let error = daemon
+            .open(&material, None, Duration::from_millis(20))
+            .expect_err("it never logged in");
+        assert!(error.contains("log in"), "{error}");
+        assert!(!daemon.alive());
+        assert!(
+            daemon
+                .open(&material, None, Duration::from_millis(1))
+                .is_err()
+        );
+        assert_eq!(lock(&tickets).len(), 2, "each open started a fresh one");
     }
 
     #[test]
-    fn a_vm_whose_agent_was_never_reached_starts_no_session() {
-        let browser = Browser::new(1_000);
+    fn a_vm_whose_agent_was_never_reached_starts_no_daemon() {
+        let material: Material = serde_json::from_str(&test_material("10.0.2.2:7704")).unwrap();
         assert_eq!(
-            browser
-                .open("{}", Duration::from_millis(1))
+            Daemon::new()
+                .open(&material, None, Duration::from_millis(1))
                 .err()
                 .as_deref(),
-            Some("the workspace's VM has no browser session")
+            Some("the workspace's VM has no daemon")
         );
-        assert_eq!(
-            browser.life().expired(1_100, LIMITS),
-            Some(End::Session),
-            "and it is ended, so the next open starts a fresh one"
-        );
-    }
-
-    #[test]
-    fn a_session_reports_on_the_lines_it_prints() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("session.log");
-        let life = Arc::new(Life::new(0));
-        let clock: crate::hosted::vm::Clock = Arc::new(|| 7_000);
-        let mut reporter = Reporter::new(&log, Arc::clone(&life), clock);
-        reporter.write_all(b"booting\nrea").unwrap();
-        assert!(!life.ready());
-        reporter.write_all(b"dy\nup 42\nsomething else\n").unwrap();
-        reporter.flush().unwrap();
-        assert!(life.ready() && life.up());
-        assert_eq!(life.provider().as_deref(), Some("42"));
-        assert!(
-            std::fs::read_to_string(&log)
-                .unwrap()
-                .contains("booting\nready\nup 42\n"),
-            "everything it printed is its log"
-        );
-        let life = Arc::new(Life::new(0));
-        let mut reporter = Reporter::new(&log, life, Arc::new(|| 7_000));
-        reporter.write_all(b"notup\nused\n").unwrap();
-        assert!(!reporter.life.up(), "`notup` is not `up`");
-        assert_eq!(reporter.life.provider(), None, "and names no window");
-        assert_eq!(reporter.life.expired(0, LIMITS), None);
     }
 }

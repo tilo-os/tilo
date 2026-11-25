@@ -739,7 +739,10 @@ async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::tes
         .clone();
     assert_eq!(
         answered_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("scribe")),
+        Some(&tilo_action_policy::MemberId::agent(
+            "scribe",
+            hex::encode(root.verifying_key().to_bytes())
+        )),
         "the agent is the agent, never its person"
     );
     assert_eq!(
@@ -828,7 +831,10 @@ async fn an_agents_key_the_workspace_lists_is_bound_to_it() {
         .expect("the agent's request reached the dispatcher");
     assert_eq!(
         answered_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("scribe")),
+        Some(&tilo_action_policy::MemberId::agent(
+            "scribe",
+            hex::encode(root.verifying_key().to_bytes())
+        )),
         "the agent acts as itself"
     );
     assert!(
@@ -1976,7 +1982,10 @@ async fn agent_call_runs_as_the_agent(
     let ran_as = dispatcher.callers().pop().unwrap();
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("scribe")),
+        Some(&tilo_action_policy::MemberId::agent(
+            "scribe",
+            hex::encode(helper.1.user_public_key)
+        )),
         "the call runs as the agent, never as the device that brought it"
     );
     assert_eq!(

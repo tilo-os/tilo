@@ -488,7 +488,7 @@ fn records(device: &Daemon) -> DeviceRecords {
             Ok(link),
             tilo_rt::app().handle().clone(),
         ),
-        workspace.to_string(),
+        tilo_session_client::device_records::Place::Own(workspace.to_string()),
     )
 }
 

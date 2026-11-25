@@ -1042,7 +1042,7 @@ pub fn person(id: &str) -> Actor {
 /// The agent `id`.
 #[allow(dead_code, reason = "not every test target names agents")]
 pub fn agent(id: &str) -> Actor {
-    tilolang_runtime::ids::MemberId::agent(id).into()
+    tilolang_runtime::ids::MemberId::agent(id, "ada").into()
 }
 
 /// The notices a run raised, kept for a test to read: what the desktop's notifications would

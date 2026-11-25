@@ -139,7 +139,7 @@ fn two_replicas_checking_one_item_at_once_both_leave_it_checked() {
 fn an_agent_passing_done_explicitly_wins() {
     let (ada, _, meta, item) = workspace();
     let agent = Caller {
-        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1", "ada").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
         handed: false,
@@ -158,7 +158,7 @@ fn an_agent_passing_done_explicitly_wins() {
     assert_eq!(
         unchecked.authorship.invoker,
         Some(tilolang_tilo::runtime::Actor::from(
-            tilolang_tilo::runtime::ids::MemberId::agent("task-1")
+            tilolang_tilo::runtime::ids::MemberId::agent("task-1", "ada")
         ))
     );
     carried(

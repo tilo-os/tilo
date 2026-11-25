@@ -15,16 +15,19 @@ impl AppBrokerState {
         workspace: &str,
     ) -> Option<Result<crate::apps::services::GoingSession, String>> {
         let acting = caller?.acting();
-        let (session, agent) = acting.agent_session.as_ref().zip(acting.agent_id())?;
+        let (session, agent) = acting
+            .agent_session
+            .as_ref()
+            .zip(acting.member_id().filter(|member| member.is_agent()))?;
         Some(self.turn_session_goes(workspace, agent, session.as_str()))
     }
 
     /// The session `session` of `agent`, while it answers a turn in `workspace`: the workspace
-    /// lists the agent, and the turn goes.
+    /// lists the agent, of its person, and the turn goes.
     pub(super) fn turn_session_goes(
         &self,
         workspace: &str,
-        agent: &str,
+        agent: &tilo_action_policy::MemberId,
         session: &str,
     ) -> Result<crate::apps::services::GoingSession, String> {
         self.services
@@ -33,12 +36,12 @@ impl AppBrokerState {
             .ok_or("this host reads no workspace's agents")?
             .lists(workspace, agent)
             .then_some(())
-            .ok_or_else(|| format!("the workspace lists no agent {agent}"))?;
+            .ok_or_else(|| format!("the workspace lists no agent {}", agent.id()))?;
         self.services
             .agent_sessions
             .as_deref()
             .ok_or("this host serves no agent sessions")?
-            .going(workspace, agent, session)
+            .going(workspace, agent.id(), session)
             .ok_or_else(|| "the turn the agent answers is over".to_owned())
     }
 
@@ -107,7 +110,10 @@ pub(super) fn admit_listed_agent(
             "the agent {agent_id} runs only on a member's own device, not on one the workspace caps"
         ));
     }
-    if !roster.lists(workspace, agent_id) {
+    // The agent the device's person runs: the record names it for them, not another person's
+    // agent of the same id.
+    let agent = tilo_action_policy::MemberId::agent(agent_id, admitted.actor_key.clone());
+    if !roster.lists(workspace, &agent) {
         return Err(format!("the workspace keeps no active agent {agent_id}"));
     }
     admitted.role = roles::agent_policy::role(admitted.role);

@@ -1,11 +1,8 @@
 //! Display intent an app's Settings pane asks of the session that owns the displays.
 //! The app supplies intent and the output set it observed; this session owns prior state,
-//! transaction identity and persistence, and the compositor keeps KMS. A request that changes
-//! anything is decided as the typed write of a device's setting is: the one decision on this
-//! device's display settings resource, which admits the device's own person from any of their
-//! devices and whoever that person granted there. A person who governs a workspace reaches another
-//! person's device only if they were granted it, and the device the request runs from decides
-//! nothing.
+//! transaction identity and persistence, and the compositor keeps KMS. Who may change them is
+//! decided by the device daemon's broker before the request reaches this seat: only this
+//! computer's own Settings changes its displays.
 
 use std::sync::Arc;
 
@@ -14,72 +11,31 @@ use settings_store::display_control::{DisplayCommand, MAX_DISPLAY_CONTROL_BYTES}
 use settings_store::hardware::DisplayHardwareSnapshot;
 use tilo_workspace_service::apps::services::DisplayControlServices;
 
-/// Whether `person`, asking from the device `calling`, may write this computer's displays in
-/// `workspace`: the one decision on the device's settings resource.
-type Admitted = dyn Fn(&str, &str, [u8; 32]) -> Result<bool, String> + Send + Sync;
-
 /// The displays' state as the compositor published it.
 type Observed = dyn Fn() -> Option<DisplayHardwareSnapshot> + Send + Sync;
 
 /// The session's display service over its own settings document and the shell it shows.
 pub(crate) struct DisplayControl {
     source: Arc<dyn SettingsSource>,
-    admitted: Arc<Admitted>,
     observed: Arc<Observed>,
 }
 
 impl DisplayControl {
-    /// The session's own answer: the one decision, in this computer's person's own workspace, on
-    /// this device's display settings.
-    pub(crate) fn native(
-        source: Arc<dyn SettingsSource>,
-        shell: &Arc<crate::app_wire::LayoutAuthority>,
-    ) -> Self {
-        let governing = Arc::clone(shell);
+    /// The session's own answer, over the displays the compositor publishes.
+    pub(crate) fn native(source: Arc<dyn SettingsSource>) -> Self {
         Self {
             source,
-            admitted: Arc::new(move |workspace: &str, person: &str, _calling: [u8; 32]| {
-                // This computer's device and the person it belongs to here: the device whose
-                // settings a display change writes, and the workspace that keeps them. Who this
-                // device is decides nothing; nor does where the Settings worker runs.
-                let (_, certificate) = tilo_identity::trusted_device::current(workspace)
-                    .map_err(|error| error.to_string())?;
-                let own =
-                    tilo_action_policy::roles::person_workspace_id(&certificate.user_public_key);
-                let mut may = false;
-                use tilo_broker_core::services::WorkspaceAuthority as _;
-                governing.with_workspace(&own, &mut |held| {
-                    may = held.is_some_and(|held| {
-                        display_writable(&held.policy, person, certificate.device_public_key)
-                    });
-                })?;
-                Ok(may)
-            }),
             observed: Arc::new(DisplayHardwareSnapshot::load),
         }
     }
 
-    /// The answer to display intent from the private Settings worker `root` / `device` is on, in
-    /// `workspace`.
-    fn answer(
-        &self,
-        workspace: &str,
-        root: [u8; 32],
-        device: [u8; 32],
-        command: &[u8],
-    ) -> Result<Vec<u8>, String> {
+    /// The answer to display intent the daemon's broker admitted.
+    fn answer(&self, command: &[u8]) -> Result<Vec<u8>, String> {
         if command.len() > MAX_DISPLAY_CONTROL_BYTES {
             return Err("The display request exceeds its wire bound.".into());
         }
         let command: DisplayCommand =
             serde_json::from_slice(command).map_err(|_| "The display request is invalid.")?;
-        if !command.mutates() {
-            return self.execute(command);
-        }
-        let person = tilo_broker_core::person_id_for_root(root);
-        if !(self.admitted)(workspace, &person, device)? {
-            return Err("The current workspace policy does not permit display changes.".into());
-        }
         self.execute(command)
     }
 
@@ -99,42 +55,13 @@ impl DisplayControl {
     }
 }
 
-/// Whether `person` may write the displays of `device` in the workspace `policy` governs: the one
-/// decision at the device's settings resource
-/// ([`tilo_action_policy::roles::is_device_settings`]). A device's settings are its owner's, kept
-/// in their own workspace, so a person who governs another workspace reaches them only where that
-/// device's person granted it there.
-fn display_writable(
-    policy: &tilo_action_policy::WorkspacePolicy,
-    person: &str,
-    device: [u8; 32],
-) -> bool {
-    let address = settings_store::placement::address("display", None, &hex::encode(device));
-    let node = policy
-        .node()
-        .app(settings_store::workspace::APP)
-        .kind(address.kind)
-        .resource(address.id);
-    policy.answer_at(
-        person,
-        &node,
-        tilo_action_policy::ActionKind::Undoable,
-        tilo_clock::unix_now(),
-    ) == tilo_action_policy::Answer::Allow
-}
-
 impl DisplayControlServices for DisplayControl {
     fn command(
         &self,
-        context: &tilo_workspace_service::apps::services::DisplayControlContext,
+        _context: &tilo_workspace_service::apps::services::DisplayControlContext,
         command: &[u8],
     ) -> Result<Vec<u8>, String> {
-        self.answer(
-            context.workspace(),
-            context.root(),
-            context.device(),
-            command,
-        )
+        self.answer(command)
     }
 }
 
@@ -151,14 +78,6 @@ mod tests {
 
     use super::*;
 
-    const ROOT: [u8; 32] = [3; 32];
-    const DEVICE: [u8; 32] = [7; 32];
-    /// Another of this device's person's own devices.
-    const ELSEWHERE: [u8; 32] = [9; 32];
-    /// A person who governs a shared workspace and is not this device's person.
-    const OWNER: [u8; 32] = [4; 32];
-    /// A person this device's person granted its displays to.
-    const GUEST: [u8; 32] = [5; 32];
     const MODE: OutputMode = OutputMode {
         width: 1280,
         height: 720,
@@ -210,36 +129,10 @@ mod tests {
         }
     }
 
-    /// `root`'s person id, as the settings and the policy name them.
-    fn person(root: [u8; 32]) -> String {
-        tilo_broker_core::person_id_for_root(root)
-    }
-
-    /// The workspace whose only person is `root`'s: where that person's device settings are kept,
-    /// and where they are decided.
-    fn own_workspace(root: [u8; 32]) -> String {
-        tilo_action_policy::roles::person_workspace_id(&root)
-    }
-
-    /// This device's displays as the resource they are written as:
-    /// `settings/devices/<device>/settings/display` in `workspace`.
-    fn displays(workspace: &str) -> tilo_action_policy::TreePath {
-        let address = settings_store::placement::address("display", None, &hex::encode(DEVICE));
-        tilo_action_policy::TreePath::workspace(workspace)
-            .app(settings_store::workspace::APP)
-            .kind(address.kind)
-            .resource(address.id)
-    }
-
-    /// The session's display service, deciding as the session does: in this device's person's own
-    /// workspace, whatever workspace the request names.
-    fn control(policy: tilo_action_policy::WorkspacePolicy) -> DisplayControl {
-        let policy = Arc::new(policy);
+    /// The session's display service over a fresh settings document and one display.
+    fn control() -> DisplayControl {
         DisplayControl {
             source: document(),
-            admitted: Arc::new(move |_workspace: &str, person: &str, _calling: [u8; 32]| {
-                Ok(display_writable(&policy, person, DEVICE))
-            }),
             observed: Arc::new(|| Some(snapshot())),
         }
     }
@@ -265,18 +158,12 @@ mod tests {
         }
     }
 
-    fn asked(
-        control: &DisplayControl,
-        root: [u8; 32],
-        device: [u8; 32],
-        command: &DisplayCommand,
-    ) -> Result<Vec<u8>, String> {
-        let bytes = serde_json::to_vec(command).expect("a display request");
-        control.answer("the-workspace", root, device, &bytes)
+    fn asked(control: &DisplayControl, command: &DisplayCommand) -> Result<Vec<u8>, String> {
+        control.answer(&serde_json::to_vec(command).expect("a display request"))
     }
 
     tilo_test_env::scenario! {
-        fn a_settings_workers_display_request_is_read_admitted_and_bounded;
+        fn a_settings_workers_display_request_is_read_bounded_and_kept;
 
         phase a_settings_worker_reads_the_displays_it_stands_on;
         // Reading the displays needs nothing beyond the connection the broker admitted: the reply is
@@ -284,12 +171,7 @@ mod tests {
         {
             let reply: Value = serde_json::from_slice(
                 &asked(
-                    &control(tilo_action_policy::WorkspacePolicy::new(
-                        own_workspace(ROOT),
-                        person(ROOT),
-                    )),
-                    ROOT,
-                    DEVICE,
+                    &control(),
                     &DisplayCommand::Inspect,
                 )
                 .expect("the reply"),
@@ -303,74 +185,19 @@ mod tests {
             assert!(reply["transaction"].is_null(), "nothing was changed");
         }
 
-        phase a_display_change_is_admitted_for_this_devices_person_and_whoever_they_granted;
-        // The displays are this device's person's, written in their own workspace by them, from
-        // whichever of their devices they ask, or by someone they granted there. A person who
-        // governs a shared workspace reaches another person's device only if granted it.
-        {
-            let own = control(tilo_action_policy::WorkspacePolicy::new(
-                own_workspace(ROOT),
-                person(ROOT),
-            ));
-            asked(&own, ROOT, DEVICE, &larger_mode())
-                .expect("this device's person changes its displays");
-            asked(&own, ROOT, ELSEWHERE, &larger_mode())
-                .expect("and from another of their devices: where the request runs decides nothing");
-
-            // Governing a shared workspace says nothing about a device that is not theirs.
-            let mut shared =
-                tilo_action_policy::WorkspacePolicy::new("the-shared-workspace", person(OWNER));
-            shared.add_member(person(ROOT), tilo_action_policy::Role::Editor);
-            assert!(
-                !display_writable(&shared, &person(OWNER), DEVICE),
-                "a workspace's owner writes no other person's device"
-            );
-            assert_eq!(
-                asked(&own, OWNER, DEVICE, &larger_mode())
-                    .expect_err("a governing person changes another person's device nothing"),
-                "The current workspace policy does not permit display changes."
-            );
-            assert!(
-                asked(&own, GUEST, DEVICE, &larger_mode()).is_err(),
-                "nor does a stranger the person granted nothing"
-            );
-
-            // Someone this device's person granted its displays to may change them.
-            let mut granted = tilo_action_policy::WorkspacePolicy::new(
-                own_workspace(ROOT),
-                person(ROOT),
-            );
-            granted.grant(tilo_action_policy::Grant::new(
-                "displays-for-a-guest",
-                tilo_action_policy::Grantee::person(person(GUEST)),
-                displays(&own_workspace(ROOT)),
-                tilo_action_policy::KindSet::UNDOABLE,
-                tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Grantee::person(person(ROOT)),
-            ));
-            asked(&control(granted), GUEST, DEVICE, &larger_mode())
-                .expect("someone the person granted changes the displays");
-        }
-
         phase a_display_request_is_bounded_and_typed;
         // Intent that cannot be a display transaction is refused as such, never run as something else.
         {
-            let displays = control(tilo_action_policy::WorkspacePolicy::new(
-                own_workspace(ROOT),
-                person(ROOT),
-            ));
+            let displays = control();
             assert_eq!(
                 displays
-                    .answer("the-workspace", ROOT, DEVICE, b"not json")
+                    .answer(b"not json")
                     .expect_err("invalid intent"),
                 "The display request is invalid."
             );
             assert_eq!(
                 displays
                     .answer(
-                        "the-workspace",
-                        ROOT,
-                        DEVICE,
                         &vec![b' '; MAX_DISPLAY_CONTROL_BYTES + 1],
                     )
                     .expect_err("oversized intent"),
@@ -378,13 +205,10 @@ mod tests {
             );
             let unavailable = DisplayControl {
                 observed: Arc::new(|| None),
-                ..control(tilo_action_policy::WorkspacePolicy::new(
-                    own_workspace(ROOT),
-                    person(ROOT),
-                ))
+                ..control()
             };
             assert_eq!(
-                asked(&unavailable, ROOT, DEVICE, &DisplayCommand::Inspect)
+                asked(&unavailable, &DisplayCommand::Inspect)
                     .expect_err("no compositor state to answer from"),
                 "The current compositor display state is unavailable."
             );
@@ -397,13 +221,10 @@ mod tests {
             let source = document();
             let displays = DisplayControl {
                 source: Arc::clone(&source),
-                ..control(tilo_action_policy::WorkspacePolicy::new(
-                    own_workspace(ROOT),
-                    person(ROOT),
-                ))
+                ..control()
             };
             let reply: Value = serde_json::from_slice(
-                &asked(&displays, ROOT, DEVICE, &larger_mode()).expect("the change is applied"),
+                &asked(&displays, &larger_mode()).expect("the change is applied"),
             )
             .expect("a display reply");
             let id = reply["transaction"]["id"]
@@ -421,8 +242,6 @@ mod tests {
 
             asked(
                 &displays,
-                ROOT,
-                DEVICE,
                 &DisplayCommand::Revert { transaction: id },
             )
             .expect("the change is reverted");

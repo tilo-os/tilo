@@ -94,7 +94,7 @@ fn fixture() -> Fixture {
     presence.set_display_name(keeper.clone(), "Ada Lovelace");
     presence.set_workspace_members([me, keeper]);
     // The workspace's agents resource names each to presence, as the page does.
-    presence.set_display_name(MemberId::agent(agent.clone()), "Planner");
+    presence.set_display_name(MemberId::agent(agent.clone(), person('3')), "Planner");
     // The page's host: a device that names a person the workspace never admitted.
     presence.set_display_name(host, "lounge workspace host");
     app.settle();
@@ -129,7 +129,7 @@ fn the_person_at_the_window_is_offered_after_a_reload() {
     let presence = app.harness().presence_mut();
     presence.set_self_member(me.clone(), "Jolly Hedgehog");
     presence.set_workspace_members([me]);
-    presence.set_display_name(MemberId::agent("planner"), "Planner");
+    presence.set_display_name(MemberId::agent("planner", person('1')), "Planner");
     app.settle();
     let shown = app.texts().join(" ");
     assert!(

@@ -311,7 +311,7 @@ fn agents_and_members_never_open_the_device_shell() {
         })
     };
     for actor in [
-        ui::tilo_actions::ActionInvoker::agent("helper"),
+        ui::tilo_actions::ActionInvoker::agent("helper", "ada"),
         ui::tilo_actions::ActionInvoker::person("0123abcd"),
     ] {
         let who = format!("{actor:?}");
@@ -327,7 +327,7 @@ fn agents_and_members_never_open_the_device_shell() {
 
     operate(
         &mut app,
-        ui::tilo_actions::ActionInvoker::agent("helper"),
+        ui::tilo_actions::ActionInvoker::agent("helper", "ada"),
         "environment:work",
     )
     .unwrap();
@@ -390,7 +390,7 @@ tilo_test_env::scenario! {
         widget.sync(&doc, &ROOT);
 
         let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::agent(
-            "helper",
+            "helper", "ada",
         ));
         widget
             .perform(crate::resource::TerminalEffect::OpenIn {
@@ -965,7 +965,7 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     );
     {
         let _scope = ui::invocation_scope::InvokerScope::enter(
-            ui::tilo_actions::ActionInvoker::agent("helper"),
+            ui::tilo_actions::ActionInvoker::agent("helper", "ada"),
         );
         let result = app
             .with_surface(|terminal: &mut crate::TerminalView| {

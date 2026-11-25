@@ -177,7 +177,7 @@ async fn no_agent_signs_in_on_its_own(
     assert_eq!(refusing.asked().len(), 2, "each asked its member");
     let person = hex::encode(ada.user_public_key);
     let nobodies = [
-        Caller::local_agent("assistant"),
+        Caller::local_agent("assistant", "ada"),
         Caller::local_app("so.tilo.chat").acting_for(person),
     ];
     for nobody in &nobodies {

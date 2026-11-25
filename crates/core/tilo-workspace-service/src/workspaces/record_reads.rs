@@ -503,6 +503,35 @@ impl RecordReads {
     ) -> Result<(), ActionCallError> {
         let now = tilo_clock::wall();
         let device = caller.device_public_key().copied();
+        // A placed device's caller reads the records its certificate names in its one workspace,
+        // decided by the certificate as its state link is, and nothing else: never as its person,
+        // and never as whoever is signed in here.
+        let placed = device.and_then(|device| state.placed_device(&device, now));
+        if caller.placed_records().is_some() || placed.is_some() {
+            let (Some(device), Some(Ok(placed))) = (device, placed) else {
+                return Err(refused());
+            };
+            let channel = crate::environment::document_channel(&address.app, &address.record);
+            let own_record = placed.records.reaches(&channel)
+                && caller
+                    .placed_records()
+                    .is_none_or(|named| named.reaches(&channel));
+            let own_workspace = state.workspace_id() == address.workspace
+                && caller
+                    .workspace()
+                    .is_none_or(|admitted| admitted == address.workspace);
+            if kind != ActionKind::Read
+                || address.app == KEY_GRANTS
+                || address.app == PRESENCE
+                || !own_record
+                || !own_workspace
+            {
+                return Err(refused());
+            }
+            return state
+                .check_document_read(device, &address.app, &address.record, now)
+                .map_err(|_| refused());
+        }
         if let Some(device) = device {
             Self::key_reaches(state, &device, &address.workspace, now)?;
         }
@@ -731,6 +760,21 @@ impl RecordReads {
             && self.broker().is_some()
         {
             return tilo_actions::remote::answer_read(self, caller, correlation, read).await;
+        }
+        // A device placed for records of one workspace keeps no copy of it: its host reads them,
+        // deciding the read as this device.
+        if let Some(reads) = self
+            .workspaces
+            .as_ref()
+            .and_then(WeakWorkspaces::upgrade)
+            .and_then(|workspaces| {
+                workspaces
+                    .providers()
+                    .host_answering_every(&address.workspace)
+            })
+            .and_then(|host| host.resource_reads())
+        {
+            return reads.answer_read(&caller, correlation, read).await;
         }
         if self.own(&caller, &address).await.is_some() {
             return tilo_actions::remote::answer_read(self, caller, correlation, read).await;

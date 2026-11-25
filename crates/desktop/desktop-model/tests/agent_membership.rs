@@ -4,7 +4,8 @@
 //! wrong people.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Change, Grant, GrantId, Grantee, KindSet, Lifetime, Role, TreePath,
+    ActionKind, Answer, Change, Grant, GrantId, Grantee, KindSet, Lifetime, MemberId, Role,
+    TreePath,
 };
 use tilo_desktop_model::*;
 
@@ -21,7 +22,7 @@ fn agent_grant(ws: &Workspace, id: &str, node: TreePath) -> Grant {
     let _ = ws;
     Grant::new(
         id,
-        Grantee::agent("scribe"),
+        Grantee::agent("scribe", "ada"),
         node,
         KindSet::READ_UNDOABLE,
         Answer::Allow,
@@ -49,7 +50,7 @@ tilo_test_env::scenario! {
 
             assert_eq!(
                 ws.policy.agent_members_at(NOW),
-                vec![("scribe".to_string(), KindSet::READ_UNDOABLE)],
+                vec![(MemberId::agent("scribe", "ada"), KindSet::READ_UNDOABLE)],
                 "the kinds of the workspace grant are what the agent may do",
             );
 
@@ -91,18 +92,18 @@ tilo_test_env::scenario! {
         let mut ws = workspace();
         let here = agent_grant(&ws, "member", ws.policy.node());
         ws.policy.grant(Grant {
-            grantee: Grantee::agent("member"),
+            grantee: Grantee::agent("member", "ada"),
             ..here
         });
         ws.policy.grant(Grant {
             id: GrantId::new("other-workspace"),
-            grantee: Grantee::agent("other-workspace"),
+            grantee: Grantee::agent("other-workspace", "ada"),
             node: TreePath::workspace("a-different-durable-workspace"),
             ..agent_grant(&ws, "other-workspace", ws.policy.node())
         });
         assert_eq!(
             ws.policy.agent_members_at(NOW),
-            vec![("member".to_string(), KindSet::READ_UNDOABLE)]
+            vec![(MemberId::agent("member", "ada"), KindSet::READ_UNDOABLE)]
         );
     }
 
@@ -181,11 +182,11 @@ tilo_test_env::scenario! {
             "an agent must not be listed as a person: {people:?}",
         );
 
-        let agents: Vec<String> = ws
+        let agents: Vec<MemberId> = ws
             .policy.agent_members_at(NOW)
             .into_iter()
             .map(|(a, _)| a)
             .collect();
-        assert_eq!(agents, vec!["scribe".to_string()]);
+        assert_eq!(agents, vec![MemberId::agent("scribe", "ada")]);
     }
 }

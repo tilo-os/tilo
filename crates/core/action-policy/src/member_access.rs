@@ -5,8 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Acting, ActionKind, Answer, Authority, Context, Grant, Grantee, TreePath, Verdict,
-    WorkspacePolicy,
+    Acting, ActionKind, Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy,
 };
 use tilo_clock::time::SystemTime;
 
@@ -141,40 +140,40 @@ impl MemberAccess {
                     && named.as_str() == person
                     && invoker.people().iter().all(|named| *named == person)
             }
-            Some(crate::MemberId::Agent(agent)) => {
+            Some(crate::MemberId::Agent { id, person: own }) => {
                 invoker.people().iter().all(|named| *named == person)
-                    && self.runs_agent(agent, invoker)
+                    && self.runs_agent(id, own.as_str())
             }
             // A bot, an automation or an app: the signer bounds it.
             _ => true,
         }
     }
 
-    /// Whether this access's person runs `agent`: the agent whose key this
-    /// device is; a key's agent only through the grant its person signed for
-    /// it; an agent that acts for this device's person; or, naming no person,
-    /// an agent the signer is the device of.
-    fn runs_agent(&self, agent: &str, invoker: &Acting) -> bool {
+    /// Whether this access's person runs the agent `agent` acting for
+    /// `own`: the agent whose key this device is; a key's agent only through
+    /// the grant its person signed for it; or an agent of this device's person,
+    /// whose certificate names them and whose grants bound what it may do.
+    fn runs_agent(&self, agent: &str, own: &str) -> bool {
         let person = self.acting.people().first().copied().unwrap_or_default();
-        if self.acting.agent_id() == Some(agent) {
+        if self
+            .acting
+            .member_id()
+            .and_then(crate::MemberId::as_agent)
+            .is_some_and(|(id, of)| id == agent && of.as_str() == own)
+        {
             return true;
         }
         // A key's agent is its own key, or the grant its person signed, which
         // this device holds: no device claims it handed.
         if crate::key_of_agent(agent).is_some() {
-            return self
-                .granted
-                .iter()
-                .any(|grant| grant.grantee == Grantee::agent(agent));
+            return self.granted.iter().any(|grant| {
+                grant
+                    .grantee
+                    .as_agent()
+                    .is_some_and(|(id, of)| id == agent && *of == own)
+            });
         }
-        match invoker.acted_for_person() {
-            // The agent acts for this device's person: the certificate it was
-            // admitted by names them, and its grants bound what it may do.
-            Some(named) => named == person,
-            // An agent that names no person is the signer's own: a device
-            // hands its agent the session it runs.
-            None => invoker.handed && !self.acting.is_agent(),
-        }
+        own == person
     }
 
     /// The same access, from a device its person's root confined to `workspace` alone (its id),

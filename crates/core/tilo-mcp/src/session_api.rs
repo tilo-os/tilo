@@ -532,9 +532,8 @@ where
             else {
                 return Err("nobody was admitted".to_owned());
             };
-            let caller = tilo_actions::remote::Caller::local_agent(agent)
-                .acting_for(person)
-                .in_workspace(workspace);
+            let caller =
+                tilo_actions::remote::Caller::local_agent(agent, person).in_workspace(workspace);
             Ok((provider, caller))
         },
         Beside::default(),
@@ -1341,7 +1340,7 @@ mod tests {
             for caller in callers.iter() {
                 assert_eq!(
                     caller.acting().member_id(),
-                    Some(&tilo_action_policy::MemberId::agent("claude-code"))
+                    Some(&tilo_action_policy::MemberId::agent("claude-code", "ada"))
                 );
                 assert_eq!(caller.workspace(), Some("workspace"));
                 assert!(caller.execution_id().is_some());

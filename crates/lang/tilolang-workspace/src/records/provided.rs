@@ -554,7 +554,7 @@ mod tests {
         let request = write_to(
             &records(&workspaces),
             &caller,
-            &tilo_actions::MemberId::agent("scout"),
+            &tilo_actions::MemberId::agent("scout", "ada"),
             "The plan is ready",
         )
         .await;
@@ -606,7 +606,7 @@ mod tests {
             &workspace,
             &[tilo_action_policy::Grant::new(
                 "scout-denied",
-                tilo_action_policy::Grantee::agent("scout"),
+                tilo_action_policy::Grantee::agent("scout", person.clone()),
                 TreePath::workspace(&workspace).rest(),
                 KindSet::ALL,
                 Answer::Deny,
@@ -644,7 +644,7 @@ mod tests {
             &workspace,
             &[tilo_action_policy::Grant::new(
                 "scout-delegated",
-                tilo_action_policy::Grantee::agent("scout"),
+                tilo_action_policy::Grantee::agent("scout", person.clone()),
                 TreePath::workspace(&workspace),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
@@ -673,7 +673,11 @@ mod tests {
                 .map(|version| (version["action"].clone(), version["who"].clone()))
                 .collect::<Vec<_>>()
         );
-        let agent = serde_json::to_value(member(tilo_actions::MemberId::agent("scout"))).unwrap();
+        let agent = serde_json::to_value(member(tilo_actions::MemberId::agent(
+            "scout",
+            person.clone(),
+        )))
+        .unwrap();
         let device_person =
             serde_json::to_value(member(tilo_actions::MemberId::person(person))).unwrap();
         for version in &versions {
@@ -725,7 +729,7 @@ mod tests {
         let request = write_to(
             &records,
             &ada,
-            &tilo_actions::MemberId::agent("scout"),
+            &tilo_actions::MemberId::agent("scout", "ada"),
             "The safe's code is 4711",
         )
         .await;

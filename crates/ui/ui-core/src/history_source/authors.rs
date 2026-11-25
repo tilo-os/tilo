@@ -124,7 +124,7 @@ impl AuthorDirectory {
                     directory.register_member(id, author_for_identity(shown.clone(), key));
                     directory.register_device(key, shown);
                 }
-                MemberId::Agent(_) | MemberId::Bot(_) => {
+                MemberId::Agent { .. } | MemberId::Bot(_) => {
                     let (red, green, blue) = crate::presence::member_color(id);
                     let person = presence
                         .acting_for(id)
@@ -258,57 +258,12 @@ impl AuthorDirectory {
         self.register_agent(
             &hex::encode(agent.device),
             HistoryAgent {
-                agent: tilo_actions::MemberId::agent(agent.agent_id.clone()),
+                agent: tilo_actions::MemberId::agent(agent.agent_id.clone(), person.clone()),
                 label: agent.label.clone(),
                 rgb: (red, green, blue),
                 person,
             },
         );
-    }
-
-    /// Name every actor this thread's mounts write as
-    /// ([`note_resource_mount`]): a document its mounts share is written by
-    /// each under its own author's actor, and history alone names none of
-    /// them. An agent mount's actor, and one whose author is among `agents`
-    /// (the workspace's agent members), is shown as that agent; a person
-    /// `person` knows (by the actor they write as) is named and coloured
-    /// as presence shows them.
-    pub fn register_noted_mounts(
-        &mut self,
-        agents: &[String],
-        person: &dyn Fn(&str) -> Option<(String, (u8, u8, u8))>,
-    ) {
-        NOTED_ACTORS.with_borrow(|actors| {
-            for (actor, noted) in actors {
-                let agent = noted.agent || agents.contains(&noted.name);
-                let handle = if agent {
-                    tilo_actions::MemberId::agent(noted.name.clone()).actor_bytes()
-                } else {
-                    noted.name.as_bytes().to_vec()
-                };
-                // The key a member's own handle actor has, so an actor
-                // history resolves by its handle alone agrees too.
-                let identity = automerge::ActorId::from(handle.as_slice()).to_hex_string();
-                let (shown, rgb) = if agent {
-                    let member = tilo_actions::MemberId::agent(noted.name.clone());
-                    (noted.name.clone(), crate::presence::member_color(&member))
-                } else {
-                    person(&noted.name).unwrap_or_else(|| {
-                        (
-                            noted.name.clone(),
-                            crate::presence::identity_color(&noted.name),
-                        )
-                    })
-                };
-                let author = author_coloured(shown, short_id(&identity), rgb);
-                let author = if agent {
-                    author.with_relation(AuthorRelation::Software)
-                } else {
-                    author
-                };
-                self.register(actor, author);
-            }
-        });
     }
 
     /// Bind `actor_hex` to the local user, read from the Tilo identity on disk.
@@ -405,7 +360,7 @@ impl AuthorDirectory {
                 self.author_from_identity(actor_label(&actor), &handle, "")
             }
             // An agent is named by its own name, and marked as the software it is.
-            Some(actor @ tilo_actions::Actor::Member(tilo_actions::MemberId::Agent(_))) => self
+            Some(actor @ tilo_actions::Actor::Member(tilo_actions::MemberId::Agent { .. })) => self
                 .author_from_identity(actor_label(&actor), &handle, short)
                 .with_relation(AuthorRelation::Software),
             Some(actor) => self.author_from_identity(actor_label(&actor), &handle, short),
@@ -458,8 +413,12 @@ impl AuthorDirectory {
         let on_behalf_of = invoker.acting.acted_for_person().map(str::to_owned);
         // An agent session that acted for a person (a coding agent on the person's computer,
         // writing through their folder or their Tilo actions) reads as the agent, for the person.
+        let agent = invoker
+            .acting
+            .member_id()
+            .filter(|member| member.is_agent());
         if let (Some(agent), Some(session), Some(person)) = (
-            invoker.acting.agent_id(),
+            agent,
             invoker.acting.agent_session.as_ref(),
             on_behalf_of.as_deref(),
         ) {
@@ -474,7 +433,7 @@ impl AuthorDirectory {
         // Any other agent that acted for a person, outside a session the change recorded, reads
         // as a session's change does. The name its connection gave it (often its session's
         // title) is detail, never its name.
-        if let (Some(agent), Some(person)) = (invoker.acting.agent_id(), on_behalf_of.as_deref()) {
+        if let (Some(agent), Some(person)) = (agent, on_behalf_of.as_deref()) {
             return self.agent_session_author(invoker, (agent, None), person);
         }
         // The person's own writer names them as the directory knows them;
@@ -564,10 +523,9 @@ impl AuthorDirectory {
     fn agent_session_author(
         &self,
         invoker: &tilo_actions::ActionInvoker,
-        (agent, session): (&str, Option<&str>),
+        (member, session): (&tilo_actions::MemberId, Option<&str>),
         person: &str,
     ) -> HistoryAuthor {
-        let member = tilo_actions::MemberId::agent(agent.to_owned());
         let actor = hex::encode(member.actor_bytes());
         let known = self.is_registered(&actor);
         let named = self.resolve_identity(&actor);
@@ -579,12 +537,12 @@ impl AuthorDirectory {
         let rgb = if known {
             named.rgb()
         } else {
-            crate::presence::member_color(&member)
+            crate::presence::member_color(member)
         };
         let mut author = self.agent_author(
             &actor,
             &HistoryAgent {
-                agent: member,
+                agent: member.clone(),
                 label,
                 rgb,
                 person: person.to_owned(),
@@ -593,7 +551,7 @@ impl AuthorDirectory {
         if let Some(attribution) = author.attribution.as_mut() {
             attribution.acting = invoker.acting.clone();
             attribution.writer = Some(fs_protocol::AttributedWriter::Agent {
-                agent: agent.to_owned(),
+                agent: member.id().to_owned(),
                 session: session.map(str::to_owned),
             });
             attribution.writer_label = invoker.name.clone().filter(|name| !name.trim().is_empty());
@@ -652,60 +610,6 @@ impl ResolveAuthor for AuthorDirectory {
 
 thread_local! {
     static THREAD_READER: std::cell::RefCell<Option<tilo_actions::MemberId>> = const { std::cell::RefCell::new(None) };
-    /// The actors this thread's mounts write records as, with who each is:
-    /// only the shell that mounted them knows which is whose.
-    static NOTED_ACTORS: std::cell::RefCell<
-        std::collections::BTreeMap<String, NotedAuthor>,
-    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-}
-
-/// One actor a mount of this thread writes as, and who it writes for.
-struct NotedAuthor {
-    /// The author's name, or an agent mount's display name.
-    name: String,
-    /// Software, not a person.
-    agent: bool,
-}
-
-/// Actors one thread remembers: a shell mounts a handful.
-const MAX_NOTED_ACTORS: usize = 256;
-
-/// Note that `actor` writes for `author`, or for the agent `agent` names (an
-/// agent mount's display name). An actor stays with the first mount that
-/// noted it: a record's own writer is shared by every mount of it.
-pub fn note_mount_actor(actor: &automerge::ActorId, author: &str, agent: Option<&str>) {
-    let author = match agent {
-        Some(name) => NotedAuthor {
-            name: name.to_owned(),
-            agent: true,
-        },
-        None => NotedAuthor {
-            name: author.to_owned(),
-            agent: false,
-        },
-    };
-    let actor = actor.to_hex_string();
-    NOTED_ACTORS.with_borrow_mut(|actors| {
-        if actors.len() < MAX_NOTED_ACTORS {
-            actors.entry(actor).or_insert(author);
-        }
-    });
-}
-
-/// Note the actors a mount of `author` writes a record as, whose own writer
-/// is `writer`: its author's handle for actions, its author's writer on the
-/// record for edits, and the record's writer for what the record wrote before
-/// (its creation, when this mount made it).
-pub fn note_resource_mount(writer: Option<&automerge::ActorId>, author: &str, agent: Option<&str>) {
-    note_mount_actor(&automerge::ActorId::from(author.as_bytes()), author, agent);
-    if let Some(writer) = writer {
-        note_mount_actor(
-            &crate::resource::author_writer(writer, author),
-            author,
-            agent,
-        );
-        note_mount_actor(writer, author, agent);
-    }
 }
 
 /// The member this thread's app runs for: whose changes every history read
@@ -728,7 +632,7 @@ fn person_label(person: &str) -> String {
 pub fn actor_label(actor: &tilo_actions::Actor) -> String {
     use tilo_actions::{Actor, MemberId};
     match actor {
-        Actor::Member(MemberId::Agent(id) | MemberId::Bot(id)) => name_words(id),
+        Actor::Member(MemberId::Agent { id, .. } | MemberId::Bot(id)) => name_words(id),
         Actor::Member(MemberId::Person(person)) => person_label(person.as_str()),
         Actor::Automation(id) => name_words(id.as_str()),
         Actor::App(app) => app_name(
@@ -773,103 +677,6 @@ pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAu
 }
 
 #[cfg(test)]
-mod noted_mount_tests {
-    use super::*;
-
-    #[test]
-    fn noted_writers_resolve_to_their_mounts_authors_and_agents_as_agents() {
-        let phone = automerge::ActorId::random();
-        let reader = automerge::ActorId::random();
-        let agent = automerge::ActorId::random();
-        let stranger = automerge::ActorId::random();
-        note_resource_mount(Some(&phone), "You", None);
-        note_mount_actor(&reader, "Reading agent", None);
-        note_resource_mount(Some(&agent), "agent-task:reading", Some("Scribe"));
-        let mut directory = AuthorDirectory::new();
-        directory.register_noted_mounts(&["Reading agent".into()], &|_| None);
-        let name = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string()).name;
-        assert_eq!(name(&phone), "You");
-        assert_eq!(
-            name(&reader),
-            "Reading agent",
-            "an author the workspace admits as an agent is shown as one"
-        );
-        assert_eq!(name(&agent), "Scribe", "an agent mount's display name");
-        assert_eq!(
-            name(&automerge::ActorId::from("agent-task:reading".as_bytes())),
-            "Scribe",
-            "and its actions"
-        );
-        assert_eq!(name(&stranger), UNKNOWN_AUTHOR_NAME, "nobody noted it");
-
-        note_mount_actor(&phone, "Reading agent", None);
-        let mut shared = AuthorDirectory::new();
-        shared.register_noted_mounts(&[], &|_| None);
-        assert_eq!(
-            shared.resolve(&phone.to_hex_string()).name,
-            "You",
-            "a writer another mount shares stays its first mount's"
-        );
-        assert_eq!(
-            shared.resolve(&reader.to_hex_string()).name,
-            "Reading agent",
-            "a person unless the workspace names an agent"
-        );
-    }
-
-    /// A mount writes as its person's actor (a key, in a workspace): their
-    /// edits read by the name and colour presence shows them, not the key.
-    #[test]
-    fn a_person_presence_knows_reads_by_their_name_and_colour() {
-        let record = automerge::ActorId::random();
-        let key = "c0ffee00c0ffee00c0ffee00c0ffee00";
-        let pink = (0xee, 0x83, 0xaf);
-        note_resource_mount(Some(&record), key, None);
-        let mut directory = AuthorDirectory::new();
-        directory.register_noted_mounts(&[], &|user| {
-            (user == key).then(|| ("Eager Dolphin".to_owned(), pink))
-        });
-        let author =
-            directory.resolve(&crate::resource::author_writer(&record, key).to_hex_string());
-        assert_eq!(author.name, "Eager Dolphin");
-        assert_eq!(author.rgb(), pink);
-    }
-
-    #[test]
-    fn every_mount_names_its_own_writer_on_a_shared_record_and_one_identity_per_author() {
-        let record = automerge::ActorId::random();
-        note_resource_mount(Some(&record), "Ada", None);
-        note_resource_mount(Some(&record), "Scout", None);
-        note_resource_mount(Some(&record), "agent-task:scout", Some("Scout"));
-        let mut directory = AuthorDirectory::new();
-        directory.register_noted_mounts(&["Scout".into()], &|_| None);
-        let resolve = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string());
-        let ada = resolve(&crate::resource::author_writer(&record, "Ada"));
-        assert_eq!(ada.name, "Ada");
-        assert_eq!(
-            resolve(&crate::resource::author_writer(&record, "Scout")).name,
-            "Scout",
-            "a second mount's edits are its own, not the first mount's"
-        );
-        assert_eq!(
-            resolve(&record).name,
-            "Ada",
-            "the record's writer stays the first"
-        );
-        let handle = resolve(&automerge::ActorId::from("Ada".as_bytes()));
-        assert_eq!(
-            (handle.identity_short.as_str(), handle.avatar_hue),
-            (ada.identity_short.as_str(), ada.avatar_hue),
-            "one member, one identity, whichever actor wrote"
-        );
-        let agent_task = resolve(&crate::resource::author_writer(&record, "agent-task:scout"));
-        let scout = resolve(&crate::resource::author_writer(&record, "Scout"));
-        assert_eq!(agent_task.name, scout.name);
-        assert_eq!(agent_task.identity_short, scout.identity_short);
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -883,6 +690,7 @@ mod tests {
             let of = |name: &str| {
                 let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::agent(
                     "claude-code",
+                    "ada",
                 ))
                 .acting_for("ada")
                 .named(Some(name.into()));
@@ -896,7 +704,7 @@ mod tests {
             assert_eq!(second.rgb(), first.rgb(), "one agent, one colour");
             assert_eq!(
                 first.rgb(),
-                crate::presence::member_color(&tilo_actions::MemberId::agent("claude-code"))
+                crate::presence::member_color(&tilo_actions::MemberId::agent("claude-code", "ada"))
             );
         }
 
@@ -984,7 +792,7 @@ mod tests {
 
         phase agent_actors_are_presented_as_named_agents_not_wire_ids;
         {
-            let scribe = tilo_actions::MemberId::agent("scribe");
+            let scribe = tilo_actions::MemberId::agent("scribe", "carol");
             assert_eq!(actor_label(&scribe.clone().into()), "Scribe");
 
             let actor = automerge::ActorId::from(scribe.actor_bytes());
@@ -1149,14 +957,14 @@ mod tests {
         authors.register_agent(
             &device,
             HistoryAgent {
-                agent: tilo_actions::MemberId::agent("scout"),
+                agent: tilo_actions::MemberId::agent("scout", person),
                 label: "Workspace folder".into(),
                 rgb: (10, 20, 30),
                 person: person.into(),
             },
         );
         let invoker = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent("scout")
+            &tilo_actions::Acting::agent("scout", person)
                 .in_session("s1")
                 .acting_for(tilo_actions::Acting::person(person)),
         )
@@ -1191,7 +999,8 @@ mod tests {
             HistoryAuthor::new("Ada", 0.0, "ada00000"),
         );
         let invoker = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent("scout").acting_for(tilo_actions::Acting::person(person)),
+            &tilo_actions::Acting::agent("scout", person)
+                .acting_for(tilo_actions::Acting::person(person)),
         )
         .named(Some("Workspace folder, sixth round".into()));
         let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
@@ -1211,7 +1020,7 @@ mod tests {
     #[test]
     fn an_agent_session_reads_as_the_member_it_was_admitted_as() {
         let person = "ben";
-        let agent = tilo_actions::MemberId::agent("agent-key-1234abcd");
+        let agent = tilo_actions::MemberId::agent("agent-key-1234abcd", person);
         let mut authors = AuthorDirectory::new();
         authors.set_reader(tilo_actions::MemberId::person(person));
         authors.register_member(
@@ -1223,7 +1032,7 @@ mod tests {
             author_coloured("Planner", short_id(agent.id()), (1, 2, 3)),
         );
         let invoker = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent(agent.id())
+            &tilo_actions::Acting::agent(agent.id(), person)
                 .in_session("s1")
                 .acting_for(tilo_actions::Acting::person(person)),
         )
@@ -1259,7 +1068,7 @@ mod tests {
     #[test]
     fn a_change_an_agent_made_for_a_person_reads_as_the_roster_names_both() {
         let person = "ada-root";
-        let agent = tilo_actions::MemberId::agent("a4b05b334073f7dc3c31652f1b0143be");
+        let agent = tilo_actions::MemberId::agent("a4b05b334073f7dc3c31652f1b0143be", person);
         let mut authors = AuthorDirectory::new();
         authors.register_roster([
             (&tilo_actions::MemberId::person(person), "Ada Stack"),

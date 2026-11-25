@@ -40,6 +40,7 @@ use tilo_actions::remote::environment_machines::{
     self, BranchMachine, DeleteMachine, MachineBranched,
 };
 use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
+use tilo_actions::remote::environment_window::{self as vm, Holds, Launch};
 use tilo_actions::remote::linux_apps::{self, AppLaunch, OpenApp};
 use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{
@@ -53,7 +54,7 @@ use tilo_server_protocol::hosted_vm::{ENVIRONMENT, VmSize};
 use ush::environment_terminals::quic::{Receiving, Sending, dial};
 use ush::environment_terminals::{HANDED_FOR, Handed, NOT_HANDED, Ran as TerminalRan, wire};
 
-use tilo_server::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Window};
+use tilo_server::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Started};
 use tilo_workspace_service::workspaces::{WorkspaceMachines, Workspaces};
 
 /// What a run says while no device takes it.
@@ -92,6 +93,11 @@ const PATIENCE: Duration = Duration::from_secs(600);
 /// How long a Browser open, or a machine's branch or delete, waits for a
 /// device before it says why it did not happen.
 const OPEN_PATIENCE: Duration = Duration::from_secs(5 * 60);
+
+/// How long a session launched in a workspace's machine is given to show its window.
+const UP_PATIENCE: Duration = Duration::from_secs(60);
+/// How often a launched session's window is read while it comes up.
+const UP_LOOK: Duration = Duration::from_millis(200);
 
 /// What this host asks as, once it serves.
 struct Asking {
@@ -141,6 +147,9 @@ pub struct Environments {
     /// The terminal streams the devices running the shells handed this host,
     /// handed on to the devices that opened them.
     terminals: Handed<OnDevice>,
+    /// The device each workspace's machine logged in as, by workspace: what its sessions are
+    /// launched, read and stopped on.
+    machines: std::sync::Mutex<std::collections::HashMap<String, [u8; 32]>>,
 }
 
 /// How a run is followed: what it prints, and when the caller stops it.
@@ -212,6 +221,7 @@ impl Environments {
             timing: Timing::default(),
             asking: OnceLock::new(),
             terminals: Handed::new(HANDED_FOR),
+            machines: std::sync::Mutex::default(),
         }
     }
 
@@ -902,11 +912,117 @@ fn plan_refusal(failure: &ActionFailure) -> Option<Refusal> {
         .and_then(|details| serde_json::from_value(details).ok())
 }
 
-/// What the server's Browser asks of a workspace's machine, on the device that runs it.
+impl Environments {
+    /// Start `workspace`'s machine at `target` with `asked`, whose material its daemon logs in
+    /// with, on the device keeping it: the device the daemon logged in as.
+    fn machine(
+        &self,
+        workspace: &str,
+        target: RemoteActionTarget,
+        asked: &impl serde::Serialize,
+    ) -> Result<[u8; 32], NotRun> {
+        let opened: OpenedBrowser = self
+            .open(workspace, target, asked)?
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        let device: [u8; 32] = hex::decode(&opened.device)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| NotRun::Error("the machine answered no device".to_owned()))?;
+        if let Some(opened_ms) = opened.opened_ms {
+            tracing::info!(%workspace, opened_ms, "a workspace's machine logged in");
+        }
+        tilo_lock::MutexRecover::lock_recover(&self.machines).insert(workspace.to_owned(), device);
+        Ok(device)
+    }
+
+    /// Ask `action` of the sessions of the machine whose device is `device`, in `workspace`,
+    /// through the workspace's dispatch: what it answered.
+    fn ask_machine(
+        &self,
+        device: [u8; 32],
+        workspace: &str,
+        action: &str,
+        argument: &impl serde::Serialize,
+    ) -> Result<serde_json::Value, String> {
+        let asking = self.asking().map_err(|not_run| not_run.to_string())?;
+        // The machine's daemon dialled this host when it logged in, and the host answers it back
+        // over that link: a VM behind its host's network is reached there, never dialled.
+        let machine = match asking.actions.remote_held(device, workspace) {
+            Some(held) => Arc::new(held),
+            None => {
+                let id = EndpointId::from_bytes(&device).map_err(|error| error.to_string())?;
+                Arc::new(
+                    asking
+                        .actions
+                        .remote(&asking.endpoint, &EndpointAddr::new(id), workspace),
+                )
+            }
+        };
+        let mut request = InvokeRequest::plain(vm::target(action), serde_json::Map::new());
+        request.argument = vm::argument(argument);
+        let settled = {
+            let _inside = asking.runtime.enter();
+            machine.invoke_until_settled(request, UP_PATIENCE)
+        };
+        match settled.wait_timeout(UP_PATIENCE).ok().flatten() {
+            Some(Ok(InvocationUpdate::Succeeded { output, .. })) => {
+                Ok(output.value.unwrap_or_default())
+            }
+            Some(Ok(InvocationUpdate::Failed { error, .. })) => Err(error.message),
+            Some(Ok(_)) => Err("the machine did not answer".to_owned()),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("the machine was not reached".to_owned()),
+        }
+    }
+
+    /// Open `launch` in the machine whose device is `device`, and answer the provider its
+    /// session's window is listed under once it is up.
+    fn launched(&self, device: [u8; 32], launch: &Launch) -> Result<String, String> {
+        self.ask_machine(device, &launch.workspace, vm::LAUNCH, launch)?;
+        let began = Instant::now();
+        loop {
+            let window: vm::Window = serde_json::from_value(self.ask_machine(
+                device,
+                &launch.workspace,
+                vm::WINDOW,
+                &serde_json::json!({}),
+            )?)
+            .map_err(|error| format!("the machine answered no window: {error}"))?;
+            let shown = window.of(launch.holds);
+            if let Some(provider) = &shown.provider {
+                return Ok(provider.clone());
+            }
+            if !shown.running {
+                return Err("its session ended before its window was up".to_owned());
+            }
+            if began.elapsed() >= UP_PATIENCE {
+                return Err(format!("its window was not up within {UP_PATIENCE:?}"));
+            }
+            std::thread::sleep(UP_LOOK);
+        }
+    }
+
+    /// End the session `holds` in `workspace`'s machine, when one logged in.
+    fn stop_session(&self, workspace: &str, holds: Holds) {
+        let device = tilo_lock::MutexRecover::lock_recover(&self.machines)
+            .get(workspace)
+            .copied();
+        let Some(device) = device else {
+            return;
+        };
+        if let Err(error) = self.ask_machine(device, workspace, vm::STOP, &vm::Session { holds }) {
+            tracing::warn!(%workspace, ?holds, %error, "a machine's session did not stop");
+        }
+    }
+}
+
+/// What the server's Browser asks of a workspace's machine: its daemon is started on the device
+/// keeping it, with the material's ticket, and the window is launched and read on that daemon.
 impl BrowserSessions for Environments {
-    /// Hand `material` to the session in the workspace's machine, and answer its window once
-    /// it is up.
-    fn start(&self, material: &Material) -> Result<Window, String> {
+    /// Start the workspace's machine with `material`, open Browser there on its record, and
+    /// answer its window once it is up.
+    fn start(&self, material: &Material) -> Result<Started, String> {
         let paid = self.paid()?;
         let written = serde_json::to_string(material).map_err(|error| {
             tracing::warn!(%error, "the Browser's material could not be written");
@@ -917,11 +1033,8 @@ impl BrowserSessions for Environments {
             account: paid.account.clone(),
             material: written,
         };
-        let opened: OpenedBrowser = match self.open(&material.workspace, browser::target(), &asked)
-        {
-            Ok(answer) => answer
-                .and_then(|value| serde_json::from_value(value).ok())
-                .unwrap_or_default(),
+        let device = match self.machine(&material.workspace, browser::target(), &asked) {
+            Ok(device) => device,
             Err(NotRun::NoDevice) => {
                 return Err(format!("{WAITING} None has room yet."));
             }
@@ -935,27 +1048,46 @@ impl BrowserSessions for Environments {
                 return Err("Browser couldn't start. Open it again to try once more.".to_owned());
             }
         };
-        Ok(Window {
-            device: material.device.device_public_key,
-            provider: opened.provider,
-        })
+        let launch = Launch {
+            workspace: material.workspace.clone(),
+            holds: Holds::Browser,
+            record: Some(material.record.clone()),
+            app: None,
+        };
+        let provider = self.launched(device, &launch).map_err(|error| {
+            tracing::warn!(%error, "the workspace's Browser did not open in its machine");
+            "Browser couldn't start. Open it again to try once more.".to_owned()
+        })?;
+        Ok(Started { provider })
     }
 
     /// End the browser session in the workspace's machine now.
     fn stop(&self, workspace: &str) {
-        let asked = OpenBrowser {
-            workspace: workspace.to_owned(),
-            account: String::new(),
-            material: String::new(),
-        };
-        if let Err(not_run) = self.open(workspace, browser::stop_target(), &asked) {
-            tracing::warn!(%workspace, %not_run, "a browser session did not stop");
-        }
+        self.stop_session(workspace, Holds::Browser);
     }
 
-    /// Hand `launch` to the workspace's Linux apps session, started with `material` when none
-    /// runs.
-    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Window, AppRefusal> {
+    /// Hand `cert`, the workspace's machine certified again, to its daemon over the link it
+    /// dialled: the one device that daemon takes requests from is this host.
+    fn renewed(
+        &self,
+        workspace: &str,
+        cert: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        let device = tilo_lock::MutexRecover::lock_recover(&self.machines)
+            .get(workspace)
+            .copied()
+            .ok_or("the workspace's machine runs no daemon")?;
+        if device != cert.device_public_key {
+            return Err("the certificate is another machine's".into());
+        }
+        let certificate = serde_json::to_string(cert).map_err(|error| error.to_string())?;
+        self.ask_machine(device, workspace, vm::RENEW, &vm::Renewal { certificate })
+            .map(drop)
+    }
+
+    /// Start the workspace's machine with `material` when it is not, and start `launch` in its
+    /// Linux apps session.
+    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Started, AppRefusal> {
         let paid = self.paid().map_err(AppRefusal::Words)?;
         let written = serde_json::to_string(material).map_err(|error| {
             tracing::warn!(%error, "the apps session's material could not be written");
@@ -965,43 +1097,39 @@ impl BrowserSessions for Environments {
             workspace: material.workspace.clone(),
             account: paid.account.clone(),
             material: written,
-            launch: launch.clone(),
         };
-        let opened: OpenedBrowser =
-            match self.open(&material.workspace, linux_apps::target(), &asked) {
-                Ok(answer) => answer
-                    .and_then(|value| serde_json::from_value(value).ok())
-                    .unwrap_or_default(),
-                Err(NotRun::Failed(failure)) => {
-                    return Err(plan_refusal(&failure).map_or_else(
-                        || {
-                            tracing::warn!(%failure.message, "a machine failed to start a session");
-                            AppRefusal::Words("The machine couldn't start it.".to_owned())
-                        },
-                        AppRefusal::Refused,
-                    ));
-                }
-                Err(NotRun::NoDevice) => {
-                    return Err(AppRefusal::Words(format!("{WAITING} None has room yet.")));
-                }
-                Err(not_run) => return Err(AppRefusal::Words(not_run.to_string())),
-            };
-        Ok(Window {
-            device: material.device.device_public_key,
-            provider: opened.provider,
-        })
+        let device = match self.machine(&material.workspace, linux_apps::target(), &asked) {
+            Ok(device) => device,
+            Err(NotRun::Failed(failure)) => {
+                return Err(plan_refusal(&failure).map_or_else(
+                    || {
+                        tracing::warn!(%failure.message, "a machine failed to start a session");
+                        AppRefusal::Words("The machine couldn't start it.".to_owned())
+                    },
+                    AppRefusal::Refused,
+                ));
+            }
+            Err(NotRun::NoDevice) => {
+                return Err(AppRefusal::Words(format!("{WAITING} None has room yet.")));
+            }
+            Err(not_run) => return Err(AppRefusal::Words(not_run.to_string())),
+        };
+        let launch = Launch {
+            workspace: material.workspace.clone(),
+            holds: Holds::Apps,
+            record: None,
+            app: Some(launch.clone()),
+        };
+        let provider = self.launched(device, &launch).map_err(|error| {
+            tracing::warn!(%error, "a Linux app did not start in its machine");
+            AppRefusal::Words("The machine couldn't start it.".to_owned())
+        })?;
+        Ok(Started { provider })
     }
 
     /// End the Linux apps session in the workspace's machine now.
     fn stop_apps(&self, workspace: &str) {
-        let asked = OpenBrowser {
-            workspace: workspace.to_owned(),
-            account: String::new(),
-            material: String::new(),
-        };
-        if let Err(not_run) = self.open(workspace, linux_apps::stop_target(), &asked) {
-            tracing::warn!(%workspace, %not_run, "a Linux apps session did not stop");
-        }
+        self.stop_session(workspace, Holds::Apps);
     }
 
     fn ask_from(

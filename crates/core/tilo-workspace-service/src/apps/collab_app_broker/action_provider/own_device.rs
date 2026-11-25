@@ -619,7 +619,7 @@ mod tests {
             let refused = [
                 Caller::authenticated([41; 32], [43; 32]).in_workspace(workspace.clone()),
                 Caller::authenticated([77; 32], [78; 32]).in_workspace(workspace.clone()),
-                Caller::local_agent("assistant").in_workspace(workspace.clone()),
+                Caller::local_agent("assistant", owner.clone()).in_workspace(workspace.clone()),
                 Caller::delegated_agent("assistant", [41; 32], [44; 32])
                     .in_workspace(workspace.clone()),
                 Caller::bot("helper", [41; 32], [45; 32]).in_workspace(workspace.clone()),

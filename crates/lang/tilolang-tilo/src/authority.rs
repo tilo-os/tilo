@@ -186,12 +186,15 @@ impl TiloAuthority {
     }
 }
 
-/// The grantee `actor` is in the workspace's policy: a member as grants name them, anyone else
-/// as software by its id.
-fn grantee(actor: &Actor) -> Grantee {
-    actor
-        .grantee()
-        .unwrap_or_else(|| Grantee::agent(actor.id()))
+/// The grantee `actor` is in the workspace's policy: a member as grants name them, an app as
+/// itself, and a visitor as any key. `None` for an automation, which no grant names.
+fn grantee(actor: &Actor) -> Option<Grantee> {
+    match actor {
+        Actor::Member(_) => actor.grantee(),
+        Actor::App(app) => Some(Grantee::App(app.as_str().to_owned())),
+        Actor::Visitor(_) => Some(Grantee::AnyKey),
+        Actor::Automation(_) => None,
+    }
 }
 
 /// Who wrote code in the chain that led to an action.
@@ -315,14 +318,17 @@ impl Authority for TiloAuthority {
             _ => person,
         });
         // An app acting by itself (a migration of its package updating its documents, or one of
-        // its triggers) runs on the workspace's origin: no person's grants decide it, the
-        // package's code still bounds it.
+        // its triggers) is no person, and what it writes is decided where every write is: the
+        // workspace's admission, by the grants naming the app (installing it gave it its own
+        // records, which a member may take back). Nothing here stands in for that decision, as
+        // with no member access; the package's code still bounds it.
         let alone = invoker.app().is_some();
         let person_party = match (&access, person, agent) {
             _ if alone => Party::default().owning(TreePath::root()),
             (Some(access), Some(person), _) => access.policy.party(person),
             // An agent nobody delegated: only what the workspace grants it.
-            (Some(access), None, _) => access.policy.party_of(grantee(invoker)),
+            (Some(access), None, _) => grantee(invoker)
+                .map_or_else(Party::default, |grantee| access.policy.party_of(grantee)),
             // No member access here: the API decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
@@ -332,9 +338,11 @@ impl Authority for TiloAuthority {
             Some(access) if !alone && access.acting.by == *invoker => access.authority(),
             _ => Policy::person(person_party),
         };
-        let delegation = match (agent, person) {
-            (Some(_), Some(person)) => Some(
-                tilo_action_policy::Acting::handed_agent(invoker.id(), person)
+        let delegation = match (agent, person, invoker.member_id()) {
+            (Some(_), Some(person), Some(member)) if member.is_agent() => Some(
+                tilo_action_policy::Acting::member(member.clone())
+                    .handed()
+                    .acting_for(tilo_action_policy::Acting::person(person))
                     .handed_preset(workspace),
             ),
             _ => None,
@@ -343,12 +351,17 @@ impl Authority for TiloAuthority {
         // its writer's code. A package's code is the person running it, as trusted as the package
         // is: it asks before reaching outside unless the workspace grants the person that, and
         // code nobody installed asks before everything but its own documents.
-        let runner = person.map_or_else(|| grantee(invoker), Grantee::person);
+        // Code run by no one a grant names (an automation's) holds nothing.
+        let Some(runner) = person.map(Grantee::person).or_else(|| grantee(invoker)) else {
+            return decision(Answer::Deny);
+        };
         let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
         for module in chain {
             let trusted = state.trusted.contains(module);
             let (author, own) = if let Some(writer) = module.writer() {
-                let writer_grantee = grantee(&writer);
+                let Some(writer_grantee) = grantee(&writer) else {
+                    return decision(Answer::Deny);
+                };
                 let own = authorship::code_grants(workspace, &writer_grantee, trusted);
                 (Author::Block(writer_grantee), own)
             } else {
@@ -372,15 +385,12 @@ impl Authority for TiloAuthority {
         }
         // A grant written under an id the app had before (`previously:`) is the app's.
         let earlier = crate::schema::earlier_ids();
-        if let Some(delegation) = &delegation {
-            // An agent is the pair of its id and its person: only that person's grants for it
-            // reach it, not another member's for an agent of the same id.
-            let theirs = workspace_grants.iter().filter(|grant| {
-                grant.grantee.agent_id().is_none() || grant.granted_by.person_id() == person
-            });
+        if let (Some(delegation), Some(agent)) = (&delegation, grantee(invoker)) {
+            // An agent is the pair of its id and its person: the grants naming that pair reach
+            // it, never one for another person's agent of the same id.
             policy = policy.bounded_by(
-                Party::new(vec![grantee(invoker)], &[])
-                    .with_grants(theirs)
+                Party::new(vec![agent], &[])
+                    .with_grants(workspace_grants)
                     .with_grants(delegation),
             );
         }
@@ -454,14 +464,14 @@ mod tests {
         {
             let answer = agent_answers::grant(
                 WORKSPACE,
-                "helper",
+                ("helper", PERSON),
                 (&AnswerScope::app(APP), ActionKind::Undoable),
                 Answer::Deny,
                 Grantee::person(PERSON),
             );
             let authority = authority(vec![answer]);
-            authority.admit_agent(&Actor::from(MemberId::agent("helper")), Some(PERSON));
-            let agent = Actor::from(MemberId::agent("helper"));
+            authority.admit_agent(&Actor::from(MemberId::agent("helper", PERSON)), Some(PERSON));
+            let agent = Actor::from(MemberId::agent("helper", PERSON));
             let own = info(EffectClass::Undoable, true);
             assert_eq!(authority.decide(&agent, &[], &own), Decision::Deny);
             assert_eq!(authority.decide(&agent, &[module()], &own), Decision::Deny);
@@ -487,8 +497,8 @@ mod tests {
         phase without_a_access_the_bounds_still_decide;
         {
             let authority = TiloAuthority::new(Actor::from(MemberId::person(PERSON)), || None);
-            authority.admit_agent(&Actor::from(MemberId::agent("helper")), Some(PERSON));
-            let agent = Actor::from(MemberId::agent("helper"));
+            authority.admit_agent(&Actor::from(MemberId::agent("helper", PERSON)), Some(PERSON));
+            let agent = Actor::from(MemberId::agent("helper", PERSON));
             assert_eq!(
                 authority.decide(&agent, &[], &info(EffectClass::Outside, true)),
                 Decision::Ask
@@ -512,8 +522,8 @@ mod tests {
         phase an_agent_asks_before_reaching_outside_until_its_person_answers;
         {
             let authority = authority(Vec::new());
-            authority.admit_agent(&Actor::from(MemberId::agent("helper")), Some(PERSON));
-            let agent = Actor::from(MemberId::agent("helper"));
+            authority.admit_agent(&Actor::from(MemberId::agent("helper", PERSON)), Some(PERSON));
+            let agent = Actor::from(MemberId::agent("helper", PERSON));
             let outside = info(EffectClass::Outside, true);
             assert_eq!(authority.decide(&agent, &[], &outside), Decision::Ask);
             let undoable = info(EffectClass::Undoable, true);
@@ -692,14 +702,17 @@ mod tests {
         // The person's answer for their agent on Todo holds on Tasks.
         let answer = agent_answers::grant(
             WORKSPACE,
-            "helper",
+            ("helper", PERSON),
             (&AnswerScope::app(APP), ActionKind::Undoable),
             Answer::Deny,
             Grantee::person(PERSON),
         );
         let authority = renamed(vec![answer]);
-        authority.admit_agent(&Actor::from(MemberId::agent("helper")), Some(PERSON));
-        let agent = Actor::from(MemberId::agent("helper"));
+        authority.admit_agent(
+            &Actor::from(MemberId::agent("helper", PERSON)),
+            Some(PERSON),
+        );
+        let agent = Actor::from(MemberId::agent("helper", PERSON));
         assert_eq!(
             authority.decide(&agent, std::slice::from_ref(&tasks), &own),
             Decision::Deny

@@ -147,7 +147,7 @@ async fn grant_agents(
         .map(|n| {
             Grant::new(
                 format!("agent-{n}-files"),
-                Grantee::agent(format!("agent-{n}")),
+                Grantee::agent(format!("agent-{n}"), person.clone()),
                 TreePath::workspace(workspace).app(fs_protocol::tree::FILES_APP),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
@@ -211,7 +211,7 @@ impl Writer {
         ));
         let person = tilo_actions::PersonId::from_root(signer.cert.user_public_key);
         let agent = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent(id).agent_of(person),
+            &tilo_actions::Acting::agent(id, "ada").agent_of(person),
         )
         .named(Some(format!("Agent {}", n % 3)));
         let mut context = tilo_actions::ActionContext::default().with_invoker(agent);

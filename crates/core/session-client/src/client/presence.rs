@@ -195,11 +195,13 @@ impl Presence {
             .board
             .here()
             .filter_map(|member| {
-                let who = member
-                    .member
-                    .clone()
-                    .map(collab_types::MemberId::agent)
-                    .or_else(|| member.user.clone().map(collab_types::MemberId::person))?;
+                let who = match (&member.member, &member.user) {
+                    (Some(agent), Some(person)) => {
+                        collab_types::MemberId::agent(agent.clone(), person.as_str())
+                    }
+                    (None, Some(person)) => collab_types::MemberId::person(person.clone()),
+                    (_, None) => return None,
+                };
                 Some(member.apps.iter().map(move |(app, key, payload)| {
                     let frame = Frame::app(app.clone(), workspace, key.clone(), payload.clone());
                     (who.clone(), frame)

@@ -498,7 +498,10 @@ pub fn event_shortcut(kept: &Kept) -> Result<Shortcut, String> {
             args: BTreeMap::from([
                 (
                     WHO.to_owned(),
-                    Binding::Literal(json!(MemberId::agent(kept.assistant.clone()))),
+                    Binding::Literal(json!(MemberId::agent(
+                        kept.assistant.clone(),
+                        kept.person.as_str()
+                    ))),
                 ),
                 ("body".to_owned(), Binding::Template(text)),
             ]),
@@ -706,8 +709,8 @@ pub fn view(kept: &Kept, shortcut: &Shortcut, runs: &Runs, now_ms: i64) -> Event
 pub struct Asker {
     /// The person, by their root, hex.
     pub person: String,
-    /// The agent, by its id, where an agent of theirs asks.
-    pub agent: Option<String>,
+    /// The agent, where an agent of theirs asks.
+    pub agent: Option<MemberId>,
 }
 
 impl Asker {
@@ -718,10 +721,10 @@ impl Asker {
         if actor.is_app() {
             return None;
         }
-        if let Some(agent) = actor.actor().agent_id() {
+        if let Some(agent) = actor.member_id().filter(|member| member.is_agent()) {
             return Some(Self {
                 person: actor.acting_for()?.to_owned(),
-                agent: Some(agent.to_owned()),
+                agent: Some(agent.clone()),
             });
         }
         Some(Self {
@@ -733,10 +736,9 @@ impl Asker {
     /// Who makes a change, as authorship keeps it.
     #[must_use]
     pub fn by(&self) -> MemberId {
-        self.agent.as_ref().map_or_else(
-            || MemberId::person(self.person.clone()),
-            |agent| MemberId::agent(agent.clone()),
-        )
+        self.agent
+            .clone()
+            .unwrap_or_else(|| MemberId::person(self.person.clone()))
     }
 }
 

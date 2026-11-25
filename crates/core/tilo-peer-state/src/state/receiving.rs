@@ -451,6 +451,35 @@ impl StatePeer {
         }
     }
 
+    /// A device's hello: a placed device's, decided by its certificate alone, or a member's.
+    fn receive_hello(
+        &mut self,
+        source: [u8; 32],
+        protocol: u32,
+        cert: &DeviceCert,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+        now: SystemTime,
+        strict_report: bool,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        // A device at a peer protocol version this one does not work
+        // with is admitted to nothing: what it says is not read here.
+        if !neighbour_wire::works_with_peer_version(protocol) {
+            return Err(AdmissionError::malformed(format!(
+                "the device speaks peer protocol {protocol}, this one {}",
+                neighbour_wire::PEER_PROTOCOL_VERSION
+            )));
+        }
+        if cert.capabilities.records.is_some() {
+            let mut report = self.receive_placed_device_hello(source, cert, revocations, now)?;
+            // A write the device sent before its certificate arrived waited for it.
+            if report.summary.metadata_changed && !self.core.pending.is_empty() {
+                self.retry_held(&mut report, now, strict_report);
+            }
+            return Ok(report);
+        }
+        self.receive_identity_hello(source, cert, revocations, now)
+    }
+
     pub(super) fn receive_with_context(
         &mut self,
         source: [u8; 32],
@@ -460,22 +489,32 @@ impl StatePeer {
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
         match message {
+            // A placed device is decided against the workspace's members: it waits for the
+            // rules that name them.
+            message @ NeighbourMsg::IdentityHello { .. }
+                if self.core.workspace_doc.is_none()
+                    && matches!(
+                        &message,
+                        NeighbourMsg::IdentityHello { cert, .. }
+                            if cert.capabilities.records.is_some()
+                    ) =>
+            {
+                self.defer(
+                    source,
+                    message,
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::Rules,
+                        now,
+                    },
+                )
+            }
             NeighbourMsg::IdentityHello {
                 protocol,
                 cert,
                 revocations,
                 ..
-            } => {
-                // A device at a peer protocol version this one does not work
-                // with is admitted to nothing: what it says is not read here.
-                if !neighbour_wire::works_with_peer_version(protocol) {
-                    return Err(AdmissionError::malformed(format!(
-                        "the device speaks peer protocol {protocol}, this one {}",
-                        neighbour_wire::PEER_PROTOCOL_VERSION
-                    )));
-                }
-                self.receive_identity_hello(source, &cert, revocations, now)
-            }
+            } => self.receive_hello(source, protocol, &cert, revocations, now, strict_report),
             NeighbourMsg::SyncResp {
                 changes,
                 workspace: received,
@@ -490,6 +529,17 @@ impl StatePeer {
                             prerequisite: MissingPrerequisite::Rules,
                             now,
                         },
+                    );
+                }
+                // A placed device is no member: its certificate alone decides what it writes
+                // ([`Self::written_as`]).
+                if self.core.placed_devices.contains_key(&source) {
+                    return self.receive_document(
+                        source,
+                        message,
+                        now,
+                        retained_replay,
+                        strict_report,
                     );
                 }
                 // A device the roster does not certify writes nothing here
@@ -612,6 +662,84 @@ impl StatePeer {
             ..Default::default()
         }))
     }
+    /// Take in the certificate of `source`, a device placed for records of this
+    /// workspace alone ([`tilo_user_identity::DeviceCapabilities::records`]),
+    /// and the revocations its person's root signed. It is kept apart from the
+    /// workspace's roster and from every list of its devices: the device is no
+    /// member, and its certificate is all that decides what it writes and
+    /// reads. Taken while its chain verifies, it names this workspace, the
+    /// person it acts as is one of the workspace's, and neither it nor the
+    /// host that issued it is revoked.
+    fn receive_placed_device_hello(
+        &mut self,
+        source: [u8; 32],
+        cert: &DeviceCert,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        if cert.device_public_key != source {
+            return Err(crate::AdmissionError::forbidden(
+                "transport certificate mismatch",
+            ));
+        }
+        if cert.capabilities.placed_in(&self.core.workspace).is_none() {
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::NotCertified,
+                "the device was placed for records of another workspace",
+            ));
+        }
+        if self.core.certificates.contains_key(&source) {
+            return Err(crate::AdmissionError::forbidden(
+                "a device of the workspace's roster is placed for no records",
+            ));
+        }
+        let verified = VerifiedCertificate::new(cert.clone(), now_ns(now))
+            .map_err(crate::AdmissionError::malformed)?;
+        let Some(rules) = self.core.workspace_doc.as_ref() else {
+            return Err(crate::AdmissionError::malformed(
+                "a placed device is decided against the workspace's rules",
+            ));
+        };
+        let person = hex::encode(cert.user_public_key);
+        if backend::member::role_in(
+            rules.workspace_policy(&self.core.workspace),
+            &self.core.workspace,
+            &person,
+        )
+        .is_none()
+        {
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::Forbidden,
+                "the person the device acts as is no member of the workspace",
+            ));
+        }
+        let mut metadata_changed =
+            self.core.placed_devices.get(&source).map(AsRef::as_ref) != Some(cert);
+        for entry in revocations {
+            if entry.user_public_key != cert.user_public_key {
+                return Err(crate::AdmissionError::forbidden("revocation root mismatch"));
+            }
+            metadata_changed |= self
+                .core
+                .revocations
+                .insert(entry)
+                .map_err(crate::AdmissionError::malformed)?;
+        }
+        // Kept even when it is refused now, so what the device sends is refused as its
+        // certificate's, never deferred as an unknown device's.
+        self.core.placed_devices.insert(source, verified);
+        if let Err(refused) = self.core.placed_certificate(&source, now) {
+            return Err(crate::AdmissionError::rejected(
+                MembershipError::from(refused).refusal_reason(),
+                "the device's certificate or the host that issued it is revoked",
+            ));
+        }
+        Ok(AdmissionReport::metadata(ReceiveOutcome {
+            metadata_changed,
+            ..Default::default()
+        }))
+    }
+
     /// Admit governance changes to the workspace document, then retry every input
     /// deferred until governance arrived.
     fn receive_workspace_changes(

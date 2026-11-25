@@ -139,9 +139,9 @@ pub(super) async fn chat_writes(
         .map(drop)
 }
 
-/// Rich text whose words are `words`, mentioning `agent`.
-pub(super) fn mentioning(words: &str, agent: &str) -> Json {
-    let named = json!({ "agent": agent }).to_string();
+/// Rich text whose words are `words`, mentioning the agent `agent` of `person`.
+pub(super) fn mentioning(words: &str, (agent, person): (&str, &str)) -> Json {
+    let named = json!({ "agent": { "id": agent, "person": person } }).to_string();
     json!({"blocks": [{"text": words, "marks": [
         {"start": 0, "end": 5, "name": "mention", "value": {"Str": named}}
     ]}]})
@@ -216,7 +216,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     ] {
         let answer = tilo_action_policy::agent_answers::grant(
             &workspace,
-            SCOUT,
+            (SCOUT, bea_person.as_str()),
             (
                 &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
                 kind,
@@ -316,7 +316,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         &bea_who,
         (MESSAGE, "m-1", Some(general.as_str())),
         Vec::new(),
-        Some(mentioning("Scout, what is planned?", SCOUT)),
+        Some(mentioning("Scout, what is planned?", (SCOUT, &bea_person))),
     )
     .await
     .unwrap();
@@ -517,6 +517,203 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     ada.shutdown().await;
 }
 
+/// The agent a rich text's first mention names, as its mark keeps the member's JSON.
+fn mentioned(body: &Json) -> Option<tilo_action_policy::MemberId> {
+    if let Ok(member) = serde_json::from_value::<tilo_action_policy::MemberId>(body.clone())
+        && member.is_agent()
+    {
+        return Some(member);
+    }
+    match body {
+        Json::Object(fields) => fields.values().find_map(mentioned),
+        Json::Array(items) => items.iter().find_map(mentioned),
+        Json::String(text) => serde_json::from_str::<Json>(text)
+            .ok()
+            .filter(|inner| !inner.is_string())
+            .and_then(|inner| mentioned(&inner)),
+        _ => None,
+    }
+}
+
+/// Ada adds Bea's agent to a conversation of her own: it stays Bea's. What it names is the agent
+/// and the person it is of, so it reads with Bea's reach, Bea's answers and her stop govern it,
+/// and Ada's own agent of the same id is another member, which nothing Bea says reaches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
+    use tilo_action_policy::{
+        Acting, ActionKind, Answer, Authority, Context, MemberId, TreePath, WorkspacePolicy,
+    };
+    let states = [(); 2].map(|()| tempfile::tempdir().unwrap());
+    let keys = Arc::new(TestGroupKeys::default());
+    let bea_root = SigningKey::from_bytes(&[0xbe; 32]);
+    let (bea_key, bea_cert) = device_cert(&bea_root, "bea-laptop", DeviceCapabilities::member());
+    let (ada_key, ada_cert) = governor();
+    let ada = test_host_holding(states[0].path(), &ada_key, &ada_cert, Arc::clone(&keys)).await;
+    let (ada, (bea_key, bea_cert), created, invitation) =
+        invited(ada, &ada_cert, "Team", 0x64, (bea_key, bea_cert)).await;
+    let workspace = created.workspace;
+    let bea = test_host_holding(states[1].path(), &bea_key, &bea_cert, keys).await;
+    bea.workspaces().set_member_device(Arc::new(MemberDevice {
+        cert: bea_cert.clone(),
+        signer: Arc::new(bea_key),
+    }));
+    bea.workspaces().join_member(&invitation).await.unwrap();
+    let (adas, beas) = (ada.workspaces(), bea.workspaces());
+    // Ada writes in Chat from her own device too: the server keeps her member copy.
+    adas.set_member_device(Arc::new(MemberDevice {
+        cert: ada_cert.clone(),
+        signer: Arc::new(ada_key.clone()),
+    }));
+    let (ada_person, bea_person) = (
+        hex::encode(ada_cert.user_public_key),
+        hex::encode(bea_cert.user_public_key),
+    );
+    govern(
+        beas,
+        &workspace,
+        &bea_cert,
+        WORKSPACE_AGENT_CREATE,
+        json!({ "name": "Scout", "id": SCOUT }),
+    )
+    .await
+    .expect("Bea makes her own agent");
+    let (beas_scout, adas_scout) = (
+        MemberId::agent(SCOUT, bea_person.as_str()),
+        MemberId::agent(SCOUT, ada_person.as_str()),
+    );
+
+    // Ada writes in a conversation of hers, adding Bea's Scout to it by its mention.
+    mount(adas);
+    let route = record_route(&workspace, CHAT);
+    let _ = adas.own_route_keys(&route, true).await;
+    let chat = tilolang_workspace::records::built_in(CHAT)
+        .unwrap()
+        .expect("Chat is built in");
+    tilolang_workspace::records::with_tl_record(
+        adas,
+        &workspace,
+        &chat,
+        (
+            tilo_workspace_service::tl_records::member(MemberId::person(ada_person.clone())),
+            &ada_person,
+        ),
+        |opened| opened.open_root().map(drop),
+    )
+    .await
+    .expect("Ada opens Chat");
+    let caller_ada = Caller::authenticated(ada_cert.user_public_key, ada_cert.device_public_key)
+        .in_workspace(&workspace);
+    chat_writes(
+        adas,
+        &workspace,
+        &caller_ada,
+        &Acting::person(ada_person.clone()).by,
+        (MESSAGE, "m-ada", None),
+        Vec::new(),
+        Some(mentioning("Scout, join us", (SCOUT, &bea_person))),
+    )
+    .await
+    .expect("Ada writes in her conversation");
+    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+        CHAT, &workspace, caller_ada,
+    );
+    let content = Command::Content {
+        kind: MESSAGE.to_owned(),
+        id: "m-ada".to_owned(),
+    };
+    let tilo_resource_store::wire::Reply::Content(Some(message)) =
+        adas.resource_command(&context, content).await.unwrap()
+    else {
+        panic!("Ada's message is kept");
+    };
+    let added = mentioned(&message).unwrap_or_else(|| panic!("no agent is named in {message}"));
+    assert_eq!(added, beas_scout, "the agent Ada added is Bea's Scout");
+    assert_ne!(
+        added, adas_scout,
+        "Ada's own agent of that id is another member"
+    );
+    // What the agent `member` may do in Chat, as its turns for its own person are decided.
+    let chat = TreePath::workspace(&workspace).app(CHAT);
+    let cx = || Context::at_time(tilo_clock::wall());
+    let decides = |policy: &WorkspacePolicy, member: &MemberId| {
+        let person = member.agent_person().expect("an agent").as_str().to_owned();
+        let acting = Acting::member(member.clone())
+            .handed()
+            .acting_for(Acting::person(person));
+        let preset = acting.handed_preset(&workspace);
+        [ActionKind::Read, ActionKind::Undoable].map(|kind| {
+            Authority::of_acting(&acting, policy, &preset)
+                .decide(&chat, kind, &cx())
+                .answer
+        })
+    };
+    let policy = beas.policy_of(&workspace).await.unwrap();
+    assert_eq!(
+        decides(&policy, &added)[0],
+        Answer::Allow,
+        "the agent Ada added reads in Chat with Bea's reach"
+    );
+
+    // Bea keeps her Scout from changing anything in Chat; Ada's answer for her own Scout of that
+    // id reaches Bea's not at all.
+    let unanswered = beas.policy_of(&workspace).await.unwrap();
+    for (writer, person, answer) in [
+        (beas, &bea_person, Answer::Deny),
+        (adas, &ada_person, Answer::Allow),
+    ] {
+        answer_grant(
+            writer,
+            &workspace,
+            tilo_action_policy::agent_answers::grant(
+                &workspace,
+                (SCOUT, person.as_str()),
+                (
+                    &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
+                    ActionKind::Undoable,
+                ),
+                answer,
+                tilo_action_policy::Grantee::person(person.clone()),
+            ),
+        )
+        .await
+        .expect("each person answers for their own agent");
+    }
+    let answered = beas.policy_of(&workspace).await.unwrap();
+    assert_ne!(decides(&unanswered, &added)[1], Answer::Deny);
+    assert_eq!(
+        decides(&answered, &added)[1],
+        Answer::Deny,
+        "Bea's answer governs the agent Ada added"
+    );
+    let adas_policy = adas.policy_of(&workspace).await.unwrap();
+    assert_ne!(
+        decides(&adas_policy, &adas_scout)[1],
+        Answer::Deny,
+        "Ada's Scout is not held by Bea's answer"
+    );
+
+    // Bea stops her Scout: the agent in Ada's conversation stops, Ada's own does not.
+    beas.answer_stop(&workspace, SCOUT)
+        .await
+        .expect("Bea stops her own agent");
+    for policy in [
+        beas.policy_of(&workspace).await.unwrap(),
+        membership_log_alone(beas, &workspace).await,
+    ] {
+        let (id, person) = added.as_agent().expect("an agent");
+        assert!(policy.stops(id, person.as_str(), &cx()), "Bea stopped it");
+        assert_eq!(decides(&policy, &added), [Answer::Deny; 2]);
+        assert!(
+            !policy.stops(SCOUT, &ada_person, &cx()),
+            "Ada's Scout is not Bea's to stop"
+        );
+        assert_ne!(decides(&policy, &adas_scout), [Answer::Deny; 2]);
+    }
+
+    bea.shutdown().await;
+    ada.shutdown().await;
+}
+
 /// An agent is the pair of its id and the person its certificate chains to: Bea, an editor, stops
 /// the agent she made and lets it go on again without administering the workspace. Cy, another
 /// editor, may write a stop and an answer for an agent of the same id, but they are his own, for
@@ -595,7 +792,7 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
         &workspace,
         tilo_action_policy::agent_answers::grant(
             &workspace,
-            SCOUT,
+            (SCOUT, bea_person.as_str()),
             (
                 &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
                 ActionKind::Undoable,
@@ -618,14 +815,10 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
         decides(&unanswered, &cy_person),
         "Cy's agent of that id is decided as if Bea had answered nothing"
     );
-    let cys_stop = tilo_action_policy::agent_answers::stop_grant(
-        &workspace,
-        SCOUT,
-        tilo_action_policy::Grantee::person(cy_person.clone()),
-    );
+    let cys_stop = tilo_action_policy::agent_answers::stop_grant(&workspace, SCOUT, &cy_person);
     let cys_answer = tilo_action_policy::agent_answers::grant(
         &workspace,
-        SCOUT,
+        (SCOUT, cy_person.as_str()),
         (
             &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
             ActionKind::Undoable,

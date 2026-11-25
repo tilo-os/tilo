@@ -1083,3 +1083,76 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
     );
     Ok(())
 }
+
+/// The native endpoint of the daemon serving `profile`: a profile named apart keeps its sockets
+/// in this account's runtime directory, under its own path's name.
+fn served_socket(profile: &Path) -> Result<PathBuf> {
+    let login = tilo_device_identity::login::Place::here(
+        tilo_identity::provisioning::collaboration_identity_paths(),
+    )?;
+    let sockets = tilo_device_identity::login::daemon::profile_sockets(login.dir(), profile)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(sockets.join("native.sock"))
+}
+
+/// A daemon between its person's parts hears a stop: held in a step of the part that ended,
+/// where its own thread cannot take the stop up, SIGTERM still ends it promptly, with its own
+/// status, and its endpoint goes with it.
+#[test]
+fn sigterm_ends_a_daemon_held_between_its_person_parts() -> Result<()> {
+    /// How long a stop may take while no part serves: a part's own stop is longer by design.
+    const ENDING_WITHIN: Duration = Duration::from_secs(5);
+    let profile = DaemonProfile::unstarted()?;
+    let path = profile.path().to_owned();
+    let socket = served_socket(&path)?;
+    let mut command = host(&path);
+    command
+        .env("RUST_LOG", "info")
+        // A step of the person's part ending that does not return, as a folder that will not
+        // unmount: the daemon sits between its parts, and only a stop heard outside its own
+        // thread can end it.
+        .env("TILO_TEST_HOLD_BETWEEN_PARTS_MS", "60000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(path.join("daemon.log"))?);
+    let mut daemon = command.spawn_locked()?;
+    let pid = i32::try_from(daemon.id()).context("the daemon's pid")?;
+    let deadline = Instant::now()
+        .checked_add(LAUNCHER_START_CAP)
+        .context("the start's deadline")?;
+    loop {
+        if profile
+            .log()
+            .contains("a test holds the daemon between its person's parts")
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            bail!(
+                "the daemon did not reach the wait between parts\n{}",
+                profile.log()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // SAFETY: `kill(2)` with SIGTERM on the daemon this test started, the signal a stop sends.
+    ensure!(
+        unsafe { libc::kill(pid, libc::SIGTERM) } == 0,
+        "SIGTERM did not reach the daemon: {}",
+        std::io::Error::last_os_error()
+    );
+    let ended = ended_within(&mut daemon, ENDING_WITHIN, &profile)?;
+    ensure!(
+        ended.success(),
+        "the daemon ended as {ended}, not of its own stop\n{}",
+        profile.log()
+    );
+    ensure!(
+        !socket.exists(),
+        "the daemon's endpoint outlived it: {}",
+        socket.display()
+    );
+    Ok(())
+}

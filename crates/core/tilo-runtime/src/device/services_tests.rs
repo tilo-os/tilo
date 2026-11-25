@@ -1411,7 +1411,7 @@ fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
         });
         DeviceRecords::on(
             DaemonShell::new(Ok(link), runtime.handle().clone()),
-            workspace.clone(),
+            tilo_session_client::device_records::Place::Own(workspace.clone()),
         )
     };
 
@@ -2088,7 +2088,7 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
             daemon.workspaces.copies(),
             &kept_root,
-            cert,
+            &cert,
         )
         .await
         .expect("the root marks the device that keeps it");

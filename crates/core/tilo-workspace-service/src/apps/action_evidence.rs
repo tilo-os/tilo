@@ -474,7 +474,7 @@ mod tests {
                 device: [4; 32],
                 agent: Some("agent".into()),
             },
-            actor_id: tilo_actions::MemberId::agent("agent"),
+            actor_id: tilo_actions::MemberId::agent("agent", "ada"),
             app_id: "notes".into(),
             document_id: "record".into(),
             resource: "document/body".into(),
@@ -677,7 +677,7 @@ mod tests {
                         agent: Some("other".into()),
                     })
                     .unwrap(),
-                    "actor_id" => serde_json::to_value(tilo_actions::MemberId::agent("other"))
+                    "actor_id" => serde_json::to_value(tilo_actions::MemberId::agent("other", "ada"))
                         .unwrap(),
                     _ => Value::String(format!("changed-{value}")),
                 };

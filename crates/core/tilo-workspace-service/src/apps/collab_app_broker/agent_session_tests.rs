@@ -32,13 +32,13 @@ fn agent_in_session(f: &Fixture) -> (AgentConnection, Caller) {
         f,
         agent_answers::grant(
             &workspace,
-            "scribe",
+            ("scribe", &person),
             (
                 &AnswerScope::app("so.tilo.notes"),
                 tilo_action_policy::ActionKind::Undoable,
             ),
             tilo_action_policy::Answer::Ask,
-            tilo_action_policy::Grantee::person(person),
+            tilo_action_policy::Grantee::person(person.clone()),
         ),
     );
     let mut admitted = f
@@ -46,7 +46,8 @@ fn agent_in_session(f: &Fixture) -> (AgentConnection, Caller) {
         .verify_action_caller(&workspace, &f.signed_presentation())
         .unwrap()
         .admitted;
-    let kept = crate::apps::test_support::KeptAgents::default().listing(&workspace, "scribe");
+    let kept =
+        crate::apps::test_support::KeptAgents::default().listing(&workspace, ("scribe", &person));
     admit_listed_agent(&kept, &workspace, &mut admitted, "scribe").unwrap();
     let agent_key = SigningKey::from_bytes(&[57; 32]).verifying_key().to_bytes();
     let caller = Caller::delegated_agent("scribe", f.native.certificate.user_public_key, agent_key)
@@ -144,7 +145,10 @@ async fn an_agent_sessions_step_waits_for_its_person_by_the_sessions_name() {
                 .await
                 .unwrap();
             let wire = stream.next().await.unwrap();
-            assert_eq!(wire.actor, tilo_actions::MemberId::agent("scribe").into());
+            assert_eq!(
+                wire.actor,
+                tilo_actions::MemberId::agent("scribe", "ada").into()
+            );
             let context = wire.context().cloned().expect("the session's context");
             assert_eq!(context.group.expect("the session's group").id, SESSION);
             let again = answered(&f, api.invoke(&caller, append_request(72)))

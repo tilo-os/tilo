@@ -126,8 +126,8 @@ pub(crate) struct KeyCertified {
 }
 
 /// Certify `key` with the person's root for what `asked` names, listed by its name
-/// ([`tilo_device_identity::login::KeyFor`]: one agent in one workspace, or a device that reaches
-/// one workspace alone), or, asked for nothing, as an agent's grant in every workspace of theirs.
+/// ([`tilo_device_identity::login::KeyFor`]: one agent in one workspace), or, asked for nothing,
+/// as an agent's grant in every workspace of theirs.
 /// A key the person revoked is answered as revoked; one certified for the same thing for long
 /// enough already is answered as it stands. The certificate is kept among the person's devices
 /// before it is answered: the one record that lists it, says what it reaches, and revokes it.

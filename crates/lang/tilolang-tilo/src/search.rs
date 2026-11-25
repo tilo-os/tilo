@@ -252,14 +252,14 @@ fn members_in(value: Option<&tilolang_runtime::store::FieldValue>) -> Vec<tilo_a
     }
 }
 
-/// `member` as an entry names them: a person by their root key, an agent as `agent:<id>`, named by
-/// what they are called now.
+/// `member` as an entry names them: a person by their root key, an agent by its actor's bytes,
+/// `agent:<person>/<id>`, named by what they are called now.
 fn person_of(member: &tilo_actions::MemberId) -> Option<IndexPerson> {
-    if let Some(agent) = member.agent_id() {
+    if member.is_agent() {
         return Some(IndexPerson {
             name: String::new(),
             anchor: String::new(),
-            identity: format!("agent:{agent}"),
+            identity: String::from_utf8_lossy(&member.actor_bytes()).into_owned(),
             agent: true,
         });
     }

@@ -1911,6 +1911,37 @@ mod cases {
         );
     }
 
+    /// A popup a script opened is adopted into the window's second engine: the window hands the
+    /// app the page it shows, and the page's window draws it beside the page with its site named.
+    #[test]
+    fn a_popup_a_page_opened_is_drawn_beside_the_page() {
+        let b = Browser::new();
+        b.page(
+            "remember_panel",
+            &[
+                ("open", Value::Bool(true)),
+                ("kind", Value::text("popup")),
+                ("id", Value::text("9")),
+                ("url", Value::text("https://example.org/sign-in")),
+                ("interactive", Value::Bool(true)),
+            ],
+        );
+        let view = b.page_view();
+        let panel = of_kind(view.tree(), "ui.WebView")
+            .into_iter()
+            .find(|web_view| web_view.props.get("surface") == Some(&Value::text("panel")))
+            .unwrap_or_else(|| panic!("no panel beside the page in\n{}", dump(view.tree())));
+        assert_eq!(
+            panel.props.get("title"),
+            Some(&Value::text("example.org")),
+            "the panel says which site it shows"
+        );
+        assert!(
+            view_texts(&view).iter().any(|text| text == "example.org"),
+            "the panel's header names the site"
+        );
+    }
+
     #[test]
     fn developer_tools_are_asked_for() {
         let b = Browser::new();
@@ -1943,6 +1974,18 @@ mod cases {
             back["items"][0]["fields"]["title"].as_str(),
             Some("Earlier")
         );
+        // The page's menu offers the page behind, and choosing it goes there.
+        let mut view = b.page_view();
+        let earlier = of_kind(view.tree(), "ui.MenuItem")
+            .into_iter()
+            .find(|row| row.props.get("label") == Some(&Value::text("Earlier")))
+            .unwrap_or_else(|| panic!("no Earlier row in\n{}", dump(view.tree())))
+            .key
+            .clone();
+        view.fire(&earlier, "choose").expect("the page behind");
+        let asked = b.page.last();
+        assert_eq!(asked["op"], "history_entry");
+        assert_eq!(asked["entry"], 2);
     }
 
     #[test]

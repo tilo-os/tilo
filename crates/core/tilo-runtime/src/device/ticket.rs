@@ -425,6 +425,13 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
     CataloguePage::from_rows(REVISION.to_owned(), rows, query)
 }
 
+/// The page `query` asks of the device's own settings actions alone: what a device placed for
+/// records lists of its own, as it sends each to its workspace's host ([`super::confined`]).
+#[must_use]
+pub(crate) fn settings_catalogue(query: &CatalogueQuery) -> CataloguePage {
+    CataloguePage::from_rows(REVISION.to_owned(), settings_rows(), query)
+}
+
 /// The settings rows: the device's own records resource, and the actions that write one.
 fn settings_rows() -> Vec<CatalogueRow> {
     let resource = CatalogueResource {
@@ -1113,6 +1120,12 @@ impl Tickets {
         caller: &tilo_actions::remote::Caller,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
+        // A device a host placed for records works on those records alone: none of this device's
+        // actions (a ticket for a new computer, a name, a revocation, the updates and server
+        // controls) is its to ask, whichever host placed it.
+        if caller.placed_records().is_some() {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
         if let Some(state) = self.0.calls.lock_recover().get(&invocation) {
             return Pending::ready(Ok(state.receipt()));
         }
@@ -1127,6 +1140,14 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
+        // A device confined to one workspace, by a certificate for it or one placed for records of
+        // it, issues no ticket: adding a computer is the person's own act on a device that keeps
+        // their root, and a confined device keeps none.
+        if action == ISSUE && self.0.cert.capabilities.workspace_name().is_some() {
+            return Pending::ready(Err(refused(
+                "this device is confined to one workspace: it issues no tickets",
+            )));
+        }
         // What the calling account's own root signs is answered with that root, and with no
         // other: an account whose root this computer keeps not signs nothing here.
         let rooted = if ROOT_PERSON_SIGNED.contains(&action.as_str()) {

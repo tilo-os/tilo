@@ -48,8 +48,12 @@ kernel_build_packages=(bc bison diffutils dwarves elfutils-libelf-devel findutil
 # The components of the guest's session: os/components.toml is the one
 # record of which Tilo-built file lands where, so the image names components and
 # never a binary or a path. The launcher starts an app sandboxed and mounts its
-# runtimes; the store's tools install and verify what the image ships.
-session_components=(tilo-session control launcher install app-package runtime-bundle cli-shim)
+# runtimes; the store's tools install and verify what the image ships. The
+# device's daemon (native-runtime-host) is the VM's one device: it joins the
+# workspace and starts the session as its client, as a login's daemon does. The
+# `tilo` command is the tenant's way to that daemon, as the person's agent, as
+# it is on any device: an agent's run in the VM asks the VM's own actions.
+session_components=(native-runtime-host tilo-session control launcher install app-package runtime-bundle cli-shim tilo-cli)
 
 # Everything that ends up in the guest image: its recipe, the agent, what
 # arranges a session and an app store, the sources of the components it builds
@@ -195,6 +199,7 @@ case ${1:-} in
       "$out/usr/share/fonts/tilo" --scope product --offline \
       --cache "${TILO_FONT_ASSET_CACHE:-$scratch/tilo-font-seed}" >/dev/null
     test -x "$out/usr/bin/tilo-session"
+    test -x "$out/usr/bin/tilo"
     test -x "$out/usr/libexec/tilo/tilo-launcher"
     test -x "$out/usr/libexec/tilo/tilo-install"
     test -x "$out/usr/libexec/tilo/tilo-runtime-bundle"
@@ -238,6 +243,8 @@ case ${1:-} in
     test -x "$root/usr/bin/tilo-session"
     test -x "$root/usr/libexec/tilo/browser-session"
     test -x "$root/usr/libexec/tilo/apps-session"
+    test -x "$root/usr/libexec/tilo/vm-daemon"
+    test -x "$root/usr/libexec/tilo/tilo-runtime"
     test -x "$root/usr/libexec/tilo/git-credential-tilo"
     test -s "$root/etc/gitconfig"
     test -x "$root/usr/bin/Xwayland"

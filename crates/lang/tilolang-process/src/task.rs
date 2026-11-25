@@ -722,7 +722,10 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
             .map(str::to_owned),
         // Only a device that says it handed the agent its session answers for it; otherwise the
         // agent acts under a key of its own, and its writes must keep its signed call.
-        handed: author.get("handed").and_then(Json::as_bool).unwrap_or(false),
+        handed: author
+            .get("handed")
+            .and_then(Json::as_bool)
+            .unwrap_or(false),
         app: None,
     };
     Ok((source.to_owned(), go_ahead, author))
@@ -966,7 +969,7 @@ mod tests {
         task.session.run(
             source,
             &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::agent(
-                "task",
+                "task", "ada",
             )),
         )
     }

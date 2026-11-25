@@ -183,7 +183,7 @@ pub fn candidate(candidate: &MentionCandidate) -> crate::widget::completion::Can
 fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggestion {
     let detail = match candidate.id {
         MemberId::Person(_) => None,
-        MemberId::Agent(_) => Some(widget_text("widget-mention-agent")),
+        MemberId::Agent { .. } => Some(widget_text("widget-mention-agent")),
         MemberId::Bot(_) => Some(widget_text("widget-mention-bot")),
     };
     let row =
@@ -216,7 +216,7 @@ mod tests {
                 PresenceHue::of_identity("u_alan"),
             ),
             MentionCandidate::new(
-                MemberId::agent("tide"),
+                MemberId::agent("tide", "u_alan"),
                 "Tide",
                 PresenceHue::of_identity("agent:tide"),
             ),

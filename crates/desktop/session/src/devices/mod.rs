@@ -237,6 +237,7 @@ fn access(
                     RecordKey::Device => AccessKind::Device,
                     RecordKey::Agent => AccessKind::Agent,
                     RecordKey::Script => AccessKind::Script,
+                    RecordKey::Placing => AccessKind::Placing,
                 },
                 agent: listed.device.agent.clone().unwrap_or_default(),
                 current: reaching.is_some_and(|device| device.local),
@@ -258,6 +259,12 @@ fn access(
                     .agent
                     .as_ref()
                     .and_then(AgentScope::workspace_name)
+                    .or_else(|| {
+                        cert.capabilities
+                            .placing
+                            .as_ref()
+                            .map(tilo_user_identity::PlacedRecords::workspace_name)
+                    })
                     .unwrap_or_default(),
             }
         })

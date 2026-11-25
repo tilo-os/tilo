@@ -196,9 +196,11 @@ impl Grantee {
         Self::Member(crate::MemberId::person(id))
     }
 
+    /// The agent `id` acting for `person` ([`crate::MemberId::Agent`]).
+    #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
-        Self::Member(crate::MemberId::agent(id))
+    pub fn agent(id: impl Into<String>, person: impl Into<crate::PersonId>) -> Self {
+        Self::Member(crate::MemberId::agent(id, person))
     }
 
     #[must_use]
@@ -229,23 +231,26 @@ impl Grantee {
     pub fn person_id(&self) -> Option<&str> {
         match self.as_member()? {
             crate::MemberId::Person(person) => Some(person.as_str()),
-            crate::MemberId::Agent(_) | crate::MemberId::Bot(_) => None,
+            crate::MemberId::Agent { .. } | crate::MemberId::Bot(_) => None,
         }
     }
 
     #[must_use]
     pub fn agent_id(&self) -> Option<&str> {
-        match self.as_member()? {
-            crate::MemberId::Agent(agent) => Some(agent),
-            crate::MemberId::Person(_) | crate::MemberId::Bot(_) => None,
-        }
+        self.as_member()?.agent_id()
+    }
+
+    /// The agent a grant names, by its id and its person, when it names one.
+    #[must_use]
+    pub fn as_agent(&self) -> Option<(&str, &crate::PersonId)> {
+        self.as_member()?.as_agent()
     }
 
     #[must_use]
     pub fn bot_id(&self) -> Option<&str> {
         match self.as_member()? {
             crate::MemberId::Bot(bot) => Some(bot),
-            crate::MemberId::Person(_) | crate::MemberId::Agent(_) => None,
+            crate::MemberId::Person(_) | crate::MemberId::Agent { .. } => None,
         }
     }
 

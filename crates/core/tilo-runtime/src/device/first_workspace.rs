@@ -166,7 +166,7 @@ impl FirstWorkspace {
                 // Held now, it lists this device with the person's others, as the daemon's start
                 // does for a workspace it holds: what every host admits the device by, and what
                 // the evidence of a call it runs is signed under.
-                hold_person(self.workspaces.copies(), self.workspaces.device_cert()).await;
+                hold_person(self.workspaces.copies(), &self.workspaces.device_cert()).await;
                 self.name(file, workspace)?;
                 let _ = self.show(&[workspace]).await;
                 Ok(workspace.to_string())
@@ -284,6 +284,11 @@ pub(super) async fn hold_person(
     cert: &tilo_user_identity::DeviceCert,
 ) {
     use tilo_workspace_service::workspaces::person_workspace::devices;
+    // A device confined to one workspace is listed by the root that certified it, in the same
+    // step, and keeps no root to mark: it writes nothing of its person's.
+    if super::confined::workspace_of(cert).is_some() {
+        return;
+    }
     if let Err(error) = devices::keep(copies, cert).await {
         tracing::warn!(%error, "this device is not listed with its person's");
     }

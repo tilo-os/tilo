@@ -64,17 +64,14 @@ pub struct ListedAgent {
 /// works here because the record names the person it acts for, and that person's session its
 /// device joins on.
 pub trait AgentRoster: Send + Sync {
-    /// The person `agent` acts for in `workspace`, while the workspace's
-    /// record names it active there; `None` for an agent it does not name.
-    fn acts_for(&self, workspace: &str, agent: &str) -> Option<String> {
-        self.listed(workspace)
-            .into_iter()
-            .find(|listed| listed.id == agent)
-            .map(|listed| listed.acts_for)
-    }
-    /// Whether the workspace's record names `agent` active in `workspace`.
-    fn lists(&self, workspace: &str, agent: &str) -> bool {
-        self.acts_for(workspace, agent).is_some()
+    /// Whether the workspace's record names `agent` active in `workspace`: its id, acting for
+    /// its person. Another person's agent of the same id is another agent.
+    fn lists(&self, workspace: &str, agent: &tilo_action_policy::MemberId) -> bool {
+        agent.as_agent().is_some_and(|(id, person)| {
+            self.listed(workspace)
+                .iter()
+                .any(|listed| listed.id == id && listed.acts_for == person.as_str())
+        })
     }
     /// The active agents the workspace's record names: its agent members.
     fn listed(&self, workspace: &str) -> Vec<ListedAgent>;

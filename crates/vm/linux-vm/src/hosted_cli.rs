@@ -90,10 +90,10 @@ usage: tilo-linux-vm hosted <command>
                          only the blocks that changed since its last copy
   browser-open --run DIR --workspace ID --account ID [--size SIZE] [--store DIR]
                [--material JSON]
-                         open or attach the browser session in a workspace's
-                         VM, and say what it took
+                         start the daemon in a workspace's VM with the placement
+                         JSON, or find it running, and say the device it is
   browser-stop --run DIR WORKSPACE
-                         end the browser session in a workspace's VM now
+                         end the daemon in a workspace's VM, and its sessions, now
 ";
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -577,14 +577,11 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Reply::Done | Reply::Ready { .. } => Ok(ExitCode::SUCCESS),
-        Reply::Opened {
-            opened_ms,
-            provider,
-        } => {
+        Reply::Opened { opened_ms, device } => {
             println!(
                 "{} {}",
-                opened_ms.map_or_else(|| "attached".to_string(), |ms| format!("opened in {ms} ms")),
-                provider,
+                opened_ms.map_or_else(|| "running".to_string(), |ms| format!("started in {ms} ms")),
+                device,
             );
             Ok(ExitCode::SUCCESS)
         }

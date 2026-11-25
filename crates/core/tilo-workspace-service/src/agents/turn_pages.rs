@@ -173,12 +173,7 @@ impl TurnPages {
         reply: &Reply,
     ) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let person = reply
-            .caller
-            .user_public_key()
-            .map(hex::encode)
-            .unwrap_or_default();
-        let agent = (turn.agent.id.0.clone(), person);
+        let agent = (turn.agent.id.0.clone(), turn.agent.acts_for.clone());
         let policy = workspaces
             .agent_policy(&reply.workspace, &agent.0, &agent.1)
             .await;

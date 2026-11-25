@@ -62,7 +62,11 @@ pub fn ask(
             label,
             title,
         } = opened_by;
-        doc.put(&entry, SESSION_AGENT, agent.as_str())?;
+        doc.put(
+            &entry,
+            SESSION_AGENT,
+            String::from_utf8_lossy(&agent.actor_bytes()).as_ref(),
+        )?;
         doc.put(&entry, SESSION, session.as_str())?;
         doc.put(&entry, SESSION_LABEL, label.as_str())?;
         doc.put(&entry, SESSION_TITLE, title.as_str())?;
@@ -86,11 +90,15 @@ pub fn asked(doc: &AutoCommit) -> Vec<(String, AskedView)> {
                 },
                 _ => None,
             };
-            let opened_by = text(SESSION).map(|session| OpenedBy {
-                run: session,
-                agent: text(SESSION_AGENT).unwrap_or_default(),
-                label: text(SESSION_LABEL).unwrap_or_default(),
-                title: text(SESSION_TITLE).unwrap_or_default(),
+            let opened_by = text(SESSION).and_then(|session| {
+                Some(OpenedBy {
+                    run: session,
+                    agent: tilo_action_policy::MemberId::of_actor_bytes(
+                        text(SESSION_AGENT)?.as_bytes(),
+                    )?,
+                    label: text(SESSION_LABEL).unwrap_or_default(),
+                    title: text(SESSION_TITLE).unwrap_or_default(),
+                })
             });
             Some((
                 id,
@@ -178,7 +186,7 @@ mod tests {
             person: person.into(),
             opened_by: Some(OpenedBy {
                 run: "agent-session:1".into(),
-                agent: "claude-code-0a1b2c3d4e".into(),
+                agent: tilo_action_policy::MemberId::agent("claude-code-0a1b2c3d4e", "ada"),
                 label: "Claude Code".into(),
                 title: String::new(),
             }),

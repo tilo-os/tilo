@@ -255,8 +255,16 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             {
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
-                workspace.allow_app(Grantee::agent("scribe"), "so.tilo.chat", KindSet::ALL);
+                workspace.allow_app(
+                    Grantee::agent("scribe", "ada"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
+                workspace.allow_app(
+                    Grantee::agent("scribe", "ada"),
+                    "so.tilo.chat",
+                    KindSet::ALL,
+                );
             }
             let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
@@ -266,7 +274,7 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(
                 delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
             );
 
             let beyond = app_asks_pressed(

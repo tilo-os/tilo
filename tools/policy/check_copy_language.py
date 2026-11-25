@@ -691,7 +691,6 @@ SURFACE_ROOTS += (
     "crates/core/session-client/",
     "crates/os/connectivity-service/",
     "crates/services/crash-reports/",
-    "crates/core/identity-authority/",
     "crates/os/network-secret-agent/",
     "crates/os/polkit-agent/",
     "crates/os/power-service/",

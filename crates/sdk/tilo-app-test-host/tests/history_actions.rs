@@ -629,7 +629,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         for (actor, text) in [
-            (tilo_actions::ActionInvoker::agent("clipboard-helper"), "agent card"),
+            (tilo_actions::ActionInvoker::agent("clipboard-helper", "ada"), "agent card"),
             (tilo_actions::ActionInvoker::person("owner"), "person card"),
         ] {
             app.call_by(
@@ -829,7 +829,7 @@ tilo_test_env::scenario! {
     phase an_agents_edit_is_recorded_as_the_agent_acting_for_its_person;
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
-        let agent = tilo_actions::Acting::agent("claude")
+        let agent = tilo_actions::Acting::agent("claude", "ada")
             .acting_for(tilo_actions::Acting::person("ada"));
         app.call_by(
             tilo_actions::ActionInvoker::admitted(&agent),
@@ -844,7 +844,7 @@ tilo_test_env::scenario! {
             .and_then(|version| version.context)
             .expect("the agent's edit is recorded");
         let invoker = entry.invoker.expect("attributed");
-        assert_eq!(invoker.acting.by, MemberId::agent("claude").into());
+        assert_eq!(invoker.acting.by, MemberId::agent("claude", "ada").into());
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
         let listed = newest(&mut app);

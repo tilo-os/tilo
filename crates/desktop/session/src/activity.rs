@@ -1627,7 +1627,8 @@ mod tests {
             *time = time.saturating_add(1);
             let wrote = tilo_actions::ActionContext {
                 invoker: Some(
-                    tilo_actions::ActionInvoker::agent("Claude Code").acting_for("ada".to_owned()),
+                    tilo_actions::ActionInvoker::agent("Claude Code", "ada".to_owned())
+                        .acting_for("ada".to_owned()),
                 ),
                 what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
                     tilo_actions::ActionKey::new(
@@ -1793,7 +1794,7 @@ mod tests {
                 members: vec![
                     collab_types::Member::named(ada.clone(), "Ada"),
                     collab_types::Member::of_software(
-                        collab_types::MemberId::agent(agent),
+                        collab_types::MemberId::agent(agent, "ada"),
                         "Claude Code",
                     ),
                 ],
@@ -1807,7 +1808,8 @@ mod tests {
 
         assert_eq!(authors.resolve_entry(&device, None).name, "Ada");
         let invoker = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent(agent).acting_for(tilo_actions::Acting::person("ada")),
+            &tilo_actions::Acting::agent(agent, "ada")
+                .acting_for(tilo_actions::Acting::person("ada")),
         );
         let context = tilo_actions::ActionContext::default().with_invoker(invoker);
         let writer = hex::encode([9_u8; 32]);

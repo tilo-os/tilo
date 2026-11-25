@@ -668,9 +668,17 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.authorize(caller, Some(&workspace), WorkspaceOp::Change(&change), now)?;
+        let by = self.authorize(caller, Some(&workspace), WorkspaceOp::Change(&change), now)?;
         let key = self.inner.host.key.clone();
-        self.administer(
+        // Giving a member a role of the workspace's own changes that member; defining a role
+        // changes nobody.
+        let stamp = matches!(
+            change,
+            tilo_action_policy::Change::SetMemberCustomRole { .. }
+        )
+        .then(|| stamped(governance::SET_ROLE, actor_of(&by)))
+        .flatten();
+        self.administer_as(
             &mut workspace,
             request_id,
             request_digest(&("custom-role", &change))?,
@@ -678,6 +686,7 @@ impl Workspaces {
                 peer.governance_mut()
                     .change_member_list(change, &key, system_time(now))
             },
+            stamp,
             now,
         )
         .await
@@ -847,8 +856,8 @@ impl Workspaces {
     /// Why the workspace did not take the answer, or does not hold this device
     /// as a member.
     pub async fn answer_stop(&self, workspace: &str, agent: &str) -> Result<(), String> {
-        let person = Grantee::person(hex::encode(self.inner.host.cert.user_public_key));
-        let stop = tilo_action_policy::agent_answers::stop_grant(workspace, agent, person);
+        let person = hex::encode(self.inner.host.cert.user_public_key);
+        let stop = tilo_action_policy::agent_answers::stop_grant(workspace, agent, &person);
         self.commit_own_change(
             workspace,
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
@@ -905,15 +914,28 @@ impl Workspaces {
         let named = workspace.to_owned();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.authorize(
+        let by = self.authorize(
             administrator,
             Some(&workspace),
             WorkspaceOp::MakeAdministrator,
             now,
         )?;
         let key = self.inner.host.key.clone();
+        // Someone new to the workspace is added; a member is given a new role.
+        let verb = if workspace
+            .peer()
+            .governance()
+            .governed_policy()
+            .map_err(CollaborationError::new)?
+            .members
+            .contains_key(&hex::encode(user_public_key))
+        {
+            governance::SET_ROLE
+        } else {
+            governance::ADD_MEMBER
+        };
         let completion = self
-            .administer(
+            .administer_as(
                 &mut workspace,
                 request_id,
                 request_digest(&("administrator", user_public_key, name))?,
@@ -925,6 +947,7 @@ impl Workspaces {
                         system_time(now),
                     )
                 },
+                stamped(verb, actor_of(&by)),
                 now,
             )
             .await?;
@@ -980,20 +1003,21 @@ impl Workspaces {
         let named = workspace.to_owned();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
+        let mut by = None;
         for person in people {
             let change = tilo_action_policy::Change::RemoveMember {
                 person: hex::encode(person),
             };
-            self.authorize(
+            by = Some(self.authorize(
                 administrator,
                 Some(&workspace),
                 WorkspaceOp::Change(&change),
                 now,
-            )?;
+            )?);
         }
         let key = self.inner.host.key.clone();
         let completion = self
-            .administer(
+            .administer_as(
                 &mut workspace,
                 request_id,
                 request_digest(people)?,
@@ -1006,6 +1030,8 @@ impl Workspaces {
                     }
                     Ok(changed)
                 },
+                by.as_deref()
+                    .and_then(|by| stamped(governance::REMOVE_MEMBER, actor_of(by))),
                 now,
             )
             .await?;

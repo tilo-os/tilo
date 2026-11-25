@@ -227,7 +227,8 @@ fn admit_agent(journal: &mut InvocationJournal, workspace: &str) -> InvocationKe
         invocation: tilo_actions::InvocationId::new(),
     };
     let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,
-        "context":tilo_actions::ActionContext::default(),"actor":{"agent":"scribe"}});
+        "context":tilo_actions::ActionContext::default(),
+        "actor":{"agent":{"id":"scribe","person":hex::encode([1; 32])}}});
     assert!(journal.admit(key.clone(), intent, 2).unwrap());
     key
 }

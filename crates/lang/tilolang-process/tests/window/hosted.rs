@@ -476,7 +476,7 @@ fn agent_session() -> (
     ui::tilo_actions::ActionContext,
 ) {
     (
-        ui::tilo_actions::ActionInvoker::agent("helper").acting_for("ada"),
+        ui::tilo_actions::ActionInvoker::agent("helper", "ada").acting_for("ada"),
         ui::tilo_actions::ActionContext::default().with_group(
             "agent-session:7",
             "Tidy the notes",

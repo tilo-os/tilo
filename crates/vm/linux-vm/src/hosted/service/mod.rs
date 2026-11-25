@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use linux_vm_protocol::link::AgentLink;
 
-use super::browser::{self, Browser, Kind, Launcher, Life, Limits, UP_PATIENCE};
+use super::browser::{self, Daemon, Launcher, UP_PATIENCE};
 use super::control::{
     FRAMING, HostLoad, OpenApp, OpenBrowser, Reply, Request, ShareRequest, VmRequest, VmStatus,
 };
@@ -40,9 +40,9 @@ pub const BUSY: &str = "The machine is full until one of its VMs goes idle.";
 /// caller asks again every few seconds while it waits.
 const WAITING_FOR_MS: u64 = 15_000;
 
-/// How long a browser session is given to write its profile back and end
+/// How long a VM's daemon is given to end its sessions (Browser writes its profile back) and end
 /// before it is killed.
-const BROWSER_GRACE: Duration = Duration::from_secs(15);
+const DAEMON_GRACE: Duration = Duration::from_secs(20);
 
 /// How long after a template was last tried another try waits. A node that
 /// could not spare the memory or whose boot failed gets another try while
@@ -110,9 +110,8 @@ struct Entry {
     /// Admitted and not yet seen asleep. Read without the VM's lock.
     awake: AtomicBool,
     vm: Mutex<HostedVm>,
-    browser: Mutex<Option<Arc<Browser>>>,
-    /// The apps session; the tenant's own, never the browser's.
-    apps: Mutex<Option<Arc<Browser>>>,
+    /// The VM's daemon, which runs its Browser and Linux apps sessions.
+    daemon: Mutex<Option<Arc<Daemon>>>,
     memory: Mutex<Measured>,
     /// Deleted: its files are gone, and whoever still holds it wakes nothing.
     gone: AtomicBool,
@@ -157,7 +156,6 @@ pub struct Service {
     building_mib: AtomicU64,
     /// Wakes waiting for room: what each asks for, and when it last asked.
     waiting: Mutex<BTreeMap<String, (u64, u64)>>,
-    browser_limits: Limits,
     /// When each size's template was last tried: building, or failed.
     templates: Mutex<BTreeMap<VmSize, u64>>,
     /// The VMs being made as branches of others, each with its account: no wake takes one, and
@@ -266,7 +264,6 @@ impl Service {
             available: Arc::new(memory::available_mib),
             building_mib: AtomicU64::new(0),
             waiting: Mutex::new(BTreeMap::new()),
-            browser_limits: Limits::default(),
             templates: Mutex::new(BTreeMap::new()),
             branching: Mutex::new(BTreeMap::new()),
             config,
@@ -319,8 +316,7 @@ impl Service {
                 log,
                 Arc::clone(&self.clock),
             )?),
-            browser: Mutex::new(None),
-            apps: Mutex::new(None),
+            daemon: Mutex::new(None),
             memory: Mutex::new(Measured::default()),
             gone: AtomicBool::new(false),
         });
@@ -616,15 +612,15 @@ impl Service {
             .cloned()
     }
 
-    /// Open `request`'s Browser: the session in the workspace's VM, started with the workspace's
-    /// material, or the session already running. `Some(ms)` when this request handed it the
-    /// workspace, `None` when it attached.
+    /// Start `request`'s workspace VM for its Browser: its daemon logged in with the workspace's
+    /// placement, started now or running already, with the folder Browser keeps its profile in
+    /// shared with the VM. The device the daemon logged in as, and what starting it took when this
+    /// request started it.
     pub fn open_browser(
         &self,
         request: &OpenBrowser,
-    ) -> Result<(Option<u64>, String), BrowserError> {
-        // Before anything wakes: a material the session could not join with
-        // refuses the open.
+    ) -> Result<(Option<u64>, [u8; 32]), BrowserError> {
+        // Before anything wakes: a placement the daemon could not log in with refuses the open.
         let material = self.hand_off(&request.material)?;
         let vm = VmRequest {
             workspace: request.workspace.clone(),
@@ -655,31 +651,16 @@ impl Service {
             })
             .transpose()?;
         let entry = self.admit(&vm, false)?;
-        let browser = self.session_in(&entry, Kind::Browser, request.size, store)?;
-        match browser.open(&material, UP_PATIENCE) {
-            Ok(opened_ms) => {
-                let provider = browser.life().provider().ok_or_else(|| {
-                    BrowserError::Session("the session came up without a window".to_owned())
-                })?;
-                if let Some(opened_ms) = opened_ms {
-                    eprintln!(
-                        "tilo-linux-vm hosted: {}: Browser up {provider} {opened_ms}ms after hand-off",
-                        entry.id()
-                    );
-                }
-                Ok((opened_ms, provider))
-            }
-            Err(message) => {
-                end_session(&entry, Kind::Browser, BROWSER_GRACE);
-                Err(BrowserError::Session(message))
-            }
-        }
+        let daemon = self.daemon_in(&entry, false, request.size, store.as_deref())?;
+        logged_in(&entry, &daemon, &material, store.as_deref())
     }
 
-    /// The line a workspace's session is handed: the server's material, with
-    /// the server's address replaced by the one its VM dials
-    /// ([`browser::hand_off`]).
-    fn hand_off(&self, material: &str) -> Result<String, BrowserError> {
+    /// The placement a workspace's daemon is handed: the server's material, with the address its
+    /// ticket names the server at replaced by the one its VM dials ([`browser::hand_off`]).
+    fn hand_off(
+        &self,
+        material: &str,
+    ) -> Result<tilo_server_protocol::hosted::Material, BrowserError> {
         let server = self
             .config
             .settings
@@ -688,11 +669,10 @@ impl Service {
         browser::hand_off(material, server.guest()).map_err(BrowserError::Invalid)
     }
 
-    /// Start the Linux app `request` names in its workspace's VM: in the apps session there, or in
-    /// one started now with the workspace's material. A Linux app is a Linux action, so the
-    /// account's plan must allow it and a host that sells its VMs needs a card. `Some(ms)` when
-    /// this request started the session.
-    pub fn open_app(&self, request: &OpenApp) -> Result<Option<u64>, BrowserError> {
+    /// Start `request`'s workspace VM for its Linux apps, as [`Self::open_browser`] does for its
+    /// Browser. A Linux app is a Linux action, so the account's plan must allow it and a host that
+    /// sells its VMs needs a card.
+    pub fn open_app(&self, request: &OpenApp) -> Result<(Option<u64>, [u8; 32]), BrowserError> {
         let material = self.hand_off(&request.material)?;
         let vm = VmRequest {
             workspace: request.workspace.clone(),
@@ -708,45 +688,24 @@ impl Service {
             }
         }
         let entry = self.admit(&vm, true)?;
-        let apps = self.session_in(&entry, Kind::Apps, request.size, None)?;
-        let opened = match apps.open(&material, UP_PATIENCE) {
-            Ok(opened) => opened,
-            Err(message) => {
-                end_session(&entry, Kind::Apps, BROWSER_GRACE);
-                return Err(BrowserError::Session(message));
-            }
-        };
-        apps.tell(&request.launch.line())
-            .map_err(BrowserError::Session)?;
-        eprintln!(
-            "tilo-linux-vm hosted: {}: Linux app {} asked of its apps session{}",
-            entry.id(),
-            request.launch.desktop_id,
-            opened.map_or_else(String::new, |ms| format!(", up {ms}ms after hand-off")),
-        );
-        Ok(opened)
+        let daemon = self.daemon_in(&entry, true, request.size, None)?;
+        logged_in(&entry, &daemon, &material, None)
     }
 
-    pub fn stop_apps(&self, workspace: &str) {
-        if let Some(entry) = self.entry(workspace, ENVIRONMENT) {
-            end_session(&entry, Kind::Apps, BROWSER_GRACE);
-        }
-    }
-
-    /// `kind`'s session in `entry`'s VM, woken at `size` with `store` mounted: the one running, or
-    /// one that starts when the workspace's material is handed to it. A Linux apps session bills
-    /// the VM's time as a Linux action does.
-    fn session_in(
+    /// `entry`'s VM's daemon, the VM woken at `size` with `store` mounted and an X display when
+    /// `x11`: the one running, or one that starts when the workspace's placement is handed to it. A
+    /// VM woken for its Linux apps bills its time as a Linux action does.
+    fn daemon_in(
         &self,
         entry: &Entry,
-        kind: Kind,
+        x11: bool,
         size: VmSize,
-        store: Option<PathBuf>,
-    ) -> Result<Arc<Browser>, BrowserError> {
+        store: Option<&Path>,
+    ) -> Result<Arc<Daemon>, BrowserError> {
         let shares: Vec<Served> = store
             .iter()
             .map(|path| Served {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 read_only: false,
             })
             .collect();
@@ -759,7 +718,7 @@ impl Service {
             // named is what a VM that is not running here would be made at.
             vm.want_size(size)?;
             *lock(&entry.size) = vm.identity().size;
-            vm.ensure(&shares, kind == Kind::Apps)
+            vm.ensure(&shares, x11)
         })();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
         drop(vm);
@@ -768,38 +727,27 @@ impl Service {
             .config
             .files(&entry.workspace, &entry.environment)
             .state
-            .join(kind.log());
-        let mut held = lock(session_slot(entry, kind));
-        let running = held
-            .as_ref()
-            .filter(|browser| browser.life().ended_because().is_none())
-            .cloned();
-        let browser = running.unwrap_or_else(|| {
-            let life = Arc::new(Life::new((self.clock)()));
-            let starts = Launcher::new(
-                link,
-                kind,
-                store,
-                Arc::clone(&life),
-                log,
-                Arc::clone(&self.clock),
-            );
-            let browser = Arc::new(Browser::booted(life, Box::new(starts)));
-            *held = Some(Arc::clone(&browser));
-            browser
+            .join(browser::LOG);
+        let mut held = lock(&entry.daemon);
+        let running = held.as_ref().filter(|daemon| daemon.alive()).cloned();
+        let daemon = running.unwrap_or_else(|| {
+            let daemon = Arc::new(Daemon::booted(Box::new(Launcher::new(link, log))));
+            *held = Some(Arc::clone(&daemon));
+            daemon
         });
         drop(held);
-        Ok(browser)
+        Ok(daemon)
     }
 
-    pub fn stop_browser(&self, workspace: &str) {
+    /// End the daemon in `workspace`'s VM, and its sessions.
+    pub fn stop_daemon(&self, workspace: &str) {
         if let Some(entry) = self.entry(workspace, ENVIRONMENT) {
-            end_session(&entry, Kind::Browser, BROWSER_GRACE);
+            end_daemon(&entry, DAEMON_GRACE);
         }
     }
 
-    /// End the browser sessions at their limits, each on a thread of its own so it can write its
-    /// profile, and make the template of each size in use that has none. Called between polls.
+    /// Make the template of each size in use that has none. Called between polls. The VMs'
+    /// sessions end at their limits in their own daemons.
     pub fn maintain(self: &Arc<Self>) {
         let now = (self.clock)();
         let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
@@ -807,21 +755,6 @@ impl Service {
             entries.iter().map(|entry| *lock(&entry.size)).collect();
         for size in sizes {
             self.keep_template(size, now);
-        }
-        for entry in entries {
-            for kind in [Kind::Browser, Kind::Apps] {
-                let end = lock(session_slot(&entry, kind))
-                    .as_ref()
-                    .and_then(|session| session.expired(now, self.browser_limits));
-                if let Some(end) = end {
-                    eprintln!(
-                        "tilo-linux-vm hosted: {}: {kind:?} session ended ({end})",
-                        entry.id()
-                    );
-                    let entry = Arc::clone(&entry);
-                    std::thread::spawn(move || end_session(&entry, kind, BROWSER_GRACE));
-                }
-            }
         }
     }
 
@@ -1108,7 +1041,7 @@ impl Service {
             )));
         }
         if let Some(entry) = self.entry(workspace, environment) {
-            end_sessions(&entry, BROWSER_GRACE);
+            end_daemon(&entry, DAEMON_GRACE);
             // Held until its files are gone: a wake that waited for it finds it gone, never a VM
             // half removed.
             let mut vm = lock(&entry.vm);
@@ -1142,7 +1075,7 @@ impl Service {
             return Ok(());
         };
         eprintln!("tilo-linux-vm hosted: {}: asked to suspend", entry.id());
-        end_sessions(&entry, BROWSER_GRACE);
+        end_daemon(&entry, DAEMON_GRACE);
         let mut vm = lock(&entry.vm);
         let result = vm.suspend();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -1153,7 +1086,7 @@ impl Service {
         let Some(entry) = self.entry(workspace, environment) else {
             return Ok(());
         };
-        end_sessions(&entry, BROWSER_GRACE);
+        end_daemon(&entry, DAEMON_GRACE);
         let mut vm = lock(&entry.vm);
         let result = vm.stop();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -1163,7 +1096,7 @@ impl Service {
     pub fn suspend_all(&self) {
         let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
         for entry in entries {
-            end_sessions(&entry, BROWSER_GRACE);
+            end_daemon(&entry, DAEMON_GRACE);
             let mut vm = lock(&entry.vm);
             if vm.awake() && vm.suspend().is_err() {
                 let _ = vm.stop();
@@ -1185,7 +1118,7 @@ impl Service {
             for entry in &entries {
                 scope.spawn(move || {
                     // A short grace: the notice is about 30 seconds.
-                    end_sessions(entry, Duration::from_secs(2));
+                    end_daemon(entry, Duration::from_secs(2));
                     let mut vm = lock(&entry.vm);
                     if vm.awake()
                         && let Err(error) = vm.suspend()
@@ -1228,7 +1161,7 @@ impl Service {
         }
         let id = entry.id();
         let files = self.config.files(workspace, environment);
-        end_sessions(&entry, BROWSER_GRACE);
+        end_daemon(&entry, DAEMON_GRACE);
         // Held for the transfer: a wake that waited for it finds it gone, never the disk half sent.
         let mut vm = lock(&entry.vm);
         if vm.awake()
@@ -1465,28 +1398,24 @@ impl Service {
                 load: self.load(),
             },
             Request::OpenBrowser { browser } => match self.open_browser(&browser) {
-                Ok((opened_ms, provider)) => Reply::Opened {
+                Ok((opened_ms, device)) => Reply::Opened {
                     opened_ms,
-                    provider,
+                    device: hex::encode(device),
                 },
                 Err(BrowserError::Full(words)) => Reply::Busy(words),
                 Err(error) => Reply::Error(error.to_string()),
             },
-            Request::StopBrowser { workspace } => {
-                self.stop_browser(&workspace);
-                Reply::Done
-            }
             Request::OpenApp { app } => match self.open_app(&app) {
-                Ok(opened_ms) => Reply::Opened {
+                Ok((opened_ms, device)) => Reply::Opened {
                     opened_ms,
-                    provider: tilo_actions::remote::linux_apps::UP_PROVIDER.to_owned(),
+                    device: hex::encode(device),
                 },
                 Err(BrowserError::Refused(refusal)) => Reply::Refused(refusal),
                 Err(BrowserError::Full(words)) => Reply::Busy(words),
                 Err(error) => Reply::Error(error.to_string()),
             },
-            Request::StopApps { workspace } => {
-                self.stop_apps(&workspace);
+            Request::StopBrowser { workspace } | Request::StopApps { workspace } => {
+                self.stop_daemon(&workspace);
                 Reply::Done
             }
             Request::Branch { vm, from } => self.answer_branch(&vm, &from),
@@ -1604,38 +1533,45 @@ impl Service {
     }
 }
 
-fn end_sessions(entry: &Entry, grace: Duration) {
-    end_session(entry, Kind::Apps, grace);
-    end_session(entry, Kind::Browser, grace);
-}
-
-/// The sessions the host started in `entry`'s VM that are still running: what
-/// keeps the VM awake between the commands run in it, as its guest's own
-/// programs do.
-fn held_sessions(entry: &Entry) -> u32 {
-    [Kind::Browser, Kind::Apps]
-        .into_iter()
-        .filter(|kind| {
-            lock(session_slot(entry, *kind))
-                .as_ref()
-                .is_some_and(|session| session.life().alive())
-        })
-        .count()
-        .try_into()
-        .unwrap_or(u32::MAX)
-}
-
-fn session_slot(entry: &Entry, kind: Kind) -> &Mutex<Option<Arc<Browser>>> {
-    match kind {
-        Kind::Browser => &entry.browser,
-        Kind::Apps => &entry.apps,
+/// `daemon` logged in with `material`, `store` named as Browser's: ended again when it does not.
+fn logged_in(
+    entry: &Entry,
+    daemon: &Daemon,
+    material: &tilo_server_protocol::hosted::Material,
+    store: Option<&Path>,
+) -> Result<(Option<u64>, [u8; 32]), BrowserError> {
+    match daemon.open(material, store, UP_PATIENCE) {
+        Ok((started_ms, device)) => {
+            if let Some(started_ms) = started_ms {
+                eprintln!(
+                    "tilo-linux-vm hosted: {}: its daemon logged in {started_ms}ms after it \
+                     started",
+                    entry.id()
+                );
+            }
+            Ok((started_ms, device))
+        }
+        Err(message) => {
+            end_daemon(entry, DAEMON_GRACE);
+            Err(BrowserError::Session(message))
+        }
     }
 }
 
-fn end_session(entry: &Entry, kind: Kind, grace: Duration) {
-    let session = lock(session_slot(entry, kind)).take();
-    if let Some(browser) = session {
-        browser.end(grace);
+/// Whether `entry`'s VM's daemon runs: what keeps the VM awake between the commands run in it,
+/// as its guest's own programs do.
+fn held_sessions(entry: &Entry) -> u32 {
+    u32::from(
+        lock(&entry.daemon)
+            .as_ref()
+            .is_some_and(|daemon| daemon.alive()),
+    )
+}
+
+fn end_daemon(entry: &Entry, grace: Duration) {
+    let daemon = lock(&entry.daemon).take();
+    if let Some(daemon) = daemon {
+        daemon.end(grace);
     }
 }
 

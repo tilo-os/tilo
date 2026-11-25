@@ -36,7 +36,6 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionDescriptor, ActionFailure};
 use tilo_broker_core::BrokerActor;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use crate::platform::steps::SessionSteps;
 use tilo_workspace_service::workspaces::task_programs::{ProgramCaller, ProgramRequest, Programs};
@@ -101,12 +100,6 @@ impl SessionActions {
     /// The rows offered now, as the last pass read them.
     pub(crate) fn offered(&self) -> Vec<tilo_actions::api::PlacedAction> {
         self.rows.read_recover().clone()
-    }
-
-    /// Answer the session's own actions from now on, offered to a turn's agent and admitted by
-    /// that turn: the layout, its undo, the windows and the notices.
-    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
-        providers.provide(wire::PROVIDER, wire::PROVIDER, Reach::Turns, self);
     }
 
     /// Serve them on the device's dispatch too, over the shell's link `shell`, for as long as it
@@ -995,7 +988,7 @@ mod tests {
         workspace.policy.owner = Some(person_id.to_owned());
         workspace.policy.grants.push(tilo_action_policy::Grant::new(
             "agent-member:scribe:session",
-            tilo_action_policy::Grantee::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe", person_id.to_owned()),
             workspace.policy.node(),
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Allow,

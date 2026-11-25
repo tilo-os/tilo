@@ -533,6 +533,12 @@ d-qfj1tkgq = Geprüft
     .w-location = Ort
     .w-came-from = Kam von
     .w-select-a-file-to-see-what = Wähle eine Datei, um zu sehen, was sie ist.
+    .w-access = Zugriff
+    .w-no-app-or-person-was-given = Keine App und keine Person hat diesen Ordner bekommen.
+    .w-no-app-or-person-was-given-2 = Keine App und keine Person hat diese Datei bekommen.
+    .w-you-gave-this = Du hast das vergeben
+    .w-gave-this = { $granted_by_name } hat das vergeben
+    .w-take-back = Zurücknehmen
 
 d-wduoe4ej = Ausgewählt
     .doc = Die Einträge, die die Person gewählt hat, nach ihren Pfaden; der Eintrag, den die Inspektion zuletzt unter ihnen zeigt; leer, solange nichts gewählt ist.

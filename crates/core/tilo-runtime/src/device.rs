@@ -27,8 +27,8 @@ mod agent_tools;
 #[cfg(test)]
 mod app_listing_tests;
 /// The project checks this device approved: its work, kept as its jobs. A check's commands are
-/// ush's own, which a phone's app carries none of.
-#[cfg(all(unix, not(target_os = "android")))]
+/// ush's own, which runs only on Linux.
+#[cfg(target_os = "linux")]
 pub(crate) mod approved_checks;
 mod asked;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
@@ -40,6 +40,7 @@ mod dispatch;
 #[cfg(target_os = "linux")]
 pub mod environments;
 // The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
+pub(crate) mod confined;
 pub mod control;
 mod files_tree;
 #[cfg(test)]
@@ -113,6 +114,8 @@ pub(crate) mod unclaimed;
 mod unclaimed_tests;
 // A vault item released to the app process whose connection asks for it.
 pub(crate) mod vault_release;
+#[cfg(target_os = "linux")]
+pub(crate) mod vm_environment;
 pub mod wake;
 pub mod wifi;
 mod window_follow;

@@ -96,9 +96,11 @@ fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, Str
     workspace
         .policy
         .grant(reads("guest-reads", Grantee::person("guest"), guest_until));
-    workspace
-        .policy
-        .grant(reads("scribe-reads", Grantee::agent("scribe"), agent_until));
+    workspace.policy.grant(reads(
+        "scribe-reads",
+        Grantee::agent("scribe", "guest"),
+        agent_until,
+    ));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     (tree, workspace_id)

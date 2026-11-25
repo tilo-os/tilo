@@ -39,7 +39,9 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
         .host
         .runtime()
         .run_agent_block(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task:1")),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+                "task:1", "ada",
+            )),
             &source,
         )
         .unwrap()

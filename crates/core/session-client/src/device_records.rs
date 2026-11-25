@@ -4,6 +4,11 @@
 //! (`settings/<name>` in the person's own workspace): read through the one record API and written
 //! with the device's `settings#set` action, both on the shell link the daemon handed the desktop.
 //!
+//! A device certified for one record alone, a workspace's VM, has no workspace of the person's to
+//! keep them in and never writes their settings: its session's records are kept in that one record
+//! instead ([`Place::Environment`]), each under the same name, written with the same action. The
+//! host seals them there, so the VM's disk keeps nothing its next session needs.
+//!
 //! A write is handed to the daemon in the order the session made it, away from the thread that made
 //! it; [`DeviceRecords::flush`] is what a session that ends waits for. A record the session shows
 //! while it runs is followed ([`DeviceRecord::follow`]): a change Settings, an agent or another of
@@ -17,7 +22,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
     DEVICE_SETTINGS, InvokeArgument, InvokeRequest, ReadAnswer, RemoteActionTarget,
-    ResourceReadRequest,
+    ResourceAddress, ResourceReadRequest,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_lock::MutexRecover as _;
@@ -50,11 +55,67 @@ impl std::fmt::Debug for DeviceRecords {
     }
 }
 
+/// Where the device's daemon keeps the session's records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// The person's own workspace, by its id: each record is `settings/<name>` there.
+    Own(String),
+    /// The one record a device certified for that record alone may write (a workspace's VM): each
+    /// record is the field `settings.<name>` of it.
+    Environment(ResourceAddress),
+}
+
+impl Place {
+    /// The workspace a read or a write of a record here names.
+    fn workspace(&self) -> &str {
+        match self {
+            Self::Own(workspace) => workspace,
+            Self::Environment(address) => &address.workspace,
+        }
+    }
+
+    /// The read of the record `name`: what it holds now, or with `after` once it moves past that
+    /// revision or the follower's wait went by.
+    fn read_request(&self, name: &str, after: Option<String>) -> ResourceReadRequest {
+        let wait_ms = after
+            .is_some()
+            .then(|| u32::try_from(FOLLOW_WAIT.as_millis()).unwrap_or(u32::MAX));
+        let (app, record) = match self {
+            Self::Own(_) => (DEVICE_SETTINGS.to_owned(), name.to_owned()),
+            Self::Environment(address) => (address.app.clone(), address.record.clone()),
+        };
+        ResourceReadRequest {
+            workspace: self.workspace().to_owned(),
+            app,
+            record,
+            joined: false,
+            after,
+            wait_ms,
+            answer: ReadAnswer::Reading,
+        }
+    }
+
+    /// What a reading of the record `name` holds: `None` for one absent or emptied.
+    fn value_of(&self, name: &str, readings: &Value) -> Option<Value> {
+        let record = readings.get("records")?.get(0)?;
+        if record.get("absent").and_then(Value::as_bool) == Some(true) {
+            return None;
+        }
+        let value = record.get("value")?;
+        match self {
+            Self::Own(_) => Some(value),
+            Self::Environment(_) => value.get(DEVICE_SETTINGS)?.get(name),
+        }
+        .filter(|value| !value.is_null())
+        .cloned()
+    }
+}
+
 enum Keeper {
-    /// The device's daemon, in the person's own workspace, which its records are carried into.
+    /// The device's daemon, which keeps the records where `place` says.
     Daemon {
         shell: DaemonShell,
-        workspace: String,
+        place: Place,
         writes: mpsc::UnboundedSender<Queued>,
     },
     /// Records held in this process alone, as the daemon would keep them: a test's.
@@ -78,12 +139,11 @@ enum Queued {
 }
 
 impl DeviceRecords {
-    /// The records of the device `shell` reaches, read and written in `workspace`, the person's
-    /// own, which the daemon carries them into.
+    /// The records of the device `shell` reaches, read and written where `place` says.
     #[must_use]
-    pub fn on(shell: DaemonShell, workspace: String) -> Self {
+    pub fn on(shell: DaemonShell, place: Place) -> Self {
         let (writes, mut pending) = mpsc::unbounded_channel();
-        let (daemon, space) = (shell.clone(), workspace.clone());
+        let (daemon, space) = (shell.clone(), place.workspace().to_owned());
         shell.runtime().spawn(async move {
             while let Some(next) = pending.recv().await {
                 match next {
@@ -108,7 +168,7 @@ impl DeviceRecords {
         Self {
             keeper: Arc::new(Keeper::Daemon {
                 shell,
-                workspace,
+                place,
                 writes,
             }),
         }
@@ -273,11 +333,9 @@ impl DeviceRecord {
             return Ok(followed.known.lock_recover().value.clone());
         }
         match &*self.records.keeper {
-            Keeper::Daemon {
-                shell, workspace, ..
-            } => shell
-                .read_blocking(read_request(workspace, &self.name, None))
-                .map(|readings| value_of(&readings)),
+            Keeper::Daemon { shell, place, .. } => shell
+                .read_blocking(place.read_request(&self.name, None))
+                .map(|readings| place.value_of(&self.name, &readings)),
             #[cfg(any(test, feature = "test-support"))]
             Keeper::Held(held) => Ok(held.lock_recover().values.get(&self.name).cloned()),
         }
@@ -303,24 +361,21 @@ impl DeviceRecord {
             })
         };
         let followed = match &*self.records.keeper {
-            Keeper::Daemon {
-                shell, workspace, ..
-            } => {
+            Keeper::Daemon { shell, place, .. } => {
                 // What it holds now, and the revision the follower waits past: a reading of the
                 // record before this session's own writes is never heard as news.
-                let readings = shell.read_blocking(read_request(workspace, &self.name, None))?;
-                let followed = from_now(value_of(&readings));
+                let readings = shell.read_blocking(place.read_request(&self.name, None))?;
+                let followed = from_now(place.value_of(&self.name, &readings));
                 let after = readings
                     .get("revision")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
-                let (shell, workspace, name) =
-                    (shell.clone(), workspace.clone(), self.name.clone());
+                let (shell, place, name) = (shell.clone(), place.clone(), self.name.clone());
                 let watching = Arc::downgrade(&followed);
                 shell
                     .runtime()
                     .clone()
-                    .spawn(follow(shell, workspace, name, after, watching));
+                    .spawn(follow(shell, place, name, after, watching));
                 followed
             }
             #[cfg(any(test, feature = "test-support"))]
@@ -385,9 +440,7 @@ impl DeviceRecord {
     /// The daemon could not be asked, or did not keep it.
     pub fn set_now(&self, value: Value) -> Result<(), String> {
         match &*self.records.keeper {
-            Keeper::Daemon {
-                shell, workspace, ..
-            } => {
+            Keeper::Daemon { shell, place, .. } => {
                 if let Some(followed) = &self.followed {
                     followed.wrote(Some(value.clone()).filter(|value| !value.is_null()));
                 }
@@ -395,7 +448,7 @@ impl DeviceRecord {
                 self.records.flush();
                 shell
                     .dispatch_blocking(
-                        Some(workspace),
+                        Some(place.workspace()),
                         &tilo_actions::remote::RemoteActionMessage::Invoke(set_request(
                             &self.name, value,
                         )),
@@ -415,16 +468,13 @@ impl DeviceRecord {
 /// until the follower is dropped.
 async fn follow(
     shell: DaemonShell,
-    workspace: String,
+    place: Place,
     name: String,
     mut after: Option<String>,
     follower: Weak<Followed>,
 ) {
     while follower.strong_count() > 0 {
-        match shell
-            .read(read_request(&workspace, &name, after.clone()))
-            .await
-        {
+        match shell.read(place.read_request(&name, after.clone())).await {
             Ok(readings) => {
                 after = readings
                     .get("revision")
@@ -433,7 +483,7 @@ async fn follow(
                 let Some(follower) = follower.upgrade() else {
                     return;
                 };
-                follower.arrived(value_of(&readings));
+                follower.arrived(place.value_of(&name, &readings));
                 if after.is_none() {
                     // A reading with no revision gives no wait to hold: asked again shortly.
                     tokio::time::sleep(ASK_AGAIN).await;
@@ -445,34 +495,6 @@ async fn follow(
             }
         }
     }
-}
-
-/// The read of the record `name`: what it holds now, or with `after` once it moves past that
-/// revision or the follower's wait went by.
-fn read_request(workspace: &str, name: &str, after: Option<String>) -> ResourceReadRequest {
-    let wait_ms = after
-        .is_some()
-        .then(|| u32::try_from(FOLLOW_WAIT.as_millis()).unwrap_or(u32::MAX));
-    ResourceReadRequest {
-        workspace: workspace.to_owned(),
-        app: DEVICE_SETTINGS.to_owned(),
-        record: name.to_owned(),
-        joined: false,
-        after,
-        wait_ms,
-        answer: ReadAnswer::Reading,
-    }
-}
-
-/// What a reading of one record holds: `None` for one absent or emptied.
-fn value_of(readings: &Value) -> Option<Value> {
-    let record = readings.get("records")?.get(0)?;
-    let absent = record.get("absent").and_then(Value::as_bool) == Some(true);
-    record
-        .get("value")
-        .filter(|_| !absent)
-        .filter(|value| !value.is_null())
-        .cloned()
 }
 
 /// The request writing the record `name` as `value`.
@@ -494,5 +516,65 @@ fn set_request(name: &str, value: Value) -> InvokeRequest {
         wait_ms: None,
         appearance: None,
         signed: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// A session in a workspace's VM reads each of its records from the one record its device may
+    /// write, under the name it has everywhere, and asks for that record, never the person's
+    /// settings; a session elsewhere reads the person's own settings record of that name.
+    #[test]
+    fn a_vm_session_reads_its_records_from_its_one_record() {
+        let environment = Place::Environment(ResourceAddress {
+            workspace: "hosted".to_owned(),
+            app: "browser".to_owned(),
+            record: "environment".to_owned(),
+        });
+        let asked = environment.read_request("so.tilo.session-wallpapers", None);
+        assert_eq!(
+            (
+                asked.workspace.as_str(),
+                asked.app.as_str(),
+                asked.record.as_str()
+            ),
+            ("hosted", "browser", "environment"),
+        );
+        let reading = json!({"records": [{"value": {"settings": {
+            "so.tilo.session-wallpapers": {"default": "dunes"},
+        }}}]});
+        assert_eq!(
+            environment.value_of("so.tilo.session-wallpapers", &reading),
+            Some(json!({"default": "dunes"})),
+        );
+        assert_eq!(
+            environment.value_of("so.tilo.session-shown", &reading),
+            None,
+            "a record the session never kept there reads as nothing",
+        );
+
+        let own = Place::Own("person".to_owned());
+        let asked = own.read_request("so.tilo.session-wallpapers", None);
+        assert_eq!(
+            (
+                asked.workspace.as_str(),
+                asked.app.as_str(),
+                asked.record.as_str()
+            ),
+            ("person", DEVICE_SETTINGS, "so.tilo.session-wallpapers"),
+        );
+        let reading = json!({"records": [{"value": {"default": "dunes"}}]});
+        assert_eq!(
+            own.value_of("so.tilo.session-wallpapers", &reading),
+            Some(json!({"default": "dunes"})),
+        );
+        assert_eq!(
+            own.value_of("x", &json!({"records": [{"absent": true, "value": {}}]})),
+            None,
+        );
     }
 }

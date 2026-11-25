@@ -26,10 +26,16 @@ use crate::meta::MetaExt as _;
 /// [`crate::authority::TiloAuthority`]), and anyone else their person id, as the workspace's
 /// member list and presence name them.
 fn actor(access: &MemberAccess, me: &PersonId, person: &str) -> MemberId {
+    MemberId::Person(person_named(access, me, person))
+}
+
+/// The runtime's name for the person of `access`'s policy `person`, where `me` is the person
+/// at the window.
+fn person_named(access: &MemberAccess, me: &PersonId, person: &str) -> PersonId {
     if Some(person) == access.person_id() {
-        MemberId::Person(me.clone())
+        me.clone()
     } else {
-        MemberId::person(person)
+        PersonId::from(person)
     }
 }
 
@@ -68,20 +74,23 @@ pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
             role: Some(role),
         });
     }
-    let mut agents: Vec<&str> = policy
+    let mut agents: Vec<(&str, &str)> = policy
         .grants
         .iter()
         // An agent admitted to the workspace holds its preset's grants (`agent-member:…`); the
         // answers a person gave an agent working for them admit nobody.
         .filter(|grant| grant.id.0.starts_with("agent-member:"))
-        .filter_map(|grant| match &grant.grantee {
-            Grantee::Member(MemberId::Agent(agent)) => Some(agent.as_str()),
-            _ => None,
-        })
+        .filter_map(|grant| grant.grantee.as_agent())
+        .map(|(agent, person)| (agent, person.as_str()))
         .collect();
     agents.sort_unstable();
     agents.dedup();
-    out.extend(agents.into_iter().map(Member::agent));
+    // An agent of the person at the window is theirs as the runtime names them.
+    out.extend(
+        agents
+            .into_iter()
+            .map(|(agent, person)| Member::agent(agent, person_named(access, me, person))),
+    );
     // The workspace's installed bots: the grants it made them name them, and a bot reads what
     // they allow it through the host that runs it.
     let mut bots: Vec<&str> = policy
@@ -135,9 +144,7 @@ pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> 
             Some((app, kind)) => workspace.app(app).kind(kind).resource(target.id_string()),
             None => workspace,
         };
-        // An agent named by its id alone is the agent of the person at the window.
-        let person = person_of(&access, &me, &me).to_owned();
-        reads_node(&access, &me, (who, Some(person.as_str())), &node)
+        reads_node(&access, &me, who, &node)
     })
 }
 
@@ -146,8 +153,8 @@ pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> 
 /// ([`reads_of`]), so a host makes one read decision and not two.
 ///
 /// A field may name a person or an agent: a person reads as themselves, an agent as the person it
-/// acts for, decided by its preset narrowed to that person's reach. An agent whose grant does not
-/// reach the record, or one acting for no member, reads none of it.
+/// is of, decided by its preset narrowed to that person's reach. An agent whose grant does not
+/// reach the record reads none of it.
 #[derive(Default)]
 pub struct MemberRecordReads {
     state: std::sync::Mutex<Option<MemberReadState>>,
@@ -196,13 +203,7 @@ impl MemberRecordReads {
 }
 
 impl tilo_resource_store::RecordReader for MemberRecordReads {
-    fn reader_of(
-        &self,
-        actor: &Actor,
-        writer: Option<&str>,
-        kind: &str,
-        id: &str,
-    ) -> Option<PersonId> {
+    fn reader_of(&self, actor: &Actor, kind: &str, id: &str) -> Option<PersonId> {
         let guard = self.state.lock().ok()?;
         let state = guard.as_ref()?;
         let workspace = TreePath::workspace(state.access.workspace());
@@ -210,13 +211,12 @@ impl tilo_resource_store::RecordReader for MemberRecordReads {
             Some((app, named)) => workspace.app(app).kind(named).resource(id.to_owned()),
             None => workspace,
         };
-        if !reads_node(&state.access, &state.me, (actor, writer), &node) {
+        if !reads_node(&state.access, &state.me, actor, &node) {
             return None;
         }
         let reader = match actor.member_id()? {
-            MemberId::Person(person) => Some(person.clone()),
-            // The agent a person's record names is their own, reading as them.
-            MemberId::Agent(_) => writer.map(PersonId::from),
+            // An agent reads as the person it is of.
+            MemberId::Person(person) | MemberId::Agent { person, .. } => Some(person.clone()),
             MemberId::Bot(_) => None,
         };
         drop(guard);
@@ -291,21 +291,14 @@ impl Host {
 }
 
 /// Whether `who` may read `node` by `access`'s policy: a person by their own party; an agent
-/// acting for `person` (the agent is the pair) as its turns are decided, by its preset narrowed
-/// to its person's reach; any other software by the grants the workspace gave it.
-fn reads_node(
-    access: &MemberAccess,
-    me: &PersonId,
-    (who, person): (&Actor, Option<&str>),
-    node: &TreePath,
-) -> bool {
+/// (its id and its person) as its turns for its person are decided, by its preset narrowed to
+/// that person's reach; any other software by the grants the workspace gave it.
+fn reads_node(access: &MemberAccess, me: &PersonId, who: &Actor, node: &TreePath) -> bool {
     let policy = &access.policy;
     let earlier = crate::schema::earlier_ids();
     let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
-    if let Some(MemberId::Agent(agent)) = who.member_id()
-        && let Some(person) = person
-    {
-        let acting = Acting::handed_agent(agent.as_str(), person);
+    if let Some(MemberId::Agent { id: agent, person }) = who.member_id() {
+        let acting = Acting::handed_agent(agent.as_str(), person_of(access, me, person));
         let preset = acting.handed_preset(&policy.workspace);
         return Policy::of_acting(&acting, policy, &preset)
             .decide(node, ActionKind::Read, &cx)
@@ -340,7 +333,7 @@ mod tests {
         policy.members.insert("cy".to_owned(), Role::Viewer);
         policy.grants.push(Grant::new(
             "agent-member:planner",
-            Grantee::agent("planner"),
+            Grantee::agent("planner", "ada"),
             TreePath::workspace("workspace"),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -373,7 +366,7 @@ mod tests {
                     Member::person("me", Role::Owner),
                     Member::person("bo", Role::Editor),
                     Member::person("cy", Role::Viewer),
-                    Member::agent("planner"),
+                    Member::agent("planner", "me"),
                 ]
             );
         }
@@ -387,32 +380,33 @@ mod tests {
                     .kind("tl.notes.Note")
                     .resource(id)
             };
-            // Each agent is the pair of its id and its person: `scout` for Ada and `scout` for
-            // Cy are two agents.
-            let all: [(Actor, Option<&str>); 6] = [
-                (MemberId::person("me").into(), None),
-                (MemberId::person("bo").into(), None),
-                (MemberId::person("cy").into(), None),
-                (MemberId::agent("planner").into(), Some("ada")),
-                (MemberId::agent("scout").into(), Some("ada")),
-                (MemberId::agent("scout").into(), Some("cy")),
+            // Each agent is the pair of its id and its person: `scout` of the person at the
+            // window and `scout` of Cy are two agents.
+            let all: [Actor; 6] = [
+                MemberId::person("me").into(),
+                MemberId::person("bo").into(),
+                MemberId::person("cy").into(),
+                MemberId::agent("planner", "me").into(),
+                MemberId::agent("scout", "me").into(),
+                MemberId::agent("scout", "cy").into(),
             ];
-            for (who, person) in &all {
+            for who in &all {
                 assert!(
-                    reads_node(&access, &PersonId::from("me"), (who, *person), &node("open")),
+                    reads_node(&access, &PersonId::from("me"), who, &node("open")),
                     "{who} reads what the workspace holds"
                 );
             }
             let secret: Vec<String> = all
                 .iter()
-                .filter(|(who, person)| {
-                    reads_node(&access, &PersonId::from("me"), (who, *person), &node("secret"))
+                .filter(|who| reads_node(&access, &PersonId::from("me"), who, &node("secret")))
+                .map(|who| match who.member_id().and_then(MemberId::as_agent) {
+                    Some((agent, person)) => format!("{agent}@{person}"),
+                    None => who.id().to_owned(),
                 })
-                .map(|(who, person)| format!("{}{}", who.id(), person.map(|p| format!("@{p}")).unwrap_or_default()))
                 .collect();
             assert_eq!(
                 secret,
-                ["me", "bo", "planner@ada", "scout@ada"],
+                ["me", "bo", "planner@me", "scout@me"],
                 "Cy, whom the grant keeps out, does not, nor does his agent of the same id as Ada's"
             );
         }

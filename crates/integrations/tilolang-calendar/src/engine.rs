@@ -1139,7 +1139,12 @@ impl Engine {
         }
     }
 
-    /// Put the iCalendar `text` into `calendar` as an entry of its own, once.
+    /// Take the invitation `text` into `calendar`: one entry under the invitation's own `UID`,
+    /// however often it comes. The first copy puts it in, the same again changes nothing, a later
+    /// version of it brings the entry up to date, and its cancellation takes the entry out. What
+    /// goes up tells the server to write to nobody, and the removal tells it to answer nobody
+    /// ([`ics::kept_beside`], [`delete`]): the person's calendar takes the invitation in, and
+    /// nobody is written to in their name for that.
     fn import(
         &mut self,
         signed: &CalendarAccount,
@@ -1149,35 +1154,117 @@ impl Engine {
         if signed.read_only {
             return Err(READ_ONLY.to_owned());
         }
+        let ics::Invitation { cancels, .. } = ics::invitation(text)?;
         let uid = uid_of(text).ok_or_else(|| "The invitation names no event".to_owned())?;
-        let held = self.held.get(&signed.id).and_then(|held| {
-            held.entries
-                .iter()
-                .find(|((key, _), held)| key == calendar && held.entry.uid == uid)
-                .map(|(_, held)| held.entry.href.clone())
-        });
-        if let Some(href) = held {
-            // The calendar holds this invitation already: its person's answer and what its
-            // server wrote stay as they are.
-            return Ok(Written::Stored(href));
-        }
         let (client, server) = Self::client(signed)?;
         let collection = Url::parse(calendar)
             .map_err(|_| "a calendar's address is not an address".to_owned())?;
         if collection.origin() != server.origin() {
             return Err("a calendar is on its account's server".to_owned());
         }
-        let mut body = text.to_owned();
-        if names_somebody(&body) {
-            body = ics::kept_text(&body);
+        let held = self.held.get(&signed.id).and_then(|held| {
+            held.entries
+                .iter()
+                .find(|((key, _), held)| key == calendar && held.entry.uid == uid)
+                .map(|(_, held)| held.entry.href.clone())
+        });
+        let Some(href) = held else {
+            if cancels {
+                // Nothing of it is here to take out.
+                return Ok(Written::Removed);
+            }
+            let body = ics::kept_text(text);
+            let url = format!("{}/{}.ics", collection.as_str().trim_end_matches('/'), uid);
+            return self.store_invitation(
+                signed,
+                (&client, calendar, &url),
+                body,
+                Precondition::IfNoneMatchAny,
+            );
+        };
+        let url =
+            Url::parse(&href).map_err(|_| "an entry's address is not an address".to_owned())?;
+        if url.origin() != server.origin() {
+            return Err("an entry is on its account's server".to_owned());
         }
-        let url = format!("{}/{}.ics", collection.as_str().trim_end_matches('/'), uid);
+        if cancels {
+            // Still held here: the sync that follows the import finds it gone, and the workspace
+            // takes it out with that.
+            delete(&client, &href)?;
+            return Ok(Written::Removed);
+        }
+        let (held, version) =
+            match held_now(&client, &url, self.version(&signed.id, &href).as_deref()) {
+                Ok(held) => held,
+                Err(Unread::Gone) => {
+                    return Err(
+                        "This invitation is no longer on its server: it is taken out of the \
+                         workspace with the next sync"
+                            .to_owned(),
+                    );
+                }
+                Err(Unread::Changed) => {
+                    return Err(
+                        "This invitation changed on its server meanwhile: the change there is \
+                         taken in with the next sync"
+                            .to_owned(),
+                    );
+                }
+                Err(Unread::Failed(reason)) => return Err(reason),
+            };
+        // Each line naming somebody says of who writes to them what the server holds of it now
+        // (RFC 6638, 3.2.1.2), so the version that goes up starts and calls off nothing.
+        let mut body = ics::kept_beside(text, Some(&held));
+        let sent = ics::parse(&body).0.into_iter().next();
+        let kept = ics::parse(&held).0.into_iter().next();
+        if let (Some(mut sent), Some(kept)) = (sent, kept.clone()) {
+            sent.calendar_id.clone_from(&kept.calendar_id);
+            if sent == kept {
+                // The same invitation again: the person's answer and what the server wrote stay.
+                return Ok(Written::Stored(href));
+            }
+        }
+        // What its person filed it under on the server stays, where the sender files it under
+        // nothing.
+        let filed: Vec<String> = kept
+            .map(|kept| kept.categories.iter().cloned().collect())
+            .unwrap_or_default();
+        let sends_none = ics::parse(&body)
+            .0
+            .first()
+            .is_none_or(|sent| sent.categories.is_empty());
+        if sends_none
+            && !filed.is_empty()
+            && let Some(with) = ics::with_categories(&body, &filed)
+        {
+            body = with;
+        }
+        if ics::ends_what_its_server_schedules(&body, &held) {
+            return Err(WOULD_CALL_IT_OFF.to_owned());
+        }
+        self.store_invitation(
+            signed,
+            (&client, calendar, url.as_str()),
+            body,
+            Precondition::IfMatch(&version),
+        )
+    }
+
+    /// Write `body`, an invitation as its calendar keeps it, at `url` of `calendar`, over what
+    /// `precondition` names, and keep what the server holds now.
+    fn store_invitation(
+        &mut self,
+        signed: &CalendarAccount,
+        (client, calendar, url): (&DavClient, &str, &str),
+        body: String,
+        precondition: Precondition<'_>,
+    ) -> Result<Written, String> {
         let response = client
             .put(
-                url.as_str(),
+                url,
                 body.clone().into_bytes(),
                 Some(ENTRY_TYPE),
-                Precondition::IfNoneMatchAny,
+                precondition,
             )
             .map_err(|error| {
                 if is_unreached(&error) {
@@ -1187,18 +1274,18 @@ impl Engine {
                 }
             })?;
         match response.status().as_u16() {
-            412 => Err("This invitation is already in that calendar".to_owned()),
+            412 => Err("This invitation changed in that calendar meanwhile".to_owned()),
             _ if response.status().is_success() => {
-                if let Some(entry) = Self::entry_of(&body, calendar, &url) {
+                if let Some(entry) = Self::entry_of(&body, calendar, url) {
                     let etag = response.etag().unwrap_or_default();
                     if let Some(held) = self.held.get_mut(&signed.id) {
                         held.entries.insert(
-                            (calendar.to_owned(), url.clone()),
+                            (calendar.to_owned(), url.to_owned()),
                             HeldEntry { etag, entry },
                         );
                     }
                 }
-                Ok(Written::Stored(url))
+                Ok(Written::Stored(url.to_owned()))
             }
             status => Err(format!("the calendar server answered {status}")),
         }

@@ -141,7 +141,7 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
 
 fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteraction {
     let mut event = tilo_ui::headless::agent_acting("so.tilo.notes/note", "insert");
-    event.actor = tilo_actions::Acting::agent("scribe");
+    event.actor = tilo_actions::Acting::agent("scribe", "portable-review");
     event.action.label = "Write".into();
     event.resource.label = "Note".into();
     event.anchor = tilo_actions::InteractionAnchor::Text {
@@ -210,7 +210,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
     agent_frame.update_presence(|presence| {
         presence
             .names
-            .insert(MemberId::agent("scribe"), "Ada".into());
+            .insert(MemberId::agent("scribe", "portable-review"), "Ada".into());
         let applied = presence
             .apply_interaction_at(event.clone(), at)
             .expect("a well-formed interaction applies");
@@ -264,8 +264,8 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
     frame.update_presence(|presence| {
         presence
             .names
-            .insert(MemberId::agent("scribe"), "Ada".into());
-        presence.set_caret(&key, MemberId::agent("scribe"), 9);
+            .insert(MemberId::agent("scribe", "portable-review"), "Ada".into());
+        presence.set_caret(&key, MemberId::agent("scribe", "portable-review"), 9);
         presence
             .apply_interaction_at(event.clone(), at)
             .expect("a well-formed interaction applies")
@@ -277,7 +277,7 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
         .presence()
         .caret_tags()
         .into_iter()
-        .filter(|tag| tag.user == MemberId::agent("scribe"))
+        .filter(|tag| tag.user == MemberId::agent("scribe", "portable-review"))
         .map(|tag| tag.label)
         .collect();
     assert_eq!(

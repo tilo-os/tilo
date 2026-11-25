@@ -304,7 +304,11 @@ mod tests {
     /// An agent's rename that landed at `at`, drawn by a first frame then.
     fn landed(at: Instant) -> PresenceCtx {
         let mut presence = PresenceCtx::empty();
-        let write = rename(1, Acting::agent("helper"), InteractionPhase::Committed);
+        let write = rename(
+            1,
+            Acting::agent("helper", "ada"),
+            InteractionPhase::Committed,
+        );
         presence.apply_interaction_at(write, at).unwrap();
         frame(&presence, at, TITLE, (None, None));
         presence
@@ -344,14 +348,22 @@ mod tests {
     fn an_agents_write_arrives_then_rests_where_it_landed() {
         let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
-        let applying = rename(1, Acting::agent("helper"), InteractionPhase::Applying);
+        let applying = rename(
+            1,
+            Acting::agent("helper", "ada"),
+            InteractionPhase::Applying,
+        );
         presence.apply_interaction_at(applying, at).unwrap();
         assert_eq!(
             frame(&presence, at, TITLE, (None, None)),
             (1, 1),
             "under way, with its caret"
         );
-        let mut write = rename(1, Acting::agent("helper"), InteractionPhase::Committed);
+        let mut write = rename(
+            1,
+            Acting::agent("helper", "ada"),
+            InteractionPhase::Committed,
+        );
         write.sequence = 2;
         presence.apply_interaction_at(write, at + SECOND).unwrap();
         assert_eq!(
@@ -389,7 +401,11 @@ mod tests {
         let at = crate::time::now();
         let mut presence = landed(at);
         let generation = presence.written_generation();
-        let again = rename(2, Acting::agent("helper"), InteractionPhase::Committed);
+        let again = rename(
+            2,
+            Acting::agent("helper", "ada"),
+            InteractionPhase::Committed,
+        );
         presence
             .apply_interaction_at(again, at + SECOND * 10)
             .unwrap();
@@ -438,7 +454,11 @@ mod tests {
     fn a_write_that_came_unseen_arrives_when_it_first_shows() {
         let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
-        let write = rename(1, Acting::agent("helper"), InteractionPhase::Committed);
+        let write = rename(
+            1,
+            Acting::agent("helper", "ada"),
+            InteractionPhase::Committed,
+        );
         presence.apply_interaction_at(write, at).unwrap();
         assert_eq!(
             presence.written_next_wake(at),

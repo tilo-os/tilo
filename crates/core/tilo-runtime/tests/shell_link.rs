@@ -391,6 +391,9 @@ fn the_sessions_own_actions_are_answered_through_the_daemons_dispatch() {
 
 /// A test's session is the daemon's shell as a sign-in starts it: the daemon runs, starts the
 /// shell handed its link, and both stop together.
+///
+/// The person's shell is the desktop session's, which only a Linux device runs.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_shell_session_starts_the_persons_shell_on_its_link_and_stops_with_it() {
     use std::io::BufRead as _;

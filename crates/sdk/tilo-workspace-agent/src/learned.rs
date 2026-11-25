@@ -431,7 +431,7 @@ mod tests {
         // facts about nobody else: it changes them, and nobody named reads or changes them.
         let mut own = Replica::<Learned>::new()
             .in_app("so.tilo.model", "Model")
-            .as_acting(tilo_actions::Acting::agent(ASSISTANT).handed());
+            .as_acting(tilo_actions::Acting::agent(ASSISTANT, "ada").handed());
         own.apply(learn("Works from Graz.", "They said so"))
             .unwrap();
         let (graz, kept) = facts(&own).remove(0);

@@ -209,6 +209,10 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
 /// answer to use another app says which: "Use “Post a message” in Chat".
 pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
     use tilo_action_policy::agent_answers::AnswerScope;
+    // What installing an app gave it: its own records, listed under the app's name.
+    if tilo_action_policy::roles::is_app_records_grant(grant) {
+        return t("workspace-settings-allows-own-records");
+    }
     let used = AnswerScope::of_node(&grant.node).filter(|_| {
         grant.grantee.app_id().is_some() && grant.answer == tilo_action_policy::Answer::Allow
     });
@@ -277,10 +281,74 @@ fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
     }
     let key = match who {
         MemberId::Person(_) => "workspace-settings-granted-by-person",
-        MemberId::Agent(_) => "workspace-settings-granted-by-agent",
+        MemberId::Agent { .. } => "workspace-settings-granted-by-agent",
         MemberId::Bot(_) => "workspace-settings-granted-by-bot",
     };
     t_args(key, &[("id", member_name_or_short_id(ws, who).into())])
+}
+
+/// Who gave a grant, as an access view draws them: the granter's name, what kind of author they
+/// are (`you`, `person`, `agent`, `app`), and whether they are the viewer. The name and the kind
+/// are drawn beside each other, never joined into one label.
+#[must_use]
+pub fn granted_by_parts(
+    ws: &Workspace,
+    who: &Grantee,
+    local_user: &str,
+    apps: &dyn AppDirectory,
+) -> (String, &'static str, bool) {
+    match who {
+        Grantee::Member(id) => {
+            let name = person_name(ws, local_user, id);
+            let mine = id.person_id() == Some(local_user) || id.agent_id() == Some(local_user);
+            let kind = if mine {
+                "you"
+            } else if id.person_id().is_some() {
+                "person"
+            } else {
+                "agent"
+            };
+            (name, kind, mine)
+        }
+        Grantee::App(app) => (app_display_name(apps, app), "app", false),
+        Grantee::Role(role) => (role_label(*role), "role", false),
+        Grantee::CustomRole(id) => (
+            ws.policy
+                .custom_roles
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.clone()),
+            "role",
+            false,
+        ),
+        Grantee::AnyKey => (who.to_string(), "visitor", false),
+    }
+}
+
+/// Whether `person` may take `grant` back now: the one who gave an app grant, or whoever the
+/// workspace lets revoke grants, unless they are barred from governing. What the host then decides
+/// when the change is written.
+#[must_use]
+pub fn may_revoke(
+    ws: &Workspace,
+    person: &str,
+    grant: &tilo_action_policy::Grant,
+    now: u64,
+) -> bool {
+    if ws.policy.is_blocked(person)
+        || ws
+            .policy
+            .restricted_until(person, &tilo_action_policy::Context::at_secs(now))
+            .is_some()
+    {
+        return false;
+    }
+    let gave_it =
+        matches!(grant.grantee, Grantee::App(_)) && grant.granted_by.person_id() == Some(person);
+    gave_it
+        || ws
+            .policy
+            .may_change_at(person, tilo_action_policy::roles::governance::REVOKE, now)
 }
 
 /// A subject the grant composer can target, and the subject axis the Permissions list groups by.
@@ -319,7 +387,10 @@ impl GrantRecipient {
             RecipientKind::Member => {
                 Some((Grantee::Member(MemberId::parsed_person(&self.id)?), None))
             }
-            RecipientKind::Agent => Some((Grantee::agent(self.id.clone()), None)),
+            RecipientKind::Agent => Some((
+                Grantee::Member(MemberId::of_actor_bytes(self.id.as_bytes())?),
+                None,
+            )),
             // A role-wide grant is a policy decision, not a per-workspace click.
             RecipientKind::Role => None,
         }
@@ -331,7 +402,10 @@ impl GrantRecipient {
                 || self.id.clone(),
                 |member| person_name(ws, local_user, &member),
             ),
-            RecipientKind::Agent => person_name(ws, local_user, &MemberId::agent(self.id.clone())),
+            RecipientKind::Agent => MemberId::of_actor_bytes(self.id.as_bytes()).map_or_else(
+                || self.id.clone(),
+                |member| person_name(ws, local_user, &member),
+            ),
             RecipientKind::App => app_display_name(apps, &self.id),
             // A role is listed as the phrase its section reads.
             RecipientKind::Role => ws
@@ -531,7 +605,7 @@ pub fn grant_recipients(ws: &Workspace) -> Vec<GrantRecipient> {
             .into_iter()
             .map(|(agent, _)| GrantRecipient {
                 kind: RecipientKind::Agent,
-                id: agent,
+                id: String::from_utf8_lossy(&agent.actor_bytes()).into_owned(),
             }),
     );
 
@@ -711,7 +785,7 @@ pub fn remove_member(ws: &mut Workspace, actor: &str, member: &str) -> Result<Po
 fn grantee_is_person(grantee: &Grantee, user: &str) -> bool {
     match grantee {
         Grantee::Member(MemberId::Person(id)) => id == user,
-        Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_))
+        Grantee::Member(MemberId::Agent { .. } | MemberId::Bot(_))
         | Grantee::Role(_)
         | Grantee::CustomRole(_)
         | Grantee::App(_)
@@ -719,9 +793,9 @@ fn grantee_is_person(grantee: &Grantee, user: &str) -> bool {
     }
 }
 
-/// Revoke every grant naming `agent` , as `actor` .
-pub fn remove_agent(ws: &mut Workspace, actor: &str, agent: &str) -> PolicyEdit {
-    let subject = tilo_action_policy::Grantee::agent(agent);
+/// Revoke every grant naming `agent`, as `actor`.
+pub fn remove_agent(ws: &mut Workspace, actor: &str, agent: &MemberId) -> PolicyEdit {
+    let subject = tilo_action_policy::Grantee::Member(agent.clone());
     let revokes = ws
         .policy
         .grants
@@ -817,9 +891,9 @@ fn classify_grantee(grantee: &Grantee) -> GrantRecipient {
             kind: RecipientKind::Member,
             id: id.as_str().to_owned(),
         },
-        Grantee::Member(MemberId::Agent(id) | MemberId::Bot(id)) => GrantRecipient {
+        Grantee::Member(member @ (MemberId::Agent { .. } | MemberId::Bot(_))) => GrantRecipient {
             kind: RecipientKind::Agent,
-            id: id.clone(),
+            id: String::from_utf8_lossy(&member.actor_bytes()).into_owned(),
         },
         Grantee::App(app) => GrantRecipient {
             kind: RecipientKind::App,
@@ -1161,12 +1235,16 @@ mod agents_tests {
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe-agent";
 
+    fn agent() -> MemberId {
+        MemberId::agent(AGENT, OWNER)
+    }
+
     fn ws_with_agent() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(17), "agents-test");
         ws.policy.set_owner(OWNER);
         ws.policy.grant(Grant::new(
             format!("agent-member:{AGENT}"),
-            tilo_action_policy::Grantee::agent(AGENT),
+            tilo_action_policy::Grantee::agent(AGENT, OWNER),
             ws.policy.node(),
             KindSet::READ,
             Answer::Allow,
@@ -1174,7 +1252,7 @@ mod agents_tests {
         ));
         let notes = Grant::new(
             "scribe-notes",
-            tilo_action_policy::Grantee::agent(AGENT),
+            tilo_action_policy::Grantee::agent(AGENT, OWNER),
             ws.policy.node().app("so.tilo.notes"),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -1207,7 +1285,7 @@ mod agents_tests {
             let ws = ws_with_agent();
             let members = ws.policy.agent_members_at(tilo_clock::unix_now());
             assert_eq!(members.len(), 1, "listed with the workspace's agents");
-            assert_eq!(members[0].0, AGENT);
+            assert_eq!(members[0].0, agent());
             assert_eq!(
                 members[0].1,
                 KindSet::READ,
@@ -1220,7 +1298,7 @@ mod agents_tests {
             ws.policy.set_owner(OWNER);
             ws.policy.grant(Grant::new(
                 format!("agent-member:{AGENT}"),
-                tilo_action_policy::Grantee::agent(AGENT),
+                tilo_action_policy::Grantee::agent(AGENT, OWNER),
                 ws.policy.node(),
                 KindSet::READ,
                 Answer::Allow,
@@ -1228,7 +1306,7 @@ mod agents_tests {
             ));
             assert_eq!(
                 ws.policy.agent_members_at(tilo_clock::unix_now()),
-                vec![(AGENT.to_string(), KindSet::READ)]
+                vec![(agent(), KindSet::READ)]
             );
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Read),
@@ -1243,7 +1321,7 @@ mod agents_tests {
             ws.grant_as(
                 OWNER,
                 CapOverride::grant(
-                    Grantee::agent(AGENT),
+                    Grantee::agent(AGENT, OWNER),
                     Scope::FsPath("/var/workspace/brief.md".into()),
                     Access::Read,
                 ),
@@ -1266,7 +1344,7 @@ mod agents_tests {
 
         {
             let mut ws = ws_with_agent();
-            let edit = remove_agent(&mut ws, OWNER, AGENT);
+            let edit = remove_agent(&mut ws, OWNER, &agent());
             assert_eq!(
                 edit.revoked.len(),
                 2,
@@ -1286,7 +1364,7 @@ mod agents_tests {
         {
             let mut ws = ws_with_agent();
             let before = ws.policy.clone();
-            assert!(remove_agent(&mut ws, "viewer", AGENT).is_empty());
+            assert!(remove_agent(&mut ws, "viewer", &agent()).is_empty());
             assert_eq!(ws.policy, before);
         }
 
@@ -1295,7 +1373,10 @@ mod agents_tests {
             let subjects = grant_recipients(&ws);
             let index = subjects
                 .iter()
-                .position(|subject| subject.kind == RecipientKind::Agent && subject.id == AGENT)
+                .position(|subject| {
+                    subject.kind == RecipientKind::Agent
+                        && MemberId::of_actor_bytes(subject.id.as_bytes()) == Some(agent())
+                })
                 .expect("agent is offered in the permission composer");
             let draft = GrantDraft {
                 subject_index: index,
@@ -1304,7 +1385,7 @@ mod agents_tests {
             let Some(cap) = draft_capability(&ws, OWNER, &draft) else {
                 panic!("agent grant can be composed");
             };
-            assert_eq!(cap.grantee, Grantee::agent(AGENT));
+            assert_eq!(cap.grantee, Grantee::agent(AGENT, OWNER));
         }
 
         {
@@ -1932,6 +2013,33 @@ mod permissions_tests {
             .find(|row| row.allows.contains("Post view"))
             .expect("the catalogue names no post-view");
         assert_eq!(unnamed.allows, "Use \u{201c}Post view\u{201d} in Chat");
+    }
+
+    /// What installing an app gave it lists under the app's name, as keeping its own records,
+    /// given by the member who installed it; whoever may revoke a grant there revokes it.
+    #[test]
+    fn an_apps_own_records_list_under_its_name_and_revoke() {
+        let mut ws = Workspace::new(WorkspaceId::from_u128(7), "own-records");
+        ws.policy.set_owner(OWNER);
+        let front = ws.id().to_string();
+        let grant = tilo_action_policy::roles::app_records_grant(&front, "so.tilo.clocks", OWNER);
+        ws.policy.grant(grant.clone());
+        let listed = listed_permissions(&ws, &ChatCatalogue, OWNER);
+        let row = listed
+            .iter()
+            .find(|row| row.id == grant.id.as_str())
+            .expect("the grant installing Clocks gave is listed");
+        assert_eq!(row.holder, "Clocks");
+        assert_eq!(row.allows, "Keep its own records");
+        assert_eq!(row.granted_by.as_deref(), Some("granted by you"));
+
+        apply_revoke(&mut ws, OWNER, grant.id.as_str()).expect("the owner revokes it");
+        assert!(
+            !listed_permissions(&ws, &ChatCatalogue, OWNER)
+                .iter()
+                .any(|row| row.id == grant.id.as_str()),
+            "revoked, it lists no more"
+        );
     }
 }
 

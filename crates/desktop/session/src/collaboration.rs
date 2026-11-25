@@ -46,8 +46,7 @@ impl Session {
             app_wire.carets.narrate(sync.take_narrated());
             // The people of the workspace in front, as its governance names them, those it
             // removed among them, and whoever is here named and coloured as the bar and People
-            // draw them: the apps there are told, so a caret wears its person's face and a
-            // message names its author after they went offline or left.
+            // draw them: the workspace's history names them the same way.
             if let Some((workspace, _)) = sync.front_members() {
                 let governed = self
                     .shared
@@ -86,7 +85,7 @@ impl Session {
                             .into_iter()
                             .map(|listed| {
                                 collab_types::Member::of_software(
-                                    collab_types::MemberId::agent(listed.id),
+                                    collab_types::MemberId::agent(listed.id, listed.acts_for),
                                     listed.name,
                                 )
                             }),
@@ -111,7 +110,6 @@ impl Session {
                 self.shared
                     .activity
                     .set_people(&workspace, crate::activity::Members { members, writers });
-                app_wire.layout.set_people(&workspace, people);
             }
         }
         // Whose view this device follows: their window here comes forward each time the place they
@@ -221,9 +219,11 @@ impl Session {
                         };
                         // The colour the agent wears wherever it shows: its member's, the same for each
                         // of its sessions — the one rule and the one key every surface asks.
-                        let (r, g, b) = ui::presence::member_color(
-                            &ui::permissions::MemberId::agent(&present.agent),
-                        );
+                        let (r, g, b) =
+                            ui::presence::member_color(&ui::permissions::MemberId::agent(
+                                &present.agent,
+                                self.shared.person.as_str(),
+                            ));
                         let face = tilo_session_client::presence::view(
                             0,
                             ui::time::unix_now_ms(),
