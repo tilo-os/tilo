@@ -2902,7 +2902,7 @@ impl Store {
             // A content goes back whole; a document of resources, only in theirs.
             let keys = if part.content { Vec::new() } else { ids };
             // A document that stands as it did then writes nothing.
-            if crate::history::steps::restore(&mut working, &part.target, &keys).is_err() {
+            if collab_types::history::steps::restore(&mut working, &part.target, &keys).is_err() {
                 continue;
             }
             working.commit_with(CommitOptions::default().with_message(stamp.message()));
