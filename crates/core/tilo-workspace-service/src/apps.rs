@@ -207,10 +207,9 @@ mod running_surface_tests {
     #[test]
     fn a_package_surface_this_process_runs_is_served_by_its_hash_only() {
         let app = "so.tilo.test.running-surface";
-        let file = tilo_surface_compile::compile(
-            "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.running-surface.note\",\"label\":\"Note\",\"version\":1}]}",
-        )
-        .unwrap();
+        // A package ships its surface compiled, so the bytes registered and hashed are canonical JSON.
+        let file = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.running-surface.note\",\"label\":\"Note\",\"version\":1}]}";
+        assert!(tilo_surface_compile::is_canonical(file));
         let file = file.as_bytes();
         let hash = hex::encode(blake3::hash(file).as_bytes());
         assert_eq!(running_surface(app, &hash), None);
