@@ -690,6 +690,81 @@ impl RoutedOwners {
     }
 }
 
+/// A record is who its store and route say it is. A peer's change can name another record's id,
+/// kind, workspace or home in the record's document, but the store holds every record as it was
+/// opened, the route still names the same record, and the other record never changes.
+#[test]
+fn a_peers_change_cannot_make_a_record_another() {
+    use automerge::ReadDoc;
+    for incremental in [false, true] {
+        for field in ["id", "kind", "workspace", "home"] {
+            let mut fixture = RoutedOwners::new();
+            let (first, second) = (&fixture.bindings[0], &fixture.bindings[1]);
+            assert_ne!(first.checkout.id, second.checkout.id);
+            let opened = fixture.records.open_resources();
+            let held = fixture.records.app_and_home();
+            let (route, other_route) = (first.broker_route(), second.broker_route());
+            let other_heads = fixture
+                .records
+                .read_checked(&second.checkout.id, |doc| doc.base_heads())
+                .unwrap();
+            let mut remote = fixture
+                .records
+                .read_checked(&first.checkout.id, Clone::clone)
+                .unwrap();
+            let baseline = remote.base_heads();
+            remote.set_actor(automerge::ActorId::from(
+                format!("peer-renames-{field}").as_bytes(),
+            ));
+            let claimed = match field {
+                "id" => second.checkout.id.to_string(),
+                "kind" => "foreign-kind".to_owned(),
+                "workspace" | "home" => "00000000-0000-4000-8000-000000000099".to_owned(),
+                _ => unreachable!(),
+            };
+            let meta = remote
+                .put_object(
+                    ROOT,
+                    collab_types::document::fields::META,
+                    automerge::ObjType::Map,
+                )
+                .unwrap();
+            remote.put(&meta, field, claimed.as_str()).unwrap();
+            remote.commit();
+            let incoming = routed_document(
+                &route.clone().unwrap(),
+                if incremental {
+                    collab_types::DocumentMutation::Incremental(remote.save_after(&baseline))
+                } else {
+                    collab_types::DocumentMutation::Snapshot(remote.save())
+                },
+            );
+            fixture.app.apply_document_event(&incoming);
+
+            let (first, second) = (&fixture.bindings[0], &fixture.bindings[1]);
+            assert_eq!(fixture.records.open_resources(), opened, "{field}");
+            assert_eq!(fixture.records.app_and_home(), held, "{field}");
+            assert_eq!(first.broker_route(), route, "{field}");
+            assert_eq!(second.broker_route(), other_route, "{field}");
+            assert_eq!(
+                fixture
+                    .records
+                    .read_checked(&second.checkout.id, |doc| doc.base_heads())
+                    .unwrap(),
+                other_heads,
+                "{field}: the record it named is untouched"
+            );
+            assert!(
+                fixture
+                    .records
+                    .read_checked(&first.checkout.id, |doc| doc.get(ROOT, "missing").is_ok())
+                    .unwrap(),
+                "{field}: the record still opens as itself"
+            );
+        }
+    }
+}
+
 tilo_test_env::scenario! {
     fn owned_records_refuse_a_corrupt_change;
 
@@ -4691,8 +4766,13 @@ fn ownership_matrix_app_with_confirmation(
     )
     .unwrap();
     layout(&mut app);
-    // The matrix control and the live pulse beside it both publish a route.
-    assert_eq!(app.control_coverage().registered, 2, "{kind}");
+    // The matrix control publishes a route when it is bound to an action; the live pulse beside
+    // it, a plain press, publishes none.
+    assert_eq!(
+        app.control_coverage().registered,
+        usize::from(kind != "ToggleGroupView"),
+        "{kind}"
+    );
     (app, log)
 }
 
@@ -4966,16 +5046,18 @@ tilo_test_env::scenario! {
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             layout(&mut app);
             let saved = app.pending_history_controls();
-            assert_eq!(saved.len(), 1, "{kind}");
             if *kind == "ToggleGroupView" {
-                assert_eq!(saved[0].invocation.arguments["index"], 1);
-            } else {
-                assert_eq!(
-                    serde_json::Value::Object(saved[0].invocation.arguments.clone()),
-                    expected,
-                    "{kind}"
-                );
+                // A plain choice runs its closure at once: nothing waits for History to seal.
+                assert!(saved.is_empty(), "{kind}");
+                assert_eq!(&*log.borrow(), &[expected], "{kind}");
+                continue;
             }
+            assert_eq!(saved.len(), 1, "{kind}");
+            assert_eq!(
+                serde_json::Value::Object(saved[0].invocation.arguments.clone()),
+                expected,
+                "{kind}"
+            );
             assert!(saved[0].owner.starts_with("outer root "));
             let named_action_target = named(&mut app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
