@@ -12,7 +12,7 @@ pub use tilo_formats::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 /// The person's formats from their settings, uncached.
 #[must_use]
 pub fn configured_formats() -> RegionFormats {
-    RegionFormats::from_section(settings_store::load_section("locale"))
+    RegionFormats::from_section(crate::settings_source::load_section("locale"))
 }
 
 static CURRENT: RwLock<Option<RegionFormats>> = RwLock::new(None);

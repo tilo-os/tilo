@@ -1,13 +1,16 @@
 //! The person's shared vocabulary, read through the app's settings channel. There is no
 //! app-local fallback: a missing or revoked channel clears the hints.
-pub use settings_store::personal_dictionary::{Edit, Snapshot, Vocabulary, Word};
+pub use settings_model::personal_dictionary::{Edit, Snapshot, Vocabulary, Word};
 use std::io;
+#[cfg(feature = "model")]
 use std::sync::Arc;
 
+#[cfg(feature = "model")]
 struct Shared {
     owner: Option<[u8; 32]>,
     generation: u64,
 }
+#[cfg(feature = "model")]
 impl Shared {
     fn current(&self) -> bool {
         self.owner.is_some()
@@ -15,6 +18,7 @@ impl Shared {
             && self.generation == crate::local_identity::generation()
     }
 }
+#[cfg(feature = "model")]
 impl Vocabulary for Shared {
     fn snapshot(&self) -> io::Result<Snapshot> {
         if !self.current() {
@@ -35,6 +39,7 @@ impl Vocabulary for Shared {
 }
 
 /// Reader for input consumers of the current authenticated app channel.
+#[cfg(feature = "model")]
 pub fn reader() -> Arc<dyn Vocabulary> {
     Arc::new(Shared {
         owner: crate::local_identity::load().map(|identity| identity.group_public_key),
@@ -42,7 +47,7 @@ pub fn reader() -> Arc<dyn Vocabulary> {
     })
 }
 
-#[cfg(feature = "broker-transport")]
+#[cfg(all(feature = "broker-transport", feature = "model"))]
 pub fn snapshot() -> io::Result<Snapshot> {
     crate::collaboration::channel_settings::installed()
         .ok_or_else(|| {
@@ -59,18 +64,18 @@ pub fn snapshot() -> io::Result<Snapshot> {
 /// snapshot again.
 #[must_use]
 pub fn revision() -> u64 {
-    #[cfg(feature = "broker-transport")]
+    #[cfg(all(feature = "broker-transport", feature = "model"))]
     {
         crate::collaboration::channel_settings::installed().map_or(0, |records| records.revision())
     }
-    #[cfg(not(feature = "broker-transport"))]
+    #[cfg(not(all(feature = "broker-transport", feature = "model")))]
     {
         0
     }
 }
 
 /// Submit an explicit user edit through the app's existing settings capability.
-#[cfg(feature = "broker-transport")]
+#[cfg(all(feature = "broker-transport", feature = "model"))]
 pub fn edit(revision: u64, edit: Edit) -> io::Result<()> {
     crate::collaboration::channel_settings::installed()
         .ok_or_else(|| {
@@ -82,7 +87,7 @@ pub fn edit(revision: u64, edit: Edit) -> io::Result<()> {
         .dictionary_edit(revision, edit)
 }
 
-#[cfg(not(feature = "broker-transport"))]
+#[cfg(not(all(feature = "broker-transport", feature = "model")))]
 pub fn snapshot() -> io::Result<Snapshot> {
     Err(io::Error::new(
         io::ErrorKind::NotConnected,
@@ -90,7 +95,7 @@ pub fn snapshot() -> io::Result<Snapshot> {
     ))
 }
 
-#[cfg(not(feature = "broker-transport"))]
+#[cfg(not(all(feature = "broker-transport", feature = "model")))]
 pub fn edit(_: u64, _: Edit) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::NotConnected,
@@ -98,7 +103,7 @@ pub fn edit(_: u64, _: Edit) -> io::Result<()> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod tests {
     use super::*;
 
@@ -143,17 +148,25 @@ mod tests {
 /// The app's settings channel served from a real settings source by the session's own
 /// server, for headless app tests: the device's settings app holds every setter, as the image
 /// grants it.
-#[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
+#[cfg(all(
+    feature = "broker-transport",
+    feature = "model",
+    any(test, feature = "test-support")
+))]
 pub struct TestSettings {
     server: runtime_collab::settings::host::AppSettingsServer,
     channel: Arc<crate::collaboration::channel_settings::ChannelSettings>,
     previous: Option<Arc<crate::collaboration::channel_settings::ChannelSettings>>,
 }
 
-#[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
+#[cfg(all(
+    feature = "broker-transport",
+    feature = "model",
+    any(test, feature = "test-support")
+))]
 impl TestSettings {
     /// Serve the app's settings channel from `source`, as the session does.
-    pub fn new(source: Arc<dyn settings_store::SettingsSource>, app: &str) -> Self {
+    pub fn new(source: Arc<dyn crate::settings_source::SettingsSource>, app: &str) -> Self {
         let channel = Arc::new(crate::collaboration::channel_settings::ChannelSettings::new(app));
         channel.linked();
         let previous =
@@ -196,7 +209,11 @@ impl TestSettings {
     }
 }
 
-#[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
+#[cfg(all(
+    feature = "broker-transport",
+    feature = "model",
+    any(test, feature = "test-support")
+))]
 impl Drop for TestSettings {
     fn drop(&mut self) {
         self.channel.disconnected();

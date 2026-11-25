@@ -22,8 +22,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub use crate::settings_source::ChangeOrigin;
 use settings_model::{DeviceClass, Scope, SettingsSchema};
-pub use settings_store::ChangeOrigin;
 /// Whether this thread may wait on storage.
 pub use tilo_files::waiting;
 pub use tilo_files::{Dir, FsError};
@@ -99,24 +99,24 @@ impl SettingsDocument {
     /// another workspace installs that workspace's document over the one before it.
     fn version(&self) -> Option<u64> {
         self.located().map(|source| match self {
-            Self::Session => settings_store::installed_version(&*source),
+            Self::Session => crate::settings_source::installed_version(&*source),
             Self::Profile(_) => source.revision(),
         })
     }
 
-    fn source(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
+    fn source(&self) -> Option<std::sync::Arc<dyn crate::settings_source::SettingsSource>> {
         let source = self.located();
         let versioned = self.clone();
         crate::component_inputs::read_versioned(self, Box::new(move || versioned.version()));
         source
     }
 
-    fn located(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
+    fn located(&self) -> Option<std::sync::Arc<dyn crate::settings_source::SettingsSource>> {
         match self {
-            Self::Session => settings_store::source(),
+            Self::Session => crate::settings_source::source(),
             // A browser has no profile directory.
             Self::Profile(_) if tilo_platform_caps::WEB => None,
-            Self::Profile(root) => Some(settings_store::profile_source(root)),
+            Self::Profile(root) => Some(crate::settings_source::profile_source(root)),
         }
     }
 
@@ -128,7 +128,7 @@ impl SettingsDocument {
     #[must_use]
     pub fn config_root(&self) -> Option<PathBuf> {
         match self {
-            Self::Session => settings_store::config_root(),
+            Self::Session => tilo_paths::profile_root(),
             Self::Profile(root) => Some(root.clone()),
         }
     }
@@ -143,7 +143,7 @@ impl SettingsDocument {
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
         self.source()
-            .map(|source| settings_store::load_section_in(&*source, name))
+            .map(|source| crate::settings_source::load_section_in(&*source, name))
             .unwrap_or_default()
     }
 
@@ -159,7 +159,7 @@ impl SettingsDocument {
         &self,
         name: &str,
         values: Map<String, Value>,
-        origin: Option<&settings_store::ChangeOrigin>,
+        origin: Option<&ChangeOrigin>,
     ) -> std::io::Result<()> {
         let source = self
             .source()
@@ -186,7 +186,7 @@ impl SettingsDocument {
     pub fn update_sections(
         &self,
         sections: Vec<(String, Map<String, Value>)>,
-        origin: &settings_store::ChangeOrigin,
+        origin: &ChangeOrigin,
     ) -> std::io::Result<()> {
         self.source()
             .ok_or_else(|| std::io::Error::other("no config directory available"))?
@@ -212,7 +212,7 @@ impl SettingsDocument {
 /// Make every settings change stored before going on, which the native runner does before
 /// the process ends.
 pub fn flush_settings_writes() {
-    settings_store::flush_pending_writes();
+    crate::settings_source::flush_pending_writes();
 }
 
 /// An app's typed settings of one [`SettingsSchema`] type, in the settings document its
@@ -337,11 +337,7 @@ impl<T: SettingsSchema> Settings<T> {
 
     /// [`Self::set`], recording `origin` — the action and who invoked it — in the
     /// document's history of who changed which setting. As [`Self::set`].
-    pub fn set_by(
-        &self,
-        value: &T,
-        origin: Option<&settings_store::ChangeOrigin>,
-    ) -> std::io::Result<()> {
+    pub fn set_by(&self, value: &T, origin: Option<&ChangeOrigin>) -> std::io::Result<()> {
         let value = value.to_settings_value().map_err(std::io::Error::other)?;
         let current = self.get().to_settings_value().ok();
         store_changed(
@@ -432,7 +428,7 @@ fn store_changed(
     scope: Scope,
     value: Value,
     current: Option<Value>,
-    origin: Option<&settings_store::ChangeOrigin>,
+    origin: Option<&ChangeOrigin>,
 ) -> std::io::Result<()> {
     // Only what differs from what is read now is written. A key the person never set
     // reads as `T`'s default; writing the whole value would store that default as their
@@ -501,7 +497,7 @@ fn store_in(
     app_id: &str,
     scope: Scope,
     value: Value,
-    origin: Option<&settings_store::ChangeOrigin>,
+    origin: Option<&ChangeOrigin>,
 ) -> std::io::Result<()> {
     let Value::Object(values) = value else {
         return Err(std::io::Error::new(
@@ -518,7 +514,7 @@ fn store_in(
                 let size = serde_json::to_vec(&object)
                     .map_err(std::io::Error::other)?
                     .len();
-                if size > settings_store::placement::MAX_PERSONAL_VALUE_BYTES {
+                if size > settings_model::MAX_PERSONAL_VALUE_BYTES {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         format!(
@@ -695,13 +691,13 @@ impl SettingsSection {
 /// empty document.
 #[must_use]
 pub fn parse_settings(text: &str) -> Map<String, Value> {
-    settings_store::parse(text)
+    crate::settings_source::parse(text)
 }
 
 /// The settings of the profile at `root`, for code that compares two profiles.
 #[must_use]
 pub fn settings_at(root: &Path) -> Map<String, Value> {
-    settings_store::SettingsSource::load(&*settings_store::profile_source(root))
+    crate::settings_source::SettingsSource::load(&*crate::settings_source::profile_source(root))
 }
 
 /// This app's secrets in the store the current host provides.
@@ -729,16 +725,16 @@ mod tests {
             const SCOPE: Scope = Scope::Shared("appearance");
         }
 
-        let first = settings_store::HostDocument::new(Map::new(), |_| Ok(()));
-        let _page = settings_store::scoped_source(Some(std::sync::Arc::new(first)));
+        let first = crate::settings_source::HostDocument::new(Map::new(), |_| Ok(()));
+        let _page = crate::settings_source::scoped_source(Some(std::sync::Arc::new(first)));
         let settings = Settings::<Appearance>::shared();
         let mut cached = SettingsCache::new(settings);
         assert_eq!(cached.get().mode, None, "a page with nothing chosen");
 
         let chosen = serde_json::json!({"appearance": {"mode": "dark"}});
         let chosen = chosen.as_object().cloned().unwrap_or_default();
-        let second = settings_store::HostDocument::new(chosen, |_| Ok(()));
-        let _other = settings_store::scoped_source(Some(std::sync::Arc::new(second)));
+        let second = crate::settings_source::HostDocument::new(chosen, |_| Ok(()));
+        let _other = crate::settings_source::scoped_source(Some(std::sync::Arc::new(second)));
         assert!(
             cached.refresh(),
             "the document installed in the other's place is a version of its own"
@@ -826,14 +822,18 @@ mod tests {
                     "app_device_local": {"so.tilo.example": {"x": 40}}
                 })
             );
-            assert_eq!(
-                settings_store::placement::holder("app_personal"),
-                settings_store::placement::Holder::Person
-            );
-            assert_eq!(
-                settings_store::placement::holder("app_device_local"),
-                settings_store::placement::Holder::Device
-            );
+            // The sections roam as the store's placement says.
+            #[cfg(feature = "model")]
+            {
+                assert_eq!(
+                    settings_store::placement::holder("app_personal"),
+                    settings_store::placement::Holder::Person
+                );
+                assert_eq!(
+                    settings_store::placement::holder("app_device_local"),
+                    settings_store::placement::Holder::Device
+                );
+            }
             assert_eq!(
                 storage.settings::<Prefs>().get(),
                 Prefs {

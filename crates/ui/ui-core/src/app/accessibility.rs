@@ -4,7 +4,7 @@ use crate::state::StateHistory as _;
 impl App {
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
         let mut reader = crate::screen_reader::ScreenReader::new();
-        reader.configure(&settings_store::accessibility::ScreenReaderSettings::load());
+        reader.configure(&crate::screen_reader::settings());
         reader
     }
 
@@ -180,7 +180,7 @@ impl App {
     /// sign-in comforts.
     pub fn apply_screen_reader_settings(
         &mut self,
-        settings: &settings_store::accessibility::ScreenReaderSettings,
+        settings: &crate::screen_reader::ScreenReaderSettings,
     ) {
         self.set_screen_reader_enabled(settings.enabled);
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
@@ -288,8 +288,18 @@ impl App {
         if let Some(observer) = self.accessibility.on_screen_reader_chord.as_mut() {
             observer(on);
         } else if self.watch_system_settings {
-            let origin = settings_store::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
-            if let Err(error) = settings_store::accessibility::SCREEN_READER.set_by(on, &origin) {
+            let origin = crate::settings_source::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
+            let mut leaf = serde_json::Map::new();
+            leaf.insert(
+                settings_model::accessibility::SCREEN_READER_KEY.to_owned(),
+                serde_json::Value::Bool(on),
+            );
+            let saved = crate::settings_source::source()
+                .ok_or_else(|| std::io::Error::other("no settings to keep it in"))
+                .and_then(|source| {
+                    source.update_section_by(settings_model::accessibility::SECTION, leaf, &origin)
+                });
+            if let Err(error) = saved {
                 tracing::warn!(%error, "the screen reader chord could not save its setting");
             }
         }

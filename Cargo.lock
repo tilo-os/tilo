@@ -20640,7 +20640,12 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tilo-actions",
+ "tilo-formats",
+ "tilo-lock",
  "tilo-resource",
+ "tilo-test-env",
+ "unicode-normalization",
  "workspace-hack",
 ]
 
@@ -20667,7 +20672,6 @@ dependencies = [
  "tilo-settings-model",
  "tilo-test-env",
  "tracing",
- "unicode-normalization",
  "workspace-hack",
 ]
 

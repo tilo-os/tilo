@@ -5,12 +5,12 @@ fn word(spelling: &str, language: Option<&str>) -> Word {
     Word::new(spelling, language).unwrap()
 }
 
-fn document(section: Option<Value>) -> Arc<crate::HostDocument> {
+fn document(section: Option<Value>) -> Arc<crate::source::HostDocument> {
     let mut initial = Map::new();
     if let Some(section) = section {
         initial.insert(SECTION.to_owned(), section);
     }
-    Arc::new(crate::HostDocument::new(initial, |_| Ok(())))
+    Arc::new(crate::source::HostDocument::new(initial, |_| Ok(())))
 }
 
 #[test]

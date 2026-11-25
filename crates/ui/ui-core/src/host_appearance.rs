@@ -35,7 +35,7 @@ fn scheme(theme: winit::window::Theme) -> Scheme {
 /// expose the host Settings portal; its unset scheme must not paint the dark fallback over the shell's
 /// configured theme.
 pub(crate) fn session_document_owns_appearance() -> bool {
-    settings_store::installed_source().is_some()
+    crate::settings_source::installed_source().is_some()
 }
 
 /// Whether the host, not the Tilo shell, owns this process's appearance.
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn the_shells_settings_own_appearance_and_their_absence_does_not() {
-        let _profile = settings_store::scoped_source(None);
+        let _profile = crate::settings_source::scoped_source(None);
         let mut env = tilo_test_env::ScopedEnv::new();
         assert!(!session_document_owns_appearance());
 
@@ -201,8 +201,11 @@ mod tests {
         // theme the host portal cannot describe.
         env.remove("XDG_CURRENT_DESKTOP");
         let appearance = serde_json::json!({"appearance": {"mode": "light"}});
-        let _shell = settings_store::scoped_source(Some(std::sync::Arc::new(
-            settings_store::HostDocument::new(appearance.as_object().unwrap().clone(), |_| Ok(())),
+        let _shell = crate::settings_source::scoped_source(Some(std::sync::Arc::new(
+            crate::settings_source::HostDocument::new(
+                appearance.as_object().unwrap().clone(),
+                |_| Ok(()),
+            ),
         )));
         assert_eq!(Theme::configured().name, Theme::light().name);
         assert!(
@@ -255,11 +258,15 @@ mod tests {
 
     /// Tests share one process: a settings document one installs process-wide is read by every test
     /// running beside it, which is how one test's light theme reached another's high-contrast toggle.
-    /// The toolkit's tests scope theirs to their thread (`settings_store::scoped_source`); the toolkit
+    /// The toolkit's tests scope theirs to their thread (`settings_source::scoped_source`); the toolkit
     /// itself never installs one, its host does.
     #[test]
     fn no_toolkit_code_installs_a_process_wide_settings_document() {
-        let needle = concat!("settings_store::", "install_source(");
+        let needles = [
+            concat!("settings_store::", "install_source("),
+            concat!("settings_source::", "install_source("),
+            concat!("settings_model::source::", "install_source("),
+        ];
         let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
         let mut found = Vec::new();
         while let Some(dir) = stack.pop() {
@@ -268,7 +275,8 @@ mod tests {
                 if path.is_dir() {
                     stack.push(path);
                 } else if path.extension().is_some_and(|ext| ext == "rs")
-                    && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle))
+                    && std::fs::read_to_string(&path)
+                        .is_ok_and(|text| needles.iter().any(|needle| text.contains(needle)))
                 {
                     found.push(path.display().to_string());
                 }

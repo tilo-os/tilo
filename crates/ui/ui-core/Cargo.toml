@@ -28,7 +28,7 @@ default = ["native", "broker-transport", "model"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "dep:settings-model"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -206,7 +206,7 @@ tilolang-lex = { version = "0.1.0", path = "../../lang/tilolang-lex" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }
 settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
-settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", optional = true }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", default-features = false }
 # Dates, clocks and numbers as the person set them, without the toolkit, so a host
 # that has no toolkit answers the same as a window (tilo-formats).
 tilo-formats = { version = "0.1.0", path = "../tilo-formats" }

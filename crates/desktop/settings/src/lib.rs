@@ -58,7 +58,7 @@ pub mod clipboard_history;
 pub mod clock;
 pub mod continuity_privacy;
 pub mod control_hints;
-pub mod day_schedule;
+pub use settings_model::day_schedule;
 pub mod desktop_controls;
 pub mod device_vpn;
 pub mod dictation;
@@ -101,11 +101,14 @@ pub mod workspace;
 
 pub use accessibility::Labelled;
 pub use key::Key;
-pub use source::{
+pub use settings_model::source::{
     ChangeOrigin, ChangeSignal, ConditionalUpdate, DeferredFailure, HostDocument, Listener,
-    SectionChange, SettingsSource, SourceScope, compare_update_section, deferred_failure_pending,
-    flush_pending_writes, install_source, installed_source, installed_version, merge_section,
-    note_deferred_failure, scoped_source, take_deferred_failures,
+    SectionChange, SettingsSource, SettingsStamp, SourceScope, compare_update_section,
+    install_source, installed_source, installed_version, keep_profile, load_section_in,
+    merge_section, parse, profile, profile_source, scoped_source,
+};
+pub use source::{
+    deferred_failure_pending, flush_pending_writes, note_deferred_failure, take_deferred_failures,
 };
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
@@ -170,78 +173,11 @@ fn unisolated_test_write() -> Option<&'static str> {
     )
 }
 
-/// The settings of a profile kept apart from the person's (a headless app's, a test's, the
-/// models a host keeps for a workspace it serves), by its root: one per root for the life of the
-/// process, kept in the root's `settings.json`, which a write replaces whole.
-#[must_use]
-pub fn profile(root: &Path) -> Arc<HostDocument> {
-    static PROFILES: std::sync::Mutex<Vec<(PathBuf, Arc<HostDocument>)>> =
-        std::sync::Mutex::new(Vec::new());
-    let mut profiles = PROFILES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((_, held)) = profiles.iter().find(|(held, _)| held == root) {
-        return Arc::clone(held);
-    }
-    let file = root.join(PROFILE_FILE);
-    let kept = std::fs::read(&file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    let document = Arc::new(HostDocument::new(kept, move |document| {
-        let bytes = serde_json::to_vec(document).map_err(std::io::Error::other)?;
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let partial = file.with_extension("json.partial");
-        std::fs::write(&partial, bytes)?;
-        std::fs::rename(&partial, &file)
-    }));
-    profiles.push((root.to_owned(), Arc::clone(&document)));
-    document
-}
-
-/// Keep the settings of the profile at `root` in what `source` makes, in place of its own
-/// document ([`profile`]), unless something keeps them already: what a host that keeps a
-/// person's settings as resources of a workspace gives the profile it opens a window on, so they
-/// are kept, stepped and read back as that host keeps the person's, and a later window on the
-/// profile finds what an earlier one set.
-pub fn keep_profile(root: &Path, source: impl FnOnce() -> Arc<dyn SettingsSource>) {
-    let mut kept = KEPT_PROFILES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !kept.iter().any(|(held, _)| held == root) {
-        kept.push((root.to_owned(), source()));
-    }
-}
-
-/// The settings of the profile at `root`: what a host gave it to keep them ([`keep_profile`]),
-/// else its own document ([`profile`]).
-#[must_use]
-pub fn profile_source(root: &Path) -> Arc<dyn SettingsSource> {
-    let kept = KEPT_PROFILES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .find(|(held, _)| held == root)
-        .map(|(_, source)| Arc::clone(source));
-    kept.unwrap_or_else(|| profile(root))
-}
-
-static KEPT_PROFILES: std::sync::Mutex<Vec<(PathBuf, Arc<dyn SettingsSource>)>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// The file a [`profile`] is kept in, below its root.
-const PROFILE_FILE: &str = "settings.json";
-
 /// The whole document. Never fails: without settings it is empty, so callers
 /// never distinguish "absent" from "broken" — both mean "use defaults".
 pub fn load() -> Map<String, Value> {
     source().map(|source| source.load()).unwrap_or_default()
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SettingsStamp(pub u64);
 
 /// Whether a poller that last observed `cached` must read the document again.
 ///
@@ -282,21 +218,14 @@ pub fn stamp() -> Option<SettingsStamp> {
     source().map(|source| SettingsStamp(source.revision()))
 }
 
-pub fn parse(text: &str) -> Map<String, Value> {
-    match serde_json::from_str::<Value>(text) {
-        Ok(Value::Object(m)) => m,
-        _ => Map::new(),
-    }
-}
-
 /// Read one top-level section of a settings document body as an object. A missing section,
 /// or one that is not an object, yields an empty map.
 pub fn section(text: &str, name: &str) -> Map<String, Value> {
-    object_section(parse(text), name)
+    settings_model::source::section_of(parse(text), name)
 }
 
 pub fn load_section(name: &str) -> Map<String, Value> {
-    object_section(load(), name)
+    settings_model::source::section_of(load(), name)
 }
 
 /// Sections `names` of this process's settings read as one: the leaves of
@@ -319,17 +248,6 @@ pub fn merged_sections(document: &Map<String, Value>, names: &[&str]) -> Map<Str
         }
     }
     merged
-}
-
-pub fn load_section_in(source: &dyn SettingsSource, name: &str) -> Map<String, Value> {
-    object_section(source.load(), name)
-}
-
-fn object_section(mut doc: Map<String, Value>, name: &str) -> Map<String, Value> {
-    match doc.remove(name) {
-        Some(Value::Object(m)) => m,
-        _ => Map::new(),
-    }
 }
 
 fn no_settings() -> std::io::Error {

@@ -4,19 +4,16 @@
 //! the `accessibility-settings` crate's model; it reads these keys through
 //! the definitions here, so the two cannot disagree about a default or a range.
 
-use serde::Deserialize;
-use serde_json::{Map, Value};
-use std::ops::RangeInclusive;
+pub use settings_model::accessibility::{
+    DEFAULT_SCREEN_READER_RATE, DEVICE_SECTION, SCREEN_READER_RATE_RANGE, SECTION,
+    ScreenReaderSettings, ScreenReaderVoice, clamped_rate,
+};
 
-pub const SECTION: &str = "accessibility";
-
-pub const DEVICE_SECTION: &str = "accessibility_device";
-
-pub const SCREEN_READER: crate::Key<bool> = crate::Key::new(SECTION, "screen_reader", || false);
-
-/// Normalised speech rate, where 100 is the engine default.
-pub const DEFAULT_SCREEN_READER_RATE: u16 = 100;
-pub const SCREEN_READER_RATE_RANGE: RangeInclusive<u16> = 50..=200;
+pub const SCREEN_READER: crate::Key<bool> = crate::Key::new(
+    SECTION,
+    settings_model::accessibility::SCREEN_READER_KEY,
+    || false,
+);
 
 pub trait Labelled: Copy + PartialEq + 'static {
     const CHOICES: &'static [Self];
@@ -61,110 +58,10 @@ macro_rules! labelled_choice {
     };
 }
 
-labelled_choice!(
-    /// Backend-neutral screen-reader voice/language preset.
-    ScreenReaderVoice {
-        #[default]
-        System => "System voice",
-        EnglishUs => "English (US)",
-        EnglishGb => "English (UK)",
-        German => "German",
-        French => "French",
-        Spanish => "Spanish",
-    }
-);
+impl Labelled for ScreenReaderVoice {
+    const CHOICES: &'static [Self] = Self::ALL;
 
-impl ScreenReaderVoice {
-    pub fn engine_voice(self) -> Option<&'static str> {
-        match self {
-            Self::System => None,
-            Self::EnglishUs => Some("en-us"),
-            Self::EnglishGb => Some("en-gb"),
-            Self::German => Some("de"),
-            Self::French => Some("fr"),
-            Self::Spanish => Some("es"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ScreenReaderSettings {
-    pub enabled: bool,
-    /// Speech rate multiplier: 1.0 is the engine default.
-    pub rate: f32,
-    pub voice: ScreenReaderVoice,
-}
-
-impl ScreenReaderSettings {
-    pub fn load() -> Self {
-        Self::from_section(&super::load_section(SECTION))
-    }
-
-    pub fn from_section(section: &Map<String, Value>) -> Self {
-        fn key<T: for<'de> Deserialize<'de>>(
-            section: &Map<String, Value>,
-            name: &str,
-        ) -> Option<T> {
-            section
-                .get(name)
-                .and_then(|value| T::deserialize(value).ok())
-        }
-        Self::new(
-            SCREEN_READER.from_section(section),
-            key(section, "screen_reader_rate").unwrap_or(DEFAULT_SCREEN_READER_RATE),
-            key(section, "screen_reader_voice").unwrap_or_default(),
-        )
-    }
-
-    pub fn new(enabled: bool, rate_percent: u16, voice: ScreenReaderVoice) -> Self {
-        Self {
-            enabled,
-            rate: f32::from(clamped_rate(rate_percent)) / 100.0,
-            voice,
-        }
-    }
-}
-
-pub fn clamped_rate(rate_percent: u16) -> u16 {
-    rate_percent.clamp(
-        *SCREEN_READER_RATE_RANGE.start(),
-        *SCREEN_READER_RATE_RANGE.end(),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn section(value: Value) -> Map<String, Value> {
-        let Value::Object(map) = value else {
-            panic!("not an object")
-        };
-        map
-    }
-
-    tilo_test_env::scenario! {
-        fn screen_reader_settings_clamp_their_rate_and_name_their_voices;
-
-        phase rate_is_clamped_and_unknown_voices_fall_back_to_the_system_voice;
-        {
-            let settings = ScreenReaderSettings::from_section(&section(serde_json::json!({
-                "screen_reader": true,
-                "screen_reader_rate": 900,
-                "screen_reader_voice": "klingon",
-            })));
-            assert!(settings.enabled);
-            assert!((settings.rate - 2.0).abs() < f32::EPSILON);
-            assert_eq!(settings.voice, ScreenReaderVoice::System);
-            assert_eq!(settings.voice.engine_voice(), None);
-
-            let settings = ScreenReaderSettings::from_section(&section(serde_json::json!({
-                "screen_reader_rate": 65,
-                "screen_reader_voice": "english_gb",
-            })));
-            assert!(!settings.enabled);
-            assert!((settings.rate - 0.65).abs() < f32::EPSILON);
-            assert_eq!(settings.voice.engine_voice(), Some("en-gb"));
-        }
+    fn label(self) -> &'static str {
+        Self::label(self)
     }
 }

@@ -29,7 +29,7 @@ pub fn settings_device() -> String {
     if let Some(device) = launched_on() {
         return device;
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "model", not(target_arch = "wasm32")))]
     if let Some(device) = settings_store::outside::device() {
         return device;
     }

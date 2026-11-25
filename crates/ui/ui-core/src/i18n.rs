@@ -42,6 +42,7 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
     }
 }
 
+#[cfg(feature = "model")]
 impl From<&tilo_resource::label::Argument> for ArgValue {
     fn from(argument: &tilo_resource::label::Argument) -> Self {
         match argument {
@@ -438,10 +439,10 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
 }
 
 /// The language this shell speaks, as a BCP 47 tag: the one the person chose in Settings, or else the
-/// locale the device runs in ([`settings_store::appearance::preferred_language`]).
+/// locale the device runs in ([`crate::settings_source::preferred_language`]).
 #[must_use]
 pub fn preferred_language() -> Option<String> {
-    settings_store::appearance::preferred_language()
+    crate::settings_source::preferred_language()
 }
 
 fn preferred_locale() -> Option<LanguageIdentifier> {
@@ -664,6 +665,7 @@ pub fn spoken_name(name: &str, resolved: bool) -> Option<String> {
 /// A resource's name in the language this thread reads: the catalogue entry for its kind
 /// ([`tilo_resource::label::message_key`]) when one is loaded, and nothing when none is, so the
 /// resource keeps the name it declares.
+#[cfg(feature = "model")]
 fn resource_label(
     catalogue: Option<&'static tilo_resource::label::Catalogue>,
     key: &str,
@@ -697,6 +699,7 @@ fn resource_label(
 /// The catalogue a declaration names its words in, loaded as any crate's embedded one: its words ride
 /// along in the window's language ([`EmbeddedCatalog::as_shared`]), its other languages read from the
 /// language packs.
+#[cfg(feature = "model")]
 fn declared_catalogue(
     catalogue: &'static tilo_resource::label::Catalogue,
 ) -> &'static EmbeddedCatalog {
@@ -788,8 +791,11 @@ impl I18nManager {
         // From here on every resource this thread publishes is named in the
         // language it just selected, and named again when that moves; so are
         // the nouns search names it by.
-        tilo_resource::label::install(resource_label, Self::revision);
-        tilo_resource::label::install_noun(resource_noun);
+        #[cfg(feature = "model")]
+        {
+            tilo_resource::label::install(resource_label, Self::revision);
+            tilo_resource::label::install_noun(resource_noun);
+        }
     }
 
     /// Whether the thread holds words of a window — a package's, or chrome a host draws around it —
@@ -1809,8 +1815,8 @@ mod tests {
             .as_object()
             .cloned()
             .unwrap_or_default();
-        let _settings = settings_store::scoped_source(Some(std::sync::Arc::new(
-            settings_store::HostDocument::new(document, |_| Ok(())),
+        let _settings = crate::settings_source::scoped_source(Some(std::sync::Arc::new(
+            crate::settings_source::HostDocument::new(document, |_| Ok(())),
         )));
         assert_eq!(preferred_language().as_deref(), Some("en-US"));
         I18nManager::install_system(
