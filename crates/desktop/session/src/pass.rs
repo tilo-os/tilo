@@ -182,6 +182,10 @@ impl Session {
         // This thread draws the desktop for the length of the pass: a search that would wait for a
         // source here is caught where it is called in a development build, rather than freezing
         // the desktop as it did on 2026-11-13 (`tilo_desktop_search::the_loop`).
+        // Nor does it wait on the device's daemon: a read of it asked here is refused, and stops a
+        // development build where it was asked. The loop follows what it reads instead, and takes
+        // the latest answer.
+        let _pass = tilo_session_client::daemon_documents::OnTheLoop::mark();
         tilo_desktop_search::the_loop(|| self.pass(timeout.into()))
     }
 
@@ -932,3 +936,7 @@ fn session<'a>(
         notifications: shared.notifications.borrow().desktop(),
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "busy_daemon_tests.rs"]
+mod busy_daemon_tests;

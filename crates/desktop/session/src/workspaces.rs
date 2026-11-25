@@ -1669,8 +1669,10 @@ impl crate::Shared {
             }
             self.settle_seed(&mut personal, &list, view);
             personal.passed(&self.handle);
+            // What this device shows is kept at once; the layouts reach their workspaces as the
+            // looks write them, never waited for on the loop.
             if adoption.changed {
-                self.keep_layout_now();
+                self.keep_layout();
             }
             personal.moved()
         };

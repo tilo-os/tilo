@@ -52,8 +52,26 @@ impl Answer {
 struct Asked {
     /// The last read's answer; `None` until one finished.
     answer: Option<Answer>,
+    /// Whether the service held the resource's workspace when the last read answered nothing of
+    /// the resource: a workspace it does not hold is one it may have no documents of yet.
+    workspace_held: bool,
     /// Whether a read of it is waiting for the reading thread.
     queued: bool,
+    /// How many writes the service told of reaching it.
+    told: u64,
+    /// How many of those had been told when the read that gave [`Self::answer`] began: an answer
+    /// read before the last write told of is no longer what the service holds.
+    answered_after: u64,
+}
+
+/// What the service holds of a resource and its workspace, as the latest read of it found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Holding {
+    /// The service holds the resource: whole, or on its way (its keys or its checkpoint have not
+    /// arrived yet).
+    pub(super) resource: bool,
+    /// The service holds the resource's workspace.
+    pub(super) workspace: bool,
 }
 
 #[derive(Default)]
@@ -92,6 +110,15 @@ impl Shared {
         state.outstanding = state.outstanding.saturating_add(1);
     }
 
+    /// The service took a write to `key`'s resource: what was read of it before is no longer
+    /// what it holds, and it is read again.
+    fn told(&self, asks: &mpsc::Sender<Key>, key: &Key) {
+        if let Some(asked) = self.lock().asked.get_mut(key) {
+            asked.told = asked.told.wrapping_add(1);
+        }
+        self.ask(asks, key);
+    }
+
     /// Every resource the loop follows.
     fn followed(&self) -> Vec<Key> {
         self.lock().asked.keys().cloned().collect()
@@ -126,15 +153,28 @@ impl Reads {
             .name("layout reads".to_owned())
             .spawn(move || {
                 while let Ok(key) = asked.recv() {
-                    if let Some(asked) = reading.lock().asked.get_mut(&key) {
+                    let begun = reading.lock().asked.get_mut(&key).map(|asked| {
                         // A write that lands while this read is under way asks for another.
                         asked.queued = false;
-                    }
+                        asked.told
+                    });
                     let answer = read(reads.as_ref(), &key);
+                    // Where the service holds nothing of the resource, whether it holds its
+                    // workspace at all: one it does not is no workspace a view is written onto.
+                    let workspace_held = match &answer {
+                        Answer::Whole(..) | Answer::Waiting => true,
+                        Answer::Nothing | Answer::Failed(_) => {
+                            let workspace = key.0.to_string();
+                            reads.workspaces().iter().any(|held| *held == workspace)
+                        }
+                    };
                     let mut state = reading.lock();
                     let asked = state.asked.entry(key).or_default();
-                    let news = asked.answer.as_ref().is_none_or(|was| !was.same(&answer));
+                    let news = asked.answer.as_ref().is_none_or(|was| !was.same(&answer))
+                        || asked.workspace_held != workspace_held;
                     asked.answer = Some(answer);
+                    asked.workspace_held = workspace_held;
+                    asked.answered_after = begun.unwrap_or(asked.told);
                     state.outstanding = state.outstanding.saturating_sub(1);
                     state.news |= news;
                     drop(state);
@@ -174,6 +214,28 @@ impl Reads {
         };
         drop(state);
         answer
+    }
+
+    /// What the service holds of `key`'s resource and its workspace, as the latest read of it
+    /// found, asking for it to be read again: `None` while that is not known yet, as no read of it
+    /// answered, or the service told of a write to it since the read that answered began. A
+    /// resource that could not be read is one the service holds nothing readable of.
+    pub(super) fn holding(&self, key: &Key) -> Option<Holding> {
+        self.follow_notices();
+        self.shared.ask(&self.asks, key);
+        let state = self.shared.lock();
+        let asked = state.asked.get(key)?;
+        if asked.answered_after != asked.told {
+            return None;
+        }
+        let resource = match asked.answer.as_ref()? {
+            Answer::Whole(..) | Answer::Waiting => true,
+            Answer::Nothing | Answer::Failed(_) => false,
+        };
+        Some(Holding {
+            resource,
+            workspace: asked.workspace_held,
+        })
     }
 
     /// Whether an answer changed since this was last asked: the loop then looks again, whatever
@@ -231,14 +293,14 @@ impl Reads {
                     Ok(write) => {
                         for key in shared.followed() {
                             if reaches(&write, &key) {
-                                shared.ask(&asks, &key);
+                                shared.told(&asks, &key);
                             }
                         }
                     }
                     // A write missed is in the resource: everything followed is read again.
                     Err(RecvError::Lagged(_)) => {
                         for key in shared.followed() {
-                            shared.ask(&asks, &key);
+                            shared.told(&asks, &key);
                         }
                     }
                     Err(RecvError::Closed) => {

@@ -1850,3 +1850,171 @@ fn a_layout_is_read_again_for_a_write_of_it_not_for_a_write_elsewhere() {
         );
     }
 }
+
+/// The device's daemon, whose every read waits while it is `busy`: a daemon under load.
+struct Busy {
+    busy: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    inner: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+}
+
+impl Busy {
+    fn set(busy: &(std::sync::Mutex<bool>, std::sync::Condvar), now: bool) {
+        *busy.0.lock().expect("the daemon's load") = now;
+        busy.1.notify_all();
+    }
+
+    fn wait(&self) {
+        let (load, eased) = &*self.busy;
+        let mut busy = load.lock().expect("the daemon's load");
+        while *busy {
+            busy = eased.wait(busy).expect("the daemon's load");
+        }
+    }
+}
+
+impl tilo_peer_state::workspace_documents::DeviceDocuments for Busy {
+    fn read(
+        &self,
+        workspace: &str,
+        app: &str,
+        resource: &str,
+        since: Option<&[[u8; 32]]>,
+    ) -> Result<tilo_peer_state::workspace_documents::DocumentRead, String> {
+        self.wait();
+        self.inner.read(workspace, app, resource, since)
+    }
+
+    fn readable(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        self.wait();
+        self.inner.readable(workspace, app, resource)
+    }
+
+    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+        self.wait();
+        self.inner.listing(workspace)
+    }
+
+    fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        self.wait();
+        self.inner.holds(workspace, app, resource)
+    }
+
+    fn workspaces(&self) -> Vec<String> {
+        self.wait();
+        self.inner.workspaces()
+    }
+}
+
+/// A daemon that answers slowly holds up no look: the loop takes what its reads last answered,
+/// and a layout another device wrote since is not known here yet, so the empty shell this one
+/// shows is not written over it.
+#[test]
+fn a_look_never_waits_on_a_busy_daemon_and_writes_nothing_over_what_it_has_not_read() {
+    let service = crate::daemon_fixture::TestDaemon::start();
+    let cert = service.certificate();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let workspace = WorkspaceId::new();
+    service.found(workspace, "Layout");
+    let layout = (workspace, Route::layout());
+
+    let busy = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let (wake, _heard) = woken();
+    let here = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        person.clone(),
+        None,
+    );
+    service.attach_as(
+        &here,
+        &(Arc::new(Busy {
+            busy: Arc::clone(&busy),
+            inner: service.reads(),
+        }) as Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>),
+        &service.writes(),
+    );
+    // The first read answers while the daemon is idle: the workspace holds no layout yet.
+    let mut shown = Layout {
+        workspaces: vec![Workspace::new(workspace, "Layout")],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    look(&here, &mut shown);
+    assert_eq!(
+        here.holds_layout(workspace),
+        Some(false),
+        "the daemon said it holds no layout"
+    );
+
+    // The daemon is busy from here on; were a look to wait for it, the test opens it after a
+    // while, and the wait shows as the time the look took.
+    Busy::set(&busy, true);
+    let (ease, eased) = std::sync::mpsc::channel::<()>();
+    let easing = {
+        let busy = Arc::clone(&busy);
+        std::thread::spawn(move || {
+            let _ = eased.recv_timeout(std::time::Duration::from_secs(10));
+            Busy::set(&busy, false);
+        })
+    };
+
+    // Another device of the person's writes the workspace's layout meanwhile.
+    let (wake, _heard) = woken();
+    let there = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        person,
+        None,
+    );
+    service.attach(&there);
+    let mut theirs = one_window_of_notes(workspace, salt);
+    look(&there, &mut theirs);
+    there.capture(&theirs);
+    there.finish_writes(&theirs, std::time::Duration::from_secs(30));
+    assert!(
+        there.layout(workspace).is_some(),
+        "the other device wrote its layout"
+    );
+
+    // The write is told here: what was read before it is no longer known to be what the
+    // workspace holds.
+    let told = std::time::Instant::now();
+    while here.holds_layout(workspace).is_some() {
+        assert!(
+            told.elapsed() < std::time::Duration::from_secs(5),
+            "the daemon tells of the write"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // This device's shell changes while the daemon is busy: the look and the write it would make
+    // take no time, and write nothing over the layout the daemon has not answered yet.
+    let mut mine = one_window_of_notes(workspace, salt);
+    let looked = std::time::Instant::now();
+    here.follow("", &mut mine);
+    here.capture(&mine);
+    let took = looked.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "a look waited {took:?} for a busy daemon"
+    );
+    assert!(
+        here.held(&layout, |held| held.writing.is_none()
+            && held.written.is_none()),
+        "nothing is written over a layout this device has not read"
+    );
+
+    // The daemon answers again, and the layout the other device wrote is what is read here.
+    drop(ease);
+    easing.join().expect("the daemon eases");
+    let eased = std::time::Instant::now();
+    while here.holds_layout(workspace) != Some(true) {
+        assert!(
+            eased.elapsed() < std::time::Duration::from_secs(30),
+            "the layout the other device wrote is read here"
+        );
+        here.read_through(std::time::Duration::from_secs(1));
+    }
+}

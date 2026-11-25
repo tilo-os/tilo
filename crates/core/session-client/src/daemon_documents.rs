@@ -55,6 +55,60 @@ const SLOW_ASK: std::time::Duration = std::time::Duration::from_secs(2);
 pub const ASKED_ON_THE_LINK: &str =
     "a blocking ask of the device's daemon was made on the thread that carries its link";
 
+/// What a blocking read of the device's daemon made on the desktop session's loop is told: the
+/// loop follows what it reads and takes the latest answer, and never waits for one.
+pub const READ_ON_THE_LOOP: &str =
+    "a blocking read of the device's daemon was made on the desktop session's loop";
+
+std::thread_local! {
+    /// Whether this thread is running a pass of the desktop session's loop.
+    static ON_THE_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread runs a pass of the desktop session's loop while it is held: a blocking read of the
+/// daemon made meanwhile is refused ([`READ_ON_THE_LOOP`]). Every frame, every answer on the
+/// session's control socket and every app's request waits for the pass, so a pass that waited on
+/// a daemon that answers slowly would stop them all.
+#[must_use = "the loop is marked only while the mark is held"]
+pub struct OnTheLoop {
+    was: bool,
+    /// The mark is the thread's: it is never sent to another.
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl OnTheLoop {
+    /// Mark this thread as running a pass of the session's loop, until the mark is dropped.
+    pub fn mark() -> Self {
+        Self {
+            was: ON_THE_LOOP.with(|on| on.replace(true)),
+            _thread: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for OnTheLoop {
+    fn drop(&mut self) {
+        ON_THE_LOOP.with(|on| on.set(self.was));
+    }
+}
+
+/// Refuse a blocking read asked on the session's loop, saying what was asked and from where. A
+/// build with debug assertions, every test's, stops there: such a read is a bug to move off the
+/// loop, never a wait to take.
+fn refused_on_the_loop(asking: &dyn Fn() -> String) -> Result<(), String> {
+    if !ON_THE_LOOP.with(std::cell::Cell::get) {
+        return Ok(());
+    }
+    let asking = asking();
+    let from = std::backtrace::Backtrace::force_capture();
+    tracing::error!(asking = %asking, from = %from, "{READ_ON_THE_LOOP}");
+    assert!(
+        !cfg!(debug_assertions),
+        "{READ_ON_THE_LOOP}: {asking}\n{from}"
+    );
+    Err(READ_ON_THE_LOOP.to_owned())
+}
+
 /// How much of what a waiting ask asked it says.
 const ASKING_SHOWN: usize = 200;
 
@@ -339,8 +393,9 @@ impl DaemonShell {
     /// [`Self::read`] from a thread that is not the runtime's.
     ///
     /// # Errors
-    /// As [`Self::dispatch`].
+    /// As [`Self::dispatch`]; one asked on the session's loop is refused ([`OnTheLoop`]).
     pub fn read_blocking(&self, read: ResourceReadRequest) -> Result<serde_json::Value, String> {
+        refused_on_the_loop(&|| format!("{read:?}"))?;
         self.dispatch_blocking(None, &read_message(read))
     }
 

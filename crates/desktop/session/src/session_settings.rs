@@ -17,8 +17,7 @@ use collab_types::store::wire::{Command, Reply};
 use serde_json::{Map, Value};
 use settings_sections::workspace::{Stores, WorkspaceSettings};
 use settings_store::placement::Holder;
-use tilo_peer_state::workspace_documents::DeviceDocuments as _;
-use tilo_session_client::daemon_documents::{DaemonDocuments, DaemonShell};
+use tilo_session_client::daemon_documents::DaemonShell;
 
 /// How long the settings go between looks at what another device or an agent changed.
 const LOOK_EVERY: Duration = Duration::from_millis(400);
@@ -34,6 +33,9 @@ pub(crate) struct SessionSettings {
     settings: Arc<WorkspaceSettings>,
     attached: Cell<bool>,
     looked: Cell<Option<Instant>>,
+    /// The workspaces the device's daemon holds, as it last answered: asked off the loop, `None`
+    /// until it answered.
+    held: Arc<std::sync::Mutex<Option<Vec<String>>>>,
     /// The revision of the settings, and the device they were read on, last left for the
     /// processes outside the session.
     published: std::cell::RefCell<Option<(u64, String)>>,
@@ -71,6 +73,7 @@ impl SessionSettings {
             settings,
             attached: Cell::new(false),
             looked: Cell::new(None),
+            held: Arc::default(),
             published: std::cell::RefCell::new(None),
             publisher: publisher.ok(),
         }
@@ -102,15 +105,22 @@ impl SessionSettings {
                 return;
             };
             let workspace = persons_workspace(&person);
-            // Asking the daemon which workspaces it holds is a round trip: once a look.
-            if !due || !sealing(&workspace) {
+            // Asking the daemon which workspaces it holds is a round trip: once a look, off the
+            // loop, which is woken by the answer and reads it on the pass after.
+            let holds = self
+                .held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .is_some_and(|held| held.contains(&workspace));
+            if !holds {
+                if due && sealing(&workspace) {
+                    self.looked.set(Some(now));
+                    self.ask_held(daemon, wake);
+                }
                 return;
             }
-            self.looked.set(Some(now));
-            if !DaemonDocuments(daemon.clone())
-                .workspaces()
-                .contains(&workspace)
-            {
+            if !sealing(&workspace) {
                 return;
             }
             self.settings.attach(Arc::new(SessionStores {
@@ -128,6 +138,29 @@ impl SessionSettings {
             self.looked.set(Some(now));
             self.settings.refresh();
         }
+    }
+
+    /// Ask the device's daemon which workspaces it holds, and wake the loop with its answer.
+    fn ask_held(&self, daemon: &DaemonShell, wake: &tilo_service::Wake) {
+        use runtime_collab::wire::shell::{ShellCall, ShellReply};
+        let (asking, held, wake) = (daemon.clone(), Arc::clone(&self.held), Arc::clone(wake));
+        daemon.runtime().spawn(async move {
+            let workspaces = match asking.ask(ShellCall::Workspaces).await {
+                Ok(ShellReply::Workspaces(workspaces)) => workspaces,
+                Ok(other) => {
+                    tracing::warn!(answer = ?other, "the device's workspaces did not read");
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the device's workspaces did not read");
+                    return;
+                }
+            };
+            *held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(workspaces);
+            wake();
+        });
     }
 
     /// Leave the settings as they are now, read on `device`, for the processes outside the

@@ -681,9 +681,6 @@ pub(crate) struct Layouts {
     /// How the person's workspaces stand on the device's daemon: a look reads the records again
     /// once that moved.
     view: RefCell<Option<Arc<WorkspaceView>>>,
-    /// Where the workspaces' documents are read, once the session opened this device's service: a
-    /// layout and its views are read from the workspace's own copy, as they are written to it.
-    reads: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>>>,
     /// The reads of the layouts and views, made off the loop once the session opened its service.
     reading: RefCell<Option<reads::Reads>>,
     /// Where the service whose writes ask for those reads again is installed, until they start.
@@ -1092,7 +1089,6 @@ impl Layouts {
     ) {
         *self.certificate.borrow_mut() = Some(Arc::new(certificate.clone()));
         *self.view.borrow_mut() = Some(Arc::clone(view));
-        *self.reads.borrow_mut() = Some(Arc::clone(reads));
         *self.writes.borrow_mut() = Some(Arc::clone(writes));
         if self.reading.borrow().is_none() {
             *self.reading.borrow_mut() = Some(reads::Reads::start(
@@ -1118,11 +1114,6 @@ impl Layouts {
         if let Some(reading) = reading {
             reading.read_through(patience);
         }
-    }
-
-    /// Where the workspaces' documents are read, once the session opened its service.
-    fn reads(&self) -> Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>> {
-        self.reads.borrow().clone()
     }
 
     /// The writes into the workspaces' documents, once the session opened its service.
@@ -1447,13 +1438,18 @@ impl Layouts {
                 // holds and this look cannot read is nobody's to write over, so nothing counts as
                 // written until a look reads it.
                 failed => {
-                    let waiting = matches!(failed, Err(NotRead::Waiting));
                     // A document the service holds nothing of reads as absent, whether it says so
                     // or answers nothing: the view here is written over no view at all. One this
-                    // look cannot read yet is waited for, never written.
-                    let absent = !waiting && self.nothing_written(workspace_id, &route);
+                    // look cannot read yet is waited for, never written, and so is one whose
+                    // absence is not known yet.
+                    let absent = if matches!(failed, Err(NotRead::Waiting)) {
+                        None
+                    } else {
+                        self.nothing_written(workspace_id, &route)
+                    };
+                    let (known, absent) = (absent.is_some(), absent == Some(true));
                     self.held(&key, |held| {
-                        held.read = !waiting;
+                        held.read = known;
                         held.unreadable = !absent;
                         if absent && held.written.is_none() {
                             held.written = Some(Written::View(PersonView::default()));
@@ -1631,10 +1627,11 @@ impl Layouts {
         // read yet (its keys are on their way) is never written over. A copy this device wrote is
         // what its next write is made on, with the workspace's merged in. A document the look read
         // as nothing may still be the workspace's: the service's copy is loaded as the store opens,
-        // and its shell written over it meanwhile would take back every window it holds.
+        // and its shell written over it meanwhile would take back every window it holds. Whether
+        // the service holds one is what its latest read found; until a read says, it may.
         if !holds
             && (read.waiting
-                || (reached.is_some() || self.holds_layout(workspace_id))
+                || (reached.is_some() || self.holds_layout(workspace_id).unwrap_or(true))
                     && self.held(&key, |held| held.folded.is_none()))
         {
             self.unwritten(
@@ -2959,26 +2956,31 @@ fn bound_apps(
         .collect()
 }
 
-/// Whether this device's service holds `workspace_id` and it holds nothing of `route` yet: what a
-/// view is written onto, rather than over one this look cannot read. A workspace the service does
-/// not hold is one the session has no documents of at all, never one it may write a view over.
+/// What this device's service holds is read off the loop ([`reads::Reads`]), and these answer from
+/// its latest read: `None` while that is not known yet, which is never taken for an absence.
 impl Layouts {
-    fn nothing_written(&self, workspace_id: WorkspaceId, route: &Route) -> bool {
-        self.reads().is_some_and(|reads| {
-            reads
-                .workspaces()
-                .iter()
-                .any(|held| held == &workspace_id.to_string())
-                && !reads.holds(&workspace_id.to_string(), route.app, &route.document)
-        })
+    /// Whether this device's service holds `workspace_id` and it holds nothing of `route` yet:
+    /// what a view is written onto, rather than over one this look cannot read. A workspace the
+    /// service does not hold is one the session has no documents of at all, never one it may
+    /// write a view over.
+    fn nothing_written(&self, workspace_id: WorkspaceId, route: &Route) -> Option<bool> {
+        let Some(reading) = self.reading.borrow().clone() else {
+            return Some(false);
+        };
+        reading
+            .holding(&(workspace_id, route.clone()))
+            .map(|holding| holding.workspace && !holding.resource)
     }
 
     /// Whether this device's service holds anything of the layout of `workspace_id`: the
     /// workspace's own copy that a session which has not read it yet is not written over.
-    fn holds_layout(&self, workspace_id: WorkspaceId) -> bool {
-        let route = Route::layout();
-        self.reads()
-            .is_some_and(|reads| reads.holds(&workspace_id.to_string(), route.app, &route.document))
+    fn holds_layout(&self, workspace_id: WorkspaceId) -> Option<bool> {
+        let Some(reading) = self.reading.borrow().clone() else {
+            return Some(false);
+        };
+        reading
+            .holding(&(workspace_id, Route::layout()))
+            .map(|holding| holding.resource)
     }
 }
 

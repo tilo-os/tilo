@@ -448,7 +448,9 @@ fn an_ask_on_the_thread_that_carries_the_link_is_refused_and_the_link_keeps_answ
         let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
         opening.extend_from_slice(&secret);
         link.write_all(&opening).await.unwrap();
-        opened.send(runtime_collab::ShellClient::open(link).0).unwrap();
+        opened
+            .send(runtime_collab::ShellClient::open(link).0)
+            .unwrap();
     });
     let shell = DaemonShell::new(Ok(link.recv().unwrap()), handle.clone());
 
@@ -472,4 +474,45 @@ fn an_ask_on_the_thread_that_carries_the_link_is_refused_and_the_link_keeps_answ
     );
     drop(stop);
     carrier.join().unwrap();
+}
+
+#[test]
+fn a_read_asked_on_the_sessions_loop_stops_there_and_one_off_it_is_answered() {
+    let runtime = runtime();
+    let daemon = daemon(&runtime);
+    let link = runtime.block_on(daemon.link());
+    let shell = DaemonShell::new(Ok(link), runtime.handle().clone());
+    let read = || super::whole(WORKSPACE, "so.tilo.desktop", "layout");
+
+    let on_the_loop = shell.clone();
+    let asked = std::thread::spawn(move || {
+        let _pass = super::OnTheLoop::mark();
+        on_the_loop.read_blocking(read())
+    })
+    .join();
+    // A build with debug assertions, every test's, stops at once; any other is refused at once.
+    let said = match asked {
+        Err(stopped) => stopped
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default(),
+        Ok(answered) => answered.expect_err("a read on the session's loop is refused"),
+    };
+    assert!(
+        said.starts_with(super::READ_ON_THE_LOOP),
+        "it says why: {said}"
+    );
+
+    // The same thread once its pass ended, and every other thread meanwhile, reads as before.
+    let after = shell.clone();
+    let answered = std::thread::spawn(move || {
+        drop(super::OnTheLoop::mark());
+        after.read_blocking(read())
+    })
+    .join()
+    .unwrap();
+    assert!(
+        answered.is_ok(),
+        "a read off the loop is answered: {answered:?}"
+    );
 }
