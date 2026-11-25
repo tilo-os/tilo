@@ -302,7 +302,9 @@ export function fromDiscord(state, event) {
     const payload = event.payload;
     if (payload.webhook_id || payload.author?.bot) return [];
     if (blocked(state, payload.author.id)) return [];
-    const channel = byDiscord(state, "channel", payload.channel_id);
+    // Said in a bridged channel, or in a thread of one the workspace holds too.
+    const channel =
+      byDiscord(state, "channel", payload.channel_id) ?? byDiscord(state, "thread", payload.channel_id);
     if (!channel) return [];
     // An account linked to a member here wears that member's face and colour; one nobody linked
     // is the account's own face alone.
@@ -332,6 +334,21 @@ export function fromDiscord(state, event) {
       origin: "discord",
       persona: payload.author.id,
     };
+    return [call];
+  }
+  if (event.source === "THREAD_CREATED") {
+    // A thread someone started in Discord under a message the workspace holds is started here
+    // under that message, and the two joined: what is said in it lands in it. Discord gives a
+    // thread started on a message that message's id. One the bridge started itself is already
+    // the workspace's.
+    const payload = event.payload;
+    if (payload.owner_id && payload.owner_id === state.bot_user) return [];
+    if (byDiscord(state, "thread", payload.id)) return [];
+    const channel = byDiscord(state, "channel", payload.parent_id);
+    const message = byDiscord(state, "message", payload.id);
+    if (!channel || !message) return [];
+    const call = chat("start_thread", { c: channel.tilo, m: message.tilo, name: payload.name || "Thread" });
+    call.map = { kind: "thread", discord: payload.id, origin: "discord", root: channel.tilo };
     return [call];
   }
   if (event.source === "MESSAGE_UPDATED") {

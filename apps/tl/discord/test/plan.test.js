@@ -586,3 +586,42 @@ test("a file Discord does not take goes as its name and size, and the message st
   expect(sizeOf(943)).toBe("943 B");
   expect(sizeOf(1_400_000)).toBe("1.4 MB");
 });
+
+test("a thread started in Discord under a message here is started here, and what is said in it lands in it", () => {
+  const held = state({ bot_user: "900" });
+  const started = fromDiscord(held, {
+    source: "THREAD_CREATED",
+    payload: { id: "777", parent_id: "456", name: "follow-up", owner_id: "3001" },
+  });
+  expect(started).toHaveLength(1);
+  expect(started[0].action).toBe("start_thread");
+  expect(started[0].args).toEqual({ c: "tl:so.tilo.chat:design", m: "tl:so.tilo.chat:m1", name: "follow-up" });
+  expect(started[0].map).toEqual({ kind: "thread", discord: "777", origin: "discord", root: "tl:so.tilo.chat:design" });
+
+  // The bot's own thread, one on a message the workspace does not hold, and one already joined
+  // start nothing.
+  const thread = (payload) => fromDiscord(held, { source: "THREAD_CREATED", payload });
+  expect(thread({ id: "777", parent_id: "456", name: "x", owner_id: "900" })).toEqual([]);
+  expect(thread({ id: "999", parent_id: "456", name: "x", owner_id: "3001" })).toEqual([]);
+  const joined = state({
+    map: [
+      { kind: "channel", tilo: "tl:so.tilo.chat:design", discord: "456" },
+      { kind: "thread", tilo: "tl:so.tilo.chat:t1", discord: "777", root: "tl:so.tilo.chat:design" },
+    ],
+  });
+  expect(fromDiscord(joined, { source: "THREAD_CREATED", payload: { id: "777", parent_id: "456" } })).toEqual([]);
+
+  // A message in the thread is relayed into it.
+  const [relayed] = fromDiscord(joined, {
+    source: "MESSAGE_CREATED",
+    payload: {
+      id: "778",
+      channel_id: "777",
+      content: "in the thread",
+      author: { id: "3003", name: "cleo" },
+      attachments: [],
+    },
+  });
+  expect(relayed.action).toBe("relay");
+  expect(relayed.args.to).toBe("tl:so.tilo.chat:t1");
+});

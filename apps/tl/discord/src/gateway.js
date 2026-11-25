@@ -46,10 +46,25 @@ export async function connect({ make, token, onEvent, onVoice, watch, url, log =
     onEvent(discordReaction("REACTION_REMOVED", reaction, user)),
   );
   client.on("guildMemberUpdate", (_, member) => onEvent(discordMember(member)));
+  client.on("threadCreate", (thread) => onEvent(discordThread(thread)));
   client.on("layout", (guild) => onEvent(discordLayout(guild)));
   await client.login(token, url);
   if (watch) await watch();
   return client;
+}
+
+/// A thread started in Discord, as the planners read it: the thread, the channel it is in, its
+/// name, and who started it.
+export function discordThread(thread) {
+  return {
+    source: "THREAD_CREATED",
+    payload: {
+      id: thread?.id ?? "",
+      parent_id: thread?.parentId ?? thread?.parent_id ?? "",
+      name: thread?.name ?? "",
+      owner_id: thread?.ownerId ?? thread?.owner_id ?? "",
+    },
+  };
 }
 
 /// A message of the gateway as the planners read it.
@@ -431,6 +446,24 @@ export class Gateway {
           id: data?.id ?? "",
           channelId: data?.channel_id ?? "",
           guildId: data?.guild_id ?? null,
+        });
+        return;
+      // A moderator clearing many messages at once: each is a deletion of its own.
+      case "MESSAGE_DELETE_BULK":
+        for (const id of data?.ids ?? []) {
+          this.#emit("messageDelete", {
+            id: String(id),
+            channelId: data?.channel_id ?? "",
+            guildId: data?.guild_id ?? null,
+          });
+        }
+        return;
+      case "THREAD_CREATE":
+        this.#emit("threadCreate", {
+          id: data?.id ?? "",
+          parentId: data?.parent_id ?? "",
+          name: data?.name ?? "",
+          ownerId: data?.owner_id ?? "",
         });
         return;
       case "MESSAGE_REACTION_ADD":

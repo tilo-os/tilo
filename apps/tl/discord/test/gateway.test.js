@@ -228,6 +228,40 @@ test("the gateway keeps what decides the bot's permissions as Discord changes it
   discord.stop();
 });
 
+test("a thread started and a bulk deletion reach the bridge as their events", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  discord.send({
+    op: 0,
+    s: 3,
+    t: "THREAD_CREATE",
+    d: { id: "777", guild_id: "123", parent_id: "456", name: "follow-up", owner_id: "3001", type: 11 },
+  });
+  discord.send({
+    op: 0,
+    s: 4,
+    t: "MESSAGE_DELETE_BULK",
+    d: { ids: ["801", "802"], channel_id: "456", guild_id: "123" },
+  });
+  await until(() => events.filter((event) => event.source === "MESSAGE_DELETED").length === 2, "the deletions");
+  expect(events.find((event) => event.source === "THREAD_CREATED").payload).toEqual({
+    id: "777",
+    parent_id: "456",
+    name: "follow-up",
+    owner_id: "3001",
+  });
+  expect(
+    events.filter((event) => event.source === "MESSAGE_DELETED").map((event) => event.payload.id),
+  ).toEqual(["801", "802"]);
+  client.destroy();
+  discord.stop();
+});
+
 test("a call hands the voice session Discord named, never the gateway's", async () => {
   const discord = fakeGateway();
   const client = await connect({
