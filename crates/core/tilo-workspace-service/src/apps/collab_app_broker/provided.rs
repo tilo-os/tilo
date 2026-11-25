@@ -199,6 +199,22 @@ pub(super) fn is_local_host_caller(
 
 /// The descriptor of the action `request` calls, as `registered` offers it to `caller`: as its
 /// argument makes it, where the provider says, else as its catalogue describes it.
+fn descriptor_of(
+    registered: &Registered,
+    caller: &Caller,
+    request: &InvokeRequest,
+    argument: Option<&str>,
+) -> Option<tilo_actions::ActionDescriptor> {
+    let address = &request.target.address;
+    if let Some(descriptor) = registered.answers.invocation(address, argument) {
+        return Some(descriptor);
+    }
+    rows_of(registered, caller)
+        .into_iter()
+        .filter_map(|row| row.action)
+        .find(|action| &action.address == address)
+}
+
 impl AppBrokerState {
     /// What the workspace decides of `request`, an action the registered provider `registered`
     /// answers, made by `caller` on their own device's connection: the same verdict the
@@ -222,7 +238,11 @@ impl AppBrokerState {
             .ok_or(ActionCallError::UnknownAction)?;
         let (workspace, policy, now) = self.current_framework_authority(caller, None, workspace)?;
         // The call's own confirmation is never read here: an ask is answered only by the
-        // person's approve of the asked record the admission keeps, which this call is not.
+        // person's approve of the asked record the admission keeps, which this call is not. An
+        // action whose contract asks its person every time asks here too, before anything runs.
+        if !Self::confirmed_as_asked(&policy, &descriptor, argument.as_deref(), None, false) {
+            return Err(ActionCallError::confirmation_required());
+        }
         self.admit_answer(
             (&workspace, &policy, now),
             deciding_app(registered, None),
@@ -230,22 +250,6 @@ impl AppBrokerState {
             (argument.as_deref(), None),
         )
     }
-}
-
-fn descriptor_of(
-    registered: &Registered,
-    caller: &Caller,
-    request: &InvokeRequest,
-    argument: Option<&str>,
-) -> Option<tilo_actions::ActionDescriptor> {
-    let address = &request.target.address;
-    if let Some(descriptor) = registered.answers.invocation(address, argument) {
-        return Some(descriptor);
-    }
-    rows_of(registered, caller)
-        .into_iter()
-        .filter_map(|row| row.action)
-        .find(|action| &action.address == address)
 }
 
 /// The query that lists everything `registered` offers, from its first page.
@@ -2460,7 +2464,9 @@ mod own_device_verdict_tests {
 
     /// A workspace `owner` owns, `MEMBER` belongs to, where `rule` answers for the member at the
     /// device action.
-    fn workspace(rule: Option<Answer>) -> (Arc<AppBrokerState>, WorkspaceId, String, String) {
+    fn broker_workspace(
+        rule: Option<Answer>,
+    ) -> (Arc<AppBrokerState>, WorkspaceId, String, String) {
         let owner = hex::encode([61u8; 32]);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(61), "Packages");
         workspace.policy.set_owner(owner.clone());
@@ -2516,10 +2522,8 @@ mod own_device_verdict_tests {
     /// the person is consulted.
     #[test]
     fn an_own_device_action_is_asked_or_denied_by_the_workspace_rules() {
-        use tilo_actions::remote::ActionProvider as _;
-
         // No rule for the workspace's owner: it runs.
-        let (state, id, workspace, owner) = workspace(None);
+        let (state, id, workspace, owner) = broker_workspace(None);
         let caller = Caller::own_person(owner.clone()).in_workspace(&workspace);
         assert!(
             state
@@ -2533,7 +2537,7 @@ mod own_device_verdict_tests {
             (Answer::Ask, "confirmation_required"),
             (Answer::Deny, "not_permitted"),
         ] {
-            let (state, same, workspace, _) = workspace(Some(rule));
+            let (state, same, workspace, _) = broker_workspace(Some(rule));
             assert_eq!(same, id, "the same workspace");
             let caller = Caller::own_person(MEMBER).in_workspace(&workspace);
             let refused = state
