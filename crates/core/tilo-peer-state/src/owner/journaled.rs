@@ -176,10 +176,10 @@ impl Journaled {
                 written.insert(log);
                 whole = whole && journal::read_whole(&entries);
                 appended = entries.len();
-                let (replayed, last) = journal::replay(stored, &entries, snapshot_version)
+                let (replayed, newest) = journal::replay(stored, &entries, snapshot_version)
                     .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
                 stored = replayed;
-                revision = revision.max(last.unwrap_or(0));
+                revision = revision.max(newest.unwrap_or(0));
             }
             if stored.workspace != workspace {
                 return Err(format!("{workspace}'s record holds another workspace"));
@@ -409,9 +409,11 @@ impl Journaled {
             let chunk = peer.get(range).unwrap_or_default();
             let digest = *blake3::hash(chunk).as_bytes();
             let name = chunk_name(workspace, &digest);
-            if !self.written.contains(&name) {
-                parts.write_part(&name, chunk)?;
-                self.written.insert(name);
+            if self.written.insert(name.clone())
+                && let Err(error) = parts.write_part(&name, chunk)
+            {
+                self.written.remove(&name);
+                return Err(error);
             }
             digests.push(digest);
         }

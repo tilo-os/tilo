@@ -2406,7 +2406,7 @@ impl DirectSync {
     /// that accepted the dial hands its replica's catch-up with the history the other one asks for
     /// ([`Self::answer_store`]), where it is judged as history: on the live stream, what it carries
     /// that was written more than the live window ago was refused as a late frame.
-    async fn link_catch_up(&self, dialing: bool) -> Result<Vec<Authored>, String> {
+    fn link_catch_up(&self, dialing: bool) -> Result<Vec<Authored>, String> {
         #[cfg_attr(
             target_arch = "wasm32",
             allow(unused_mut, reason = "a page keeps no store to open the link with")
@@ -2495,7 +2495,7 @@ impl DirectSync {
                 reason = "a page keeps no store of its writes to send again"
             )
         )]
-        let mut catch_up = self.link_catch_up(dialing).await?;
+        let mut catch_up = self.link_catch_up(dialing)?;
         // This device's writes no device keeping the workspace answered yet go
         // once more, after what the link opens with: the other device answers
         // each, so a write made while it was away reaches it and says so.
