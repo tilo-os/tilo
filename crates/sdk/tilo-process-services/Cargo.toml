@@ -31,8 +31,9 @@ test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 native = ["tilo-process/native", "dep:tokio", "dep:jni", "dep:tilo-files", "tilo-files/watch", "dep:tilo-model-client", "tilo-secrets/host-keyring"]
 # Screen capture through the XDG Desktop Portal. Linux only: the native
 # runner turns it on for Linux targets, and it enables nothing elsewhere.
-# File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
-# `tilo-location`), selected per target without a feature.
+# File choosers and OpenURI are a platform crate's (`tilo-dialogs`), selected
+# per target without a feature. Location is the device's own action: a process
+# never reaches the platform's location service itself.
 portal = ["native", "dep:ashpd"]
 # The desktop's own chooser, opener and wallpaper portals, for a runner hosting an app on a
 # foreign desktop. A Tilo app process reaches the session's chooser and opener over their
@@ -75,8 +76,6 @@ tilo-clipboard.workspace = true
 tilo-dialogs.workspace = true
 # User notifications, with each target's backend.
 tilo-notify.workspace = true
-# Device location, with each target's backend.
-tilo-location.workspace = true
 # The system's now-playing controls where the platform has its own (macOS).
 tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", optional = true }
 # App-scoped secrets, with each target's store.

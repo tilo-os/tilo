@@ -2136,6 +2136,25 @@ impl Daemon {
             }
             Err(why) => tracing::warn!(%why, "this device keeps no packages"),
         }
+        // Where this device is, read here and never by an app's own process: an app asks this
+        // device's action, and is answered only under its declared capability or the person's
+        // yes.
+        let declaring = Arc::clone(&apps);
+        workspaces.copies().provide(
+            super::location::PROVIDER,
+            Arc::new(super::location::Location::this_device(
+                &identity.cert.device_public_key,
+                Arc::new(super::location::System),
+                Arc::new(move |app: &str| {
+                    <crate::apps::Apps as tilo_workspace_service::work::HostConnections>::gives(
+                        &declaring,
+                        "",
+                        app,
+                        super::location::CAPABILITY,
+                    )
+                }),
+            )),
+        );
         // A branch made here takes its source's Terminal environments from the runtime that
         // keeps them, and its machine from the device keeping that.
         #[cfg(target_os = "linux")]

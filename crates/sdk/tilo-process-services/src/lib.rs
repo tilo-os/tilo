@@ -18,8 +18,10 @@
 //! The user-mediated services' traits and their Linux, macOS and web backends
 //! live in platform crates (`tilo-clipboard`, `tilo-dialogs`, …), which this
 //! crate re-exports; [`process::ProcessServices`] is the per-app registry of them.
-//! The remaining native backends (media sessions, location, screen capture)
-//! live in [`native`] behind the `native` feature.
+//! The remaining native backends (media sessions and screen capture) live in
+//! [`native`] behind the `native` feature. Location is the device's own: a
+//! process asks the device's action (`devices/<device>/location#locate`) and
+//! never the platform's location service, which stays in the device's daemon.
 //!
 //! Apps do not depend on this crate: `tilo-ui` re-exports every module here
 //! under the same path (`ui::portal`, `ui::process`, `ui::time`, …), and

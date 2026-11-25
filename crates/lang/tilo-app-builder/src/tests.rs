@@ -4797,7 +4797,7 @@ fn a_capability_the_code_uses_must_be_declared_before_a_build() {
     let app = root.path().join("locator");
     create_app(request(app.clone())).unwrap();
     let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
-    lib.push_str("\npub fn locate() { let _ = ui::location::Feature::Location; }\n");
+    lib.push_str("\npub fn locate() { let _ = ui::location::request_location(); }\n");
     std::fs::write(app.join("src/lib.rs"), lib).unwrap();
     let project = |app: &Path| targets::Project {
         app_dir: app.to_path_buf(),
