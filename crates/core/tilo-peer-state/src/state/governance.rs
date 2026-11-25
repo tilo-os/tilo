@@ -744,8 +744,15 @@ impl PeerGovernance<'_> {
     ) -> Result<crate::join::MembershipChallenge, String> {
         // A renewed certificate is challenged as the device it renews; its
         // membership is decided once the governor holds it
-        // ([`PeerGovernanceMut::renew_member_certificate`]).
-        if self.renewal_of(device_cert, now)?.is_none() {
+        // ([`PeerGovernanceMut::renew_member_certificate`]). A device the
+        // workspace holds no certificate for renews nothing: it is a stranger
+        // or a further device of a member, told apart below.
+        let held = self
+            .peer
+            .core
+            .certificates
+            .contains_key(&device_cert.device_public_key);
+        if !held || self.renewal_of(device_cert, now)?.is_none() {
             if let Err(error) = self.peer.certificate(&device_cert.device_public_key, now) {
                 // A further device of a person the workspace lists is
                 // challenged as theirs, and sends its own row with its proof
