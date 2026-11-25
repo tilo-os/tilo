@@ -21,7 +21,7 @@ use settings_store::{appearance, power};
 
 use crate::common::people::{
     Device, at, set_setting, setting, setting_section, two_devices_of_one_person,
-    two_devices_of_one_person_with_apps, waited,
+    two_devices_of_one_person_running_apps, waited,
 };
 
 /// What `device`'s session reads of `key`.
@@ -128,7 +128,7 @@ fn shell_action(device: &Device, action: &str, arguments: &Value) {
 /// their own record, so both devices draw all three.
 #[test]
 fn a_persons_shell_choices_follow_them_to_their_other_device() {
-    let (site, _ada, laptop, phone) = two_devices_of_one_person_with_apps();
+    let (site, _ada, laptop, phone) = two_devices_of_one_person_running_apps();
     let devices = [&laptop, &phone];
 
     let docked = shell_setting(&laptop, "dock_edge");

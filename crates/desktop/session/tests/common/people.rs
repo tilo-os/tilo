@@ -748,7 +748,7 @@ pub fn joined_carrying(
 /// [`two_devices_of_one_person`] for two devices that carry the Files app: a session reads the apps
 /// it has when it starts, so each device has them before its session does.
 pub fn two_devices_of_one_person_with_files() -> (Site, Person, Device, Device) {
-    two_devices_of_one_person_carrying(Device::install_files)
+    two_devices_of_one_person_carrying(|device| device.install_files())
 }
 
 /// [`two_devices_of_one_person`] for two devices that carry the development session's tilolang
@@ -767,15 +767,36 @@ pub fn two_devices_of_one_person_with_apps() -> (Site, Person, Device, Device) {
     (site, ada, laptop, phone)
 }
 
+/// [`two_devices_of_one_person_with_apps`] for two devices whose daemons run those apps' code
+/// themselves, as a person's computer does: each has the runtimes the apps name and the launcher
+/// its daemon starts every tilolang process through (the shell's actions an agent or the person
+/// calls among them). A daemon a test starts finds no launcher beside it, so it is named.
+pub fn two_devices_of_one_person_running_apps() -> (Site, Person, Device, Device) {
+    two_devices_of_one_person_carrying(|device| {
+        crate::common::dev_apps::install(&device.store(), &device.store().join("scratch"));
+        crate::common::dev_apps::install_runtimes(&device.home.path().join("data/tilo-runtime"));
+        device.env(
+            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+            &crate::common::dev_apps::runtimes().trusted,
+        );
+        device.env(
+            "TILO_LAUNCHER_BIN",
+            tilo_test_env::sibling_binary("launcher", "tilo-launcher"),
+        );
+    })
+}
+
 /// The person's laptop and phone, each carrying what `install` puts in its store: both are made
 /// first, then told of the person's fleet, then started together — a session reads the apps and
 /// the devices of the person it has when it starts.
-fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Person, Device, Device) {
+fn two_devices_of_one_person_carrying(
+    install: impl Fn(&mut Device),
+) -> (Site, Person, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
-    for device in [&laptop, &phone] {
+    for device in [&mut laptop, &mut phone] {
         install(device);
     }
     let hers = site.invite(ada.public, Role::Editor);
