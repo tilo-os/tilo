@@ -419,8 +419,17 @@ pub async fn write_record(
     (app, record): (&str, &str),
     edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
 ) -> Result<(), String> {
+    let kind = declare_record_kind(workspaces, app);
+    workspaces
+        .author_record(workspace, (app, &kind, record), edit)
+        .await
+}
+
+/// Declare [`record_kind`] of `app` on `workspaces`, a record whose fields the tests write: what
+/// running the app's package does. Answers the kind.
+pub fn declare_record_kind(workspaces: &Workspaces, app: &str) -> String {
     let kind = record_kind(app);
-    let field_lines: Vec<String> = [
+    let fields: Vec<serde_json::Value> = [
         "attachment",
         "attachments",
         "body",
@@ -435,18 +444,20 @@ pub async fn write_record(
         "title",
     ]
     .iter()
-    .map(|field| format!("  {{ path = \"{field}\", type = \"any\" }},\n"))
+    .map(|field| serde_json::json!({ "path": field, "type": "any" }))
     .collect();
-    let fields = field_lines.join("");
-    let surface = format!(
-        "format = 2\n\n[[resources]]\nkind = \"{kind}\"\nlabel = \"Record\"\nversion = 1\n\
-         fields = [\n{fields}]\n\n[[resources.verbs]]\nid = \"type\"\nkind = \"undoable\"\n"
-    );
-    let compiled = tilo_surface_compile::compile(&surface).expect("the fixture is a surface");
-    workspaces.declare_package_surface(app, compiled.as_bytes());
-    workspaces
-        .author_record(workspace, (app, &kind, record), edit)
-        .await
+    let surface = collab_types::surface::canonical(&serde_json::json!({
+        "format": 2,
+        "resources": [{
+            "kind": kind,
+            "label": "Record",
+            "version": 1,
+            "fields": fields,
+            "verbs": [{ "id": "type", "kind": "undoable" }],
+        }],
+    }));
+    workspaces.declare_package_surface(app, surface.as_bytes());
+    kind
 }
 
 /// Name `app`'s `surface`, the `surface.toml` its package ships, on `host`, as running that

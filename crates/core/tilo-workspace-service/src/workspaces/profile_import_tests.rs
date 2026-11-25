@@ -23,17 +23,7 @@ const DEVICE: &str = "device-6b0f3c2e-8d1a-4f7e-9a52-3c4d5e6f7a8b";
 const WINDOW: u64 = 7;
 const KIND: &str = "so.tilo.test.notebook.page";
 /// The notebook's surface: one kind, whose content is the page.
-const SURFACE: &str = r#"format = 2
-
-[[resources]]
-kind = "so.tilo.test.notebook.page"
-label = "Page"
-version = 1
-fields = [
-  { path = "title", type = "string" },
-  { path = "body", type = "string" },
-]
-"#;
+const SURFACE: &str = r#"{"format":2,"resources":[{"fields":[{"path":"title","type":"string"},{"path":"body","type":"string"}],"kind":"so.tilo.test.notebook.page","label":"Page","version":1}]}"#;
 
 /// A device whose native apps kept their files below `home`, writing as the person's device
 /// with the notebook's surface known here, and a workspace of theirs it holds.
@@ -43,7 +33,8 @@ async fn device(scratch: &Path, home: &Path) -> (TestHost, DeviceCert, String) {
         test_host_with_app_files(&scratch.join("service"), &key, &cert, vec![home.to_owned()])
             .await;
     let workspaces = host.workspaces();
-    crate::workspaces::keep_surface(&workspaces.inner.host.surfaces, APP, SURFACE.as_bytes());
+    crate::workspaces::keep_surface(&workspaces.inner.host.surfaces, APP, SURFACE.as_bytes())
+        .unwrap();
     workspaces.set_member_device(std::sync::Arc::new(crate::workspaces::MemberDevice {
         cert: cert.clone(),
         signer: std::sync::Arc::new(key),

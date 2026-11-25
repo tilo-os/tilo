@@ -108,7 +108,9 @@ use tilo_workspace_service::workspaces::{DocumentRoute, MemberDevice, ResourceWr
 /// opens: its own roles read and change the built-in apps' records, and the records are served
 /// to whoever the workspace's dispatch admits.
 pub(crate) fn mount(workspaces: &Workspaces) {
-    workspaces.provide_tilolang(tilolang_workspace::host());
+    workspaces
+        .provide_tilolang(tilolang_workspace::host())
+        .expect("the build's tilolang apps declare their surfaces");
     if let Some(tilolang) = workspaces.tilolang() {
         tilolang.records.serve(workspaces);
     }

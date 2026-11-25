@@ -155,30 +155,35 @@ pub async fn apply_on<R: Resource>(
     .await
 }
 
-/// The kinds of the person's own records and of what a workspace's owner alone keeps of it,
-/// declared under the apps that keep them: every holder's store keeps them as the resources of
-/// those apps, founded and judged by their types.
+/// The kinds of the person's own records, of what a workspace's owner alone keeps of it, and of
+/// the records the system keeps for apps, declared under the apps that keep them, each from its
+/// type: every holder's store keeps them as the resources of those apps, founded and judged by
+/// their types. What every service declares as it starts.
+///
+/// # Errors
+/// A type's surface does not compile: the service cannot judge that kind's records, so it does
+/// not start.
 pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> Result<(), String> {
     use tilo_resource::surface::surface_of;
     declare(
         surfaces,
         devices::DEVICES.0,
-        vec![surface_of::<devices::Devices>()],
+        &[surface_of::<devices::Devices>()],
     )?;
     declare(
         surfaces,
         super::blocked::BLOCKED.0,
-        vec![surface_of::<super::blocked::Blocked>()],
+        &[surface_of::<super::blocked::Blocked>()],
     )?;
     declare(
         surfaces,
         super::region::REGION.0,
-        vec![surface_of::<super::region::Region>()],
+        &[surface_of::<super::region::Region>()],
     )?;
     declare(
         surfaces,
         super::servers::SERVERS.0,
-        vec![
+        &[
             surface_of::<super::servers::Servers>(),
             surface_of::<super::servers::floor::Floor>(),
         ],
@@ -186,12 +191,12 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
     declare(
         surfaces,
         super::membership::OWNERSHIP.0,
-        vec![surface_of::<super::membership::Ownership>()],
+        &[surface_of::<super::membership::Ownership>()],
     )?;
     declare(
         surfaces,
         tilo_user_identity::workspace_list::APP,
-        vec![surface_of::<
+        &[surface_of::<
             tilo_user_identity::workspace_list::WorkspaceList,
         >()],
     )?;
@@ -202,7 +207,21 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
         system::<tilo_workspace_emoji::WorkspaceEmoji>(surfaces, tilo_workspace_emoji::OWNER);
         system::<tilo_contact_directory::ContactDirectory>(surfaces, tilo_app_id::apps::CONTACTS);
         system::<crate::environment::VmEnvironment>(surfaces, crate::environment::VM_APP);
+        // The calls that wait for their person's yes, kept in each workspace's store.
+        super::keep_surface(
+            surfaces,
+            tilo_actions::remote::workspace_invocations::PROVIDER,
+            super::asked_kept::surface().as_bytes(),
+        )?;
     }
+    // The workspace's own record of its agents: its kinds and verbs, kept as an installed
+    // package's surface is, so this device decides the changes that name them.
+    #[cfg(feature = "agents")]
+    super::keep_surface(
+        surfaces,
+        tilo_workspace_agent::OWNER,
+        include_bytes!("../../workspace-surface.json"),
+    )?;
     Ok(())
 }
 
@@ -219,17 +238,10 @@ fn system<R: Resource>(surfaces: &collab_types::app_surface::Surfaces, app: &str
 fn declare(
     surfaces: &collab_types::app_surface::Surfaces,
     app: &str,
-    resources: Vec<tilo_resource::surface::Surface>,
+    resources: &[tilo_resource::surface::Surface],
 ) -> Result<(), String> {
-    let resources: Vec<serde_json::Value> = resources
-        .into_iter()
-        .map(serde_json::to_value)
-        .collect::<Result<_, _>>()
-        .map_err(|error| format!("a surface of {app} does not write as JSON: {error}"))?;
-    let file = tilo_resource::surface::file::render("", &resources, &[])
-        .map_err(|error| format!("a surface of {app} does not write as a surface file: {error}"))?;
-    super::keep_surface(surfaces, app, file.as_bytes());
-    Ok(())
+    let file = collab_types::surface::canonical(&serde_json::json!({ "resources": resources }));
+    super::keep_surface(surfaces, app, file.as_bytes())
 }
 
 /// [`edit_on`] where this device holds `workspace` as a member copy another of the person's

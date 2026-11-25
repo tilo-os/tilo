@@ -181,7 +181,10 @@ fn an_alarm_set_for_the_phone_rings_there_with_no_network() {
     home.relay(&server.relay_url());
     // The person's server runs the language its program links, as a computer's daemon does.
     let tilolang = tilolang_workspace::host();
-    server.workspaces().provide_tilolang(tilolang.clone());
+    server
+        .workspaces()
+        .provide_tilolang(tilolang.clone())
+        .expect("the build's tilolang apps declare their surfaces");
     {
         // A record's writes wait on the reactor its records were registered on: the server's.
         let _entered = server.runtime.enter();

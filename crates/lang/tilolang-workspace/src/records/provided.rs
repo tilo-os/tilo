@@ -568,7 +568,9 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        workspaces.provide_tilolang(crate::host());
+        workspaces
+            .provide_tilolang(crate::host())
+            .expect("the build's tilolang apps declare their surfaces");
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
@@ -612,7 +614,9 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        workspaces.provide_tilolang(crate::host());
+        workspaces
+            .provide_tilolang(crate::host())
+            .expect("the build's tilolang apps declare their surfaces");
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
@@ -711,7 +715,9 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        workspaces.provide_tilolang(crate::host());
+        workspaces
+            .provide_tilolang(crate::host())
+            .expect("the build's tilolang apps declare their surfaces");
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
@@ -870,7 +876,9 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        workspaces.provide_tilolang(crate::host());
+        workspaces
+            .provide_tilolang(crate::host())
+            .expect("the build's tilolang apps declare their surfaces");
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let ada_person = hex::encode(owner.user_public_key);

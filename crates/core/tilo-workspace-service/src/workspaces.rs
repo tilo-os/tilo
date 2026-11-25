@@ -2079,12 +2079,16 @@ impl Workspaces {
     /// A built-in tilolang app's record is written with no package installed, so its types and
     /// verbs are named here, as an installed app's surface names them: the store judges its
     /// writes by them from the moment the runtime is mounted.
+    ///
+    /// # Errors
+    /// A built-in app's surface does not compile: the service cannot judge its records.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn provide_tilolang(&self, tilolang: crate::tl_records::Tilolang) {
+    pub fn provide_tilolang(&self, tilolang: crate::tl_records::Tilolang) -> Result<(), String> {
         for (app, bytes) in tilolang.records.surfaces() {
-            keep_surface(&self.inner.host.surfaces, &app, &bytes);
+            keep_surface(&self.inner.host.surfaces, &app, &bytes)?;
         }
         let _ = self.inner.tilolang.set(tilolang);
+        Ok(())
     }
 
     /// The language runtime this service's program mounted, where one did.

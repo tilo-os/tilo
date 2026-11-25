@@ -794,7 +794,8 @@ mod tests {
     async fn started(dir: &std::path::Path, (key, cert, keys): &Device) -> TestHost {
         let host = test_host_holding(dir, key, cert, std::sync::Arc::clone(keys)).await;
         let workspaces = host.workspaces();
-        crate::workspaces::keep_surface(&workspaces.inner.host.surfaces, NOTES, SURFACE.as_bytes());
+        crate::workspaces::keep_surface(&workspaces.inner.host.surfaces, NOTES, SURFACE.as_bytes())
+            .unwrap();
         workspaces.set_member_device(std::sync::Arc::new(crate::workspaces::MemberDevice {
             cert: cert.clone(),
             signer: std::sync::Arc::new(key.clone()),

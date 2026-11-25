@@ -310,7 +310,9 @@ impl ServiceSessions {
         // offer the styles the device's installed packages declare.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(tilolang) = &cfg.tilolang {
-            workspaces.provide_tilolang(tilolang.clone());
+            workspaces
+                .provide_tilolang(tilolang.clone())
+                .map_err(ServiceError::Workspaces)?;
         }
         // The typed actions of the workspaces' built-in records (their agents, emoji, contacts,
         // the person's list), applied here for whichever device of a workspace asks.
@@ -430,23 +432,9 @@ impl ServiceSessions {
                     settings_store::workspace::SURFACE_APP,
                     settings_store::workspace::surface_json(),
                 );
-                // The workspace's own record of its agents: its kinds and verbs, kept as an
-                // installed package's surface is, so this device decides the changes that name
-                // them.
+                // The kinds the system keeps, declared from their types: a service that could not
+                // judge one of them does not start.
                 crate::workspaces::person_workspace::declare_kinds(&cfg.surfaces)?;
-                // The calls that wait for their person's yes, kept in each workspace's store.
-                #[cfg(not(target_arch = "wasm32"))]
-                crate::workspaces::keep_surface(
-                    &cfg.surfaces,
-                    tilo_actions::remote::workspace_invocations::PROVIDER,
-                    crate::workspaces::asked_kept::SURFACE.as_bytes(),
-                );
-                #[cfg(feature = "agents")]
-                crate::workspaces::keep_surface(
-                    &cfg.surfaces,
-                    tilo_workspace_agent::OWNER,
-                    include_bytes!("../workspace-surface.json"),
-                );
                 Arc::clone(&cfg.surfaces)
             },
             apps,

@@ -1025,20 +1025,7 @@ mod tests {
     /// the vault's type itself is refused, so no package judges the vault's writes by its copy.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn installing_passwords_keeps_the_vault_the_systems() {
-        const PASSWORDS: &str = r#"format = 2
-
-[[resources]]
-kind = "passwords.item"
-label = "Item"
-version = 1
-fields = [
-  { path = "title", type = "text" },
-]
-
-[[resources.verbs]]
-id = "type"
-kind = "undoable"
-"#;
+        const PASSWORDS: &str = r#"{"format":2,"resources":[{"fields":[{"path":"title","type":"text"}],"kind":"passwords.item","label":"Item","verbs":[{"id":"type","kind":"undoable"}],"version":1}]}"#;
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let server = test_host(scratch.path(), &key, &cert).await;

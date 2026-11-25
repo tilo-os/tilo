@@ -57,17 +57,21 @@ pub fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, Collaborati
 /// device's stores judge the app's resource writes by `surfaces`, its own; the
 /// receipts are decided by the process's, which is the same registry on a
 /// device that runs alone, where the second naming changes nothing.
+///
+/// # Errors
+/// `surface` is not the canonical compiled form of a surface: nothing of `app` is declared,
+/// and the error names the app and why.
 pub(crate) fn keep_surface(
     surfaces: &collab_types::app_surface::Surfaces,
     app: &str,
     surface: &[u8],
-) {
-    if collab_types::surface::SurfaceFile::compiled(surface).is_err() {
-        return;
-    }
+) -> Result<(), String> {
+    collab_types::surface::SurfaceFile::compiled(surface)
+        .map_err(|why| format!("the surface of {app} declares nothing: {why}"))?;
     surfaces.register_package(app, surface);
     collab_types::app_surface::register_package(app, surface);
     crate::surfaces::keep(&blake3::hash(surface).to_hex(), surface);
+    Ok(())
 }
 
 impl Workspaces {

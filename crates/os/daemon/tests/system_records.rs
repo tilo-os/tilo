@@ -34,7 +34,9 @@ tilo_automerge_isolate::test_worker!();
 /// opens: the records of the built-in apps are served to whoever the workspace's dispatch
 /// admits.
 fn mount(workspaces: &Workspaces) {
-    workspaces.provide_tilolang(tilolang_workspace::host());
+    workspaces
+        .provide_tilolang(tilolang_workspace::host())
+        .expect("the build's tilolang apps declare their surfaces");
     if let Some(tilolang) = workspaces.tilolang() {
         tilolang.records.serve(workspaces);
     }

@@ -2238,8 +2238,14 @@ impl Workspaces {
     /// workspaces judge their resource writes by it: what launching the package does on a device
     /// that runs it, for a test whose app is a package this build does not carry.
     #[cfg(any(test, feature = "test-support"))]
+    #[expect(
+        clippy::panic,
+        reason = "a test's surface that does not compile is the test's bug"
+    )]
     pub fn declare_package_surface(&self, app: &str, surface: &[u8]) {
-        crate::workspaces::keep_surface(&self.inner.host.surfaces, app, surface);
+        if let Err(why) = crate::workspaces::keep_surface(&self.inner.host.surfaces, app, surface) {
+            panic!("{why}");
+        }
     }
 
     /// `governed`'s store with every app surface this device knows declared

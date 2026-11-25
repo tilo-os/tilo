@@ -21,25 +21,24 @@ use super::{WeakWorkspaces, Workspaces};
 /// The record of a workspace's invocations that keeps those waiting for their person's yes:
 /// a map from each one's id to the call as it was asked ([`KeptAsk`]).
 const RECORD: &str = "asked";
-/// The kind the record is, as [`SURFACE`] declares it.
+/// The kind the record is, as [`surface`] declares it.
 const KIND: &str = "tilo.invocations.asked";
 /// Where the record keeps the calls: each one's id to the call as it was asked, as JSON.
 const CALLS: &str = "calls";
-/// What [`PROVIDER`] declares its records are, so every holder's store keeps them.
-pub(crate) const SURFACE: &str = r#"format = 2
-
-[[resources]]
-kind = "tilo.invocations.asked"
-label = "Asked calls"
-version = 1
-fields = [
-  { path = "calls", type = { map = "text" } },
-]
-
-[[resources.verbs]]
-id = "type"
-kind = "undoable"
-"#;
+/// What [`PROVIDER`] declares its records are, so every holder's store keeps them: the
+/// surface's compiled form.
+pub(crate) fn surface() -> String {
+    collab_types::surface::canonical(&serde_json::json!({
+        "format": 2,
+        "resources": [{
+            "kind": KIND,
+            "label": "Asked calls",
+            "version": 1,
+            "fields": [{ "path": CALLS, "type": { "map": "text" } }],
+            "verbs": [{ "id": "type", "kind": "undoable" }],
+        }],
+    }))
+}
 
 /// One change to a workspace's record of the calls that wait.
 enum Change {

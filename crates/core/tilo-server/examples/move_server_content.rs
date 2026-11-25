@@ -601,21 +601,7 @@ mod tests {
                 // only while it writes it: what a record names is read without it.
                 workspaces.declare_package_surface(
                     "so.tilo.notes",
-                    br#"format = 2
-
-[[resources]]
-kind = "test.notes.note"
-label = "Note"
-version = 1
-fields = [
-  { path = "picture", type = "text" },
-  { path = "avatar", type = "text" },
-]
-
-[[resources.verbs]]
-id = "type"
-kind = "undoable"
-"#,
+                    br#"{"format":2,"resources":[{"fields":[{"path":"picture","type":"text"},{"path":"avatar","type":"text"}],"kind":"test.notes.note","label":"Note","verbs":[{"id":"type","kind":"undoable"}],"version":1}]}"#,
                 );
                 workspaces
                     .author_record(
