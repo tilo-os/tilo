@@ -677,9 +677,9 @@ impl Session {
         let channels_fanout =
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         changes.waking(options.wake.handle());
-        let resource_index = view
-            .as_ref()
-            .map(|_| crate::resource_index::RecordChanges::start(&document_reads, changes.clone()));
+        let resource_index = view.as_ref().map(|view| {
+            crate::resource_index::RecordChanges::start(&document_reads, view, changes.clone())
+        });
         // What this device holds is read once the session follows what changes in it.
         if let Some(index) = &resource_index {
             let index = std::sync::Arc::clone(index);

@@ -20,15 +20,19 @@ pub(crate) struct RecordChanges {
 }
 
 impl RecordChanges {
-    /// Note what `changes` follows of the workspaces `reads` holds: a change of one the device
-    /// does not hold is no news to any role, and is noted when the device holds it.
+    /// Note what `changes` follows of the workspaces this device holds, as `view` says the daemon
+    /// published them: a change of one the device does not hold is no news to any role, and is
+    /// noted when the device holds it. `reads` lists what each holds when it is swept.
     pub(crate) fn start(
         reads: &Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        view: &Arc<crate::workspace_view::WorkspaceView>,
         changes: crate::platform::records::Changes,
     ) -> Arc<Self> {
         changes.holding(Arc::new({
-            let reads = Arc::clone(reads);
-            move |workspace: &str| reads.workspaces().iter().any(|held| held == workspace)
+            let view = Arc::clone(view);
+            move |workspace: &str| {
+                tilo_desktop_model::WorkspaceId::parse(workspace).is_some_and(|id| view.holds(id))
+            }
         }));
         Arc::new(Self {
             reads: Arc::clone(reads),
@@ -62,12 +66,5 @@ impl RecordChanges {
     /// `record` of `app` in `workspace` changed: the device's daemon took a write of it.
     pub(crate) fn changed(&self, workspace: &str, app: &str, record: &str) {
         self.changes.note(workspace, app, record, false);
-    }
-
-    /// The keys settled: what had no keys here may read now, and the workspaces this device holds
-    /// now are noted.
-    pub(crate) fn settled(&self) {
-        self.changes.settling();
-        self.sweep();
     }
 }

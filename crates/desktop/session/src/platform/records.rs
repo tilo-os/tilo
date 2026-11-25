@@ -28,7 +28,9 @@ pub struct Changed {
 }
 
 /// Whether this device holds a workspace, as the stream is told: a change of one it does not hold
-/// is nothing any role following the stream can read.
+/// is nothing any role following the stream can read. It answers at once, from what the session
+/// already knows: a change is noted on whichever thread heard it, the one that carries the
+/// daemon's link included, and none of them waits on the daemon.
 type Holds = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// The one stream of record changes: every write that lands in the workspaces' records is noted
@@ -52,9 +54,6 @@ struct Inner {
     /// Whether this device holds a workspace, where the session knows: what [`Changes::holding`]
     /// was told.
     holds: Mutex<Option<Holds>>,
-    /// What `holds` answered for each workspace, so a change of one asks it nothing until the keys
-    /// settle.
-    answered: Mutex<BTreeMap<String, bool>>,
 }
 
 impl Changes {
@@ -62,21 +61,6 @@ impl Changes {
     /// is no news here, and is taken when the workspace becomes held.
     pub fn holding(&self, holds: Holds) {
         *self.0.holds.lock().unwrap_or_else(PoisonError::into_inner) = Some(holds);
-        self.0
-            .answered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-    }
-
-    /// The keys settled: a workspace this device held nothing of may be held now, so what
-    /// [`Self::holding`] answered of one it does not hold is asked again.
-    pub fn settling(&self) {
-        self.0
-            .answered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, held| *held);
     }
 
     /// Whether this device holds `workspace`, as [`Self::holding`] says: true where the session
@@ -88,25 +72,7 @@ impl Changes {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let Some(asked) = asked else {
-            return true;
-        };
-        if let Some(held) = self
-            .0
-            .answered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(workspace)
-        {
-            return *held;
-        }
-        let held = asked(workspace);
-        self.0
-            .answered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(workspace.to_owned(), held);
-        held
+        asked.is_none_or(|asked| asked(workspace))
     }
 
     /// Note that `record` of `app` changed in `workspace` (an empty route: the workspace's list

@@ -813,6 +813,7 @@ mod tests {
             SeatParts {
                 records: Some(crate::resource_index::RecordChanges::start(
                     &daemon.reads(),
+                    &daemon.view(),
                     changes.clone(),
                 )),
                 ..serving_nothing()
