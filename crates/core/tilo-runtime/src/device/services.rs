@@ -4603,12 +4603,16 @@ impl RuntimeActionProvider {
                 reason: "only you read your machines, on a device of yours".into(),
             })));
         }
-        let InvokeArgument::Json(arguments) = &request.argument else {
-            return Some(Pending::ready(Err(ActionCallError::Refused {
-                reason: "a machine step takes typed arguments".into(),
-            })));
+        // A read that names nothing (the servers, the recovery keys) comes with no arguments.
+        let arguments = match &request.argument {
+            InvokeArgument::Json(arguments) => arguments.clone(),
+            InvokeArgument::None => Map::new(),
+            InvokeArgument::Text(_) => {
+                return Some(Pending::ready(Err(ActionCallError::Refused {
+                    reason: "a machine step takes typed arguments".into(),
+                })));
+            }
         };
-        let arguments = arguments.clone();
         let (done, receipt) = tilo_actions::remote::pending();
         let workspaces = Arc::clone(&self.workspaces);
         let invocation = request.invocation;
