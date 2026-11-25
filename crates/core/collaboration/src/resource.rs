@@ -280,15 +280,24 @@ pub fn content_genesis(
         }
     }
     if made.pending_ops() != 0 {
-        // The initializer's content is the creator's edit of the record they just made: a change
-        // that names no one is refused.
         made.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::ActionContext::whole_edit_by(by)),
+            automerge::transaction::CommitOptions::default().with_message(initial_content_by(by)),
         );
     }
     *doc = made;
     Ok(())
+}
+
+/// The message of what a brand-new record starts with, which `by` creates it with: their edit,
+/// since a change that names no one is refused, but what the record starts as rather than a step
+/// of theirs, so no undo takes it back and workspace activity leaves it out
+/// ([`tilo_actions::ChangeKind::External`]).
+pub(crate) fn initial_content_by(by: &tilo_action_policy::Acting) -> String {
+    tilo_actions::ActionContext::default()
+        .with_invoker(tilo_actions::ActionInvoker::admitted(by))
+        .with_change(tilo_actions::ChangeKind::External)
+        .change_message()
+        .unwrap_or_default()
 }
 
 /// Bring together a record whose root containers its devices each made of their own before its

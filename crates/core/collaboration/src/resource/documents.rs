@@ -1264,7 +1264,7 @@ impl ResourceReservation {
         if doc.pending_ops() != 0 {
             doc.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(tilo_actions::ActionContext::whole_edit_by(by)),
+                    .with_message(super::initial_content_by(by)),
             );
         }
         let mut set = self.store.set_mut();
