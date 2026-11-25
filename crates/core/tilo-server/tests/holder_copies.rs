@@ -509,7 +509,8 @@ async fn govern(
 /// through a key of hers that reached the workspace on the second server,
 /// lists its servers there, which makes the workspace hers, and from her
 /// computer, which keeps her root, takes the stopped one out; the second then
-/// keeps the workspace alone and makes its base.
+/// is the only server left and makes its base, and her computer still keeps
+/// its own copy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
@@ -594,9 +595,10 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     .await;
     within("the server it was made on stops", made_on.stop()).await;
 
-    let (old_key, main_key) = (
+    let (old_key, main_key, laptop_key) = (
         hex::encode(old.device_pubkey()),
         hex::encode(main.device_pubkey()),
+        hex::encode(laptop.device_pubkey()),
     );
     // The workspace is still the server's, kept for Alice: its servers are
     // offered to her all the same, at the path she finds them by, or she
@@ -663,9 +665,23 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     )
     .await
     .expect("her computer takes the stopped server out");
-    let servers = removed["servers"].as_array().unwrap();
-    assert_eq!(servers.len(), 1, "{removed}");
-    assert_eq!(servers[0]["device"], main_key, "{removed}");
+    // Main is the only server left; her computer still keeps its own copy.
+    let servers: Vec<_> = removed["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|server| {
+            (
+                server["device"].as_str().unwrap(),
+                server["here"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        servers,
+        [(laptop_key.as_str(), true), (main_key.as_str(), false)],
+        "{removed}"
+    );
     let status = workspaces.copies(&workspace.workspace).await.unwrap();
     assert_eq!(
         status.base_maker,
