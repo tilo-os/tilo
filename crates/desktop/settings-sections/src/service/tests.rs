@@ -979,3 +979,81 @@ fn a_package_that_is_not_installed_is_refused() {
         Value::Null
     );
 }
+
+/// The person's own theme, as the appearance's own verb makes one: its id.
+fn own_theme(service: &mut SettingsService) -> String {
+    service
+        .invoke(
+            APPEARANCE,
+            "new-theme",
+            &arguments(json!({ "id": "mine", "base": "paper-dark" })),
+        )
+        .expect("the appearance's own verb makes a theme");
+    "mine".to_owned()
+}
+
+/// Whether the theme `id` of the appearance is dark, as the section reads now.
+fn theme_is_dark(service: &mut SettingsService, id: &str) -> bool {
+    let read = service.read(APPEARANCE).expect("the appearance reads");
+    read["themes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|theme| theme["id"] == json!(id))
+        .and_then(|theme| theme["value"]["dark"].as_bool())
+        .unwrap_or_else(|| panic!("the theme {id} is one of the person's: {read}"))
+}
+
+/// A read-only field is written by the actions the section declares, never by a setter: a setter
+/// that takes an edit inside `themes` cannot reach `themes.*.dark`, and the field keeps its value
+/// where the write is refused.
+#[test]
+fn a_write_to_a_read_only_field_is_refused_and_the_field_keeps_its_value() {
+    let _home = tilo_test_env::TestHome::new().expect("a home");
+    let _settings = crate::in_memory::scoped();
+    let mut service = own_person("ada");
+    let id = own_theme(&mut service);
+    let dark = theme_is_dark(&mut service, &id);
+    let write = service.invoke(
+        APPEARANCE,
+        "set-themes",
+        &arguments(json!({
+            "edit": {
+                "path": [{ "item": id }, { "field": "dark" }],
+                "op": "set",
+                "value": !dark,
+            }
+        })),
+    );
+    let Err(refused) = write else {
+        panic!("the theme's polarity is the section's own verb's to change")
+    };
+    assert!(
+        format!("{refused}").contains("changed only by the record's actions"),
+        "the refusal says the field is the section's actions' to change: {refused}"
+    );
+    assert_eq!(
+        theme_is_dark(&mut service, &id),
+        dark,
+        "the read-only field keeps its value"
+    );
+}
+
+/// The field's own declared verb still derives it: `switch-polarity` sets the theme's `dark`, and
+/// the write is the section's own, not a setter's.
+#[test]
+fn a_sections_own_verb_changes_the_read_only_field_it_derives() {
+    let _home = tilo_test_env::TestHome::new().expect("a home");
+    let _settings = crate::in_memory::scoped();
+    let mut service = own_person("ada");
+    let id = own_theme(&mut service);
+    let dark = theme_is_dark(&mut service, &id);
+    service
+        .invoke(
+            APPEARANCE,
+            "switch-polarity",
+            &arguments(json!({ "theme": id, "dark": !dark })),
+        )
+        .expect("the section's own verb switches the polarity");
+    assert_eq!(theme_is_dark(&mut service, &id), !dark);
+}

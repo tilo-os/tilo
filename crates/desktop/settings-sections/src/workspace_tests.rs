@@ -378,3 +378,35 @@ fn a_sections_own_verb_is_a_change_the_store_admits() {
         "the hint is in the workspace's record: {stored:?}"
     );
 }
+
+/// The settings channel's write of a read-only field is refused where it is admitted, and the
+/// section keeps its value: the appearance's `theme_package` is written by the action that
+/// applies a theme, never by an app's record change naming it.
+#[test]
+fn a_read_only_field_refuses_the_settings_channels_write() {
+    let workspaces = Workspaces::new();
+    let settings = WorkspaceSettings::new();
+    settings.attach(workspaces.clone());
+    let write = object(json!({ "theme_package": "so.tilo.theme.triangle" }));
+    let refused = settings
+        .readonly_refusal("appearance", &write)
+        .expect("the channel cannot write the package");
+    assert!(
+        refused.contains("read only"),
+        "the refusal says the field is read only: {refused}"
+    );
+    assert_eq!(
+        settings
+            .load()
+            .get("appearance")
+            .and_then(|held| held.get("theme_package")),
+        None,
+        "the field keeps its value"
+    );
+    assert!(
+        settings
+            .readonly_refusal("appearance", &object(json!({ "mode": "dark" })))
+            .is_none(),
+        "an ordinary field is the channel's to write"
+    );
+}

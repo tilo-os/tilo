@@ -69,6 +69,44 @@ fn admitted() -> Revalidate {
     Arc::new(|| Ok(()))
 }
 
+/// A settings source that declares the appearance's `theme_package` read only, as the sections
+/// do, and keeps everything else as the plain document does.
+struct Declaring(Arc<Store>);
+
+impl SettingsSource for Declaring {
+    fn load(&self) -> Map<String, Value> {
+        self.0.load()
+    }
+
+    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        self.update_section_by(name, values, &settings_store::ChangeOrigin::default())
+    }
+
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &settings_store::ChangeOrigin,
+    ) -> std::io::Result<()> {
+        self.0.update_section_by(name, values, origin)
+    }
+
+    fn readonly_refusal(&self, _name: &str, values: &Map<String, Value>) -> Option<String> {
+        values.contains_key("theme_package").then(|| {
+            "the appearance's theme_package is read only: only the settings' own actions change it"
+                .to_owned()
+        })
+    }
+
+    fn revision(&self) -> u64 {
+        self.0.revision()
+    }
+
+    fn changes(&self) -> &settings_store::ChangeSignal {
+        self.0.changes()
+    }
+}
+
 /// An app's settings calls, answered the way the wire answers them.
 struct AppSettingsHandle(AppSettingsServer);
 
@@ -572,5 +610,30 @@ tilo_test_env::scenario! {
             );
         });
         assert!(records.load().get("personal_dictionary").is_none());
+    }
+
+    phase a_read_only_field_is_no_record_change;
+    // A field the section declares read only is changed by an action the section declares: the
+    // channel asks the source, which keeps the declarations, before it writes.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Declaring(Arc::new(HostDocument::new(Map::new(), |_| Ok(()))));
+        let settings = AppSettingsServer::new(
+            "so.tilo.settings",
+            Arc::new(Declaring(Arc::clone(&source.0))) as Arc<dyn SettingsSource>,
+            admitted(),
+        )
+        .with_grants(every_setter());
+        run(async {
+            let refused = settings
+                .update(
+                    "appearance",
+                    br#"{"theme_package": "so.tilo.theme.triangle"}"#,
+                    None,
+                )
+                .expect_err("the package is applied by its action");
+            assert!(refused.contains("read only"), "{refused}");
+        });
+        assert!(source.0.load().get("appearance").is_none());
     }
 }

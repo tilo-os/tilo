@@ -126,6 +126,14 @@ pub trait SettingsSource: Send + Sync {
         ))
     }
 
+    /// Why writing `values` to section `name` is refused — a field the section declares read only
+    /// would change — asked before the settings channel writes an app's values there. The field
+    /// is changed by the action a section declares and by nothing else, so no app's write reaches
+    /// it. `None` from a source that keeps no such declarations.
+    fn readonly_refusal(&self, _name: &str, _values: &Map<String, Value>) -> Option<String> {
+        None
+    }
+
     /// Take back (`undo`) or bring back the last step any of `invokers` (actors, as a change
     /// names them) took on section `section`, of the app `app` where the section keeps each
     /// app's preferences apart. Whether there was one.
@@ -226,6 +234,7 @@ shared_source! {
         sections: Vec<(String, Map<String, Value>)>,
         origin: &ChangeOrigin,
     ) -> std::io::Result<ConditionalUpdate>;
+    fn readonly_refusal(&self, name: &str, values: &Map<String, Value>) -> Option<String>;
     fn step(
         &self,
         section: &str,

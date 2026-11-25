@@ -388,6 +388,130 @@ impl Shape {
         }
         false
     }
+
+    /// The first field this lays out that is read only and `after` changes from `before`, by its
+    /// path (`themes.mine.dark`): a field only the record's own verbs change, never a field edit.
+    /// `before` and `after` are the record's JSON form ([`Model::to_json`](crate::Model::to_json)).
+    #[must_use]
+    pub fn changed_readonly<'a>(
+        &self,
+        before: Option<&'a serde_json::Value>,
+        after: Option<&'a serde_json::Value>,
+    ) -> Option<String> {
+        self.changed_readonly_at("", before, after)
+    }
+
+    fn changed_readonly_at<'a>(
+        &self,
+        path: &str,
+        before: Option<&'a serde_json::Value>,
+        after: Option<&'a serde_json::Value>,
+    ) -> Option<String> {
+        let join = |key: &str| {
+            if path.is_empty() {
+                key.to_owned()
+            } else {
+                format!("{path}.{key}")
+            }
+        };
+        match self {
+            Self::Value => None,
+            Self::Record(fields) => fields.iter().find_map(|field| {
+                let path = join(field.key);
+                let before = before.and_then(|value| value.get(field.key));
+                let after = after.and_then(|value| value.get(field.key));
+                if field.readonly {
+                    (before != after).then_some(path)
+                } else {
+                    field.shape.changed_readonly_at(&path, before, after)
+                }
+            }),
+            // A collection and a keyed collection are arrays of items, a collection's each
+            // `{"id", "value"}`; a map's items sit under their keys.
+            Self::Collection(item) => entries(before, after)
+                .into_iter()
+                .find_map(|(id, before, after)| item.changed_readonly_at(&join(id), before, after)),
+            Self::Keyed(item) => {
+                let count = [before, after]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_array().map(Vec::len))
+                    .max()
+                    .unwrap_or_default();
+                (0..count).find_map(|at| {
+                    let before = before
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|items| items.get(at));
+                    let after = after
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|items| items.get(at));
+                    item.changed_readonly_at(&join("*"), before, after)
+                })
+            }
+            Self::Map(item) => {
+                let mut keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+                for value in [before, after].into_iter().flatten() {
+                    keys.extend(
+                        value
+                            .as_object()
+                            .into_iter()
+                            .flatten()
+                            .map(|(key, _)| key.as_str()),
+                    );
+                }
+                keys.into_iter().find_map(|key| {
+                    let before = before
+                        .and_then(serde_json::Value::as_object)
+                        .and_then(|entries| entries.get(key));
+                    let after = after
+                        .and_then(serde_json::Value::as_object)
+                        .and_then(|entries| entries.get(key));
+                    item.changed_readonly_at(&join(key), before, after)
+                })
+            }
+        }
+    }
+}
+
+/// One item of a collection's JSON form that changed: its id, and its value before and after (a
+/// side that does not hold it is `None`).
+type ChangedItem<'a> = (
+    &'a str,
+    Option<&'a serde_json::Value>,
+    Option<&'a serde_json::Value>,
+);
+
+/// The items of a collection's JSON form in `before` and `after`, by id, each with its value: an
+/// item only one side holds reads as `None` on the other.
+fn entries<'a>(
+    before: Option<&'a serde_json::Value>,
+    after: Option<&'a serde_json::Value>,
+) -> Vec<ChangedItem<'a>> {
+    let values =
+        |value: Option<&'a serde_json::Value>| -> Vec<(&'a str, Option<&'a serde_json::Value>)> {
+            value
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    let id = entry.get("id").and_then(serde_json::Value::as_str)?;
+                    Some((id, entry.get("value")))
+                })
+                .collect()
+        };
+    let before = values(before);
+    let after = values(after);
+    let ids: std::collections::BTreeSet<&str> =
+        before.iter().chain(&after).map(|(id, _)| *id).collect();
+    let of = |items: &[(&'a str, Option<&'a serde_json::Value>)], id: &str| {
+        items
+            .iter()
+            .find(|(held, _)| *held == id)
+            .and_then(|(_, value)| *value)
+    };
+    ids.into_iter()
+        .map(|id| (id, of(&before, id), of(&after, id)))
+        .collect()
 }
 
 /// The key of a collection entry's order key.

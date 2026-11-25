@@ -393,6 +393,11 @@ pub mod host {
                 .keys()
                 .all(|field| granted(grants, section, Some(field)))
         {
+            // A field the section declares read only is changed by an action the section
+            // declares, never by a record change an app writes.
+            if let Some(refusal) = source.readonly_refusal(section, &values) {
+                return Err(refusal);
+            }
             if let Some(check) = check {
                 check(&source.load(), section, &values)?;
             }

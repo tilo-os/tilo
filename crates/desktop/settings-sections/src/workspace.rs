@@ -617,6 +617,24 @@ fn unattached() -> std::io::Error {
     )
 }
 
+/// The stored layout of the section `section` (`appearance`, `power`): the fields it declares,
+/// its read-only ones marked.
+fn shape_of(section: &str) -> Option<ui::tilo_resource::Shape> {
+    static SHAPES: std::sync::OnceLock<BTreeMap<&'static str, ui::tilo_resource::Shape>> =
+        std::sync::OnceLock::new();
+    let shapes = SHAPES.get_or_init(|| {
+        let kept = crate::kept();
+        crate::places()
+            .into_iter()
+            .filter_map(|(kind, section, _)| {
+                let (_, shape) = kept.iter().find(|(held, _)| *held == kind)?;
+                Some((section, *shape))
+            })
+            .collect()
+    });
+    shapes.get(section).copied()
+}
+
 /// The stamp a write of `leaf` carries: its verb, who made it and the invocation.
 fn stamp(leaf: &str, origin: &ChangeOrigin, invocation: &str) -> Stamp {
     Stamp {
@@ -844,6 +862,37 @@ impl SettingsSource for WorkspaceSettings {
 
     fn take_deferred_failures(&self) -> Vec<DeferredFailure> {
         std::mem::take(&mut self.state.lock_recover().failures)
+    }
+
+    fn readonly_refusal(&self, name: &str, values: &Map<String, Value>) -> Option<String> {
+        if placement::per_app(name) {
+            return None;
+        }
+        let shape = shape_of(name)?;
+        let before = {
+            let state = self.state.lock_recover();
+            Value::Object(
+                state
+                    .view
+                    .get(name)
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        };
+        let mut after = before.as_object().cloned().unwrap_or_default();
+        for (field, value) in values {
+            if value.is_null() {
+                after.remove(field);
+            } else {
+                after.insert(field.clone(), value.clone());
+            }
+        }
+        shape
+            .changed_readonly(Some(&before), Some(&Value::Object(after)))
+            .map(|path| {
+                format!("{name}'s {path} is read only: only the settings' own actions change it")
+            })
     }
 
     fn revision(&self) -> u64 {
