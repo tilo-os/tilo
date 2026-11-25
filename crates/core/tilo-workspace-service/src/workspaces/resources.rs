@@ -2125,13 +2125,6 @@ impl Workspaces {
             }
             candidate = governed.peer().clone();
         }
-        // Writes the store takes later, with the rest of their action, are checked now as the
-        // batch's earlier writes leave their documents: none of them is in the store yet.
-        if !whole {
-            self.store_of(&mut governed)
-                .check_writes(&writes, device.device())
-                .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
-        }
         let mut requests = Vec::with_capacity(writes.len());
         for write in &writes {
             requests.push(

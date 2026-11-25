@@ -379,43 +379,6 @@ impl Store {
         )
     }
 
-    /// Check `writes`, a batch staged against this store, each as [`Self::check_write`] does,
-    /// against the documents as the batch's earlier writes leave them: none of them is applied.
-    ///
-    /// # Errors
-    /// A write has no base among the store's changes and the batch's earlier ones, or the
-    /// resource schema refuses it.
-    pub fn check_writes(&mut self, writes: &[Written], author: [u8; 32]) -> Result<(), Refusal> {
-        let mut live: HashMap<String, Arc<Automerge>> = HashMap::new();
-        let mut checked = Ok(());
-        for write in writes {
-            if !live.contains_key(&write.doc) {
-                if self.doc(&write.doc).is_err() {
-                    checked = Err(Refusal::Unplaced);
-                    break;
-                }
-                if let Some(doc) = self.docs.get(&write.doc) {
-                    live.insert(write.doc.clone(), Arc::clone(doc));
-                }
-            }
-            checked = self.check_write(write, author);
-            if checked.is_err() {
-                break;
-            }
-            // The live document is kept aside: this copy alone takes the change.
-            if let Ok(doc) = self.doc(&write.doc)
-                && doc.apply_changes([write.change.clone()]).is_err()
-            {
-                checked = Err(Refusal::Unplaced);
-                break;
-            }
-        }
-        for (doc, held) in live {
-            self.docs.insert(doc, held);
-        }
-        checked
-    }
-
     /// The kinds of the records `write`, staged against this store, writes, as each holder that
     /// receives it reads them ([`collab_types::claim::store_record_kinds`]): what the sealed op
     /// that carries it claims.
