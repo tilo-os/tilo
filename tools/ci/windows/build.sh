@@ -105,8 +105,11 @@ case "$mode" in
     mkdir -p "$out"
     export XWIN_CACHE_DIR="${TMPDIR:-/tmp}/xwin-download-$arch" XWIN_ARCH="$arch"
     rm -rf -- "$XWIN_CACHE_DIR"
+    mkdir -p "$XWIN_CACHE_DIR"
+    seed_windows_sdk_manifests "$XWIN_CACHE_DIR"
     # `cargo xwin env` sets up the toolchain (downloading the CRT and SDK
-    # into XWIN_CACHE_DIR) and prints the environment it would build with.
+    # into XWIN_CACHE_DIR, from the manifests seeded above) and prints the
+    # environment it would build with.
     cargo xwin env --target "$target" >/dev/null
     test -f "$XWIN_CACHE_DIR/xwin/DONE"
     tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$XWIN_CACHE_DIR" -cf - . \

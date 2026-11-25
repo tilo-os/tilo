@@ -4629,10 +4629,12 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "build/windows-sdk-{arch}"
-# Fetches Microsoft's CRT and SDK packages, at the versions tools/ci/windows/xwin-env.sh pins
-# (xwin checks each package against the hash the manifest names), so the archive is served from
-# the cache instead of fetched again by every Windows build.
-egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+# Fetches Microsoft's CRT and SDK packages, each from the address its package manifest names and
+# checked against the hash there. What is fetched is fixed by files this check reads: the channel
+# manifest tools/ci/windows holds, the package manifest's hash in tools/ci/windows/xwin-env.sh, and
+# the SDK and CRT versions there too. So the archive is served from the cache instead of fetched
+# again by every Windows build, and a new SDK is a commit that replaces those pins.
+egress = { to = ["download.visualstudio.microsoft.com:443"], pinned = true }
 run = "bash tools/ci/windows/build.sh sdk {arch} /target/windows/sdk"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 outputs = ["/target/windows/sdk/sdk-{arch}.tar.zst", "/target/windows/sdk/sdk-{arch}.tar.zst.sha256"]
