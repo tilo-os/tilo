@@ -26,6 +26,10 @@ pub struct NavListProps {
     /// A place was chosen: its key is the value.
     #[component(event(value = String))]
     pub select: Event,
+    /// A place was dropped on another: carries the place's key and the key it was dropped on,
+    /// in that order. The app moves its own list; the list keeps no order of its own.
+    #[component(event(value = Vec<String>))]
+    pub reorder: Event,
 }
 
 /// A group of places under a heading (a category of channels, a folder of notebooks); a
@@ -221,9 +225,11 @@ impl Described for NavList {
             rail,
             items,
             select,
+            reorder,
         } = props;
         let placed = place(key, title, items, select);
         let mut list = Self::new(placed.sections.clone()).with_id(key);
+        list.set_reorder_event(reorder);
         list.set_row_menus(&placed.menus);
         if let Some(selected) = selected {
             list = list.selected(&selected);
@@ -245,8 +251,10 @@ impl Described for NavList {
             rail,
             items,
             select,
+            reorder,
         } = props;
         let placed = place(&self.key, title, items, select);
+        self.set_reorder_event(reorder);
         self.set_row_menus(&placed.menus);
         self.set_sections(placed.sections.clone());
         self.set_selected(selected.as_deref());

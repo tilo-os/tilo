@@ -117,6 +117,12 @@ impl Apps {
     pub(crate) fn hand_sign_ins(&self, sign_ins: Box<connectors::SignIns>) {
         self.connectors.hand_sign_ins(sign_ins);
     }
+
+    /// Hand each origin connector this device starts the connection to its dispatch through
+    /// `actions` from now on.
+    pub(crate) fn hand_actions(&self, actions: Box<connectors::Actions>) {
+        self.connectors.hand_actions(actions);
+    }
 }
 
 /// Where a launch reads what the person granted the app it starts: the
@@ -281,6 +287,12 @@ impl Apps {
         self.instances.read_provided_from(providers);
     }
 
+    /// Hand the tilolang process of each app's own instances started from now on its daemon line,
+    /// made by `lines` ([`crate::device::processes::OwnLines`]).
+    pub(crate) fn serve_own_lines(&self, lines: crate::device::processes::OwnLines) {
+        self.instances.serve_own_lines(lines);
+    }
+
     /// Run the code of an app whose calls name no view as `person`, the member the device acts
     /// as, from now on.
     pub(crate) fn keep_person(&self, person: &str) {
@@ -405,6 +417,19 @@ impl Apps {
             .find(|app| app.app_id == app_id)
             .map(|app| app.declared_actions())
             .unwrap_or_default()
+    }
+
+    /// Whether the build of `app` installed here declares `capability`.
+    pub(crate) fn declares(&self, app: &str, capability: &str) -> bool {
+        self.installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)
+            .is_some_and(|installed| {
+                installed
+                    .declared_capabilities()
+                    .iter()
+                    .any(|declared| declared == capability)
+            })
     }
 
     /// The resource kinds the installed package `app_id` declared its
@@ -600,14 +625,21 @@ impl Apps {
                 &original,
                 (origin, socket.as_fd()),
             )?;
-            self.record_started(connectors::pid(&child), app_id, workspace);
+            self.launched.record_showing(
+                connectors::pid(&child),
+                app_id,
+                workspace,
+                Shows::Connection,
+                None,
+            );
             Ok(child)
         }
         #[cfg(target_os = "macos")]
         {
             let child = macos::connector(self, &app, workspace, (origin, socket.as_fd()))?;
             if let Some(pid) = connectors::pid(&child) {
-                self.record_started(pid, app_id, workspace);
+                self.launched
+                    .record_showing(pid, app_id, workspace, Shows::Connection, None);
             }
             Ok(child)
         }
@@ -652,6 +684,13 @@ impl Apps {
     )]
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) {
         let _ = self.launched.record_started(pid, app, workspace);
+    }
+
+    /// Record `pid` as the tilolang process that runs `app`'s own instances in `workspace`, as the
+    /// device's processes record the one they start.
+    #[cfg(test)]
+    pub(crate) fn record_own_tilolang(&self, pid: u32, app: &str, workspace: &str) {
+        let _ = self.launched.record_own_tilolang(pid, app, workspace);
     }
 
     /// Forget the launch recorded for `pid`, once its process ended.
@@ -1226,6 +1265,8 @@ struct StartedRecord {
     start_time: u64,
     app: String,
     workspace: String,
+    /// The tilolang process that runs the app's own instances alone.
+    own: bool,
 }
 
 struct LaunchRecord {
@@ -1254,9 +1295,13 @@ pub(crate) enum ProcessOf {
         workspace: String,
         connection: bool,
     },
-    /// A tilolang process the daemon started for the app: an instance, an origin connector or a
-    /// task host.
-    Started { app: String, workspace: String },
+    /// A process the daemon started for the app: a tilolang process, an origin connector or a
+    /// task host. `own` when it is the tilolang process that runs the app's own instances alone.
+    Started {
+        app: String,
+        workspace: String,
+        own: bool,
+    },
 }
 
 impl Launched {
@@ -1358,6 +1403,17 @@ impl Launched {
     /// Record `pid` as the process this runtime started to run `app` in `workspace`; `false`
     /// when its start time cannot be read.
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.record_start(pid, app, workspace, false)
+    }
+
+    /// [`Self::record_started`] for the tilolang process that runs `app`'s own instances alone,
+    /// and nothing of any other app's, a task's or a page's: the process its own secrets are kept
+    /// for and read back by ([`ProcessOf::Started::own`]).
+    pub(crate) fn record_own_tilolang(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.record_start(pid, app, workspace, true)
+    }
+
+    fn record_start(&self, pid: u32, app: &str, workspace: &str, own: bool) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -1367,6 +1423,7 @@ impl Launched {
                 start_time,
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
+                own,
             },
         );
         true
@@ -1380,11 +1437,15 @@ impl Launched {
                 record.start_time,
                 record.app.clone(),
                 record.workspace.clone(),
+                record.own,
             )
         });
-        if let Some((recorded, app, workspace)) = started {
-            return (process_start_time(pid) == Some(recorded))
-                .then_some(ProcessOf::Started { app, workspace });
+        if let Some((recorded, app, workspace, own)) = started {
+            return (process_start_time(pid) == Some(recorded)).then_some(ProcessOf::Started {
+                app,
+                workspace,
+                own,
+            });
         }
         let launched = self.0.lock_recover().get(&pid).map(|record| {
             (

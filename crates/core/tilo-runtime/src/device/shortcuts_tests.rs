@@ -122,6 +122,7 @@ async fn a_shortcut_saved_through_the_daemons_library_is_stored_in_its_workspace
     let saved = described.shortcuts[0].decode().expect("it reads back");
     let revocations = held
         .workspaces
+        .copies()
         .workspace_revocations(&held.placed.to_string())
         .expect("the workspace's revocations");
     assert_eq!(

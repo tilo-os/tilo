@@ -38,6 +38,7 @@ pub mod canvas;
 pub mod connection;
 #[cfg(feature = "app-launch")]
 pub mod containers_engine;
+pub mod daemon_line;
 #[cfg(feature = "app-launch")]
 pub mod db_engine;
 pub mod engines;

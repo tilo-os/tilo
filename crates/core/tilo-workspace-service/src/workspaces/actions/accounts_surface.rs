@@ -567,8 +567,38 @@ mod surface_tests {
                         (
                             "places",
                             list(FieldType::Text),
-                            "The servers it belongs to, each `imap://…` or `smtp://…`.",
+                            "The places it belongs to, each `imap://…`, `smtp://…` or a                              server's origin.",
                         ),
+                        (
+                            "account",
+                            named("SignedInAccount".to_owned()),
+                            "The workspace's account it signs in for, where it keeps one.",
+                        ),
+                    ],
+                ),
+                record(
+                    "SignedInAccount",
+                    "An account of the workspace's that has a sign-in: where it signs in, never                      what it signs in with.",
+                    &[
+                        ("id", FieldType::Text, "The account's id."),
+                        ("kind", FieldType::Text, "The kind of account it is."),
+                        ("name", FieldType::Text, "What its person calls it."),
+                        (
+                            "address",
+                            FieldType::Text,
+                            "The address or name it signs in at.",
+                        ),
+                        (
+                            "server",
+                            FieldType::Text,
+                            "The server it signs in to, empty where its settings name none.",
+                        ),
+                        (
+                            "read_only",
+                            FieldType::Bool,
+                            "Whether nothing is ever written to its server.",
+                        ),
+                        ("enabled", FieldType::Bool, "Whether the account is in use."),
                     ],
                 ),
                 record(

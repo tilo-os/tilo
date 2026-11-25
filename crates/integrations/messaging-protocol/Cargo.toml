@@ -24,7 +24,6 @@ uuid.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-secret-vault = { path = "../../core/secret-vault" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
-tilo-secrets = { path = "../../platform/tilo-secrets" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 whatsapp-rust = { version = "=0.7.0", default-features = false, features = ["tokio-runtime"], optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }

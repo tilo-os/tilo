@@ -1081,3 +1081,216 @@ async fn every_other_caller_is_refused_a_keep_saying_why() {
     assert!(!asked_records(workspaces, &workspace).contains(TOKEN));
     assert!(files_holding(dir.path(), TOKEN.as_bytes()).is_empty());
 }
+
+/// The tilolang process of the bridge's own instances keeps its token and reads it back with
+/// nobody asked, and each call stands in the device's record of invocations without the token.
+/// It is refused every item the bridge did not keep itself: the person's, and the reader's even
+/// once the person lent it to the bridge's held connection. A tilolang process apps share and a
+/// process no turn placed are refused both keeping and reading back.
+#[tokio::test]
+async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let records = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
+    records.keep_no_secrets(workspaces.secret_parameters());
+    workspaces.serve_invocations(Arc::clone(&records));
+    let persons = kept(&service, workspace_id, &owner, (GATEWAY, OTHER)).await;
+    let (lines, guard) = logged();
+    let own = AppProcess::OwnTilolang;
+
+    let call = keep_of("bot-token", TOKEN, None);
+    let kept_here = workspaces
+        .keep_for((BRIDGE, &workspace), &own, &call)
+        .await
+        .expect("the bridge's own tilolang process keeps its token");
+    let release = release_of(&kept_here.reference);
+    let released: Released = workspaces
+        .release_to((BRIDGE, &workspace), &own, &release)
+        .await
+        .expect("and reads it back");
+    assert_eq!(released.secret, TOKEN);
+    let store = workspaces.asked_store().unwrap();
+    assert!(store.waiting_in(&workspace).is_empty(), "nobody was asked");
+
+    // Both calls are in the device's record, as the bridge's, without the token.
+    let listed = records.listed(&workspace);
+    let record_of = |id: InvocationId| {
+        listed
+            .iter()
+            .find(|recorded| recorded.request.invocation == id)
+            .cloned()
+    };
+    let kept_record = record_of(call.invocation).expect("the keep is recorded");
+    assert_eq!(kept_record.request.target, person_vault::keep_target());
+    assert_eq!(kept_record.sealed, vec!["value".to_owned()]);
+    assert_eq!(
+        kept_record.caller.acting().app().map(|app| app.to_string()),
+        Some(BRIDGE.to_owned())
+    );
+    assert!(
+        matches!(
+            kept_record.state.as_ref().map(|state| &state.update),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ),
+        "the keep ended: {:?}",
+        kept_record.state
+    );
+    let release_record = record_of(release.invocation).expect("the release is recorded");
+    assert!(
+        release_record.secret,
+        "it keeps only that the secret was given"
+    );
+    let recorded: String = listed
+        .iter()
+        .map(|recorded| {
+            format!(
+                "{}{:?}",
+                serde_json::to_string(&recorded.request).unwrap(),
+                recorded.state
+            )
+        })
+        .collect();
+    assert!(recorded.contains("bot-token"), "{recorded}");
+    assert!(
+        !recorded.contains(TOKEN),
+        "a record holds the token: {recorded}"
+    );
+
+    // The bridge's tilolang code never reads it back: its calls reach the vault through the
+    // app's broker, as a process apps share, and a release or a keep there is refused. Only the
+    // process's Rust host, on the daemon's line for that very process, is answered.
+    let tilolang_code = Caller::local_app(BRIDGE)
+        .acting_for(hex::encode(owner.user_public_key))
+        .in_workspace(&workspace);
+    for (target, argument) in [
+        (
+            person_vault::release_target(&kept_here.reference),
+            Value::Null,
+        ),
+        (
+            person_vault::keep_target(),
+            json!({"purpose": "bot-token", "value": OTHER}),
+        ),
+    ] {
+        assert_eq!(
+            refusal(
+                ask_at(
+                    &service,
+                    workspace_id,
+                    (&owner, &tilolang_code),
+                    target,
+                    argument,
+                )
+                .await
+            ),
+            release::from_a_shared_process(BRIDGE)
+        );
+    }
+
+    // The person's own item is not the bridge's.
+    assert_eq!(
+        refusal(
+            workspaces
+                .release_to((BRIDGE, &workspace), &own, &release_of(&persons))
+                .await
+        ),
+        release::not_kept_by_the_app(BRIDGE)
+    );
+
+    // The reader's item, lent to the bridge's held connection, is still not its tilolang
+    // process's.
+    workspaces.run_connections(Arc::new(BridgeAndReader));
+    takes_turn_in(
+        workspaces,
+        &workspace,
+        &Turn::connection(BRIDGE, Vec::new()),
+        AT_ONCE,
+    )
+    .await
+    .expect("this device takes the bridge's connection");
+    let readers = workspaces
+        .keep_for(
+            (READER, &workspace),
+            &AppProcess::OwnTilolang,
+            &keep_of("api-key", OTHER, None),
+        )
+        .await
+        .unwrap();
+    let lend = release_of(&readers.reference);
+    let held = AppProcess::connection(BRIDGE);
+    assert_eq!(
+        refusal(
+            workspaces
+                .release_to((BRIDGE, &workspace), &held, &lend)
+                .await
+        ),
+        release::asked_first(BRIDGE)
+    );
+    let [waiting] = &store.waiting_in(&workspace)[..] else {
+        panic!("one question");
+    };
+    super::super::tests::settled(workspaces.resolve_asked(
+        &caller(&owner).in_workspace(&workspace),
+        &approve_and_grant(&waiting.asked.record),
+    ))
+    .await
+    .expect("their answer is taken");
+    let lent: Released = workspaces
+        .release_to((BRIDGE, &workspace), &held, &lend)
+        .await
+        .expect("the held connection reads what it was lent");
+    assert_eq!(lent.secret, OTHER);
+    assert_eq!(
+        refusal(
+            workspaces
+                .release_to((BRIDGE, &workspace), &own, &lend)
+                .await
+        ),
+        release::not_kept_by_the_app(BRIDGE),
+        "a lent item never reaches a tilolang process"
+    );
+
+    // A tilolang process apps share, and a process no turn placed, are refused both.
+    for (process, why) in [
+        (
+            AppProcess::Tilolang,
+            release::from_a_tilolang_process(BRIDGE),
+        ),
+        (
+            AppProcess::Unplaced,
+            release::from_an_unplaced_process(BRIDGE),
+        ),
+    ] {
+        assert_eq!(
+            refusal(
+                workspaces
+                    .keep_for(
+                        (BRIDGE, &workspace),
+                        &process,
+                        &keep_of("bot-token", TOKEN, None)
+                    )
+                    .await
+            ),
+            why
+        );
+        assert_eq!(
+            refusal(
+                workspaces
+                    .release_to((BRIDGE, &workspace), &process, &release)
+                    .await
+            ),
+            why
+        );
+    }
+
+    drop(guard);
+    let logged = String::from_utf8(lines.0.lock().unwrap().clone()).unwrap();
+    for secret in [TOKEN, OTHER] {
+        assert!(!logged.contains(secret), "a log line holds it: {logged}");
+        assert!(!asked_records(workspaces, &workspace).contains(secret));
+        assert!(files_holding(dir.path(), secret.as_bytes()).is_empty());
+    }
+}

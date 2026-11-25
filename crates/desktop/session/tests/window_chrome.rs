@@ -750,11 +750,39 @@ fn a_host_windows_name_is_changed_from_its_menu() {
     });
 }
 
+/// An app whose window the person clicked and that leaves the compositor's ping unanswered past
+/// the timeout is judged hung by the compositor, as a real one is: its window says so, with Wait and
+/// Force quit. The client here never reads what the compositor sends it, so it never answers.
 #[test]
 fn a_window_that_stops_answering_says_so_on_the_window_itself() {
+    use crate::common::window::{Client, window_of};
+
     let _settled = ui::motion::testing::settled();
-    let mut session = host_window_session();
-    session.handle().set_unresponsive_windows(vec![7]);
+    let (mut session, _notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let mut client = Client::connect(session.compositor());
+    client.pump(&mut session, |_, seen| {
+        seen.compositor.is_some() && seen.wm_base.is_some() && seen.seat.is_some()
+    });
+    client.map_plain(&mut session, "org.example.Host", (400, 300));
+    let (id, (x, y, width, height)) =
+        window_of(session.compositor(), "org.example.Host").expect("the app's window is placed");
+    // Input the app is sent is what it is asked to answer; from here on it reads nothing.
+    crate::common::window::click(
+        &mut session,
+        f64::from(x + width / 2),
+        f64::from(y + height / 2),
+    );
+    let past = std::time::Instant::now()
+        + tilo_compositor::app_liveness::UNANSWERED
+        + Duration::from_secs(1);
+    assert!(
+        session.compositor().advance_app_liveness_at(past),
+        "the silence is past the timeout"
+    );
+    assert_eq!(session.compositor().not_responding_windows(), [id]);
     until(&mut session, "the hung card", |session| {
         on_screen(session, "Not responding").is_some()
             && on_screen(session, "Wait").is_some()
@@ -762,11 +790,15 @@ fn a_window_that_stops_answering_says_so_on_the_window_itself() {
     });
     crate::common::shot(&mut session, "layout-hung-card");
     press(&mut session, "Wait");
-    // Waiting keeps the window and takes the card away until the app answers again.
-    session.handle().set_unresponsive_windows(Vec::new());
+    // Waiting keeps the window and takes the card away for another period.
     until(&mut session, "the card gone", |session| {
         on_screen(session, "Not responding").is_none()
     });
+    assert!(
+        window_of(session.compositor(), "org.example.Host").is_some(),
+        "waiting keeps the window"
+    );
+    drop(client);
 }
 
 #[test]

@@ -26,7 +26,7 @@ use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::device::Device as Entered;
-use tilo_workspace_service::apps::services::{WorkspaceAuthority, WorkspaceGrants};
+use tilo_workspace_service::apps::services::WorkspaceGrants;
 use tilo_workspace_service::content::{ContentShelf, RouteContent};
 use tilo_workspace_service::own_device::{self, KeyService};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
@@ -436,8 +436,8 @@ impl ServiceWorkspaces {
     }
 
     /// Close the service and its endpoint, as the process ending would: what the service holds
-    /// is kept, and the next service opened under this device's directory takes it up.
-    #[cfg(test)]
+    /// is kept, and the next service opened under this device's directory takes it up. The
+    /// person's part that ends closes its own so, before the next part opens the same stores.
     pub(crate) async fn shutdown(&self) {
         self.service.shutdown().await;
         self.endpoint.close().await;
@@ -584,18 +584,12 @@ impl ServiceWorkspaces {
 
     /// Every workspace this device holds, as its governance describes it.
     pub(crate) fn workspaces(&self) -> Vec<Workspace> {
-        self.held()
-            .into_iter()
-            .filter_map(|(workspace, name, peer)| {
-                tilo_workspace_service::workspaces::describe(workspace, &name, &peer)
-            })
-            .collect()
+        self.copies().workspaces_now()
     }
 
     /// One workspace as [`Self::workspaces`] describes it, built alone.
     pub(crate) fn workspace(&self, workspace: WorkspaceId) -> Option<Workspace> {
-        let copy = self.copies().copy_now(workspace)?;
-        tilo_workspace_service::workspaces::describe(workspace, &copy.name, &copy.peer)
+        self.copies().workspace_now(workspace)
     }
 
     /// What this device is to `workspace`, for the workspace's Files endpoint:
@@ -825,64 +819,6 @@ impl ServiceWorkspaces {
         if let Ok(mut keepers) = self.keepers.lock() {
             keepers.push(keeper);
         }
-    }
-}
-
-impl WorkspaceAuthority for ServiceWorkspaces {
-    /// The revocations the workspace's replica on this device holds: what an agent's key and a
-    /// saved shortcut's signer are checked against here.
-    fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
-        let peer = self.peer(WorkspaceId::parse(workspace)?)?;
-        let mut revocations = tilo_user_identity::RevocationList::new();
-        for entry in peer.revocations() {
-            revocations.insert(entry).ok()?;
-        }
-        Some(revocations)
-    }
-
-    /// The registries the workspace's replica on this device records: what a moderation
-    /// request's destination is checked against here.
-    fn package_registries(&self, workspace: &str) -> Option<serde_json::Value> {
-        let peer = self.peer(WorkspaceId::parse(workspace)?)?;
-        Some(serde_json::json!({ "registries": peer.governance().package_registries() }))
-    }
-
-    /// The work kept done in the workspace's replica on this device: what counts a shortcut's
-    /// triggered runs here.
-    fn done_under(&self, workspace: &str, prefix: &str) -> Vec<serde_json::Value> {
-        WorkspaceId::parse(workspace)
-            .and_then(|id| self.peer(id))
-            .map(|peer| {
-                peer.workspace()
-                    .done_under(prefix)
-                    .into_values()
-                    .map(|done| done.answer)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Every workspace this device holds, as one tree.
-    fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
-        let tree = Layout {
-            workspaces: self.workspaces(),
-            ..Layout::default()
-        };
-        read(&tree);
-        Ok(())
-    }
-
-    /// Only the requested workspace is built.
-    fn with_workspace(
-        &self,
-        workspace: &str,
-        read: &mut dyn FnMut(Option<&Workspace>),
-    ) -> Result<(), String> {
-        let held = WorkspaceId::parse(workspace)
-            .and_then(|id| self.workspace(id))
-            .filter(|held| held.id().to_string() == workspace);
-        read(held.as_ref());
-        Ok(())
     }
 }
 

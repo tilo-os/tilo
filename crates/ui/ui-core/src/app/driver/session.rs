@@ -413,6 +413,9 @@ struct Walk<'a> {
     /// What a widget's parent publishes for it in its own nodes, by the widget's address: a
     /// list's row with its place in the list, its level and its disclosure.
     represented: std::cell::RefCell<HashMap<usize, crate::a11y::AccessNode>>,
+    /// The surfaces open over the window that its layout does not hold
+    /// ([`Widget::overlay_surface`]), composed as layers of their own.
+    lifted: std::cell::RefCell<Vec<Composed>>,
 }
 
 impl<'a> Walk<'a> {
@@ -484,6 +487,30 @@ impl<'a> Walk<'a> {
             })
     }
 
+    /// Compose `surface`, open over the window from the widget at `path`, as a layer of its own,
+    /// and take it out of what the widget publishes (`owner`): it stands over the window, not in
+    /// the widget's box. A press on one of its rows still reaches the widget that opened it, the
+    /// one its path names before the `#`.
+    fn lift(&self, path: &str, surface: &dyn Widget, owner: Option<&mut crate::a11y::AccessNode>) {
+        let Some(access) = surface.accessibility() else {
+            return;
+        };
+        if let Some(owner) = owner {
+            owner
+                .children
+                .retain(|child| !(child.role == access.role && child.name == access.name));
+        }
+        let rect = surface.get_rect();
+        let mut layer = Composed::new(
+            format!("{path}#{}", surface.name()),
+            surface.name(),
+            [rect.x0, rect.y0, rect.width(), rect.height()],
+        );
+        layer.semantics = Some(crate::a11y::with_synthetic_bounds(access, surface));
+        layer.appears_from = surface.appears_from().map(|point| [point.x, point.y]);
+        self.lifted.borrow_mut().push(layer);
+    }
+
     fn compose(
         &self,
         node: NodeId,
@@ -534,7 +561,7 @@ impl<'a> Walk<'a> {
             return Composed::new(path.clone(), "ClosedComponent", [x, y, size.0, size.1]);
         };
         let rect = widget.get_rect();
-        let semantics = self
+        let mut semantics = self
             .represented
             .borrow_mut()
             .remove(&address(widget))
@@ -544,6 +571,9 @@ impl<'a> Walk<'a> {
                     .flatten()
                     .map(|access| crate::a11y::with_synthetic_bounds(access, widget))
             });
+        if let Some(surface) = widget.overlay_surface() {
+            self.lift(path, surface, semantics.as_mut());
+        }
         if let Some(access) = semantics
             .as_ref()
             .filter(|access| !access.children.is_empty())
@@ -645,6 +675,7 @@ impl Driver {
             placed: std::cell::RefCell::default(),
             open: std::cell::RefCell::default(),
             represented: std::cell::RefCell::default(),
+            lifted: std::cell::RefCell::default(),
         };
         let (width, height) = self.viewport();
         let mut anonymous = 0;
@@ -684,6 +715,7 @@ impl Driver {
                 walk.compose(node, (0.0, 0.0), &mut anonymous, "")
             })
             .collect();
+        layers.extend(walk.lifted.take());
         layers.sort_by(|a, b| a.path.cmp(&b.path));
         let focus = self.app.focused_node.and_then(|focused| {
             walk.node_widgets

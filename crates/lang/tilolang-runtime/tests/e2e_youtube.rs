@@ -437,7 +437,7 @@ mod cases {
             if let Some(ended) = self.ended.0.lock().unwrap().get(job) {
                 return Some(ended.clone());
             }
-            let said = self.engine.status(job).ok()?;
+            let said = tilolang_grayjay::Engine::status(job).ok()?;
             tilolang_tilo::engine::record_of(job, &said)
         }
 
@@ -495,7 +495,7 @@ mod cases {
         }
 
         fn cancel(&self, job: &str) -> bool {
-            self.engine.cancel(job)
+            tilolang_grayjay::Engine::cancel(job)
         }
     }
 

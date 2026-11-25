@@ -25,6 +25,14 @@ pub const CREATE: &str = "create";
 /// text or link.
 pub const JOIN: &str = "join";
 
+/// [`LIST`]'s action that branches a workspace this device keeps into a new one of the person's
+/// own: `{workspace, name, id}`, the id the branch is made under.
+pub const BRANCH: &str = "branch";
+
+/// [`LIST`]'s action that deletes a workspace of the person's own where this device keeps it:
+/// `{workspace}`.
+pub const DELETE: &str = "delete";
+
 /// A workspace's action that writes one change to its people and settings, signed as the device
 /// that asks: `{command}`, a [`crate::workspace_membership::WorkspaceMembershipCommand`]. The
 /// workspace's admission decides it, as it decides every member's change.

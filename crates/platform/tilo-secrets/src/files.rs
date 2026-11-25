@@ -63,16 +63,6 @@ impl FileStore {
         })
     }
 
-    /// The store in `dir` under `key`, which is kept elsewhere: no key file is read or written.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn with_key(dir: &Path, key: SymmetricKey) -> Result<Self, SecretError> {
-        prepare_dir(dir)?;
-        Ok(Self {
-            dir: dir.to_owned(),
-            key,
-        })
-    }
-
     fn record(app: &str, key: &str) -> Vec<u8> {
         let mut record = Vec::with_capacity(app.len().saturating_add(key.len()).saturating_add(1));
         record.extend_from_slice(app.as_bytes());

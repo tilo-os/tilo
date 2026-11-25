@@ -44,7 +44,7 @@ use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide}
 use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{AskedDispatch, AskedFacts, AskedRecords, Fact};
 use tilo_actions::remote::person_vault::{self, Found, ItemRef, Kept, Released};
-use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, InvokeRequest, Pending};
 use zeroize::Zeroizing;
 
 use super::{WeakWorkspaces, Workspaces};
@@ -71,6 +71,17 @@ pub const BY_AN_AGENT: &str = "An agent never holds a vault item's secret, and k
 /// What a keep that names no purpose, or one that is not a single short line, is refused with.
 pub const NOT_A_PURPOSE: &str =
     "A secret an app keeps names what it keeps it for, such as `oauth-token`: one short line.";
+
+/// What a release to the tilolang process of the app's own instances of an item the app did not
+/// keep itself is refused with: one another app kept, the person kept, or one lent to the app.
+#[must_use]
+pub fn not_kept_by_the_app(app: &str) -> String {
+    format!(
+        "{app} asked from its tilolang process, which is released only the secrets {app} kept \
+         itself. This item is another app's or the person's: a sandboxed process of {app}'s own \
+         that a turn placed here may be lent it."
+    )
+}
 
 /// What a keep whose `replacing` names an item the app did not keep for that purpose is refused
 /// with.
@@ -182,9 +193,15 @@ pub enum AppProcess {
     /// A sandboxed launch of the app's own package no turn placed: a window, or a process
     /// started for a call.
     Unplaced,
-    /// A tilolang process the daemon started for the app, which runs the language's code every
-    /// app shares.
+    /// A process the daemon started for the app that is not its own instances' tilolang process:
+    /// a task's host, a page's window, a connector.
     Tilolang,
+    /// The tilolang process the daemon started to run this one app's instances alone. Its Rust
+    /// host code keeps the app's own secrets and reads back what the app kept itself, to use
+    /// them on the app's behalf (a connection, a signature); no value its tilolang code holds is
+    /// ever one. It is released nothing else: no item another app kept, the person kept or lent
+    /// it.
+    OwnTilolang,
 }
 
 impl AppProcess {
@@ -221,6 +238,38 @@ pub(super) fn kept_by_app(facts: &ItemFacts, app: &str) -> bool {
 
 /// The longest purpose an app keeps a secret for, in characters.
 const MAX_PURPOSE_CHARS: usize = 64;
+
+/// `purpose` as an app names what it keeps a secret, or holds a device key, for: one short line.
+fn purpose_of(purpose: &str) -> Result<String, ActionCallError> {
+    let purpose = purpose.trim();
+    if purpose.is_empty()
+        || purpose.chars().count() > MAX_PURPOSE_CHARS
+        || purpose.chars().any(char::is_control)
+    {
+        return Err(ActionCallError::refused(NOT_A_PURPOSE.to_owned()));
+    }
+    Ok(purpose.to_owned())
+}
+
+/// The context every device key is derived in: no other key of the device's is derived in it.
+const DEVICE_KEY_CONTEXT: &str = "tilo.so 2026-11 device key of an app's own purpose v1";
+
+/// The key the device whose key is `device` holds for `app`'s own `purpose` in `workspace`: each
+/// part length-prefixed, so no two triples hash alike, under the device's own key as the secret
+/// it is derived from. The device's key cannot be read back from it.
+fn derive_device_key(
+    device: &ed25519_dalek::SigningKey,
+    (workspace, app, purpose): (&str, &str, &str),
+) -> Zeroizing<[u8; 32]> {
+    let secret = Zeroizing::new(device.to_bytes());
+    let mut hasher = blake3::Hasher::new_derive_key(DEVICE_KEY_CONTEXT);
+    hasher.update(secret.as_slice());
+    for part in [workspace, app, purpose] {
+        hasher.update(&u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    Zeroizing::new(*hasher.finalize().as_bytes())
+}
 
 /// What kind of item a person reads it as.
 pub(super) const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static str {
@@ -264,7 +313,9 @@ impl Workspaces {
         let lease = match process {
             AppProcess::Placed { lease } => lease,
             AppProcess::Unplaced => return Err(refused(from_an_unplaced_process(app))),
-            AppProcess::Tilolang => return Err(refused(from_a_tilolang_process(app))),
+            AppProcess::Tilolang | AppProcess::OwnTilolang => {
+                return Err(refused(from_a_tilolang_process(app)));
+            }
         };
         let here = self.lease_device(workspace).await;
         let holder = self.lease_holder(workspace, lease).await.ok().flatten();
@@ -278,6 +329,82 @@ impl Workspaces {
             .await
             .map_err(|why| refused(device_may_not_read(app, &why)))?;
         Ok(())
+    }
+
+    /// Vouch that `process` may keep `app`'s own secrets and read them back: its held connection
+    /// ([`Self::held_connection`]), or the tilolang process of the app's own instances on a
+    /// device that may read the vault for it. `true` for that tilolang process, which is
+    /// released only what the app kept itself.
+    async fn keeps_own_secrets(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+    ) -> Result<bool, ActionCallError> {
+        if *process != AppProcess::OwnTilolang {
+            return self
+                .held_connection((app, workspace), process)
+                .await
+                .map(|()| false);
+        }
+        let cert = self.device_cert();
+        let device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(workspace);
+        self.using_vault(workspace, &device, Some(app), false)
+            .await
+            .map_err(|why| ActionCallError::refused(device_may_not_read(app, &why)))?;
+        Ok(true)
+    }
+
+    /// Write `request`, `app`'s call on its own process's connection, into the device's record
+    /// of invocations as it ended, as every call the device is asked for is: without the
+    /// arguments its action publishes as secret, and, for one that answers a secret, keeping of
+    /// the answer only that it was given.
+    fn note_own_call(
+        &self,
+        (app, workspace): (&str, &str),
+        request: &InvokeRequest,
+        ended: Result<Value, &ActionCallError>,
+        answers_a_secret: bool,
+    ) {
+        let Some(records) = self.inner.invocations.get() else {
+            return;
+        };
+        let invocation = request.invocation;
+        let update = match ended {
+            Ok(value) => tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
+            },
+            Err(error) => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: error.code().to_owned(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        };
+        let person = hex::encode(self.device_cert().user_public_key);
+        let caller = Caller::local_app(app)
+            .acting_for(person)
+            .in_workspace(workspace);
+        let route: Arc<dyn ActionProvider + Send + Sync> = Arc::new(Ended(
+            tilo_actions::remote::InvocationState::new(invocation, update),
+        ));
+        records.record(
+            &caller,
+            &caller,
+            request,
+            Some(workspace),
+            (route, caller.clone()),
+        );
+        if answers_a_secret {
+            records.keep_secret(&invocation);
+        }
     }
 
     /// The item of `workspace`'s vault tagged for `app` and `purpose`, the newest such: what an
@@ -330,11 +457,13 @@ impl Workspaces {
             .and_then(|facts| ItemRef::from_id(facts.id.as_str())))
     }
 
-    /// Answer `app`'s held connection the reference of the item tagged for the app and purpose
+    /// Answer `app`'s connection the reference of the item tagged for the app and purpose
     /// `request` names ([`person_vault::FIND`]): the item a secret the app was moved to is kept
-    /// as. It reads the vault and releases nothing, so its person is not asked; a release of the
-    /// item afterwards is, and names the asking app. Every process that is not the app's held
-    /// connection is refused as a release's is.
+    /// as. The app is the connection's, never the one the request names, so a call cannot read
+    /// another app's tags. It reads the vault and releases nothing, so its person is not asked; a
+    /// release of the item afterwards is, and names the asking app. Every process that is not the
+    /// app's held connection is refused as a release's is, but the tilolang process of the app's
+    /// own instances, which is answered only what the app kept itself.
     ///
     /// # Errors
     /// Refused for a process no turn placed here, a connection another device holds, and a device
@@ -345,15 +474,32 @@ impl Workspaces {
         process: &AppProcess,
         request: &InvokeRequest,
     ) -> Result<Found, ActionCallError> {
-        self.held_connection((app, workspace), process).await?;
+        let tilolang = self.keeps_own_secrets((app, workspace), process).await?;
         let looking: person_vault::FindItem = super::person_vault::argument(
             request,
-            "an item to find names the app and the purpose it was tagged for",
+            "an item to find names the purpose it was tagged for",
         )?;
-        let reference = self
-            .item_tagged(workspace, &looking.app, &looking.purpose)
+        let mut reference = self
+            .item_tagged(workspace, app, &looking.purpose)
             .await
             .map_err(ActionCallError::refused)?;
+        if tilolang && let Some(found) = &reference {
+            let id = ItemId::parse(found.id())
+                .ok_or_else(|| ActionCallError::refused(not_kept_by_the_app(app)))?;
+            let own = self
+                .open_vault(workspace)
+                .await
+                .map_err(|why| ActionCallError::refused(device_may_not_read(app, &why)))?
+                .items()
+                .facts()
+                .into_iter()
+                .find(|facts| facts.id == id)
+                .is_some_and(|facts| kept_by_app(&facts, app));
+            if !own {
+                // Its own process is answered only its own; it has kept nothing here.
+                reference = None;
+            }
+        }
         Ok(Found { reference })
     }
 
@@ -424,8 +570,21 @@ impl Workspaces {
     /// # Errors
     /// Refused, in words a person reads, for a process no turn placed here or one apps share,
     /// a connection another device holds, a device that may not read the vault for the app, an
-    /// item the vault does not keep, and an item no grant lets the app read.
+    /// item the vault does not keep, and an item no grant lets the app read. The tilolang process
+    /// of the app's own instances is refused every item the app did not keep itself, lent or not.
     pub async fn release_to(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<Released, ActionCallError> {
+        let released = self.release_on((app, workspace), process, request).await;
+        let ended = released.as_ref().map(|_| Value::Null);
+        self.note_own_call((app, workspace), request, ended, true);
+        released
+    }
+
+    async fn release_on(
         &self,
         (app, workspace): (&str, &str),
         process: &AppProcess,
@@ -437,7 +596,7 @@ impl Workspaces {
                 reason: NOT_AN_ITEM.to_owned(),
             }
         })?;
-        self.held_connection((app, workspace), process).await?;
+        let tilolang = self.keeps_own_secrets((app, workspace), process).await?;
         let cert = self.device_cert();
         let person = hex::encode(cert.user_public_key);
         let id = ItemId::parse(item.id()).ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
@@ -455,6 +614,9 @@ impl Workspaces {
             .in_workspace(workspace);
         // What the app kept itself is its own, under its install grant: releasing it asks nobody.
         let own = kept_by_app(&facts, app);
+        if tilolang && !own {
+            return Err(refused(not_kept_by_the_app(app)));
+        }
         if !own && !self.app_reads(workspace, app, &item).await {
             self.ask_release(workspace, &caller, request, &item, &facts)
                 .map_err(refused)?;
@@ -500,19 +662,27 @@ impl Workspaces {
         process: &AppProcess,
         request: &InvokeRequest,
     ) -> Result<Kept, ActionCallError> {
+        let kept = self.keep_on((app, workspace), process, request).await;
+        let ended = kept
+            .as_ref()
+            .map(|kept| serde_json::json!({"reference": kept.reference.to_string()}));
+        self.note_own_call((app, workspace), request, ended, false);
+        kept
+    }
+
+    async fn keep_on(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<Kept, ActionCallError> {
         let refused = ActionCallError::refused;
-        self.held_connection((app, workspace), process).await?;
+        self.keeps_own_secrets((app, workspace), process).await?;
         let mut keeping: person_vault::KeepValue = super::person_vault::argument(
             request,
             "a secret an app keeps names its purpose and its value",
         )?;
-        let purpose = keeping.purpose.trim().to_owned();
-        if purpose.is_empty()
-            || purpose.chars().count() > MAX_PURPOSE_CHARS
-            || purpose.chars().any(char::is_control)
-        {
-            return Err(refused(NOT_A_PURPOSE.to_owned()));
-        }
+        let purpose = purpose_of(&keeping.purpose)?;
         let tags = [
             person_vault::app_tag(app),
             person_vault::purpose_tag(&purpose),
@@ -566,6 +736,56 @@ impl Workspaces {
         let reference = ItemRef::from_id(kept.id.as_str())
             .ok_or_else(|| refused("the kept item has no reference".to_owned()))?;
         Ok(Kept { reference })
+    }
+
+    /// The key this device holds for `app`'s own `purpose` in `workspace`
+    /// ([`person_vault::DEVICE_KEY`]), answered to `process`: derived from the device's own key,
+    /// so the same on every ask here and different on every other device, for every other app,
+    /// purpose and workspace, and kept nowhere. Nobody is asked: it is no item of the vault, and
+    /// says nothing of the device's key. The call is written down as the app's, as its keep is,
+    /// and the key is not.
+    ///
+    /// # Errors
+    /// Refused, in the words a keep is, for a process no turn placed here or one apps share, a
+    /// connection another device holds, and a purpose that is no short line.
+    pub async fn device_key_for(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<person_vault::DeviceKey, ActionCallError> {
+        let derived = self.device_key_on((app, workspace), process, request).await;
+        let ended = derived.as_ref().map(|_| Value::Null);
+        self.note_own_call((app, workspace), request, ended, true);
+        derived
+    }
+
+    async fn device_key_on(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<person_vault::DeviceKey, ActionCallError> {
+        let refused = ActionCallError::refused;
+        match process {
+            AppProcess::OwnTilolang => {}
+            AppProcess::Placed { lease } => {
+                let here = self.lease_device(workspace).await;
+                let holder = self.lease_holder(workspace, lease).await.ok().flatten();
+                if holder != Some(here) {
+                    return Err(refused(held_elsewhere(app)));
+                }
+            }
+            AppProcess::Unplaced => return Err(refused(from_an_unplaced_process(app))),
+            AppProcess::Tilolang => return Err(refused(from_a_tilolang_process(app))),
+        }
+        let asked: person_vault::DeviceKeyFor =
+            super::person_vault::argument(request, "a device key names what it is for")?;
+        let purpose = purpose_of(&asked.purpose)?;
+        let key = derive_device_key(&self.inner.host.key, (workspace, app, &purpose));
+        Ok(person_vault::DeviceKey {
+            key: hex::encode(key.as_slice()),
+        })
     }
 
     /// Ask the person `caller` acts for whether its app may read `item`, as an asked record
@@ -643,6 +863,40 @@ impl Workspaces {
         let dispatch: Arc<dyn AskedDispatch> = Arc::new(VaultAsks(self.downgrade()));
         let records = self.told(store.for_dispatch(VAULT_ASKS, Arc::downgrade(&dispatch)));
         let _ = self.inner.vault_asks.set((dispatch, records));
+    }
+}
+
+/// Where the record of a call on an app's own connection says it ran: the call ended as it was
+/// answered, so there is nothing to follow or stop.
+struct Ended(tilo_actions::remote::InvocationState);
+
+impl ActionProvider for Ended {
+    fn query(
+        &self,
+        _: &Caller,
+        _: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
+    }
+
+    fn invoke(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
+    }
+
+    fn observe(
+        &self,
+        _: &Caller,
+        id: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        (self.0.update.invocation() == *id).then(|| self.0.clone())
+    }
+
+    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Ok(()))
     }
 }
 

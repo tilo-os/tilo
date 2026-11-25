@@ -21,11 +21,7 @@ view quick_settings() {
 /// takes that height and scrolls inside it. On a `compact` shell (the room the panel stands in,
 /// never the panel's own width) it takes the shell's width.
 view quick_settings_panel(fill_height: Bool, compact: Bool) {
-    ui.FloatingPanel(
-        width: if not compact { 360.0 },
-        fill: compact,
-        fill_height: fill_height,
-    ) {
+    ui.FloatingPanel(width: if not compact { 360.0 }, fill: compact, fill_height: fill_height) {
         header: {
             row(gap: .related, align: .center, wrap: true) {
                 ui.Text("Quick settings", role: .heading)

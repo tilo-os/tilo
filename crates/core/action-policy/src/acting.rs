@@ -72,6 +72,17 @@ impl<'a> Authority<'a> {
         for node in acting.nodes() {
             match &node.by {
                 Actor::Member(member) => match member {
+                    // An app's own connection, which no person's session made: it holds the
+                    // grants naming the app, never an empty person's.
+                    MemberId::Person(person) if person.is_empty() && node.app.is_some() => {
+                        if let Some(app) = node.app.as_ref() {
+                            others.push(
+                                policy
+                                    .party_of(Grantee::app(app.as_str()))
+                                    .with_grants(granted),
+                            );
+                        }
+                    }
                     MemberId::Person(person) => {
                         people = people.saturating_add(1);
                         let party = policy
@@ -552,6 +563,37 @@ mod tests {
                 ),
                 Answer::Allow,
                 "in another app's node the person's own grants decide"
+            );
+        }
+
+        phase an_apps_own_connection_holds_the_grants_naming_it;
+        {
+            // An app's held connection acts as no person: it holds the grants that name the
+            // app, and an empty person's grants are nothing.
+            let app = "so.tilo.calendar";
+            let node = TreePath::workspace(WORKSPACE).app("tilo.accounts");
+            let granted = [Grant::new(
+                "manifest",
+                Grantee::app(app),
+                node.clone(),
+                crate::KindSet::READ,
+                Answer::Allow,
+                Grantee::person("owner"),
+            )];
+            let holding = Acting::member(MemberId::person("")).in_app(app);
+            assert_eq!(
+                Authority::of_acting(&holding, &policy(), &granted)
+                    .decide(&node, ActionKind::Read, &Context::at_secs(1))
+                    .answer,
+                Answer::Allow,
+                "the grant naming the app decides for its own connection"
+            );
+            assert_eq!(
+                Authority::of_acting(&holding, &policy(), &[])
+                    .decide(&node, ActionKind::Read, &Context::at_secs(1))
+                    .answer,
+                Answer::Deny,
+                "and nothing reaches it that names no one"
             );
         }
 

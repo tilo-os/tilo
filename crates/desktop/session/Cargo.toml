@@ -73,7 +73,7 @@ tilo-automerge = { path = "../../core/tilo-automerge" }
 base64.workspace = true
 # The MLS vault's master key: the Secret Service, the Keychain, the page's
 # IndexedDB, or the store a headless machine names with `TILO_SECRETS_DIR`.
-tilo-secrets.workspace = true
+tilo-secrets = { workspace = true, features = ["host-keyring"] }
 # The surface apps' sockets are handed to their children as descriptors.
 # The certificate a device was approved with, kept where the identity helper
 # reads it once and taken away after.

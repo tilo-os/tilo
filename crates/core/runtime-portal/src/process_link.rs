@@ -132,6 +132,17 @@ pub enum ToProcess {
     /// The workspace's content changed: its owners set another limit, or a host refused content or
     /// kept it once a limit was raised. The processes running windows of `workspace` serve it.
     Content(WorkspaceContent),
+    /// The process's connection to the device's daemon, served as the app's own: the one path from
+    /// a tilolang app's process to the daemon, since its sandbox holds no socket of the daemon's.
+    /// Sent once, right after it starts, and only to the process that runs one app's own
+    /// instances: a task's host or a page's window is never sent it. Its Rust host calls what a
+    /// sandboxed app calls on its held connection for itself on it (keeping and reading back its
+    /// own secrets, the key the device holds for it); no value its tilolang code holds is ever
+    /// one of their answers.
+    Daemon {
+        #[serde(with = "crate::packet::fd")]
+        line: Descriptor,
+    },
 }
 
 impl Packet for ToProcess {
@@ -150,6 +161,7 @@ impl Packet for ToProcess {
             | Self::JobsUnder(_)
             | Self::Engine(_)
             | Self::Reveal { .. }
+            | Self::Daemon { .. }
             | Self::Finish => false,
         };
         if over {

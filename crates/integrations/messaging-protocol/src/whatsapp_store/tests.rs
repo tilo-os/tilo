@@ -507,7 +507,9 @@ async fn revoked_original_grant_stops_actual_sdk_ratchet_and_pending_writes() {
     );
     assert!(sdk.load().await.is_err());
     let forbidden = dir.path().join("revoked-ownership");
-    assert!(EncryptedBackend::open_system(&forbidden, owner(), grant.clone()).is_err());
+    assert!(
+        EncryptedBackend::open_profile(&forbidden, owner(), fixture_key(), grant.clone()).is_err()
+    );
     assert!(
         !forbidden.exists(),
         "revoked grants must perform no ownership I/O"

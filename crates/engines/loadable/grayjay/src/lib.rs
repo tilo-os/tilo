@@ -1,4 +1,4 @@
-//! YouTube's Grayjay link, as its own library in the runtime bundle
+//! The `YouTube` app's Grayjay link, as its own library in the runtime bundle
 //! (`libtilo_grayjay_engine.so`), opened the first time `so.tilo.tube` asks it
 //! to pair with or sync a Grayjay device.
 //!
@@ -16,7 +16,7 @@ extern crate runtime_dylib;
 
 #[cfg(feature = "thin")]
 mod engine {
-    use std::sync::OnceLock;
+    use std::sync::Arc;
 
     use tilo_engine_loader::{Device, EngineApi, Frames, JobOp, JobSink, Needs};
 
@@ -24,10 +24,13 @@ mod engine {
     /// other.
     pub const APP: &str = tilolang_grayjay::APP;
 
-    /// The one engine of this process.
-    fn shared() -> &'static tilolang_grayjay::Engine {
-        static ENGINE: OnceLock<tilolang_grayjay::Engine> = OnceLock::new();
-        ENGINE.get_or_init(tilolang_grayjay::Engine::production)
+    /// The engine over the key `device` holds for the app's Grayjay link, asked for this call
+    /// and kept nowhere.
+    fn keyed(device: &Device) -> Result<tilolang_grayjay::Engine, String> {
+        let key = device.device_key(tilolang_grayjay::PURPOSE)?;
+        Ok(tilolang_grayjay::Engine::with_key_source(Arc::new(
+            tilolang_grayjay::FixedKey::taking(key),
+        )))
     }
 
     /// The jobs this engine runs: pairing and syncing, which read this device's
@@ -41,20 +44,20 @@ mod engine {
     }
 
     /// One `engine.call` for this app.
-    fn call(_device: &Device, op: &str, input: &str) -> Result<String, String> {
-        shared().call(op, input)
+    fn call(device: &Device, op: &str, input: &str) -> Result<String, String> {
+        keyed(device)?.call(op, input)
     }
 
     /// One `engine.start`: pairing or syncing, run as the job the host names.
     fn start(
-        _device: &Device,
+        device: &Device,
         job: &str,
         op: &str,
         input: &str,
         moved: &JobSink,
     ) -> Result<(), String> {
         let moved = *moved;
-        shared().start(
+        keyed(device)?.start(
             job,
             op,
             input,
@@ -64,7 +67,7 @@ mod engine {
 
     /// One job's progress, as JSON.
     fn status(_device: &Device, job: &str) -> Result<String, String> {
-        shared().status(job)
+        tilolang_grayjay::Engine::status(job)
     }
 
     /// One stream: this engine runs none.
@@ -79,7 +82,7 @@ mod engine {
 
     /// One stopped job: false when it is not this engine's or had finished.
     fn cancel(_device: &Device, job: &str) -> bool {
-        shared().cancel(job)
+        tilolang_grayjay::Engine::cancel(job)
     }
 
     /// The one engine this library answers with.

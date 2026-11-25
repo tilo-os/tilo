@@ -353,7 +353,7 @@ fn toml_string(value: &str) -> String {
 }
 
 /// The kinds of the app's connection process, each once: the outside origins its types hold
-/// (`imap`, `music`, `youtube`), sorted, then the held connections it keeps (`connections:
+/// (`caldav`, `imap`, `music`, `youtube`), sorted, then the held connections it keeps (`connections:
 /// ["lsp"]`). The process the system runs for the app with no window runs each one's code.
 #[must_use]
 pub fn connection_kinds(meta: &PackageMeta) -> Vec<&'static str> {
@@ -377,8 +377,8 @@ fn releases_secrets(meta: &PackageMeta) -> bool {
         .any(|kind| kind.releases)
 }
 
-/// The outside origins a package's types hold, each once, in a fixed order: `imap`, `music`,
-/// `youtube`.
+/// The outside origins a package's types hold, each once, in a fixed order: `caldav`, `imap`,
+/// `music`, `youtube`.
 #[must_use]
 pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     let mut origins: Vec<&'static str> = Vec::new();
@@ -388,7 +388,7 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
         };
         // Only the origins the platform runs a connector for: the session's own kinds
         // (`session.layout`) are written by the session, never by a process.
-        let connector = ["imap", "music", "youtube"]
+        let connector = ["caldav", "imap", "music", "youtube"]
             .into_iter()
             .find(|name| *name == origin);
         if let Some(name) = connector
@@ -490,9 +490,10 @@ fn capabilities(
     if !origins.is_empty() || engine || !web.is_empty() {
         required.push("network.http".to_owned());
     }
-    // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`), and a held
-    // connection whose code needs a vault item has it released through them; the others don't.
-    if origins.contains(&"imap") || releases {
+    // The mail and calendar origins sign in to the workspace's accounts (`ACCOUNT_SIGN_INS`), and
+    // a held connection whose code needs a vault item has it released through them; the others
+    // don't.
+    if signs_in(origins) || releases {
         optional.push("account-sign-ins".to_owned());
     }
     // The page runs in this device's engine, which keeps its own processes and speaks to the web.
@@ -706,13 +707,25 @@ struct EntrypointLines {
     program: String,
 }
 
-fn entrypoint_lines(program: Option<&SourceProgram>, options: &BuildOptions) -> EntrypointLines {
+fn entrypoint_lines(
+    program: Option<&SourceProgram>,
+    options: &BuildOptions,
+    signs_in: bool,
+) -> EntrypointLines {
     let Some(entry) = program.and_then(|program| program.entrypoint.as_ref()) else {
         return EntrypointLines {
             runtime: toml_string(&options.tilolang_runtime),
             bin: toml_string(RUNTIME_BIN),
             kind: toml_string("gui"),
-            program: String::new(),
+            // An app whose origin signs in to the workspace's accounts keeps its connection:
+            // the device runs its connector as that connection.
+            program: if signs_in {
+                "connection = true
+"
+                .to_owned()
+            } else {
+                String::new()
+            },
         };
     };
     let mut lines = format!(
@@ -787,7 +800,7 @@ fn manifest_text(
     let namespaces = plan.namespaces();
     let services = services_block(program);
     let runtimes = runtime_list(meta, options, program);
-    let entry = entrypoint_lines(program, options);
+    let entry = entrypoint_lines(program, options, signs_in(&origins));
     let EntrypointLines {
         runtime: entry_runtime,
         bin: entry_bin,
@@ -1032,6 +1045,14 @@ fn keywords_table(meta: &PackageMeta, catalogues: &[(String, String)]) -> String
 
 /// Whether an action of the app, or a view of it, reaches an action another app publishes: what the
 /// manifest declares as `[actions] invoke`.
+/// Whether one of `origins` signs in to the workspace's accounts: the mail and calendar
+/// origins do, and the others don't.
+fn signs_in(origins: &[&str]) -> bool {
+    origins
+        .iter()
+        .any(|origin| matches!(*origin, "imap" | "caldav"))
+}
+
 fn calls_another_app(meta: &PackageMeta) -> bool {
     meta.actions
         .iter()

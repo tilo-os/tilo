@@ -13,6 +13,12 @@ homepage.workspace = true
 name = "tilo_secrets"
 path = "src/lib.rs"
 
+[features]
+# The Linux Secret Service client, its keyring reads for owner migration and the device-identity
+# proofs spoken over it: a host process's store (`linux`). An app process keeps its secrets in
+# the workspace's vault over its held connection and links none of this.
+host-keyring = ["dep:zbus"]
+
 [dependencies]
 # Desktop backends block on IPC; the async API runs them on the app runtime's
 # blocking pool.
@@ -31,12 +37,17 @@ sha2.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
-# The freedesktop Secret Service, spoken directly: no `secret-tool` process.
+# An app process keeps its secrets in the workspace's vault over the connection its launcher
+# handed it (`vault`), and a host process in the freedesktop Secret Service (`host-keyring`),
+# spoken directly: no `secret-tool` process.
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio = { workspace = true, features = ["net"] }
-zbus = { workspace = true, features = ["tokio", "blocking-api"] }
-# A sandboxed app's key comes from the Secret portal.
-ashpd = { workspace = true, features = ["secret"] }
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
+# The vault's actions on the app's held connection, and the one line protocol they travel on.
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
+serde.workspace = true
+serde_json.workspace = true
 
 # The login Keychain's generic passwords.
 # The Keystore wraps the store's key, reached through the process's Java VM.

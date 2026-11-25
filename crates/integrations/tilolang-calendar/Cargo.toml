@@ -11,8 +11,8 @@ description = "The calendar origin of tilolang packages: the iCalendar format a 
 ignored = ["calendar-test-support"]
 
 [dependencies]
-# The workspace's accounts and their sign-ins, as the session tells the connector them.
-accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
+# The one dispatch the connector reaches: the vault's logins and an item's release.
+tilo-actions = { path = "../../core/actions", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", optional = true }
 tilo-dav = { path = "../tilo-dav", default-features = false, features = ["client"], optional = true }
@@ -51,8 +51,8 @@ default = ["engine"]
 # and the connector process's loop. A tilolang host needs none of it: its origins reach the
 # connector over a socket.
 engine = [
-    "dep:accounts",
     "dep:runtime-portal",
+    "dep:tilo-actions",
     "dep:tilo-dav",
     "dep:tilo-net",
     "dep:tokio",

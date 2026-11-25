@@ -162,6 +162,8 @@ pub struct Daemon {
     api: std::sync::OnceLock<Arc<tilo_api::direct::Direct>>,
     /// What hands agents' connections on the native endpoint to the device's session.
     agents: super::serve::Agents,
+    /// The connections this part of the daemon serves, closed when it ends.
+    connections: Arc<crate::daemon::Connections>,
     place: DaemonPlace,
     /// The device's directory: its login, its synced folders' settings and its migrations.
     dir: PathBuf,
@@ -179,6 +181,38 @@ impl Daemon {
     #[cfg(test)]
     pub(crate) fn live(&self) -> Option<&Arc<super::live_relay::Live>> {
         self.live.get()
+    }
+
+    /// Whether the app `app` installed here declares `capability` in its signed manifest.
+    pub(crate) fn app_declares(&self, app: &str, capability: &str) -> bool {
+        self.apps.declares(app, capability)
+    }
+
+    /// The person's id, hex of their root, as which this device acts.
+    pub(crate) fn person_id(&self) -> String {
+        hex::encode(self.cert.user_public_key)
+    }
+
+    /// Hand each origin connector this device starts the connection to this device's one
+    /// dispatch, admitted as the app the launch record says it runs: what a program that signs in
+    /// calls the published actions over, decided under that app's grants.
+    pub(crate) fn hand_actions_to_connectors(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        self.apps
+            .hand_actions(Box::new(move |connector, app, workspace, pid| {
+                let daemon = weak
+                    .upgrade()
+                    .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+                super::local::hand_to_connector(
+                    &daemon,
+                    connector,
+                    crate::seats::AppAt {
+                        app: app.to_owned(),
+                        workspace: workspace.to_owned(),
+                        pid,
+                    },
+                )
+            }));
     }
 
     /// What an app's call lane needs to carry one of its calls into a workspace's call through
@@ -997,6 +1031,15 @@ impl Daemon {
         Ok(child)
     }
 
+    /// Where an app's search entries are published on its connection here, once the daemon
+    /// keeps the device's index.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn search_index_services(
+        &self,
+    ) -> Option<Arc<dyn tilo_workspace_service::apps::services::SearchIndexServices>> {
+        self.workspaces.search_index_services()
+    }
+
     /// The workspaces this device holds, through its opened workspace service.
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
@@ -1428,6 +1471,13 @@ impl Daemon {
     /// What hands agents' connections to the device's session while one holds it.
     pub(crate) fn agents(&self) -> &super::serve::Agents {
         &self.agents
+    }
+
+    /// The connections this part of the daemon serves: each is closed when it ends
+    /// ([`crate::daemon::Connections::end`]), so its clients connect again to the part that
+    /// starts next rather than being answered by this one's services after they ended.
+    pub(crate) fn connections(&self) -> &Arc<crate::daemon::Connections> {
+        &self.connections
     }
 
     #[allow(
@@ -2193,6 +2243,7 @@ impl Daemon {
             account: Mutex::new(None),
             api: std::sync::OnceLock::new(),
             agents: super::serve::Agents::default(),
+            connections: Arc::default(),
             place,
             dir: identity.place.dir().to_path_buf(),
             _lock: lock,
@@ -2625,7 +2676,7 @@ fn start_broker(
     let (policy_origin, policy_time) = execution_policy_clock()?;
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         parts.sockets.collab.clone(),
-        Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
+        Some(Arc::new(parts.workspaces.copies().clone()) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_commits(ServiceCommits::new(parts.workspaces)
             as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>),
         None,
@@ -2871,7 +2922,7 @@ fn record_services(
     services.workspace_memberships = Some(
         tilo_workspace_service::workspaces::ProfileMemberships::new(
             parts.workspaces.copies().clone(),
-            Arc::clone(parts.workspaces)
+            Arc::new(parts.workspaces.copies().clone())
                 as tilo_workspace_service::apps::services::WorkspaceAuthorityHandle,
         ) as Arc<dyn tilo_workspace_service::apps::services::WorkspaceMemberships>,
     );
@@ -3873,27 +3924,17 @@ impl tilo_api::session::AccountHere for Daemon {
         let device = self.cert.clone();
         Box::pin(async move {
             known(&device, &key)?;
-            // A workspace this device keeps for its person is theirs, however it was made: a branch
-            // is only ever of one of theirs.
-            let _ = workspaces
-                .copies()
-                .claim_own(&device.user_public_key, &source)
-                .await;
             let branch = id.unwrap_or_else(Uuid::new_v4).to_string();
-            let mut arguments = Map::new();
-            arguments.insert("workspace".into(), json!(source));
-            arguments.insert("name".into(), json!(name));
-            arguments.insert("branch".into(), json!(branch));
-            if !labels.is_empty() {
-                arguments.insert("labels".into(), json!(labels));
-            }
-            let made: CreatedWorkspace = answer(
-                workspaces
-                    .service()
-                    .ask_own(key.cert(), BRANCH_OWN_WORKSPACE, arguments)
-                    .await,
-            )?;
-            enter_here(&workspaces, &made.workspace.workspace, &device).await?;
+            let made = branch_here(
+                &workspaces,
+                key.cert(),
+                &device,
+                source,
+                name,
+                branch,
+                labels,
+            )
+            .await?;
             Ok(listed_workspace(made.workspace, &workspaces))
         })
     }
@@ -3934,26 +3975,7 @@ impl tilo_api::session::AccountHere for Daemon {
         let device = self.cert.clone();
         Box::pin(async move {
             known(&device, &key)?;
-            let _ = workspaces
-                .copies()
-                .claim_own(&device.user_public_key, &workspace)
-                .await;
-            // A workspace the device does not keep for its person is not the key's to delete, and one
-            // it deleted before is no such workspace either.
-            if !workspaces
-                .copies()
-                .owns(&device.user_public_key, &workspace)
-            {
-                return Err(ServerError::NotFound);
-            }
-            let mut arguments = Map::new();
-            arguments.insert("workspace".into(), json!(workspace));
-            workspaces
-                .service()
-                .ask_own(key.cert(), DELETE_WORKSPACE, arguments)
-                .await
-                .map(drop)
-                .map_err(unavailable)
+            delete_here(&workspaces, key.cert(), &device, &workspace).await
         })
     }
 
@@ -4109,6 +4131,75 @@ impl Daemon {
     fn knows(&self, key: &GrantKey) -> bool {
         known(&self.cert, key).is_ok()
     }
+}
+
+/// Make `branch`, a branch of `source` called `name`, one of `device`'s person's own, on this
+/// device: `acting` asks the workspace service for it, and `device` signs its way into the branch
+/// made. Answers the branch the service made.
+///
+/// # Errors
+/// The source is not one the device keeps for its person, the service could not copy it whole, or
+/// the device could not enter the branch.
+pub(crate) async fn branch_here(
+    workspaces: &ServiceWorkspaces,
+    acting: &DeviceCert,
+    device: &DeviceCert,
+    source: String,
+    name: String,
+    branch: String,
+    labels: WorkspaceLabels,
+) -> Result<CreatedWorkspace, ServerError> {
+    // A workspace this device keeps for its person is theirs, however it was made: a branch is
+    // only ever of one of theirs.
+    let _ = workspaces
+        .copies()
+        .claim_own(&device.user_public_key, &source)
+        .await;
+    let mut arguments = Map::new();
+    arguments.insert("workspace".into(), json!(source));
+    arguments.insert("name".into(), json!(name));
+    arguments.insert("branch".into(), json!(branch));
+    if !labels.is_empty() {
+        arguments.insert("labels".into(), json!(labels));
+    }
+    let made: CreatedWorkspace = answer(
+        workspaces
+            .service()
+            .ask_own(acting, BRANCH_OWN_WORKSPACE, arguments)
+            .await,
+    )?;
+    enter_here(workspaces, &made.workspace.workspace, device).await?;
+    Ok(made)
+}
+
+/// Delete `workspace`, one of `device`'s person's own, on this device: `acting` asks the
+/// workspace service for it.
+///
+/// # Errors
+/// The device keeps no workspace of that id for its person, or the service did not delete it.
+pub(crate) async fn delete_here(
+    workspaces: &ServiceWorkspaces,
+    acting: &DeviceCert,
+    device: &DeviceCert,
+    workspace: &str,
+) -> Result<(), ServerError> {
+    let _ = workspaces
+        .copies()
+        .claim_own(&device.user_public_key, workspace)
+        .await;
+    // A workspace the device does not keep for its person is not the key's to delete, and one it
+    // deleted before is no such workspace either.
+    if !workspaces.copies().owns(&device.user_public_key, workspace) {
+        return Err(ServerError::NotFound);
+    }
+    let mut arguments = Map::new();
+    arguments.insert("workspace".into(), json!(workspace));
+    workspaces
+        .service()
+        .ask_own(acting, DELETE_WORKSPACE, arguments)
+        .await
+        .map(drop)
+        .map_err(unavailable)
 }
 
 /// Enter `workspace` as this device's, as `device`, signing its own row there with this device's
@@ -5059,7 +5150,7 @@ impl RuntimeActionProvider {
                             .map_or_else(String::new, |(app, _)| app.to_owned()),
                         instance: pressed.instance.clone(),
                         resource: pressed.resource.clone(),
-                        at: None,
+                        at: pressed.at,
                     }
                 }),
             };

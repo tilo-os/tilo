@@ -155,9 +155,7 @@ fn behind_tabs(windows: List<device.Window>, w: device.Window) -> List<device.Wi
 view window_place(w: device.Window, weight: Float, peek: Bool, compact: Bool, roomy: Bool) {
     let cap = if compact {
         100rem
-    } else if roomy {
-        if peek { 12rem } else { 26rem }
-    } else if peek { 9rem } else { 20rem }
+    } else if roomy { if peek { 12rem } else { 26rem } } else if peek { 9rem } else { 20rem }
     ui.Card(
         item: w,
         title: w.title,

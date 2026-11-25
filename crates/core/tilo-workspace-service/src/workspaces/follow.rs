@@ -80,9 +80,7 @@ impl Workspaces {
                     self.keep_checkpoint_check(workspace, route, compaction)
                         .await
                 }
-                None if followed.changed
-                    && envelope.kind == collab_types::OpKind::Compaction =>
-                {
+                None if followed.changed && envelope.kind == collab_types::OpKind::Compaction => {
                     self.check_leading_checkpoint(workspace, route).await
                 }
                 None => Ok(()),

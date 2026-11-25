@@ -2,7 +2,6 @@
 
 use std::io::{self, BufRead, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use tilo_clock::time::{Duration, Instant};
@@ -20,7 +19,6 @@ pub const MAX_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenError {
     WrongOwner,
-    OwnershipUnavailable,
     TransportUnavailable,
 }
 
@@ -34,24 +32,9 @@ pub struct SignalRuntime {
 }
 
 impl SignalRuntime {
-    /// Use an existing OS-keychain key with the supervisor's verified handle.
-    /// No persistent grant, key or Signal linking is created by this call.
-    pub fn open_system(
-        root: &Path,
-        owner: Owner,
-        signal_account: String,
-        stream: UnixStream,
-    ) -> Result<Self, OpenError> {
-        if owner.service != Service::Signal {
-            return Err(OpenError::WrongOwner);
-        }
-        let journal = EncryptedJournal::open_system(root, &owner)
-            .map_err(|_| OpenError::OwnershipUnavailable)?;
-        Self::from_journal(owner, signal_account, stream, journal)
-    }
-
-    /// Host-injected ownership, without weakening the production OS-keychain path.
-    /// The journal's frozen device/account/link generation must match exactly.
+    /// Run over `journal`, opened under the key the host keeps for the account in the
+    /// workspace's vault. The journal's frozen device/account/link generation must match
+    /// exactly.
     pub fn from_journal(
         owner: Owner,
         signal_account: String,

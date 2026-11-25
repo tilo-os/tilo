@@ -642,6 +642,8 @@ pub struct Autocomplete {
     last_pointer: Point,
     outcome: AutocompleteOutcome,
     edited: bool,
+    /// A row or the typed text was taken since the host last heard: an edit alone is not.
+    taken: bool,
     /// The modifier a row was taken with, and the row: fired as [`Autocomplete::on_alternate`].
     alternate_pending: Option<String>,
     edits: Option<crate::component::Bound<String>>,
@@ -674,6 +676,7 @@ impl Autocomplete {
             last_pointer: Point::ZERO,
             outcome: AutocompleteOutcome::None,
             edited: false,
+            taken: false,
             alternate_pending: None,
             edits: None,
             accepted: None,
@@ -984,6 +987,7 @@ impl Autocomplete {
     fn accept(&mut self, value: String) {
         self.input.set_text(&value);
         self.edited = true;
+        self.taken = true;
         self.close();
         self.outcome = AutocompleteOutcome::Accepted(value);
     }
@@ -1229,12 +1233,16 @@ impl Widget for Autocomplete {
             if let Some(edits) = &self.edits {
                 edits.edited(crate::component::Value::Text(text.clone()));
             }
-            if let Some(pending) = self.alternate_pending.take() {
-                if let Some(alternate) = &self.alternate {
-                    alternate.fire(Some(crate::component::Value::Text(pending)));
+            // A letter typed is an edit, which the host hears as the text; only a row or the text
+            // taken is a choice.
+            if std::mem::take(&mut self.taken) {
+                if let Some(pending) = self.alternate_pending.take() {
+                    if let Some(alternate) = &self.alternate {
+                        alternate.fire(Some(crate::component::Value::Text(pending)));
+                    }
+                } else if let Some(accepted) = &self.accepted {
+                    accepted.fire(Some(crate::component::Value::Text(text)));
                 }
-            } else if let Some(accepted) = &self.accepted {
-                accepted.fire(Some(crate::component::Value::Text(text)));
             }
         }
         inner

@@ -178,7 +178,7 @@ impl Workspaces {
         process: &AppProcess,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        if matches!(process, AppProcess::Tilolang) {
+        if matches!(process, AppProcess::Tilolang | AppProcess::OwnTilolang) {
             return Err(refused(from_a_tilolang_process(app)));
         }
         let cert = self.device_cert();

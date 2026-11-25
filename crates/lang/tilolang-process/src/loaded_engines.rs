@@ -345,6 +345,13 @@ fn device(context: &Context<'_>) -> Device {
         read,
     )
     .redeeming(redeem)
+    .keying(device_key)
+}
+
+/// The key the device holds for the app's own `purpose`, asked on this process's daemon line
+/// ([`crate::daemon_line`]): what a loaded engine presents as the app's identity on this device.
+fn device_key(_context: *mut c_void, purpose: &str) -> Result<[u8; 32], String> {
+    crate::daemon_line::device_key(purpose)
 }
 
 /// A request's context a window of this process handed over for a job to start with: the

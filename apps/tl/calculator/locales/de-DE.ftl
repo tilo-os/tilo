@@ -269,3 +269,6 @@ d-gdbpqtv2 = Flächen
     .w-nothing-graphed-yet = Noch nichts gezeichnet
 
 d-so-tilo-calculator-keywords = rechnen, mathe, mathematik, grundrechnen, wissenschaftlicher rechner, zahlen, taschenrechner, kcalc, qalculate
+
+d-p5ftuuiy = Spur gesagt
+    .w-x-y = x = { $said }, y = { $said2 }

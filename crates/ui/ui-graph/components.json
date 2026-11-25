@@ -4936,6 +4936,13 @@
           "name": "select",
           "doc": "A place was chosen: its key is the value.",
           "value": "text"
+        },
+        {
+          "name": "reorder",
+          "doc": "A place was dropped on another: carries the place's key and the key it was dropped on, in that order. The app moves its own list; the list keeps no order of its own.",
+          "value": {
+            "list": "text"
+          }
         }
       ],
       "semantics": {

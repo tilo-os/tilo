@@ -8,10 +8,11 @@
 //! is a bridge to the other app, not a second sync of Tilo's workspaces: nothing here writes a
 //! Tilo resource, and the app records the devices it paired.
 //!
-//! The device's Noise static key is derived from a secret the platform's own store keeps for
-//! this app ([`tilolang_secrets`](tilo_secrets)), never from a record: the key is this
-//! device's identity to Grayjay, so a copy of it on another device would be the same device
-//! twice. A pairing code arrives in the invite, is used by the one handshake, and is stored
+//! The device's Noise static key is derived from the key this device holds for the app's own
+//! purpose ([`PURPOSE`]), which the device's daemon derives from the device's own key and hands
+//! the app's own process alone: never a record and never a vault item, since the key is this
+//! device's identity to Grayjay, and a copy of it on another device would be the same device
+//! twice. It is kept nowhere: asked for again each time it is needed. A pairing code arrives in the invite, is used by the one handshake, and is stored
 //! nowhere.
 //!
 //! [`Engine`] is what `engine.call` and `engine.start` answer: `device` says the key this
@@ -40,7 +41,6 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tilo_secrets::{PutOptions, SecretStore};
 use zeroize::Zeroizing;
 
 use crate::transport::{DeviceKey, SyncClient};
@@ -51,16 +51,13 @@ pub const APP: &str = "so.tilo.tube";
 /// What the app is called on Grayjay's side, as the device it syncs with.
 pub const DEVICE_NAME: &str = "Tilo Tube";
 
-/// The key of the secret the platform's store keeps the device key's seed under.
-const DEVICE_SEED: &str = "grayjay-device-seed";
-
-/// The shortest seed a device key is derived from: a store that hands back less is refusing.
-const MINIMUM_SEED_BYTES: usize = 16;
+/// What the app asks the device's key for: its Noise static key to Grayjay.
+pub const PURPOSE: &str = "grayjay-noise";
 
 /// Why a sync could not go through.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The device cannot do this now: no secret store, no network.
+    /// The device cannot do this now: no network.
     Unavailable(String),
     /// A pairing invite or handshake did not hold up.
     Pairing(String),
@@ -91,79 +88,15 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Where a device's Grayjay key comes from.
-///
-/// The platform's store keeps it ([`HeldKey`]); a test or a peer run in the same process can
-/// hold one of its own ([`FixedKey`]).
+/// Where a device's Grayjay key comes from: the key the device holds for the app ([`PURPOSE`]),
+/// as its engine host hands it ([`FixedKey`]).
 pub trait KeySource: Send + Sync {
     /// The seed the device key is derived from, wiped from memory when dropped.
     fn seed(&self) -> Result<Zeroizing<Vec<u8>>, Error>;
 }
 
-/// The seed the platform's app-scoped secret store keeps: created on the first use, then the
-/// same for as long as the device exists.
-#[derive(Clone)]
-pub struct HeldKey {
-    store: SecretStore,
-}
-
-impl HeldKey {
-    /// This app's own secret store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            store: SecretStore::for_app(APP),
-        }
-    }
-
-    /// A store kept in memory, for a test or a device with no keychain.
-    #[must_use]
-    pub fn memory() -> Self {
-        Self {
-            store: SecretStore::memory(APP),
-        }
-    }
-}
-
-impl Default for HeldKey {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl KeySource for HeldKey {
-    fn seed(&self) -> Result<Zeroizing<Vec<u8>>, Error> {
-        let unavailable =
-            |error: tilo_secrets::SecretError| Error::KeyUnavailable(error.to_string());
-        if self
-            .store
-            .get_blocking(DEVICE_SEED)
-            .map_err(unavailable)?
-            .is_none()
-        {
-            let mut seed = Zeroizing::new(vec![0_u8; 32]);
-            getrandom::fill(&mut seed)
-                .map_err(|error| Error::KeyUnavailable(format!("no randomness: {error}")))?;
-            let label = Some("YouTube's Grayjay device key".to_owned());
-            self.store
-                .put_blocking(DEVICE_SEED, &seed, PutOptions { label })
-                .map_err(unavailable)?;
-        }
-        let seed = self
-            .store
-            .get_blocking(DEVICE_SEED)
-            .map_err(unavailable)?
-            .ok_or_else(|| Error::KeyUnavailable("the secret store lost the device key".into()))?;
-        if seed.expose().len() < MINIMUM_SEED_BYTES {
-            return Err(Error::KeyUnavailable(
-                "the secret store returned insufficient key material".into(),
-            ));
-        }
-        Ok(Zeroizing::new(seed.expose().to_vec()))
-    }
-}
-
-/// A seed a caller holds itself: a test's, or a peer that runs in this process.
+/// A seed the caller holds: the key the device holds for the app, asked for the call that runs
+/// now, or a test's.
 #[derive(Clone)]
 pub struct FixedKey(Zeroizing<Vec<u8>>);
 
@@ -171,6 +104,14 @@ impl FixedKey {
     #[must_use]
     pub fn new(seed: impl Into<Vec<u8>>) -> Self {
         Self(Zeroizing::new(seed.into()))
+    }
+
+    /// The key the device holds for the app, taken: the array it came in is wiped.
+    #[must_use]
+    pub fn taking(mut key: [u8; 32]) -> Self {
+        let seed = Self::new(key.to_vec());
+        zeroize::Zeroize::zeroize(&mut key);
+        seed
     }
 }
 
@@ -276,12 +217,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// The engine over the platform's own secret store.
-    #[must_use]
-    pub fn production() -> Self {
-        Self::with_key_source(Arc::new(HeldKey::new()))
-    }
-
     /// The engine over `key`.
     #[must_use]
     pub fn with_key_source(key: Arc<dyn KeySource>) -> Self {
@@ -412,7 +347,7 @@ impl Engine {
     }
 
     /// How a job stands, as JSON: its state, what it answered, or why it failed.
-    pub fn status(&self, job: &str) -> Result<String, String> {
+    pub fn status(job: &str) -> Result<String, String> {
         let (state, answer, error) = {
             let jobs = jobs();
             let held = jobs
@@ -434,7 +369,8 @@ impl Engine {
     }
 
     /// Stop a job: false when it is no job of this bridge, or had already ended.
-    pub fn cancel(&self, job: &str) -> bool {
+    #[must_use]
+    pub fn cancel(job: &str) -> bool {
         let mut jobs = jobs();
         match jobs.held.get_mut(job) {
             Some(held) if held.state == RUNNING => {

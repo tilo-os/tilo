@@ -316,7 +316,6 @@ impl PeopleOverlay {
         // Keyboard focus stays with the person and control it was on, not the row index, when
         // people come, go or reorder.
         let focused = self.keyboard_focus.and_then(|hit| self.target_id(hit));
-        self.follow_expansion(model);
         self.host = model.host;
         self.shown_rows = model.rows.to_vec();
         self.shown_pinned = model.pinned;
@@ -1123,13 +1122,11 @@ impl PeopleOverlay {
     }
 
     pub fn needs_animation_frame(&self) -> bool {
-        let now = ui::motion::frame_now();
-        self.reveal.is_moving(now)
-            || self.scroll_theme.as_ref().is_some_and(|theme| {
-                self.scroll
-                    .as_ref()
-                    .is_some_and(|scroll| scroll.needs_animation_frame(theme))
-            })
+        self.scroll_theme.as_ref().is_some_and(|theme| {
+            self.scroll
+                .as_ref()
+                .is_some_and(|scroll| scroll.needs_animation_frame(theme))
+        })
     }
 
     pub fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

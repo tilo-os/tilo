@@ -64,7 +64,7 @@ lazy-painter = ["dep:tilo-engine-loader"]
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview/local-daemons"]
+local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "tilo-local-identity/local-daemons", "collaboration?/local-daemons", "tilo-webview/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -348,6 +348,8 @@ tilo-presence-types = { version = "0.1.0", path = "../../core/presence-types" }
 # The plain part of the resource vocabulary: text splices, search scopes, item kinds and workspace
 # emoji names, read with or without the record model.
 tilo-resource-plain = { version = "0.1.0", path = "../../core/resource-plain" }
+# Who sits at this device: the identity a host installs, read with or without the model.
+tilo-local-identity = { version = "0.1.0", path = "../../core/local-identity" }
 # Window-group widths and drop targets are the layout model's own types.
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model", optional = true }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so

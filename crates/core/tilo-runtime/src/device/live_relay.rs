@@ -56,6 +56,35 @@ use super::workspaces::ServiceWorkspaces;
 /// change: a removal the key service did not announce still cuts its sessions within this.
 const REREAD: Duration = Duration::from_secs(30);
 
+/// How long a workspace whose relay did not take this device in waits before it is asked again:
+/// [`RETRY_FIRST`] after the first miss, twice as long after each further one, and never longer
+/// than [`RETRY_LONGEST`]. A relay that is away and comes back says nothing, so it is asked again
+/// soon and then ever less often, and never given up on.
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const RETRY_LONGEST: Duration = Duration::from_secs(15);
+
+/// The wait the schedule gives before a workspace's relay is asked again after `missed` attempts
+/// in a row it took this device in on none of.
+fn retry_schedule(missed: u32) -> Duration {
+    let doublings = missed.saturating_sub(1).min(8);
+    RETRY_FIRST
+        .saturating_mul(1_u32 << doublings)
+        .min(RETRY_LONGEST)
+}
+
+/// The wait before `device` asks `workspace`'s relay again after `missed` misses in a row: the
+/// schedule's ([`retry_schedule`]), less up to a quarter the device takes off by its own key
+/// ([`tilo_live::live_session::spread`]). The devices of a workspace miss its relay together, when
+/// it went away or had no room; on the schedule alone they would all ask it again in one moment
+/// each time.
+fn retry_wait(device: [u8; 32], workspace: WorkspaceId, missed: u32) -> Duration {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut turn = std::hash::DefaultHasher::new();
+    workspace.as_uuid().as_bytes().hash(&mut turn);
+    missed.hash(&mut turn);
+    tilo_live::live_session::spread(retry_schedule(missed), device, turn.finish())
+}
+
 /// Now, in Unix nanoseconds.
 fn now_ns() -> u64 {
     tilo_clock::unix_now_ns()
@@ -819,6 +848,8 @@ pub(crate) struct Live {
     pub(super) speaking: super::live_speaking::Speaking,
     /// This live session itself, for what answers on its behalf later.
     this: std::sync::Weak<Live>,
+    /// Told when a workspace's live session ended, so it is settled again at once.
+    settle: Arc<tokio::sync::Notify>,
 }
 
 impl Live {
@@ -871,6 +902,7 @@ impl Live {
             calls: Mutex::default(),
             speaking: super::live_speaking::Speaking::new(fanout),
             this: this.clone(),
+            settle: Arc::new(tokio::sync::Notify::new()),
         });
         live.speaking.hear_apps(&live);
         // An app joins and leaves a call through the device's one dispatch, as any action.
@@ -934,13 +966,16 @@ impl Live {
     }
 
     /// Read every workspace's membership, keys and calls again whenever the key service says one
-    /// moved, and at least every [`REREAD`]; the relay's judgement follows them, and so does this
-    /// device's own place in each workspace's live session.
+    /// moved, a live session of one ended, and at least every [`REREAD`]; the relay's judgement
+    /// follows them, and so does this device's own place in each workspace's live session. A
+    /// workspace whose relay did not take this device in is asked again after [`retry_wait`].
     fn follow(self: &Arc<Self>) {
         let live = Arc::downgrade(self);
         let keys = self.shared.workspaces.keys();
+        let settle = Arc::clone(&self.settle);
         tilo_rt::app().spawn(async move {
             let mut after = keys.generation();
+            let mut missed: BTreeMap<WorkspaceId, u32> = BTreeMap::new();
             loop {
                 let Some(live) = live.upgrade() else {
                     return;
@@ -963,13 +998,23 @@ impl Live {
                 }
                 // This device's own place in each workspace's live session: a server's daemon
                 // holds it as a desktop's session does, so a call carries with no session.
-                for workspace in held {
-                    live.reconcile_call(workspace).await;
+                let mut wait = REREAD;
+                for workspace in &held {
+                    live.reconcile_call(*workspace).await;
+                    if live.shared.awaits_relay(*workspace) {
+                        let misses = missed.entry(*workspace).or_default();
+                        *misses = misses.saturating_add(1);
+                        wait = wait.min(retry_wait(live.shared.device, *workspace, *misses));
+                    } else {
+                        missed.remove(workspace);
+                    }
                 }
+                missed.retain(|workspace, _| held.contains(workspace));
                 drop(live);
                 tokio::select! {
                     changed = keys.changed(after) => after = changed,
-                    () = tokio::time::sleep(REREAD) => {}
+                    () = settle.notified() => {}
+                    () = tokio::time::sleep(wait) => {}
                 }
             }
         });
@@ -1201,6 +1246,7 @@ impl Live {
         self.drop_call(workspace);
         self.shared
             .note_session(workspace, SessionState::Unreached { relay, name });
+        self.settle.notify_one();
     }
 
     /// Stop taking part in `workspace`'s live session here: the session's readers and carrier
@@ -1364,6 +1410,14 @@ impl ResourceReads for SessionReads {
 impl Shared {
     /// Note how far this device's place in `workspace`'s live session came, and tell the reading
     /// when it moved.
+    /// Whether `workspace`'s relay is to be asked again: it was not reached, or had no room.
+    fn awaits_relay(&self, workspace: WorkspaceId) -> bool {
+        matches!(
+            self.sessions.lock_recover().get(&workspace),
+            Some(SessionState::Unreached { .. } | SessionState::Busy { .. })
+        )
+    }
+
     fn note_session(&self, workspace: WorkspaceId, state: SessionState) {
         let moved = {
             let mut sessions = self.sessions.lock_recover();

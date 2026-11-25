@@ -144,30 +144,6 @@ impl SignalBroker {
             observers: Arc::default(),
         })
     }
-    pub fn open_system(
-        root: &std::path::Path,
-        owner: crate::journal::Owner,
-        signal_account: String,
-        stream: std::os::unix::net::UnixStream,
-        authority: Arc<dyn SignalAuthority>,
-    ) -> Result<Self, SendError> {
-        let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
-        if store.protection() != tilo_secrets::Protection::OsKeychain {
-            return Err(SendError::Unavailable);
-        }
-        let key = crate::journal::FORMAT
-            .load_or_create_system_key_in(true, &store)
-            .ok_or(SendError::Unavailable)?;
-        let history = History::open(&root.join("history"), &owner, key)?;
-        let runtime = SignalRuntime::open_system(
-            &root.join("journal"),
-            owner,
-            signal_account.clone(),
-            stream,
-        )
-        .map_err(|_| SendError::Unavailable)?;
-        Self::new(runtime, history, authority, signal_account)
-    }
     /// Frozen authority for host registration, never inferred from metadata.
     pub fn owner(&self) -> Result<crate::journal::Owner, SendError> {
         Ok(self

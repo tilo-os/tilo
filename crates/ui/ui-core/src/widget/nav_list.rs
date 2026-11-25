@@ -1127,6 +1127,25 @@ impl NavList {
         self
     }
 
+    /// Bind where a dragged place lands to the event the app answers, as
+    /// [`Self::on_move_action`] binds it in Rust: the place's key and the key it was dropped on,
+    /// in that order.
+    pub fn set_reorder_event(&mut self, reorder: crate::component::Event) {
+        if reorder.is_none() {
+            return;
+        }
+        let this = std::mem::replace(self, Self::new(Vec::new()));
+        *self = this.on_move(move |source: &str, drop: NavDrop| {
+            let target = match drop {
+                NavDrop::Into(target) | NavDrop::Before(target) | NavDrop::After(target) => target,
+            };
+            reorder.fire(Some(crate::component::Value::List(vec![
+                crate::component::Value::Text(source.to_owned()),
+                crate::component::Value::Text(target),
+            ])));
+        });
+    }
+
     /// Let the person drag items: into an item marked [`NavItem::drop_target`], or before and
     /// after items in the same section.
     #[must_use]

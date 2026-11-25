@@ -34,9 +34,9 @@ from mail_provider import (  # noqa: E402
 )
 from story import Failed, Story, until, walk  # noqa: E402
 
-# What both windows need: Settings, where the person's accounts are kept, and Mail, a tilolang
-# app (TILOLANG).
-APPS = "settings"
+# What both windows need: Settings, where the person's accounts are kept, and Mail, both
+# tilolang apps (TILOLANG), and no native app.
+APPS = ""
 
 
 def steps(story: Story) -> None:

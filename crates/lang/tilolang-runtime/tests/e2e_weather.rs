@@ -757,6 +757,8 @@ mod cases {
             let (mut window, field) = weather.open_search();
             window.edit(&field, &Value::text(" amsterdam")).unwrap();
             window.poll_patches().unwrap();
+            // The look waits until what is typed stops changing, and then asks once.
+            weather.step("poll_weather");
             weather.step("poll_weather");
             assert_eq!(
                 weather.services.urls().len(),
@@ -801,10 +803,12 @@ mod cases {
             window.edit(&field, &Value::text("New York")).unwrap();
             window.poll_patches().unwrap();
             weather.step("poll_weather");
+            weather.step("poll_weather");
             let asked = weather.services.urls().last().cloned().unwrap_or_default();
             assert!(asked.contains("name=New%20York"), "{asked}");
             window.edit(&field, &Value::text("München")).unwrap();
             window.poll_patches().unwrap();
+            weather.step("poll_weather");
             weather.step("poll_weather");
             let asked = weather.services.urls().last().cloned().unwrap_or_default();
             assert!(asked.contains("name=M%C3%BCnchen"), "{asked}");
@@ -924,7 +928,9 @@ mod cases {
             let (mut window, field) = weather.open_search();
             window.edit(&field, &Value::text("Amsterdam")).unwrap();
             window.poll_patches().unwrap();
-            // The window's poll asks the service once for what was typed and takes the rows.
+            // The window's polls wait until what was typed stops changing, then ask the service
+            // once for it and take the rows.
+            weather.step("poll_weather");
             weather.step("poll_weather");
             assert_eq!(weather.services.urls().len(), 1);
             window.poll_patches().unwrap();
@@ -1053,6 +1059,130 @@ mod cases {
                 weather.field(&amsterdam, "region"),
                 json!("North Holland"),
                 "the place the reference did not name still stands as it was"
+            );
+        }
+
+        phase a_place_is_dragged_before_another;
+        {
+            let weather = Weather::new(false);
+            let amsterdam = weather.save("Amsterdam", 52.374, 4.8897);
+            let cairo = weather.save("Cairo", 30.0444, 31.2357);
+            weather.refresh();
+            let mut window = weather.weather_window();
+            let list = of_kind(window.tree(), "ui.NavList")
+                .into_iter()
+                .next()
+                .expect("the sidebar's list")
+                .key
+                .clone();
+            // The person drags Cairo onto Amsterdam: the list reports both, and the app moves
+            // the place before the one it was dropped on.
+            window
+                .fire_with(
+                    &list,
+                    "reorder",
+                    Some(&Value::List(vec![
+                        Value::text(cairo.id_string()),
+                        Value::text(amsterdam.id_string()),
+                    ])),
+                )
+                .unwrap();
+            window.poll_patches().unwrap();
+            let ordered: Vec<String> = match weather.rt.read(&weather.root, "places").unwrap() {
+                Value::List(items) => items
+                    .into_iter()
+                    .map(|item| {
+                        let Value::Ref(held) = item else {
+                            panic!("a place is a record")
+                        };
+                        match weather.rt.read(&held.target, "name").unwrap() {
+                            Value::Text(name) => name,
+                            other => panic!("a name is {other:?}"),
+                        }
+                    })
+                    .collect(),
+                other => panic!("places is {other:?}"),
+            };
+            assert_eq!(ordered, ["Cairo", "Amsterdam"], "Cairo moved before Amsterdam");
+        }
+
+        phase a_query_is_looked_up_once_it_stops_changing;
+        {
+            let weather = Weather::new(false);
+            let (mut window, field) = weather.open_search();
+            // A word typed quickly is two changes of the field and no look until it settles.
+            window.edit(&field, &Value::text("A")).unwrap();
+            window.poll_patches().unwrap();
+            window.edit(&field, &Value::text("Am")).unwrap();
+            window.poll_patches().unwrap();
+            weather.step("poll_weather");
+            assert!(
+                weather.services.urls().is_empty(),
+                "nothing is asked while the word is still being typed: {:?}",
+                weather.services.urls()
+            );
+            weather.step("poll_weather");
+            let asked = weather.services.urls();
+            assert_eq!(asked.len(), 1, "one look for the settled query: {asked:?}");
+            assert!(asked[0].contains("name=Am"), "{asked:?}");
+        }
+
+        phase the_hours_are_drawn_as_one_trend;
+        {
+            let weather = Weather::new(false);
+            weather.save("Berlin", 52.52, 13.405);
+            weather.refresh();
+            let berlin = weather.place("Berlin");
+            let page = weather.window("place_page", vec![Value::resource(&berlin)]);
+            let trend = of_kind(page.tree(), "ui.Sparkline")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the hours are drawn: {}", dump(page.tree())));
+            let samples = match trend.props.get("samples") {
+                Some(Value::List(samples)) => samples.len(),
+                other => panic!("samples are {other:?}"),
+            };
+            assert_eq!(samples, 24, "one point an hour, as the strip shows them");
+            let leading = match trend.props.get("leading_dot") {
+                Some(Value::Float(value)) => *value,
+                Some(Value::Int(value)) => f64::from(u32::try_from(*value).unwrap_or_default()),
+                Some(Value::Opt(Some(held))) => match &**held {
+                    Value::Float(value) => *value,
+                    Value::Int(value) => f64::from(u32::try_from(*value).unwrap_or_default()),
+                    other => panic!("the leading dot is {other:?}"),
+                },
+                other => panic!("the leading dot is {other:?}"),
+            };
+            assert!((leading - 20.0).abs() < 0.01, "the trend starts where the sky is: {leading}");
+            assert_eq!(text(trend, "unit"), "°");
+        }
+
+        phase the_air_says_what_it_is_doing;
+        {
+            let weather = Weather::new(false);
+            *weather.services.air.borrow_mut() = (500, String::new());
+            let berlin = weather.save("Berlin", 52.52, 13.405);
+            weather.save("Cairo", 30.0444, 31.2357);
+            // The read takes the places one at a time: the first is read while the second waits.
+            weather.step("refresh");
+            let loading = weather.window("place_page", vec![Value::resource(&berlin)]);
+            assert!(
+                drawn(&loading).iter().any(|text| text == "Reading the air…"),
+                "the air says it is on its way: {}",
+                dump(loading.tree())
+            );
+            assert!(
+                !of_kind(loading.tree(), "ui.Skeleton").is_empty(),
+                "and draws a skeleton while it waits"
+            );
+            weather.step("poll_weather");
+            let answered = weather.window("place_page", vec![Value::resource(&berlin)]);
+            assert!(
+                drawn(&answered)
+                    .iter()
+                    .any(|text| text == "No air-quality reading for this place."),
+                "the air service refused, and the page says there is no reading: {}",
+                dump(answered.tree())
             );
         }
     }

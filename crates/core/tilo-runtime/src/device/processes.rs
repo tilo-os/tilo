@@ -314,6 +314,8 @@ pub struct Processes {
     jobs: OnceLock<Arc<super::jobs::DeviceJobs>>,
     /// Where each engine job this device admitted runs, until it ends.
     engines: Mutex<engines::Engines>,
+    /// What makes the daemon line of each app's own process, once the daemon serves them.
+    own_lines: OnceLock<OwnLines>,
     /// The device's one wasm compiler: the cache of modules compiled ahead of time for this
     /// device, under the person's data directory. `None` when it cannot be made, and each
     /// module then runs on the interpreter in the process that gets it.
@@ -362,6 +364,7 @@ impl Processes {
             attests: OnceLock::new(),
             jobs: OnceLock::new(),
             engines: Mutex::default(),
+            own_lines: OnceLock::new(),
             compiler: OnceLock::new(),
         })
     }
@@ -448,6 +451,13 @@ impl Processes {
                 generation,
             }) > 0
         })
+    }
+
+    /// Hand the process of each app's own instances started from now on its daemon line, made by
+    /// `lines`: that process alone, never a task's host or a page's window, which run code that is
+    /// not the app's.
+    pub(crate) fn serve_own_lines(&self, lines: OwnLines) {
+        let _ = self.own_lines.set(lines);
     }
 
     /// Tell `told` what each app here plays, as its Playback moves, and stop telling the one
@@ -1239,11 +1249,28 @@ impl Processes {
         let socket = Arc::new(ours);
         self.tell_jobs_under(key, &socket);
         // A connection from this process is the app it runs, not the account that started it.
-        // The engine host runs no app: nothing that connects from it is admitted as one.
+        // Only the process of the app's own instances is the app's own: a task's host or a page's
+        // window runs code that is not the app's. The engine host runs no app: nothing that
+        // connects from it is admitted as one.
         if key.alone != Some(Alone::Engines)
             && let Some(attests) = self.attests.get()
         {
-            let _ = attests.record_started(started.pid, &key.app, &key.workspace);
+            let _ = if key.alone.is_none() {
+                attests.record_own_tilolang(started.pid, &key.app, &key.workspace)
+            } else {
+                attests.record_started(started.pid, &key.app, &key.workspace)
+            };
+        }
+        // The app's own process, and only it, is handed its daemon line, over the link alone
+        // ([`OwnLines`]): recorded first, so the line answers it from its first call.
+        if key.alone.is_none()
+            && let Some(lines) = self.own_lines.get()
+        {
+            let handed = lines(started.pid, &key.app, &key.workspace)
+                .and_then(|line| ToProcess::Daemon { line }.send(&socket));
+            if let Err(error) = handed {
+                tracing::warn!(%error, workspace = %key.workspace, app = %key.app, "an app's own tilolang process has no daemon line: it keeps and reads back no secret of its own");
+            }
         }
         tracing::info!(
             workspace = %key.workspace,
@@ -1423,6 +1450,12 @@ impl Processes {
         }
     }
 }
+
+/// What makes the daemon line of the process `pid` the daemon started to run `app`'s own
+/// instances in `workspace`: the daemon's end served as that app's own connection, and the end the
+/// process is handed (`daemon::own_lines`).
+pub(crate) type OwnLines =
+    Arc<dyn Fn(u32, &str, &str) -> std::io::Result<Descriptor> + Send + Sync>;
 
 /// What waits for a started host to end, and answers how it ended.
 type Wait = Box<dyn FnOnce() -> std::io::Result<std::process::ExitStatus> + Send>;
@@ -1774,6 +1807,8 @@ mod tests {
             request: InstanceRequest,
             window: bool,
             content: bool,
+            /// Whether the daemon handed it its line over the link before the instance.
+            daemon_line: bool,
         }
 
         /// Run as the process the test launcher starts: read the first message on the link the
@@ -1785,15 +1820,26 @@ mod tests {
                 return;
             };
             let link = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
-            let Some(ToProcess::Instance { request, fds }) = ToProcess::receive(&link).unwrap()
-            else {
-                panic!("the process is handed an instance first");
+            let mut daemon_line = false;
+            let (request, fds) = loop {
+                match ToProcess::receive(&link).unwrap() {
+                    Some(ToProcess::Daemon { line }) => {
+                        assert!(!daemon_line, "the line is handed once");
+                        daemon_line = true;
+                        // Said on the line, so the test reads that it is the daemon's end's.
+                        let mut line = std::os::unix::net::UnixStream::from(line);
+                        std::io::Write::write_all(&mut line, b"own\n").unwrap();
+                    }
+                    Some(ToProcess::Instance { request, fds }) => break (request, fds),
+                    other => panic!("the process is handed an instance first: {other:?}"),
+                }
             };
             let handed = Handed {
                 args: std::env::var("TILO_TEST_LAUNCHER_ARGS").unwrap(),
                 request: *request,
                 window: fds.window.is_some(),
                 content: fds.content.is_some(),
+                daemon_line,
             };
             std::fs::write(says, serde_json::to_vec(&handed).unwrap()).unwrap();
         }
@@ -1804,6 +1850,9 @@ mod tests {
             dir: tempfile::TempDir,
             processes: Arc<Processes>,
             _launcher: tilo_test_env::StandIn,
+            /// Each daemon line the device made: the app and workspace it was made for, and the
+            /// daemon's end of it.
+            lines: Arc<Mutex<Vec<(String, String, OwnedFd)>>>,
         }
 
         impl Device {
@@ -1836,10 +1885,23 @@ mod tests {
                         })
                     }),
                 );
+                let lines = Arc::new(Mutex::new(Vec::new()));
+                processes.serve_own_lines({
+                    let lines = Arc::clone(&lines);
+                    Arc::new(move |_pid, app: &str, workspace: &str| {
+                        let (ours, theirs) = runtime_portal::process_link::pair()?;
+                        lines
+                            .lock()
+                            .unwrap()
+                            .push((app.to_owned(), workspace.to_owned(), ours));
+                        Ok(theirs)
+                    })
+                });
                 Self {
                     dir,
                     processes,
                     _launcher: launcher,
+                    lines,
                 }
             }
 
@@ -1972,6 +2034,23 @@ mod tests {
                 handed.window && handed.content,
                 "the window's own connections reach the process"
             );
+            // The process of the app's own instances is handed its daemon line over its link,
+            // before its first instance, made for that app and workspace alone.
+            assert!(handed.daemon_line, "the app's own process holds its line");
+            let mut lines = device.lines.lock().unwrap();
+            let [(app, workspace, ours)] = &mut lines[..] else {
+                panic!("one line is made, for the one process");
+            };
+            assert_eq!((app.as_str(), workspace.as_str()), (NOTES, WORKSPACE));
+            let mut said = String::new();
+            std::io::BufRead::read_line(
+                &mut std::io::BufReader::new(std::os::unix::net::UnixStream::from(
+                    ours.try_clone().unwrap(),
+                )),
+                &mut said,
+            )
+            .unwrap();
+            assert_eq!(said, "own\n", "the process holds the other end of the line");
         }
 
         /// The desktop's media controls follow what the daemon's processes play over the shell's
@@ -2350,6 +2429,21 @@ mod tests {
         std::fs::write(handed, came.join("\n")).unwrap();
     }
 
+    /// A device whose daemon makes a line for each app's own process, counting the lines it made.
+    #[cfg(target_os = "linux")]
+    fn counting_lines(processes: &Processes) -> Arc<std::sync::atomic::AtomicUsize> {
+        let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        processes.serve_own_lines({
+            let made = Arc::clone(&made);
+            Arc::new(move |_pid, _app: &str, _workspace: &str| {
+                made.fetch_add(1, Ordering::SeqCst);
+                let (_ours, theirs) = runtime_portal::process_link::pair()?;
+                Ok(theirs)
+            })
+        });
+        made
+    }
+
     /// An agent task's host is started as every tilolang process here is, through the launcher's
     /// tilolang process kind, and granted less than an app's: its own storage, and nothing the
     /// workspace's apps kept on this device. It is handed its task and nothing after it, so it
@@ -2385,6 +2479,7 @@ mod tests {
             launcher,
             Box::new(|_, _| Err("no app is started here".to_owned())),
         );
+        let lines = counting_lines(&processes);
 
         let (_api, program) = std::os::unix::net::UnixStream::pair().expect("a program link");
         let apps = tilo_render_protocol::shm::sealed_blob("tilolang-apps", b"[]")
@@ -2447,6 +2542,11 @@ mod tests {
             "run-1",
             "the task was handed over the link, and nothing after it"
         );
+        assert_eq!(
+            lines.load(Ordering::SeqCst),
+            0,
+            "a task's host runs code that is not the app's: it gets no daemon line"
+        );
     }
 
     /// A view shown on a web page gets a window of its own, started through the launcher's
@@ -2491,6 +2591,7 @@ mod tests {
                 Box::new(move |app: &str| opened.lock().unwrap().push(app.to_owned()))
             },
         );
+        let lines = counting_lines(&processes);
 
         let (patch, mut instance) =
             std::os::unix::net::UnixStream::pair().expect("a patch connection");
@@ -2559,6 +2660,11 @@ mod tests {
                 "--page",
             ],
             "the launcher's tilolang process on the app's runtimes, granted nothing more"
+        );
+        assert_eq!(
+            lines.load(Ordering::SeqCst),
+            0,
+            "a page's window runs code that is not the app's own: it gets no daemon line"
         );
     }
 

@@ -6,13 +6,17 @@
 //! that link to every other process of the user, the store included. Such a process
 //! proves the identity instead.
 
+#[cfg(feature = "host-keyring")]
 use std::os::unix::ffi::OsStringExt;
 use std::sync::Mutex;
 
 use tilo_seal::secret_service::CallerKey;
 
+#[cfg(feature = "host-keyring")]
 const SERVICE: &str = "org.freedesktop.secrets";
+#[cfg(feature = "host-keyring")]
 const MANAGEMENT_PATH: &str = "/so/tilo/Secrets1";
+#[cfg(feature = "host-keyring")]
 const MANAGEMENT: &str = "so.tilo.Secrets1";
 
 static ARMED: Mutex<Option<CallerKey>> = Mutex::new(None);
@@ -28,11 +32,13 @@ pub fn arm(device_secret: &[u8]) {
     }
 }
 
+#[cfg(feature = "host-keyring")]
 fn dumpable() -> bool {
     // SAFETY: PR_GET_DUMPABLE takes no pointers and only reads a flag.
     unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) == 1 }
 }
 
+#[cfg(feature = "host-keyring")]
 fn key() -> Option<CallerKey> {
     if dumpable() {
         return None;
@@ -43,10 +49,12 @@ fn key() -> Option<CallerKey> {
 /// Whether this process identifies itself to the store by proof. A refusal is then
 /// worth one more attempt on a fresh connection, since a store that restarted has
 /// forgotten the proof.
+#[cfg(feature = "host-keyring")]
 pub(crate) fn in_use() -> bool {
     key().is_some()
 }
 
+#[cfg(feature = "host-keyring")]
 fn answer(key: &CallerKey, challenge: &[u8], caller: &str) -> Option<(Vec<u8>, Vec<u8>)> {
     // A process may always read its own link, dumpable or not.
     let program = std::fs::read_link("/proc/self/exe")
@@ -62,6 +70,7 @@ fn answer(key: &CallerKey, challenge: &[u8], caller: &str) -> Option<(Vec<u8>, V
 /// device key); a store that does not speak `so.tilo.Secrets1` (another
 /// Secret Service) answers with an error, and the caller carries on
 /// unproven.
+#[cfg(feature = "host-keyring")]
 pub(crate) fn prove_blocking(connection: &zbus::blocking::Connection) -> zbus::Result<bool> {
     let Some(key) = key() else {
         return Ok(false);
@@ -79,6 +88,7 @@ pub(crate) fn prove_blocking(connection: &zbus::blocking::Connection) -> zbus::R
     Ok(true)
 }
 
+#[cfg(feature = "host-keyring")]
 pub async fn prove(connection: &zbus::Connection) -> zbus::Result<bool> {
     let Some(key) = key() else {
         return Ok(false);

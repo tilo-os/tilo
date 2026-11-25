@@ -88,6 +88,8 @@ pub(crate) struct Instances {
     person: OnceLock<String>,
     /// The providers this device registered, whose packages every instance is handed.
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
+    /// What makes each app's own tilolang process its daemon line, once the daemon serves them.
+    own_lines: OnceLock<crate::device::processes::OwnLines>,
     made: Mutex<Vec<Made>>,
     next: AtomicU64,
 }
@@ -302,6 +304,7 @@ impl Instances {
             chosen: Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
             person: OnceLock::new(),
             provided: OnceLock::new(),
+            own_lines: OnceLock::new(),
             made: Mutex::default(),
             next: AtomicU64::new(1),
         }
@@ -330,6 +333,14 @@ impl Instances {
         let _ = self.provided.set(providers);
     }
 
+    /// Hand each app's own tilolang process started from now on its daemon line, made by `lines`.
+    pub(crate) fn serve_own_lines(&self, lines: crate::device::processes::OwnLines) {
+        let _ = self.own_lines.set(Arc::clone(&lines));
+        if let Some(processes) = self.processes.get() {
+            processes.serve_own_lines(lines);
+        }
+    }
+
     /// The tilolang processes, through the launcher found first.
     pub(crate) fn processes(&self) -> Result<&Arc<Processes>, String> {
         if let Some(processes) = self.processes.get() {
@@ -340,6 +351,9 @@ impl Instances {
             let processes = Processes::new(launcher).attesting(Arc::clone(&self.launched));
             if let Some(providers) = self.provided.get() {
                 processes.read_provided_from(providers.clone());
+            }
+            if let Some(lines) = self.own_lines.get() {
+                processes.serve_own_lines(Arc::clone(lines));
             }
             processes
         }))

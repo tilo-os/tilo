@@ -288,6 +288,7 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
         ToProcess::CancelJob { job } => tilolang_process::engines::stop(&job),
         ToProcess::JobsUnder(under) => tilolang_process::engines::jobs_under(under),
         ToProcess::Engine(job) => tilolang_process::engines::run(&job),
+        ToProcess::Daemon { line } => tilolang_process::daemon_line::keep(line),
         ToProcess::Finish => {}
         other @ (ToProcess::Window { .. } | ToProcess::Patch { .. }) => {
             tracing::error!(

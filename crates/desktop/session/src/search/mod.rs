@@ -366,6 +366,17 @@ struct PendingFind {
     /// deadline, and a source that never answers is cut off with what is in.
     answer: Option<FindAnswer>,
     due: ui::time::Instant,
+    /// Whether a source answered the stream at once while its own answer was still coming from
+    /// elsewhere (the device's index, asked over the daemon's link): the stream is asked again
+    /// once that answer is in, so the find reads it rather than the empty rows it gave first.
+    awaited: bool,
+}
+
+impl PendingFind {
+    /// Whether one of the find's sources still waits for an answer it asked for elsewhere.
+    fn source_waits(&self) -> bool {
+        self.sources.iter().any(Source::waiting)
+    }
 }
 
 /// Who a find was asked for, and so what its hits become when they are in.
@@ -978,24 +989,29 @@ impl SessionSearch {
             })
         };
         let stream = tilo_desktop_search::search_stream(needle, &refs, 0, &workers, &*used);
-        // What is in already answers at once; what still works comes on a later pass.
-        if stream.pending() {
-            let due = ui::time::now()
+        drop(refs);
+        // What is in already answers at once; what still works comes on a later pass, and so does
+        // what a source answered empty while its own answer was still coming from elsewhere.
+        let find = PendingFind {
+            stream,
+            sources,
+            workers,
+            used,
+            needle: typed,
+            workspace: workspace.map(str::to_owned),
+            answer: Some(answer),
+            due: ui::time::now()
                 .checked_add(within)
-                .unwrap_or_else(ui::time::now);
-            self.pending.borrow_mut().push(PendingFind {
-                stream,
-                sources,
-                workers,
-                used,
-                needle: typed,
-                workspace: workspace.map(str::to_owned),
-                answer: Some(answer),
-                due,
-            });
+                .unwrap_or_else(ui::time::now),
+            awaited: false,
+        };
+        if find.stream.pending() || find.source_waits() {
+            self.pending.borrow_mut().push(find);
             return;
         }
-        finish(answer, needle, &stream.rows());
+        if let Some(answer) = find.answer {
+            finish(answer, needle, &find.stream.rows());
+        }
     }
 
     /// Take up the finds whose answers are in, and those a source did not answer in time: called
@@ -1015,10 +1031,38 @@ impl SessionSearch {
                 .map(|source| source as &dyn Source)
                 .collect();
             let _ = find.stream.resume(&refs, &find.workers, &*find.used);
+            drop(refs);
             let overdue = ui::time::now() >= find.due;
+            if !overdue && find.source_waits() {
+                find.awaited = true;
+                kept.push(find);
+                continue;
+            }
             if find.stream.pending() && !overdue {
                 kept.push(find);
                 continue;
+            }
+            // A source's late answer is in: the stream is asked again, which that source now
+            // answers from what came, and the find is taken up once the new stream is in.
+            if find.awaited && !overdue {
+                find.awaited = false;
+                let refs: Vec<&dyn Source> = find
+                    .sources
+                    .iter()
+                    .map(|source| source as &dyn Source)
+                    .collect();
+                find.stream = tilo_desktop_search::search_stream(
+                    &find.needle,
+                    &refs,
+                    0,
+                    &find.workers,
+                    &*find.used,
+                );
+                drop(refs);
+                if find.stream.pending() {
+                    kept.push(find);
+                    continue;
+                }
             }
             let Some(answer) = find.answer.take() else {
                 continue;

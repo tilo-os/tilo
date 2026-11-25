@@ -7,13 +7,14 @@ use std::rc::Rc;
 
 use tilo_resource::replica::Replica;
 use tilo_resource::resource::Resource;
+use tilo_resource::{AppNamed, NoApp};
 use tilo_resource::{Edit, Invoke};
 use ui::tilo_actions::{ActionOutput, EncodedAction, ResourceSpec};
 
 use crate::resource::Imager;
 
 struct Kept {
-    replica: Replica<Imager>,
+    replica: Replica<Imager, AppNamed>,
     file: Option<PathBuf>,
     revision: u64,
 }
@@ -57,9 +58,9 @@ impl Store {
         Self::kept(Replica::new(), None)
     }
 
-    fn kept(replica: Replica<Imager>, file: Option<PathBuf>) -> Self {
+    fn kept(replica: Replica<Imager, NoApp>, file: Option<PathBuf>) -> Self {
         Self(Rc::new(RefCell::new(Kept {
-            replica,
+            replica: replica.in_app(crate::resource::APP_ID, "Imager"),
             file,
             revision: 0,
         })))

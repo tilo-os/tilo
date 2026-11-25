@@ -60,22 +60,6 @@ pub trait StateAuthority: Send + Sync {
 }
 
 impl EncryptedBackend {
-    pub fn open_system(
-        root: &Path,
-        owner: Owner,
-        authority: Arc<dyn StateAuthority>,
-    ) -> Result<Self> {
-        Self::open_authorized(root, owner, authority, || {
-            let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
-            if store.protection() != tilo_secrets::Protection::OsKeychain {
-                return Err(unavailable());
-            }
-            STATE_FORMAT
-                .load_or_create_system_key_in(true, &store)
-                .ok_or_else(unavailable)
-        })
-    }
-
     fn open_authorized(
         root: &Path,
         owner: Owner,
@@ -86,20 +70,6 @@ impl EncryptedBackend {
             return Err(unavailable());
         }
         Self::open_state(root, owner, lookup()?, Some(authority))
-    }
-
-    pub fn open_existing_in(
-        root: &Path,
-        owner: Owner,
-        store: &tilo_secrets::SecretStore,
-    ) -> Result<Self> {
-        if store.app_id() != "so.tilo.messaging-broker" {
-            return Err(unavailable());
-        }
-        let key = STATE_FORMAT
-            .load_or_create_system_key_in(true, store)
-            .ok_or_else(unavailable)?;
-        Self::open_with_key(root, owner, key)
     }
 
     pub fn open_with_key(root: &Path, owner: Owner, key: VaultKey) -> Result<Self> {

@@ -242,23 +242,28 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
         lounge.workspaces.settle(&mut governed).await.unwrap();
     }
     assert!(
-        state.lock().await.peer().publication().checkpoint_reached(
-            (APP, DOCUMENT),
-            (*envelope.author.as_bytes(), envelope.seq)
-        ),
+        state
+            .lock()
+            .await
+            .peer()
+            .publication()
+            .checkpoint_reached((APP, DOCUMENT), (*envelope.author.as_bytes(), envelope.seq)),
         "every device with the record's keys checked the compaction"
     );
     // A store retires a checked compaction's writes as the next frame reaches it: the member
     // writes on.
     seal_and_send_title(&lounge.member, &session, &lounge.workspace, "four");
-    tilo_test_env::within("the server drops the write the checked compaction covers", async {
-        while retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
-            .await
-            .contains(&second)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
+    tilo_test_env::within(
+        "the server drops the write the checked compaction covers",
+        async {
+            while retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
+                .await
+                .contains(&second)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
     .await;
     follows(&lounge.workspaces, &lounge.workspace, "four").await;
     assert_eq!(

@@ -11,7 +11,6 @@
 use std::collections::BTreeMap;
 
 use collab_types::WorkspaceId;
-use tilo_resource::AppNamed;
 use tilo_resource::{ActionCx, Collection, Id, Model, Refusal, resource};
 
 /// The app the list is a resource of.
@@ -264,6 +263,8 @@ pub fn kind() -> tilo_resource::ResourceKind {
 
 #[cfg(test)]
 mod tests {
+    use tilo_resource::AppNamed;
+
     use super::*;
 
     fn replica() -> tilo_resource::Replica<WorkspaceList, AppNamed> {

@@ -31,9 +31,11 @@ use tilo_lock::MutexRecover as _;
 /// governance change names as the one who decided it. `None` for a key that is
 /// no person.
 pub(super) fn actor_of(person: &str) -> Option<Actor> {
-    tilo_action_policy::PersonId::parse(person)
-        .ok()
-        .map(|person| Actor::Member(MemberId::person(person)))
+    tilo_failure::ignored!(
+        "a change decided by a key that is no person names no decider, and still applies",
+        tilo_action_policy::PersonId::parse(person).ok()
+    )
+    .map(|person| Actor::Member(MemberId::person(person)))
 }
 
 /// The grantee `by` as the governor's actor: a person, or the workspace's

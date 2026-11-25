@@ -1,6 +1,7 @@
 //! A press that needs the person's yes is asked where they pressed: the shell's confirm stands
 //! at the point of the window the press was in, its answer that does what they pressed for under
-//! that point, and that answer is the asked record's own `resolve`.
+//! that point, and that answer is the asked record's own `resolve`. Escape, a press off it and
+//! its own no each decline the record.
 
 use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{UiNode, Value};
@@ -106,27 +107,72 @@ tilo_test_env::scenario! {
     {
         let (host, called) = shell();
         let desktop = desktop(&host);
-        let share = desktop
-            .tree()
-            .of_kind("ui.Popover")
-            .into_iter()
-            .flat_map(|confirm| confirm.of_kind("ui.Button"))
-            .find(|node| node.props.get("label") == Some(&Value::text("Share")))
-            .expect("the confirm's Share")
-            .key
-            .clone();
-        desktop.press(&share).unwrap();
-        let calls = called.0.borrow();
-        let Some(Invocation::Action { action, args, .. }) = calls.last() else {
-            panic!("the confirm answered the record: {calls:?}");
-        };
-        assert_eq!(action.as_str(), "resolve", "{calls:?}");
+        desktop.press(&confirm_button(&desktop, "Share")).unwrap();
         assert_eq!(
-            args.iter()
-                .find(|(name, _)| name == "resolution")
-                .map(|(_, value)| value),
-            Some(&Value::text("approve")),
-            "pressing again at the same spot says yes"
+            answers(&called),
+            ["approve"],
+            "pressing again at the same spot says yes, and only that"
         );
     }
+
+    phase escape_or_a_press_outside_it_declines;
+    {
+        // Escape and a press off the panel are the popover's one dismissal.
+        let (host, called) = shell();
+        let desktop = desktop(&host);
+        let confirm = desktop.tree().of_kind("ui.Popover")[0].key.clone();
+        desktop.fire(&confirm, "dismiss").unwrap();
+        assert_eq!(
+            answers(&called),
+            ["decline"],
+            "closing the question says no to the record, and nothing of the call runs"
+        );
+    }
+
+    phase its_dont_allow_declines;
+    {
+        let (host, called) = shell();
+        let desktop = desktop(&host);
+        desktop
+            .press(&confirm_button(&desktop, "Don't allow"))
+            .unwrap();
+        assert_eq!(
+            answers(&called),
+            ["decline"],
+            "the confirm's own no says no to the record, and nothing of the call runs"
+        );
+    }
+}
+
+/// The key of the confirm's button labelled `label`.
+fn confirm_button(desktop: &tilolang_runtime::ViewInstance, label: &str) -> String {
+    desktop
+        .tree()
+        .of_kind("ui.Popover")
+        .into_iter()
+        .flat_map(|confirm| confirm.of_kind("ui.Button"))
+        .find(|node| node.props.get("label") == Some(&Value::text(label)))
+        .unwrap_or_else(|| panic!("the confirm's {label}"))
+        .key
+        .clone()
+}
+
+/// Every call the shell made, each the record's `resolve` with the resolution it gave: all that
+/// reached the workspace, which runs the asked call only on an approve.
+fn answers(called: &Called) -> Vec<String> {
+    called
+        .0
+        .borrow()
+        .iter()
+        .map(|call| {
+            let Invocation::Action { action, args, .. } = call else {
+                panic!("the shell called only the record's resolve: {call:?}");
+            };
+            assert_eq!(action.as_str(), "resolve", "{call:?}");
+            match args.iter().find(|(name, _)| name == "resolution") {
+                Some((_, Value::Text(resolution))) => resolution.clone(),
+                other => panic!("a resolution: {other:?}"),
+            }
+        })
+        .collect()
 }

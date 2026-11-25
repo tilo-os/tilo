@@ -1,6 +1,7 @@
 //! Window-independent projection of a managed record's historical states. The controller reads a
 //! rolled-back clone of the live Automerge document.
 
+#[cfg(feature = "model")]
 mod assets;
 
 /// Moves on whenever something reaches a History surface from outside a refresh of it: an asset or file
@@ -19,40 +20,70 @@ pub(crate) fn note_news() {
 }
 
 pub(crate) mod api;
+#[cfg(feature = "model")]
 pub mod capability;
+#[cfg(feature = "model")]
 pub mod coverage;
+#[cfg(feature = "model")]
 pub(crate) mod feed;
+#[cfg(feature = "model")]
 pub mod folder;
+#[cfg(feature = "model")]
 mod listing;
+#[cfg(feature = "model")]
 pub mod preview;
+#[cfg(feature = "model")]
 pub mod restore;
+#[cfg(feature = "model")]
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
+#[cfg(feature = "model")]
 use tilo_sort::CompactSort as _;
+#[cfg(feature = "model")]
 pub(crate) mod owner;
+#[cfg(feature = "model")]
 pub mod registration;
+#[cfg(feature = "model")]
 pub use owner::HistoryOwner;
+#[cfg(feature = "model")]
 pub(crate) mod canvas;
 pub(crate) mod frame;
+#[cfg(feature = "model")]
 pub(crate) mod frozen_root;
+#[cfg(feature = "model")]
 pub use frozen_root::{FrozenRootPreview, outline_preview};
+#[cfg(feature = "model")]
 pub(crate) mod host;
+#[cfg(feature = "model")]
 pub mod pending_controls;
+#[cfg(feature = "model")]
 pub use coverage::{HistoricalGap, HistoricalSupport, TypeHistory};
+#[cfg(feature = "model")]
 pub use preview::*;
+#[cfg(feature = "model")]
 pub use registration::*;
 
+#[cfg(feature = "model")]
 use std::collections::HashMap;
+#[cfg(feature = "model")]
 use std::fmt;
+#[cfg(feature = "model")]
 use std::rc::Rc;
+#[cfg(feature = "model")]
 use std::sync::Arc;
 
+#[cfg(feature = "model")]
 use automerge::transaction::Transactable;
+#[cfg(feature = "model")]
 use automerge::{AutoCommit, ChangeHash};
 
+#[cfg(feature = "model")]
 use crate::history_source::{CompareError, HistorySource, compare_entries};
+#[cfg(feature = "model")]
 use crate::permissions::MemberId;
+#[cfg(feature = "model")]
 use crate::{DocumentId, HistoryEntry, HistoryEntryId};
 
+#[cfg(feature = "model")]
 /// Full authority namespace for one historical resource.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HistoryResource {
@@ -62,6 +93,7 @@ pub struct HistoryResource {
     pub document_id: DocumentId,
 }
 
+#[cfg(feature = "model")]
 impl HistoryResource {
     pub fn new(
         profile_id: impl Into<String>,
@@ -78,6 +110,7 @@ impl HistoryResource {
     }
 }
 
+#[cfg(feature = "model")]
 /// Which exact frontier of a selected change or group is being previewed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreviewSide {
@@ -86,6 +119,7 @@ pub enum PreviewSide {
     After,
 }
 
+#[cfg(feature = "model")]
 /// Immutable Automerge bytes at one exact causal frontier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistorySnapshot {
@@ -95,6 +129,7 @@ pub struct HistorySnapshot {
     selection: Vec<HistoryEntryId>,
 }
 
+#[cfg(feature = "model")]
 impl HistorySnapshot {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -113,6 +148,7 @@ impl HistorySnapshot {
     }
 }
 
+#[cfg(feature = "model")]
 /// Opaque proof that a particular selected state was reviewed against a particular live frontier.
 /// Validation grants no authority and writes nothing; the host must separately recheck permissions
 /// before restoring.
@@ -125,6 +161,7 @@ pub struct RestoreReview {
     generation: u64,
 }
 
+#[cfg(feature = "model")]
 impl RestoreReview {
     pub fn resource(&self) -> &HistoryResource {
         &self.resource
@@ -143,6 +180,7 @@ impl RestoreReview {
     }
 }
 
+#[cfg(feature = "model")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryError {
     EmptySelection,
@@ -156,6 +194,7 @@ pub enum HistoryError {
     UncommittedLiveChanges,
 }
 
+#[cfg(feature = "model")]
 impl fmt::Display for HistoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -178,8 +217,10 @@ impl fmt::Display for HistoryError {
     }
 }
 
+#[cfg(feature = "model")]
 impl std::error::Error for HistoryError {}
 
+#[cfg(feature = "model")]
 struct SelectedPreview {
     selection: Vec<HistoryEntryId>,
     before: HistorySnapshot,
@@ -188,6 +229,7 @@ struct SelectedPreview {
     part: Option<SelectedPart>,
 }
 
+#[cfg(feature = "model")]
 /// Documents a window keeps beside its own, whose versions its History shows and restores: the parts
 /// of the app's chain. The workspace's history lists their changes with the window's own.
 pub trait HistoryParts {
@@ -213,6 +255,7 @@ pub trait HistoryParts {
     ) -> Result<(), String>;
 }
 
+#[cfg(feature = "model")]
 /// One part of a chain whose changes History lists: the chain's document id and the part's number.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryPart {
@@ -220,6 +263,7 @@ pub struct HistoryPart {
     pub index: u64,
 }
 
+#[cfg(feature = "model")]
 /// A version of a part to draw: the part, the frontier shown, the selected changes' frontiers before
 /// and after them, the window's document and where the person left the previous version.
 pub struct PartVersion<'a> {
@@ -231,6 +275,7 @@ pub struct PartVersion<'a> {
     pub view: PreviewView,
 }
 
+#[cfg(feature = "model")]
 /// The selected changes are a part's: the part, the window's document and the part's frontier when
 /// they were selected.
 struct SelectedPart {
@@ -239,6 +284,7 @@ struct SelectedPart {
     live_heads: Vec<ChangeHash>,
 }
 
+#[cfg(feature = "model")]
 pub struct HistoryController {
     resource: HistoryResource,
     /// The documents kept beside the resource, whose versions are shown when the selected changes
@@ -252,6 +298,7 @@ pub struct HistoryController {
     snapshots: HashMap<Vec<ChangeHash>, Arc<[u8]>>,
 }
 
+#[cfg(feature = "model")]
 impl HistoryController {
     /// A controller over `resource` that has observed the committed frontier `live_heads`.
     pub fn new(resource: HistoryResource, live_heads: Vec<ChangeHash>) -> Self {
@@ -556,6 +603,7 @@ impl HistoryController {
     }
 }
 
+#[cfg(feature = "model")]
 impl From<CompareError> for HistoryError {
     fn from(error: CompareError) -> Self {
         match error {
@@ -566,6 +614,7 @@ impl From<CompareError> for HistoryError {
     }
 }
 
+#[cfg(feature = "model")]
 fn committed_clone(live: &AutoCommit) -> AutoCommit {
     let mut projection = live.clone();
     if projection.pending_ops() != 0 {
@@ -574,33 +623,43 @@ fn committed_clone(live: &AutoCommit) -> AutoCommit {
     projection
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
     heads.compact_sort();
     heads
 }
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 pub(crate) mod host_tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 pub(crate) mod focus_tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 pub(crate) mod isolation_tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 pub(crate) mod integration_tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 pub(crate) use host_tests::preview as test_preview;
 
+#[cfg(feature = "model")]
 pub(crate) mod routes;
 
+#[cfg(feature = "model")]
 /// Opaque retained framework surface used only by owning runner traversal.
 #[doc(hidden)]
 /// A window's History as the windows that own one hand it to a visitor.
 pub(crate) type FrameworkHistorySurface = host::HistoryHost;
+#[cfg(feature = "model")]
 pub(crate) mod embedded;

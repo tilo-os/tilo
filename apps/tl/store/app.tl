@@ -145,6 +145,9 @@ type App (title: name) {
     updatable: Bool = false
     /// Why this computer cannot change it, in the source's words; empty when it can.
     trouble: Text = ""
+    /// Why the last change of it on this computer failed; empty until one does, and once a change
+    /// ends.
+    failed: Text = ""
 
     search {
         filter "Discover" = not bot and installed == "" (icon: .store)
@@ -175,6 +178,7 @@ type App (title: name) {
         hide bot_apps
         hide bot_connectors
         hide bot_appearance
+        hide failed
     }
 }
 
@@ -227,8 +231,14 @@ type Store {
     blocks: Collection<Block>
     /// What the last read of the sources came to.
     status: Text = ""
-    /// Why the last read of the sources failed, when it did.
+    /// Why reading the sources failed as a whole, when it did: a source that failed alone says so
+    /// where its apps are listed.
     trouble: Text = ""
+    /// Why Flathub's catalogue could not be read, when it could not.
+    flathub_trouble: Text = ""
+    /// Why a command that was no app's change could not be carried out: adding a repository,
+    /// reviewing a package, refreshing a report.
+    command_trouble: Text = ""
     /// The read running now, by the engine's job id.
     reading: Text = ""
     /// Whether this computer has Flatpak.
@@ -670,31 +680,35 @@ action change_done(s: Store, a: App, j: host.Job) {
     if j.state == .done {
         match json.decode<JobWords>(j.detail) {
             .ok(words) => {
+                a.failed = ""
                 s.status = words.status
                 read_app(s, a)
             }
             .err(why) => {
-                s.trouble = why
+                a.failed = why
             }
         }
     } else if j.state == .failed {
-        s.trouble = "{a.name}: {j.error}"
+        a.failed = j.error
         read_app(s, a)
     }
 }
 
 /// A job that changes the catalogue itself rather than one app, followed as the read is: its end
 /// reads the sources again, so a new repository or an update of everything lands.
-action begin_reading(s: Store, op: Text, ask: Text) {
+action begin_reading(s: Store, op: Text, ask: Text) -> Bool {
     if s.reading != "" {
-        return
+        return false
     }
     match engine.start(op, ask, done: j -> reading_done(s, j), progress: j -> reading_moved(s, j)) {
         .ok(job) => {
             s.reading = job
+            s.command_trouble = ""
+            true
         }
         .err(why) => {
-            s.trouble = why
+            s.command_trouble = why
+            false
         }
     }
 }
@@ -707,9 +721,10 @@ action begin(s: Store, a: App, op: Text, ask: Text) {
     match engine.start(op, ask, done: j -> change_done(s, a, j)) {
         .ok(job) => {
             a.job = job
+            a.failed = ""
         }
         .err(why) => {
-            s.trouble = why
+            a.failed = why
         }
     }
 }
@@ -723,11 +738,11 @@ action read_app(s: Store, a: App) {
     }
     match engine.call("one", json.encode(OneAsk(identity: a.identity))) {
         .err(why) => {
-            s.trouble = why
+            a.failed = why
         }
         .ok(text) => match json.decode<One>(text) {
             .err(why) => {
-                s.trouble = why
+                a.failed = why
             }
             .ok(one) => match one.item {
                 .some(text) => absorb_text(s, text),
@@ -745,11 +760,11 @@ action show_details(s: Store, a: App) uses web {
     }
     match engine.call("details", json.encode(OneAsk(identity: a.identity))) {
         .err(why) => {
-            s.trouble = why
+            a.failed = why
         }
         .ok(text) => match json.decode<Details>(text) {
             .err(why) => {
-                s.trouble = why
+                a.failed = why
             }
             .ok(d) => {
                 a.description = d.description
@@ -778,7 +793,7 @@ action show_details(s: Store, a: App) uses web {
                     match json.decode<Permission>(text) {
                         .ok(p) => { a.permissions.insert(p) }
                         .err(why) => {
-                            s.trouble = why
+                            a.failed = why
                         }
                     }
                 }
@@ -789,7 +804,7 @@ action show_details(s: Store, a: App) uses web {
                     match json.decode<Release>(text) {
                         .ok(r) => { a.releases.insert(r) }
                         .err(why) => {
-                            s.trouble = why
+                            a.failed = why
                         }
                     }
                 }
@@ -859,16 +874,17 @@ action read_flathub(s: Store) uses web {
         )
         if not answer.ok {
             if page == 1 {
-                s.status = "The apps of your workspace are read; Flathub could not be reached."
+                s.flathub_trouble = "Flathub did not answer. Its apps are missing from the catalogue."
             }
             return
         }
         match json.parse(answer.text()) {
             .err(why) => {
-                s.trouble = std.say("Flathub's catalogue could not be read: {why}")
+                s.flathub_trouble = std.say("Flathub's catalogue could not be read: {why}")
                 return
             }
             .ok(root) => {
+                s.flathub_trouble = ""
                 last = number_at(root, "totalPages").to_int()
                 for hit in list_at(root, "hits") {
                     if let item = flathub_item(s, hit) { absorb_text(s, json.encode(item)) }
@@ -935,7 +951,7 @@ action read_flathub_details(s: Store, a: App) uses web {
     let language = locale_language()
     let appstream = web.get("https://flathub.org/api/v2/appstream/{a.identity}?locale={language}")
     if not appstream.ok {
-        s.trouble = std.say("Flathub did not answer for {a.name}")
+        a.failed = std.say("Flathub did not answer for {a.name}")
         return
     }
     let summary = web.get("https://flathub.org/api/v2/summary/{a.identity}")
@@ -968,7 +984,7 @@ action read_flathub_details(s: Store, a: App) uses web {
             match json.decode<Permission>(text) {
                 .ok(p) => { a.permissions.insert(p) }
                 .err(why) => {
-                    s.trouble = why
+                    a.failed = why
                 }
             }
         }
@@ -979,13 +995,13 @@ action read_flathub_details(s: Store, a: App) uses web {
             match json.decode<Release>(text) {
                 .ok(r) => { a.releases.insert(r) }
                 .err(why) => {
-                    s.trouble = why
+                    a.failed = why
                 }
             }
         }
         a.details_read = true
     } else {
-        s.trouble = std.say("Flathub's answer for {a.name} could not be read")
+        a.failed = std.say("Flathub's answer for {a.name} could not be read")
     }
 }
 
@@ -1364,7 +1380,7 @@ action absorb_text(s: Store, text: Text) -> Option<App> {
 action absorb_remote_text(s: Store, text: Text) {
     match json.decode<Item>(text) {
         .err(why) => {
-            s.trouble = why
+            s.flatpak_trouble = why
         }
         .ok(item) => {
             if let known = s.remotes.find(r -> r.name == item.identity) {
@@ -1613,7 +1629,7 @@ action block_app(s: Store, a: App) (label: "Block app", icon: .ban) {
     s.blocks.insert(Block(identity: a.identity))
     match engine.call("block", json.encode(BlockAsk(identity: a.identity, blocked: true))) {
         .err(why) => {
-            s.trouble = why
+            s.command_trouble = why
         }
         .ok(_) => {}
     }
@@ -1626,7 +1642,7 @@ action unblock_app(s: Store, a: App) (label: "Unblock", icon: .circle_check) {
     if let b = block { s.blocks.remove(b) }
     match engine.call("block", json.encode(BlockAsk(identity: a.identity, blocked: false))) {
         .err(why) => {
-            s.trouble = why
+            s.command_trouble = why
         }
         .ok(_) => {}
     }
@@ -1650,15 +1666,15 @@ action import_package(s: Store, file: File) -> host.Resource (
         json.encode(PackageAsk(file: file.url, name: file.name, size: file.size)),
     ) {
         .err(why) => {
-            s.trouble = why
+            s.command_trouble = why
         }
         .ok(text) => match json.decode<Review>(text) {
             .err(why) => {
-                s.trouble = why
+                s.command_trouble = why
             }
             .ok(review) => {
                 if review.trouble != "" {
-                    s.trouble = review.trouble
+                    s.command_trouble = review.trouble
                 } else if let a = absorb_text(s, review.item) {
                     s.reviewed_root = review.root
                     s.reviewed_app = a.identity
@@ -1711,15 +1727,15 @@ action open_reference(s: Store, file: File) {
         json.encode(PackageAsk(file: file.url, name: file.name, size: file.size)),
     ) {
         .err(why) => {
-            s.trouble = why
+            s.command_trouble = why
         }
         .ok(text) => match json.decode<Review>(text) {
             .err(why) => {
-                s.trouble = why
+                s.command_trouble = why
             }
             .ok(review) => {
                 if review.trouble != "" {
-                    s.trouble = review.trouble
+                    s.command_trouble = review.trouble
                 } else if absorb_text(s, review.item) != .none {
                     s.status = "Opened a Flatpak reference."
                 }
@@ -1743,7 +1759,7 @@ action open_link(s: Store, link: Text) -> host.Resource {
         if let a = s.apps.find(x -> x.identity == named) {
             return a
         }
-        s.trouble = "No app “{named}” is in this catalogue yet."
+        s.command_trouble = "No app “{named}” is in this catalogue yet."
         return s
     }
     let runtime = link_after(link, "tilo-store:runtime/")
@@ -1751,7 +1767,7 @@ action open_link(s: Store, link: Text) -> host.Resource {
         if let a = s.apps.find(x -> x.identity == runtime or x.identity == "runtime:{runtime}") {
             return a
         }
-        s.trouble = "No runtime “{runtime}” is in this catalogue yet."
+        s.command_trouble = "No runtime “{runtime}” is in this catalogue yet."
     }
     s
 }
@@ -1763,12 +1779,12 @@ action review_runtime(s: Store, runtime: Text, registry: Text = "") -> Option<Ap
 ) {
     match engine.call("runtime", json.encode(RuntimeAsk(runtime: runtime, registry: registry))) {
         .err(why) => {
-            s.trouble = why
+            s.command_trouble = why
             return .none
         }
         .ok(text) => match json.decode<One>(text) {
             .err(why) => {
-                s.trouble = why
+                s.command_trouble = why
                 return .none
             }
             .ok(one) => match one.item {
@@ -1776,7 +1792,7 @@ action review_runtime(s: Store, runtime: Text, registry: Text = "") -> Option<Ap
                     return absorb_text(s, text)
                 }
                 .none => {
-                    s.trouble = "No enabled repository offers the required runtime for this computer."
+                    s.command_trouble = "No enabled repository offers the required runtime for this computer."
                     return .none
                 }
             },
@@ -1841,15 +1857,17 @@ action submit_report(r: Report) (label: "Submit report", icon: .send) {
     let st = root Store
     let prepared = prepare_report(st, r, false)
     if prepared.trouble != "" or prepared.operation == "" {
-        st.trouble = prepared.trouble
+        st.command_trouble = prepared.trouble
         return
     }
-    begin_reading(
+    // A draft stays a draft until it is on its way: only a started send says it was.
+    if begin_reading(
         st,
         "submit-report",
         json.encode(SendAsk(identity: r.identity, operation: prepared.operation, note: r.note)),
-    )
-    r.status = "Submitted, awaiting verified status"
+    ) {
+        r.status = "Submitted, awaiting verified status"
+    }
 }
 
 /// Appeals a decision about an app.
@@ -1877,15 +1895,15 @@ action refresh_status(s: Store, r: Report) (label: "Refresh status", icon: .refr
         json.encode(StatusAsk(identity: r.identity, case: r.case, registry: r.registry)),
     ) {
         .err(why) => {
-            s.trouble = why
+            s.command_trouble = why
         }
         .ok(text) => match json.decode<Case>(text) {
             .err(why) => {
-                s.trouble = why
+                s.command_trouble = why
             }
             .ok(read) => {
                 if read.trouble != "" {
-                    s.trouble = "Registry request failed: {read.trouble}"
+                    s.command_trouble = "Registry request failed: {read.trouble}"
                 } else {
                     r.status = read.status
                     s.status = "Moderation status refreshed: {read.case} is {read.status}."

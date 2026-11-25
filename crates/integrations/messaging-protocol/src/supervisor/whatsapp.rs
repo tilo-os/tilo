@@ -76,25 +76,6 @@ impl WhatsappBootstrap {
         authority.check()?;
         Ok(bootstrap)
     }
-    /// Open existing OS-keychain ownership on the native supervisor worker.
-    /// No key is provisioned and no weaker store or ambient account is used.
-    pub async fn open_system(
-        root: &std::path::Path,
-        owner: crate::journal::Owner,
-        network: Network,
-        authority: Arc<dyn super::AccountAuthority>,
-    ) -> Result<Self, SendError> {
-        if !root.is_absolute() {
-            return Err(SendError::InvalidRequest);
-        }
-        let backend = crate::whatsapp_store::EncryptedBackend::open_system(
-            root,
-            owner,
-            Arc::new(StateGrant(authority)),
-        )
-        .map_err(|_| SendError::Unavailable)?;
-        Self::build(backend, network).await
-    }
     /// Build with already owned encrypted ownership and supplied native transports.
     /// No connection, login, grant or key is created. Linking is a separate
     /// explicit user operation on the native host's returned client.

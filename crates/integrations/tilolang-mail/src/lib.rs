@@ -121,7 +121,7 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
     // The session hands its account sign-ins before any reader.
     let sign_ins = match origin_connector::receive(&socket) {
         Ok(Some(Handed::SignIns(sign_ins))) => sign_ins,
-        Ok(Some(Handed::Reader(_))) => {
+        Ok(Some(Handed::Reader(_) | Handed::Actions(_))) => {
             return Err("the session handed the mail connector no account sign-ins".to_owned());
         }
         Ok(None) => return Ok(()),

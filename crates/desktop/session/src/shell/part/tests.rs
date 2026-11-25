@@ -62,7 +62,7 @@ const WORKSPACE_NAME: &str = "Name a new workspace";
 fn click(part: &mut ShellPart, name: &str) {
     let (x, y, w, h) = part
         .control_bounds(name)
-        .unwrap_or_else(|| panic!("the bar shows {name}"));
+        .unwrap_or_else(|| panic!("the bar shows {name}: {:?}", part.accessible_labels()));
     part.pointer_motion(x + w / 2.0, y + h / 2.0);
     part.prepare_frame();
     part.pointer_button(0x110, true);
@@ -1014,7 +1014,7 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
             part.prepare_frame();
             part.draw();
         }
-        click(&mut part, "Close");
+        click(&mut part, "Close this window");
         assert_eq!(
             link.asked.borrow().front().cloned(),
             Some(Ask {
@@ -1026,7 +1026,7 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
             "with strips {strips:?}"
         );
         assert!(
-            part.control_bounds("Close").is_none(),
+            part.control_bounds("Close this window").is_none(),
             "the menu closed with strips {strips:?}"
         );
     }
@@ -1060,12 +1060,13 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
     };
     click(&mut part, item);
     assert!(part.refusals().is_empty(), "{:?}", part.refusals());
-    let asked = link
-        .asked
-        .borrow()
-        .front()
-        .cloned()
-        .expect("the move is asked");
+    let asked = link.asked.borrow().front().cloned().unwrap_or_else(|| {
+        let refusals = format!("{:?}", part.refusals());
+        panic!(
+            "the move is asked: refusals {refusals}, showing {:?}",
+            part.accessible_labels()
+        )
+    });
     assert_eq!(
         (asked.resource.as_str(), asked.action.as_str()),
         ("desktop:chrome", "move-tab")
@@ -1156,7 +1157,14 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         part.prepare_frame();
         part.draw();
     }
-    click(&mut part, "Search everywhere for quarterly");
+    // Enter on what was typed, with nothing here it names: the platform's search for it.
+    for pressed in [true, false] {
+        tilo_session_core::surface::ShellSurface::key(
+            &mut part,
+            &super::tests_support::key(0xff0d, pressed),
+        );
+        part.prepare_frame();
+    }
     assert_eq!(
         link.asked.borrow().front().cloned(),
         Some(Ask {
@@ -1308,7 +1316,7 @@ fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
         "the bar names the strip: {labels:?}"
     );
     assert!(
-        labels.iter().any(|label| label == "Pat"),
+        labels.iter().any(|label| label == "Pat: open your card"),
         "the bar shows the person: {labels:?}"
     );
 }

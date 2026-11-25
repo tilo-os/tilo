@@ -50,11 +50,15 @@ impl OwnProcess {
             ))
         };
         match daemon.apps().process_of(self.pid).ok_or_else(gone)? {
-            ProcessOf::Started { app, workspace }
-                if app == self.app && workspace == self.workspace =>
-            {
-                Ok(AppProcess::Tilolang)
-            }
+            ProcessOf::Started {
+                app,
+                workspace,
+                own,
+            } if app == self.app && workspace == self.workspace => Ok(if own {
+                AppProcess::OwnTilolang
+            } else {
+                AppProcess::Tilolang
+            }),
             ProcessOf::Launched {
                 app,
                 workspace,
@@ -99,6 +103,7 @@ impl ActionProvider for OwnProcess {
         let find = tilo_actions::remote::person_vault::is_find(&request.target);
         let call = tilo_actions::remote::person_vault::is_web_call(&request.target);
         let keep = tilo_actions::remote::person_vault::is_keep(&request.target);
+        let device_key = tilo_actions::remote::person_vault::is_device_key(&request.target);
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
@@ -119,6 +124,15 @@ impl ActionProvider for OwnProcess {
                 workspaces
                     .web_call_to((&app, &workspace), &process, &request)
                     .await
+            } else if device_key {
+                workspaces
+                    .device_key_for((&app, &workspace), &process, &request)
+                    .await
+                    .and_then(|key| {
+                        serde_json::to_value(&key).map_err(|_| ActionCallError::Unavailable {
+                            reason: "the device key could not be answered".into(),
+                        })
+                    })
             } else if keep {
                 workspaces
                     .keep_for((&app, &workspace), &process, &request)
@@ -160,8 +174,8 @@ impl ActionProvider for OwnProcess {
     }
 }
 
-/// Whether `frame` is a release, a find, a web call or a keep this connection's own process asks
-/// for, the ways an app's held connection reaches its vault items, or one of the page login actions a
+/// Whether `frame` is a release, a find, a web call, a keep or a device key this connection's own
+/// process asks for, the ways an app's held connection reaches its vault items, or one of the page login actions a
 /// window of the app's own asks for its page ([`tilo_actions::remote::person_vault::is_page_login`]).
 pub(crate) fn is_answered_for_this_process(
     frame: &tilo_actions::remote::RemoteActionFrame,
@@ -173,6 +187,7 @@ pub(crate) fn is_answered_for_this_process(
                 || tilo_actions::remote::person_vault::is_find(&request.target)
                 || tilo_actions::remote::person_vault::is_web_call(&request.target)
                 || tilo_actions::remote::person_vault::is_keep(&request.target)
+                || tilo_actions::remote::person_vault::is_device_key(&request.target)
                 || tilo_actions::remote::person_vault::is_page_login(&request.target)
     )
 }

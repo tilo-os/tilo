@@ -27,25 +27,36 @@ async fn heads(workspaces: &Workspaces, workspace: &str) -> Vec<automerge::Chang
         .unwrap_or_default()
 }
 
-/// Every governance change committed past `since`, as the change names it: its
-/// stamp and the time its commit carries.
-async fn stamped(
-    workspaces: &Workspaces,
-    workspace: &str,
-    since: &[automerge::ChangeHash],
-) -> Vec<(collab_types::Stamp, i64)> {
+/// Every named governance change the workspace lists
+/// ([`tilo_peer_state::workspace::base::named_changes`]): those its bases
+/// kept, then those of its history since.
+async fn named(workspaces: &Workspaces, workspace: &str) -> Vec<(collab_types::Stamp, i64)> {
     let state = workspaces
         .state(workspace)
         .await
         .expect("the workspace is held");
-    let changes = state.workspace_changes_since(since);
-    changes
+    state
+        .admitted_workspace()
+        .map(tilo_peer_state::workspace::base::named_changes)
+        .unwrap_or_default()
         .into_iter()
-        .filter_map(|bytes| {
-            let change = AmChange::from_bytes(bytes).ok()?;
-            Some((collab_types::Stamp::of(&change)?, change.timestamp()))
-        })
+        .filter_map(|kept| Some((collab_types::Stamp::of_message(&kept.message)?, kept.time)))
         .collect()
+}
+
+/// Every named governance change made after the first `since` the workspace
+/// listed, as the change names it: its stamp and the time its commit carries.
+async fn stamped(
+    workspaces: &Workspaces,
+    workspace: &str,
+    since: usize,
+) -> Vec<(collab_types::Stamp, i64)> {
+    named(workspaces, workspace).await.split_off(since)
+}
+
+/// How many named governance changes the workspace lists now.
+async fn listed(workspaces: &Workspaces, workspace: &str) -> usize {
+    named(workspaces, workspace).await.len()
 }
 
 /// The person whose root is `root` (a user key), as a stamp names them.
@@ -76,25 +87,11 @@ fn assert_one(stamps: &[(collab_types::Stamp, i64)], verb: &str, by: &Actor, sta
     );
 }
 
-/// A workspace of `workspaces`, administered once so its document stops
-/// starting over: the first administration of a workspace writes its document
-/// as a fresh base, which holds the change's state and none of its history.
-async fn made_workspace(workspaces: &Workspaces, owner: &DeviceCert, name: &str) -> String {
-    let workspace = workspaces.create(name).await.unwrap().workspace;
-    workspaces
-        .add_member(
-            &workspace,
-            owner,
-            AddMemberRequest {
-                request_id: [250; 32],
-                user_public_key: [250; 32],
-                place: MemberPlace::Role(Role::Viewer),
-                name: None,
-            },
-        )
-        .await
-        .unwrap();
-    workspace
+/// A new workspace of `workspaces`, never administered: its first
+/// administration starts its document over from a base, which keeps the
+/// action it names.
+async fn made_workspace(workspaces: &Workspaces, name: &str) -> String {
+    workspaces.create(name).await.unwrap().workspace
 }
 
 #[tokio::test]
@@ -110,8 +107,8 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
     let by = actor(owner.user_public_key);
     let target = [9u8; 32];
 
-    let workspace = made_workspace(&workspaces, &owner, "Added").await;
-    let before = heads(&workspaces, &workspace).await;
+    let workspace = made_workspace(&workspaces, "Added").await;
+    let before = listed(&workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .add_member(
@@ -127,13 +124,13 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, &before).await,
+        &stamped(&workspaces, &workspace, before).await,
         governance::ADD_MEMBER,
         &by,
         started,
     );
 
-    let before = heads(&workspaces, &workspace).await;
+    let before = listed(&workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .set_member_role(
@@ -148,13 +145,13 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, &before).await,
+        &stamped(&workspaces, &workspace, before).await,
         governance::SET_ROLE,
         &by,
         started,
     );
 
-    let before = heads(&workspaces, &workspace).await;
+    let before = listed(&workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .remove_member(
@@ -168,13 +165,13 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, &before).await,
+        &stamped(&workspaces, &workspace, before).await,
         governance::REMOVE_MEMBER,
         &by,
         started,
     );
 
-    let workspace = made_workspace(&workspaces, &owner, "Banned").await;
+    let workspace = made_workspace(&workspaces, "Banned").await;
     let banned = [10u8; 32];
     workspaces
         .add_member(
@@ -189,7 +186,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         )
         .await
         .unwrap();
-    let before = heads(&workspaces, &workspace).await;
+    let before = listed(&workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .ban_member(
@@ -204,7 +201,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .unwrap();
     // A ban is one action across two governance changes: the removal, then
     // the block that keeps the person out. Both name the ban.
-    let stamps = stamped(&workspaces, &workspace, &before).await;
+    let stamps = stamped(&workspaces, &workspace, before).await;
     assert!(
         (1..=2).contains(&stamps.len()),
         "a ban is one removal and its block, got {stamps:?}"
@@ -216,7 +213,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         assert!(*time >= started, "{time} < {started}");
     }
 
-    let before = heads(&workspaces, &workspace).await;
+    let before = listed(&workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .unban_member(
@@ -230,7 +227,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, &before).await,
+        &stamped(&workspaces, &workspace, before).await,
         governance::UNBAN,
         &by,
         started,
@@ -245,7 +242,7 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let workspace = made_workspace(&workspaces, &owner, "Moderated").await;
+    let workspace = made_workspace(&workspaces, "Moderated").await;
     let person = [11u8; 32];
     workspaces
         .add_member(
@@ -260,7 +257,7 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
         )
         .await
         .unwrap();
-    let before = heads(&workspaces, &workspace).await;
+    let before = listed(&workspaces, &workspace).await;
     workspaces
         .ban_member(
             &workspace,
@@ -283,9 +280,12 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
         )
         .await
         .unwrap();
-    let stamps = stamped(&workspaces, &workspace, &before).await;
+    let stamps = stamped(&workspaces, &workspace, before).await;
     // The two changes a ban makes name it; lifting it names the unban after.
-    let mut verbs: Vec<&str> = stamps.iter().map(|(stamp, _)| stamp.verb.as_str()).collect();
+    let mut verbs: Vec<&str> = stamps
+        .iter()
+        .map(|(stamp, _)| stamp.verb.as_str())
+        .collect();
     verbs.dedup();
     assert_eq!(
         verbs,
@@ -306,9 +306,10 @@ async fn a_refused_member_action_stamps_no_members_change() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let workspace = made_workspace(&workspaces, &owner, "Refused").await;
+    let workspace = made_workspace(&workspaces, "Refused").await;
     let (_, stranger) = guest_device();
     let before = heads(&workspaces, &workspace).await;
+    let listed_before = listed(&workspaces, &workspace).await;
 
     // Someone the workspace has never let in cannot move its people, ban one
     // or remove one: the change is refused before any is written.
@@ -337,7 +338,9 @@ async fn a_refused_member_action_stamps_no_members_change() {
     assert!(refused.is_err(), "a stranger bans nobody");
 
     assert!(
-        stamped(&workspaces, &workspace, &before).await.is_empty(),
+        stamped(&workspaces, &workspace, listed_before)
+            .await
+            .is_empty(),
         "a refused change is no change, and appears in no feed"
     );
     assert_eq!(
@@ -345,5 +348,106 @@ async fn a_refused_member_action_stamps_no_members_change() {
         before,
         "the workspace's governance stands where it did"
     );
+    server.shutdown().await;
+}
+
+/// The named changes `peer`'s governance lists, as each names its action.
+fn listed_by(peer: &tilo_peer_state::StatePeer) -> Vec<(collab_types::Stamp, i64)> {
+    peer.admitted_workspace()
+        .map(tilo_peer_state::workspace::base::named_changes)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|kept| Some((collab_types::Stamp::of_message(&kept.message)?, kept.time)))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_base_keeps_every_action_the_history_before_it_took() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let by = actor(owner.user_public_key);
+    let workspace = made_workspace(&workspaces, "Kept").await;
+    let founded = listed(&workspaces, &workspace).await;
+    let (first, second) = ([21u8; 32], [22u8; 32]);
+    let add = |request: u8, person: [u8; 32]| AddMemberRequest {
+        request_id: [request; 32],
+        user_public_key: person,
+        place: MemberPlace::Role(Role::Editor),
+        name: None,
+    };
+    workspaces
+        .add_member(&workspace, &owner, add(1, first))
+        .await
+        .unwrap();
+    workspaces
+        .remove_member(
+            &workspace,
+            &owner,
+            RemoveMemberRequest {
+                request_id: [2; 32],
+                user_public_key: first,
+            },
+        )
+        .await
+        .unwrap();
+    workspaces
+        .add_member(&workspace, &owner, add(3, second))
+        .await
+        .unwrap();
+    let held = workspaces
+        .state(&workspace)
+        .await
+        .expect("the workspace is held");
+    let before = listed_by(&held);
+
+    // Someone new after a withdrawal: the document starts over, so the one
+    // just added never receives what was withdrawn.
+    let mut rebased = held.clone();
+    let generation = |peer: &tilo_peer_state::StatePeer| {
+        peer.admitted_workspace()
+            .map_or(0, tilo_peer_state::workspace::base::generation)
+    };
+    assert!(
+        rebased.rebase_workspace().unwrap(),
+        "the document starts over"
+    );
+    assert!(
+        generation(&rebased) > generation(&held),
+        "from a newer base"
+    );
+    let base = rebased
+        .admitted_workspace()
+        .unwrap()
+        .clone()
+        .get_changes(&[]);
+    assert_eq!(base.len(), 1, "a base holds none of the history before it");
+    assert!(
+        base[0].message().is_none(),
+        "the base itself names no action"
+    );
+    assert_eq!(
+        listed_by(&rebased),
+        before,
+        "every action before the base is still listed, once and in order"
+    );
+
+    let kept: Vec<&(collab_types::Stamp, i64)> = before.iter().skip(founded).collect();
+    let verbs: Vec<&str> = kept.iter().map(|(stamp, _)| stamp.verb.as_str()).collect();
+    assert_eq!(
+        verbs,
+        [
+            governance::ADD_MEMBER,
+            governance::REMOVE_MEMBER,
+            governance::ADD_MEMBER
+        ],
+        "{kept:?}"
+    );
+    for (stamp, _) in &kept {
+        assert_eq!(stamp.invoker, collab_types::Stamp::by(&by), "{stamp:?}");
+    }
+    let times: Vec<i64> = kept.iter().map(|(_, time)| *time).collect();
+    assert!(times.windows(2).all(|pair| pair[0] <= pair[1]), "{times:?}");
     server.shutdown().await;
 }

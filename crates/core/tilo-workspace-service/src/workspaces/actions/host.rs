@@ -1702,6 +1702,8 @@ mod branch;
 mod calendars_turn_tests;
 #[cfg(test)]
 mod connections_tests;
+#[cfg(all(test, feature = "agents"))]
+mod device_key_tests;
 #[cfg(test)]
 mod formats_tests;
 #[cfg(test)]

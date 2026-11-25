@@ -3,9 +3,9 @@
 
 use super::*;
 use crate::model::{Filesystem, SourceKind, sample_recent_sources, sample_source};
-use tilo_resource::{Edit, Replica};
+use tilo_resource::{AppNamed, Edit, Replica};
 
-fn edit(imager: &mut Replica<Imager>, edit: &Edit<Imager>) -> Result<(), String> {
+fn edit(imager: &mut Replica<Imager, AppNamed>, edit: &Edit<Imager>) -> Result<(), String> {
     let invoke = Invoke::edit(edit).map_err(|error| error.to_string())?;
     imager
         .apply(invoke)
@@ -13,13 +13,13 @@ fn edit(imager: &mut Replica<Imager>, edit: &Edit<Imager>) -> Result<(), String>
         .map_err(|error| error.to_string())
 }
 
-fn review(imager: &mut Replica<Imager>, source: &Source) {
+fn review(imager: &mut Replica<Imager, AppNamed>, source: &Source) {
     imager
         .apply(Imager::SELECT_SOURCE.with(source.clone()))
         .unwrap();
 }
 
-fn recent_paths(imager: &Replica<Imager>) -> Vec<String> {
+fn recent_paths(imager: &Replica<Imager, AppNamed>) -> Vec<String> {
     imager
         .state()
         .unwrap()
@@ -34,7 +34,7 @@ tilo_test_env::scenario! {
 
     phase a_new_record_starts_with_empty_records;
     {
-        let imager = Replica::<Imager>::new();
+        let imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
         let state = imager.state().unwrap();
         assert!(state.source.is_none());
         assert!(state.recent.is_empty());
@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
 
     phase profile_field_edits_set_one_field_and_store_no_secret;
     {
-        let mut imager = Replica::<Imager>::new();
+        let mut imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
         let profile = Imager::paths().profile;
         for change in [
             profile.hostname.replace("lab01"),
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
 
     phase reviewing_images_keeps_them_in_recency_order;
     {
-        let mut imager = Replica::<Imager>::new();
+        let mut imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
         let [tilo, fedora, arch]: [Source; 3] = sample_recent_sources().try_into().unwrap();
         assert!(
             imager.apply(Imager::CLEAR_SOURCE.with(())).is_err(),
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
 
     phase concurrent_edits_converge;
     {
-        let mut ours = Replica::<Imager>::new();
+        let mut ours = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
         review(&mut ours, &sample_source());
         let mut theirs = ours.fork();
         let profile = Imager::paths().profile;
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
 
     phase an_agents_changes_render_as_the_apps_sentences;
     {
-        let mut imager = Replica::<Imager>::new().as_agent_for("claude", "ada");
+        let mut imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model").as_agent_for("claude", "ada");
         review(&mut imager, &sample_source());
         let profile = Imager::paths().profile;
         for change in [

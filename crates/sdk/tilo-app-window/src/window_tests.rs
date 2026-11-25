@@ -1007,6 +1007,68 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
     }]
 }
 
+/// A key that presses a control says where in the window that control stands: a question the
+/// call it makes raises stands there, as one a click raises stands where the click was. A key the
+/// window passes to the control the keyboard is in says where that control stands.
+#[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a control's place in a window is a few thousand pixels at most"
+)]
+fn a_key_that_presses_a_control_says_where_the_control_stands() {
+    const DECLARED: u32 = 41;
+    const FOCUSED: u32 = 42;
+    let point = |rect: ui::kurbo::Rect| {
+        let centre = rect.center();
+        tilo_actions::remote::asked::PressPoint {
+            x: centre.x.round() as i32,
+            y: centre.y.round() as i32,
+        }
+    };
+    let mut archive = UiNode::empty("ui.Button", "archive");
+    archive
+        .props
+        .insert("label".to_owned(), Value::text("Archive"));
+    archive
+        .props
+        .insert("key".to_owned(), Value::text("Ctrl+Enter"));
+    archive
+        .events
+        .insert("press".to_owned(), wire::Event::default());
+    let mut page = UiNode::empty("stack", "page");
+    page.children.push(archive);
+    let (mut app, mut harness) = drawn(&[ToUi::Open {
+        level: Level::Root,
+        target: doc(),
+        tree: page,
+        front: None,
+        capture_protected: false,
+    }]);
+    let button = rect_of(drawn_window(&mut harness).body.as_ref(), "archive")
+        .expect("the button is laid out");
+    ui::press::note(DECLARED);
+    press(&mut harness, &["command"], "Enter");
+    assert_eq!(fired(&mut app).len(), 1, "the key pressed the button");
+    assert_eq!(
+        tilo_actions::remote::press_points::of(DECLARED),
+        Some(point(button)),
+        "the key's press stands at the button it pressed"
+    );
+
+    let (_app, mut harness) = drawn(&bound_page("ui.TextInput", &[], Value::text("hello")));
+    harness.click_named("field").expect("the field is drawn");
+    harness.relayout();
+    let field = rect_of(drawn_window(&mut harness).body.as_ref(), "field")
+        .expect("the field is laid out");
+    ui::press::note(FOCUSED);
+    harness.key("Enter");
+    assert_eq!(
+        tilo_actions::remote::press_points::of(FOCUSED),
+        Some(point(field)),
+        "a key no control declares stands at the control the keyboard is in"
+    );
+}
+
 #[test]
 fn a_declared_shortcut_runs_the_action_through_its_button() {
     let (mut app, mut window) = window();

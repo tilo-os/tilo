@@ -223,27 +223,79 @@ pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<s
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
     // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
     // were kept, above.
-    runtime.shutdown_timeout(SHUTDOWN);
+    ending_step("the person's part's runtime", SHUTDOWN, move || {
+        runtime.shutdown_timeout(SHUTDOWN);
+    });
     drop(watching);
     // The next holder opens the stores as soon as this process lets go of the lock, which is
-    // before this process ends: let go of them first, or it finds them still open.
+    // before this process ends: let go of them first, or it finds them still open. The next
+    // part in this process opens them too, and finds them held while this peer is.
     let peer = PEER.lock_recover().take();
     if let Some(peer) = peer {
-        let releasing = bridge_runtime()?;
-        // The timer is made inside the runtime: one made outside it has no clock to tick on.
-        if releasing
-            .block_on(async { tokio::time::timeout(RELEASING, peer.shutdown(RELEASING)).await })
-            .is_err()
-        {
-            tracing::warn!("the workspaces' files did not close in time");
-        }
-        releasing.shutdown_timeout(SHUTDOWN);
+        ending_step("the workspaces' files", RELEASING, move || {
+            let Ok(releasing) = bridge_runtime() else {
+                tracing::error!(
+                    "the workspaces' files cannot be closed: no runtime to close them on"
+                );
+                return;
+            };
+            // The timer is made inside the runtime: one made outside it has no clock to tick on.
+            if releasing
+                .block_on(async { tokio::time::timeout(RELEASING, peer.shutdown(RELEASING)).await })
+                .is_err()
+            {
+                tracing::warn!("the workspaces' files did not close in time");
+            }
+            releasing.shutdown_timeout(SHUTDOWN);
+        });
     }
+    *NOT_IN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     if let Err(error) = &served {
         tracing::error!(%error, "this holder ends: it could not serve");
     }
     served
 }
+
+/// Run `step`, a step of the person's part ending, on a thread of its own, and wait for it at
+/// most `within` and a moment: one that takes longer is left behind and named in the log, so
+/// the part that starts next is never held by it, and a step that hangs says which it is.
+pub(crate) fn ending_step(
+    what: &'static str,
+    within: Duration,
+    step: impl FnOnce() + Send + 'static,
+) {
+    let started = Instant::now();
+    let (done, finished) = std::sync::mpsc::sync_channel::<()>(1);
+    let spawned = std::thread::Builder::new()
+        .name("tilo-part-ends".to_owned())
+        .spawn(move || {
+            let _watched = tilo_rt::stall::doing(format!("the person's part ending: {what}"));
+            step();
+            let _ = done.send(());
+        });
+    if let Err(error) = spawned {
+        tracing::error!(%error, step = what, "a step of the person's part ending could not run");
+        return;
+    }
+    let bound = within.saturating_add(ENDING_SLACK);
+    match finished.recv_timeout(bound) {
+        Ok(()) => tracing::debug!(
+            step = what,
+            took_ms = started.elapsed().as_millis(),
+            "a step of the person's part ending finished"
+        ),
+        Err(_) => tracing::error!(
+            step = what,
+            waited_ms = bound.as_millis(),
+            "a step of the person's part ending did not finish in time; it is left behind"
+        ),
+    }
+}
+
+/// What a step of the person's part ending is given past its own bound before it is left behind.
+const ENDING_SLACK: Duration = Duration::from_secs(1);
 
 /// What tells a daemon running in this process to stop ([`crate::daemon::Running::stop`]): heard
 /// by its holder's loop, and by its wait for a person to claim the device.

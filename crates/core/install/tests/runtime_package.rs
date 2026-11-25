@@ -476,13 +476,166 @@ tilo_test_env::scenario! {
                 .to_string_lossy()
                 .starts_with(".install-")
         }));
+    }
+}
 
+/// A temporary directory on a filesystem with fs-verity: `TILO_FSVERITY_DIR`, else the target's.
+fn verity_dir() -> Result<tempfile::TempDir, String> {
+    let base = std::env::var_os("TILO_FSVERITY_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")), PathBuf::from);
+    std::fs::create_dir_all(&base).map_err(|e| format!("{}: {e}", base.display()))?;
+    let dir = tempfile::tempdir_in(&base).map_err(|e| format!("{}: {e}", base.display()))?;
+    let probe = dir.path().join("probe");
+    std::fs::write(&probe, b"probe").map_err(|e| e.to_string())?;
+    runtime_bundle::verity::enable(&probe).map_err(|e| format!("{}: {e}", base.display()))?;
+    Ok(dir)
+}
+
+#[test]
+fn an_installed_runtime_is_sealed_so_a_launch_reads_none_of_it() {
+    let dir = tilo_test_env::require_capability!(
+        FsVerity,
+        verity_dir(),
+        "no fs-verity filesystem to install a runtime on"
+    );
+    let env = Env::in_dir(dir.path());
+    let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
+    env.trust(&[&runtime_key]);
+    let (version, bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
+    let package = env.runtime_tapp("one", &bundle, &format!("tilo-runtime/{version}"));
+    let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+    assert!(ok, "{out}");
+    let installed = env.installed_bundle(&version);
+    let policy = runtime_bundle::VerifyOptions {
+        require_publisher: Some(runtime_key),
+        require_signature: true,
+        require_arch: None,
+    };
+    let (manifest, check) = runtime_bundle::verify_bundle_verity_with(&installed, &policy).unwrap();
+    let files = manifest.files.len();
+    assert!(
+        out.contains(&format!("sealed   : {files} file(s) with fs-verity")),
+        "{out}"
+    );
+    assert_eq!(
+        check,
+        runtime_bundle::PayloadCheck {
+            by_verity: files,
+            by_record: 0,
+            hashed: 0,
+            hashed_bytes: 0,
+        }
+    );
+    let toolkit = installed.join("lib/libruntime_dylib.so");
+    assert!(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&toolkit)
+            .is_err()
+    );
+}
+
+fn bundle_path_of(bundle: &Path, hash: &str) -> String {
+    let text =
+        std::fs::read_to_string(bundle.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)).unwrap();
+    let manifest: runtime_bundle::BundleManifest = toml::from_str(&text).unwrap();
+    manifest
+        .files
+        .into_iter()
+        .find(|file| file.hash == hash)
+        .unwrap()
+        .path
+}
+
+/// A runtime-signing identity file; returns its public key and path.
+fn identity_file(env: &Env, name: &str) -> (String, PathBuf) {
+    let identity = runtime_bundle::Identity::generate();
+    let path = env.path(&format!("{name}.json"));
+    std::fs::write(&path, identity.to_json_bytes()).unwrap();
+    (identity.public_key_hex(), path)
+}
+
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn runtime_installs_preserve_permissions;
+
+    phase signed_engine_runtime_preserves_executable_permissions_on_install;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let env = Env::new();
+        let (runtime_key, runtime_identity) = identity_file(&env, "engine-publisher");
+        env.trust(&[&runtime_key]);
+        let host = env.path("engine-host-root");
+        let loader = runtime_bundle::host_minimal_paths_for(runtime_bundle::host_arch()).unwrap()[0]
+            .trim_start_matches('/');
+        std::fs::create_dir_all(host.join(loader).parent().unwrap()).unwrap();
+        std::fs::write(host.join(loader), b"loader fixture").unwrap();
+        let engine = env.path("chromium");
+        std::fs::create_dir_all(&engine).unwrap();
+        let executable = engine.join("tilo-chromium-host");
+        std::fs::write(&executable, b"#!/bin/sh\nprintf 'engine started\\n'\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(engine.join("resources.pak"), b"engine resource").unwrap();
+        let bundle = env.path("signed-engine-bundle");
+        let version = "2026.10.2-engine-test";
+        runtime_bundle::build_bundle_with(
+            &bundle,
+            version,
+            &runtime_bundle::BuildOptions {
+                from: Some(&host),
+                arch: Some(runtime_bundle::host_arch()),
+                identity: Some(&runtime_identity),
+                extra_libs: &[engine],
+                extra_bins: &[],
+            },
+        )
+        .unwrap();
+        let tapp = env.runtime_tapp_with_host(
+            "engine",
+            &bundle,
+            &format!("tilo-runtime/{version}"),
+            Some("lib/chromium/tilo-chromium-host"),
+        );
+        let (ok, output) = env.cmd(&[
+            "install",
+            tapp.to_str().unwrap(),
+            "--require-publisher",
+            &hex_key(&env.publisher),
+        ]);
+        assert!(ok, "{output}");
+        let installed = env.installed_bundle(version);
+        runtime_bundle::verify_bundle_with(
+            &installed,
+            &runtime_bundle::VerifyOptions {
+                require_publisher: Some(runtime_key),
+                require_signature: true,
+                require_arch: Some(runtime_bundle::host_arch().to_string()),
+            },
+        )
+        .unwrap();
+        let host = installed.join("lib/chromium/tilo-chromium-host");
+        assert_ne!(
+            std::fs::metadata(&host).unwrap().permissions().mode() & 0o111,
+            0,
+            "signed engine executable lost its execute bits"
+        );
+        assert_eq!(
+            std::fs::metadata(installed.join("lib/chromium/resources.pak"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0,
+            "resource acquired execute bits"
+        );
         let process = Command::new(host)
             .output_locked()
             .expect("installed signed engine must execute");
         assert!(process.status.success());
         assert_eq!(process.stdout, b"engine started\n");
     }
+
 }
 
 #[path = "gc.rs"]

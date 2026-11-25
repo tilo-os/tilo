@@ -268,9 +268,6 @@ mod tests {
                         answer
                     }
                     In::Asked(Ask::ReportSync { .. }) => Answer::Reported,
-                    In::Asked(Ask::Keep { .. } | Ask::Forget { .. }) => Answer::Refused {
-                        error: "Mail keeps no sign-in of its own".into(),
-                    },
                 };
                 if !say(&answer) {
                     return;

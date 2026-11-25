@@ -94,12 +94,15 @@ impl PersonStore for DaemonPersonStore {
         Box::pin(async move {
             let held = self.saved(&app, &name).await?;
             let founding = held.is_none();
+            // A resource the workspace holds none of starts from its genesis, or from nothing
+            // where it has none (the shell's own documents, which carry their whole history in
+            // the change), as the daemon's own writes of the person's workspace found it.
             let mut document = match held {
                 Some(bytes) => automerge::AutoCommit::load(&bytes)
                     .map_err(|error| format!("the person's resource does not read: {error}"))?,
-                None => *authoring
+                None => authoring
                     .genesis
-                    .ok_or("the person's workspace holds none of that resource to change")?,
+                    .map_or_else(automerge::AutoCommit::new, |genesis| *genesis),
             };
             let before = document.get_heads();
             (authoring.edit)(&mut document)?;
@@ -159,5 +162,85 @@ impl PersonStore for DaemonPersonStore {
             }
         });
         told
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use automerge::ReadDoc as _;
+    use automerge::transaction::Transactable as _;
+    use tilo_session_client::daemon_documents::inherited_link;
+
+    /// The shell's first write of one of its documents to the person's workspace founds it at the
+    /// daemon, which then holds it: the shell's documents carry no genesis of their own, and a
+    /// write the daemon was never handed would leave the person's shell on this device alone.
+    #[test]
+    fn the_first_write_of_a_document_the_workspace_holds_none_of_founds_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
+        let (_identity, cert, _key) = crate::governance::tests::provisioned_identity(&mut home);
+        let profile = tempfile::tempdir().expect("a profile for the daemon");
+        std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("the profile is this user's");
+        let daemon = tilo_runtime::daemon::Running::start(profile.path())
+            .expect("the device's daemon starts");
+        let within = tilo_test_env::hang_bound();
+        let runtime = tilo_rt::app().handle().clone();
+        let link = inherited_link(
+            Some(
+                daemon
+                    .link_shell(within)
+                    .expect("the daemon makes the shell's link"),
+            ),
+            &runtime,
+        );
+        let shell = DaemonShell::new(link, runtime.clone());
+        let store = DaemonPersonStore::new(shell.clone(), DaemonWritesFeed::start(&shell), cert);
+        let (app, name) = (crate::shell_document::APP, "dock");
+        runtime.block_on(async {
+            let deadline = tokio::time::Instant::now() + within;
+            while !store.held().await {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the daemon never held the person's workspace"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert_eq!(
+                store.document(app, name).await.expect("the daemon reads"),
+                None,
+                "the workspace holds none of the document before the shell writes it"
+            );
+            store
+                .author(
+                    app.to_owned(),
+                    name.to_owned(),
+                    Authoring {
+                        genesis: None,
+                        edit: Box::new(|document| {
+                            document
+                                .put(automerge::ROOT, "edge", "left")
+                                .map_err(|error| error.to_string())
+                        }),
+                    },
+                )
+                .await
+                .expect("the shell's first write of the document lands");
+            let held = store
+                .document(app, name)
+                .await
+                .expect("the daemon reads")
+                .expect("the workspace holds the document the shell founded");
+            let held = automerge::AutoCommit::load(&held).expect("the document reads");
+            assert_eq!(
+                held.get(automerge::ROOT, "edge")
+                    .expect("the document reads")
+                    .map(|(value, _)| value.to_string()),
+                Some("\"left\"".to_owned()),
+                "what the shell wrote is what the workspace holds"
+            );
+        });
+        drop(daemon);
     }
 }

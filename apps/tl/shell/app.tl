@@ -133,14 +133,14 @@ view bar() {
     // The display in use carries the whole bar; each other display carries the compact one, as
     // the desktop's own bars do: what a person reaches for where their work is (the sounds, the
     // connection, the charge, the notices, the people) stays where they work.
-    let compact = not on_primary()
+    let elsewhere = not on_primary()
     let nobody = device.overlays.ask == "" and (space.compact or frames_style())
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
             if part.shown
-                and (space.wide or not part_gives_way(part, roomy))
-                and (not compact or part_keeps_compact(part.kind))
+                and (wide or not part_gives_way(part, roomy))
+                and (not elsewhere or part_keeps_compact(part.kind))
                 and not (part.kind == .people and nobody)
                 and (not frames_style() or canvas_keeps(part)) {
                 ui.DragItem(

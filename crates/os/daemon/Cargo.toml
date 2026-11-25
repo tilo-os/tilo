@@ -52,6 +52,8 @@ name = "system_records"
 path = "tests/system_records.rs"
 
 [dependencies]
+# The host keychain its secrets and device proofs live in: a process with no app connection.
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 tilo-runtime = { path = "../../core/tilo-runtime" }
 # The collaboration client the SDK app the process tests install uses, without the toolkit: an
 # app's own connection to its workspace.
@@ -141,3 +143,8 @@ tilolang-mail = { path = "../../integrations/tilolang-mail", features = ["test-s
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# `tilo-secrets` is named for its `host-keyring` feature alone: the feature links the process's
+# keychain backend, and no line of this crate calls the store itself.
+ignored = ["tilo-secrets"]

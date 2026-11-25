@@ -9,11 +9,11 @@
 )]
 
 use serde::{Deserialize, Serialize};
+use tilo_resource::AppNamed;
 use tilo_resource::{
     ActionCx, ActionKind, Availability, Collection, Derived, Id, Invoke, JsonSchema, Model, Outbox,
     Params, Refusal, Replica, Resource, resource,
 };
-use tilo_resource::AppNamed;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Colour {

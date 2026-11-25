@@ -716,6 +716,8 @@ readers = [
   "crates/ui/ui-core/src/component/coverage_tests.rs",
   "crates/ui/ui-core/src/part_paint/shader/tests.rs",
   "crates/ui/ui-core/src/tokens/shader.rs",
+  # The painter AOT test paints with the Bauhaus theme (an input above).
+  "crates/ui/ui-core/tests/painter_aot.rs",
 ]
 
 
@@ -788,7 +790,6 @@ readers = [
   "crates/lang/tilolang-cli/tests/support/mod.rs",
   "crates/lang/tilolang-cli/tests/native_types.rs",
   "crates/lang/tilolang-cli/tests/check.rs",
-  "crates/lang/tilolang-cli/tests/dev.rs",
   "crates/lang/tilolang-cli/tests/build.rs",
 ]
 
@@ -807,6 +808,8 @@ inputs = ["apps/", "dist/macos/collection_local_runtime.py", "docs/tilo-sh/pages
 readers = [
   "crates/core/tilo-runtime/tests/customer_workspaces.rs",
   "crates/core/tilo-runtime/tests/host/apps.rs",
+  # The app listing test builds Notes from its sources.
+  "crates/core/tilo-runtime/src/device/app_listing_tests.rs",
 ]
 
 [[cargo]]
@@ -876,6 +879,8 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_weather.rs",
   "crates/lang/tilolang-runtime/tests/e2e_word_processor.rs",
   "crates/lang/tilolang-runtime/tests/e2e_youtube.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_slides.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_totp.rs",
   "crates/lang/tilolang-runtime/tests/words.rs",
 ]
 
@@ -979,6 +984,17 @@ readers = [
   "crates/lang/tilolang-tilo/tests/written_views.rs",
   "crates/lang/tilolang-tilo/tests/contacts.rs",
   "crates/lang/tilolang-tilo/tests/native_chat_skills.rs",
+  "crates/lang/tilolang-tilo/tests/asking_effects.rs",
+  "crates/lang/tilolang-tilo/tests/chat_export.rs",
+  "crates/lang/tilolang-tilo/tests/shell_staged.rs",
+  "crates/lang/tilolang-tilo/tests/chat_recording.rs",
+  "crates/lang/tilolang-tilo/tests/chat_system.rs",
+  "crates/lang/tilolang-tilo/tests/settings_devices.rs",
+  "crates/lang/tilolang-tilo/tests/settings_mobile.rs",
+  "crates/lang/tilolang-tilo/tests/settings_storage.rs",
+  "crates/lang/tilolang-tilo/tests/slides_agent_words.rs",
+  "crates/lang/tilolang-tilo/tests/slides_search.rs",
+  "crates/lang/tilolang-tilo/tests/totp_search.rs",
 ]
 
 [[cargo]]
@@ -1004,9 +1020,14 @@ readers = ["crates/lang/tilolang-web/tests/apps.rs"]
 
 [[cargo]]
 package = "tilolang-window"
-# The window's test support compiles Settings from its sources, and reads its ids lock.
-inputs = ["apps/tl/settings/"]
-readers = ["crates/lang/tilolang-window/tests/support/mod.rs"]
+# The window's test support compiles Settings from its sources, and reads its ids lock; the
+# Slides notes test compiles Slides from its sources.
+inputs = ["apps/tl/settings/", "apps/tl/slides/"]
+readers = [
+  "crates/lang/tilolang-window/tests/support/mod.rs",
+  "crates/lang/tilolang-window/tests/slides_notes.rs",
+  "crates/lang/tilolang-window/tests/slides_present.rs",
+]
 
 [[cargo]]
 package = "tilolang-youtube"
@@ -1329,6 +1350,8 @@ inputs = [
   "crates/desktop/tilo-keyboard-map/",
   "crates/desktop/tilo-system-resources/",
   "crates/desktop/tilo-wallpapers/",
+  # The Android readiness check doctors the Tilo phone app.
+  "crates/desktop/phone/",
   "crates/core/tilo-resource/",
   "crates/core/tilo-resource-macros/",
   "crates/core/tilo-app-id/",
@@ -1586,7 +1609,6 @@ inputs = [
   "apps/tl/tasks/",
 ]
 readers = [
-  "crates/os/daemon/tests/language/resource_writes_tests.rs",
   "crates/os/daemon/tests/language/task_work_tests.rs",
   "crates/os/daemon/tests/language/triggers_tests.rs",
 ]
@@ -2290,6 +2312,10 @@ check = "sdk-python"
 
 [[covered]]
 suite = "sdk/python/tests/test_many.py"
+check = "sdk-python"
+
+[[covered]]
+suite = "sdk/python/tests/test_call_lane.py"
 check = "sdk-python"
 
 [[covered]]

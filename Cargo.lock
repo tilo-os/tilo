@@ -6367,6 +6367,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-process",
  "tilo-resource",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-unlock-protocol",
  "url",
@@ -12069,6 +12070,7 @@ dependencies = [
  "tilo-paths",
  "tilo-registry-types",
  "tilo-rt",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-test-http",
  "tokio",
@@ -16027,6 +16029,7 @@ dependencies = [
  "tilo-migrate",
  "tilo-net",
  "tilo-paths",
+ "tilo-secrets",
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-session-client",
@@ -16299,6 +16302,7 @@ dependencies = [
  "tilo-fs-protocol",
  "tilo-identity-client",
  "tilo-key-group",
+ "tilo-local-identity",
  "tilo-lock",
  "tilo-media",
  "tilo-process",
@@ -16657,6 +16661,7 @@ dependencies = [
  "tilo-runtime-bundle",
  "tilo-runtime-collab",
  "tilo-runtime-portal",
+ "tilo-secrets",
  "tilo-server-protocol",
  "tilo-socket",
  "tilo-startup-metrics",
@@ -17956,6 +17961,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-local-identity"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "tilo-identity-client",
+ "tilo-lock",
+ "tilo-runtime-portal",
+ "tilo-test-env",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-locale"
 version = "0.1.0"
 dependencies = [
@@ -18166,7 +18184,6 @@ dependencies = [
  "tilo-net",
  "tilo-resource",
  "tilo-secret-vault",
- "tilo-secrets",
  "tilo-test-env",
  "tokio",
  "tokio-tungstenite",
@@ -18568,6 +18585,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-secret-vault",
+ "tilo-secrets",
  "tilo-service",
  "tilo-test-env",
  "tokio",
@@ -19982,20 +20000,23 @@ dependencies = [
 name = "tilo-secrets"
 version = "0.1.0"
 dependencies = [
- "ashpd",
  "hex",
  "jni 0.21.1",
  "js-sys",
  "libc",
  "rustix 1.1.6",
  "security-framework",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-actions",
  "tilo-files",
  "tilo-platform-caps",
  "tilo-process",
  "tilo-rt",
  "tilo-seal",
+ "tilo-socket",
  "tilo-test-env",
  "tokio",
  "wasm-bindgen",
@@ -21231,6 +21252,7 @@ dependencies = [
  "tilo-host-search",
  "tilo-identity-client",
  "tilo-image-codec",
+ "tilo-local-identity",
  "tilo-lock",
  "tilo-media",
  "tilo-mime",
@@ -22140,8 +22162,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tilo-accounts",
  "tilo-action-policy",
+ "tilo-actions",
  "tilo-dav",
  "tilo-document",
  "tilo-formats",
@@ -22215,13 +22237,11 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
- "getrandom 0.4.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "snow",
  "tilo-clock",
- "tilo-secrets",
  "tilo-test-env",
  "tilo-wire-frame",
  "tracing",

@@ -200,4 +200,4 @@ fn project_sandbox(
 
 #[cfg(test)]
 #[path = "membership_tests.rs"]
-mod tests;
+pub(crate) mod tests;
