@@ -732,7 +732,13 @@ async fn a_shortcut_kept_to_her_account_hears_her_mail_and_no_other_account() {
         cert: cert.clone(),
         signer: Arc::new(key.clone()),
     }));
-    declare_app(&host, "so.tilo.mail", MAIL_SURFACE.as_bytes());
+    declare_app(
+        &host,
+        "so.tilo.mail",
+        tilo_surface_compile::compile(MAIL_SURFACE)
+            .expect("the surface compiles")
+            .as_bytes(),
+    );
     let workspace = workspaces.create("Mail").await.unwrap().workspace;
     let clock = Pinned::at(pinned_at("2026-11-23T08:00:00Z"));
     let keep_message = async |id: &str, account: &str, received: &str| {
