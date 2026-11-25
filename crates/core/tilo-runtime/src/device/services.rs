@@ -4560,6 +4560,14 @@ impl tilo_api::session::Here for DaemonHere {
         tilo_api::session::Here::invocations(&*self.daemon().ok()?)
     }
 
+    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
+        let (daemon, by) = (self.daemon(), by.clone());
+        Box::pin(async move {
+            let daemon = daemon?;
+            tilo_api::session::Here::import(&*daemon, &by, carried).await
+        })
+    }
+
     /// The account this device serves for its person, when it keeps their workspaces itself: the
     /// daemon that founded their workspace answers their list, never a read of the copy a
     /// restarted daemon is still taking in.

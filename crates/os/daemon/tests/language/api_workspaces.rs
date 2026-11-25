@@ -16,6 +16,8 @@ use crate::language::host;
 const LIST: &str = "/v1/resources/account/workspaces/actions/list";
 /// Where a key makes one.
 const CREATE: &str = "/v1/resources/account/workspaces/actions/create";
+/// Where a desktop hands its workspaces to the device it runs on.
+const IMPORT: &str = "/v1/resources/account/workspaces/actions/import";
 
 /// The ids the `account/workspaces#list` answer lists.
 fn ids(listed: &Value) -> Vec<String> {
@@ -72,6 +74,23 @@ fn a_computer_and_a_key_share_the_persons_workspace_list() {
             ids(&listed["result"]),
             computer,
             "nothing was made: {listed}"
+        );
+    });
+}
+
+/// A desktop hands its person's workspaces to the device it runs on: the device that keeps them
+/// answers, and it takes them from its own person's device and no key of theirs.
+#[test]
+fn importing_a_desktops_workspaces_reaches_the_device_that_takes_them_in() {
+    host::run(|host| async move {
+        let key = host.key("Claude Code");
+        let (status, refused) = key.post(IMPORT, &json!({})).await;
+        assert_eq!(status, 422, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("only this device's own person takes its desktop's workspaces in"),
+            "the device that keeps them answers, not a host without them: {refused}"
         );
     });
 }
