@@ -5,6 +5,7 @@ edition = "2024"
 publish = true
 license = "MIT"
 description = "A deck's engine: the slides, their elements and words, and the .odp and .pptx interchange, with no toolkit."
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 

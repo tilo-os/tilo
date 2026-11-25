@@ -13,6 +13,11 @@ def package(name, license, *dependencies, features=()):
         "name": name,
         "source": None,
         "license": license,
+        # A complete manifest: what crates.io shows for it, and a README that exists.
+        "description": f"{name}, for a test.",
+        "repository": "https://code.tilo.so/tilo/tilo",
+        "manifest_path": str(ROOT / "Cargo.toml"),
+        "readme": "docs/crates/supporting-crate.md",
         "features": {feature: [] for feature in features},
         "dependencies": [
             {"name": dep, "kind": kind, "path": f"/checkout/{dep}", "optional": optional,
@@ -73,6 +78,26 @@ class BuilderManifestGraph(unittest.TestCase):
         packages[2]["name"] = packages[1]["dependencies"][0]["name"] = "tilo-environment"
         reached = builder_licenses.manifest_closure(packages, ["tilolang"])
         self.assertEqual(builder_licenses.publishable_findings(reached), [])
+
+    def test_a_crate_it_reaches_says_what_it_is_and_has_a_readme(self):
+        # crates.io shows the description and the README as the crate's page.
+        packages = [
+            package("tilolang", "MIT", ("tilo-deck", None, False, True)),
+            package("tilo-deck", "MIT"),
+        ]
+        packages[1]["readme"] = None
+        packages[1]["description"] = None
+        reached = builder_licenses.manifest_closure(packages, ["tilolang"])
+        self.assertEqual(builder_licenses.publishable_findings(reached), [
+            "tilo-deck: a builder crate reaches it, and it has no description",
+            "tilo-deck: a builder crate reaches it, and it names no README that exists",
+        ])
+        packages[1]["description"] = "A deck's engine."
+        packages[1]["readme"] = "docs/crates/no-such-page.md"
+        reached = builder_licenses.manifest_closure(packages, ["tilolang"])
+        self.assertEqual(builder_licenses.publishable_findings(reached), [
+            "tilo-deck: a builder crate reaches it, and it names no README that exists",
+        ])
 
     def test_a_root_outside_the_workspace_is_refused(self):
         with self.assertRaises(ValueError):

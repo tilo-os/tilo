@@ -12,8 +12,9 @@ depends on it. LICENSING.md licenses them MIT, so:
   feature a builder crate ships (all but `test-support`), is approved too.
 
 Every Tilo crate they reach is published with them, so it must be publishable too: `publish`
-not false, a `tilo-` or `tilolang` package name, and a version on every path dependency its
-published manifest keeps (crates.io takes no path).
+not false, a `tilo-` or `tilolang` package name, a description, a repository, a README that
+exists, and a version on every path dependency its published manifest keeps (crates.io takes no
+path).
 
 `--manifests` checks only what the manifests say (`cargo metadata` and a walk of the graph, in
 seconds): what every push to main runs, and the pre-push hook. The full check adds the
@@ -125,6 +126,15 @@ def publishable_findings(reached):
     for name, package in sorted(reached.items()):
         if package.get("publish") == []:
             findings.append(f"{name}: a builder crate reaches it, and it has publish = false")
+        for field in ("description", "repository"):
+            if not package.get(field):
+                findings.append(f"{name}: a builder crate reaches it, and it has no {field}")
+        # crates.io shows the README as the crate's page: one beside the manifest, or
+        # docs/crates/supporting-crate.md for a crate nobody starts from.
+        readme = package.get("readme")
+        if not readme or not (Path(package["manifest_path"]).parent / readme).is_file():
+            findings.append(f"{name}: a builder crate reaches it, and it names no README that "
+                            "exists")
         if not name.startswith(PUBLISHED_PREFIXES):
             findings.append(f"{name}: a builder crate reaches it, and its name has no tilo- or "
                             "tilolang prefix")

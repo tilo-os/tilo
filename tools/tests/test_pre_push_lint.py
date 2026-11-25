@@ -963,7 +963,10 @@ class BuilderLicenseGateTests(unittest.TestCase):
     def metadata(self, leaf_license: str) -> dict:
         policy = tomllib.loads((ROOT / "tools/sdk/license-policy.toml").read_text())
         def package(name, license, deps=()):
-            return {"name": name, "source": None, "license": license, "dependencies": [
+            return {"name": name, "source": None, "license": license,
+                    "description": name, "repository": "https://code.tilo.so/tilo/tilo",
+                    "manifest_path": str(ROOT / "Cargo.toml"),
+                    "readme": "docs/crates/supporting-crate.md", "dependencies": [
                 {"name": dep, "kind": None, "req": "^0.1.0", "path": f"/x/{dep}"} for dep in deps]}
         roots = [package(name, "MIT") for name in policy["builder_roots"]]
         roots[0]["dependencies"].append(
