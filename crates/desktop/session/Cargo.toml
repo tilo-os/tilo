@@ -490,8 +490,11 @@ tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 # The canonical compiled form of the surface this crate publishes.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # This package's own integration tests run a session in their process as the shell of a device
-# daemon (`shell_session::start_in_process`): the feature that builds it.
-tilo-session = { path = ".", features = ["test-support"] }
+# daemon (`shell_session::start_in_process`): the feature that builds it. Named apart from the
+# package: under its own name, `--features tilo-session/dev-overrides` (the dev image's build,
+# os/image/compile.sh) names this test-only dependency's feature, and the session the image ships
+# was built without it.
+tilo-session-test-support = { package = "tilo-session", path = ".", features = ["test-support"] }
 # The person's devices as a host holding their record lists them, which the tests' own identities
 # are checked against (`sources::test_trust`).
 tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }
