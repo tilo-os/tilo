@@ -3355,7 +3355,9 @@ impl DirectSync {
         } else if !admit.permits(remote, &authored) {
             Some("the link's device may not send it".to_owned())
         } else {
-            self.admits(authored.from, false).err()
+            // A server keeping the workspace asks for the content it lacks as one of those the
+            // workspace names to keep it, in no member's roster row.
+            self.admits(authored.from, true).err()
         };
         if let Some(reason) = refused {
             tracing::warn!(
