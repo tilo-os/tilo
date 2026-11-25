@@ -608,11 +608,20 @@ async fn record_change_of(
 ) -> Vec<u8> {
     use automerge::transaction::Transactable as _;
 
-    let bytes = copies
-        .stored_record_in(workspace, app, record)
-        .await
-        .expect("the record reads")
-        .expect("the copy holds the record");
+    // The serving device's record reaches the copy by sync, after the workspace's history.
+    let bytes = tilo_test_env::within("the copy holds the record", async {
+        loop {
+            if let Some(bytes) = copies
+                .stored_record_in(workspace, app, record)
+                .await
+                .expect("the record reads")
+            {
+                break bytes;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     let mut opened = automerge::AutoCommit::load(&bytes).expect("the record opens");
     let heads = opened.get_heads();
     opened
