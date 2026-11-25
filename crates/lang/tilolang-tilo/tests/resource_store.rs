@@ -37,6 +37,17 @@ impl tilo_resource_store::Port for Declared {
     ) -> Result<collab_types::store::wire::Reply, String> {
         use tilo_resource_store::wire;
         let mut store = self.0.borrow_mut();
+        // The caller's last steps, which an undo reads: a read that needs the store itself, as
+        // the workspace service answers it.
+        if let collab_types::store::wire::Command::Steps {
+            steps,
+            invoker,
+            kinds,
+            redo,
+        } = command
+        {
+            return Ok(wire::steps(&mut store, steps, &invoker, &kinds, redo));
+        }
         if !command.writes() {
             return wire::read(&store, &command, &|_| true)
                 .ok_or_else(|| "the store answered no read".to_owned());
