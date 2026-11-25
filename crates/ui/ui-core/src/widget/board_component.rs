@@ -148,6 +148,8 @@ impl Command {
             link,
             choose,
             separator: _,
+            // A board's commands are not a font picker's.
+            sample: _,
         } = props;
         Self {
             label,

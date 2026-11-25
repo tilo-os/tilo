@@ -358,6 +358,31 @@ fn texted(store: &ResourceStore, meta: &Meta, ty: &str) -> Vec<FieldSpec> {
         let named = fields.remove(at);
         fields.insert(0, named);
     }
+    // A set of texts is words a person searches by too: the tags on a photo, the objects and
+    // pets it shows. They come after the prose, so the resource's title still names it.
+    if fields
+        .iter()
+        .any(|field| matches!(field.kind, FieldKind::Text | FieldKind::RichText))
+    {
+        for field in &declared.fields {
+            if declared.search.concealed.contains(&field.id) {
+                continue;
+            }
+            if field.ty.trim() != "Set<Text>" {
+                continue;
+            }
+            let Some(kind) = entry.fields.get(&field.id).map(|field| field.kind) else {
+                continue;
+            };
+            if !matches!(kind, FieldKind::Set) {
+                continue;
+            }
+            fields.push(FieldSpec {
+                id: field.id.clone(),
+                kind,
+            });
+        }
+    }
     fields
 }
 
@@ -404,6 +429,17 @@ fn hit_of(
                     blocks.extend(line_hits(&field, &text));
                 }
                 FieldValue::Text(text)
+            }
+            // Each name in a set of texts is a word of the resource's: the tags, the objects
+            // and pets it shows, found wherever search looks.
+            FieldValue::Keys(keys) => {
+                for key in keys {
+                    let word = key.trim();
+                    if !word.is_empty() {
+                        texts.push(word.to_owned());
+                    }
+                }
+                continue;
             }
             FieldValue::Rich(rich) => {
                 for reference in rich.references() {

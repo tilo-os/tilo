@@ -57,8 +57,9 @@ type Message {
   sentences and notes name none of it while they name a field the places show: an assignment
   says who the task went to, never the moment or the hand it was kept for an agent to act on. A
   change that wrote only hidden fields reads as the action's own words.
-- Text fields: every `Text` and `RichText` field is indexed, and a result shows the resource's
-  first one, cut to its first line.
+- Text fields: every `Text` and `RichText` field is indexed, and so is every member of a
+  `Set<Text>` (a photo's tags, the objects and pets it shows), and a result shows the resource's
+  first text, cut to its first line.
 - Without a `search` block, every simple field (`Bool`, enum, date, number, reference, set) is a
   filter, and the first time field is the default sort. A Todo with `done` and `due` gets "Done"
   and "Due" filters with no code.

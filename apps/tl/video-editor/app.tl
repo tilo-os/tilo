@@ -1775,20 +1775,34 @@ action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float, w
 }
 
 /// Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`,
-/// the clips chosen, by as much. A clip moved alone goes onto the track `track` names when that is
-/// another track of its kind, unlocked, with room for it there.
+/// the clips chosen, by as much. The track `track` names is where the grabbed clip lands: a clip
+/// moved alone goes there, and a chosen group moves down or up the rows by the same step, each
+/// clip onto the track of its kind that is open and has room for it after the move.
 action move_to(p: Project, c: Clip, start: Float, track: Text, with: List<Clip>) {
     let alone = not (with.len() > 1 and with.contains(c))
+    let moving = with_links(p, if alone { [c] } else { with })
+    let shift = start - c.start
+    let landed = if alone { shifted(p, c, start) } else { moved(p, moving, shift) }
+    if not landed {
+        return
+    }
     if let t = p.tracks.find(x -> x.id() == track) {
-        if alone
-            and t != c.track
-            and t.form == c.track.form
-            and not t.locked
-            and not overlaps(p, t, start, start + shown(c), c.id()) {
-            c.track = t
+        if t != c.track and t.form == c.track.form and not t.locked {
+            let rows = ordered_tracks(p)
+            let step = (rows.index_of(t) ?? 0) - (rows.index_of(c.track) ?? 0)
+            for one in moving {
+                let landing = rows.at((rows.index_of(one.track) ?? 0) + step)
+                if let landing = landing {
+                    if landing.form == one.track.form
+                        and not landing.locked
+                        and not overlaps(p, landing, one.start, clip_end(one), one.id()) {
+                        one.track = landing
+                    }
+                }
+            }
+            redraw(p)
         }
     }
-    commit_drag(p, "move", c.id(), c.start, start, with)
 }
 
 /// Trims a clip to start at `start` and last `length`, as a drag on its edge on the timeline
@@ -1988,18 +2002,21 @@ action paste_track(p: Project, track: Text, form_named: Text) -> Track {
 
 /// Places copied clips from `at`, the earliest there and the rest keeping their distance from
 /// it; clips linked to each other stay linked, to each other alone.
-action paste_clips(p: Project, at: Float) uses clipboard (icon: .clipboard_paste, label: "Paste") {
+action paste_clips(p: Project, at: Float) -> List<Text> uses clipboard (
+    icon: .clipboard_paste,
+    label: "Paste",
+) {
     let text = clipboard.paste() ?? ""
     let copy = match json.decode<Copied>(text) {
         .ok(copy) => copy,
         .err(_) => {
             trouble(p, "The clipboard holds no clips")
-            return
+            return []
         }
     }
     if copy.kind != copied_kind() {
         trouble(p, "The clipboard holds no clips")
-        return
+        return []
     }
     let came: List<CopiedClip> = copy.clips.flat_map(
         t -> match json.decode<CopiedClip>(t) {
@@ -2009,6 +2026,7 @@ action paste_clips(p: Project, at: Float) uses clipboard (icon: .clipboard_paste
     )
     let base = came.map(c -> c.clip.start).sort_by(t -> t).first() ?? 0.0
     let fresh = "{p.clips.len()}"
+    let made: List<Text> = []
     for one in came {
         let media = p.media.find(m -> m.id() == one.media)
             ?? p.media.find(m -> one.path != "" and m.path == one.path)
@@ -2022,12 +2040,15 @@ action paste_clips(p: Project, at: Float) uses clipboard (icon: .clipboard_paste
                 length,
             )
             let link = if one.clip.link == "" { "" } else { "{one.clip.link}~{fresh}" }
-            restore_clip(p, json.encode(one.clip), track, media, start, link)
+            if let made_clip = restore_clip(p, json.encode(one.clip), track, media, start, link) {
+                made = [made, [made_clip.id()]].flat_map(x -> x)
+            }
         } else {
             trouble(p, "A copied clip's source is not in this cut")
         }
     }
     redraw(p)
+    made
 }
 
 /// How long a kept clip runs on the timeline.
@@ -2036,20 +2057,31 @@ fn shown_saved(c: SavedClip) -> Float {
 }
 
 /// Puts a copy of the clips right after them, on the same tracks.
-action duplicate_clips(p: Project, cs: List<Clip>) (icon: .copy, label: "Duplicate") {
+action duplicate_clips(p: Project, cs: List<Clip>) -> List<Text> (icon: .copy, label: "Duplicate") {
     if cs.is_empty() {
-        return
+        return []
     }
     let lo = cs.map(c -> c.start).sort_by(t -> t).first() ?? 0.0
     let hi = cs.map(c -> clip_end(c)).sort_by(t -> 0.0 - t).first() ?? 0.0
     let offset = (hi - lo).max(smallest())
     let fresh = "{p.clips.len()}"
+    let made: List<Text> = []
     for c in cs.sort_by(x -> x.start) {
         let link = if c.link == "" { "" } else { "{c.link}~{fresh}" }
         let start = free_at(p, c.track, snap_time(p, c.start + offset), shown(c))
-        restore_clip(p, json.encode(saved_clip(p, c)), c.track, c.media, start, link)
+        if let made_clip = restore_clip(
+                p,
+                json.encode(saved_clip(p, c)),
+                c.track,
+                c.media,
+                start,
+                link,
+            ) {
+            made = [made, [made_clip.id()]].flat_map(x -> x)
+        }
     }
     redraw(p)
+    made
 }
 
 /// Where the playhead goes from `at` to the next marked instant: a marker, or a clip's edge.
@@ -3225,10 +3257,16 @@ view edit_menu(
             on choose: copy_clips(p, chosen)
         }
         ui.MenuItem(std.say("Paste at the playhead"), icon: .clipboard_paste, key: "Ctrl+V") {
-            on choose: paste_clips(p, playhead)
+            on choose: {
+                let made = paste_clips(p, playhead)
+                set(selected, made)
+            }
         }
         ui.MenuItem(std.say("Duplicate"), icon: .copy, key: "Ctrl+D", disabled: none) {
-            on choose: duplicate_clips(p, chosen)
+            on choose: {
+                let copies = duplicate_clips(p, chosen)
+                set(selected, copies)
+            }
         }
         ui.MenuItem(
             std.say("Delete"),
@@ -3689,6 +3727,7 @@ view window(e: Editor) {
                                 scroll: scroll,
                                 playhead: head,
                                 length: total(p),
+                                clips: p.clips_at,
                                 step: frame(p),
                             ) {
                                 on scrub(t: Float): set(playhead, t).then(scrub_to(p, t))
@@ -4547,11 +4586,12 @@ template view inspector(
             // The faces this device sets text in, with the system's own sans at the head so
             // there is always a way back to it.
             ui.MenuButton(font_words(m), icon: .type) {
-                ui.MenuItem(std.say("System sans"), checked: m.font == "") {
+                // Every family is shown in itself, so the person chooses by reading it.
+                ui.MenuItem(std.say("System sans"), checked: m.font == "", sample: "") {
                     on choose: set_font(m, "")
                 }
                 for family in fonts() {
-                    ui.MenuItem(family, checked: m.font == family) {
+                    ui.MenuItem(family, checked: m.font == family, sample: family) {
                         on choose: set_font(m, family)
                     }
                 }

@@ -108,6 +108,7 @@ mod removed;
 mod resource_store;
 mod rich_text;
 mod scenarios;
+mod set_search;
 mod settings_about;
 mod settings_accessibility;
 mod settings_billing;

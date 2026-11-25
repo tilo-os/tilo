@@ -59,6 +59,9 @@ pub enum MenuItem {
         /// The app's own artwork, painted in the icon's place once it has pixels: a row that
         /// names an app ([`MenuItem::with_image`]).
         image: Option<crate::icons::AppImage>,
+        /// The face the label is set in, when it previews one: a font picker's rows show each
+        /// family in itself ([`MenuItem::with_sample`]).
+        sample: Option<crate::text_render::FontChoice>,
         /// `Some` reserves the leading selection gutter and publishes a
         /// semantic checked state. `None` is an ordinary command row.
         checked: Option<bool>,
@@ -127,6 +130,7 @@ impl MenuItem {
             action,
             icon: None,
             image: None,
+            sample: None,
             checked: None,
             destructive: false,
             enabled: true,
@@ -217,6 +221,29 @@ impl MenuItem {
             *item_image = Some(image);
         }
         self
+    }
+
+    /// Set the row's label in `face` instead of the interface's own: a font picker shows each
+    /// family in itself, so a person chooses by reading it.
+    #[must_use]
+    pub fn with_sample(mut self, face: crate::text_render::FontChoice) -> Self {
+        if let MenuItem::Action {
+            sample: row_sample, ..
+        } = &mut self
+        {
+            *row_sample = Some(face);
+        }
+        self
+    }
+
+    /// The face this row's label is set in, when it previews one
+    /// ([`Self::with_sample`]).
+    #[must_use]
+    pub fn sample(&self) -> Option<&crate::text_render::FontChoice> {
+        match self {
+            MenuItem::Action { sample, .. } => sample.as_ref(),
+            _ => None,
+        }
     }
 
     /// Show the keyboard shortcut that runs the same command at the row's
@@ -973,7 +1000,13 @@ impl ContextMenu {
                 } else {
                     label
                 };
-                let (w, h) = text.measure_style(label, None, &style);
+                // A row that previews a face is measured in it, so the panel holds the label
+                // whole.
+                let row_style = match item.sample() {
+                    Some(face) => style.clone().with_family(face.clone()),
+                    None => style.clone(),
+                };
+                let (w, h) = text.measure_style(label, None, &row_style);
                 let check_width = if has_leading_gutter {
                     f64::from(theme.tokens.metrics.icon_sm + theme.tokens.spacing.s2)
                 } else {

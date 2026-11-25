@@ -233,7 +233,7 @@ fn mix(store: &ContentStore, input: &str) -> Result<String, String> {
     }
     let ask: Ask = reads(input)?;
     let cut = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
-    let (over_db, overs, hot) = measure_mix(&cut);
+    let (over_db, overs, hot) = measure_mix(&cut, mix_sources());
     Ok(serde_json::json!({
         "over_db": over_db,
         "overs": overs,
@@ -242,14 +242,30 @@ fn mix(store: &ContentStore, input: &str) -> Result<String, String> {
     .to_string())
 }
 
+/// The sources the mix check reads through, held for the process: a check runs again after every
+/// edit, and a source's samples are the same on each until the file itself changes.
+fn mix_sources() -> &'static Mutex<video_edit::audio::SourcePcm> {
+    /// How much decoded sound the check keeps: a cut's sources, bounded so a long film cannot
+    /// pin a device's memory.
+    const KEPT_BYTES: usize = 512 * 1024 * 1024;
+    static SOURCES: OnceLock<Mutex<video_edit::audio::SourcePcm>> = OnceLock::new();
+    SOURCES.get_or_init(|| Mutex::new(video_edit::audio::SourcePcm::new(KEPT_BYTES)))
+}
+
 /// The cut's mix measured to its end, answering how far over full scale it went, where, and
 /// which tracks were over on their own.
-fn measure_mix(cut: &model::Project) -> (f64, Vec<f64>, Vec<String>) {
+fn measure_mix(
+    cut: &model::Project,
+    sources: &Mutex<video_edit::audio::SourcePcm>,
+) -> (f64, Vec<f64>, Vec<String>) {
     // A cut with no sound in it cannot go over: nothing is decoded to find out.
     if !video_edit::audio::has_audio(cut) {
         return (0.0, Vec::new(), Vec::new());
     }
-    let mut source = video_edit::audio::DecodedPcm::new(cut);
+    let mut cache = sources
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut source = video_edit::audio::CachedSource::new(cut, &mut cache);
     let meters = video_edit::audio::MixMeters::new();
     let block = video_edit::audio::MONITOR_BLOCK;
     let step = ui_core::num::f64_of_usize(block) / f64::from(video_edit::audio::SAMPLE_RATE);

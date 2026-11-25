@@ -20,6 +20,7 @@ use crate::paint::{PaintCtx, with_alpha_scaled};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, TextRole};
+use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Ink, TaffyTreeExt, Widget};
 
 use super::{EDGE_GRAB, Geom, SNAP_REACH, on_grid, snap_target, tick_steps, timecode};
@@ -153,6 +154,8 @@ enum Hold {
     Empty {
         track: usize,
     },
+    /// The bar under the tracks that scrolls the lane along the time.
+    Scrollbar,
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +210,8 @@ pub struct TrackTimeline {
     pub(crate) scroll: f64,
     pub(crate) playhead: f64,
     pub(crate) length: f64,
+    /// The moments a measurement found a problem at, marked where they happened.
+    pub(crate) clips: Vec<f64>,
     pub(crate) step: f64,
     pub(crate) tracks: Vec<Track>,
     pub(crate) markers: Vec<Marker>,
@@ -227,9 +232,12 @@ pub struct TrackTimeline {
     modifiers: ModifiersState,
     drag: Option<Drag>,
     focus: Option<Focus>,
-    /// A span let go of, by its key, held where it was dropped until the view says where it
-    /// stands, or until this moment passes with no answer: then it glides back.
-    pending: Option<(String, crate::time::Instant)>,
+    /// The bar under the tracks that scrolls the lane along the time: the shared scroll model,
+    /// in seconds rather than pixels.
+    bar: Scrollbar,
+    /// The spans let go of, by their keys, held where they were dropped until the view says
+    /// where they stand, or until each one's moment passes with no answer: then they glide back.
+    pending: Vec<(String, crate::time::Instant)>,
 }
 
 impl TrackTimeline {
@@ -240,6 +248,7 @@ impl TrackTimeline {
             scroll: 0.0,
             playhead: 0.0,
             length: 0.0,
+            clips: Vec::new(),
             step: 0.0,
             tracks: Vec::new(),
             markers: Vec::new(),
@@ -257,7 +266,8 @@ impl TrackTimeline {
             modifiers: ModifiersState::empty(),
             drag: None,
             focus: None,
-            pending: None,
+            bar: Scrollbar::horizontal(),
+            pending: Vec::new(),
         };
         timeline.retarget(tracks, markers);
         timeline
@@ -306,7 +316,7 @@ impl TrackTimeline {
         self.shown.retain(|key, _| seen.contains(key));
         // The view answered: a span it kept where it was dropped stays, one it refused glides
         // back above.
-        self.pending = None;
+        self.pending.clear();
         self.lift.retain(|key, _| seen.contains(key));
         // A drag holds a span by its place: one the view took away or moved under the hand ends it.
         if let Some(Drag {
@@ -497,8 +507,46 @@ impl TrackTimeline {
                     length,
                 })
             }
-            Hold::Toggle { .. } | Hold::Empty { .. } => None,
+            Hold::Toggle { .. } | Hold::Empty { .. } | Hold::Scrollbar => None,
         }
+    }
+
+    /// Whether the lane shows less than what is on the tracks runs.
+    fn scrollable(&self) -> bool {
+        self.length > self.span + 0.5
+    }
+
+    /// How tall the band under the tracks is: the scroll bar's gutter, when there is one.
+    fn scrollbar_h(&self) -> f64 {
+        if self.scrollable() {
+            f64::from(self.theme().tokens.metrics.scrollbar_gutter)
+        } else {
+            0.0
+        }
+    }
+
+    /// The band under the tracks the bar lies in, and the track within it: the thumb's lane
+    /// along the time. `None` when the lane shows everything.
+    fn scrollbar(&self) -> Option<(Rect, Rect)> {
+        if !self.scrollable() {
+            return None;
+        }
+        let geom = self.geom();
+        let gutter = self.scrollbar_h();
+        let rows_bottom =
+            geom.rect.y0 + geom.ruler_h + geom.track_h * crate::num::f64_of_usize(geom.tracks);
+        let y0 = rows_bottom.min(self.rect.y1 - gutter).max(geom.rect.y0);
+        if y0 + gutter > self.rect.y1 + 0.5 {
+            return None;
+        }
+        let area = Rect::new(geom.lane().x0, y0, geom.rect.x1, y0 + gutter);
+        Some((area, self.bar.track_in(area, &self.theme())))
+    }
+
+    /// The bar's scroll geometry: the whole cut along the lane, what the lane shows, and where
+    /// it stands.
+    fn scroll_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.length.max(self.span), self.span, self.scroll)
     }
 
     /// The moment the playhead is drawn at: where the hand holds it while it is dragged.
@@ -610,6 +658,28 @@ impl TrackTimeline {
     }
 
     fn begin(&mut self, point: Point) -> bool {
+        if let Some((area, track)) = self.scrollbar() {
+            let metrics = self.scroll_metrics();
+            match self.bar.press(track, metrics, point) {
+                PressOutcome::Thumb => {
+                    self.drag = Some(Drag {
+                        hold: Hold::Scrollbar,
+                        origin: point,
+                        current: point,
+                        active: true,
+                    });
+                    self.dirty = true;
+                    return true;
+                }
+                PressOutcome::Page(offset) => {
+                    self.scroll_to(offset);
+                    return true;
+                }
+                // The band around the thumb is the bar's, not the last track's.
+                PressOutcome::Miss if area.contains(point) => return true,
+                PressOutcome::Miss => {}
+            }
+        }
         let Some(hold) = self.hold_at(point) else {
             return false;
         };
@@ -633,10 +703,14 @@ impl TrackTimeline {
             return;
         };
         drag.current = point;
+        if drag.hold == Hold::Scrollbar {
+            self.drag_bar(point);
+            return;
+        }
         let movable = match drag.hold {
             Hold::Span { track, .. } => self.tracks.get(track).is_some_and(|t| !t.locked),
             Hold::Marker { .. } | Hold::Playhead => true,
-            Hold::Toggle { .. } | Hold::Empty { .. } => false,
+            Hold::Toggle { .. } | Hold::Empty { .. } | Hold::Scrollbar => false,
         };
         if !drag.active && movable && (point - drag.origin).hypot() >= DRAG_THRESHOLD {
             drag.active = true;
@@ -663,6 +737,10 @@ impl TrackTimeline {
         };
         drag.current = point;
         self.dirty = true;
+        if drag.hold == Hold::Scrollbar {
+            self.bar.release();
+            return;
+        }
         if drag.active {
             match self.landing(&drag) {
                 Some(Landing::Playhead { at }) => {
@@ -705,6 +783,11 @@ impl TrackTimeline {
                 }
             }
             Hold::Empty { track } => {
+                // Shift on an empty stretch adds nothing to what is chosen: it keeps the
+                // selection as it stands rather than clearing it.
+                if self.modifiers.shift_key() {
+                    return;
+                }
                 if let Some(t) = self.tracks.get(track) {
                     let at = on_grid(self.geom().time_at(point.x), self.step);
                     self.press.fire(Some(Value::List(vec![
@@ -713,7 +796,7 @@ impl TrackTimeline {
                     ])));
                 }
             }
-            Hold::Playhead => {}
+            Hold::Playhead | Hold::Scrollbar => {}
         }
     }
 
@@ -742,7 +825,7 @@ impl TrackTimeline {
         } else {
             crate::time::Duration::from_millis(ANSWER_WAIT_MS)
         };
-        self.pending = Some((key, crate::time::now() + wait));
+        self.pending.push((key, crate::time::now() + wait));
         if unanswered {
             self.settle_pending(crate::time::now());
         }
@@ -766,32 +849,37 @@ impl TrackTimeline {
         }
     }
 
-    /// A dropped span the view has not answered for by `now` glides back to where it stands.
+    /// A dropped span the view has not answered for by `now` glides back to where it stands,
+    /// and so does every span dropped with it.
     fn settle_pending(&mut self, now: crate::time::Instant) -> bool {
-        let Some((key, by)) = self.pending.clone() else {
-            return false;
-        };
-        if now < by {
+        let (due, waiting): (
+            Vec<(String, crate::time::Instant)>,
+            Vec<(String, crate::time::Instant)>,
+        ) = self.pending.drain(..).partition(|(_, by)| *by <= now);
+        self.pending = waiting;
+        if due.is_empty() {
             return false;
         }
-        self.pending = None;
-        let Some(span) = self
-            .tracks
-            .iter()
-            .flat_map(|t| &t.spans)
-            .find(|s| s.key == key)
-        else {
-            return false;
-        };
-        let place = Vec2::new(span.start, span.length);
         let theme = self.theme();
         let timing = crate::motion::Snap::SPEC.timing(
             Direction::Enter,
             theme.motion(),
             MotionSource::Pointer,
         );
-        if let Some(shown) = self.shown.get_mut(&key) {
-            shown.set(place, timing, crate::motion::frame_now());
+        let frame = crate::motion::frame_now();
+        for (key, _) in due {
+            let Some(span) = self
+                .tracks
+                .iter()
+                .flat_map(|t| &t.spans)
+                .find(|s| s.key == key)
+            else {
+                continue;
+            };
+            let place = Vec2::new(span.start, span.length);
+            if let Some(shown) = self.shown.get_mut(&key) {
+                shown.set(place, timing, frame);
+            }
         }
         self.dirty = true;
         true
@@ -812,9 +900,17 @@ impl TrackTimeline {
 
     /// Zoom by `notches` of the wheel about the moment at `x`, keeping that moment under it.
     fn zoom_about(&mut self, notches: f64, x: f64) {
+        self.zoom_by(1.25_f64.powf(-notches), x);
+    }
+
+    /// Zoom by `factor`, as a pinch scales what the lane shows, about the moment at `x`.
+    fn zoom_by(&mut self, factor: f64, x: f64) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
         let geom = self.geom();
         let pinned = geom.time_at(x);
-        let span = (self.span * 1.25_f64.powf(-notches)).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
+        let span = (self.span * factor).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
         if (span - self.span).abs() < f64::EPSILON {
             return;
         }
@@ -1244,7 +1340,14 @@ impl TrackTimeline {
             crate::paint::stroke_line(
                 ctx.scene,
                 ctx.transform,
-                Line::new((x, ruler.y0), (x, self.rect.y1)),
+                Line::new(
+                    (x, ruler.y0),
+                    (
+                        x,
+                        (ruler.y1 + geom.track_h * crate::num::f64_of_usize(geom.tracks))
+                            .min(self.rect.y1),
+                    ),
+                ),
                 with_alpha_scaled(tone, 0.55),
                 hairline,
             );
@@ -1261,6 +1364,28 @@ impl TrackTimeline {
             }
         }
 
+        let tracks_bottom = ruler.y1 + geom.track_h * crate::num::f64_of_usize(geom.tracks);
+        // Where a measurement found a problem: a danger flag on the ruler and a line down the
+        // tracks, so the flag stands at the moment it is about.
+        for at in &self.clips {
+            let x = geom.x_of(*at);
+            let danger = crate::widget::Tone::Danger.colour(theme);
+            crate::paint::stroke_line(
+                ctx.scene,
+                ctx.transform,
+                Line::new((x, ruler.y0), (x, tracks_bottom.min(self.rect.y1))),
+                with_alpha_scaled(danger, 0.45),
+                hairline,
+            );
+            let mut flag = BezPath::new();
+            flag.move_to((x, ruler.y1 - 10.0));
+            flag.line_to((x + 8.0, ruler.y1 - 6.0));
+            flag.line_to((x, ruler.y1 - 2.0));
+            flag.close_path();
+            ctx.scene
+                .fill(Fill::NonZero, ctx.transform, danger, None, &flag);
+        }
+
         // The playhead: a line down every row with a handle on the ruler.
         let head = self.shown_playhead();
         let x = geom.x_of(head);
@@ -1268,7 +1393,7 @@ impl TrackTimeline {
         crate::paint::stroke_line(
             ctx.scene,
             ctx.transform,
-            Line::new((x, ruler.y0), (x, self.rect.y1)),
+            Line::new((x, ruler.y0), (x, tracks_bottom.min(self.rect.y1))),
             red,
             hairline * 2.0,
         );
@@ -1291,6 +1416,38 @@ impl TrackTimeline {
             );
         }
         ctx.scene.pop_layer();
+
+        // The bar under the tracks: how much of the cut the lane shows and where it stands.
+        if let Some((_, track)) = self.scrollbar() {
+            self.bar.draw(
+                ctx.scene,
+                ctx.transform,
+                track,
+                self.scroll_metrics(),
+                theme,
+                false,
+            );
+        }
+    }
+
+    /// Scroll the lane to where the hand holds the bar.
+    fn drag_bar(&mut self, point: Point) {
+        let Some((_, track)) = self.scrollbar() else {
+            return;
+        };
+        if let Some(offset) = self.bar.drag_to(track, self.scroll_metrics(), point) {
+            self.scroll_to(offset);
+        }
+    }
+
+    /// Light the bar's thumb while the pointer rests on it, and let it go when it leaves.
+    fn hover_bar(&mut self) {
+        let metrics = self.scroll_metrics();
+        if let Some((_, track)) = self.scrollbar()
+            && self.bar.update_hover(track, metrics, self.pointer)
+        {
+            self.dirty = true;
+        }
     }
 
     fn paint_span(&self, ctx: &mut PaintCtx<'_>, span: &Span, look: Look, geom: &Geom) {
@@ -1705,6 +1862,21 @@ impl TrackTimeline {
     pub(crate) fn wheel_for_test(&mut self, notches: f64, x: f64) {
         self.zoom_about(notches, x);
     }
+
+    #[cfg(test)]
+    pub(crate) fn pinch_for_test(&mut self, factor: f64, x: f64) {
+        self.zoom_by(factor, x);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scrollbar_for_test(&self) -> Option<(Rect, Rect)> {
+        self.scrollbar()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bar_metrics_for_test(&self) -> ScrollMetrics {
+        self.scroll_metrics()
+    }
 }
 
 impl Widget for TrackTimeline {
@@ -1743,9 +1915,10 @@ impl Widget for TrackTimeline {
             _ => 0.0,
         });
         let (_, ruler_h, track_h) = self.metrics();
+        let rows = Geom::height(ruler_h, track_h, self.tracks.len()) + self.scrollbar_h();
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(Geom::height(ruler_h, track_h, self.tracks.len())),
+            height: crate::num::f32_of_f64(rows),
         }
     }
 
@@ -1780,6 +1953,12 @@ impl Widget for TrackTimeline {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.modifiers = ctx.modifiers.state();
         match event {
+            WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.pointer) => {
+                if *delta != 0.0 {
+                    self.zoom_by(1.0 + *delta, self.pointer.x);
+                    *ctx.handled = true;
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.pointer) => {
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
@@ -1799,6 +1978,7 @@ impl Widget for TrackTimeline {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = ctx.logical(position);
+                self.hover_bar();
                 if self.drag.is_some() {
                     self.update_drag(self.pointer);
                     *ctx.handled = true;
@@ -1879,7 +2059,7 @@ impl Widget for TrackTimeline {
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-        self.pending.as_ref().map(|(_, by)| *by)
+        self.pending.iter().map(|(_, by)| *by).min()
     }
 
     fn serve_deadline(&mut self, now: crate::time::Instant) -> bool {
@@ -1898,6 +2078,19 @@ impl Widget for TrackTimeline {
                 _ => CursorIcon::Grabbing,
             });
         }
+        if let Some((area, track)) = self.scrollbar()
+            && area.contains(point)
+        {
+            let over_thumb = self
+                .bar
+                .thumb_rect(track, self.scroll_metrics())
+                .is_some_and(|thumb| thumb.contains(point));
+            return Some(if over_thumb {
+                CursorIcon::Grab
+            } else {
+                CursorIcon::Default
+            });
+        }
         Some(match self.hold_at(point)? {
             Hold::Playhead => CursorIcon::ColResize,
             Hold::Span { track, grab, .. } => {
@@ -1911,7 +2104,7 @@ impl Widget for TrackTimeline {
             }
             Hold::Marker { .. } => CursorIcon::Grab,
             Hold::Toggle { .. } => CursorIcon::Pointer,
-            Hold::Empty { .. } => CursorIcon::Default,
+            Hold::Empty { .. } | Hold::Scrollbar => CursorIcon::Default,
         })
     }
 

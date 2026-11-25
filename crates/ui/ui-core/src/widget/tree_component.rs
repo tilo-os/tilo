@@ -484,6 +484,8 @@ impl Command {
             link,
             choose,
             separator: _,
+            // A command row here is not a font picker's: no row previews a face.
+            sample: _,
         } = props;
         Self {
             label,

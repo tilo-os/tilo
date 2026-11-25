@@ -647,7 +647,28 @@ fn shown_picture(p: Photo) -> Text {
 
 /// The picture the grid draws for `p`: the small preview where one was made, else the picture.
 fn card_picture(p: Photo) -> Text {
+    if p.picture == "" {
+        return ""
+    }
+    // A picture whose bytes are still on another device shows the thumbnail this device holds
+    // while there is one, and its shape while there is not: never a blank card.
+    if p.picture_state == "waiting" {
+        // The thumbnail stands in while the photograph arrives; without one the card shows
+        // its shape and says what it waits for.
+        return p.thumb
+    }
+    if p.picture_state == "unreadable" {
+        return ""
+    }
     if p.thumb != "" { p.thumb } else { p.picture }
+}
+
+/// What a card says under a picture this device does not hold: where it stands. A card with no
+/// art still says what it waits for or why it cannot open it.
+fn card_state(p: Photo) -> List<Text> {
+    if p.picture_state == "waiting" {
+        [std.say("Arriving from another device")]
+    } else if p.picture_state == "unreadable" { [std.say("Could not open this photo")] } else { [] }
 }
 
 /// The photo ids in a list, toggled: the one there is taken out, the one that is not is added.
@@ -2016,6 +2037,7 @@ view library_grid(
                     p,
                     title: p.name,
                     picture: card_picture(p),
+                    meta: card_state(p),
                     selected: selection.contains(p.id),
                 ) {
                     on activate: set(selection, toggled(selection, p.id))
@@ -2025,7 +2047,7 @@ view library_grid(
     } else {
         ui.MediaGrid(size: if big { .regular } else { .small }, fill) {
             for p in photos {
-                ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                ui.MediaCard(p, title: p.name, picture: card_picture(p), meta: card_state(p)) {
                     on activate: check_picture(p)
                         .then(set(viewing, p.id))
                         .then(set(confirming, false))
@@ -2091,7 +2113,12 @@ view timeline_page(lib: Library, viewing: State<Text>, month: State<Text>, day: 
                 ui.Text(day_word(d.key), role: .subheading)
                 ui.MediaGrid(size: .small, fill) {
                     for p in d.items {
-                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                        ui.MediaCard(
+                            p,
+                            title: p.name,
+                            picture: card_picture(p),
+                            meta: card_state(p),
+                        ) {
                             on activate: set(viewing, p.id)
                         }
                     }
@@ -2103,7 +2130,12 @@ view timeline_page(lib: Library, viewing: State<Text>, month: State<Text>, day: 
                 ui.Text("No capture date", role: .subheading)
                 ui.MediaGrid(size: .small, fill) {
                     for p in undated {
-                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                        ui.MediaCard(
+                            p,
+                            title: p.name,
+                            picture: card_picture(p),
+                            meta: card_state(p),
+                        ) {
                             on activate: set(viewing, p.id)
                         }
                     }
@@ -2164,7 +2196,7 @@ view places_page(lib: Library, viewing: State<Text>) {
                             width: 96,
                             height: 96,
                         ) {
-                            ui.MediaCard(p, picture: card_picture(p)) {
+                            ui.MediaCard(p, picture: card_picture(p), meta: card_state(p)) {
                                 on activate: set(viewing, p.id)
                             }
                         }
@@ -2175,7 +2207,12 @@ view places_page(lib: Library, viewing: State<Text>) {
                 ui.Text("Named places", role: .caption, secondary: true)
                 ui.MediaGrid(size: .small, fill) {
                     for p in named {
-                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                        ui.MediaCard(
+                            p,
+                            title: p.name,
+                            picture: card_picture(p),
+                            meta: card_state(p),
+                        ) {
                             on activate: set(viewing, p.id)
                         }
                     }
@@ -2537,11 +2574,17 @@ view analysis_page(lib: Library) {
         if not run.failures.is_empty() {
             ui.Text("Needs attention", role: .subheading)
             for failure in run.failures {
-                ui.ListRow(
-                    title: failure_name(lib, failure.resource),
-                    secondary: failure.reason,
-                    icon: .circle_alert,
-                )
+                if let p = lib.photos.find(x -> failure.resource.ends_with(x.id)) {
+                    ui.ListRow(title: p.name, secondary: failure.reason, icon: .circle_alert) {
+                        on activate: open(p)
+                    }
+                } else {
+                    ui.ListRow(
+                        title: failure.resource,
+                        secondary: failure.reason,
+                        icon: .circle_alert,
+                    )
+                }
             }
         }
     }
@@ -2556,12 +2599,6 @@ fn analysis_word(phase: Text) -> Text {
     } else if phase == "complete" {
         "Finished"
     } else if phase == "cancelled" { "Stopped" } else { "Ready to analyze" }
-}
-
-/// The photo a failed analysis names: the kind and id its search entry carries end with the id
-/// the library gave it, so the failure reads as the photo it is about.
-fn failure_name(lib: Library, resource: Text) -> Text {
-    if let p = lib.photos.find(x -> resource.ends_with(x.id)) { p.name } else { resource }
 }
 
 /// What the library knows of a photo, and what its fields are: its name, when it was taken,
@@ -2750,7 +2787,7 @@ view photos(lib: Library) {
     } else {
         ui.MediaGrid(size: .small) {
             for p in lib.photos {
-                ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                ui.MediaCard(p, title: p.name, picture: card_picture(p), meta: card_state(p)) {
                     on activate: open(p, front: false)
                 }
             }

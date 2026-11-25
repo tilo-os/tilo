@@ -4,6 +4,7 @@ use crate::component::{
     Component, Described, Event, OfferedAction, PartType, Person, ResourceId, Source,
 };
 use crate::icons::Icon;
+use crate::text_render::FontChoice;
 use crate::widget::{ButtonRole, MenuEntry, Press};
 
 use super::{MenuButton, MenuItem};
@@ -17,6 +18,9 @@ pub struct MenuItemProps {
     pub label: String,
     /// A glyph before the label, for recognition; the label stays its name.
     pub icon: Option<Icon>,
+    /// The face the label is set in, as a family's name: a font picker sets each row in the
+    /// family it offers, so a person chooses by reading it. Empty is the interface's own sans.
+    pub sample: Option<String>,
     /// It takes something away: drawn as destructive, and undone rather than confirmed.
     pub destructive: bool,
     /// Whether it is the one chosen now, in a menu of choices (a sort order).
@@ -48,6 +52,16 @@ pub struct MenuItemProps {
     pub choose: Event,
 }
 
+/// The face a row's label is set in: a family by name, or the interface's own sans for none.
+fn family_face(family: &str) -> FontChoice {
+    let family = family.trim();
+    if family.is_empty() {
+        FontChoice::SansSerif
+    } else {
+        FontChoice::Named(family.to_owned())
+    }
+}
+
 impl MenuItemProps {
     /// The command as a menu row: choosing it presses the action the view bound to it, or
     /// reports the view's own event.
@@ -61,6 +75,10 @@ impl MenuItemProps {
         let item = MenuItem::bound(props.label, press).with_destructive(props.destructive);
         let item = match props.icon {
             Some(icon) => item.with_icon(icon),
+            None => item,
+        };
+        let item = match props.sample.as_deref() {
+            Some(family) => item.with_sample(family_face(family)),
             None => item,
         };
         let item = match props.checked {
@@ -136,6 +154,7 @@ impl From<OfferedAction> for MenuItemProps {
             link: None,
             choose: action.run,
             separator: false,
+            sample: None,
         }
     }
 }

@@ -8449,7 +8449,7 @@
     },
     {
       "name": "TrackTimeline",
-      "doc": "A time ruler over rows of tracks, with what stands on each track as spans, the markers a person set on the ruler and the playhead: a film's cut, a sound's layers, a show's timing. Dragging a span moves it along its track or onto another, dragging its edge trims it, and both line up with the grid, the other spans' edges, the markers and the playhead; dragging along the ruler moves the playhead. Each is a typed event, and the timeline never changes what it shows: the view commits the change, and the span settles into the place the view gives it.",
+      "doc": "A time ruler over rows of tracks, with what stands on each track as spans, the markers a person set on the ruler and the playhead: a film's cut, a sound's layers, a show's timing. Dragging a span moves it along its track or onto another, dragging its edge trims it, and both line up with the grid, the other spans' edges, the markers and the playhead; dragging along the ruler moves the playhead. The wheel and a pinch zoom the lane about the pointer and scroll it along the time, and a bar under the tracks shows how much of the cut the lane holds and moves it. Each is a typed event, and the timeline never changes what it shows: the view commits the change, and the span settles into the place the view gives it.",
       "props": [
         {
           "name": "label",
@@ -8477,6 +8477,13 @@
           "name": "length",
           "doc": "How long what is on the tracks runs, in seconds: where zooming to fit and the end key go.",
           "type": "float"
+        },
+        {
+          "name": "clips",
+          "doc": "The moments a measurement found a problem at — where the mix went over full scale — marked on the ruler and down the tracks, so the flag stands where it happened.",
+          "type": {
+            "list": "float"
+          }
         },
         {
           "name": "step",
@@ -10353,6 +10360,13 @@
           "doc": "A glyph before the label, for recognition; the label stays its name.",
           "type": {
             "option": "icon"
+          }
+        },
+        {
+          "name": "sample",
+          "doc": "The face the label is set in, as a family's name: a font picker sets each row in the family it offers, so a person chooses by reading it. Empty is the interface's own sans.",
+          "type": {
+            "option": "text"
           }
         },
         {

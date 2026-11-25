@@ -1449,11 +1449,67 @@ mod cases {
                 )),
                 "the photo it could not read is listed, with why: {rows:?}"
             );
+            // The row opens the photo it is about, so a person looks at what failed.
+            let row = of_kind(page.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|node| text_prop(node, "title") == "Harbour.png")
+                .expect("the failed photo's row")
+                .key
+                .clone();
+            let opened = page
+                .fire_with(&row, "activate", None)
+                .unwrap_or_else(|why| panic!("the failed row opens its photo: {why}"));
+            assert!(matches!(opened, InvokeOutcome::Done(_)), "{opened:?}");
             // Retrying asks the device to read only the pictures that failed.
             let page = page;
             let retry = Gallery::control(&page, "ui.Button", "label", "Retry failed photos");
             page.press(&retry).unwrap();
             assert_eq!(g.vision.asked.borrow().as_slice(), ["retry"]);
+        }
+
+        phase a_card_whose_picture_is_on_another_device_says_so;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            // The bytes go from this device while the record stays: what a second device holds
+            // before the picture has arrived.
+            g.device.0.borrow_mut().clear();
+            g.call("check_picture", vec![Value::resource(&photo)]);
+            assert_eq!(
+                g.rt.read(&photo, "picture_state").unwrap(),
+                Value::text("waiting"),
+                "the picture is not here"
+            );
+            let page = g.open("library", vec![Value::resource(&g.lib)]);
+            let card = of_kind(page.tree(), "ui.MediaCard")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the library's card: {}", dump(page.tree())));
+            // The thumbnail this device kept stands in while the photograph arrives.
+            let thumb = match g.rt.read(&photo, "thumb").unwrap() {
+                Value::Text(thumb) => thumb,
+                other => panic!("the thumbnail reads {other:?}"),
+            };
+            assert!(!thumb.is_empty(), "the import kept a thumbnail");
+            assert_eq!(
+                card.props.get("picture").and_then(Value::as_text),
+                Some(thumb.as_str()),
+                "the card draws the thumbnail rather than nothing"
+            );
+            let meta: Vec<String> = match card.props.get("meta") {
+                Some(Value::List(items)) => items
+                    .iter()
+                    .filter_map(|item| item.as_text().map(str::to_owned))
+                    .collect(),
+                other => panic!("the card's meta reads {other:?}"),
+            };
+            assert!(
+                meta.contains(&"Arriving from another device".to_owned()),
+                "the card says where its picture is: {meta:?}"
+            );
         }
 
         phase what_a_photo_shows_is_read_in_one_call_and_shown;

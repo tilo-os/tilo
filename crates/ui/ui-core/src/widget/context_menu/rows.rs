@@ -95,6 +95,7 @@ impl FloatingRow for MenuRow {
                 label,
                 icon,
                 image,
+                sample,
                 checked,
                 destructive,
                 enabled,
@@ -115,6 +116,7 @@ impl FloatingRow for MenuRow {
                         submenu: submenu.is_some(),
                     },
                     label,
+                    sample.as_ref(),
                     (self.trailing.as_deref(), self.trailing_width),
                     (content_x0, content_x1),
                 );
@@ -157,6 +159,7 @@ fn paint_action(
     state: &RowState<'_, MenuColumns>,
     action: Action<'_>,
     label: &str,
+    sample: Option<&crate::text_render::FontChoice>,
     (trailing, trailing_width): (Option<&str>, f64),
     (content_x0, content_x1): (f64, f64),
 ) {
@@ -230,7 +233,10 @@ fn paint_action(
         }
         label_x += icon_size + f64::from(theme.tokens.spacing.s2);
     }
-    let style = theme.text(TextRole::Body);
+    let style = match sample {
+        Some(face) => theme.text(TextRole::Body).with_family(face.clone()),
+        None => theme.text(TextRole::Body),
+    };
     let shown = ctx.text.elide_to_width_style(
         label,
         crate::num::f32_of_f64((content_x1 - trailing_width - label_x).max(1.0)),

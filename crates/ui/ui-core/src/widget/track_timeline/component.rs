@@ -10,8 +10,10 @@ use super::widget::{Marker, Span, Track, TrackTimeline};
 /// set on the ruler and the playhead: a film's cut, a sound's layers, a show's timing. Dragging a
 /// span moves it along its track or onto another, dragging its edge trims it, and both line up
 /// with the grid, the other spans' edges, the markers and the playhead; dragging along the ruler
-/// moves the playhead. Each is a typed event, and the timeline never changes what it shows: the
-/// view commits the change, and the span settles into the place the view gives it.
+/// moves the playhead. The wheel and a pinch zoom the lane about the pointer and scroll it along
+/// the time, and a bar under the tracks shows how much of the cut the lane holds and moves it.
+/// Each is a typed event, and the timeline never changes what it shows: the view commits the
+/// change, and the span settles into the place the view gives it.
 #[derive(Component)]
 #[component(name = "TrackTimeline", role = "Group", label = "label")]
 pub struct TrackTimelineProps {
@@ -25,6 +27,9 @@ pub struct TrackTimelineProps {
     pub playhead: f64,
     /// How long what is on the tracks runs, in seconds: where zooming to fit and the end key go.
     pub length: f64,
+    /// The moments a measurement found a problem at — where the mix went over full scale — marked
+    /// on the ruler and down the tracks, so the flag stands where it happened.
+    pub clips: Vec<f64>,
     /// The grid a drag lands on, in seconds: one frame (1/30) for a film, nothing for free time.
     pub step: f64,
     /// The tracks, top to bottom, each with what stands on it.
@@ -59,6 +64,7 @@ impl Default for TrackTimelineProps {
             scroll: 0.0,
             playhead: 0.0,
             length: 0.0,
+            clips: Vec::new(),
             step: 0.0,
             tracks: Vec::new(),
             markers: Vec::new(),
@@ -239,6 +245,7 @@ impl Described for TrackTimeline {
         timeline.scroll = props.scroll.max(0.0);
         timeline.playhead = props.playhead.max(0.0);
         timeline.length = props.length.max(0.0);
+        timeline.clips = props.clips;
         timeline.step = props.step.max(0.0);
         timeline.scrub = props.scrub;
         timeline.seek = props.seek;
@@ -255,6 +262,7 @@ impl Described for TrackTimeline {
         self.scroll = props.scroll.max(0.0);
         self.playhead = props.playhead.max(0.0);
         self.length = props.length.max(0.0);
+        self.clips = props.clips;
         self.step = props.step.max(0.0);
         self.scrub = props.scrub;
         self.seek = props.seek;

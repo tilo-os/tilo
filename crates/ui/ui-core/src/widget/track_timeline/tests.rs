@@ -304,6 +304,75 @@ tilo_test_env::scenario! {
         assert!(fired.iter().any(|f| f.event == "scrolled"));
     }
 
+    phase a_pinch_scales_the_lane_about_the_pointer;
+    {
+        let queue = crate::Intents::default();
+        let mut timeline = laid(cut(&queue));
+        let pointer = x(&timeline, 10.0);
+        timeline.pinch_for_test(2.0, pointer);
+        let fired = queue.take();
+        let zoom = fired.iter().find(|f| f.event == "zoomed").expect("zoomed");
+        assert_eq!(floats(zoom.value.as_ref()), vec![10.0], "twice as close");
+        assert!((timeline.geom_for_test().time_at(pointer) - 10.0).abs() < 1e-9);
+    }
+
+    phase the_bar_under_the_tracks_scrolls_the_lane;
+    {
+        let queue = crate::Intents::default();
+        let mut props = cut(&queue);
+        // Forty seconds of cut in a lane that shows twenty: there is somewhere to scroll.
+        props.length = 40.0;
+        let mut timeline = laid(props);
+        let (area, track) = timeline.scrollbar_for_test().expect("a bar under the tracks");
+        assert!(
+            area.y0 >= timeline.geom_for_test().row(1).y1 - 0.5,
+            "the bar stands under the rows"
+        );
+        // The thumb starts at the leading end: take hold of it and drag a quarter of the track
+        // along, which is about half of what it can travel.
+        let grab = Point::new(track.x0 + 2.0, track.center().y);
+        assert!(timeline.press_at_for_test(grab, ModifiersState::empty()));
+        let to = Point::new(track.x0 + track.width() / 4.0, track.center().y);
+        timeline.move_to_for_test(to);
+        timeline.release_at_for_test(to);
+        let fired = queue.take();
+        let scrolled = fired
+            .iter()
+            .filter(|f| f.event == "scrolled")
+            .next_back()
+            .expect("the lane scrolled");
+        let at = floats(scrolled.value.as_ref())[0];
+        assert!((at - 10.0).abs() < 1.0, "a quarter of the track is half the cut: {at}");
+        // A press past the thumb pages by what the lane shows.
+        let after = Point::new(track.x1 - 4.0, track.center().y);
+        assert!(timeline.press_at_for_test(after, ModifiersState::empty()));
+        timeline.release_at_for_test(after);
+        let fired = queue.take();
+        let paged = fired
+            .iter()
+            .filter(|f| f.event == "scrolled")
+            .next_back()
+            .expect("a page");
+        assert!(floats(paged.value.as_ref())[0] > at, "a page goes on from where it stood");
+    }
+
+    phase shift_on_an_empty_stretch_keeps_the_selection;
+    {
+        let queue = crate::Intents::default();
+        let mut timeline = laid(cut(&queue));
+        // V1 after `b` (which ends at 14 s) is empty.
+        let empty = Point::new(x(&timeline, 16.0), row_y(&timeline, 0));
+        assert!(timeline.press_at_for_test(empty, ModifiersState::SHIFT));
+        timeline.release_at_for_test(empty);
+        assert!(queue.take().is_empty(), "Shift adds nothing and clears nothing");
+        let at = Point::new(x(&timeline, 16.0), row_y(&timeline, 0));
+        assert!(timeline.press_at_for_test(at, ModifiersState::empty()));
+        timeline.release_at_for_test(at);
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "{fired:?}");
+        assert_eq!((fired[0].key.as_str(), fired[0].event.as_str()), ("cut", "press"));
+    }
+
     phase a_reader_hears_the_playhead_the_tracks_and_their_spans;
     {
         let queue = crate::Intents::default();

@@ -576,6 +576,10 @@ d-smn7av4u-latitude = Breite
 
 d-smn7av4u-longitude = Länge
 
+d-j4y4smjx = Kartenstand
+    .w-arriving-from-another-device = Kommt von einem anderen Gerät
+    .w-could-not-open-this-photo = Dieses Foto konnte nicht geöffnet werden
+
 d-nu2l23l6 = Geteilte Zeile
     .w-not-set = Nicht gesetzt
     .w-mixed = Gemischt

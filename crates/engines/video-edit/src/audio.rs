@@ -429,6 +429,161 @@ impl PcmSource for DecodedPcm {
     }
 }
 
+/// A source's decoded samples, held between checks: the mix a person re-measures as they edit
+/// does not change a source's samples, so a decode answers every later check of the same cut.
+/// A file that changed — relinked, replaced, written again — is decoded again. Bounded by
+/// bytes, the oldest source leaving when a new one would not fit.
+#[cfg(any(feature = "gst", feature = "decode"))]
+pub struct SourcePcm {
+    entries: Vec<CachedPcm>,
+    bytes: usize,
+    limit: usize,
+}
+
+#[cfg(any(feature = "gst", feature = "decode"))]
+struct CachedPcm {
+    path: std::path::PathBuf,
+    stamp: Stamp,
+    pcm: Option<std::sync::Arc<Vec<f32>>>,
+}
+
+/// What says a source file is the one that was decoded: its size and the moment it was written.
+#[cfg(any(feature = "gst", feature = "decode"))]
+#[derive(Clone, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    written: Option<std::time::SystemTime>,
+}
+
+#[cfg(any(feature = "gst", feature = "decode"))]
+impl Stamp {
+    fn of(path: &std::path::Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: metadata.len(),
+            written: metadata.modified().ok(),
+        })
+    }
+}
+
+#[cfg(any(feature = "gst", feature = "decode"))]
+impl SourcePcm {
+    /// A cache holding at most `limit` bytes of decoded samples.
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            bytes: 0,
+            limit,
+        }
+    }
+
+    /// The source's samples, decoding them only when the file changed since the last check.
+    pub fn pcm(&mut self, source: &media::Source) -> Option<std::sync::Arc<Vec<f32>>> {
+        self.pcm_with(source, &mut decode_pcm)
+    }
+
+    /// [`Self::pcm`] with the decode `decode` does, so a test can count the decodes the cache
+    /// spares.
+    fn pcm_with(
+        &mut self,
+        source: &media::Source,
+        decode: &mut dyn FnMut(&media::Source) -> Option<Vec<f32>>,
+    ) -> Option<std::sync::Arc<Vec<f32>>> {
+        let Some(path) = source.abs_path() else {
+            // Nothing on this device says what the source's file is, so there is nothing to
+            // keep it by: it is decoded for this check alone.
+            return decode(source).map(std::sync::Arc::new);
+        };
+        let stamp = Stamp::of(&path);
+        if let Some(stamp) = &stamp
+            && let Some(at) = self.entries.iter().position(|entry| entry.path == path)
+        {
+            if self.entries[at].stamp == *stamp {
+                let pcm = self.entries[at].pcm.clone();
+                // The source just asked for stands last in line to leave.
+                let entry = self.entries.remove(at);
+                self.entries.push(entry);
+                return pcm;
+            }
+            // The file changed under the cut: what was decoded of it is no longer its samples.
+            let gone = self.entries.remove(at);
+            self.bytes = self.bytes.saturating_sub(bytes_of(gone.pcm.as_ref()));
+        }
+        let pcm = decode(source).map(std::sync::Arc::new);
+        let Some(stamp) = stamp else {
+            // Nothing says what the file is, so nothing says the decode still holds: it answers
+            // this check and is not kept.
+            return pcm;
+        };
+        let bytes = bytes_of(pcm.as_ref());
+        if bytes > self.limit {
+            return pcm;
+        }
+        self.entries.push(CachedPcm {
+            path,
+            stamp,
+            pcm: pcm.clone(),
+        });
+        self.bytes = self.bytes.saturating_add(bytes);
+        while self.bytes > self.limit && self.entries.len() > 1 {
+            let gone = self.entries.remove(0);
+            self.bytes = self.bytes.saturating_sub(bytes_of(gone.pcm.as_ref()));
+        }
+        pcm
+    }
+
+    /// How many sources it holds decoded.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[cfg(any(feature = "gst", feature = "decode"))]
+fn bytes_of(pcm: Option<&std::sync::Arc<Vec<f32>>>) -> usize {
+    pcm.map_or(0, |pcm| pcm.len() * std::mem::size_of::<f32>())
+}
+
+/// A mix that reads its sources through [`SourcePcm`]: the same samples as [`DecodedPcm`],
+/// decoded once across checks instead of once per check.
+#[cfg(any(feature = "gst", feature = "decode"))]
+pub struct CachedSource<'a> {
+    sources: std::collections::HashMap<MediaId, media::Source>,
+    cache: &'a mut SourcePcm,
+}
+
+#[cfg(any(feature = "gst", feature = "decode"))]
+impl<'a> CachedSource<'a> {
+    pub fn new(project: &Project, cache: &'a mut SourcePcm) -> Self {
+        let sources = project
+            .media
+            .iter()
+            .filter_map(|item| {
+                let resolved = item.source();
+                resolved
+                    .is_decodable()
+                    .then(|| (item.id, crate::media::engine_source(&resolved.abs_path)))
+            })
+            .collect();
+        Self { sources, cache }
+    }
+}
+
+#[cfg(any(feature = "gst", feature = "decode"))]
+impl PcmSource for CachedSource<'_> {
+    fn samples(&mut self, media: MediaId, from_secs: f64, frames: usize) -> Option<Vec<f32>> {
+        let source = self.sources.get(&media)?;
+        let pcm = self.cache.pcm(source)?;
+        let start = (from_secs.max(0.0) * f64::from(SAMPLE_RATE)) as usize * CHANNELS;
+        if start >= pcm.len() {
+            return None;
+        }
+        let end = (start + frames * CHANNELS).min(pcm.len());
+        pcm.get(start..end).map(<[f32]>::to_vec)
+    }
+}
+
 /// `None` when the source yields no audio at all: a silent video is not an error.
 /// A decode that stalls past its budget mixes as silence rather than freezing an
 /// export.
@@ -1972,5 +2127,44 @@ mod tests {
             });
             assert!(!has_audio(&p));
         }
+    }
+}
+
+#[cfg(all(test, any(feature = "gst", feature = "decode")))]
+mod pcm_cache_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::SourcePcm;
+
+    #[test]
+    fn a_source_is_decoded_once_until_the_file_changes() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let path = dir.path().join("take.wav");
+        std::fs::write(&path, b"first take").expect("the source");
+        let source = crate::media::engine_source(&path);
+        let mut cache = SourcePcm::new(1 << 20);
+        let decodes = AtomicUsize::new(0);
+        let mut decode = |_: &media::Source| {
+            decodes.fetch_add(1, Ordering::Relaxed);
+            Some(vec![0.25_f32; 8])
+        };
+        let first = cache.pcm_with(&source, &mut decode).expect("samples");
+        let again = cache.pcm_with(&source, &mut decode).expect("samples");
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "the held samples answer the second check"
+        );
+        assert_eq!(decodes.load(Ordering::Relaxed), 1, "a source decodes once");
+        // The file changed under the cut: it is decoded again, and the old samples go.
+        std::fs::write(&path, b"a longer second take").expect("the source again");
+        let third = cache.pcm_with(&source, &mut decode).expect("samples");
+        assert_eq!(
+            decodes.load(Ordering::Relaxed),
+            2,
+            "a changed file decodes again"
+        );
+        assert!(!Arc::ptr_eq(&first, &third));
+        assert_eq!(cache.held(), 1, "one source, one set of samples");
     }
 }

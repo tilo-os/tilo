@@ -1403,8 +1403,24 @@ mod cases {
             s.call("add_effect", vec![Value::resource(&first), Value::text("sepia")]);
             let copied = s.call("copy_clips", vec![Value::resource(&p), both.clone()]);
             assert!(matches!(copied, InvokeOutcome::Done(_)), "the copy ran: {copied:?}");
-            s.call("paste_clips", vec![Value::resource(&p), Value::Float(40.0)]);
+            let made = s.call("paste_clips", vec![Value::resource(&p), Value::Float(40.0)]);
+            let made: Vec<String> = match made {
+                InvokeOutcome::Done(Value::List(items)) => items
+                    .iter()
+                    .filter_map(|item| item.as_text().map(str::to_owned))
+                    .collect(),
+                other => panic!("the paste answers the clips it made: {other:?}"),
+            };
             let clips = s.clips(&p);
+            let mut pasted_ids: Vec<String> = clips
+                .iter()
+                .filter(|c| s.number(c, "start") >= 40.0 - f64::EPSILON)
+                .map(|c| c.id_string())
+                .collect();
+            pasted_ids.sort();
+            let mut answered = made.clone();
+            answered.sort();
+            assert_eq!(answered, pasted_ids, "the paste names the clips it made, to choose");
             assert_eq!(clips.len(), 4, "the paste made two clips: {}", s.text(&p, "trouble"));
             let mut starts: Vec<f64> = clips.iter().map(|c| s.number(c, "start")).collect();
             starts.sort_by(f64::total_cmp);
@@ -1426,7 +1442,15 @@ mod cases {
             s.call("nudge", vec![Value::resource(&p), both.clone(), Value::Int(second_of_frames)]);
             assert!((s.number(&first, "start") - 1.0).abs() < f64::EPSILON, "a second later");
             assert!((s.number(&second, "start") - 13.0).abs() < f64::EPSILON, "and the other with it");
-            s.call("duplicate_clips", vec![Value::resource(&p), both.clone()]);
+            let copies = s.call("duplicate_clips", vec![Value::resource(&p), both.clone()]);
+            let copies: Vec<String> = match copies {
+                InvokeOutcome::Done(Value::List(items)) => items
+                    .iter()
+                    .filter_map(|item| item.as_text().map(str::to_owned))
+                    .collect(),
+                other => panic!("the duplicate answers its copies: {other:?}"),
+            };
+            assert_eq!(copies.len(), 2, "one copy of each clip, named to choose");
             assert_eq!(s.clips(&p).len(), 6);
             assert!(
                 s.clips(&p)
@@ -1557,6 +1581,56 @@ mod cases {
     }
 
     tilo_test_env::scenario! {
+        fn a_chosen_group_moves_onto_another_track;
+
+        phase the_group_follows_the_clip_the_hand_grabbed;
+        {
+            let s = Studio::new();
+            let (p, media, first) = s.placed();
+            let v1 = s.tracks(&p).into_iter().find(|t| s.text(t, "name") == "V1").unwrap();
+            s.place(&p, &media, &v1, 12.0);
+            let second = s
+                .clips(&p)
+                .into_iter()
+                .find(|c| c.id_string() != first.id_string())
+                .expect("a second clip");
+            let v2 = match s.call(
+                "add_track",
+                vec![
+                    Value::resource(&p),
+                    Value::Enum(EnumValue {
+                        ty: s.app.compiled.ids.get("Form").expect("Form").to_owned(),
+                        variant: s.app.compiled.ids.get("Form.video").expect("video").to_owned(),
+                        fields: std::collections::BTreeMap::default(),
+                    }),
+                ],
+            ) {
+                InvokeOutcome::Done(Value::Ref(r)) => std::rc::Rc::unwrap_or_clone(r.target),
+                other => panic!("a video track is added: {other:?}"),
+            };
+            // Both clips are chosen when the first is dragged one second on, onto V2.
+            s.call(
+                "move_to",
+                vec![
+                    Value::resource(&p),
+                    Value::resource(&first),
+                    Value::Float(1.0),
+                    Value::text(v2.id_string()),
+                    Value::List(vec![Value::resource(&first), Value::resource(&second)]),
+                ],
+            );
+            let track_of = |c: &ResourceRef| match s.rt.read(c, "track").unwrap() {
+                Value::Ref(r) => r.target.id_string(),
+                other => panic!("a clip's track reads {other:?}"),
+            };
+            assert_eq!(track_of(&first), v2.id_string(), "the grabbed clip lands on V2");
+            assert_eq!(track_of(&second), v2.id_string(), "and the chosen clip with it");
+            assert!((s.number(&first, "start") - 1.0).abs() < f64::EPSILON);
+            assert!((s.number(&second, "start") - 13.0).abs() < f64::EPSILON, "keeping its distance");
+        }
+    }
+
+    tilo_test_env::scenario! {
         fn the_mix_says_where_it_clipped_and_comes_down_as_one;
 
         phase the_device_measures_where_the_mix_goes_over;
@@ -1611,6 +1685,23 @@ mod cases {
                 "the mix's flag says how far over it went:\n{}",
                 dump(window.tree())
             );
+            // The flag stands on the timeline at the moments it is about, not only in the
+            // inspector's banner.
+            let timeline = of_kind(window.tree(), "ui.TrackTimeline")
+                .into_iter()
+                .next()
+                .expect("the timeline");
+            let marks: Vec<f64> = match timeline.props.get("clips") {
+                Some(Value::List(items)) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Float(at) => *at,
+                        other => panic!("a clip mark reads {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("the timeline's clip marks read {other:?}"),
+            };
+            assert_eq!(marks, vec![3.0, 7.5], "the flag stands where the mix clipped");
             // The button beside the tracks takes the playhead to the first place it clipped,
             // and the device is asked for the frame there.
             let go = of_kind(window.tree(), "ui.Button")
@@ -1825,14 +1916,31 @@ mod cases {
             let opened = window.fire_with(&key, "activate", None);
             assert!(matches!(opened, Ok(InvokeOutcome::Done(_))), "{opened:?}");
             let window = s.window();
-            assert!(
-                of_kind(window.tree(), "ui.MenuButton")
-                    .iter()
-                    .any(|button| button.props.get("label").and_then(Value::as_text)
-                        == Some("System sans")),
-                "the title's font picker names the family in force:\n{}",
-                dump(window.tree())
-            );
+            let picker = of_kind(window.tree(), "ui.MenuButton")
+                .into_iter()
+                .find(|button| {
+                    button.props.get("label").and_then(Value::as_text) == Some("System sans")
+                })
+                .unwrap_or_else(|| {
+                    panic!("the title's font picker names the family in force:\n{}", dump(window.tree()))
+                });
+            // Every row is set in the family it offers, so a person chooses by reading it.
+            let sample = |item: &&tilolang_runtime::UiNode| match item.props.get("sample") {
+                Some(Value::Text(family)) => Some(family.clone()),
+                Some(Value::Opt(Some(inner))) => inner.as_text().map(str::to_owned),
+                _ => None,
+            };
+            let rows = of_kind(picker, "ui.MenuItem");
+            assert!(!rows.is_empty(), "the picker offers the device's faces");
+            for row in rows {
+                let label = row.props.get("label").and_then(Value::as_text).unwrap_or_default();
+                let wanted = if label == "System sans" { "" } else { label };
+                assert_eq!(
+                    sample(&row).as_deref(),
+                    Some(wanted),
+                    "`{label}` is shown in itself"
+                );
+            }
         }
     }
 }

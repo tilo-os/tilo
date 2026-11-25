@@ -1172,7 +1172,7 @@ view library_settings(lib: Library) {
                         }
                         ui.MenuButton("Add a face", icon: .plus) {
                             for family in fonts() {
-                                ui.MenuItem(font_family_title(family)) {
+                                ui.MenuItem(font_family_title(family), sample: family) {
                                     on choose: add_font(lib, family)
                                 }
                             }
@@ -1577,7 +1577,11 @@ view book_page(b: Book) {
                         }
                         ui.MenuButton("Face", icon: .type, icon_only: true) {
                             for f in shown_fonts(lib) {
-                                ui.MenuItem(font_title(f), checked: lib.face == f.family) {
+                                ui.MenuItem(
+                                    font_title(f),
+                                    checked: lib.face == f.family,
+                                    sample: f.family,
+                                ) {
                                     on choose: set_face(lib, f.family)
                                 }
                             }
