@@ -2573,6 +2573,26 @@ impl Driver {
         if let Some(refusal) = self.own_refusal(invocation) {
             return Err(refusal);
         }
+        // Another provider's action ends as that provider answered it.
+        match self.provider_answer(invocation) {
+            Some(tilo_actions::remote::ReceiptStatus::Completed { output }) => {
+                return Ok(crate::widget::ResourceOperationStart::Completed(
+                    output.clone(),
+                ));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Failed { error }) => {
+                return Err(jobs::failure_refusal(address, error.clone()));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Cancelled { message }) => {
+                return Err(tilo_actions::ApiError::Failed(
+                    message.clone().unwrap_or_else(|| "cancelled".to_owned()),
+                ));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Rejected { error }) => {
+                return Err(crate::session_api::api_error(error));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Accepted) | None => {}
+        }
         let ended = self
             .call_updates(invocation)
             .into_iter()
