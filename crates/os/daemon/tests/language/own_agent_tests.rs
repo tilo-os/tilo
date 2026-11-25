@@ -633,11 +633,19 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
         Answer::Allow,
         tilo_action_policy::Grantee::person(cy_person.clone()),
     );
-    // What Cy's device, and a replica holding its membership log alone, decided before he wrote.
-    let cys_before = [
-        cys.policy_of(&workspace).await.unwrap(),
-        membership_log_alone(cys, &workspace).await,
-    ];
+    // Bea's answer reaches Cy's device through the serving device in its own time: Cy's writes
+    // are weighed against copies of his that hold it, or its arrival would read as their effect.
+    let deadline = tilo_test_env::hang_deadline();
+    let beas_agent = decides(&before, &bea_person);
+    while decides(&cys.policy_of(&workspace).await.unwrap(), &bea_person) != beas_agent
+        || decides(&membership_log_alone(cys, &workspace).await, &bea_person) != beas_agent
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Bea's answer never reached Cy"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     for change in [cys_stop, cys_answer] {
         answer_grant(cys, &workspace, change)
             .await
@@ -647,7 +655,7 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
         cys.policy_of(&workspace).await.unwrap(),
         membership_log_alone(cys, &workspace).await,
     ];
-    for (policy, earlier) in cys_after.iter().zip(&cys_before) {
+    for policy in &cys_after {
         assert!(policy.stops(SCOUT, &cy_person, &cx()), "Cy stopped his own");
         assert!(
             !policy.stops(SCOUT, &bea_person, &cx()),
@@ -655,7 +663,7 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
         );
         assert_eq!(
             decides(policy, &bea_person),
-            decides(earlier, &bea_person),
+            beas_agent,
             "Bea's agent is decided as before Cy wrote anything"
         );
         assert_eq!(
