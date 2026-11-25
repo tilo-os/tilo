@@ -1202,8 +1202,8 @@ tilo_test_env::scenario! {
 
     phase an_operation_names_exactly_the_governance_its_batch_changes;
     // The operation names what its batch changed and nothing else: a change no
-    // operation names, or a row an operation names without changing it, is
-    // refused.
+    // operation names, or a row an operation names that no change of the batch
+    // wrote, is refused.
     {
         let workspace = started();
         let before = &workspace.doc;
@@ -1246,6 +1246,28 @@ tilo_test_env::scenario! {
             WorkspaceRefusal::GovernanceWriter,
             "an operation names a row the batch did not change"
         );
+        // A batch that writes a row and puts it back as it was, as a server
+        // detached and named again among the holders, still names it.
+        let reached = crate::members::heads(&crate::members::ops(before));
+        let put_back = governing(
+            &workspace.admin,
+            &workspace.admin_key,
+            reached,
+            &[GovernanceRow::Settings],
+        );
+        let batch = changes_after(before, |doc| {
+            doc.put(ROOT, "name", "Renamed").unwrap();
+            doc.put(ROOT, "name", "Workspace").unwrap();
+            crate::members::put_op(doc, &put_back).unwrap();
+        });
+        let admitted = admit(
+            Some(before),
+            member_of(&admin, &workspace.admin),
+            &workspace.owner.user_public_key,
+            &batch,
+        )
+        .expect("an operation names a row its batch wrote and put back");
+        assert_eq!(name_of(&admitted.candidate).as_deref(), Some("Workspace"));
     }
 
     phase a_reader_relays_an_operation_that_proves_its_writer;

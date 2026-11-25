@@ -278,7 +278,19 @@ fn operations_name_rows(
         declared.retain(|row| *row != GovernanceRow::Checkpoints);
     }
     declared.sort_unstable();
-    if declared != held_rows {
+    // Every part the batch changes is one an operation names, and every part an
+    // operation names is one the batch changes. A batch can write a part and
+    // put it back as it was, as a server detached and named again among the
+    // holders: the operations that wrote it still name it, and each was judged
+    // on it above.
+    let wrote = written
+        .and_then(|written| super::rows::written_rows(candidate, written))
+        .unwrap_or_default();
+    if held_rows.iter().any(|row| !declared.contains(row))
+        || declared
+            .iter()
+            .any(|row| !held_rows.contains(row) && !wrote.contains(row))
+    {
         return Err(MembershipRefusal::NotMembership);
     }
     Ok(())
@@ -553,16 +565,55 @@ fn row_name(row: GovernanceRow) -> &'static str {
 /// from ([`crate::standing::taken_from`]): a cut is the record of a change
 /// that took standing away, written by whoever may make that change, and of
 /// no one else.
+///
+/// A batch can carry a change that took a standing away and a later one that
+/// gave it back, as a server detached and named again among the holders: read
+/// across the whole batch, nothing is taken from it. Such a cut is judged at
+/// the write that made it, which must have taken the standing it records: a
+/// governance write commits what it changes and then the cuts and operations
+/// recording it, so that write is the change holding the cut together with
+/// its parent when the same device made both.
 fn standing(workspace: &str, at: &AutoCommit, after: &AutoCommit) -> Result<(), MembershipRefusal> {
     let taken = crate::standing::taken_from(workspace, at, after);
     let cut = crate::standing::subjects_cut(at, after).map_err(MembershipRefusal::Refused)?;
-    match cut.into_iter().find(|subject| !taken.contains(subject)) {
-        Some(subject) => Err(MembershipRefusal::Refused(format!(
-            "a cut of {}, whose standing the change takes nothing of",
-            hex::encode(subject)
-        ))),
-        None => Ok(()),
+    let untaken: Vec<[u8; 32]> = cut
+        .into_iter()
+        .filter(|subject| !taken.contains(subject))
+        .collect();
+    if untaken.is_empty() {
+        return Ok(());
     }
+    let mut history = after.clone();
+    let mut from = at.clone();
+    let changes = history.get_changes(&from.get_heads());
+    for subject in untaken {
+        let taken_where_cut = changes.iter().any(|change| {
+            let start = match change.deps() {
+                [parent] => changes
+                    .iter()
+                    .find(|earlier| {
+                        earlier.hash() == *parent && earlier.actor_id() == change.actor_id()
+                    })
+                    .unwrap_or(change),
+                _ => change,
+            };
+            let (Ok(before), Ok(written)) = (
+                history.fork_at(start.deps()),
+                history.fork_at(&[change.hash()]),
+            ) else {
+                return false;
+            };
+            crate::standing::subjects_cut(&before, &written).is_ok_and(|cut| cut.contains(&subject))
+                && crate::standing::taken_from(workspace, &before, &written).contains(&subject)
+        });
+        if !taken_where_cut {
+            return Err(MembershipRefusal::Refused(format!(
+                "a cut of {}, whose standing the change takes nothing of",
+                hex::encode(subject)
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The invitation `signed`, redeemed by `joiner` at `at_ns`, when it admits

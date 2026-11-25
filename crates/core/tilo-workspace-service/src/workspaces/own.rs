@@ -559,6 +559,13 @@ impl Workspaces {
                 format!("come into {host} through its entry first"),
             ),
             None => {
+                // A server that offers no workspaces of its own has no site
+                // name to say this under.
+                let host = if host.is_empty() {
+                    "this server"
+                } else {
+                    host.as_str()
+                };
                 return EntryRefused {
                     code: EntryRefusalCode::Refused,
                     error: format!("{host} keeps workspaces only for the person it runs for"),
