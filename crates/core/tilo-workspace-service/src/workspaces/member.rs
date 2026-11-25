@@ -2211,8 +2211,8 @@ impl Workspaces {
         let name = workspace.to_owned();
         let workspaces = self.downgrade();
         let intake = self.content_intake(&name);
+        let asks = self.content_asks(workspace, link);
         let mut reader = link.reader();
-        let link = link.clone();
         tokio::spawn(async move {
             while let Some(frame) = reader.recv().await {
                 let Some(workspaces) = workspaces.upgrade() else {
@@ -2274,32 +2274,9 @@ impl Workspaces {
                 if !asking {
                     continue;
                 }
-                // A mounted workspace's file bytes are read from its Files daemon, whose answer
-                // comes in on a socket this runtime serves: read on the runtime's own thread, the
-                // read would wait out every ask for an answer that cannot arrive.
-                let answers = {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_answer(&name, &author, &body)
-                    })
-                    .await
-                };
-                let Ok(answers) = answers else {
-                    continue;
-                };
-                for answer in answers {
-                    let Ok(message) = tilo_failure::ignored!(
-                        "a content answer this device made itself does not decode",
-                        NeighbourMsg::decode(&answer)
-                    ) else {
-                        continue;
-                    };
-                    // Waits while the link to the serving device is full: the
-                    // asks behind this one wait with it.
-                    if let Err(error) = link.send_content(message).await {
-                        tracing::debug!(%name, %error, "a member's content answer did not reach the serving device");
-                    }
+                // The answering is gone only with the member copy's host.
+                if asks.send((frame.author, body)).await.is_err() {
+                    return;
                 }
             }
         })

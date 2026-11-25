@@ -700,6 +700,7 @@ impl Workspaces {
         let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
         let link = link.clone();
         let intake = self.content_intake(&name);
+        let asks = self.content_asks(&name, &link);
         // Subscribed, where the replica stands, before the task runs:
         // every frame the link admits from here on is this reader's, and what
         // the replica held before is not read again.
@@ -751,32 +752,9 @@ impl Workspaces {
                 if !asking {
                     continue;
                 }
-                // A mounted workspace's file bytes are read from its Files daemon, whose answer
-                // comes in on a socket this runtime serves: read on the runtime's own thread, the
-                // read would wait out every ask for an answer that cannot arrive.
-                let answers = {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_answer(&name, &author, &body)
-                    })
-                    .await
-                };
-                let Ok(answers) = answers else {
-                    continue;
-                };
-                for answer in answers {
-                    match NeighbourMsg::decode(&answer) {
-                        Ok(message) => {
-                            // Waits while the asker's link is full: the asks
-                            // behind this one wait with it, and so does the
-                            // asker.
-                            let _ = link.send_content(message).await;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "a content answer did not encode");
-                        }
-                    }
+                // The answering is gone only with the host.
+                if asks.send((frame.author, body)).await.is_err() {
+                    return;
                 }
             }
         });
