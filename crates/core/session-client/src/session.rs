@@ -2812,9 +2812,7 @@ impl Task {
                     None => _ = status.workspace_devices.remove(&workspace),
                 });
             }
-            let calls = self
-                .with_workspace(workspace_id, |view| Ok(view.peer().governance().calls()))
-                .and_then(Result::ok);
+            let calls = self.call_rules(workspace_id);
             if self.reports.status().workspace_calls.get(&workspace) != calls.as_ref() {
                 self.reports.change(|status| match calls {
                     Some(calls) => _ = status.workspace_calls.insert(workspace.clone(), calls),
@@ -3675,13 +3673,13 @@ impl Task {
                 .count(),
         );
         for (id, bytes, ..) in kept {
-            if room == 0 {
+            let Some(left) = room.checked_sub(1) else {
                 break;
-            }
+            };
             if !self.sent.insert((workspace_id, id)) {
                 continue;
             }
-            room -= 1;
+            room = left;
             let message = match neighbour_wire::NeighbourMsg::decode(&bytes) {
                 Ok(message) => message,
                 Err(error) => {
@@ -4461,6 +4459,15 @@ impl Task {
                 .collect())
         })?
         .ok()
+    }
+
+    /// What each call of `workspace_id` allows, by channel, as the workspace keeps it.
+    fn call_rules(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<BTreeMap<String, collab_types::calls::CallRule>> {
+        self.with_workspace(workspace_id, |view| Ok(view.peer().governance().calls()))
+            .and_then(Result::ok)
     }
 
     /// The devices that hold the keys of `route`'s workspace, as the channels' directory names

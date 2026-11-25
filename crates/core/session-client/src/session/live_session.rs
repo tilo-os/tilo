@@ -576,10 +576,7 @@ impl Task {
                 );
                 continue;
             };
-            let call_rules = self
-                .with_workspace(workspace_id, |view| Ok(view.peer().governance().calls()))
-                .and_then(Result::ok)
-                .unwrap_or_default();
+            let call_rules = self.call_rules(workspace_id).unwrap_or_default();
             let call_persons: BTreeMap<[u8; 32], String> = self
                 .member_devices(workspace_id)
                 .unwrap_or_default()
