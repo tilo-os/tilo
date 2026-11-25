@@ -2,6 +2,17 @@
 //! starts an app when the app offers actions whose ids begin with it.
 use super::*;
 
+/// What the app itself ran, since the last time this was taken: the window a call brings
+/// forward is the workspace's `open`, which is the open the call is, never another action the
+/// app offers.
+fn ran_in_the_app(notes: &Notes) -> Vec<(String, String, Value)> {
+    notes
+        .invoked()
+        .into_iter()
+        .filter(|(_, action, _)| action != "open")
+        .collect()
+}
+
 /// `notes#open` is what starts Notes, and says what is in it once it runs. The live Notes
 /// offers an agent `open-link`, its one action whose id begins with `open`: asked to open on
 /// Notes that runs already (another device of the person's opened it, and this one shows its
@@ -20,7 +31,7 @@ fn opening_an_app_that_runs_is_never_another_action_its_name_begins() {
                 "{path}: {text}"
             );
         }
-        assert_eq!(host.invoked(), Vec::new(), "nothing was run");
+        assert_eq!(ran_in_the_app(&host), Vec::new(), "nothing was run");
         // Nor with arguments, which are the open's own and no other action's.
         let (text, failed) = tool(
             &server,
@@ -32,7 +43,7 @@ fn opening_an_app_that_runs_is_never_another_action_its_name_begins() {
             failed && text.contains("has no action open; its open-link is another action"),
             "{text}"
         );
-        assert_eq!(host.invoked(), Vec::new(), "nothing was run");
+        assert_eq!(ran_in_the_app(&host), Vec::new(), "nothing was run");
         for path in ["notes#open-link", "notes#open-l"] {
             let (text, failed) = tool(
                 &server,
@@ -42,8 +53,7 @@ fn opening_an_app_that_runs_is_never_another_action_its_name_begins() {
             .await;
             assert!(!failed, "{path}: {text}");
         }
-        let ran: Vec<String> = host
-            .invoked()
+        let ran: Vec<String> = ran_in_the_app(&host)
             .into_iter()
             .map(|(_, action, _)| action)
             .collect();
