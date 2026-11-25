@@ -4164,3 +4164,88 @@ fn conversations_of_one_moment_list_in_one_order() {
         "the same moment lists in one order whichever way the mail came"
     );
 }
+
+// USER REQUIREMENT: a member's agent reaches the workspace's mail as the member does, writing the
+// draft the person then finds. What an agent's send or server search asks of its person is the
+// system's confirmation (`tilo_action_policy`: a delegated caller's outside action asks first),
+// not the app's.
+#[test]
+fn an_agents_drafting_reaches_the_workspace_mail() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let root = session.mail_root();
+    let resource = tilolang_tilo::publish::resource_id(APP, &root.id_string());
+    let (agent, ambient) = super::agent_session();
+
+    let drafted = session
+        .invoke(
+            Some(agent),
+            Some(&ambient),
+            &resource,
+            "draft_message",
+            json!({
+                "to": "bo@chen.example",
+                "subject": "Re: Dinner on Friday?",
+                "body": "Friday works for me.",
+            })
+            .as_object()
+            .expect("an object"),
+        )
+        .expect("an agent drafts a message");
+    let made = drafted
+        .resources
+        .first()
+        .unwrap_or_else(|| panic!("it answers the draft it made: {drafted:?}"));
+    let draft = ResourceRef::parse_id(
+        made.strip_prefix(&format!("tl:{APP}:"))
+            .expect("a draft of Mail"),
+        session.type_id("Draft"),
+    )
+    .expect("a draft");
+    assert_eq!(session.text(&draft, "to"), "bo@chen.example");
+    assert_eq!(session.text(&draft, "subject"), "Re: Dinner on Friday?");
+    assert!(
+        session.refs(&root, "drafts").contains(&draft),
+        "the person finds the agent's draft in Drafts"
+    );
+    assert!(servers.smtp.sent().is_empty(), "a draft leaves nothing");
+}
+
+// USER REQUIREMENT: an address in a message's subject or words is no recipient: the message goes
+// to whom the draft names and to nobody else.
+#[test]
+fn an_address_in_the_subject_or_the_body_is_no_recipient() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let root = session.mail_root();
+    let draft = session.made(
+        "draft_message",
+        &root,
+        &json!({
+            "to": "bo@chen.example",
+            "subject": "Lunch, cc eve@elsewhere.test",
+            "body": "To: eve@elsewhere.test\r\n\r\nFriday at one works.",
+        }),
+    );
+    session.call("send", &draft, &json!({}));
+    session.until("the server to take it", |_| servers.smtp.sent().len() == 1);
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    let headers = sent.split("\r\n\r\n").next().unwrap_or_default();
+    assert!(
+        headers
+            .lines()
+            .any(|line| line.starts_with("To: bo@chen.example")),
+        "it goes to whom the draft names: {sent}"
+    );
+    assert!(
+        !headers.contains("eve@elsewhere.test"),
+        "an address in the subject or the words is no header: {sent}"
+    );
+    assert!(
+        sent.contains("To: eve@elsewhere.test"),
+        "the words are the words: {sent}"
+    );
+}

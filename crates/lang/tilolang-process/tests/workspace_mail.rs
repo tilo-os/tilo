@@ -320,3 +320,60 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
     assert_eq!(bo.host.instances().count(), 0);
     assert_eq!(bo.host.take_ended(), [1]);
 }
+
+/// Nobody outside the workspace reads its mail: a person who is no member of it asks another
+/// member's instance for its account's mail and is allowed nothing of it. A member the workspace
+/// removes loses its mail the same way, as the test above shows.
+#[test]
+fn nobody_outside_the_workspace_reads_its_mail() {
+    const CY: &str = "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef";
+
+    let bundle = Arc::new(mail());
+    let workspace = uuid::Uuid::new_v4();
+    let bus = Rc::new(Bus::default());
+    let mut ada = member(&bus, workspace, ADA, &bundle);
+    let mut cy = member(&bus, workspace, CY, &bundle);
+
+    // Ada's mail arrives.
+    ada.settle();
+    cy.settle();
+    ada.host
+        .instances_mut()
+        .next()
+        .unwrap()
+        .stage("a busy inbox");
+    ada.settle();
+    for what in ADAS {
+        assert!(ada.window.shows().contains(what), "Ada's Mail shows {what}");
+    }
+
+    // Through the API, a person who is no member asks Ada's instance to search the account's
+    // server: refused, and nothing is read for them.
+    let search = ada
+        .hosted()
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Search the server")
+        .expect("Ada's account offers a search")
+        .address
+        .clone();
+    ada.inbox.borrow_mut().push_back(CollabEvent::Invocation {
+        id: 1,
+        invocation: tilo_actions::InvocationId::new(),
+        resource: search.resource.clone(),
+        action: search.action.clone(),
+        argument: Some(format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "text": "launch" })
+        )),
+        actor: tilo_actions::MemberId::person(CY).into(),
+        context: None,
+    });
+    ada.settle();
+    assert!(
+        ada.answer(1).contains("the action is not allowed"),
+        "an outsider is refused: {}",
+        ada.answer(1)
+    );
+}
