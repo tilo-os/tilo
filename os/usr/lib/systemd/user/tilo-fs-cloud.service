@@ -10,18 +10,15 @@ After=graphical-session.target
 Slice=background.slice
 Type=simple
 # One mount per enabled cloud storage account (WebDAV, Nextcloud, Google
-# Drive, OneDrive, Dropbox, iCloud Drive) under ~/Remote. The service reads
-# the account store and each account's short-lived credential from the
-# handoff store; it never opens the account vault. When a credential is
-# missing, expired or rejected it runs Settings' credential helper, which
-# alone opens the vault for that call and publishes a fresh short-lived
-# credential. Each `fs mount-cloud` child receives only its own account's
+# Drive, OneDrive, Dropbox, iCloud Drive) under ~/Remote. The service keeps no
+# sign-in and opens no vault: the daemon that keeps the workspaces' accounts
+# releases each mount's credential when the mount asks, and keeps a renewed
+# grant there. Each `fs mount-cloud` child receives only its own account's
 # credential on stdin. Per-account metadata, queued uploads and the content
 # cache live under the state dir: queued edits are not a cache and must
 # survive cache cleaning.
 # The sandbox below makes the home read-only, so the mounts root comes from
-# user-tmpfiles.d/tilo-fs.conf (in /usr/share) and the accounts directory from
-# ConfigurationDirectory=. No ExecStartPre: under systemd 259 a user unit
+# user-tmpfiles.d/tilo-fs.conf (in /usr/share). No ExecStartPre: under systemd 259 a user unit
 # with PrivateIPC=yes cannot start a second sandboxed process (its IPC
 # namespace setup fails with EPERM and the next exec exits 226/NAMESPACE).
 # Two control sockets, each the user's alone and carrying no credential.
@@ -35,18 +32,13 @@ RestartSec=2s
 TimeoutStopSec=20s
 
 # Mounts need `fusermount3`'s privilege transition in the children, so
-# NoNewPrivileges must remain off. Settings' account store and the handoff
-# store are read through the read-only home; the handoff key comes from the
-# session's Secret Service. The accounts directory stays writable for the
-# credential helper this service runs, which seals rotated grants back into
-# the vault and publishes handoff credentials; nothing else under the config
-# directory is.
+# NoNewPrivileges must remain off. Nothing under the config directory is read
+# or written.
 PrivateTmp=yes
 PrivateIPC=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/Remote %S/tilo %E/tilo %E/tilo/accounts
-ConfigurationDirectory=tilo/accounts
+ReadWritePaths=%h/Remote %S/tilo
 StateDirectory=tilo/cloud
 # Kept across restarts (and created at login by user-tmpfiles.d): Settings'
 # sandbox binds tilo-fs-cloud, so a restarted service's socket shows through.

@@ -837,16 +837,13 @@ fn idle_polls_back_off_and_reset_on_activity() {
     }
 }
 
-/// The stand-in session telling the accounts `root` keeps: one per root, for as long as the
-/// tests run.
-fn session(root: &Path) -> Arc<accounts::sign_ins::fixture::Fixture> {
+/// The stand-in daemon telling the accounts `root` keeps: one per root, for as long as the
+/// tests run. It answers the app's own dispatch as the daemon of this computer does: the
+/// workspaces, their cloud accounts, one account's sign-in whenever a mount asks, and the
+/// reports a mount makes.
+fn session(root: &Path) -> Arc<TestAsk> {
     static SESSIONS: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                std::path::PathBuf,
-                Arc<accounts::sign_ins::fixture::Fixture>,
-            >,
-        >,
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Arc<TestAsk>>>,
     > = std::sync::OnceLock::new();
     let mut sessions = SESSIONS
         .get_or_init(std::sync::Mutex::default)
@@ -855,8 +852,115 @@ fn session(root: &Path) -> Arc<accounts::sign_ins::fixture::Fixture> {
     Arc::clone(
         sessions
             .entry(root.to_path_buf())
-            .or_insert_with(|| Arc::new(accounts::sign_ins::fixture::Fixture::serve(root))),
+            .or_insert_with(|| Arc::new(TestAsk::default())),
     )
+}
+
+/// The daemon's answers, as the tests change them.
+#[derive(Default)]
+struct TestAsk {
+    state: std::sync::Mutex<TestState>,
+}
+
+#[derive(Default)]
+struct TestState {
+    accounts: Vec<accounts::Account>,
+    secrets: std::collections::HashMap<String, String>,
+    reports: Vec<(String, accounts::SyncHealth)>,
+}
+
+impl TestAsk {
+    fn keep(&self, id: &str, password: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .secrets
+            .insert(id.to_owned(), password.to_owned());
+    }
+
+    fn keep_account(&self, account: accounts::Account) {
+        let mut state = self.state.lock().unwrap();
+        state.accounts.retain(|held| held.id != account.id);
+        state.accounts.push(account);
+    }
+
+    fn remove_account(&self, id: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .accounts
+            .retain(|account| account.id.as_str() != id);
+    }
+
+    fn reported(&self) -> Vec<(String, accounts::SyncHealth)> {
+        self.state.lock().unwrap().reports.clone()
+    }
+}
+
+impl tilo_fs::cloud::Ask for TestAsk {
+    fn invoke(
+        &self,
+        _: Option<&str>,
+        target: tilo_actions::remote::RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, tilo_fs::cloud::Asked> {
+        use tilo_fs::cloud::Asked;
+        let mut state = self.state.lock().unwrap();
+        match (target.provider.as_str(), target.address.action.as_str()) {
+            ("tilo.account", "list") => Ok(serde_json::json!({
+                "workspaces": [{"id": "workspace-1"}]
+            })),
+            ("tilo.accounts", "cloud-accounts") => Ok(serde_json::json!({
+                "accounts": state
+                    .accounts
+                    .iter()
+                    .filter(|account| tilo_fs::cloud::providers::is_file_account(account))
+                    .filter_map(|account| {
+                        Some(serde_json::json!({
+                            "account": serde_json::to_value(account).ok()?,
+                            "signedIn": false
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            })),
+            ("tilo.accounts", "cloud-credential") => {
+                let id = arguments
+                    .get("account")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| Asked::Refused("an account is named".into()))?;
+                let account = state
+                    .accounts
+                    .iter()
+                    .find(|account| account.id.as_str() == id)
+                    .ok_or_else(|| Asked::Refused("That account is not kept here".into()))?;
+                let username = account
+                    .config
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let secret = state.secrets.get(id).cloned().unwrap_or_default();
+                Ok(serde_json::json!({
+                    "kind": "basic",
+                    "username": username,
+                    "secret": secret
+                }))
+            }
+            ("tilo.accounts", "report-sync") => {
+                let id = arguments
+                    .get("account")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let health = arguments
+                    .get("health")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(accounts::SyncHealth::from_word)
+                    .unwrap_or_default();
+                state.reports.push((id.to_owned(), health));
+                Ok(serde_json::Value::Null)
+            }
+            (_, action) => Err(Asked::Refused(format!("no such action: {action}"))),
+        }
+    }
 }
 
 /// Keep `password` in the vault entry account `id` signs in with.
@@ -868,7 +972,7 @@ fn service_config(root: &Path, home: &Path) -> ServiceConfig {
     ServiceConfig {
         mounts_root: home.join("Remote"),
         state_root: home.join("state"),
-        accounts: Arc::new(tilo_fs::cloud::SessionAccounts::new(session(root).socket())),
+        accounts: Arc::new(tilo_fs::cloud::SessionAccounts::over(session(root))),
         control_socket: None,
         file_socket: None,
     }

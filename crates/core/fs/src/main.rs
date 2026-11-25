@@ -330,16 +330,15 @@ async fn run_command(cli: Cli) -> Result<()> {
                 Some(path) => path,
                 None => std::env::current_exe()?,
             };
-            let sign_ins = accounts::sign_ins::socket()
-                .context("no runtime directory for the session's account sign-ins")?;
             let result = tokio::task::spawn_blocking(move || {
                 tilo_fs::cloud::CloudService::new(
                     tilo_fs::cloud::ServiceConfig {
-                        // The session tells the workspaces' file accounts and releases their
-                        // passwords.
-                        accounts: std::sync::Arc::new(tilo_fs::cloud::SessionAccounts::new(
-                            sign_ins,
-                        )),
+                        // The daemon that keeps the workspaces' accounts releases each mount's
+                        // sign-in, as the person on this computer, whenever the mount asks.
+                        accounts: std::sync::Arc::new(
+                            tilo_fs::cloud::SessionAccounts::new()
+                                .map_err(std::io::Error::other)?,
+                        ),
                         mounts_root,
                         state_root,
                         control_socket,

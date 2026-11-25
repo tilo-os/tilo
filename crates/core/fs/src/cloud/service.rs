@@ -1,12 +1,12 @@
 //! The per-user cloud account service and its mount processes.
 //!
-//! `fs cloud-service` (user unit `tilo-fs-cloud.service`) follows the file accounts of the
-//! workspaces this device holds, as the session tells them ([`super::account_source`]), and
-//! keeps exactly one mount per enabled file account at
+//! `fs cloud-service` (user unit `tilo-fs-cloud.service`) follows the cloud accounts of the
+//! workspaces this device holds, as the daemon that keeps them tells them
+//! ([`super::account_source`]), and keeps exactly one mount per enabled cloud account at
 //! `~/Remote/<account label>`. An account that appears or is enabled gets a mount
 //! process with its one short-lived credential on stdin; one disabled, reconfigured or
 //! removed has its mount stopped, and removal also drops its cache and queued state.
-//! The service reports each mount's health to the session, which keeps it in the
+//! The service reports each mount's health to the daemon, which keeps it in the
 //! workspace's accounts that every member's Settings reads.
 //!
 //! It serves its mounts' control (`runtime_fs::cloud`) on two sockets, each mode 0600
@@ -14,10 +14,9 @@
 //! capabilities, syncs, pauses and resumes; the file socket also asks a mount for a
 //! file's revisions, to restore a revision or for a share link. Each request travels
 //! down the mount's stdin and its answer comes back on stdout, so no credential
-//! crosses either socket. Neither the service nor its mounts open a vault: a password
-//! is released by the session from the workspace's vault entry the account names, and
-//! an access token comes from the handoff store, which runs Settings' credential helper
-//! when it is missing, expired or rejected.
+//! crosses either socket. Neither the service nor its mounts open a vault or keep a sign-in: the
+//! daemon that keeps the account releases its password, or its grant's access token, whenever
+//! the mount asks, and keeps a renewed grant in the workspace's vault.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;

@@ -849,7 +849,7 @@ impl Workspaces {
             reason = "a test signs in through a stand-in provider; a real build uses the committed registrations"
         )
     )]
-    fn cloud_credentials(&self, root: &Path) -> CredentialStore {
+    pub(in crate::workspaces) fn cloud_credentials(&self, root: &Path) -> CredentialStore {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(store) = self
             .inner

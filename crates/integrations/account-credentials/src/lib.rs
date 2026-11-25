@@ -27,11 +27,12 @@
 //! - **The model manager** downloads gated Hugging Face models with a
 //!   Hugging Face sign-in Settings made for that alone
 //!   ([`Capability::ModelDownloads`], `hugging_face`).
-//! - **A drive this process reads** (`tilo migrate` bringing a cloud's files
-//!   over) signs in with [`DriveSignIn`]: the access token (or `iCloud`
-//!   session headers) is made in memory from the grant, renewed when due, and
-//!   any rotated grant is sealed back into the vault. Nothing short-lived is
-//!   written to a file for another process.
+//! - **A drive that reads a cloud's files** (`tilo migrate` bringing one
+//!   over, a device's mount) signs in with [`CredentialStore::drive_credential`]:
+//!   the access token (or `iCloud` session headers) is made from the sign-in the
+//!   workspace's vault keeps, renewed when due, and the rotated sign-in is
+//!   answered to be kept back where the account is. No vault is opened here and
+//!   nothing short-lived is written to a file for another process.
 //!
 //! A grant the provider no longer accepts (a revoked refresh token, an
 //! `iCloud` session that needs the two-factor step again) is refused as
@@ -68,7 +69,7 @@ pub use spotify_identity::SpotifyIdentity;
 pub use clients::{COPILOT_TOKEN_ENDPOINT, ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "store")]
 pub use credential_store::{
-    CredentialError, CredentialStore, DriveSignIn, GrantState, RenewedGrant, SIGN_IN_TIMEOUT,
+    CredentialError, CredentialStore, DriveCredential, GrantState, RenewedGrant, SIGN_IN_TIMEOUT,
     copied_secret, copied_source_matches, icloud_apple_id, icloud_secret, is_cloud_type,
     is_copied_secret, oauth_secret, oauth_tokens, password_credential, protected_grant_protocol,
     requires_protected_consumer,

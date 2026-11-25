@@ -57,7 +57,6 @@ filesystem = [
     "dep:fuser",
     "dep:fs-native",
     "dep:accounts",
-    "dep:account-credentials",
     "dep:cloud-source",
     "dep:cloud-source-dav",
     "dep:cloud-source-gdrive",
@@ -160,9 +159,6 @@ redb.workspace = true
 # Cloud accounts as mounted folders: the account store and credential
 # handoff, the provider interface and the providers.
 accounts = { package = "tilo-accounts", version = "0.1.0", path = "../../integrations/accounts", optional = true }
-# What a sign-in-by-provider-page account's drive reads with: the grant this device keeps,
-# renewed by the same store `tilo migrate` reads it through.
-account-credentials = { version = "0.1.0", path = "../../integrations/account-credentials", optional = true }
 cloud-source = { package = "tilo-cloud-source", version = "0.1.0", path = "../../integrations/cloud-source", optional = true }
 cloud-source-dav = { package = "tilo-cloud-source-dav", version = "0.1.0", path = "../../integrations/cloud-source-dav", optional = true }
 cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", version = "0.1.0", path = "../../integrations/cloud-source-gdrive", optional = true }

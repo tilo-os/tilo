@@ -15,6 +15,8 @@
 
 /// The device's cloud-storage mounts: what the accounts' sync actions tell them.
 pub(in crate::workspaces) mod cloud_control;
+/// The cloud-storage accounts a device's mount reads, and the sign-ins it is handed.
+pub(in crate::workspaces) mod cloud_mounts;
 /// The sign-ins of the accounts and providers, as entries of the workspace's vault.
 pub(in crate::workspaces) mod kept_sign_ins;
 pub(in crate::workspaces) mod oauth_grant;
@@ -328,6 +330,33 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
+        // What a device's cloud mount reads and signs in with: the accounts it mounts and the
+        // sign-in of one, answered to the person's own connection alone. The mount runs as the
+        // person on this computer, outside any app or page, so what it reads is decided by the
+        // workspace's own rules for them, as the vault's releases are.
+        if matches!(
+            action,
+            person_accounts::CLOUD_ACCOUNTS
+                | person_accounts::CLOUD_CREDENTIAL
+                | person_accounts::REPORT_SYNC_VERB
+        ) {
+            if !caller.is_own_connection() {
+                return Err(ActionCallError::Refused {
+                    reason: "A cloud mount's sign-in is answered only to a connection of your \
+                             own on this computer"
+                        .to_owned(),
+                });
+            }
+            let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+            let here = workspace.to_string();
+            let root = self.workspace_root(&here);
+            let signing = Signing {
+                vault: self.vault_for(&here, caller.acting()).serving(request),
+                root: &root,
+                by: "",
+            };
+            return cloud_mounts::invoke(self, signing, &here, caller.acting(), request).await;
+        }
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);
         let reach = self
@@ -393,7 +422,9 @@ pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
         person_accounts::LIST
         | person_accounts::WATCH
         | person_accounts::FIND_SERVERS
-        | person_accounts::SIGN_INS => ActionKind::Read,
+        | person_accounts::SIGN_INS
+        | person_accounts::CLOUD_ACCOUNTS
+        | person_accounts::CLOUD_CREDENTIAL => ActionKind::Read,
         _ => ActionKind::Undoable,
     }
 }

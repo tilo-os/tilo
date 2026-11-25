@@ -3,11 +3,12 @@
 //! refresh token becoming "sign in again", and a drive only ever seeing access
 //! tokens.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use accounts::{Account, AccountId, Secret, SecretVault};
-use cloud_source::CredentialSource as _;
+use cloud_source::CredentialSource;
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 use zeroize::Zeroizing;
 
@@ -16,7 +17,7 @@ use crate::icloud::{
 };
 use crate::providers::{GOOGLE_DRIVE_TYPE, ICLOUD_DRIVE_TYPE, WEBDAV_TYPE};
 use crate::{
-    CredentialError, CredentialStore, DriveSignIn, OAuthCloud, icloud_secret, oauth_secret,
+    CredentialError, CredentialStore, DriveCredential, OAuthCloud, icloud_secret, oauth_secret,
 };
 
 fn save(
@@ -92,10 +93,33 @@ fn signed_in_drive(lifetime: u64) -> (Fixture, tilo_oauth::TokenSet) {
     )
 }
 
+/// The sign-in the vault at `root` keeps for `account`, and what a drive makes of it: the
+/// renewed sign-in is kept back, as the accounts provider keeps it.
+fn drive(
+    credential_store: &CredentialStore,
+    root: &Path,
+    account: &Account,
+    force: bool,
+) -> Result<DriveCredential, CredentialError> {
+    let secret = SecretVault::open_in(root)
+        .get(&account.id)
+        .ok_or(CredentialError::NeedsAuthentication)?;
+    let made = credential_store.drive_credential(account, &secret, force)?;
+    if let Some(renewed) = &made.renewed {
+        let mut vault = SecretVault::open_in(root);
+        vault.put(&account.id, renewed);
+        vault.try_save().map_err(CredentialError::Storage)?;
+    }
+    Ok(made)
+}
+
 /// The access token a drive of `id` signs in with now.
-fn drive_token(credential_store: &CredentialStore, account: &Account) -> String {
-    match credential_store.file_credential(account, false).unwrap() {
-        cloud_source::Credential::Bearer { token, .. } => token.to_string(),
+fn drive_token(credential_store: &CredentialStore, root: &Path, account: &Account) -> String {
+    match drive(credential_store, root, account, false)
+        .unwrap()
+        .credential
+    {
+        Some(cloud_source::Credential::Bearer { token, .. }) => token.to_string(),
         other => panic!("expected a bearer token, got {other:?}"),
     }
 }
@@ -103,11 +127,51 @@ fn drive_token(credential_store: &CredentialStore, account: &Account) -> String 
 /// The session headers a drive of `id` signs in with now.
 fn drive_headers(
     credential_store: &CredentialStore,
+    root: &Path,
     account: &Account,
 ) -> Vec<(String, Zeroizing<String>)> {
-    match credential_store.file_credential(account, false).unwrap() {
-        cloud_source::Credential::Session { headers, .. } => headers,
+    match drive(credential_store, root, account, false)
+        .unwrap()
+        .credential
+    {
+        Some(cloud_source::Credential::Session { headers, .. }) => headers,
         other => panic!("expected session headers, got {other:?}"),
+    }
+}
+
+/// A drive's connection to the vault at `root`, as a device helper's is: the credential the
+/// store makes of the sign-in the vault keeps, the renewed sign-in kept back.
+struct DriveOver {
+    store: CredentialStore,
+    root: PathBuf,
+    account: Account,
+    rejected: AtomicBool,
+}
+
+impl DriveOver {
+    fn new(store: &CredentialStore, root: &Path, account: &Account) -> Self {
+        Self {
+            store: store.clone(),
+            root: root.to_path_buf(),
+            account: account.clone(),
+            rejected: AtomicBool::new(false),
+        }
+    }
+}
+
+impl CredentialSource for DriveOver {
+    fn credential(&self) -> cloud_source::Result<cloud_source::Credential> {
+        let force = self.rejected.swap(false, Ordering::SeqCst);
+        let made =
+            drive(&self.store, &self.root, &self.account, force).map_err(|error| match error {
+                CredentialError::Offline => cloud_source::Error::Offline,
+                _ => cloud_source::Error::Unauthorized,
+            })?;
+        made.credential.ok_or(cloud_source::Error::Unauthorized)
+    }
+
+    fn rejected(&self) {
+        self.rejected.store(true, Ordering::SeqCst);
     }
 }
 
@@ -130,7 +194,7 @@ tilo_test_env::scenario! {
         let root = dir.path().join("tilo");
         let id = AccountId::from("google-drive-1");
         let tokens = tilo_oauth::TokenSet::default();
-        let saved = save(
+        save(
             &root,
             &id,
             GOOGLE_DRIVE_TYPE,
@@ -149,10 +213,6 @@ tilo_test_env::scenario! {
             credential_store.oauth_access_token(&id, GMAIL, false),
             Err(CredentialError::Storage(_))
         ));
-        assert!(matches!(
-            credential_store.file_credential(&saved, false),
-            Err(CredentialError::Storage(_))
-        ));
         assert_eq!(std::fs::read(&sealed).unwrap(), b"corrupt credentials");
     }
 
@@ -160,7 +220,7 @@ tilo_test_env::scenario! {
     {
         let (fixture, tokens) = signed_in_drive(3600);
         assert_eq!(
-            drive_token(&fixture.credential_store, &fixture.account),
+            drive_token(&fixture.credential_store, &fixture.root, &fixture.account),
             tokens.access_token
         );
         assert_eq!(
@@ -178,7 +238,7 @@ tilo_test_env::scenario! {
     phase a_due_token_is_refreshed_before_it_is_handed_out;
     {
         let (fixture, tokens) = signed_in_drive(1);
-        let handed = drive_token(&fixture.credential_store, &fixture.account);
+        let handed = drive_token(&fixture.credential_store, &fixture.root, &fixture.account);
         assert_eq!(fixture.server.refreshes(), 1, "the due token is renewed first");
         assert_ne!(handed, tokens.access_token);
         assert_eq!(
@@ -190,7 +250,11 @@ tilo_test_env::scenario! {
     phase a_rejected_token_is_replaced_through_the_drives_sign_in;
     {
         let (fixture, tokens) = signed_in_drive(3600);
-        let source = DriveSignIn::new(fixture.credential_store.clone(), fixture.account.clone());
+        let source = DriveOver::new(
+            &fixture.credential_store,
+            &fixture.root,
+            &fixture.account,
+        );
         let bearer = |credential: cloud_source::Credential| match credential {
             cloud_source::Credential::Bearer { token, .. } => token.to_string(),
             other => panic!("unexpected {other:?}"),
@@ -206,13 +270,18 @@ tilo_test_env::scenario! {
     {
         let (fixture, _tokens) = signed_in_drive(3600);
         fixture.server.revoke_all_refresh_tokens();
+        let dead = drive(&fixture.credential_store, &fixture.root, &fixture.account, true)
+            .expect("the grant is read, and left emptied");
         assert!(
-            matches!(
-                fixture.credential_store.file_credential(&fixture.account, true),
-                Err(CredentialError::NeedsAuthentication)
-            )
+            dead.credential.is_none(),
+            "a revoked grant signs no drive in"
         );
-        let source = DriveSignIn::new(fixture.credential_store, fixture.account);
+        let source = DriveOver::new(
+            &fixture.credential_store,
+            &fixture.root,
+            &fixture.account,
+        );
+        source.rejected();
         assert!(matches!(
             source.credential(),
             Err(cloud_source::Error::Unauthorized)
@@ -222,7 +291,11 @@ tilo_test_env::scenario! {
     phase a_drive_never_receives_a_refresh_token;
     {
         let (fixture, tokens) = signed_in_drive(3600);
-        let source = DriveSignIn::new(fixture.credential_store.clone(), fixture.account.clone());
+        let source = DriveOver::new(
+            &fixture.credential_store,
+            &fixture.root,
+            &fixture.account,
+        );
         let mut seen = Vec::new();
         for _ in 0..3 {
             source.rejected();
@@ -469,10 +542,14 @@ tilo_test_env::scenario! {
         );
         assert!(
             matches!(
-                CredentialStore::for_root(Some(root)).file_credential(&saved, false),
+                CredentialStore::for_root(Some(root)).drive_credential(
+                    &saved,
+                    &Secret::password("dav-password"),
+                    false
+                ),
                 Err(CredentialError::NeedsAuthentication)
             ),
-            "the session releases its password from the workspace's vault"
+            "the accounts provider releases its password from the workspace's vault"
         );
     }
 
@@ -510,7 +587,7 @@ tilo_test_env::scenario! {
             Some("ada@icloud.com")
         );
 
-            let headers = drive_headers(&credential_store, &saved);
+            let headers = drive_headers(&credential_store, &root, &saved);
         assert_eq!(headers.len(), 1);
         assert!(
             !headers[0].1.contains("trust-for"),
@@ -519,10 +596,10 @@ tilo_test_env::scenario! {
 
         *icloud.needs_reauth.lock().unwrap() = true;
         assert!(
-            matches!(
-                credential_store.file_credential(&saved, true),
-                Err(CredentialError::NeedsAuthentication)
-            )
+            drive(&credential_store, &root, &saved, true)
+                .expect("the session is read, and left emptied")
+                .credential
+                .is_none()
         );
     }
 
@@ -557,8 +634,8 @@ tilo_test_env::scenario! {
             &icloud_secret(APPLE_ID, &session),
             serde_json::json!({ "identity": APPLE_ID }),
         );
-        let credential_store = CredentialStore::for_root(Some(root)).with_icloud(Arc::new(auth));
-            let headers = drive_headers(&credential_store, &saved);
+        let credential_store = CredentialStore::for_root(Some(root.clone())).with_icloud(Arc::new(auth));
+            let headers = drive_headers(&credential_store, &root, &saved);
         assert!(
             headers
                 .iter()
@@ -568,10 +645,10 @@ tilo_test_env::scenario! {
         fake.expire_web_sessions();
         fake.expire_trust();
         assert!(
-            matches!(
-                credential_store.file_credential(&saved, true),
-                Err(CredentialError::NeedsAuthentication)
-            )
+            drive(&credential_store, &root, &saved, true)
+                .expect("the session is read, and left emptied")
+                .credential
+                .is_none()
         );
     }
 }
@@ -982,7 +1059,14 @@ tilo_test_env::scenario! {
             serde_json::json!({}),
         );
         assert!(matches!(
-            CredentialStore::for_root(Some(root.clone())).file_credential(&saved, false),
+            CredentialStore::for_root(Some(root.clone())).drive_credential(
+                &saved,
+                &Secret {
+                    password: String::new(),
+                    token: secret.token.clone(),
+                },
+                false
+            ),
             Err(CredentialError::NeedsAuthentication),
         ));
         assert_eq!(SecretVault::open_in(&root).get(&id).unwrap(), secret);
