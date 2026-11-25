@@ -2890,7 +2890,7 @@ fn caller_may(
 fn platform_verb_of(command: &collab_types::store::wire::Command) -> Option<&str> {
     use collab_types::store::wire::Command;
     fn named(stamp: &tilo_resource_store::Stamp) -> Option<&str> {
-        tilo_resource_store::RESERVED_VERBS
+        tilo_resource_store::PLATFORM_VERBS
             .contains(&stamp.verb.as_str())
             .then_some(stamp.verb.as_str())
     }

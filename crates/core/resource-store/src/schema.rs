@@ -51,8 +51,9 @@ pub const ORIGIN_VERB: &str = collab_types::Stamp::ORIGIN_VERB;
 pub const PLATFORM_VERBS: [&str; 6] = collab_types::Stamp::PLATFORM_VERBS;
 
 /// The verbs no surface an app ships may declare ([`collab_types::Stamp::RESERVED_VERBS`]): the
-/// platform's own, and the two a step back or a version brought back writes under.
-pub const RESERVED_VERBS: [&str; 6] = collab_types::Stamp::RESERVED_VERBS;
+/// platform's own, and the migration, which a store admits by its derived step or by who may write
+/// the record.
+pub const RESERVED_VERBS: [&str; 7] = collab_types::Stamp::RESERVED_VERBS;
 
 /// The verb that brings a record to a storage version of its type: the step its kind and id
 /// derive for that version ([`collab_types::document::founding::migrate`]), and no other change.

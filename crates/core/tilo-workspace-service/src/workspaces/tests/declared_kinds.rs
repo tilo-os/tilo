@@ -251,7 +251,7 @@ async fn an_apps_command_under_the_platforms_verb_is_refused() {
             ..Stamp::default()
         },
     };
-    for verb in tilo_resource_store::RESERVED_VERBS {
+    for verb in tilo_resource_store::PLATFORM_VERBS {
         let refused = workspaces
             .own_resource_command(&workspace, APP, put(verb), Vec::new())
             .await

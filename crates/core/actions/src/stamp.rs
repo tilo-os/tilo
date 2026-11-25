@@ -219,17 +219,19 @@ impl Stamp {
     ];
 
     /// The verbs no surface an app ships may declare, whether or not a schema admits them yet:
-    /// the platform's own ([`Self::PLATFORM_VERBS`]) and the two that take a step back or bring a
-    /// version back ([`Self::UNDO_VERB`], [`Self::RESTORE_VERB`]). Their `$` names are the
-    /// platform's, so an app's own `undo` or `restore` action is a different verb, judged by its
-    /// own surface's write set.
-    pub const RESERVED_VERBS: [&str; 6] = [
+    /// the platform's own ([`Self::PLATFORM_VERBS`]), which take a step back or bring a version
+    /// back too ([`Self::UNDO_VERB`], [`Self::RESTORE_VERB`]), and the migration
+    /// ([`Self::MIGRATE_VERB`]), which a store admits by its derived step or by who may write the
+    /// record, never by an app's write set. The `$` names are the platform's, so an app's own
+    /// `undo` or `restore` action is a different verb, judged by its own surface's write set.
+    pub const RESERVED_VERBS: [&str; 7] = [
         "$invocation",
         "$suggest",
         "$decide-invocation",
         "$settle-block",
         Self::UNDO_VERB,
         Self::RESTORE_VERB,
+        Self::MIGRATE_VERB,
     ];
 
     /// The stamp a change's message `message` names; `None` for one that names none.

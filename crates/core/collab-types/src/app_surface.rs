@@ -599,6 +599,19 @@ mod tests {
             );
         }
 
+        phase a_package_declaring_a_reserved_verb_names_no_surface;
+        {
+            for verb in crate::Stamp::RESERVED_VERBS {
+                let app = format!("test.reserves-{}", verb.trim_start_matches('$'));
+                let file = compiled(&format!(
+                    "[[resources]]\nkind = \"test.reserves\"\nlabel = \"Reserves\"\nversion = 1\n\n[[resources.verbs]]\nid = \"{verb}\"\nkind = \"undoable\"\n"
+                ));
+                register_package(&app, file.as_bytes());
+                assert_eq!(bytes_of(&app), None, "{verb}: its surface is refused");
+            }
+            assert!(crate::Stamp::RESERVED_VERBS.contains(&crate::Stamp::MIGRATE_VERB));
+        }
+
         phase a_surface_in_the_authored_form_names_none;
         {
             let toml = b"[[resources]]\nkind = \"test.toml\"\nlabel = \"Toml\"\nversion = 1\n";

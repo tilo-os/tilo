@@ -292,8 +292,9 @@ impl Workspaces {
                 ));
             }
             // The platform's own verbs write past any surface's write set: an app's process
-            // writes under none of them, whatever action it gave the name to.
-            if tilo_resource_store::RESERVED_VERBS.contains(&stamp.verb.as_str()) {
+            // writes under none of them, whatever action it gave the name to. A migration is
+            // the store's to judge, by its derived step or by who may write the record.
+            if tilo_resource_store::PLATFORM_VERBS.contains(&stamp.verb.as_str()) {
                 return Err(format!(
                     "`{}` is the platform's own verb: no app writes under it",
                     stamp.verb
