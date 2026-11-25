@@ -5,7 +5,11 @@
 //! The bridge is the app's own connector, run by the daemon beside its instances: its protocol
 //! code is the connector crate's, over the same calendar server a person rents.
 
+use std::sync::Arc;
+
 use serde_json::json;
+use tilo_workspace_service::workspaces::MemberDevice;
+use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
 use tilolang_calendar::test_support::Rig;
 use tilolang_calendar::test_support::fake_caldav::Server;
 
@@ -16,9 +20,18 @@ const PASSWORD: &str = "the-password-her-vault-keeps";
 /// its person connects their server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_connected_calendar_account_is_kept_where_the_bridge_reads_it() {
-    let device = super::Device::start("Calendar", None).await;
-    let workspace = device.workspace.clone();
-    let acting = tilo_action_policy::Acting::person(device.person());
+    // The workspace's own store, with no window and no app's package: what the account is kept
+    // in is the one record, and the bridge reads it there.
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Calendar").await.unwrap().workspace;
+    let acting = tilo_action_policy::Acting::person(hex::encode(cert.user_public_key));
 
     let server = "https://calendar.example.test/dav/";
     let mut account = accounts::Account::new(
@@ -33,16 +46,14 @@ async fn a_connected_calendar_account_is_kept_where_the_bridge_reads_it() {
         "calendars": [],
         "collapsed": false,
     });
-    device
-        .workspaces()
+    workspaces
         .keep_workspace_account((&workspace, &acting, None), &account)
         .await
         .expect("the account is kept");
 
     // What the bridge's account source reads: the workspace's calendar accounts, each with the
     // server and user name its sign-in is released for.
-    let held = device
-        .workspaces()
+    let held = workspaces
         .workspace_accounts(&workspace)
         .await
         .expect("the workspace's accounts are read");
@@ -61,7 +72,7 @@ async fn a_connected_calendar_account_is_kept_where_the_bridge_reads_it() {
         Some(ADA)
     );
 
-    device.shutdown().await;
+    host.shutdown().await;
 }
 
 /// An entry as a calendar server holds it: `start` and `end` as `DTSTART`/`DTEND` say them.
