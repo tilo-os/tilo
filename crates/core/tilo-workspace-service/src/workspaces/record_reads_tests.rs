@@ -1052,3 +1052,65 @@ async fn a_granted_setting_reads_alone_until_it_is_taken_back(
         "the setting reads nothing after the person revokes the grant"
     );
 }
+
+/// The person's shell lists the workspace's invocations through the device's own reader, as its
+/// listing service reads them once a second: every read is answered, never refused, whichever
+/// workspace the shell shows — one this device holds, or one it does not — and what it lists is
+/// the person's own calls alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_persons_shell_lists_their_invocations_without_a_refusal() {
+    use tilo_actions::remote::{
+        ReadAnswer, RemoteActionMessage, ResourceReadRequest, workspace_invocations,
+    };
+    let h = host().await;
+    let reads = h.workspaces().resource_reads();
+    let person = Caller::authenticated(h.cert.user_public_key, h.cert.device_public_key)
+        .in_workspace(h.kitchen.clone());
+    let listing = |workspace: &str| ResourceReadRequest {
+        workspace: workspace.to_owned(),
+        app: workspace_invocations::PROVIDER.to_owned(),
+        record: String::new(),
+        joined: false,
+        wait_ms: Some(0),
+        after: None,
+        answer: ReadAnswer::Reading,
+    };
+    let reading = |answer: RemoteActionMessage| match answer {
+        RemoteActionMessage::ResourceReading { result, .. } => {
+            let reading = result.unwrap_or_else(|error| {
+                panic!("the person's shell lists the workspace's invocations: {error}")
+            });
+            serde_json::from_str::<serde_json::Value>(&reading)
+                .unwrap_or_else(|error| panic!("the listing is a reading: {error}"))
+        }
+        _ => panic!("the read is answered as a reading"),
+    };
+    // The workspace in front, which this device holds.
+    let held = reading(
+        std::sync::Arc::clone(&reads)
+            .answer_read(&person, 0, listing(&h.kitchen))
+            .await,
+    );
+    assert!(held["items"].is_array(), "{held}");
+    // The workspace the shell shows after a switch to one this device keeps no copy of: the
+    // listing still answers the person's own calls, instead of a policy refusing a record the
+    // device keeps none of.
+    let elsewhere = uuid::Uuid::new_v4().to_string();
+    let moved = reading(
+        std::sync::Arc::clone(&reads)
+            .answer_read(&person, 0, listing(&elsewhere))
+            .await,
+    );
+    assert!(moved["items"].is_array(), "{moved}");
+    // Nobody else's calls are in it: another person reads their own list, which holds none of
+    // the person's.
+    let stranger = Caller::local_person("someone else").in_workspace(h.kitchen.clone());
+    let theirs = reading(reads.answer_read(&stranger, 0, listing(&h.kitchen)).await);
+    assert!(
+        theirs["items"]
+            .as_array()
+            .is_some_and(std::vec::Vec::is_empty),
+        "another person's list holds none of the person's calls: {theirs}"
+    );
+    h.server.shutdown().await;
+}

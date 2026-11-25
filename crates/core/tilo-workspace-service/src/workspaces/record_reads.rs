@@ -1033,11 +1033,35 @@ impl RecordReads {
             return own?.watch(caller, address, wake).await;
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
-            && let Some(broker) = self.broker()
-        {
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
             self.may_read_invocations(caller, &address.workspace)?;
-            return broker.watch_invocations(caller, &address.workspace, wake);
+            if let Some(broker) = self.broker() {
+                return broker.watch_invocations(caller, &address.workspace, wake);
+            }
+            // A reader that runs no apps keeps no invocation of its own: what it lists is the
+            // calls that wait here for the caller's own person, from their asked records of this
+            // app. It is woken by the next of those written, never by a read the workspace's
+            // policy decides of a record this device keeps none of.
+            let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
+            else {
+                return Ok(());
+            };
+            let Some(runtime) = runtime.clone().or_else(|| self.runtime()) else {
+                return Err(ActionCallError::Unavailable {
+                    reason: "this device is not running".into(),
+                });
+            };
+            let workspace = address.workspace.clone();
+            wake_at(
+                &runtime,
+                workspaces.document_writes(),
+                move |write| {
+                    write.workspace == workspace
+                        && write.app == tilo_actions::remote::workspace_invocations::PROVIDER
+                },
+                wake,
+            );
+            return Ok(());
         }
         let route = self.route(caller, address).await?;
         if address.app == PRESENCE && !matches!(route, Route::Served(_)) {
