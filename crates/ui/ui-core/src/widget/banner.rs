@@ -308,9 +308,12 @@ fn geometry_with(
     };
     let natural = line_h + 2.0 * m.pad_y;
     let height = natural.max(m.min_height);
-    let top = (height - line_h) / 2.0;
+    // Centring halves a length: each top lands on the display's pixels, so a control's edge is
+    // drawn crisp at 1.5 as at 2.
+    let snap = crate::widget::layout::snap_to_device_pixels;
+    let top = snap((height - line_h) / 2.0);
     let text_top = if beside {
-        top + (line_h - text_h) / 2.0
+        snap(top + (line_h - text_h) / 2.0)
     } else {
         top
     };
@@ -319,18 +322,23 @@ fn geometry_with(
         (m.icon, m.icon),
     );
     let text_origin = Point::new(body_x0 + leading, text_top + (text_h - lines_h) / 2.0);
-    let actions_top = if beside {
+    let actions_top = snap(if beside {
         top + (line_h - control_h) / 2.0
     } else {
         top + actions_y
-    };
+    });
     let (action, secondary_action) = if beside {
         // Beside the text the actions stand from the trailing edge back: the main action last,
         // so it sits at the edge.
         let mut x = body_x1;
         let mut rects = Vec::new();
         for w in widths.iter().rev() {
-            rects.push(Rect::new(x - w, actions_top, x, actions_top + control_h));
+            rects.push(Rect::new(
+                snap(x - w),
+                actions_top,
+                snap(x),
+                actions_top + control_h,
+            ));
             x -= w + m.related;
         }
         match (actions[1], actions[0]) {
@@ -345,7 +353,12 @@ fn geometry_with(
         let mut x = body_x0 + leading;
         let mut rects = Vec::new();
         for w in &widths {
-            rects.push(Rect::new(x, actions_top, x + w, actions_top + control_h));
+            rects.push(Rect::new(
+                snap(x),
+                actions_top,
+                snap(x + w),
+                actions_top + control_h,
+            ));
             x += w + m.related;
         }
         match (actions[0], actions[1]) {

@@ -1315,3 +1315,28 @@ fn assert_band_opened_only(frame: &BandFrame) {
         "{name}: nothing is painted below its edge, at {closed:?} over {ground:?}"
     );
 }
+
+/// A banner centres its action on the line it shares with the words, and that halves a length:
+/// at 1.5 device pixels per logical one each edge of the action still lands on a device pixel,
+/// beside the words and under them, so the button is drawn crisp rather than across two rows.
+#[test]
+fn a_banners_action_stands_on_the_display_pixels_at_one_and_a_half() {
+    let _scale = crate::widget::layout::enter_device_scale(1.5);
+    let theme = Theme::light();
+    let mut text = TextRenderer::new();
+    let content = BannerContent::new(BannerKind::Warning, "Sync paused")
+        .with_message(Some("Files sync again when you are online."));
+    let on_grid = |edge: f64| ((edge * 1.5) - (edge * 1.5).round()).abs() < 1e-6;
+    for control_h in [27.0, 28.0, 29.0, 31.0] {
+        for (width, main) in [(900.0, 61.3), (360.0, 61.3), (900.0, 75.0)] {
+            let g = geometry_with(&content, [None, Some(main)], control_h, width, &mut text, &theme);
+            let action = g.action.expect("the banner has its action");
+            for edge in [action.x0, action.y0, action.x1] {
+                assert!(
+                    on_grid(edge),
+                    "an edge of the action at {edge} (control {control_h}, width {width}) is off the display's pixels"
+                );
+            }
+        }
+    }
+}
