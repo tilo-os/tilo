@@ -22,7 +22,7 @@ use super::{Device, Write, mount, write};
 /// Let the installed app `app` write and change the records it keeps in `workspace`, as the
 /// person whose device `cert` names grants it: what a workspace grants an app it runs, so its
 /// origin's writes are its own rather than one person's.
-async fn let_app_write(
+pub(super) async fn let_app_write(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
     workspace: &str,
     app: &str,

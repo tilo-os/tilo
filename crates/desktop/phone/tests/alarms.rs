@@ -1,9 +1,9 @@
 //! An alarm the person sets on another device of theirs for this phone rings on the phone at its
 //! moment from the phone's own platform, with no network: the phone, signed in by ticket, keeps
 //! the workspace in its daemon, reads Clocks' trigger (`at a.at on a.rings_on`) from its copy of
-//! the record, and arms the platform's alarm with what the ring will say. Moving the alarm moves
-//! it, turning it off takes it back, an alarm for another device arms nothing here, and once the
-//! phone is cut off the platform still rings it.
+//! the record, and arms the platform's alarm with what the ring will say. An alarm for another
+//! device arms nothing here, and once the phone is cut off the platform still rings it. Moving an
+//! alarm and turning it off are the daemon's own tests (`language::wakeups_tests`).
 //!
 //! The daemon reads its places from the process's environment, so this binary is one test, as
 //! `ticket.rs` is. The platform's notifications are the one stand-in: what Android's
@@ -182,7 +182,11 @@ fn an_alarm_set_for_the_phone_rings_there_with_no_network() {
     // The person's server runs the language its program links, as a computer's daemon does.
     let tilolang = tilolang_workspace::host();
     server.workspaces().provide_tilolang(tilolang.clone());
-    tilolang.records.serve(&server.workspaces());
+    {
+        // A record's writes wait on the reactor its records were registered on: the server's.
+        let _entered = server.runtime.enter();
+        tilolang.records.serve(&server.workspaces());
+    }
     // The phone mounts on its daemon what its app does, its platform's notifications among it.
     let platform = Arc::new(Platform::default());
     tilo_runtime::device::capabilities::mount(tilo_phone::worker::capabilities(
@@ -220,7 +224,7 @@ fn an_alarm_set_for_the_phone_rings_there_with_no_network() {
     // The person sets an alarm for another device of theirs, and one for the phone: the phone
     // arms the one for itself, saying what its ring will say, with its snooze.
     alarm(&server, &person, "Gym", (6, 0), &"ab".repeat(32));
-    let standup = alarm(&server, &person, "Standup", (7, 0), &phone_id);
+    alarm(&server, &person, "Standup", (7, 0), &phone_id);
     let armed = armed_once(&platform, "the phone arms the alarm set for it", |armed| {
         armed
             .iter()
@@ -241,52 +245,16 @@ fn an_alarm_set_for_the_phone_rings_there_with_no_network() {
         ["Snooze 5 minutes"]
     );
 
-    // Moved to half past, the phone moves the same alarm.
-    clocks(&server, &person, "edit_alarm", {
-        let standup = standup.clone();
-        move || {
-            vec![
-                Value::resource(&standup),
-                Value::text("Standup"),
-                Value::Int(7),
-                Value::Int(30),
-                Value::List(Vec::new()),
-            ]
-        }
-    });
-    let moved = armed_once(&platform, "the phone moves the alarm", |armed| {
-        armed.len() == 1 && armed[0].body == "It is 7:30"
-    });
-    assert_eq!(moved[0].tag, first.tag, "the same alarm, moved");
-
-    // Turned off, the phone takes it back; on again, it arms it again.
-    clocks(&server, &person, "set_alarm_enabled", {
-        let standup = standup.clone();
-        move || vec![Value::resource(&standup), Value::Bool(false)]
-    });
-    armed_once(
-        &platform,
-        "the phone takes the alarm back",
-        <[Notification]>::is_empty,
-    );
-    clocks(&server, &person, "set_alarm_enabled", {
-        let standup = standup.clone();
-        move || vec![Value::resource(&standup), Value::Bool(true)]
-    });
-    let armed = armed_once(&platform, "the phone arms it again", |armed| {
-        armed.len() == 1
-    });
-
     // The phone is cut off from every other device: its server and the laptop go away. The
     // alarm's moment comes, and the phone's platform rings it by itself.
     drop(laptop);
     drop(server);
-    platform.ring(&armed[0].tag);
+    platform.ring(&first.tag);
     let shown = platform.shown.lock().unwrap().clone();
     assert_eq!(shown.len(), 1, "{shown:#?}");
     assert_eq!(
         (shown[0].title.as_str(), shown[0].body.as_str()),
-        ("Standup", "It is 7:30"),
+        ("Standup", "It is 7:00"),
         "the phone shows the alarm with no network"
     );
 

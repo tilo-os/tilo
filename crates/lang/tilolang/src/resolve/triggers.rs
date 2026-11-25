@@ -292,7 +292,9 @@ impl Resolver<'_> {
             self.err(
                 "E133",
                 expr.span,
-                "`on` names the device a trigger's moment lands on, and `every` names no moment: write `at {param}.<a time> on {param}.<the device>`",
+                format!(
+                    "`on` names the device a trigger's moment lands on, and `every` names no moment: write `at {param}.<a time> on {param}.<the device>`"
+                ),
             );
             return None;
         }

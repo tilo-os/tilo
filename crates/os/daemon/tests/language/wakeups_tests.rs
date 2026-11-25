@@ -206,7 +206,7 @@ async fn an_alarm_for_this_device_rings_from_its_own_wakeup_and_once() {
     let now = || tilo_clock::unix_now_ms_i64();
 
     // An alarm for another device of theirs arms nothing here.
-    alarm(
+    let gym = alarm(
         &workspaces,
         &workspace,
         &packages,
@@ -222,6 +222,17 @@ async fn an_alarm_for_this_device_rings_from_its_own_wakeup_and_once() {
         0
     );
     assert!(platform.armed().is_empty(), "the gym alarm rings elsewhere");
+    // Off, it rings nowhere: what the workspace runs below is this device's alarm alone.
+    clocks(
+        &workspaces,
+        &workspace,
+        &packages,
+        &person,
+        ("set_alarm_enabled", move || {
+            vec![Value::resource(&gym), Value::Bool(false)]
+        }),
+    )
+    .await;
 
     // One for this device is armed with what its ring will say, and the snooze it offers.
     let standup = alarm(
@@ -332,8 +343,9 @@ async fn an_alarm_for_this_device_rings_from_its_own_wakeup_and_once() {
     assert_eq!(rang.len(), 1, "the device knows it rang: {rang:?}");
 
     // The device that runs the trigger rings the alarm for the workspace at that moment and
-    // writes the notice; the device that rang it already shows it no second time, where one
-    // that did not would.
+    // writes the notice, as Clocks, which the person let keep its records; the device that rang
+    // it already shows it no second time, where one that did not would.
+    super::triggers_tests::let_app_write(&workspaces, &workspace, APP, &cert).await;
     let who = member(tilo_actions::MemberId::person(person.clone()));
     let ran = with_tl_record(
         &workspaces,

@@ -153,14 +153,30 @@ fn run(host: &Host, schedule: &Schedule, now: i64) -> (usize, bool) {
             host.runtime()
                 .invoke_action_named(&run, &by, (due.action.as_str(), due.args));
         host.store().drop_run_marks(&run);
+        // What the action wrote reached the workspace only if it took it: a run it refused did
+        // nothing, as an invocation it refused does
+        // ([`crate::resources::ResourceStore::take_refusal`]).
+        let outcome = match (outcome, host.store().take_refusal()) {
+            (Ok(InvokeOutcome::Done(_)), Some(refused)) => Err(refused),
+            (outcome, _) => Ok(outcome),
+        };
         match outcome {
-            Ok(InvokeOutcome::Done(answer)) => {
+            Err(refused) => {
+                schedule.done.borrow_mut().insert(run);
+                tracing::warn!(
+                    app = due.app,
+                    trigger = due.name,
+                    %refused,
+                    "the workspace refused what a trigger wrote"
+                );
+            }
+            Ok(Ok(InvokeOutcome::Done(answer))) => {
                 ran = ran.saturating_add(1);
                 host.store()
                     .turn_done(&address, &inputs, answer_json(&answer));
                 schedule.done.borrow_mut().insert(run);
             }
-            other => {
+            Ok(other) => {
                 // The instant is the run's whether it was carried out or not: a run that failed
                 // leaves its document as it is and is not made again for the same instant, which
                 // would run it on every frame and never rest. The next instant the document
@@ -380,7 +396,7 @@ pub fn landing(host: &Host, device: &str, person: &str, now: i64) -> Vec<Landing
     let mut out = Vec::new();
     for package in host.packages() {
         for trigger in &package.meta.triggers {
-            let (TriggerWhenMeta::At(field), Some(names)) = (&trigger.when, &trigger.device) else {
+            let (TriggerWhenMeta::At(field), Some(on)) = (&trigger.when, &trigger.device) else {
                 continue;
             };
             let pred = time_where(field, CmpOp::Gt, now);
@@ -392,7 +408,7 @@ pub fn landing(host: &Host, device: &str, person: &str, now: i64) -> Vec<Landing
                 let Some(at) = time_of(host, doc, field).filter(|at| *at > now) else {
                     continue;
                 };
-                let named = text_of(host, doc, names);
+                let named = text_of(host, doc, on);
                 if !named.is_empty() && !named.eq_ignore_ascii_case(device) {
                     continue;
                 }

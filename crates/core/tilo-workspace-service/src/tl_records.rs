@@ -398,6 +398,30 @@ impl Port for Record {
     }
 
     fn command(&self, command: Command) -> Result<Reply, String> {
+        // An action that runs once in the workspace (a trigger's run) is this device's to run
+        // when the workspace gives it the turn, as it is for a window of the app.
+        #[cfg(feature = "apps")]
+        if let Command::Turn {
+            address,
+            inputs,
+            answer,
+        } = command
+        {
+            let Some(runtime) = &self.runtime else {
+                return Err(format!(
+                    "{}'s record was opened to be read, and runs no action",
+                    self.app
+                ));
+            };
+            let workspaces = self.workspaces.clone();
+            let (workspace, app) = (self.workspace.clone(), self.app.clone());
+            return Self::wait(runtime, async move {
+                workspaces
+                    .once_turn(&workspace, &app, address, inputs, answer)
+                    .await
+                    .map(Reply::Turn)
+            });
+        }
         // A read answers from the store the workspace reads through without its lock: it needs no
         // reactor and no thread of its own, and never waits for a write that waits on the key
         // service or a link, nor for a whole pass of the record's index.
@@ -436,13 +460,24 @@ impl Port for Record {
             command,
             Arc::clone(&self.refused),
         );
-        // A first write can wait for this device's group keys on the reactor. A thread already
-        // inside the reactor (a bot's run is driven by it) waits from a thread of its own.
+        Self::wait(runtime, carried)
+    }
+}
+
+#[cfg(any(feature = "apps", feature = "agents"))]
+impl Record {
+    /// `work` carried out on `runtime`. A first write can wait for this device's group keys on
+    /// the reactor; a thread already inside the reactor (a bot's run is driven by it) waits
+    /// from a thread of its own.
+    fn wait(
+        runtime: &tokio::runtime::Handle,
+        work: impl std::future::Future<Output = Result<Reply, String>> + Send,
+    ) -> Result<Reply, String> {
         if tokio::runtime::Handle::try_current().is_err() {
-            return runtime.block_on(carried);
+            return runtime.block_on(work);
         }
         std::thread::scope(
-            |scope| match scope.spawn(|| runtime.block_on(carried)).join() {
+            |scope| match scope.spawn(|| runtime.block_on(work)).join() {
                 Ok(reply) => reply,
                 Err(panic) => std::panic::resume_unwind(panic),
             },
