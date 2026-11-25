@@ -28,6 +28,10 @@ use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_dev
 
 pub use tilo_actions::remote::SignedInvocation;
 
+/// The name a workspace's published declarations give an action id, where they give one: how a
+/// call signed by an action's name and a change that claims its id are found to be one action.
+pub type PublishedName<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 /// Why an invocation was not signed, or its signature not accepted.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum InvocationError {
@@ -291,7 +295,7 @@ pub fn verify_recorded(
     (workspace, keeper): (&str, Option<RecordHost<'_>>),
     revocations: &RevocationList,
     at_ns: u64,
-    published_name: Option<&dyn Fn(&str) -> Option<String>>,
+    published_name: Option<PublishedName<'_>>,
 ) -> Result<Option<DeviceCert>, InvocationError> {
     let invoker = context.invoker.as_ref().map(|invoker| &invoker.acting);
     let Some(call) = context.signed.as_deref() else {
@@ -375,7 +379,7 @@ pub struct RecordHost<'a> {
 fn outside_call(
     context: &tilo_actions::ActionContext,
     target: &tilo_actions::remote::RemoteActionTarget,
-    published_name: Option<&dyn Fn(&str) -> Option<String>>,
+    published_name: Option<PublishedName<'_>>,
 ) -> bool {
     let named = &target.address.resource;
     let in_resource = match &context.resource {
@@ -383,11 +387,9 @@ fn outside_call(
         None => context.what.is_none(),
     };
     let names_verb = match &context.what {
-        Some(tilo_actions::Did::Verb(verb)) => same_action(
-            &verb.action.action,
-            &target.address.action,
-            published_name,
-        ),
+        Some(tilo_actions::Did::Verb(verb)) => {
+            same_action(&verb.action.action, &target.address.action, published_name)
+        }
         _ => true,
     };
     !(in_resource && names_verb)
@@ -396,11 +398,7 @@ fn outside_call(
 /// Whether the verb `claimed`, as a change names it, is the action `signed` the caller asked
 /// for: the same text, or the id the app publishes under that name (a tilolang app offers its
 /// actions by the names its code declares while a change claims the declaration's id).
-fn same_action(
-    claimed: &str,
-    signed: &str,
-    published_name: Option<&dyn Fn(&str) -> Option<String>>,
-) -> bool {
+fn same_action(claimed: &str, signed: &str, published_name: Option<PublishedName<'_>>) -> bool {
     claimed == signed
         || published_name
             .and_then(|published| published(claimed))
@@ -414,11 +412,12 @@ fn same_action(
 #[must_use]
 pub fn declared_effect(
     context: &tilo_actions::ActionContext,
-    published_name: Option<&dyn Fn(&str) -> Option<String>>,
+    published_name: Option<PublishedName<'_>>,
 ) -> bool {
-    context.signed.as_deref().is_some_and(|call| {
-        outside_call(context, &call.signed.statement().target, published_name)
-    })
+    context
+        .signed
+        .as_deref()
+        .is_some_and(|call| outside_call(context, &call.signed.statement().target, published_name))
 }
 
 /// Whether `context` records a step the action `target` names declares it takes
@@ -474,7 +473,7 @@ pub fn verify_carried(
     record: &collab_types::receipt::WrittenDocument<'_>,
     claim: &collab_types::claim::ChangeClaim,
     revocations: &RevocationList,
-    published_name: Option<&dyn Fn(&str) -> Option<String>>,
+    published_name: Option<PublishedName<'_>>,
 ) -> Result<DeviceCert, InvocationError> {
     check_signature(signed)?;
     let statement = signed.statement();
@@ -543,7 +542,7 @@ pub fn carried_effect(
     signed: &SignedInvocation,
     record: &collab_types::receipt::WrittenDocument<'_>,
     claim: &collab_types::claim::ChangeClaim,
-    published_name: Option<&dyn Fn(&str) -> Option<String>>,
+    published_name: Option<PublishedName<'_>>,
 ) -> bool {
     let target = &signed.statement().target;
     let named = &target.address.resource;
