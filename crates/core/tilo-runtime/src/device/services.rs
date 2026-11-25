@@ -1278,13 +1278,13 @@ impl Daemon {
     pub fn start_shell(
         &self,
         mut command: Command,
-        window: Option<runtime_portal::process_link::Descriptor>,
+        window: Option<&runtime_portal::process_link::Descriptor>,
     ) -> io::Result<Child> {
         use std::os::fd::AsRawFd as _;
         /// Where a session's window connection is handed to the shell it starts.
         const WINDOW_FD: i32 = 4;
         let token = hex::encode(self.shell_token());
-        if let Some(window) = &window {
+        if let Some(window) = window {
             launcher::inherit::hand_down(
                 &mut command,
                 vec![(window.as_raw_fd(), WINDOW_FD)],
@@ -4843,6 +4843,128 @@ pub struct RuntimeActionProvider {
     handed: Option<crate::seats::Hand>,
 }
 
+/// A person's stop of their agent on this device, or letting a stopped one go on: what this
+/// device's runs of the agent are doing ends, and the stop is written in every workspace the
+/// agent may work in.
+struct AgentStop {
+    stopping: bool,
+    session: String,
+    workspace: String,
+    agent: String,
+    member: tilo_action_policy::MemberId,
+    targets: Vec<String>,
+    person: Caller,
+    receipt: InvocationReceipt,
+    workspaces: Arc<ServiceWorkspaces>,
+    invocations: Arc<Invocations>,
+    broker: AppActionBroker,
+}
+
+/// The grant and session a stop or go-on `request` names, as its arguments name them.
+fn stop_named(
+    request: &InvokeRequest,
+) -> Result<
+    tilo_actions::remote::mcp_server::AgentSessionRef,
+    Pending<Result<InvocationReceipt, ActionCallError>>,
+> {
+    match &request.argument {
+        InvokeArgument::Json(argument) => {
+            match serde_json::from_value(Value::Object(argument.clone())) {
+                Ok(named) => Ok(named),
+                Err(error) => Err(Pending::ready(Err(ActionCallError::invalid_request(
+                    error.to_string(),
+                )))),
+            }
+        }
+        _ => Err(Pending::ready(Err(ActionCallError::invalid_request(
+            "a stop names its grant and session",
+        )))),
+    }
+}
+
+/// Every workspace `held` keeps that a stop of `agent` for `operator` reaches: all of them for
+/// a stop; for going on, those whose policy stops the agent now.
+fn stop_targets(
+    held: &ServiceWorkspaces,
+    stopping: bool,
+    agent: &str,
+    operator: &str,
+    now: &tilo_action_policy::Context<'_>,
+) -> Vec<String> {
+    held.workspaces()
+        .into_iter()
+        .filter(|workspace| {
+            stopping
+                || held.policy_of(workspace.id())()
+                    .is_some_and(|policy| policy.stops(agent, operator, now))
+        })
+        .map(|workspace| workspace.id().to_string())
+        .collect()
+}
+
+/// Write `stop` as the person's own say. What this device's runs of the agent are doing ends
+/// first, then the stop (or going on) is written in each workspace it reaches, and the session's
+/// own record follows.
+async fn write_agent_stop(stop: AgentStop) -> Result<InvocationReceipt, ActionCallError> {
+    let AgentStop {
+        stopping,
+        session,
+        workspace,
+        agent,
+        member,
+        targets,
+        person,
+        receipt,
+        workspaces,
+        invocations,
+        broker,
+    } = stop;
+    let copies = workspaces.copies();
+    let mut answer = Ok(receipt);
+    if stopping {
+        // What this device recorded of the runs it serves ends first: those are in the
+        // workspace it is bound to, which the listing of held workspaces need not name.
+        let own = workspace.clone();
+        let origin_writes = |caller: &Caller, origin: &Origin| {
+            broker.state().may_write_origin(caller, &own, origin)
+        };
+        for cancelled in invocations.stop_agent(&person, &workspace, &member, &origin_writes) {
+            let _ = cancelled.await;
+        }
+    }
+    for target in &targets {
+        if stopping {
+            // What it is running ends first: as the dispatch itself cancels a call, the
+            // person's own ask, before the answer that refuses the next one. Written the other
+            // way, the answer's change of who is here woke a running watch, which answered what
+            // it saw before its cancellation reached it.
+            let origin_writes = |caller: &Caller, origin: &Origin| {
+                broker.state().may_write_origin(caller, target, origin)
+            };
+            for cancelled in invocations.stop_agent(&person, target, &member, &origin_writes) {
+                let _ = cancelled.await;
+            }
+        }
+        let written = if stopping {
+            copies.answer_stop(target, &agent).await
+        } else {
+            copies.answer_go_on(target, &agent).await
+        };
+        if let Err(reason) = written {
+            answer = Err(ActionCallError::Refused { reason });
+            break;
+        }
+    }
+    if answer.is_ok() {
+        if stopping {
+            copies.stop_agent(&workspace, &session);
+        } else {
+            copies.let_agent_go_on(&workspace, &session);
+        }
+    }
+    answer
+}
+
 impl RuntimeActionProvider {
     /// Resolves on the next write landing in a document this device's service holds, from
     /// whichever device or app it came, or once a provider has waited as long as any may.
@@ -5264,62 +5386,37 @@ impl RuntimeActionProvider {
         request: &InvokeRequest,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         use tilo_actions::remote::mcp_server;
-        let target = &request.target;
-        let action = target.address.action.as_str();
-        if target.provider != mcp_server::PROVIDER
+        let action = request.target.address.action.as_str();
+        if request.target.provider != mcp_server::PROVIDER
             || ![mcp_server::STOP, mcp_server::GO_ON].contains(&action)
             || !caller.acting().is_person()
         {
             return None;
         }
-        let named: mcp_server::AgentSessionRef = match &request.argument {
-            InvokeArgument::Json(argument) => {
-                match serde_json::from_value(Value::Object(argument.clone())) {
-                    Ok(named) => named,
-                    Err(error) => {
-                        return Some(Pending::ready(Err(ActionCallError::invalid_request(
-                            error.to_string(),
-                        ))));
-                    }
-                }
-            }
-            _ => {
-                return Some(Pending::ready(Err(ActionCallError::invalid_request(
-                    "a stop names its grant and session",
-                ))));
-            }
+        let named = match stop_named(request) {
+            Ok(named) => named,
+            Err(refused) => return Some(refused),
         };
-        let copies = self.workspaces.copies();
-        if !copies.knows_agent_session(&self.workspace, &named.session) {
+        if !self
+            .workspaces
+            .copies()
+            .knows_agent_session(&self.workspace, &named.session)
+        {
             return None;
         }
         let stopping = action == mcp_server::STOP;
-        let (session, workspace) = (named.session, self.workspace.clone());
         let operator = self.workspaces.operator();
         let agent = device_agent_id(&operator, MCP_CLIENT);
         // The person's own act, as the caller that made the agent's calls works for them.
-        let person = Caller::local_person(hex::encode(operator)).in_workspace(&workspace);
+        let person = Caller::local_person(hex::encode(operator)).in_workspace(&self.workspace);
         // Every workspace the agent may work in: a stop is the person's own say about their own
-        // agent, which reaches only the agent acting for them, so it is written in each workspace
-        // this device holds; going on takes it back where it stands. The answer syncs with the
-        // workspace, so a host running the agent elsewhere refuses its next call.
+        // agent, which reaches only the agent acting for them, so it is written in each
+        // workspace this device holds; going on takes it back where it stands. The answer syncs
+        // with the workspace, so a host running the agent elsewhere refuses its next call.
         let operator_person = hex::encode(operator);
         let member = tilo_action_policy::MemberId::agent(agent.clone(), operator_person.clone());
         let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
-        let targets: Vec<String> = self
-            .workspaces
-            .workspaces()
-            .into_iter()
-            .filter(|held| {
-                stopping
-                    || self.workspaces.policy_of(held.id())()
-                        .is_some_and(|policy| policy.stops(&agent, &operator_person, &now))
-            })
-            .map(|held| held.id().to_string())
-            .collect();
-        let workspaces = Arc::clone(&self.workspaces);
-        let invocations = Arc::clone(&self.invocations);
-        let broker = self.broker.clone();
+        let targets = stop_targets(&self.workspaces, stopping, &agent, &operator_person, &now);
         let receipt = InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {
@@ -5330,59 +5427,24 @@ impl RuntimeActionProvider {
             },
         };
         let (complete, answered) = tilo_actions::remote::pending();
-        let stop = async move {
-            let copies = workspaces.copies();
-            let mut answer = Ok(receipt);
-            if stopping {
-                // What this device recorded of the runs it serves ends first: those are in the
-                // workspace it is bound to, which the listing of held workspaces need not name.
-                let own = workspace.clone();
-                let origin_writes = |caller: &Caller, origin: &Origin| {
-                    broker.state().may_write_origin(caller, &own, origin)
-                };
-                for cancelled in
-                    invocations.stop_agent(&person, &workspace, &member, &origin_writes)
-                {
-                    let _ = cancelled.await;
-                }
-            }
-            for target in &targets {
-                if stopping {
-                    // What it is running ends first: as the dispatch itself cancels a call, the
-                    // person's own ask, before the answer that refuses the next one. Written the
-                    // other way, the answer's change of who is here woke a running watch, which
-                    // answered what it saw before its cancellation reached it.
-                    let origin_writes = |caller: &Caller, origin: &Origin| {
-                        broker.state().may_write_origin(caller, target, origin)
-                    };
-                    for cancelled in
-                        invocations.stop_agent(&person, target, &member, &origin_writes)
-                    {
-                        let _ = cancelled.await;
-                    }
-                }
-                let written = if stopping {
-                    copies.answer_stop(target, &agent).await
-                } else {
-                    copies.answer_go_on(target, &agent).await
-                };
-                if let Err(reason) = written {
-                    answer = Err(ActionCallError::Refused { reason });
-                    break;
-                }
-            }
-            if answer.is_ok() {
-                if stopping {
-                    copies.stop_agent(&workspace, &session);
-                } else {
-                    copies.let_agent_go_on(&workspace, &session);
-                }
-            }
-            complete.complete(answer);
-        };
+        let stop = write_agent_stop(AgentStop {
+            stopping,
+            session: named.session,
+            workspace: self.workspace.clone(),
+            agent,
+            member,
+            targets,
+            person,
+            receipt,
+            workspaces: Arc::clone(&self.workspaces),
+            invocations: Arc::clone(&self.invocations),
+            broker: self.broker.clone(),
+        });
         match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn(stop)),
-            Err(_) => super::workspaces::block_on_owned(stop),
+            Ok(runtime) => drop(runtime.spawn(async move { complete.complete(stop.await) })),
+            Err(_) => super::workspaces::block_on_owned(async move {
+                complete.complete(stop.await);
+            }),
         }
         Some(answered)
     }
@@ -5778,6 +5840,17 @@ impl RuntimeActionProvider {
             );
             return answer;
         }
+        self.invoke_as_session(caller, request, session)
+    }
+
+    /// The call itself, as the session's own run: recorded as its invocation, and, where it
+    /// waits for the person's yes, noted as waiting so the listing shows it.
+    fn invoke_as_session(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        session: &AdmittedRuntimeSession,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let runs_as = session.acting().clone();
         let invocation = request.invocation;
         self.invocations.record(

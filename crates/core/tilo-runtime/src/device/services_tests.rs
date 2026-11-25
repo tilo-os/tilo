@@ -1377,7 +1377,12 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     // the daemon starts is admitted by the link it hands it.
     let other = std::process::Command::new(std::env::current_exe().unwrap());
     let native = root.join(tilo_paths::machine::DAEMON_NATIVE);
-    let mut other = shell_child(&root, &native, other, &format!("other:{}", socket.display()));
+    let mut other = shell_child(
+        &root,
+        &native,
+        other,
+        &format!("other:{}", socket.display()),
+    );
     let status = other.0.spawn_locked().unwrap().wait().unwrap();
     assert!(
         status.success()
@@ -1677,39 +1682,54 @@ fn shell_child(
 /// What the child of [`SHELL_TEST`] playing `role` checks.
 #[cfg(unix)]
 async fn shell_helper(role: &str) {
-    use runtime_collab::wire::shell::{SHELL_MAGIC, SHELL_SECRET_BYTES, ShellCall, ShellReply};
-    use std::io::Write as _;
-    use tokio::io::AsyncWriteExt as _;
     if role == "shell" {
-        let token = std::env::var(runtime_collab::wire::shell::SHELL_TOKEN_ENV)
-            .expect("the daemon gave its shell a token");
-        let socket = std::env::var(SHELL_NATIVE).expect("the daemon's own socket");
-        let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(20)))
-            .unwrap();
-        writeln!(
-            &stream,
-            "{}",
-            serde_json::json!({"native": "shells#link", "token": token})
-        )
-        .unwrap();
-        let (line, handed) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
-        let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
-        assert!(answer["error"].is_null(), "{answer}");
-        let link = std::os::unix::net::UnixStream::from(
-            handed.expect("the daemon hands its shell's token a link"),
-        );
-        link.set_nonblocking(true).unwrap();
-        let (shell, _) =
-            runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
-        let answer = shell.call(ShellCall::Workspaces).await;
-        assert!(
-            matches!(&answer, Ok(ShellReply::Workspaces(held)) if !held.is_empty()),
-            "the shell the daemon started is answered: {answer:?}"
-        );
-        return;
+        the_started_shell_is_answered().await;
+    } else {
+        another_roles_asks_are_refused(role).await;
     }
+}
+
+/// The shell the daemon started redeems the one-use token it was given, and the daemon answers
+/// it on the link that token admits.
+#[cfg(unix)]
+async fn the_started_shell_is_answered() {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    use std::io::Write as _;
+    let token = std::env::var(runtime_collab::wire::shell::SHELL_TOKEN_ENV)
+        .expect("the daemon gave its shell a token");
+    let socket = std::env::var(SHELL_NATIVE).expect("the daemon's own socket");
+    let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .unwrap();
+    writeln!(
+        &stream,
+        "{}",
+        serde_json::json!({"native": "shells#link", "token": token})
+    )
+    .unwrap();
+    let (framed, handed) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
+    let answer: serde_json::Value = serde_json::from_slice(&framed).unwrap();
+    assert!(answer["error"].is_null(), "{answer}");
+    let link = std::os::unix::net::UnixStream::from(
+        handed.expect("the daemon hands its shell's token a link"),
+    );
+    link.set_nonblocking(true).unwrap();
+    let (shell, _) =
+        runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
+    let answer = shell.call(ShellCall::Workspaces).await;
+    assert!(
+        matches!(&answer, Ok(ShellReply::Workspaces(held)) if !held.is_empty()),
+        "the shell the daemon started is answered: {answer:?}"
+    );
+}
+
+/// A process of the account the daemon did not start as the shell is refused every ask, on a
+/// link it opens with a secret the daemon never made.
+#[cfg(unix)]
+async fn another_roles_asks_are_refused(role: &str) {
+    use runtime_collab::wire::shell::{SHELL_MAGIC, SHELL_SECRET_BYTES, ShellCall};
+    use tokio::io::AsyncWriteExt as _;
     let socket = role.strip_prefix("other:").expect("a role this test plays");
     let workspace = WorkspaceId::new().to_string();
     let membership = tilo_actions::remote::InvokeRequest {
@@ -3202,7 +3222,9 @@ fn a_seat_takes_one_shell_link_at_a_time() {
     let token = session
         .shell_token_for(person, seat)
         .expect("a free seat takes a link");
-    let link = session.link_with(&token).expect("the link reaches the dispatch");
+    let link = session
+        .link_with(&token)
+        .expect("the link reaches the dispatch");
     let deadline = tilo_test_env::hang_deadline();
     while !session.shell_live(seat) {
         assert!(

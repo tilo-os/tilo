@@ -627,36 +627,33 @@ impl Seats {
             };
             // A token is the daemon's own word for whose shell this is; without one, the record of
             // a link this daemon admitted for the same process before is.
-            let person = match token {
-                Some(token) => {
-                    let Some(holder) = shells.token_holder(&token) else {
-                        return refusal(
-                            "this token is no shell link the daemon made, or it was taken already"
-                                .to_owned(),
-                        );
-                    };
-                    if !seats.acts_as(uid, admitted, holder) {
-                        return refusal(
-                            "this account does not act as the person this token was made for"
-                                .to_owned(),
-                        );
-                    }
-                    holder
+            let person = if let Some(token) = token {
+                let Some(holder) = shells.token_holder(&token) else {
+                    return refusal(
+                        "this token is no shell link the daemon made, or it was taken already"
+                            .to_owned(),
+                    );
+                };
+                if !seats.acts_as(uid, admitted, holder) {
+                    return refusal(
+                        "this account does not act as the person this token was made for"
+                            .to_owned(),
+                    );
                 }
-                None => {
-                    let Some(person) = seats.recorded_seat(uid, pid) else {
-                        return refusal(
-                            "this process is no seat a shell link was admitted for: ask for one with the token the daemon gave it"
-                                .to_owned(),
-                        );
-                    };
-                    if !seats.acts_as(uid, admitted, person) {
-                        return refusal(
-                            "this account does not act as the seat's person now".to_owned(),
-                        );
-                    }
-                    person
+                holder
+            } else {
+                let Some(person) = seats.recorded_seat(uid, pid) else {
+                    return refusal(
+                        "this process is no seat a shell link was admitted for: ask for one with the token the daemon gave it"
+                            .to_owned(),
+                    );
+                };
+                if !seats.acts_as(uid, admitted, person) {
+                    return refusal(
+                        "this account does not act as the seat's person now".to_owned(),
+                    );
                 }
+                person
             };
             if shells.live(seat_id) {
                 return refusal("this seat's shell is linked already".to_owned());
@@ -718,16 +715,17 @@ impl Seats {
         let path = self.seat_record(uid, pid)?;
         let bytes = std::fs::read(path).ok()?;
         let record: Value = serde_json::from_slice(&bytes).ok()?;
-        if record["uid"].as_u64() != Some(u64::from(uid))
-            || record["pid"].as_u64() != Some(u64::from(pid))
+        let record = record.as_object()?;
+        if record.get("uid").and_then(Value::as_u64) != Some(u64::from(uid))
+            || record.get("pid").and_then(Value::as_u64) != Some(u64::from(pid))
         {
             return None;
         }
-        let start = record["start"].as_u64();
+        let start = record.get("start").and_then(Value::as_u64);
         if crate::apps::process_start_time(pid) != start {
             return None;
         }
-        hex::decode(record["person"].as_str()?)
+        hex::decode(record.get("person")?.as_str()?)
             .ok()
             .and_then(|person| <[u8; 32]>::try_from(person).ok())
     }

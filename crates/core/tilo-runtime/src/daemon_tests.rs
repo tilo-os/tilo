@@ -1867,11 +1867,7 @@ impl crate::seats::Shells for Linked {
             .flatten()
     }
 
-    fn redeem(
-        &self,
-        _secret: [u8; 32],
-        _seat: u64,
-    ) -> io::Result<std::os::unix::net::UnixStream> {
+    fn redeem(&self, _secret: [u8; 32], _seat: u64) -> io::Result<std::os::unix::net::UnixStream> {
         Ok(self.made())
     }
 
@@ -2054,8 +2050,8 @@ fn a_session_started_with_a_link_starts_a_nested_shell_with_its_own_link_and_win
             serde_json::json!({"native": "shells#link", "token": token})
         )
         .unwrap();
-        let (line, handed) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
-        let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        let (framed, handed) = runtime_portal::fd_transport::recv_with_fd(&stream).unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&framed).unwrap();
         assert!(answer["error"].is_null(), "{answer}");
         let link = std::os::unix::net::UnixStream::from(
             handed.expect("the daemon answers its shell's token with a link"),
@@ -2230,22 +2226,14 @@ impl crate::seats::Shells for NestedShells {
         self.0.upgrade()?.shell_token_holder(token)
     }
 
-    fn redeem(
-        &self,
-        secret: [u8; 32],
-        seat: u64,
-    ) -> io::Result<std::os::unix::net::UnixStream> {
+    fn redeem(&self, secret: [u8; 32], seat: u64) -> io::Result<std::os::unix::net::UnixStream> {
         self.0
             .upgrade()
             .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?
             .shell_redeem(secret, seat)
     }
 
-    fn link_for(
-        &self,
-        person: [u8; 32],
-        seat: u64,
-    ) -> io::Result<std::os::unix::net::UnixStream> {
+    fn link_for(&self, person: [u8; 32], seat: u64) -> io::Result<std::os::unix::net::UnixStream> {
         let daemon = self
             .0
             .upgrade()
@@ -2255,7 +2243,9 @@ impl crate::seats::Shells for NestedShells {
     }
 
     fn live(&self, seat: u64) -> bool {
-        self.0.upgrade().is_some_and(|daemon| daemon.shell_live(seat))
+        self.0
+            .upgrade()
+            .is_some_and(|daemon| daemon.shell_live(seat))
     }
 
     fn start(
@@ -2276,7 +2266,7 @@ impl crate::seats::Shells for NestedShells {
             .args(args.get(1..).unwrap_or_default())
             .stdin(std::process::Stdio::null());
         super::the_shells_environment(&mut command, env);
-        daemon.start_shell(command, window)
+        daemon.start_shell(command, window.as_ref())
     }
 }
 

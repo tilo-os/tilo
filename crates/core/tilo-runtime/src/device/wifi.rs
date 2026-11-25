@@ -398,23 +398,35 @@ mod tests {
         let caller =
             Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(own);
 
+        shares_a_sealed_passphrase(&wifi, &caller, &personal, &key).await;
+        refuses_a_passphrase_to_every_other(&wifi, &caller, cert.user_public_key).await;
+    }
+
+    /// The person's share is kept sealed in their workspace, and this device joins with it.
+    async fn shares_a_sealed_passphrase(
+        wifi: &Wifi,
+        caller: &Caller,
+        personal: &PersonResources,
+        key: &SigningKey,
+    ) {
         assert_eq!(
             ask(
-                &wifi,
-                &caller,
+                wifi,
+                caller,
                 SHARE,
                 share_arguments("Home", Security::Wpa2, "a passphrase")
             )
             .await,
             Ok(json!({"ssid": "Home"}))
         );
-
         // The person's workspace keeps it sealed, and this device joins with it once it is there.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(20))
+            .expect("a deadline twenty seconds out is representable");
         let answer = loop {
             let answer = ask(
-                &wifi,
-                &caller,
+                wifi,
+                caller,
                 LOOKUP,
                 lookup_arguments("Home", Security::Wpa2),
             )
@@ -433,15 +445,20 @@ mod tests {
             !kept.wifi.is_empty()
                 && kept.wifi.iter().all(|(_, network)| {
                     Credential::from_hex(&network.credential)
-                        .is_some_and(|sealed| sealed.open(&key).is_ok())
+                        .is_some_and(|sealed| sealed.open(key).is_ok())
                         && !network.credential.contains(&hex::encode("a passphrase"))
                 }),
             "the person's workspace keeps the passphrase sealed to their devices, never in the clear"
         );
+    }
+
+    /// Nobody but the person themselves gets or gives one: not an agent acting for them, not
+    /// an app, and not an app serving them.
+    async fn refuses_a_passphrase_to_every_other(wifi: &Wifi, caller: &Caller, person: [u8; 32]) {
         assert_eq!(
             ask(
-                &wifi,
-                &caller,
+                wifi,
+                caller,
                 LOOKUP,
                 lookup_arguments("Nowhere", Security::Wpa2)
             )
@@ -451,8 +468,8 @@ mod tests {
         );
         assert!(
             ask(
-                &wifi,
-                &caller,
+                wifi,
+                caller,
                 SHARE,
                 lookup_arguments("Home", Security::Wpa2)
             )
@@ -461,9 +478,7 @@ mod tests {
             "a share carries the passphrase"
         );
 
-        // Nobody but the person themselves gets or gives one: not an agent acting for them, not
-        // an app, and not an app serving them.
-        let person = hex::encode(cert.user_public_key);
+        let person = hex::encode(person);
         let agent = Caller::agent_turn(
             ("an-agent", person.clone()),
             person.clone(),
@@ -482,7 +497,7 @@ mod tests {
                     share_arguments("Home", Security::Wpa2, "another passphrase"),
                 ),
             ] {
-                let refused = ask(&wifi, other, action, arguments).await;
+                let refused = ask(wifi, other, action, arguments).await;
                 assert!(
                     refused
                         .as_ref()
@@ -493,8 +508,8 @@ mod tests {
         }
         assert_eq!(
             ask(
-                &wifi,
-                &caller,
+                wifi,
+                caller,
                 LOOKUP,
                 lookup_arguments("Home", Security::Wpa2)
             )

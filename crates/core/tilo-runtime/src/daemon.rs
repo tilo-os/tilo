@@ -1105,7 +1105,7 @@ impl crate::seats::Shells for PersonShells {
         let mut command = std::process::Command::new(shell_program()?);
         command.args(args).stdin(std::process::Stdio::null());
         the_shells_environment(&mut command, env);
-        daemon.start_shell(command, window)
+        daemon.start_shell(command, window.as_ref())
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -2323,6 +2323,22 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             }
             return None;
         }
+        self.serve_session(stream, first, rest, follow, seated, descriptors);
+        None
+    }
+
+    /// Answer `stream` as a session, `first` and then `rest` and what `follow` reads being its
+    /// input: by the seats when it asks them, as a launcher's start, or as the person's own
+    /// connection.
+    fn serve_session(
+        &self,
+        stream: Stream,
+        first: Vec<u8>,
+        rest: Vec<u8>,
+        follow: Stream,
+        seated: Option<&Seated>,
+        descriptors: Vec<runtime_portal::process_link::Descriptor>,
+    ) {
         // A connection that asks the seats (who it is, a shell started or waited for) is
         // answered by them alone: asking founds the person no workspace, so a shell started for
         // a desktop about to hand its own over finds that one.
@@ -2334,7 +2350,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             if let Err(error) = serve_seat(&stream, input, seated) {
                 tracing::debug!(%error, "native seat client disconnected");
             }
-            return None;
+            return;
         }
         // A launcher asks this computer to start an app: the daemon makes the launch, as it
         // makes every launch, so the app is attested as the one it runs. The request is the
@@ -2342,7 +2358,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         #[cfg(unix)]
         if let Some(launch) = self.launch.clone().filter(|_| is_launch_request(&first)) {
             launch(stream, &first, descriptors);
-            return None;
+            return;
         }
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
         // The session is admitted by the first request that needs one, never by a connection's
@@ -2371,7 +2387,6 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
         }
-        None
     }
 
     /// Answer `stream`'s frames, `first` and then `rest` and what `follow` reads: until it ends,
