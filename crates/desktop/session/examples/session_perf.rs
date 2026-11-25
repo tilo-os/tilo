@@ -401,7 +401,12 @@ fn notebook(titles: &[&str]) -> (ResourceService, Vec<String>) {
         else {
             panic!("a tilolang action is done once committed");
         };
-        let id = note.resources.first().expect("the note's id").clone();
+        // What the action made is named by the id its app names it by: its published resource is
+        // that id under the app.
+        let id = tilolang_tilo::publish::resource_id(
+            NOTES,
+            note.resources.first().expect("the note's id"),
+        );
         service
             .invoke(
                 &id,
