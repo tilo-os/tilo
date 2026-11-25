@@ -20,7 +20,9 @@ use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, InvokeArgument,
     InvokeRequest,
 };
-use tilo_actions::{ActionAddress, ActionDescriptor, ActionFailure, ActionOutput, InvocationUpdate};
+use tilo_actions::{
+    ActionAddress, ActionDescriptor, ActionFailure, ActionOutput, InvocationUpdate,
+};
 use tilo_desktop_model::Workspace;
 use tilo_server_protocol::WorkspaceId;
 
@@ -45,15 +47,11 @@ fn open_descriptor() -> ActionDescriptor {
         action_label: "Open in Files".into(),
         keywords: Vec::new(),
         icon: None,
-        description: Some(
-            "Put a file the workspace keeps into the workspace's own folder".into(),
-        ),
+        description: Some("Put a file the workspace keeps into the workspace's own folder".into()),
         locus: tilo_actions::ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
         contract: tilo_actions::ActionContract {
-            execution: tilo_actions::ExecutionMode::Background {
-                cancellable: false,
-            },
+            execution: tilo_actions::ExecutionMode::Background { cancellable: false },
             result: tilo_actions::ResultSpec::None,
             ..tilo_actions::ActionContract::default()
         },
@@ -110,13 +108,9 @@ fn said_invocation_id(request: &InvokeRequest) -> Option<String> {
 }
 
 /// The context the host stamps on what `caller`'s `request` changes: the invocation id the host
-/// admitted it under, the request as its caller signed it, the purpose and gesture the caller
-/// said, and the work it is part of. The group is the host's to say.
-///
-/// The tree's change keeps the signed request, as every change an action makes for its caller
-/// does: each device that takes the change in checks the signature and decides the change by
-/// the caller's own grants on the tree's verbs the put is carried out as, rather than taking
-/// this device's word that the caller asked.
+/// admitted it under, the purpose and gesture the caller said, and the work it is part of. The
+/// group is the host's to say. The request itself is kept where the tree is changed
+/// ([`crate::apps::services::FilesPutCall`]).
 fn caller_context(caller: &Caller, request: &InvokeRequest) -> tilo_actions::ActionContext {
     let said = request.context.as_ref();
     let group = match caller.agent_session() {
@@ -132,14 +126,13 @@ fn caller_context(caller: &Caller, request: &InvokeRequest) -> tilo_actions::Act
             .and_then(|context| context.group.clone())
             .filter(|group| group.kind != tilo_actions::context::AGENT_SESSION_GROUP),
     };
-    let context = tilo_actions::ActionContext {
+    tilo_actions::ActionContext {
         group,
         purpose: said.and_then(|context| context.purpose.clone()),
         gesture: said.and_then(|context| context.gesture),
         source_invocation: Some(request.invocation),
         ..tilo_actions::ActionContext::default()
-    };
-    super::invoker::signed_by_request(Some(context), Some(request)).unwrap_or_default()
+    }
 }
 
 /// Whether `actor` may change the files of `workspace` now: the tree's own records read and
@@ -203,7 +196,9 @@ impl AppBrokerState {
         }
         let workspace_id = workspace.id().to_string();
         if caller.workspace() != Some(workspace_id.as_str()) {
-            tracing::warn!("putting a file into a workspace was refused: the caller names no such workspace");
+            tracing::warn!(
+                "putting a file into a workspace was refused: the caller names no such workspace"
+            );
             return Err(ActionCallError::UnknownAction);
         }
         if !may_put_into_tree(workspace, policy, now) {
@@ -214,9 +209,10 @@ impl AppBrokerState {
             );
             return Err(ActionCallError::NotPermitted);
         }
-        let puts = self.services.files_open.clone().ok_or_else(|| {
-            refusal("the workspace's folder is not served on this host".into())
-        })?;
+        let puts =
+            self.services.files_open.clone().ok_or_else(|| {
+                refusal("the workspace's folder is not served on this host".into())
+            })?;
         let Some(workspace_id) = WorkspaceId::parse(&workspace_id) else {
             return Err(ActionCallError::UnknownAction);
         };
@@ -252,7 +248,14 @@ impl AppBrokerState {
                     .unwrap_or(false)
             }
         };
-        let update = match puts.put(workspace_id, &arguments, Some(acting), &confirm) {
+        // The tree's change keeps the request, so each device that takes the change in checks
+        // who asked and decides it by the caller's own grants on the tree's verbs the put is
+        // carried out as, rather than taking this device's word for it.
+        let call = crate::apps::services::FilesPutCall {
+            context: acting,
+            request,
+        };
+        let update = match puts.put(workspace_id, &arguments, Some(call), &confirm) {
             Ok(value) => InvocationUpdate::Succeeded {
                 invocation: admitted.invocation,
                 output: ActionOutput {

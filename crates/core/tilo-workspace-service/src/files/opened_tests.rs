@@ -65,20 +65,30 @@ fn put_content(shelf: &Shelf, workspace: WorkspaceId, bytes: &[u8]) -> String {
     format!("tilo.content:{hash}")
 }
 
+/// `record` of the workspace's tree as this device reads it, `None` while the workspace holds
+/// none of it. The tree's records are sealed under the Files keys, outside the store.
+async fn tree_record(workspaces: &Workspaces, workspace: &str, record: &str) -> Option<Vec<u8>> {
+    use tilo_peer_state::workspace_documents::DocumentRead;
+    match workspaces
+        .own_read(workspace, (FILES_APP, record), &[], usize::MAX)
+        .await
+        .unwrap_or_else(|error| panic!("the tree's record {record} reads: {error}"))
+    {
+        DocumentRead::Whole { bytes, .. } => Some(bytes),
+        DocumentRead::Absent => None,
+        read => panic!("the tree's record {record} reads whole, not {read:?}"),
+    }
+}
+
 /// The workspace's tree as its records read, `None` before anything was put into it.
 async fn tree_if_kept(workspaces: &Workspaces, workspace: &str) -> Option<Tree> {
-    let index = workspaces
-        .resource_document(workspace, FILES_APP, &tree::document_id())
-        .await
-        .unwrap()?;
+    let index = tree_record(workspaces, workspace, &tree::document_id()).await?;
     let index = automerge::AutoCommit::load(&index).expect("the tree's own record reads");
     let mut kept = TreeChunks::default();
     kept.read_index(&index);
     for chunk in tree::listed_chunks(&index) {
-        let record = workspaces
-            .resource_document(workspace, FILES_APP, &tree::chunk_document_id(chunk))
+        let record = tree_record(workspaces, workspace, &tree::chunk_document_id(chunk))
             .await
-            .unwrap()
             .unwrap_or_else(|| panic!("the workspace keeps chunk {chunk} of the tree"));
         kept.read_chunk(
             chunk,
@@ -204,14 +214,34 @@ impl Put {
     /// Put `arguments` as the dispatch does, on a thread of its own: the tree's sync then has
     /// this device's runtime to itself, as it does when a daemon serves a call.
     fn put(&self, arguments: &Value) -> Result<Value, String> {
-        self.put_as(arguments, None)
+        self.put_for(arguments, None)
     }
 
-    /// [`Self::put`], the tree changed in `acting`.
-    fn put_as(
+    /// [`Self::put`], made for the `files#open` of `arguments` the workspace's owner signed on
+    /// their device.
+    fn put_signed(&self, arguments: &Value) -> Result<Value, String> {
+        let request = self.signed_open(arguments);
+        let context = tilo_actions::ActionContext {
+            source_invocation: Some(request.invocation),
+            ..tilo_actions::ActionContext::default()
+        }
+        .with_invoker(tilo_actions::ActionInvoker::person(hex::encode(
+            governor().1.user_public_key,
+        )));
+        self.put_for(
+            arguments,
+            Some(crate::apps::services::FilesPutCall {
+                context,
+                request: &request,
+            }),
+        )
+    }
+
+    /// [`Self::put`], made for `call`.
+    fn put_for(
         &self,
         arguments: &Value,
-        acting: Option<tilo_actions::ActionContext>,
+        call: Option<crate::apps::services::FilesPutCall<'_>>,
     ) -> Result<Value, String> {
         std::thread::scope(|scope| {
             scope
@@ -219,7 +249,7 @@ impl Put {
                     self.puts.put(
                         self.workspace,
                         arguments.as_object().unwrap(),
-                        acting,
+                        call,
                         &|| true,
                     )
                 })
@@ -228,9 +258,8 @@ impl Put {
         })
     }
 
-    /// The context a `files#open` of `arguments`, signed by the workspace's owner on their
-    /// device, changes the tree in: the person as its invoker, and the request as they signed it.
-    fn signed_open(&self, arguments: &Value) -> tilo_actions::ActionContext {
+    /// The `files#open` of `arguments`, signed by the workspace's owner on their device.
+    fn signed_open(&self, arguments: &Value) -> tilo_actions::remote::InvokeRequest {
         let (key, cert) = governor();
         let mut request = tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
@@ -265,14 +294,25 @@ impl Put {
             )
             .unwrap(),
         ));
-        tilo_actions::ActionContext {
-            source_invocation: Some(request.invocation),
-            signed: tilo_actions::remote::SignedCall::of(&request).map(Box::new),
-            ..tilo_actions::ActionContext::default()
-        }
-        .with_invoker(tilo_actions::ActionInvoker::person(hex::encode(
-            cert.user_public_key,
-        )))
+        request
+    }
+
+    /// Let the agent `id` of `person` write the workspace's files, as a person's Settings grants
+    /// it.
+    async fn allow_agent(&self, id: &str, person: &str) {
+        crate::workspaces::fixtures::record_grants(
+            &self.workspaces,
+            &self.name,
+            &[tilo_action_policy::Grant::new(
+                format!("{id}-files"),
+                tilo_action_policy::Grantee::agent(id, person),
+                tilo_action_policy::TreePath::workspace(&self.name).app(FILES_APP),
+                tilo_action_policy::KindSet::READ_UNDOABLE,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(person),
+            )],
+        )
+        .await;
     }
 
     /// What the workspace's Files keys are, as this device keeps them.
@@ -362,23 +402,52 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
     assert_eq!(roots, 1, "the file is not kept beside itself");
 }
 
-/// The tree's change of a put the person signed keeps their request, and the workspace takes it
-/// in as theirs: it checks the signature and decides the change by the person's own grants on
-/// the tree's verbs, a new folder and a new file among them.
+/// The tree's change of a put keeps the request it was made for, and the workspace takes it in:
+/// the person's as they signed it, decided by their own grants on the tree's verbs, and an
+/// agent's that asked under no key of its own as this device signs it for the agent's person.
 #[tokio::test]
 async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
     let put = fixture().await;
     let bytes = b"signed for\n";
     let content = put_content(&put.shelf, put.workspace, bytes);
     let arguments = json!({"content": content, "name": "asked.txt", "dir": "signed"});
-    let acting = put.signed_open(&arguments);
-    let answer = put.put_as(&arguments, Some(acting)).unwrap();
+    let answer = put.put_signed(&arguments).unwrap();
     assert_eq!(answer["path"], "signed/asked.txt", "{answer}");
     let tree = tree_of(&put.workspaces, &put.name).await;
     assert!(
         file_at(&tree, "signed", "asked.txt").is_some(),
         "the workspace took the change in"
     );
+
+    // An agent of the person's asked under no key of its own: this device, which keeps the
+    // workspace's records, signs the call as the one that carried it out for the person, and
+    // the workspace takes the change in as the agent's.
+    let agents = put_content(&put.shelf, put.workspace, b"an agent's\n");
+    let arguments = json!({"content": agents, "name": "agent.txt", "dir": "signed"});
+    let owner = hex::encode(governor().1.user_public_key);
+    put.allow_agent("porter", &owner).await;
+    let mut request = put.signed_open(&arguments);
+    request.signed = None;
+    let porter = tilo_actions::ActionContext {
+        source_invocation: Some(request.invocation),
+        ..tilo_actions::ActionContext::default()
+    }
+    .with_invoker(tilo_actions::ActionInvoker::admitted(
+        &tilo_action_policy::Acting::agent("porter", owner.as_str())
+            .acting_for(tilo_action_policy::Acting::person(owner.as_str())),
+    ));
+    let answer = put
+        .put_for(
+            &arguments,
+            Some(crate::apps::services::FilesPutCall {
+                context: porter,
+                request: &request,
+            }),
+        )
+        .unwrap();
+    assert_eq!(answer["path"], "signed/agent.txt", "{answer}");
+    let tree = tree_of(&put.workspaces, &put.name).await;
+    assert!(file_at(&tree, "signed", "agent.txt").is_some());
 }
 
 /// A folder of files goes in as one change, whether the list is given inline or as content of

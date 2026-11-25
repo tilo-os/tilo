@@ -338,9 +338,10 @@ pub fn verify_recorded(
     )?;
     // The device that keeps the record carried the call out itself, for an agent acting for a
     // person (a turn it runs, or a call it admitted again on its person's yes), and signed it
-    // as the device that did: the step is one the called action declares, and the change names
-    // the agent and its person. It never names the person as having made it themselves.
-    if declared
+    // as the device that did: the step is one the called action declares, or the put of files
+    // the call is, and the change names the agent and its person. It never names the person as
+    // having made it themselves.
+    if (declared || puts_files(context, &statement.target, app))
         && keeper.is_some_and(|keeper| *keeper.device == cert.device_public_key)
         && invoker.is_some_and(|acting| acting.is_agent() && acting.acted_for_person().is_some())
     {
@@ -559,6 +560,7 @@ pub fn verify_carried(
     // claim names is a step the called action declares it takes there.
     let outside = carried_effect(signed, record, claim, published_name);
     let verbs = claimed_verbs(claim);
+    let puts = puts_files_claimed(&statement.target, record.app, &verbs);
     let declared = keeper.is_some()
         && if verbs.is_empty() {
             // A store's change claims only the kinds of the records it writes: what a receiver
@@ -585,7 +587,7 @@ pub fn verify_carried(
     let invoker = claim.invoker.as_deref();
     // The keeper carried out a call for an agent acting for a person, and signed it as the
     // device that did: as [`verify_recorded`] reads it.
-    if outside
+    if (outside || puts)
         && keeper.is_some_and(|device| *device == cert.device_public_key)
         && invoker.is_some_and(|acting| acting.is_agent() && acting.acted_for_person().is_some())
     {
@@ -641,17 +643,24 @@ pub fn carried_effect(
         .all(|action| same_action(&action.action, &target.address.action, published_name));
     // The put of files a Files `open` given content is carried out as: every device that opens
     // the change checks its argument ([`verify_recorded`]).
-    if !verbs.is_empty()
-        && verbs.iter().all(|action| {
-            collab_types::files_open_step(
-                &target.address,
-                (record.app, &action.kind, &action.action),
-            )
-        })
-    {
+    if puts_files_claimed(target, record.app, &verbs) {
         return false;
     }
     !(in_record && names_verb)
+}
+
+/// Whether the verbs a sealed change claims, in a record of `app`, are the put of files the call
+/// `target` asked for ([`collab_types::files_open_step`]): every device that opens the change
+/// checks the rest ([`verify_recorded`]).
+fn puts_files_claimed(
+    target: &tilo_actions::remote::RemoteActionTarget,
+    app: &str,
+    verbs: &[&tilo_actions::ActionKey],
+) -> bool {
+    !verbs.is_empty()
+        && verbs.iter().all(|action| {
+            collab_types::files_open_step(&target.address, (app, &action.kind, &action.action))
+        })
 }
 
 /// Whether every action `claim` names is an edit of a record's fields, as a store's change is

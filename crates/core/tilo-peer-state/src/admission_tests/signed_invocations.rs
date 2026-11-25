@@ -1488,6 +1488,66 @@ tilo_test_env::scenario! {
         assert!(tree_value(&receiver).contains("seed"), "never applied: {}", tree_value(&receiver));
     }
 
+    phase an_agents_put_the_device_keeping_the_records_carried_out_counts_only_from_it;
+    {
+        let (mut receiver, a, _ac, b, bc, now) = seeded_with_files();
+        let owner = hex::encode(bc.user_public_key);
+        // The workspace lets its person's agent write the folder's files, as it grants an
+        // agent any action.
+        receiver
+            .governance_mut()
+            .put_governed_grants(
+                &[tilo_action_policy::Grant::new(
+                    "scribe-files",
+                    tilo_action_policy::Grantee::agent("scribe", owner.as_str()),
+                    tilo_action_policy::TreePath::workspace(WORKSPACE).app(FILES),
+                    tilo_action_policy::KindSet::READ_UNDOABLE,
+                    tilo_action_policy::Answer::Allow,
+                    tilo_action_policy::Grantee::person(owner.as_str()),
+                )],
+                &a,
+                now,
+            )
+            .unwrap();
+        let agent = |id: &str| {
+            tilo_actions::ActionInvoker::admitted(
+                &tilo_action_policy::Acting::agent(id, owner.as_str())
+                    .acting_for(tilo_action_policy::Acting::person(owner.as_str())),
+            )
+        };
+        // The agent asked under no key of its own; the device that keeps the workspace's
+        // records carried the put out for its person and signed the call as the device that
+        // did, keeping no argument.
+        let carried = |invoker: tilo_actions::ActionInvoker, cert: &DeviceCert, key: &SigningKey| {
+            let mut request = files_open(
+                serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+                cert,
+                key,
+                now,
+            );
+            let mut context = tree_change(&request, invoker, &["new-file"]);
+            context.signed.as_mut().unwrap().argument = None;
+            request.signed = None;
+            context
+        };
+        let message = tree_written(&receiver, &b, &carried(agent("scribe"), &bc, &b), "carried", now);
+        take(&mut receiver, message, now).expect("the device keeping the records carried it out");
+        assert!(tree_value(&receiver).contains("carried"), "{}", tree_value(&receiver));
+        // Another agent of the same person, which the workspace never let write its files, is
+        // refused though the same device carried its put out.
+        let message = tree_written(&receiver, &b, &carried(agent("stray"), &bc, &b), "stray", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("not granted"), "{}", refused.reason);
+        // A member's device that keeps nothing carries out no call it did not sign for its
+        // caller.
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        let message =
+            tree_written(&receiver, &key, &carried(agent("scribe"), &cert, &key), "elsewhere", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("does not check"), "{}", refused.reason);
+        assert!(tree_value(&receiver).contains("carried"), "{}", tree_value(&receiver));
+    }
+
     phase a_put_outside_the_callers_grants_is_refused;
     {
         let (mut receiver, a, _ac, b, _bc, now) = seeded_with_files();

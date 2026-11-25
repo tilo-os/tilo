@@ -697,15 +697,27 @@ pub trait FilesTreePuts: Send + Sync {
     /// workspace still lets the caller write its files, as a grant taken back while the content
     /// was read takes the change away.
     ///
+    /// `call` is the call the put is made for, when a caller made one: the tree's change is made
+    /// in its context and keeps the call as [`FilesPutCall`] says.
+    ///
     /// # Errors
     /// Why the tree did not take the files, in words a person reads.
     fn put(
         &self,
         workspace: tilo_server_protocol::WorkspaceId,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        acting: Option<tilo_actions::ActionContext>,
+        call: Option<FilesPutCall<'_>>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<serde_json::Value, String>;
+}
+
+/// The call a put into a workspace's folder is made for: the context the tree's change is made
+/// in (who asked, in which run and work), and the request they sent. The change keeps the request
+/// as its caller signed it, or, for an agent's call signed otherwise, as the device carrying it
+/// out signs it for the agent's person, so every replica checks who asked.
+pub struct FilesPutCall<'a> {
+    pub context: tilo_actions::ActionContext,
+    pub request: &'a tilo_actions::remote::InvokeRequest,
 }
 
 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
@@ -714,10 +726,10 @@ impl FilesTreePuts for crate::files::OpenedFiles {
         &self,
         workspace: tilo_server_protocol::WorkspaceId,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        acting: Option<tilo_actions::ActionContext>,
+        call: Option<FilesPutCall<'_>>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<serde_json::Value, String> {
-        crate::files::OpenedFiles::put(self, workspace, arguments, acting, confirm)
+        crate::files::OpenedFiles::put(self, workspace, arguments, call, confirm)
     }
 }
 

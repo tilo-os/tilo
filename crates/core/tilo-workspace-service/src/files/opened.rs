@@ -23,6 +23,7 @@ use tilo_fs::namespace::FileToPut;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
+use crate::apps::services::FilesPutCall;
 use crate::content::{ContentScope, ContentShelf};
 use crate::workspaces::Workspaces;
 
@@ -75,8 +76,8 @@ impl Putting {
                         "`{content}` names no list of files: give a JSON list of content, name and dir"
                     )
                 })?;
-                let bytes = store(hash)
-                    .ok_or_else(|| format!("this workspace holds no {content}"))?;
+                let bytes =
+                    store(hash).ok_or_else(|| format!("this workspace holds no {content}"))?;
                 serde_json::from_slice(&bytes)
                     .map_err(|error| format!("{content} is no list of files: {error}"))?
             }
@@ -118,9 +119,7 @@ impl Putting {
             .to_owned();
         let hash = tilo_actions::content_hash(&content)
             .ok_or_else(|| {
-                format!(
-                    "`{content}` names no content: give the file's `tilo.content:<reference>`"
-                )
+                format!("`{content}` names no content: give the file's `tilo.content:<reference>`")
             })?
             .to_owned();
         let name = arguments
@@ -207,17 +206,23 @@ impl OpenedFiles {
     /// `confirm` is asked once every file is named and before the tree is touched: whether the
     /// workspace still lets the caller write its files.
     ///
+    /// The change is made in `call`'s context, keeping its request ([`Self::kept_call`]).
+    ///
     /// # Errors
     /// A content reference the workspace does not hold, a name or folder the tree refuses, keys
-    /// the workspace's files need and this device cannot read, a grant taken back while the
-    /// content was read, or a change the workspace did not take in time.
+    /// the workspace's files need and this device cannot read, a call that does not sign here, a
+    /// grant taken back while the content was read, or a change the workspace did not take in
+    /// time.
     pub fn put(
         &self,
         workspace: WorkspaceId,
         arguments: &Map<String, Value>,
-        acting: Option<ActionContext>,
+        call: Option<FilesPutCall<'_>>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<Value, String> {
+        let acting = call
+            .map(|call| self.kept_call(workspace, call))
+            .transpose()?;
         let many = arguments.contains_key("files");
         let read = |hash: &str| self.read(workspace, hash);
         let puttings = Putting::all(arguments, &read)?;
@@ -241,27 +246,70 @@ impl OpenedFiles {
             })
             .collect();
         tilo_rt::app()
-            .block_on(self.workspaces.puts().change(workspace, acting, &mut |tree| {
-                let placed = tree.put_files(&to_put)?;
-                // A folder's answer names how many files it put, not each: the caller sent the
-                // list and knows where each file is.
-                Ok(if many {
-                    json!({"count": placed.len()})
-                } else {
-                    files.iter().zip(placed.iter()).next().map_or_else(
-                        Value::default,
-                        |((putting, _, size), file)| {
-                            json!({
-                                "path": file.path,
-                                "content": putting.content,
-                                "size": size,
-                                "replaced": file.replaced,
-                            })
-                        },
-                    )
-                })
-            }))
+            .block_on(
+                self.workspaces
+                    .puts()
+                    .change(workspace, acting, &mut |tree| {
+                        let placed = tree.put_files(&to_put)?;
+                        // A folder's answer names how many files it put, not each: the caller sent the
+                        // list and knows where each file is.
+                        Ok(if many {
+                            json!({"count": placed.len()})
+                        } else {
+                            files.iter().zip(placed.iter()).next().map_or_else(
+                                Value::default,
+                                |((putting, _, size), file)| {
+                                    json!({
+                                        "path": file.path,
+                                        "content": putting.content,
+                                        "size": size,
+                                        "replaced": file.replaced,
+                                    })
+                                },
+                            )
+                        })
+                    }),
+            )
             .map_err(|error| error.to_string())?
+    }
+
+    /// `call`'s context, keeping its request as every replica of the tree checks it: as its
+    /// caller signed it, or, for an agent's call signed otherwise, as this device signs it as the
+    /// one that carries it out for the agent's person, with how the agent was allowed
+    /// ([`Workspaces::carried_call`]). A call kept as its caller signed it keeps its argument, so
+    /// a replica checks the content and names the call put against the signature.
+    ///
+    /// # Errors
+    /// The call does not sign here.
+    fn kept_call(
+        &self,
+        workspace: WorkspaceId,
+        FilesPutCall {
+            mut context,
+            request,
+        }: FilesPutCall<'_>,
+    ) -> Result<ActionContext, String> {
+        let acting = context
+            .invoker
+            .as_ref()
+            .map(|invoker| invoker.acting.clone());
+        let kept = tilo_rt::app()
+            .block_on(self.workspaces.carried_call(
+                &workspace.to_string(),
+                request,
+                acting.as_ref(),
+                &[],
+            ))
+            .map_err(|error| error.to_string())??;
+        context.signed = kept.map(|(invocation, mut call)| {
+            context.source_invocation = Some(invocation);
+            if Some(&call.signed) == request.signed.as_deref() {
+                call.argument =
+                    tilo_actions::remote::SignedCall::of(request).and_then(|own| own.argument);
+            }
+            Box::new(call)
+        });
+        Ok(context)
     }
 
     /// The bytes named `hash` this workspace keeps: content put into it, or a file its tree
@@ -304,8 +352,7 @@ impl OpenedFiles {
         used: Option<&key_group::ContentKeys>,
     ) -> Result<(), String> {
         let current = self.sealing(workspace)?;
-        let generation =
-            |keys: &key_group::ContentKeys| (keys.workspace(), keys.epoch());
+        let generation = |keys: &key_group::ContentKeys| (keys.workspace(), keys.epoch());
         if used.map(generation) != current.as_ref().map(generation) {
             return Err("file access changed while it was saved".to_owned());
         }

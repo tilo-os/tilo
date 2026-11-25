@@ -43,16 +43,17 @@ impl FilesTreePuts for Recorder {
         &self,
         workspace: WorkspaceId,
         arguments: &Map<String, Value>,
-        acting: Option<tilo_actions::ActionContext>,
+        call: Option<crate::apps::services::FilesPutCall<'_>>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<Value, String> {
         if !confirm() {
             return Err("the caller may no longer write the workspace's files".to_owned());
         }
-        self.0
-            .lock()
-            .unwrap()
-            .push((workspace.to_string(), arguments.clone(), acting));
+        self.0.lock().unwrap().push((
+            workspace.to_string(),
+            arguments.clone(),
+            call.map(|call| call.context),
+        ));
         Ok(json!({
             "path": "Inbox/plan.md",
             "content": arguments.get("content").cloned().unwrap_or_default(),

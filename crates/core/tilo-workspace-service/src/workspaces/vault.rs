@@ -378,7 +378,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The call does not sign here.
-    pub(super) async fn carried_call(
+    pub(crate) async fn carried_call(
         &self,
         workspace: &str,
         request: &InvokeRequest,
