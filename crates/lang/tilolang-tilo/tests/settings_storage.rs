@@ -22,7 +22,8 @@ fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
-/// The app as it ships, with the platform's packages it reads through.
+/// The app as it ships, with the platform's packages it reads through and the fleet's native ones
+/// (the migration engine its account rows ask).
 fn settings() -> (Host, tilolang::Compiled) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
@@ -30,8 +31,9 @@ fn settings() -> (Host, tilolang::Compiled) {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
     )
     .expect("its ids parse");
-    let metas =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let fleet = vec![dir.parent().expect("apps/tl").to_path_buf()];
+    let metas = tilolang_tilo::catalogue::published_packages(&fleet)
+        .expect("the platform's and the fleet's packages read");
     let compiled =
         tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
     let host = Host::new(me(), || None).expect("a host");
@@ -495,7 +497,10 @@ fn fetched_files_are_fetched_ahead_or_held_to_a_space_the_person_chooses() {
     );
     view.fire_with(&space, "change", Some(&Value::text("25 GB")))
         .expect("the space is chosen");
-    assert_eq!(sent.argument("set-cache-size", "size"), Value::text("25 GB"));
+    assert_eq!(
+        sent.argument("set-cache-size", "size"),
+        Value::text("25 GB")
+    );
 
     // A device that fetches nothing ahead says so on the same switch.
     let off = READING.replace("\"prefetch\": true", "\"prefetch\": false");
