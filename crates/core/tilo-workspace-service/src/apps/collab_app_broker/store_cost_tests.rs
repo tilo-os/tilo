@@ -1,7 +1,7 @@
-//! What one store command costs an app: the command an app's process sends over its
-//! collaboration connection, through the device's dispatch, to the workspace's real store and
-//! back. An app holds no store of its own, so an action that names many resources makes as many
-//! trips; a trip that costs milliseconds makes an import of a few hundred rows take seconds.
+// What one store command costs an app: the command an app's process sends over its
+// collaboration connection, through the device's dispatch, to the workspace's real store and
+// back. An app holds no store of its own, so an action that names many resources makes as many
+// trips; a trip that costs milliseconds makes an import of a few hundred rows take seconds.
 
 use crate::apps::service_resources::ServiceResources;
 use crate::workspaces::fixtures;
