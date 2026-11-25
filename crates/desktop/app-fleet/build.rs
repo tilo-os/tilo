@@ -88,11 +88,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|error| format!("a Tilo checkout: {error}"))?;
     let apps_dir = root.join("apps");
     if !apps_dir.is_dir() {
-        return Err(format!(
-            "{}: no apps/, so this is not a Tilo checkout: the fleet is read from the apps beside it",
+        // A packaged crate carries no apps: it is built from its own sources alone, where no app
+        // is known, so it compiles an empty fleet and says so.
+        println!(
+            "cargo::warning=tilo-app-fleet: {} holds no apps, so this build compiles an empty fleet",
             apps_dir.display()
-        )
-        .into());
+        );
+        return write(&render(&[], None));
     }
     let mut apps: Vec<App> = Vec::new();
     watch(&apps_dir);
@@ -119,9 +121,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     watch(&sections);
     let sections_surface = fs::read_to_string(&sections)?;
     claim_each_id(&apps)?;
-    let out = render(&apps, &sections_surface);
+    write(&render(&apps, Some(&sections_surface)))
+}
+
+/// Write the fleet's module into `OUT_DIR`, where it is included from.
+fn write(module: &str) -> Result<(), Box<dyn Error>> {
     let out_dir = env::var("OUT_DIR")?;
-    fs::write(Path::new(&out_dir).join("fleet.rs"), out)?;
+    fs::write(Path::new(&out_dir).join("fleet.rs"), module)?;
     Ok(())
 }
 
@@ -193,7 +199,7 @@ fn claim_each_id(apps: &[App]) -> Result<(), Box<dyn Error>> {
 }
 
 /// The fleet's Rust module: every listed app's entry, and every package's surfaced declarations.
-fn render(apps: &[App], sections: &str) -> String {
+fn render(apps: &[App], sections: Option<&str>) -> String {
     let mut out = String::from(
         "// What every app commits about itself, gathered by this crate's build script from each\n\
          // app's `fleet.json` (`tilolang describe --fleet --write`). Not edited by hand.\n\n\
@@ -205,7 +211,7 @@ fn render(apps: &[App], sections: &str) -> String {
     out.push_str(&document_windows(&listed));
     out.push_str(&private_kinds(&listed));
     out.push_str(&surfaces(apps, sections));
-    out.push_str(&surface_names(apps));
+    out.push_str(&surface_names(apps, sections.is_some()));
     out.push_str("pub(super) const APPS: &[FleetApp] = &[\n");
     for app in &listed {
         out.push_str(&app_module(app));
@@ -283,7 +289,7 @@ fn private_kinds(apps: &[&App]) -> String {
 }
 
 /// Each package's compiled surface, as its package ships it.
-fn surfaces(apps: &[App], sections: &str) -> String {
+fn surfaces(apps: &[App], sections: Option<&str>) -> String {
     let mut out = String::from(
         "/// Each package's compiled surface, as its package ships it: what a task's programs\n\
          /// compile against there, and what the SDK's types and the API's description describe,\n\
@@ -298,16 +304,18 @@ fn surfaces(apps: &[App], sections: &str) -> String {
             &format!("    ({}, {}),", quoted(&app.entry.id), quoted(&app.surface)),
         );
     }
-    line(
-        &mut out,
-        &format!("    (\"so.tilo.settings.sections\", {}),", quoted(sections)),
-    );
+    if let Some(sections) = sections {
+        line(
+            &mut out,
+            &format!("    (\"so.tilo.settings.sections\", {}),", quoted(sections)),
+        );
+    }
     out.push_str("];\n\n");
     out
 }
 
 /// The name of each package that ships a surface.
-fn surface_names(apps: &[App]) -> String {
+fn surface_names(apps: &[App], sections: bool) -> String {
     let mut out = String::from(
         "/// The name of each package that ships a surface (`SURFACES`), including the services\n\
          /// the fleet does not list.\n\
@@ -324,10 +332,12 @@ fn surface_names(apps: &[App]) -> String {
             ),
         );
     }
-    line(
-        &mut out,
-        "    (\"so.tilo.settings.sections\", \"Settings sections\"),",
-    );
+    if sections {
+        line(
+            &mut out,
+            "    (\"so.tilo.settings.sections\", \"Settings sections\"),",
+        );
+    }
     out.push_str("];\n\n");
     out
 }
