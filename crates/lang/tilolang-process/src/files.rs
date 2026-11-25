@@ -26,11 +26,25 @@ use tilolang_tilo::runtime::blob::{
 pub const NO_CHOOSER: &str = "nobody is at this computer to choose a file; name the file instead";
 
 /// This device's home folder: what a `~` at the front of a path names.
+///
+/// A person's files are the workspace their login mounted, which a device's login gives the
+/// session and its apps (`TILO_WORKSPACE_ROOTS`): that is their home folder, and `File.list("~")`
+/// lists the folder Files and the person's other apps read. A computer serving no workspace (a
+/// desktop started without one) keeps the account's home.
 #[must_use]
 pub fn home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(std::path::PathBuf::from)
+    workspace().or_else(|| {
+        std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(std::path::PathBuf::from)
+    })
+}
+
+/// The workspace the login mounted for this session, when it mounted one: the first absolute
+/// root of `TILO_WORKSPACE_ROOTS`.
+fn workspace() -> Option<std::path::PathBuf> {
+    let roots = std::env::var_os("TILO_WORKSPACE_ROOTS")?;
+    std::env::split_paths(&roots).find(|root| root.is_absolute() && !root.as_os_str().is_empty())
 }
 
 /// The path a program named as a real one: `~` and `~/…` are this device's home folder, as the
@@ -1398,6 +1412,26 @@ mod tests {
                 .expect("no preview is no error")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_home_folder_is_the_workspace_the_login_mounted() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        assert_eq!(
+            resolve("~"),
+            home.home().to_path_buf(),
+            "a computer serving no workspace keeps the account's home"
+        );
+        let workspace = home.root().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let roots = std::env::join_paths([&workspace, &home.root().join("elsewhere")]).unwrap();
+        home.env().set("TILO_WORKSPACE_ROOTS", roots);
+        assert_eq!(
+            resolve("~"),
+            workspace,
+            "the person's files are the workspace their login mounted"
+        );
+        assert_eq!(resolve("~/notes/todo.md"), workspace.join("notes/todo.md"));
     }
 
     #[test]
