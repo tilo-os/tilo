@@ -641,14 +641,17 @@ pub fn carried_effect(
         .all(|action| same_action(&action.action, &target.address.action, published_name));
     // The put of files a Files `open` given content is carried out as: every device that opens
     // the change checks its argument ([`verify_recorded`]).
-    let puts_files = !verbs.is_empty()
+    if !verbs.is_empty()
         && verbs.iter().all(|action| {
             collab_types::files_open_step(
                 &target.address,
                 (record.app, &action.kind, &action.action),
             )
-        });
-    !(in_record && names_verb) && !puts_files
+        })
+    {
+        return false;
+    }
+    !(in_record && names_verb)
 }
 
 /// Whether every action `claim` names is an edit of a record's fields, as a store's change is

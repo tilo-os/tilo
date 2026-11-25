@@ -26,17 +26,17 @@ fn owner_id() -> String {
     "a1".repeat(32)
 }
 
-/// What reached the workspace's folder, and the context its change was to be made in.
-#[derive(Default)]
-struct Recorder(
-    Mutex<
-        Vec<(
-            String,
-            Map<String, Value>,
-            Option<tilo_actions::ActionContext>,
-        )>,
-    >,
+/// One put that reached the workspace's folder: the workspace, the open's arguments, and the
+/// context its change was to be made in.
+type Reached = (
+    String,
+    Map<String, Value>,
+    Option<tilo_actions::ActionContext>,
 );
+
+/// What reached the workspace's folder.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<Reached>>);
 
 impl FilesTreePuts for Recorder {
     fn put(
