@@ -8,7 +8,7 @@ use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::files::{Entry, FileTarget, FilesHost, TrashEntry};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
-use tilolang_runtime::{ActionRef, Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{ActionRef, Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/containers/app.tl");
@@ -283,8 +283,7 @@ impl Installed {
         self.actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"))
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone())
     }
 
     fn key_of(&self, name: &str) -> Option<&str> {
@@ -305,8 +304,7 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
         match self
             .host
             .runtime()

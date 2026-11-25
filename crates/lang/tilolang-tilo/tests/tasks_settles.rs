@@ -192,7 +192,7 @@ fn agent_work_lists_the_tasks_agents_are_given() {
         "the agent's task alone"
     );
 
-    let mut page = task_page(&ada, &sorted);
+    let page = task_page(&ada, &sorted);
     let assignee = chip(&ada, &page, "assignee");
     page.edit(&assignee, &Value::text(actor_text(&me))).unwrap();
     ada.commit();

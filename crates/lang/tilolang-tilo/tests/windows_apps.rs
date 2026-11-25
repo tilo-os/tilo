@@ -187,7 +187,7 @@ impl Sent {
             .iter()
             .filter_map(|invocation| match invocation {
                 Invocation::Action { name, .. } => Some(name.clone()),
-                _ => None,
+                Invocation::Edit { .. } => None,
             })
             .collect()
     }
@@ -262,8 +262,7 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
         match self
             .host
             .runtime()

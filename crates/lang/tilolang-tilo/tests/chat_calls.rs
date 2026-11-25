@@ -95,6 +95,39 @@ fn steps(view: &mut tilolang_runtime::ViewInstance) -> Vec<CallStep> {
         .collect()
 }
 
+/// Mutes bo for ada alone, then brings them back at the level they had: a device's own choice,
+/// kept for it and played at once.
+fn mute_and_restore(ada: &Replica, voice: &mut tilolang_runtime::ViewInstance) {
+    let silence = keyed(voice.tree(), "ui.MenuItem", "Mute for me");
+    voice.fire(&silence, "choose").unwrap();
+    ada.commit();
+    assert_eq!(
+        steps(voice),
+        vec![CallStep::Volume {
+            member: "bo".into(),
+            percent: 0
+        }]
+    );
+    voice.poll_patches().unwrap();
+    assert!(
+        voice
+            .tree()
+            .of_kind("ui.MenuButton")
+            .iter()
+            .any(|b| label(b).as_deref() == Some("Muted for you")),
+    );
+    let silence = keyed(voice.tree(), "ui.MenuItem", "Mute for me");
+    voice.fire(&silence, "choose").unwrap();
+    ada.commit();
+    assert_eq!(
+        steps(voice),
+        vec![CallStep::Volume {
+            member: "bo".into(),
+            percent: 50
+        }]
+    );
+}
+
 #[test]
 fn whoever_talks_in_a_call_rings_under_its_channel() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
@@ -179,34 +212,7 @@ fn how_loud_someone_plays_is_this_devices_own_and_plays_at_once_and_on_joining()
     );
 
     // Muted for ada alone, and back at the level they had.
-    let silence = keyed(voice.tree(), "ui.MenuItem", "Mute for me");
-    voice.fire(&silence, "choose").unwrap();
-    ada.commit();
-    assert_eq!(
-        steps(&mut voice),
-        vec![CallStep::Volume {
-            member: "bo".into(),
-            percent: 0
-        }]
-    );
-    voice.poll_patches().unwrap();
-    assert!(
-        voice
-            .tree()
-            .of_kind("ui.MenuButton")
-            .iter()
-            .any(|b| label(b).as_deref() == Some("Muted for you")),
-    );
-    let silence = keyed(voice.tree(), "ui.MenuItem", "Mute for me");
-    voice.fire(&silence, "choose").unwrap();
-    ada.commit();
-    assert_eq!(
-        steps(&mut voice),
-        vec![CallStep::Volume {
-            member: "bo".into(),
-            percent: 50
-        }]
-    );
+    mute_and_restore(&ada, &mut voice);
 
     // Out of the call, joining joins muted and plays bo at the kept level: the microphone is
     // never turned on by joining.

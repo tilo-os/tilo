@@ -157,6 +157,14 @@ fn received(value: &Value) -> Json {
 
 /// The person's input on a device whose two keyboards type: one the shared layouts, one its own.
 fn person_and_device(host: &Host) {
+    publish_input(host);
+    publish_devices(host);
+    publish_keyboard(host);
+}
+
+/// The person's input section on this device: what the mouse and touchpad do, and the keyboard's
+/// own settings.
+fn publish_input(host: &Host) {
     publish(
         host,
         "so.tilo.settings.sections#Input",
@@ -204,6 +212,10 @@ fn person_and_device(host: &Host) {
             "tablets": {},
         }),
     );
+}
+
+/// The devices this person's settings read: the keyboards attached, the screens, and the apps.
+fn publish_devices(host: &Host) {
     publish(
         host,
         "so.tilo.device#InputDevices",
@@ -259,6 +271,10 @@ fn person_and_device(host: &Host) {
             ],
         }),
     );
+}
+
+/// The keyboard this device reads: its layouts, and the drawing of the one the settings inspect.
+fn publish_keyboard(host: &Host) {
     publish(
         host,
         "so.tilo.device#Keyboard",
@@ -380,7 +396,7 @@ fn a_keyboard_is_given_a_layout_of_its_own() {
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
     let dropdown = control(
-        &view.tree(),
+        view.tree(),
         "ui.Dropdown",
         "caption",
         "The laptop's keyboard types",
@@ -470,7 +486,7 @@ fn a_layout_joins_the_shared_list_without_changing_what_is_typed() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    let dropdown = control(&view.tree(), "ui.Dropdown", "caption", "Another layout");
+    let dropdown = control(view.tree(), "ui.Dropdown", "caption", "Another layout");
     view.edit(&dropdown, &Value::text("French"))
         .expect("French is chosen");
     view.poll_patches().expect("the choice draws");
@@ -561,7 +577,7 @@ fn a_pressed_key_is_inspected_and_the_level_is_chosen() {
     assert_eq!(received(argument(&args, "level")), json!(0));
 
     sent.borrow_mut().clear();
-    view.press(&control(&view.tree(), "ui.Segment", "label", "Shift"))
+    view.press(&control(view.tree(), "ui.Segment", "label", "Shift"))
         .expect("the Shift level is chosen");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "inspect-keyboard");
@@ -582,16 +598,11 @@ fn another_layout_is_drawn_and_the_keyboards_own_comes_back() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    let dropdown = control(
-        &view.tree(),
-        "ui.Dropdown",
-        "caption",
-        "Draw another layout",
-    );
+    let dropdown = control(view.tree(), "ui.Dropdown", "caption", "Draw another layout");
     view.edit(&dropdown, &Value::text("English (US)"))
         .expect("another layout is chosen");
     view.poll_patches().expect("the choice draws");
-    view.press(&control(&view.tree(), "ui.Button", "label", "Draw it"))
+    view.press(&control(view.tree(), "ui.Button", "label", "Draw it"))
         .expect("another layout is drawn");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "show-keyboard-layout");
@@ -610,14 +621,14 @@ fn caps_lock_and_the_compose_key_are_set() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&control(&view.tree(), "ui.Segment", "label", "Escape"))
+    view.press(&control(view.tree(), "ui.Segment", "label", "Escape"))
         .expect("Caps Lock is made Escape");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-caps-lock");
     assert_eq!(argument(&args, "behaviour"), &Value::text("escape"));
 
     sent.borrow_mut().clear();
-    view.press(&control(&view.tree(), "ui.Segment", "label", "Right Alt"))
+    view.press(&control(view.tree(), "ui.Segment", "label", "Right Alt"))
         .expect("Right Alt is made the compose key");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-compose-key");
@@ -638,13 +649,8 @@ fn an_apps_paste_shortcut_is_chosen_and_given_back() {
         texts(&view)
     );
 
-    view.press(&control(
-        &view.tree(),
-        "ui.Segment",
-        "label",
-        "Ctrl+Shift+V",
-    ))
-    .expect("the Terminal is given Ctrl+Shift+V");
+    view.press(&control(view.tree(), "ui.Segment", "label", "Ctrl+Shift+V"))
+        .expect("the Terminal is given Ctrl+Shift+V");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-paste-shortcut");
     assert_eq!(argument(&args, "app"), &Value::text("org.example.Term"));
@@ -672,11 +678,11 @@ fn another_app_joins_with_a_chosen_shortcut() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    let apps = control(&view.tree(), "ui.Dropdown", "caption", "The app");
+    let apps = control(view.tree(), "ui.Dropdown", "caption", "The app");
     view.edit(&apps, &Value::text("Writer"))
         .expect("Writer is chosen");
     view.poll_patches().expect("the choice draws");
-    view.press(&control(&view.tree(), "ui.Button", "label", "Set it"))
+    view.press(&control(view.tree(), "ui.Button", "label", "Set it"))
         .expect("Writer is given the chosen shortcut");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-paste-shortcut");

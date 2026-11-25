@@ -190,7 +190,7 @@ fn choosing_an_output_or_input_plays_it_and_keeps_it() {
                 .map(|(named, value)| (named.clone(), value.clone()))
                 .collect::<Vec<_>>(),
         ),
-        other => panic!("not an action: {other:?}"),
+        invocation @ Invocation::Edit { .. } => panic!("not an action: {invocation:?}"),
     };
     let (app, name, args) = action(0);
     assert_eq!(
@@ -334,7 +334,7 @@ fn each_output_plays_a_test_sound_of_its_own() {
         .into_iter()
         .filter_map(|invocation| match invocation {
             Invocation::Action { name, args, .. } => Some((name, args)),
-            _ => None,
+            Invocation::Edit { .. } => None,
         })
         .collect();
     let names: Vec<&str> = asked.iter().map(|(name, _)| name.as_str()).collect();

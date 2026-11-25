@@ -150,11 +150,7 @@ fn a_moderator_bans_through_the_workspace_and_overturning_lets_them_back() {
     let report = done(as_who(
         "ben",
         "report_person",
-        vec![
-            all.clone(),
-            Value::Actor(person("cy")),
-            Value::text("Threats"),
-        ],
+        vec![all, Value::Actor(person("cy")), Value::text("Threats")],
     ));
     ada.commit();
     done(as_who("mo", "ban_reported", vec![report.clone()]));

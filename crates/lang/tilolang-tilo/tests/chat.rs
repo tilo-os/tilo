@@ -1444,7 +1444,7 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
         "the grant that writes the channel posts in it: {:?}",
         plan(&design_ref).err()
     );
-    let elsewhere = plan(&random_ref).err().expect("no grant, no post");
+    let elsewhere = plan(&random_ref).expect_err("no grant, no post");
     assert!(elsewhere.contains("not allowed"), "{elsewhere}");
 
     // Viewing it is no writing it: a share to read refuses the post.
@@ -1452,7 +1452,7 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
         share(&design_ref, tilo_action_policy::share::ShareAccess::View),
         "ben",
     ));
-    let reading_only = plan(&design_ref).err().expect("viewing is not posting");
+    let reading_only = plan(&design_ref).expect_err("viewing is not posting");
     assert!(reading_only.contains("not allowed"), "{reading_only}");
 }
 
@@ -2227,20 +2227,7 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
     );
 
     // The bridge is a package of its own, with the service's records.
-    let (bridge, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
-    let bridge_meta = bridge
-        .host
-        .package("so.tilo.discord.preview")
-        .expect("the Discord package")
-        .meta;
-    for name in [
-        "Accounts", "Discord", "Mapping", "Link", "DChannel", "DRole",
-    ] {
-        assert!(
-            bridge_meta.types.iter().any(|t| t.name == name),
-            "the bridge package declares {name}"
-        );
-    }
+    bridge_package_declares_its_records();
 
     // A message from outside, as the scenario relays it: the author's picture, the service's
     // name, and the pictures its words carry.
@@ -2265,23 +2252,15 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
     let mut view = ada.host.open_resource(&target(&channel), None).unwrap();
     let rows = rows(&mut view);
     let mut said: Vec<String> = rows.iter().flat_map(texts).collect();
-    let nodes: Vec<tilolang_runtime::UiNode> = rows
-        .iter()
-        .flat_map(|row| {
-            crate::fixtures::nodes(row)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .collect();
     said.extend(texts(view.tree()));
     assert!(
         said.iter()
             .any(|text| text.contains("wrote this in Discord")),
         "the outside author and the service: {said:?}"
     );
-    let pictures: Vec<String> = nodes
-        .into_iter()
+    let pictures: Vec<String> = rows
+        .iter()
+        .flat_map(|row| crate::fixtures::nodes(row).into_iter().cloned())
         .filter(|node| node.kind == "ui.Avatar")
         .filter_map(|node| node.props.get("picture").cloned())
         .filter_map(|value| match value {
@@ -2328,6 +2307,24 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
         Value::Text("Discord".to_owned()),
         "the channel says the service it is carried to"
     );
+}
+
+/// The bridge package declares the service's records, as a package of its own.
+fn bridge_package_declares_its_records() {
+    let (bridge, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
+    let bridge_meta = bridge
+        .host
+        .package("so.tilo.discord.preview")
+        .expect("the Discord package")
+        .meta;
+    for name in [
+        "Accounts", "Discord", "Mapping", "Link", "DChannel", "DRole",
+    ] {
+        assert!(
+            bridge_meta.types.iter().any(|t| t.name == name),
+            "the bridge package declares {name}"
+        );
+    }
 }
 /// The id of Chat's view `name`, as a window opens one.
 fn view_id(r: &Replica, name: &str) -> String {
@@ -2417,7 +2414,7 @@ fn a_draft_is_its_authors_alone_and_the_send_empties_it() {
         &ada,
         "send",
         vec![
-            design.clone(),
+            design,
             rich(""),
             Value::none(),
             Value::List(Vec::new()),
@@ -2562,8 +2559,8 @@ fn the_sidebar_says_what_is_half_written_in_a_conversation() {
     );
 
     // Sending empties the draft, and the row stops saying it.
-    let send = button(view.tree(), "Send").expect("the composer's send");
-    let sent = view.press(&send).unwrap();
+    let send_button = button(view.tree(), "Send").expect("the composer's send");
+    let sent = view.press(&send_button).unwrap();
     assert!(matches!(sent, InvokeOutcome::Done(_)), "sent: {sent:?}");
     ada.commit();
     let sidebar = ada.view(APP);
@@ -2578,6 +2575,109 @@ fn the_sidebar_says_what_is_half_written_in_a_conversation() {
         text_prop(&row, "secondary"),
         None,
         "an empty draft says nothing"
+    );
+}
+
+/// The labels of the sidebar's channel rows.
+fn sidebar_labels(view: &ViewInstance) -> Vec<String> {
+    view.tree()
+        .of_kind("ui.NavItem")
+        .into_iter()
+        .filter_map(|item| match item.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The titles of the sidebar's sections.
+fn sidebar_sections(view: &ViewInstance) -> Vec<String> {
+    view.tree()
+        .of_kind("ui.NavSection")
+        .into_iter()
+        .filter_map(|section| match section.props.get("title") {
+            Some(Value::Text(title)) => Some(title.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The commands `node`'s own menu offers.
+fn menu_labels(node: &UiNode) -> Vec<String> {
+    node.of_kind("ui.MenuItem")
+        .iter()
+        .filter_map(|item| text_prop(item, "label"))
+        .collect()
+}
+
+/// The channel's row, its page and its category's heading each offer what is done to them.
+fn the_channel_offers_its_commands(sidebar: &ViewInstance, opened: &ViewInstance) {
+    let row = sidebar
+        .tree()
+        .of_kind("ui.NavItem")
+        .into_iter()
+        .find(|item| item.props.get("label") == Some(&Value::text("design reviews")))
+        .expect("the channel's row")
+        .clone();
+    let channel_menu = menu_labels(&row);
+    for command in ["Rename channel", "Set the topic", "Archive channel"] {
+        assert!(
+            channel_menu.contains(&command.to_owned()),
+            "{command} stands on the channel's row: {channel_menu:?}"
+        );
+    }
+    let page_menu = menu_labels(opened.tree());
+    for command in [
+        "Rename channel",
+        "Set the topic",
+        "Move up",
+        "Delete channel",
+    ] {
+        assert!(
+            page_menu.contains(&command.to_owned()),
+            "{command} stands on the channel's page: {page_menu:?}"
+        );
+    }
+    let section = sidebar
+        .tree()
+        .of_kind("ui.NavSection")
+        .into_iter()
+        .find(|section| text_prop(section, "title") == Some("Product".to_owned()))
+        .expect("the category's heading")
+        .clone();
+    let category_menu = menu_labels(&section);
+    for command in ["Rename category", "Move up", "Delete category"] {
+        assert!(
+            category_menu.contains(&command.to_owned()),
+            "{command} stands on the category's heading: {category_menu:?}"
+        );
+    }
+}
+
+/// Set aside, the channel leaves the sidebar and keeps its messages; restoring brings it back.
+fn set_aside_then_restored(ada: &Replica, design: &Value) {
+    call(
+        ada,
+        "archive_channel",
+        vec![design.clone(), Value::Bool(true)],
+    );
+    ada.commit();
+    let shown = sidebar_labels(&ada.view(APP));
+    assert!(
+        !shown.contains(&"design reviews".to_owned()),
+        "set aside: {shown:?}"
+    );
+    assert_eq!(messages(ada, &target(design)).len(), 1, "its messages stay");
+    call(
+        ada,
+        "archive_channel",
+        vec![design.clone(), Value::Bool(false)],
+    );
+    ada.commit();
+    let sidebar = ada.view(APP);
+    assert!(
+        sidebar_labels(&sidebar).contains(&"design reviews".to_owned()),
+        "restoring puts it back"
     );
 }
 
@@ -2627,25 +2727,9 @@ fn a_channels_name_topic_and_place_are_the_moderators_to_change() {
     );
     call(&ada, "rename_category", vec![team, Value::text("Product")]);
     let sidebar = ada.view(APP);
-    let names: Vec<String> = sidebar
-        .tree()
-        .of_kind("ui.NavItem")
-        .into_iter()
-        .filter_map(|item| match item.props.get("label") {
-            Some(Value::Text(label)) => Some(label.clone()),
-            _ => None,
-        })
-        .collect();
+    let names = sidebar_labels(&sidebar);
     assert!(names.contains(&"design reviews".to_owned()), "{names:?}");
-    let sections: Vec<String> = sidebar
-        .tree()
-        .of_kind("ui.NavSection")
-        .into_iter()
-        .filter_map(|section| match section.props.get("title") {
-            Some(Value::Text(title)) => Some(title.clone()),
-            _ => None,
-        })
-        .collect();
+    let sections = sidebar_sections(&sidebar);
     assert!(sections.contains(&"Product".to_owned()), "{sections:?}");
     assert_eq!(name_of(&ada, &target(&design)), "design reviews");
     assert_eq!(messages(&ada, &target(&design)).len(), 1);
@@ -2658,103 +2742,9 @@ fn a_channels_name_topic_and_place_are_the_moderators_to_change() {
         shown.contains(&"Reviews and critique".to_owned()),
         "the topic stands in the window: {shown:?}"
     );
-    let sidebar = ada.view(APP);
-    let row = sidebar
-        .tree()
-        .of_kind("ui.NavItem")
-        .into_iter()
-        .find(|item| item.props.get("label") == Some(&Value::text("design reviews")))
-        .expect("the channel's row")
-        .clone();
-    let channel_menu: Vec<String> = row
-        .of_kind("ui.MenuItem")
-        .iter()
-        .filter_map(|item| text_prop(item, "label"))
-        .collect();
-    for command in ["Rename channel", "Set the topic", "Archive channel"] {
-        assert!(
-            channel_menu.contains(&command.to_owned()),
-            "{command} stands on the channel's row: {channel_menu:?}"
-        );
-    }
-    // The channel's own page offers them too, and a moderator moves and deletes it there.
-    let page_menu: Vec<String> = opened
-        .tree()
-        .of_kind("ui.MenuItem")
-        .iter()
-        .filter_map(|item| text_prop(item, "label"))
-        .collect();
-    for command in [
-        "Rename channel",
-        "Set the topic",
-        "Move up",
-        "Delete channel",
-    ] {
-        assert!(
-            page_menu.contains(&command.to_owned()),
-            "{command} stands on the channel's page: {page_menu:?}"
-        );
-    }
-    let section = sidebar
-        .tree()
-        .of_kind("ui.NavSection")
-        .into_iter()
-        .find(|section| text_prop(section, "title") == Some("Product".to_owned()))
-        .expect("the category's heading")
-        .clone();
-    let category_menu: Vec<String> = section
-        .of_kind("ui.MenuItem")
-        .iter()
-        .filter_map(|item| text_prop(item, "label"))
-        .collect();
-    for command in ["Rename category", "Move up", "Delete category"] {
-        assert!(
-            category_menu.contains(&command.to_owned()),
-            "{command} stands on the category's heading: {category_menu:?}"
-        );
-    }
+    the_channel_offers_its_commands(&sidebar, &opened);
 
-    // Set aside, the channel leaves the sidebar and keeps its messages; restoring brings it back.
-    call(
-        &ada,
-        "archive_channel",
-        vec![design.clone(), Value::Bool(true)],
-    );
-    ada.commit();
-    let sidebar = ada.view(APP);
-    let shown = sidebar
-        .tree()
-        .of_kind("ui.NavItem")
-        .into_iter()
-        .filter_map(|item| match item.props.get("label") {
-            Some(Value::Text(label)) => Some(label.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        !shown.contains(&"design reviews".to_owned()),
-        "set aside: {shown:?}"
-    );
-    assert_eq!(
-        messages(&ada, &target(&design)).len(),
-        1,
-        "its messages stay"
-    );
-    call(
-        &ada,
-        "archive_channel",
-        vec![design.clone(), Value::Bool(false)],
-    );
-    ada.commit();
-    let sidebar = ada.view(APP);
-    assert!(
-        sidebar
-            .tree()
-            .of_kind("ui.NavItem")
-            .into_iter()
-            .any(|item| item.props.get("label") == Some(&Value::text("design reviews"))),
-        "restoring puts it back"
-    );
+    set_aside_then_restored(&ada, &design);
 
     // Only the workspace's moderators decide a channel's name, topic or side.
     let meta = ada.host.package(APP).unwrap().meta;
@@ -2767,7 +2757,7 @@ fn a_channels_name_topic_and_place_are_the_moderators_to_change() {
     for (action, args) in [
         ("rename_channel", vec![design.clone(), Value::text("mine")]),
         ("set_topic", vec![design.clone(), Value::text("mine")]),
-        ("archive_channel", vec![design.clone(), Value::Bool(true)]),
+        ("archive_channel", vec![design, Value::Bool(true)]),
     ] {
         let refused = as_ben(action, args);
         assert!(
@@ -2795,7 +2785,7 @@ fn a_carried_message_shows_its_persona_and_a_pinned_one_stands_on_pins() {
         ],
     );
     let own = call(&ada, "send", vec![design.clone(), rich("On my way.")]);
-    call(&ada, "pin", vec![own.clone(), Value::Bool(true)]);
+    call(&ada, "pin", vec![own, Value::Bool(true)]);
     ada.commit();
 
     // A message carried in from another service opens no run of the carrier: the account that
@@ -2806,7 +2796,7 @@ fn a_carried_message_shows_its_persona_and_a_pinned_one_stands_on_pins() {
         .tree()
         .of_kind("ui.ListItem")
         .into_iter()
-        .map(|item| item.props.get("author").is_some())
+        .map(|item| item.props.contains_key("author"))
         .collect();
     assert_eq!(
         authors,
@@ -2935,7 +2925,7 @@ fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
         hourly_bytes: 250 * 1_048_576,
         refusals: vec![RefusedContent {
             record: "so.tilo.chat/message".to_owned(),
-            hash: hash.clone(),
+            hash,
             bytes: 30 * 1_048_576,
             limit: "file".to_owned(),
             allowed: twenty_five,
@@ -2984,13 +2974,7 @@ fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
     );
 
     // Raised: the limit allows it, the host keeps it again, and the refusal record is gone.
-    *served.borrow_mut() = Some(WorkspaceContent {
-        file_bytes: 50 * 1_048_576,
-        member_bytes: 250 * 1_048_576,
-        hourly_bytes: 250 * 1_048_576,
-        refusals: Vec::new(),
-        host_person: None,
-    });
+    *served.borrow_mut() = Some(raised_content());
     assert!(
         ada.host.follow_content(),
         "the raised limit reaches the host the frame reads"
@@ -3005,6 +2989,17 @@ fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
         shown.iter().any(|text| text.contains("site-plan.pdf")),
         "the attachment stays: {shown:?}"
     );
+}
+
+/// The limits a raise sets: the file is allowed, so the host keeps it again.
+fn raised_content() -> tilolang_tilo::content::WorkspaceContent {
+    tilolang_tilo::content::WorkspaceContent {
+        file_bytes: 50 * 1_048_576,
+        member_bytes: 250 * 1_048_576,
+        hourly_bytes: 250 * 1_048_576,
+        refusals: Vec::new(),
+        host_person: None,
+    }
 }
 
 /// A message a bridge carries from an account a member linked wears that member's face, and so
@@ -3161,11 +3156,7 @@ fn an_answer_carries_its_reasoning_and_continues_where_it_stopped() {
     );
 
     // Continue is a reply to the answer, which the agent's next turn reads with it.
-    let asked = call(
-        &ada,
-        "continue_answer",
-        vec![design.clone(), answer.clone()],
-    );
+    let asked = call(&ada, "continue_answer", vec![design, answer.clone()]);
     ada.commit();
     match ada.read(&target(&asked), "reply_to") {
         Value::Opt(Some(replied)) => assert_eq!(
@@ -3222,7 +3213,7 @@ fn a_person_is_reported_and_a_decision_is_overturned_on_the_moderators_page() {
         "ben",
         "report_person",
         vec![
-            all.clone(),
+            all,
             Value::Actor(person("ada")),
             Value::text("Keeps talking over people in calls"),
         ],
@@ -3253,7 +3244,7 @@ fn a_person_is_reported_and_a_decision_is_overturned_on_the_moderators_page() {
     done(as_who(
         "ada",
         "overturn",
-        vec![report.clone(), Value::text("It happened again")],
+        vec![report, Value::text("It happened again")],
     ));
     ada.commit();
 

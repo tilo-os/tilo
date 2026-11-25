@@ -375,10 +375,10 @@ fn a_chrome_verb_opens_the_window_at_its_focus_and_says_it_was_shown() {
     );
     app.read(&feed(0), &page(changes(3), 3));
     let mut window = app.window();
-    let timer = of_kind(window.tree(), "ui.Timer")
-        .first()
-        .map(|node| node.key.clone())
-        .unwrap_or_else(|| panic!("the window holds the ask's clock: {:?}", shown(&window)));
+    let timer = of_kind(window.tree(), "ui.Timer").first().map_or_else(
+        || panic!("the window holds the ask's clock: {:?}", shown(&window)),
+        |node| node.key.clone(),
+    );
     window.fire(&timer, "tick").expect("the clock strikes");
     window.poll_patches().expect("the window takes the ask");
     assert_eq!(

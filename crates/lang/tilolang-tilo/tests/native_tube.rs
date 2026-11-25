@@ -1,4 +1,4 @@
-//! The library and watch history the native Tube kept, opened by the tilolang YouTube: its
+//! The library and watch history the native Tube kept, opened by the tilolang `YouTube`: its
 //! migration carries the channels subscribed to, the videos liked, the watch queue, the watch
 //! history with when each video was watched, and the replies written to comments over once, as one
 //! change. A device that opens the same documents later finds it done. The native app's documents

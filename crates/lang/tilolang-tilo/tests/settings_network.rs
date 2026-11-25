@@ -114,11 +114,11 @@ struct Pane {
 impl Pane {
     /// The Network pane open on a device that reads `network`.
     fn new(network: &str) -> Self {
-        Self::pane("network", network, MODEM)
+        Self::pane_of("network", network, MODEM)
     }
 
     /// The window open on the page `name`, on a device that reads `network` and `modem`.
-    fn pane(name: &str, network: &str, modem: &str) -> Self {
+    fn pane_of(name: &str, network: &str, modem: &str) -> Self {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
         let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
         let ids = tilolang::IdsLock::parse(
@@ -186,7 +186,7 @@ impl Pane {
 }
 
 fn reading(resource: &str, name: &str) -> ResourceRef {
-    ResourceRef::parse_id(resource, &format!("so.tilo.device#{name}")).expect("a resource id")
+    ResourceRef::parse_id(resource, format!("so.tilo.device#{name}")).expect("a resource id")
 }
 
 /// Every text the node carries, whatever it is called, under `node` in order.

@@ -1282,7 +1282,7 @@ action poke(address: Text, arguments: json.Value) -> Text {
     made.status.label()
 }
 "#;
-        let used = platform_packages_of(["tilo.actions", "tilo.invocations"].into_iter())
+        let used = platform_packages_of(["tilo.actions", "tilo.invocations"])
             .expect("the platform's registry packages read");
         let compiled = tilolang::compile_package(source, &tilolang::IdsLock::new(), &used)
             .unwrap_or_else(|diagnostics| {

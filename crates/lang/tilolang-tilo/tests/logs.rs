@@ -155,8 +155,10 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(
+                || Err(format!("no action {name}")),
+                |(_, id)| Ok(id.clone()),
+            )?;
         match self
             .host
             .runtime()
@@ -164,7 +166,7 @@ impl Installed {
             .map_err(|why| why.to_string())?
         {
             tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
-            other => panic!("{name} answers {other:?}"),
+            other => Err(format!("{name} answers {other:?}")),
         }
     }
 

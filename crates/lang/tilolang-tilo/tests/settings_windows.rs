@@ -139,16 +139,6 @@ impl Sent {
         };
         (app.to_string(), name)
     }
-
-    fn argument(&self, named: &str) -> Value {
-        let Invocation::Action { args, .. } = self.last() else {
-            panic!("the pane sends an action: {:?}", self.last());
-        };
-        args.iter()
-            .find(|(name, _)| name == named)
-            .map(|(_, value)| value.clone())
-            .unwrap_or_else(|| panic!("the verb takes `{named}`: {args:?}"))
-    }
 }
 
 impl Invoker for Sent {
@@ -295,7 +285,7 @@ fn the_windows_card_offers_the_install_the_retry_and_the_removal() {
             &device_type("windows_compat"),
             layer(state, offered, problem),
         );
-        let mut view = open(&host, "updates_pane");
+        let view = open(&host, "updates_pane");
         let shown = texts(&view);
         assert!(shown.contains(&status.to_owned()), "{state}: {shown:?}");
         let drawn: Vec<String> = view

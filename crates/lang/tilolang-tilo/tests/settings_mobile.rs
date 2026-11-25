@@ -27,7 +27,7 @@ fn me() -> Actor {
 }
 
 fn reading(resource: &str, name: &str) -> ResourceRef {
-    ResourceRef::parse_id(resource, &format!("so.tilo.device#{name}")).expect("a resource id")
+    ResourceRef::parse_id(resource, format!("so.tilo.device#{name}")).expect("a resource id")
 }
 
 /// What the pane asked of the device.
@@ -270,7 +270,7 @@ fn modem_asking() -> String {
 #[test]
 fn the_mobile_pane_lists_the_operators_and_chooses_one() {
     let pane = Pane::new(MOBILE, MODEM_SCANNED);
-    let mut view = pane.open();
+    let view = pane.open();
     let words = shown(&view);
     for wanted in [
         "The operator",

@@ -117,7 +117,7 @@ fn of_kind(
     holds: &mut dyn FnMut(&tilolang_runtime::UiNode) -> bool,
 ) {
     if node.kind == kind && holds(node) {
-        *out += 1;
+        *out = out.saturating_add(1);
     }
     for child in &node.children {
         of_kind(child, kind, out, holds);

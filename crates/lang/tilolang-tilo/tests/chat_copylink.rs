@@ -296,7 +296,7 @@ fn a_messages_menu_copies_its_link() {
         ToApp::Open {
             resource: wire::ResourceRef {
                 id: channel.id_string(),
-                ty: channel.ty.clone(),
+                ty: channel.ty,
             },
         },
     );

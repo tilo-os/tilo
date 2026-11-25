@@ -171,7 +171,7 @@ fn a_category_heading_is_kept_by_the_category_across_a_rename_and_a_move() {
         &ada,
         "new_channel",
         vec![
-            all.clone(),
+            all,
             Value::text("deploys"),
             Value::text(""),
             Value::some(ops),

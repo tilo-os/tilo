@@ -437,7 +437,7 @@ fn a_session_begins_only_where_the_task_may_still_be_worked() {
     );
     call(&ada, "session_began", vec![one.clone()]);
     assert!(
-        !refused(&ada, "session_began", vec![one.clone()]),
+        !refused(&ada, "session_began", vec![one]),
         "told to go on, its sessions begin again"
     );
 }
@@ -520,11 +520,7 @@ fn a_piece_beyond_what_its_task_allows_is_not_given_to_an_agent() {
         "add_subtask",
         vec![parent.clone(), Value::text("Two")],
     );
-    call(
-        &ada,
-        "set_pieces_at_once",
-        vec![parent.clone(), some(int(1))],
-    );
+    call(&ada, "set_pieces_at_once", vec![parent, some(int(1))]);
     call(&ada, "session_began", vec![one.clone()]);
     ada.commit();
     let helper = MemberId::agent("helper", "ada");

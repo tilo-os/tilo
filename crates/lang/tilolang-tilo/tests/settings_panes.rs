@@ -326,7 +326,7 @@ fn the_spelling_pane_keeps_words_in_the_personal_dictionary() {
         )
         .expect("the words the person kept");
     invoke(&host, "open_pane", vec![Value::text("spelling")]);
-    let mut view = open_view(&host, "spelling_pane");
+    let view = open_view(&host, "spelling_pane");
     let shown = texts(&view);
     assert!(shown.contains(&"Tilo".to_owned()), "{shown:?}");
     assert!(shown.contains(&"Élodie".to_owned()), "{shown:?}");
@@ -378,19 +378,16 @@ fn the_spelling_pane_keeps_words_in_the_personal_dictionary() {
                 .find(|(named, _)| named == wanted)
                 .map(|(_, value)| value.clone())
         };
-        match verb {
-            "add" => {
-                assert_eq!(arg("spelling"), Some(Value::text("Kiitos")));
-                assert_eq!(
-                    arg("language"),
-                    Some(Value::Opt(None)),
-                    "no language given keeps the word for every language"
-                );
-            }
-            _ => {
-                assert_eq!(arg("spelling"), Some(Value::text("Tilo")));
-                assert_eq!(arg("language"), Some(Value::Opt(None)));
-            }
+        if verb == "add" {
+            assert_eq!(arg("spelling"), Some(Value::text("Kiitos")));
+            assert_eq!(
+                arg("language"),
+                Some(Value::Opt(None)),
+                "no language given keeps the word for every language"
+            );
+        } else {
+            assert_eq!(arg("spelling"), Some(Value::text("Tilo")));
+            assert_eq!(arg("language"), Some(Value::Opt(None)));
         }
     }
 }

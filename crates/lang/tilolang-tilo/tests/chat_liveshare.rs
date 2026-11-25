@@ -22,9 +22,12 @@ const WINDOW: &str = "7";
 /// Where Ben's shell shows Ada's window: a place of its own.
 const BENS_PLACE: &str = "41";
 
+/// One verb Chat asked of the shell and the arguments it gave.
+type Asked = (String, Vec<(String, Value)>);
+
 /// What Chat asked of the shell, each verb by name with its arguments.
 #[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<(String, Vec<(String, Value)>)>>>);
+struct Sent(Rc<RefCell<Vec<Asked>>>);
 
 impl Invoker for Sent {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
@@ -36,7 +39,7 @@ impl Invoker for Sent {
 }
 
 impl Sent {
-    fn take(&self) -> Vec<(String, Vec<(String, Value)>)> {
+    fn take(&self) -> Vec<Asked> {
         std::mem::take(&mut *self.0.borrow_mut())
     }
 }

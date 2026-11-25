@@ -101,7 +101,7 @@ fn a_view_reads_each_step_of_a_records_writes_reaching_another_device() {
         pending: Vec::new(),
         refused: vec!["11".repeat(32)],
     };
-    host.store().moved_docs(&BTreeSet::from([root.doc.clone()]));
+    host.store().moved_docs(&BTreeSet::from([root.doc]));
     view.poll_patches().unwrap();
     assert!(
         texts(view.tree()).contains(&"refused".to_owned()),

@@ -111,64 +111,7 @@ fn workspace() -> (Replica, ResourceRef) {
 #[test]
 fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
     let (ada, account) = workspace();
-    // The token is the vault's first: nothing finds servers without it.
-    let refused = run(
-        &ada,
-        &person("ada"),
-        "find_servers",
-        vec![Value::resource(&account)],
-    );
-    assert!(
-        matches!(&refused, Err(why) if why.contains("Add the bot's token first")),
-        "{refused:?}"
-    );
-
-    // Ada asks for the token: the person types it into their vault, and the program answers
-    // where it was kept.
-    match run(
-        &ada,
-        &person("ada"),
-        "ask_token",
-        vec![Value::resource(&account)],
-    ) {
-        Ok(InvokeOutcome::Done(_)) => {}
-        other => panic!("ada asks for the token: {other:?}"),
-    }
-    ada.commit();
-    let token_press = text(&ada.host, &account, "setup_ask");
-    match run(
-        &ada,
-        &bridge(),
-        "keep_token",
-        vec![
-            Value::resource(&account),
-            Value::text(token_press.as_str()),
-            Value::text(ITEM),
-        ],
-    ) {
-        Ok(InvokeOutcome::Done(_)) => {}
-        other => panic!("the bridge keeps the token's item: {other:?}"),
-    }
-    // A person never writes the item.
-    let refused = run(
-        &ada,
-        &person("ada"),
-        "keep_token",
-        vec![
-            Value::resource(&account),
-            Value::text(token_press.as_str()),
-            Value::text(ITEM),
-        ],
-    );
-    assert!(
-        matches!(&refused, Err(why) if why.contains("Only the bridge keeps the bot's token")),
-        "{refused:?}"
-    );
-    assert_eq!(
-        text(&ada.host, &account, "token_item"),
-        ITEM,
-        "the item kept"
-    );
+    the_token_is_the_vaults_first(&ada, &account);
 
     // Ada presses: the record names the step and the press, and waits.
     match run(
@@ -189,13 +132,82 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
         "the press names the person who made it"
     );
 
+    only_the_bridge_answers_the_press(&ada, &account, &press);
+}
+
+/// The token is the vault's first: nothing finds servers without it, and only the bridge keeps the
+/// item the program gives it.
+fn the_token_is_the_vaults_first(ada: &Replica, account: &ResourceRef) {
+    // The token is the vault's first: nothing finds servers without it.
+    let refused = run(
+        ada,
+        &person("ada"),
+        "find_servers",
+        vec![Value::resource(account)],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("Add the bot's token first")),
+        "{refused:?}"
+    );
+
+    // Ada asks for the token: the person types it into their vault, and the program answers
+    // where it was kept.
+    match run(
+        ada,
+        &person("ada"),
+        "ask_token",
+        vec![Value::resource(account)],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ada asks for the token: {other:?}"),
+    }
+    ada.commit();
+    let token_press = text(&ada.host, account, "setup_ask");
+    match run(
+        ada,
+        &bridge(),
+        "keep_token",
+        vec![
+            Value::resource(account),
+            Value::text(token_press.as_str()),
+            Value::text(ITEM),
+        ],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("the bridge keeps the token's item: {other:?}"),
+    }
+    // A person never writes the item.
+    let refused = run(
+        ada,
+        &person("ada"),
+        "keep_token",
+        vec![
+            Value::resource(account),
+            Value::text(token_press.as_str()),
+            Value::text(ITEM),
+        ],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("Only the bridge keeps the bot's token")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        text(&ada.host, account, "token_item"),
+        ITEM,
+        "the item kept"
+    );
+}
+
+/// An answer to an older press changes nothing, the person is never the one who answers, and the
+/// bridge's answer says a bot in no server is so and ends the wait.
+fn only_the_bridge_answers_the_press(ada: &Replica, account: &ResourceRef, press: &str) {
     // An answer to an older press changes nothing, and the person is never the one who answers.
     let refused = run(
-        &ada,
+        ada,
         &bridge(),
         "setup_failed",
         vec![
-            Value::resource(&account),
+            Value::resource(account),
             Value::text("another-press"),
             Value::text("Discord could not be reached."),
         ],
@@ -205,12 +217,12 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
         "{refused:?}"
     );
     let refused = run(
-        &ada,
+        ada,
         &person("ada"),
         "setup_failed",
         vec![
-            Value::resource(&account),
-            Value::text(press.as_str()),
+            Value::resource(account),
+            Value::text(press),
             Value::text("Discord could not be reached."),
         ],
     );
@@ -221,12 +233,12 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
 
     // The bridge answers the press that waits: a bot in no server is said, and nothing waits.
     match run(
-        &ada,
+        ada,
         &bridge(),
         "found_servers",
         vec![
-            Value::resource(&account),
-            Value::text(press.as_str()),
+            Value::resource(account),
+            Value::text(press),
             Value::List(vec![]),
         ],
     ) {
@@ -235,14 +247,10 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
     }
     ada.commit();
     assert_eq!(
-        text(&ada.host, &account, "setup_problem"),
+        text(&ada.host, account, "setup_problem"),
         "The bot is in no server. Add it to one in Discord first."
     );
-    assert_eq!(
-        text(&ada.host, &account, "setup_wants"),
-        "",
-        "nothing waits"
-    );
+    assert_eq!(text(&ada.host, account, "setup_wants"), "", "nothing waits");
 }
 
 /// A member who does not moderate the workspace is refused every step of the setup, with the
@@ -379,74 +387,10 @@ fn offer(ada: &Replica, account: &ResourceRef, proof: &str, user: &str, name: &s
 fn a_link_offer_opens_once_for_its_holder_until_it_runs_out() {
     let (ada, account) = workspace();
     ada.host.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
-
-    // `/link` answered with a one-time code; the person's side hands over its digest, which is
-    // all the bridge keeps.
     let code = "the-one-time-code";
     let proof = digest(code);
-    offer(&ada, &account, &proof, "1000", "ada_on_discord");
-    let offers = records(&ada.host, &account, "link_offers");
-    assert_eq!(offers.len(), 1, "the offer is kept");
-    let kept = offers.first().expect("the offer");
-    assert_eq!(
-        text(&ada.host, kept, "discord_user"),
-        "1000",
-        "the offer keeps the account it is for"
-    );
 
-    // A code nobody offered opens nothing.
-    let stray = digest(&digest("another code"));
-    let refused = run(
-        &ada,
-        &person("ada"),
-        "complete_link",
-        vec![Value::resource(&account), Value::text(stray.as_str())],
-    );
-    assert!(
-        matches!(&refused, Err(why) if why.contains("was already used or has run out")),
-        "{refused:?}"
-    );
-
-    // The holder links: the Discord account is theirs here, and the code and its proof are not
-    // written anywhere.
-    match run(
-        &ada,
-        &person("ada"),
-        "complete_link",
-        vec![Value::resource(&account), Value::text(proof.as_str())],
-    ) {
-        Ok(InvokeOutcome::Done(_)) => {}
-        other => panic!("ada links: {other:?}"),
-    }
-    ada.commit();
-    let links = records(&ada.host, &account, "links");
-    assert_eq!(links.len(), 1, "one account linked");
-    let link = links.first().expect("the link");
-    assert_eq!(text(&ada.host, link, "discord_user"), "1000");
-    assert!(
-        text(&ada.host, link, "person").contains("ada"),
-        "linked to ada"
-    );
-    let package = ada.host.package(APP).expect("the package");
-    let declared = package
-        .meta
-        .types
-        .iter()
-        .find(|t| t.id == link.ty)
-        .expect("the link type");
-    for field in &declared.fields {
-        if let Value::Text(said) = read(&ada.host, link, &field.name) {
-            assert_ne!(said, code, "the code is never kept");
-            assert_ne!(
-                said, proof,
-                "nor is its proof: only the digest of the proof"
-            );
-        }
-    }
-    assert!(
-        records(&ada.host, &account, "link_offers").is_empty(),
-        "the offer is used up"
-    );
+    the_offer_opens_once_for_its_holder(&ada, &account, code, &proof);
 
     // The same code again opens nothing.
     let refused = run(
@@ -475,26 +419,104 @@ fn a_link_offer_opens_once_for_its_holder_until_it_runs_out() {
         "{refused:?}"
     );
 
+    a_sign_in_offer_is_its_starters(&ada, &account);
+}
+
+/// A `/link` offer opens for the person holding its code, once: the record keeps the digest of the
+/// proof and never the code, and the offer is used up.
+fn the_offer_opens_once_for_its_holder(
+    ada: &Replica,
+    account: &ResourceRef,
+    code: &str,
+    proof: &str,
+) {
+    offer(ada, account, proof, "1000", "ada_on_discord");
+    let offers = records(&ada.host, account, "link_offers");
+    assert_eq!(offers.len(), 1, "the offer is kept");
+    let kept = offers.first().expect("the offer");
+    assert_eq!(
+        text(&ada.host, kept, "discord_user"),
+        "1000",
+        "the offer keeps the account it is for"
+    );
+
+    // A code nobody offered opens nothing.
+    let stray = digest(&digest("another code"));
+    let refused = run(
+        ada,
+        &person("ada"),
+        "complete_link",
+        vec![Value::resource(account), Value::text(stray.as_str())],
+    );
+    assert!(
+        matches!(&refused, Err(why) if why.contains("was already used or has run out")),
+        "{refused:?}"
+    );
+
+    // The holder links: the Discord account is theirs here, and the code and its proof are not
+    // written anywhere.
+    match run(
+        ada,
+        &person("ada"),
+        "complete_link",
+        vec![Value::resource(account), Value::text(proof)],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ada links: {other:?}"),
+    }
+    ada.commit();
+    let links = records(&ada.host, account, "links");
+    assert_eq!(links.len(), 1, "one account linked");
+    let link = links.first().expect("the link");
+    assert_eq!(text(&ada.host, link, "discord_user"), "1000");
+    assert!(
+        text(&ada.host, link, "person").contains("ada"),
+        "linked to ada"
+    );
+    let package = ada.host.package(APP).expect("the package");
+    let declared = package
+        .meta
+        .types
+        .iter()
+        .find(|t| t.id == link.ty)
+        .expect("the link type");
+    for field in &declared.fields {
+        if let Value::Text(said) = read(&ada.host, link, &field.name) {
+            assert_ne!(said, code, "the code is never kept");
+            assert_ne!(
+                said, proof,
+                "nor is its proof: only the digest of the proof"
+            );
+        }
+    }
+    assert!(
+        records(&ada.host, account, "link_offers").is_empty(),
+        "the offer is used up"
+    );
+}
+
+/// An offer that started in Tilo belongs to whoever started it: another member is refused.
+fn a_sign_in_offer_is_its_starters(ada: &Replica, account: &ResourceRef) {
     // An offer that started in Tilo belongs to whoever started it: another member is refused.
     ada.host.set_clock(|| "2026-11-24T09:20:00Z".to_owned());
     match run(
-        &ada,
+        ada,
         &person("ada"),
         "ask_token",
-        vec![Value::resource(&account)],
+        vec![Value::resource(account)],
     ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("ada asks for the token: {other:?}"),
     }
     ada.commit();
-    let press = text(&ada.host, &account, "setup_ask");
+    let press = text(&ada.host, account, "setup_ask");
     let state = digest("the consent page's state");
     match run(
-        &ada,
+        ada,
         &bridge(),
         "start_sign_in",
         vec![
-            Value::resource(&account),
+            Value::resource(account),
             Value::text(press.as_str()),
             Value::text("https://discord.com/oauth2/authorize?client_id=1&state=x"),
             Value::text(state.as_str()),
@@ -505,11 +527,11 @@ fn a_link_offer_opens_once_for_its_holder_until_it_runs_out() {
     }
     let theirs = digest("ada's consent code");
     match run(
-        &ada,
+        ada,
         &bridge(),
         "offer_sign_in",
         vec![
-            Value::resource(&account),
+            Value::resource(account),
             Value::text(digest(&theirs).as_str()),
             Value::text("2000"),
             Value::text("ada_on_discord"),
@@ -521,10 +543,10 @@ fn a_link_offer_opens_once_for_its_holder_until_it_runs_out() {
     }
     ada.commit();
     let refused = run(
-        &ada,
+        ada,
         &person("bo"),
         "complete_link",
-        vec![Value::resource(&account), Value::text(theirs.as_str())],
+        vec![Value::resource(account), Value::text(theirs.as_str())],
     );
     assert!(
         matches!(&refused, Err(why) if why.contains("started by another account")),
@@ -548,32 +570,14 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
         None,
     );
     let accounts = Value::resource(&ada.host.root_of(APP).unwrap());
-    let meta = ada.host.package(APP).unwrap().meta;
-    let as_who = |who: &Actor, action: &str, args: Vec<Value>| {
-        ada.host.runtime().invoke_action(
-            who,
-            (crate::fixtures::action_id(&meta, action).as_str(), args),
-        )
-    };
-    let refused = |result: &Result<InvokeOutcome, _>, why: &str| {
-        assert!(
-            !matches!(result, Ok(InvokeOutcome::Done(_))),
-            "the call is refused: {result:?}"
-        );
-        assert!(
-            format!("{result:?}").contains(why),
-            "with the reason `{why}`: {result:?}"
-        );
-    };
-
     let ben = person("ben");
-    let setup = as_who(&ben, "begin_setup", vec![accounts.clone()]);
-    refused(
+    let setup = as_who(&ada, &ben, "begin_setup", vec![accounts.clone()]);
+    denied(
         &setup,
         "Only the workspace's moderators connect a Discord server",
     );
 
-    let opened = as_who(&person("ada"), "begin_setup", vec![accounts]);
+    let opened = as_who(&ada, &person("ada"), "begin_setup", vec![accounts]);
     let discord = match opened {
         Ok(InvokeOutcome::Done(discord)) => discord,
         other => panic!("the owner connects a Discord account: {other:?}"),
@@ -581,6 +585,7 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
     ada.commit();
 
     let connected = as_who(
+        &ada,
         &person("ada"),
         "connect",
         vec![discord.clone(), Value::text("123"), Value::text("Server")],
@@ -592,6 +597,7 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
     ada.commit();
 
     let joined = as_who(
+        &ada,
         &ben,
         "connect",
         vec![
@@ -600,12 +606,13 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
             Value::text("Elsewhere"),
         ],
     );
-    refused(
+    denied(
         &joined,
         "Only the workspace's moderators connect a Discord server",
     );
 
     let sign_in = as_who(
+        &ada,
         &ben,
         "set_sign_in",
         vec![
@@ -613,12 +620,13 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
             Value::text("https://discord.com/oauth2/authorize?client_id=1&scope=identify"),
         ],
     );
-    refused(
+    denied(
         &sign_in,
         "Only the workspace's moderators set up signing in with Discord",
     );
 
     let mo = as_who(
+        &ada,
         &person("mo"),
         "set_sign_in",
         vec![
@@ -631,16 +639,29 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
         "a moderator sets the consent page: {mo:?}"
     );
 
-    let unlink = as_who(&ben, "unlink", vec![discord.clone(), Value::text("3001")]);
-    refused(
+    let unlink = as_who(
+        &ada,
+        &ben,
+        "unlink",
+        vec![discord.clone(), Value::text("3001")],
+    );
+    denied(
         &unlink,
         "Only the workspace's moderators, or the person it is with, unlink a Discord account",
     );
 
+    the_bridge_reports_the_layout(&ada, &discord);
+}
+
+/// The bridge itself reports the layout and blocks a persona: it acts as the app, which no member
+/// is.
+fn the_bridge_reports_the_layout(ada: &Replica, discord: &Value) {
     // The bridge itself reports the layout and blocks a persona: it acts as the app, which no
     // member is.
+    let ben = person("ben");
     let bridge = bridge();
     let layout = as_who(
+        ada,
         &bridge,
         "observe_layout",
         vec![
@@ -656,6 +677,7 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
         "the bridge reports the layout: {layout:?}"
     );
     let blocked = as_who(
+        ada,
         &bridge,
         "block_persona",
         vec![discord.clone(), Value::text("3001")],
@@ -665,17 +687,18 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
         "the bridge blocks a persona: {blocked:?}"
     );
     let by_member = as_who(
+        ada,
         &ben,
         "observe_layout",
         vec![
-            discord,
+            discord.clone(),
             Value::text("1"),
             Value::List(Vec::new()),
             Value::List(Vec::new()),
             Value::List(Vec::new()),
         ],
     );
-    refused(&by_member, "Only the bridge keeps the server's layout");
+    denied(&by_member, "Only the bridge keeps the server's layout");
 }
 
 /// A member reaches only what the workspace's grants give them: a link offer is the bridge's
@@ -686,30 +709,45 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
 fn a_member_reaches_only_what_their_grants_give_them() {
     let (ada, account) = mirrored();
     let meta = ada.host.package(APP).unwrap().meta;
-    // The bridge links Ada's Discord account from `/link`: the person's side hands over the
-    // digest of the one-time code it holds, and the bridge keeps the digest of that.
+    links_ada(&ada, &account);
+    only_the_bridge_offers_a_link(&ada, &account);
+    the_map_and_the_layout_are_the_bridges(&ada, &account, &meta);
+    only_a_moderator_kicks_or_bans(&ada, &account);
+    only_a_moderator_deletes_a_channel(&ada, &account);
+    ben_links_and_a_link_unlinks_by_its_person_or_a_moderator(&ada, &account);
+
+    // The members' calls were refused and the moderators' went through, each read by the app
+    // before the program makes its own call to Discord.
+    ada.commit();
+}
+
+/// The bridge links Ada's Discord account from `/link`: the person's side hands over the digest of
+/// the one-time code it holds, and the bridge keeps the digest of that.
+fn links_ada(ada: &Replica, account: &ResourceRef) {
     let ada_proof = digest("ada's code");
-    offer(&ada, &account, &ada_proof, "3001", "ada_on_discord");
+    offer(ada, account, &ada_proof, "3001", "ada_on_discord");
     match run(
-        &ada,
+        ada,
         &person("ada"),
         "complete_link",
-        vec![Value::resource(&account), Value::text(ada_proof.as_str())],
+        vec![Value::resource(account), Value::text(ada_proof.as_str())],
     ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("ada links: {other:?}"),
     }
     ada.commit();
+}
 
-    // An offer is the bridge's, never a member's, moderator or not: otherwise a member could
-    // offer an account no `/link` named and take it with a proof they hold.
+/// An offer is the bridge's, never a member's, moderator or not: otherwise a member could offer an
+/// account no `/link` named and take it with a proof they hold.
+fn only_the_bridge_offers_a_link(ada: &Replica, account: &ResourceRef) {
     let offering = |who: &Actor| {
         run(
-            &ada,
+            ada,
             who,
             "offer_link",
             vec![
-                Value::resource(&account),
+                Value::resource(account),
                 Value::text(digest("another code").as_str()),
                 Value::text("4001"),
                 Value::text("someone_on_discord"),
@@ -719,32 +757,38 @@ fn a_member_reaches_only_what_their_grants_give_them() {
     was_refused(&offering(&person("ben")), "Only the bridge offers a link");
     was_refused(&offering(&person("mo")), "Only the bridge offers a link");
     allowed(&offering(&bridge()));
+}
 
-    // Joining a Tilo resource to a Discord id, and what Discord reports of the server, are the
-    // bridge's too: a member who could map an id would reach past the channel a bridge is
-    // confined to, and one who could report a layout would choose what the bridge trusts.
+/// Joining a Tilo resource to a Discord id, and what Discord reports of the server, are the
+/// bridge's too: a member who could map an id would reach past the channel a bridge is confined
+/// to, and one who could report a layout would choose what the bridge trusts.
+fn the_map_and_the_layout_are_the_bridges(
+    ada: &Replica,
+    account: &ResourceRef,
+    meta: &tilolang_runtime::meta::Meta,
+) {
     was_refused(
         &as_who(
-            &ada,
+            ada,
             &person("mo"),
             "map",
             vec![
-                Value::resource(&account),
-                case(&meta, "MappedKind", "channel"),
+                Value::resource(account),
+                case(meta, "MappedKind", "channel"),
                 Value::text("tl:so.tilo.chat:invented"),
                 Value::text("999"),
-                case(&meta, "OriginSide", "discord"),
+                case(meta, "OriginSide", "discord"),
             ],
         ),
         "Only the bridge joins the two sides",
     );
     was_refused(
         &as_who(
-            &ada,
+            ada,
             &person("mo"),
             "observe_layout",
             vec![
-                Value::resource(&account),
+                Value::resource(account),
                 Value::text("1"),
                 Value::List(Vec::new()),
                 Value::List(Vec::new()),
@@ -753,12 +797,14 @@ fn a_member_reaches_only_what_their_grants_give_them() {
         ),
         "Only the bridge keeps the server's layout",
     );
+}
 
-    // A linked member is the moderators' to kick or ban.
+/// A linked member is the moderators' to kick or ban.
+fn only_a_moderator_kicks_or_bans(ada: &Replica, account: &ResourceRef) {
     let kicked = carry_as(
-        &ada,
+        ada,
         &person("ben"),
-        &account,
+        account,
         "kick",
         json!({
             "op": "kick",
@@ -770,9 +816,9 @@ fn a_member_reaches_only_what_their_grants_give_them() {
         "Only the workspace's moderators manage Discord members",
     );
     allowed(&carry_as(
-        &ada,
+        ada,
         &person("mo"),
-        &account,
+        account,
         "kick",
         json!({
             "op": "kick",
@@ -780,74 +826,74 @@ fn a_member_reaches_only_what_their_grants_give_them() {
         }),
     ));
     allowed(&carry_as(
-        &ada,
+        ada,
         &person("mo"),
-        &account,
+        account,
         "ban",
         json!({
             "op": "ban",
             "user": "3001",
         }),
     ));
+}
 
-    // A channel the bridge made there is the moderators' to delete.
+/// A channel the bridge made there is the moderators' to delete.
+fn only_a_moderator_deletes_a_channel(ada: &Replica, account: &ResourceRef) {
     let deleted = as_who(
-        &ada,
+        ada,
         &person("ben"),
         "delete_channel_there",
-        vec![Value::resource(&account), Value::text("457")],
+        vec![Value::resource(account), Value::text("457")],
     );
     was_refused(
         &deleted,
         "Only the workspace's moderators change the server's channels",
     );
     allowed(&as_who(
-        &ada,
+        ada,
         &person("mo"),
         "delete_channel_there",
-        vec![Value::resource(&account), Value::text("457")],
+        vec![Value::resource(account), Value::text("457")],
     ));
+}
 
-    // A second link, this one Ben's, so a moderator unlinks an account that is not theirs.
+/// A second link, this one Ben's, so a moderator unlinks an account that is not theirs: a link is
+/// its person's to unlink, or a moderator's.
+fn ben_links_and_a_link_unlinks_by_its_person_or_a_moderator(ada: &Replica, account: &ResourceRef) {
     let ben_proof = digest("ben's code");
-    offer(&ada, &account, &ben_proof, "3002", "ben_on_discord");
+    offer(ada, account, &ben_proof, "3002", "ben_on_discord");
     match run(
-        &ada,
+        ada,
         &person("ben"),
         "complete_link",
-        vec![Value::resource(&account), Value::text(ben_proof.as_str())],
+        vec![Value::resource(account), Value::text(ben_proof.as_str())],
     ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("ben links: {other:?}"),
     }
     ada.commit();
 
-    // A link is its person's to unlink, or a moderator's.
     was_refused(
         &as_who(
-            &ada,
+            ada,
             &person("ben"),
             "unlink",
-            vec![Value::resource(&account), Value::text("3001")],
+            vec![Value::resource(account), Value::text("3001")],
         ),
         "Only the workspace's moderators, or the person it is with, unlink a Discord account",
     );
     allowed(&as_who(
-        &ada,
+        ada,
         &person("ada"),
         "unlink",
-        vec![Value::resource(&account), Value::text("3001")],
+        vec![Value::resource(account), Value::text("3001")],
     ));
     allowed(&as_who(
-        &ada,
+        ada,
         &person("mo"),
         "unlink",
-        vec![Value::resource(&account), Value::text("3002")],
+        vec![Value::resource(account), Value::text("3002")],
     ));
-
-    // The members' calls were refused and the moderators' went through, each read by the app
-    // before the program makes its own call to Discord.
-    ada.commit();
 }
 
 // ---- the bridge's calls, and the one channel it reaches --------------------------------
@@ -908,6 +954,19 @@ fn carried_out(
     args: Json,
 ) -> Result<InvokeOutcome, tilolang_runtime::RuntimeError> {
     carry_as(r, &bridge(), account, action, args)
+}
+
+/// A call expected to be refused: one that did not run, with `why` in its reason. A refusal the
+/// runtime reports as `Denied` is one too.
+fn denied(result: &Result<InvokeOutcome, tilolang_runtime::RuntimeError>, why: &str) {
+    assert!(
+        !matches!(result, Ok(InvokeOutcome::Done(_))),
+        "the call is refused: {result:?}"
+    );
+    assert!(
+        format!("{result:?}").contains(why),
+        "with the reason `{why}`: {result:?}"
+    );
 }
 
 /// A call expected to be refused: one that did not run, with `why` in its reason.
@@ -1130,54 +1189,16 @@ fn what_a_bridged_conversation_says_is_read_by_the_bridge() {
 /// A bridge of one channel reaches that channel, its threads and nothing else: messages in
 /// another channel, the server's layout, roles, members and emoji are refused before Discord
 /// hears of them.
+
 #[test]
 fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
     let (ada, account) = connected(Some("456"));
     let meta = ada.host.package(APP).unwrap().meta;
-    let discord = Value::resource(&account);
-    // A thread grown from a message in the bridged channel.
-    allowed(&as_who(
-        &ada,
-        &bridge(),
-        "map",
-        vec![
-            discord.clone(),
-            case(&meta, "MappedKind", "thread"),
-            Value::text("tl:so.tilo.chat:topic"),
-            Value::text("777"),
-            case(&meta, "OriginSide", "discord"),
-        ],
-    ));
-    // A second channel the bridge maps, so a send to it reaches the one-channel rule rather
-    // than the channel's own absence.
-    allowed(&as_who(
-        &ada,
-        &bridge(),
-        "map",
-        vec![
-            discord,
-            case(&meta, "MappedKind", "channel"),
-            Value::text("tl:so.tilo.chat:elsewhere"),
-            Value::text("999"),
-            case(&meta, "OriginSide", "discord"),
-        ],
-    ));
-    ada.commit();
+    a_thread_and_a_second_channel(&ada, &account, &meta);
 
-    let send = |channel: &str| {
-        json!({
-            "op": "send",
-            "channel": channel,
-            "webhook": "555",
-            "username": "ada",
-            "content": "hello",
-            "attachments": [],
-            "tilo": "tl:so.tilo.chat:made",
-        })
-    };
-    allowed(&carried_out(&ada, &account, "send_there", send("456")));
+    allowed(&carried_out(&ada, &account, "send_there", send_to("456")));
     was_refused(
-        &carried_out(&ada, &account, "send_there", send("999")),
+        &carried_out(&ada, &account, "send_there", send_to("999")),
         "This bridge reaches only its one Discord channel",
     );
     allowed(&carried_out(
@@ -1193,54 +1214,66 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
         }),
     ));
 
+    nothing_outside_the_channel(&ada, &account);
+    nothing_else_in_the_server(&ada, &account);
+
+    ada.commit();
+}
+
+/// The `send` the bridge's program writes for `channel`.
+fn send_to(channel: &str) -> Json {
+    json!({
+        "op": "send",
+        "channel": channel,
+        "webhook": "555",
+        "username": "ada",
+        "content": "hello",
+        "attachments": [],
+        "tilo": "tl:so.tilo.chat:made",
+    })
+}
+
+/// A thread grown from a message in the bridged channel, and a second channel the bridge maps, so
+/// a send to it reaches the one-channel rule rather than the channel's own absence.
+fn a_thread_and_a_second_channel(
+    ada: &Replica,
+    account: &ResourceRef,
+    meta: &tilolang_runtime::meta::Meta,
+) {
+    let discord = Value::resource(account);
+    allowed(&as_who(
+        ada,
+        &bridge(),
+        "map",
+        vec![
+            discord.clone(),
+            case(meta, "MappedKind", "thread"),
+            Value::text("tl:so.tilo.chat:topic"),
+            Value::text("777"),
+            case(meta, "OriginSide", "discord"),
+        ],
+    ));
+    allowed(&as_who(
+        ada,
+        &bridge(),
+        "map",
+        vec![
+            discord,
+            case(meta, "MappedKind", "channel"),
+            Value::text("tl:so.tilo.chat:elsewhere"),
+            Value::text("999"),
+            case(meta, "OriginSide", "discord"),
+        ],
+    ));
+    ada.commit();
+}
+
+/// Nothing outside the one channel is edited, deleted, reacted to or given a webhook.
+fn nothing_outside_the_channel(ada: &Replica, account: &ResourceRef) {
     was_refused(
         &carried_out(
-            &ada,
-            &account,
-            "apply_role",
-            json!({
-                "op": "apply-role",
-                "name": "Bridge",
-                "tilo": "bridge",
-            }),
-        ),
-        "A bridge of one channel changes nothing else in the server",
-    );
-    was_refused(
-        &carried_out(
-            &ada,
-            &account,
-            "kick",
-            json!({"op": "kick", "user": "3001"}),
-        ),
-        "A bridge of one channel changes nothing else in the server",
-    );
-    was_refused(
-        &carried_out(
-            &ada,
-            &account,
-            "apply_emoji",
-            json!({
-                "op": "apply-emoji",
-                "name": "party",
-                "tilo": "party",
-            }),
-        ),
-        "A bridge of one channel changes nothing else in the server",
-    );
-    was_refused(
-        &as_who(
-            &ada,
-            &bridge(),
-            "delete_channel_there",
-            vec![Value::resource(&account), Value::text("456")],
-        ),
-        "A bridge of one channel changes nothing else in the server",
-    );
-    was_refused(
-        &carried_out(
-            &ada,
-            &account,
+            ada,
+            account,
             "edit_there",
             json!({
                 "op": "edit",
@@ -1254,8 +1287,8 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
     );
     was_refused(
         &carried_out(
-            &ada,
-            &account,
+            ada,
+            account,
             "delete_there",
             json!({
                 "op": "delete",
@@ -1269,8 +1302,8 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
     for action in ["react_there", "unreact_there"] {
         was_refused(
             &carried_out(
-                &ada,
-                &account,
+                ada,
+                account,
                 action,
                 json!({
                     "op": "react",
@@ -1284,8 +1317,8 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
     }
     was_refused(
         &carried_out(
-            &ada,
-            &account,
+            ada,
+            account,
             "create_webhook",
             json!({
                 "op": "create-webhook",
@@ -1295,12 +1328,56 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
         ),
         "This bridge reaches only its one Discord channel",
     );
+}
+
+/// A bridge of one channel changes nothing else in the server: roles, members, emoji, channels and
+/// overwrites are refused.
+fn nothing_else_in_the_server(ada: &Replica, account: &ResourceRef) {
+    was_refused(
+        &carried_out(
+            ada,
+            account,
+            "apply_role",
+            json!({
+                "op": "apply-role",
+                "name": "Bridge",
+                "tilo": "bridge",
+            }),
+        ),
+        "A bridge of one channel changes nothing else in the server",
+    );
+    was_refused(
+        &carried_out(ada, account, "kick", json!({"op": "kick", "user": "3001"})),
+        "A bridge of one channel changes nothing else in the server",
+    );
+    was_refused(
+        &carried_out(
+            ada,
+            account,
+            "apply_emoji",
+            json!({
+                "op": "apply-emoji",
+                "name": "party",
+                "tilo": "party",
+            }),
+        ),
+        "A bridge of one channel changes nothing else in the server",
+    );
+    was_refused(
+        &as_who(
+            ada,
+            &bridge(),
+            "delete_channel_there",
+            vec![Value::resource(account), Value::text("456")],
+        ),
+        "A bridge of one channel changes nothing else in the server",
+    );
     // An overwrite changes the whole server's permissions, which a bridge of one channel never
     // makes.
     was_refused(
         &carried_out(
-            &ada,
-            &account,
+            ada,
+            account,
             "set_overwrite",
             json!({
                 "op": "set-overwrite",
@@ -1311,11 +1388,8 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
         ),
         "A bridge of one channel changes nothing else in the server",
     );
-
-    ada.commit();
 }
 
-/// Run `name` of `app` as `who`, with `args`.
 fn run_in(
     replica: &Replica,
     app: &str,

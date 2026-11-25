@@ -51,6 +51,8 @@ mod disks;
 mod document_search;
 mod done_days;
 mod engines;
+#[path = "support/export_probe.rs"]
+mod export_probe;
 mod feedback_picker;
 mod files;
 mod firewall;

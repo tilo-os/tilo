@@ -108,6 +108,23 @@ fn account(replica: &Replica) -> ResourceRef {
     accounts[0].clone()
 }
 
+/// The joinings the carry wrote, sorted: each entry's kind and the Tilo and Discord names it
+/// joins.
+fn joinings(replica: &Replica, held: &ResourceRef) -> Vec<(String, String, String)> {
+    let mut found: Vec<(String, String, String)> = items(&replica.host, held, "map")
+        .iter()
+        .map(|entry| {
+            (
+                variant(&replica.host, entry, "kind"),
+                text(&replica.host, entry, "tilo"),
+                text(&replica.host, entry, "discord"),
+            )
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 #[test]
 fn the_lounges_server_is_carried_whole_and_a_second_carry_adds_nothing() {
     let documents = documents();
@@ -143,17 +160,7 @@ fn the_lounges_server_is_carried_whole_and_a_second_carry_adds_nothing() {
     );
 
     let map = items(&replica.host, &held, "map");
-    let mut found: Vec<(String, String, String)> = map
-        .iter()
-        .map(|entry| {
-            (
-                variant(&replica.host, entry, "kind"),
-                text(&replica.host, entry, "tilo"),
-                text(&replica.host, entry, "discord"),
-            )
-        })
-        .collect();
-    found.sort();
+    let found = joinings(&replica, &held);
     assert_eq!(
         found,
         vec![
@@ -298,7 +305,7 @@ fn a_second_device_makes_no_duplicates() {
 fn a_device_opened_before_the_native_documents_arrive_carries_them_once_they_do() {
     let source = source();
     let (replica, _) = Replica::new("ada", Workspace::new(), &[(source.as_str(), DISCORD_IDS)]);
-    let root = replica.host.root_of(APP).expect("the root");
+    replica.host.root_of(APP).expect("the root");
     replica.commit();
     assert!(
         !replica.host.runtime().has_earlier(APP),

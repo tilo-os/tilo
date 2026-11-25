@@ -324,11 +324,15 @@ fn the_timeline_scrubs_through_the_versions_and_comes_back_to_now() {
         newest >= 2.0,
         "a version for each shape and the artwork's making: {newest}"
     );
-    assert_eq!(number(&line, "value"), newest, "the knob rests on now");
+    assert_eq!(
+        number(&line, "value").to_bits(),
+        newest.to_bits(),
+        "the knob rests on now"
+    );
     match line.props.get("stops") {
         Some(Value::List(stops)) => assert_eq!(
-            f64::from(u32::try_from(stops.len()).unwrap()),
-            newest + 1.0,
+            f64::from(u32::try_from(stops.len()).unwrap()).to_bits(),
+            (newest + 1.0).to_bits(),
             "{stops:?}"
         ),
         other => panic!("each version is a stop: {other:?}"),
@@ -349,13 +353,13 @@ fn the_timeline_scrubs_through_the_versions_and_comes_back_to_now() {
     view.poll_patches().unwrap();
     let line = timeline(&view);
     assert_eq!(
-        number(&line, "max"),
-        newest,
+        number(&line, "max").to_bits(),
+        newest.to_bits(),
         "laying a comparison over the surface is no version of the work"
     );
     assert_eq!(
-        number(&line, "value"),
-        newest - 1.0,
+        number(&line, "value").to_bits(),
+        (newest - 1.0).to_bits(),
         "the knob stays where it was left"
     );
     assert!(
@@ -398,8 +402,8 @@ fn the_well_previews_the_brush_size_and_paint_as_they_change() {
         .unwrap();
     view.poll_patches().unwrap();
     assert_eq!(
-        number(&preview(&view), "size"),
-        before + 20.0,
+        number(&preview(&view), "size").to_bits(),
+        (before + 20.0).to_bits(),
         "the preview follows the size"
     );
     assert!(

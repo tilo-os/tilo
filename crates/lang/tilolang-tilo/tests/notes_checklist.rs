@@ -110,6 +110,83 @@ type Step = (
     Vec<(&'static str, &'static str, Option<bool>)>,
 );
 
+/// What the editor sends as the person types, step by step: the whole body each time its
+/// lines changed, and how the note's body should read after it.
+fn typed_states() -> Vec<Step> {
+    let bullet = |text: &str| {
+        block(
+            "list_item",
+            text,
+            &[
+                ("level", AttrVal::Int(0)),
+                ("ordered", AttrVal::Bool(false)),
+            ],
+        )
+    };
+    let heading = || block("heading", "Packing", &[("level", AttrVal::Int(2))]);
+    vec![
+        (vec![heading()], vec![("heading", "Packing", None)]),
+        (
+            vec![heading(), block("paragraph", "", &[])],
+            vec![("heading", "Packing", None), ("paragraph", "", None)],
+        ),
+        (
+            vec![heading(), bullet("passport")],
+            vec![
+                ("heading", "Packing", None),
+                ("list_item", "passport", None),
+            ],
+        ),
+        (
+            vec![heading(), bullet("passport"), bullet("")],
+            vec![
+                ("heading", "Packing", None),
+                ("list_item", "passport", None),
+                ("list_item", "", None),
+            ],
+        ),
+        (
+            vec![heading(), bullet("passport"), task("")],
+            vec![
+                ("heading", "Packing", None),
+                ("list_item", "passport", None),
+                ("list_item", "", Some(false)),
+            ],
+        ),
+        (
+            vec![heading(), bullet("passport"), task("charger")],
+            vec![
+                ("heading", "Packing", None),
+                ("list_item", "passport", None),
+                ("list_item", "charger", Some(false)),
+            ],
+        ),
+        (
+            vec![heading(), bullet("passport"), task("charger"), task("")],
+            vec![
+                ("heading", "Packing", None),
+                ("list_item", "passport", None),
+                ("list_item", "charger", Some(false)),
+                ("list_item", "", Some(false)),
+            ],
+        ),
+        (
+            vec![
+                heading(),
+                bullet("passport"),
+                task("charger"),
+                task("adapters"),
+            ],
+            vec![
+                ("heading", "Packing", None),
+                ("list_item", "passport", None),
+                ("list_item", "charger", Some(false)),
+                ("list_item", "adapters", Some(false)),
+            ],
+        ),
+    ]
+}
+
 fn written(rich: &RichValue) -> Vec<Said> {
     rich.blocks
         .iter()
@@ -199,80 +276,9 @@ fn each_step_of_typing_the_body_leaves_the_note_as_it_was_written() {
         .expect("the body's editor")
         .key
         .clone();
-    let bullet = |text: &str| {
-        block(
-            "list_item",
-            text,
-            &[
-                ("level", AttrVal::Int(0)),
-                ("ordered", AttrVal::Bool(false)),
-            ],
-        )
-    };
-    let heading = || block("heading", "Packing", &[("level", AttrVal::Int(2))]);
     // What the editor sends as the person types: the whole body each time its lines changed.
     // What the editor sends as the person types: the whole body each time its lines changed.
-    let states: Vec<Step> = vec![
-        (vec![heading()], vec![("heading", "Packing", None)]),
-        (
-            vec![heading(), block("paragraph", "", &[])],
-            vec![("heading", "Packing", None), ("paragraph", "", None)],
-        ),
-        (
-            vec![heading(), bullet("passport")],
-            vec![
-                ("heading", "Packing", None),
-                ("list_item", "passport", None),
-            ],
-        ),
-        (
-            vec![heading(), bullet("passport"), bullet("")],
-            vec![
-                ("heading", "Packing", None),
-                ("list_item", "passport", None),
-                ("list_item", "", None),
-            ],
-        ),
-        (
-            vec![heading(), bullet("passport"), task("")],
-            vec![
-                ("heading", "Packing", None),
-                ("list_item", "passport", None),
-                ("list_item", "", Some(false)),
-            ],
-        ),
-        (
-            vec![heading(), bullet("passport"), task("charger")],
-            vec![
-                ("heading", "Packing", None),
-                ("list_item", "passport", None),
-                ("list_item", "charger", Some(false)),
-            ],
-        ),
-        (
-            vec![heading(), bullet("passport"), task("charger"), task("")],
-            vec![
-                ("heading", "Packing", None),
-                ("list_item", "passport", None),
-                ("list_item", "charger", Some(false)),
-                ("list_item", "", Some(false)),
-            ],
-        ),
-        (
-            vec![
-                heading(),
-                bullet("passport"),
-                task("charger"),
-                task("adapters"),
-            ],
-            vec![
-                ("heading", "Packing", None),
-                ("list_item", "passport", None),
-                ("list_item", "charger", Some(false)),
-                ("list_item", "adapters", Some(false)),
-            ],
-        ),
-    ];
+    let states: Vec<Step> = typed_states();
     for (step, (blocks, want)) in states.into_iter().enumerate() {
         page.edit(
             &editor,

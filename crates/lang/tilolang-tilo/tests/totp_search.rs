@@ -310,13 +310,13 @@ fn shows_the_account_it_names(
     github: &ResourceRef,
     acme: &ResourceRef,
 ) {
-    let plain = anchor
+    let resource_id = anchor
         .strip_prefix("tl:")
         .and_then(|rest| rest.split_once(':'))
         .map_or(anchor, |(_, id)| id);
     let plan = replica
         .host
-        .open_plan(APP, plain, None)
+        .open_plan(APP, resource_id, None)
         .expect("the hit names a resource of the workspace");
     assert_eq!(
         plan.target.as_ref().map(ResourceRef::id_string),

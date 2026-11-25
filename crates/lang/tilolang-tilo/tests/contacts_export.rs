@@ -2,12 +2,9 @@
 //! current vCard 4.0, and the older 3.0 an address book that reads no 4.0 card opens. The
 //! system's one Export… lists them; Contacts keeps no export menu of its own.
 
-#[path = "support/export_probe.rs"]
-mod export_probe;
-
 use tilo_render_protocol::patch::Level;
 
-use export_probe::{export_formats, window};
+use crate::export_probe::{export_formats, window};
 
 const CONTACTS_APP: &str = "so.tilo.contacts";
 

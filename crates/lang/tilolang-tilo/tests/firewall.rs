@@ -195,8 +195,10 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(
+                || Err(format!("no action {name}")),
+                |(_, id)| Ok(id.clone()),
+            )?;
         match self
             .host
             .runtime()
@@ -204,7 +206,7 @@ impl Installed {
             .map_err(|why| why.to_string())?
         {
             tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
-            other => panic!("{name} answers {other:?}"),
+            other => Err(format!("{name} answers {other:?}")),
         }
     }
 
@@ -575,7 +577,7 @@ fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
         let Value::List(rules) = rules else {
             panic!("rules are a list: {rules:?}")
         };
-        let rule = rules
+        rules
             .iter()
             .find_map(|rule| {
                 let Value::Ref(rule) = rule else { return None };
@@ -583,8 +585,7 @@ fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
                 let port = app.host.runtime().read(&held, "port").expect("port");
                 (port == Value::text("3389")).then_some(held)
             })
-            .expect("the 3389 rule");
-        rule
+            .expect("the 3389 rule")
     };
     // A change made elsewhere, or an undo here, leaves the workspace's configuration different
     // from what this device holds; the window hands it to this device's firewalld.
@@ -615,7 +616,7 @@ fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
 }
 
 /// The keys of the nodes of `kind`, in order.
-fn with_kind<'a>(node: &'a UiNode, kind: &str, into: &mut Vec<String>) {
+fn with_kind(node: &UiNode, kind: &str, into: &mut Vec<String>) {
     if node.kind == kind {
         into.push(node.key.clone());
     }

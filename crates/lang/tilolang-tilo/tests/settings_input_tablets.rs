@@ -17,8 +17,6 @@ use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
-const APP: &str = "so.tilo.settings";
-
 /// The pad a test attaches, by the identity its settings are kept under.
 const PAD: &str = "056a:0374:Wacom Intuos Pro M Pad";
 
@@ -173,16 +171,16 @@ fn sent_once(sent: &Rc<RefCell<Vec<Invocation>>>) -> (String, Vec<(String, Value
 }
 
 fn argument(args: &[(String, Value)], wanted: &str) -> Value {
-    args.iter()
-        .find(|(named, _)| named == wanted)
-        .map(|(_, value)| value.clone())
-        .unwrap_or_else(|| panic!("an argument `{wanted}`: {args:?}"))
+    args.iter().find(|(named, _)| named == wanted).map_or_else(
+        || panic!("an argument `{wanted}`: {args:?}"),
+        |(_, value)| value.clone(),
+    )
 }
 
 #[test]
 fn a_pad_button_is_given_any_of_the_desktops_shortcuts() {
     let (host, compiled) = settings();
-    let mut view = input_pane(&host, &compiled);
+    let view = input_pane(&host, &compiled);
 
     // The button offers the desktop's shortcuts by what they do and the keys they are on, and
     // carries the id the section's verb takes.
@@ -227,7 +225,7 @@ fn a_pad_button_is_given_any_of_the_desktops_shortcuts() {
 #[test]
 fn a_ring_is_set_in_every_mode_the_pad_reports() {
     let (host, compiled) = settings();
-    let mut view = input_pane(&host, &compiled);
+    let view = input_pane(&host, &compiled);
 
     // One row per mode the ring reports, each showing what the settings service reads for it.
     let ring = view.tree().of_kind("ui.Dropdown");

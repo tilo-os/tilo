@@ -753,7 +753,7 @@ fn settled(replica: &Replica) {
     replica.commit();
 }
 
-/// The client over the real YouTube origin, answered by a scripted service.
+/// The client over the real `YouTube` origin, answered by a scripted service.
 struct Connected {
     ada: Replica,
     meta: Meta,
@@ -1110,7 +1110,7 @@ fn comments_are_read_and_only_their_writer_takes_a_reply_back() {
     );
 }
 
-/// The segments SponsorBlock marks are skipped as playback reaches them, and stay where they are
+/// The segments `SponsorBlock` marks are skipped as playback reaches them, and stay where they are
 /// when the person turns skipping off.
 #[test]
 fn a_segment_the_community_marks_is_skipped_as_it_plays() {
@@ -1182,7 +1182,7 @@ fn a_segment_the_community_marks_is_skipped_as_it_plays() {
     );
 }
 
-/// DeArrow's community title and Return YouTube Dislike's count are drawn on the page, and the
+/// `DeArrow`'s community title and Return `YouTube` Dislike's count are drawn on the page, and the
 /// person can show the maker's own title again.
 #[test]
 fn the_community_names_the_video_and_counts_its_dislikes() {
@@ -1279,7 +1279,7 @@ fn the_search_narrows_to_the_kind_the_person_chose() {
     );
 }
 
-/// A length or a date narrows what YouTube is asked for: the search is asked again with the
+/// A length or a date narrows what `YouTube` is asked for: the search is asked again with the
 /// filter the person chose.
 #[test]
 fn the_search_asks_youtube_with_its_length_and_date() {
@@ -1334,7 +1334,7 @@ fn the_search_asks_youtube_with_its_length_and_date() {
 }
 
 /// The person's preferred quality is what the service is asked for a stream at: 480p is what the
-/// player opens, not the tallest picture YouTube serves.
+/// player opens, not the tallest picture `YouTube` serves.
 #[test]
 fn the_preferred_quality_is_what_the_stream_is_asked_at() {
     let client = sink_client("a subscriptions feed");

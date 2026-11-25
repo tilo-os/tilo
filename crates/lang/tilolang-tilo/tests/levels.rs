@@ -85,7 +85,7 @@ fn pages(
             !more || rows.len() == size,
             "a page short of its size is the last"
         );
-        offset += rows.len();
+        offset = offset.saturating_add(rows.len());
         out.push(rows);
         if !more {
             return out;
@@ -104,8 +104,8 @@ fn lists_as_whole(host: &Host, planner: &Arc<dyn Planner>, parent: Option<&str>)
     for size in PAGES {
         let listed = pages(host, planner, parent, size, true, &|_| true);
         for (at, page) in listed.iter().enumerate() {
-            let from = (at * size).min(expected.len());
-            let to = (from + size).min(expected.len());
+            let from = at.saturating_mul(size).min(expected.len());
+            let to = from.saturating_add(size).min(expected.len());
             assert_eq!(
                 page,
                 &expected[from..to],

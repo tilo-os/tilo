@@ -190,6 +190,39 @@ fn pill_widths(emoji: &[&str]) -> Vec<f64> {
     .collect()
 }
 
+/// A picker leads its frequent row with the emoji used most, after the workspace's own and the
+/// add tile; the standard set follows, and a search finds one first.
+fn frequent_row_leads_with_the_most_used() {
+    let mut strip = ui::widget::ReactionStripWidget::new(Vec::new(), None);
+    for emoji in ["🎉", ":party_parrot:", ":party_parrot:"] {
+        strip.toggle(emoji);
+    }
+    let mut picker = ui::widget::EmojiPicker::framed();
+    picker.open_at(
+        Some(Rect::new(100.0, 40.0, 130.0, 70.0)),
+        Rect::new(0.0, 0.0, 1280.0, 800.0),
+        &ui::Theme::dark(),
+    );
+    let items = picker.items();
+    assert_eq!(
+        items[..4],
+        [
+            Some(":party_parrot:"),
+            None,
+            Some(":party_parrot:"),
+            Some("🎉"),
+        ],
+        "the workspace's emoji with the add tile, then the most used: {items:?}"
+    );
+    assert!(items.len() > 4, "the standard set follows");
+    picker.set_query("parrot");
+    assert_eq!(
+        picker.items().first().copied().flatten(),
+        Some(":party_parrot:"),
+        "searching finds it first"
+    );
+}
+
 #[test]
 fn a_workspace_emoji_is_added_reacted_with_drawn_offered_and_kept_from_others() {
     // Ada adds the picture as `:party_parrot:` through the record's action.
@@ -285,32 +318,5 @@ fn a_workspace_emoji_is_added_reacted_with_drawn_offered_and_kept_from_others() 
 
     // Reacting is using: the emoji used most leads the picker's frequent row, after the
     // workspace's own and before the standard set.
-    let mut strip = ui::widget::ReactionStripWidget::new(Vec::new(), None);
-    for emoji in ["🎉", ":party_parrot:", ":party_parrot:"] {
-        strip.toggle(emoji);
-    }
-    let mut picker = ui::widget::EmojiPicker::framed();
-    picker.open_at(
-        Some(Rect::new(100.0, 40.0, 130.0, 70.0)),
-        Rect::new(0.0, 0.0, 1280.0, 800.0),
-        &ui::Theme::dark(),
-    );
-    let items = picker.items();
-    assert_eq!(
-        items[..4],
-        [
-            Some(":party_parrot:"),
-            None,
-            Some(":party_parrot:"),
-            Some("🎉"),
-        ],
-        "the workspace's emoji with the add tile, then the most used: {items:?}"
-    );
-    assert!(items.len() > 4, "the standard set follows");
-    picker.set_query("parrot");
-    assert_eq!(
-        picker.items().first().copied().flatten(),
-        Some(":party_parrot:"),
-        "searching finds it first"
-    );
+    frequent_row_leads_with_the_most_used();
 }

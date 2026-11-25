@@ -462,15 +462,18 @@ impl tilo_resource_store::Port for Counted {
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         match command {
-            tilo_resource_store::wire::Command::Get { .. } => self.gets.set(self.gets.get() + 1),
+            tilo_resource_store::wire::Command::Get { .. } => {
+                self.gets.set(self.gets.get().saturating_add(1));
+            }
             tilo_resource_store::wire::Command::VersionEnd { .. } => {
-                self.ends.set(self.ends.get() + 1);
+                self.ends.set(self.ends.get().saturating_add(1));
             }
             _ => {}
         }
         let reply = tilo_resource_store::Port::command(&self.port, command)?;
         if let tilo_resource_store::wire::Reply::Page(page) = &reply {
-            self.rows.set(self.rows.get() + page.resources.len());
+            self.rows
+                .set(self.rows.get().saturating_add(page.resources.len()));
         }
         Ok(reply)
     }

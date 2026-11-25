@@ -2335,7 +2335,7 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
     // Outline is finished with nothing under it, so it goes; the task whose step is still open
     // stays with that step.
     assert_eq!(
-        call(&ada, "clear_done", vec![root.clone()]),
+        call(&ada, "clear_done", vec![root]),
         Value::Int(1),
         "one finished task went"
     );

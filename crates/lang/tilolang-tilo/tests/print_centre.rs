@@ -283,8 +283,7 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
         match self
             .host
             .runtime()
@@ -301,8 +300,10 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(
+                || Err(format!("no action {name}")),
+                |(_, id)| Ok(id.clone()),
+            )?;
         match self
             .host
             .runtime()
@@ -310,7 +311,7 @@ impl Installed {
             .map_err(|why| why.to_string())?
         {
             tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
-            other => panic!("{name} answers {other:?}"),
+            other => Err(format!("{name} answers {other:?}")),
         }
     }
 
@@ -655,7 +656,7 @@ fn first_page(app: &Installed) -> ResourceRef {
 }
 
 /// The pictures the window draws.
-fn pictures<'a>(tree: &'a UiNode) -> Vec<&'a UiNode> {
+fn pictures(tree: &UiNode) -> Vec<&UiNode> {
     fn walk<'a>(node: &'a UiNode, found: &mut Vec<&'a UiNode>) {
         if node.kind == "ui.Image" {
             found.push(node);

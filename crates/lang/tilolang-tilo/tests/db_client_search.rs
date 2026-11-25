@@ -25,7 +25,9 @@ struct Engine {
 
 impl EngineHost for Engine {
     fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        assert_eq!(app, APP, "an app asks its own engine");
+        if app != APP {
+            return Err("an app asks its own engine".to_owned());
+        }
         match op {
             "catalog" => Ok(r#"["main"]"#.to_owned()),
             "tables" => Ok(r#"[
@@ -67,7 +69,9 @@ impl EngineHost for Engine {
         _input: &str,
         handlers: &JobHandlers,
     ) -> Result<String, String> {
-        assert_eq!(app, APP);
+        if app != APP {
+            return Err(format!("{app} asks its own engine"));
+        }
         let job = format!("devices/ab/jobs/{op}-1");
         self.started
             .borrow_mut()
@@ -169,8 +173,7 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
         match self
             .host
             .runtime()

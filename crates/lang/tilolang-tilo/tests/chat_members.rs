@@ -170,7 +170,7 @@ fn texts(node: &UiNode) -> Vec<String> {
     crate::fixtures::nodes(node)
         .into_iter()
         .filter_map(
-            |node| match node.props.get("label").or(node.props.get("value")) {
+            |node| match node.props.get("label").or_else(|| node.props.get("value")) {
                 Some(Value::Text(text)) => Some(text.clone()),
                 _ => None,
             },
@@ -197,12 +197,9 @@ fn listed(view: &mut ViewInstance, section: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Press the button labelled `label` on the row of `person` in the panel.
-fn press(view: &mut ViewInstance, person: &str, label: &str) -> Result<InvokeOutcome, String> {
-    view.poll_patches().unwrap();
-    let key = view
-        .tree()
-        .of_kind("row")
+/// The key of the button labelled `label` on the row of `person` in the panel.
+fn button_on(view: &UiNode, person: &str, label: &str) -> Option<String> {
+    view.of_kind("row")
         .into_iter()
         .filter(|row| {
             row.of_kind("ui.Text")
@@ -211,10 +208,21 @@ fn press(view: &mut ViewInstance, person: &str, label: &str) -> Result<InvokeOut
         })
         .flat_map(|row| row.of_kind("ui.Button"))
         .find(|button| button.props.get("label") == Some(&Value::text(label)))
-        .unwrap_or_else(|| panic!("no {label} for {person}: {:?}", texts(view.tree())))
-        .key
-        .clone();
+        .map(|button| button.key.clone())
+}
+
+/// Press the button labelled `label` on the row of `person` in the panel.
+fn press(view: &mut ViewInstance, person: &str, label: &str) -> Result<InvokeOutcome, String> {
+    view.poll_patches().unwrap();
+    let Some(key) = button_on(view.tree(), person, label) else {
+        return Err(format!("no {label} for {person}: {:?}", texts(view.tree())));
+    };
     view.press(&key).map_err(|error| format!("{error:?}"))
+}
+
+/// Whether the panel lists `person` under `section`.
+fn lists(view: &mut ViewInstance, section: &str, person: &str) -> bool {
+    listed(view, section).contains(&person.to_owned())
 }
 
 fn view_id(r: &Replica, name: &str) -> String {
@@ -238,30 +246,33 @@ fn reads(ben: &Replica, channel: &tilolang_runtime::ResourceRef) -> bool {
         .may_read(&ben.host.viewer().clone(), channel)
 }
 
+/// Mo makes the "design" channel, as her window asks Chat for one.
+fn made_channel(mo: &Replica) -> Value {
+    let all = Value::resource(&mo.host.root_of(APP).unwrap());
+    mo.commit();
+    let meta = mo.host.package(APP).unwrap().meta;
+    match mo
+        .host
+        .runtime()
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("mo")),
+            (
+                crate::fixtures::action_id(&meta, "new_channel").as_str(),
+                vec![all, Value::text("design")],
+            ),
+        )
+        .unwrap()
+    {
+        InvokeOutcome::Done(made) => made,
+        other => panic!("Mo makes the channel: {other:?}"),
+    }
+}
+
 #[test]
 fn a_moderator_lets_ben_into_a_channel_and_takes_him_out_again() {
     let policy = workspace();
     let mo = member("mo", Workspace::new(), &policy);
-    let all = Value::resource(&mo.host.root_of(APP).unwrap());
-    mo.commit();
-    let made = {
-        let meta = mo.host.package(APP).unwrap().meta;
-        match mo
-            .host
-            .runtime()
-            .invoke_action(
-                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("mo")),
-                (
-                    crate::fixtures::action_id(&meta, "new_channel").as_str(),
-                    vec![all, Value::text("design")],
-                ),
-            )
-            .unwrap()
-        {
-            InvokeOutcome::Done(made) => made,
-            other => panic!("Mo makes the channel: {other:?}"),
-        }
-    };
+    let made = made_channel(&mo);
     mo.commit();
     let channel = target(&made);
 
@@ -299,12 +310,12 @@ fn a_moderator_lets_ben_into_a_channel_and_takes_him_out_again() {
         .open_resource(&channel, Some(&view_id(&mo, "channel_members")))
         .unwrap();
     assert!(
-        !listed(&mut panel, "Members").contains(&"ben".to_owned()),
+        !lists(&mut panel, "Members", "ben"),
         "{:?}",
         texts(panel.tree())
     );
     assert!(
-        listed(&mut panel, "Not in the channel").contains(&"ben".to_owned()),
+        lists(&mut panel, "Not in the channel", "ben"),
         "{:?}",
         texts(panel.tree())
     );
@@ -314,7 +325,7 @@ fn a_moderator_lets_ben_into_a_channel_and_takes_him_out_again() {
     assert!(matches!(added, Ok(InvokeOutcome::Done(_))), "{added:?}");
     mo.host.follow_members();
     assert!(
-        listed(&mut panel, "Members").contains(&"ben".to_owned()),
+        lists(&mut panel, "Members", "ben"),
         "{:?}",
         texts(panel.tree())
     );
@@ -333,7 +344,7 @@ fn a_moderator_lets_ben_into_a_channel_and_takes_him_out_again() {
     assert!(matches!(removed, Ok(InvokeOutcome::Done(_))), "{removed:?}");
     mo.host.follow_members();
     assert!(
-        !listed(&mut panel, "Members").contains(&"ben".to_owned()),
+        !lists(&mut panel, "Members", "ben"),
         "{:?}",
         texts(panel.tree())
     );

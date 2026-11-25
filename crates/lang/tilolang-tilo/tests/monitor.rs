@@ -179,8 +179,7 @@ impl Installed {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
         match self
             .host
             .runtime()
@@ -392,7 +391,7 @@ fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
 fn a_persons_cadence_is_their_window_state_and_reaches_the_device() {
     let app = Installed::new(READING);
     let mut window = app.window();
-    let item = find(&window.tree(), &|text| text == "Every 3 seconds").expect("the cadence menu");
+    let item = find(window.tree(), &|text| text == "Every 3 seconds").expect("the cadence menu");
     window
         .fire(&item.key, "choose")
         .expect("the cadence is chosen");

@@ -84,6 +84,20 @@ fn channel(instance: &Instance) -> tilolang_runtime::ResourceRef {
     }
 }
 
+/// The directory a capture is written to: beside the test's built binary, as the other shots
+/// are, since a source tree read from a test may be read-only.
+fn captures() -> std::path::PathBuf {
+    std::env::current_exe()
+        .expect("the test's binary")
+        .parent()
+        .expect("its directory")
+        .parent()
+        .expect("the profile's directory")
+        .parent()
+        .expect("the build's directory")
+        .join("chat-persona-shot")
+}
+
 /// Chat's window as its app sends it, its channel open, in both themes, saved beside `out`.
 #[test]
 fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
@@ -171,15 +185,7 @@ fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
     harness.relayout();
     // The captures stand beside the build, as the other shots do: a source tree read from a
     // test may be read-only.
-    let out = std::env::current_exe()
-        .expect("the test's binary")
-        .parent()
-        .expect("its directory")
-        .parent()
-        .expect("the profile's directory")
-        .parent()
-        .expect("the build's directory")
-        .join("chat-persona-shot");
+    let out = captures();
     std::fs::create_dir_all(&out).expect("the captures' directory");
     harness.render_png(&out.join("chat-persona-dark.png"));
     harness

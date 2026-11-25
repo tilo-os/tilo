@@ -63,12 +63,13 @@ impl Disk {
 
     /// The path the app names this file by.
     fn app_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.home)
-            .map(|inside| format!("~/{}", inside.display()))
-            .unwrap_or_else(|_| path.display().to_string())
+        path.strip_prefix(&self.home).map_or_else(
+            |_| path.display().to_string(),
+            |inside| format!("~/{}", inside.display()),
+        )
     }
 
-    fn entry(&self, path: &Path, named: &str) -> Option<Entry> {
+    fn entry(path: &Path, named: &str) -> Option<Entry> {
         let meta = std::fs::symlink_metadata(path).ok()?;
         let name = path.file_name()?.to_string_lossy().into_owned();
         let modified = meta
@@ -110,7 +111,7 @@ impl FilesHost for Disk {
             } else {
                 format!("{}/{name}", path.trim_end_matches('/'))
             };
-            if let Some(entry) = self.entry(&item.path(), &named) {
+            if let Some(entry) = Self::entry(&item.path(), &named) {
                 found.push(entry);
             }
         }
@@ -119,7 +120,7 @@ impl FilesHost for Disk {
     }
 
     fn stat(&self, path: &str) -> Result<Option<Entry>, String> {
-        Ok(self.entry(&self.resolve(path), path))
+        Ok(Self::entry(&self.resolve(path), path))
     }
 
     fn read(&self, path: &str) -> Result<Vec<u8>, String> {
@@ -134,11 +135,10 @@ impl FilesHost for Disk {
         let Some(store) = &self.previews else {
             return Ok(None);
         };
-        let name = self
-            .resolve(path)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "preview".to_owned());
+        let name = self.resolve(path).file_name().map_or_else(
+            || "preview".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         Ok(Some(store.keeping(
             &format!("{name}-preview.png"),
             "image/png",
@@ -149,15 +149,13 @@ impl FilesHost for Disk {
     fn mkdir(&self, path: &str) -> Result<Entry, String> {
         let dir = self.resolve(path);
         std::fs::create_dir(&dir).map_err(|error| error.to_string())?;
-        self.entry(&dir, path)
-            .ok_or_else(|| "the folder did not appear".to_owned())
+        Self::entry(&dir, path).ok_or_else(|| "the folder did not appear".to_owned())
     }
 
     fn write(&self, path: &str, bytes: &[u8]) -> Result<Entry, String> {
         let file = self.resolve(path);
         std::fs::write(&file, bytes).map_err(|error| error.to_string())?;
-        self.entry(&file, path)
-            .ok_or_else(|| "the file did not appear".to_owned())
+        Self::entry(&file, path).ok_or_else(|| "the file did not appear".to_owned())
     }
 
     fn rename(&self, path: &str, name: &str) -> Result<Entry, String> {
@@ -168,8 +166,7 @@ impl FilesHost for Disk {
             .ok_or_else(|| "it has no folder".to_owned())?;
         std::fs::rename(&from, &to).map_err(|error| error.to_string())?;
         let named = self.app_path(&to);
-        self.entry(&to, &named)
-            .ok_or_else(|| "the entry did not appear".to_owned())
+        Self::entry(&to, &named).ok_or_else(|| "the entry did not appear".to_owned())
     }
 
     fn move_entry(&self, path: &str, folder: &str) -> Result<Entry, String> {
@@ -180,8 +177,7 @@ impl FilesHost for Disk {
             .ok_or_else(|| "it has no name".to_owned())?;
         let (to, named) = self.path_of(folder, &name);
         std::fs::rename(&from, &to).map_err(|error| error.to_string())?;
-        self.entry(&to, &named)
-            .ok_or_else(|| "the entry did not appear".to_owned())
+        Self::entry(&to, &named).ok_or_else(|| "the entry did not appear".to_owned())
     }
 
     fn copy(&self, path: &str, folder: &str) -> Result<Entry, String> {
@@ -196,20 +192,19 @@ impl FilesHost for Disk {
         let (mut to, mut named) = self.path_of(folder, &landing);
         let stem = Path::new(&name)
             .file_stem()
-            .map_or(name.clone(), |stem| stem.to_string_lossy().into_owned());
+            .map_or_else(|| name.clone(), |stem| stem.to_string_lossy().into_owned());
         let extension = Path::new(&name)
             .extension()
             .map(|ext| format!(".{}", ext.to_string_lossy()))
             .unwrap_or_default();
-        let mut number = 2;
+        let mut number = 2u32;
         while to.exists() {
             landing = format!("{stem} ({number}){extension}");
             (to, named) = self.path_of(folder, &landing);
-            number += 1;
+            number = number.saturating_add(1);
         }
         std::fs::copy(&from, &to).map_err(|error| error.to_string())?;
-        self.entry(&to, &named)
-            .ok_or_else(|| "the copy did not appear".to_owned())
+        Self::entry(&to, &named).ok_or_else(|| "the copy did not appear".to_owned())
     }
 
     fn copy_to(&self, path: &str, to: &str) -> Result<Entry, String> {
@@ -219,8 +214,7 @@ impl FilesHost for Disk {
             return Err(format!("{} already exists", at.display()));
         }
         std::fs::copy(&from, &at).map_err(|error| error.to_string())?;
-        self.entry(&at, to)
-            .ok_or_else(|| "the copy did not appear".to_owned())
+        Self::entry(&at, to).ok_or_else(|| "the copy did not appear".to_owned())
     }
 
     fn remove(&self, path: &str) -> Result<bool, String> {
@@ -277,8 +271,7 @@ impl FilesHost for Disk {
         let to = self.resolve(&original);
         std::fs::rename(self.home.join(".Trash").join(name), &to)
             .map_err(|error| error.to_string())?;
-        self.entry(&to, &original)
-            .ok_or_else(|| "the entry did not come back".to_owned())
+        Self::entry(&to, &original).ok_or_else(|| "the entry did not come back".to_owned())
     }
 
     fn document_apps(&self, _path: &str) -> Result<Vec<DocumentApp>, String> {
@@ -334,10 +327,16 @@ impl EngineHost for Transfers {
     /// What a file's header states, as the device reads it: a movie plays for a minute and five
     /// seconds, a document has twelve pages, anything else states nothing.
     fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        assert_eq!((app, op), ("so.tilo.file-explorer", "facts"));
-        Ok(if input.ends_with(".mp4") {
+        if (app, op) != ("so.tilo.file-explorer", "facts") {
+            return Err(format!("{app}'s {op} is not the file explorer's facts"));
+        }
+        let extension = Path::new(input)
+            .extension()
+            .map(|extension| extension.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(if extension.eq_ignore_ascii_case("mp4") {
             r#"{"width":0,"height":0,"duration":65000,"pages":0,"codec":"h264","container":"mp4"}"#
-        } else if input.ends_with(".pdf") {
+        } else if extension.eq_ignore_ascii_case("pdf") {
             r#"{"width":0,"height":0,"duration":0,"pages":12,"codec":"pdf","container":"pdf"}"#
         } else {
             r#"{"width":0,"height":0,"duration":0,"pages":0,"codec":"","container":""}"#
@@ -352,7 +351,9 @@ impl EngineHost for Transfers {
         input: &str,
         handlers: &JobHandlers,
     ) -> Result<String, String> {
-        assert_eq!((app, op), ("so.tilo.file-explorer", "transfer"));
+        if (app, op) != ("so.tilo.file-explorer", "transfer") {
+            return Err(format!("{app}'s {op} is not the file explorer's transfer"));
+        }
         let ask: serde_json::Value = serde_json::from_str(input).expect("the ask is JSON");
         let folder = self.disk.resolve(ask["folder"].as_str().expect("a folder"));
         for path in ask["paths"].as_array().expect("paths") {
@@ -362,15 +363,16 @@ impl EngineHost for Transfers {
                 .expect("a name")
                 .to_string_lossy()
                 .into_owned();
-            let (stem, extension) = name
-                .rsplit_once('.')
-                .map_or((name.clone(), String::new()), |(stem, extension)| {
-                    (stem.to_owned(), format!(".{extension}"))
-                });
-            let to = std::iter::once(folder.join(&name))
-                .chain((2..).map(|n| folder.join(format!("{stem} ({n}){extension}"))))
-                .find(|to| !to.exists())
-                .expect("a free name");
+            let (stem, extension) = name.rsplit_once('.').map_or_else(
+                || (name.clone(), String::new()),
+                |(stem, extension)| (stem.to_owned(), format!(".{extension}")),
+            );
+            let mut to = folder.join(&name);
+            let mut number = 2u32;
+            while to.exists() {
+                to = folder.join(format!("{stem} ({number}){extension}"));
+                number = number.saturating_add(1);
+            }
             if ask["moving"] == true {
                 std::fs::rename(&from, &to).expect("a move");
             } else {
@@ -440,7 +442,10 @@ impl BlobHost for Store {
 
 /// What the app asked of an app that is not its own, such as the session's `open_app`.
 #[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<(String, Vec<Value>)>>>);
+struct Sent(Rc<RefCell<Vec<Asked>>>);
+
+/// One call the app made: the action's name and its arguments.
+type Asked = (String, Vec<Value>);
 
 impl Invoker for Sent {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
@@ -618,8 +623,7 @@ impl Files {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
         match self
             .host
             .runtime()
@@ -637,8 +641,7 @@ impl Files {
             .actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("no action {name}"));
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
         self.host
             .runtime()
             .invoke_action(&me(), (id.as_str(), args))
@@ -663,7 +666,7 @@ impl Files {
         Value::resource(&self.root)
     }
 
-    fn text(&self, path: &str) -> Value {
+    fn text(path: &str) -> Value {
         Value::Text(path.to_owned())
     }
 }
@@ -751,7 +754,7 @@ fn the_window_shows_the_places_this_device_holds_and_the_folders_entries() {
     std::fs::create_dir_all(app.disk.home.join("Documents/Projects")).expect("a folder");
 
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Documents")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Documents")]);
     let mut window = app.window();
     let words = shown(&mut window);
     for wanted in ["Documents", "plan.md", "Projects"] {
@@ -785,13 +788,13 @@ fn select_all_and_paste_copy_every_chosen_entry_and_a_taken_name_is_kept_both() 
     write(&home, "Archive/a.txt", "older a");
 
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Inbox")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Inbox")]);
     app.call("select_all", vec![app.root_value()]);
     app.call(
         "carry_selection",
         vec![app.root_value(), Value::Bool(false)],
     );
-    app.call("go", vec![app.root_value(), app.text("~/Archive")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Archive")]);
     app.call("paste", vec![app.root_value()]);
 
     assert_eq!(
@@ -822,16 +825,16 @@ fn an_entry_cut_from_one_folder_moves_to_another_and_keeps_its_name() {
     std::fs::create_dir_all(home.join("Documents")).expect("a folder");
 
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Downloads")]);
     app.call(
         "choose",
         vec![
             app.root_value(),
-            Value::List(vec![app.text("~/Downloads/report.pdf")]),
+            Value::List(vec![Files::text("~/Downloads/report.pdf")]),
         ],
     );
     app.call("carry_selection", vec![app.root_value(), Value::Bool(true)]);
-    app.call("go", vec![app.root_value(), app.text("~/Documents")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Documents")]);
     app.call("paste", vec![app.root_value()]);
 
     assert!(home.join("Documents/report.pdf").exists(), "the file moved");
@@ -850,10 +853,13 @@ fn chosen_entries_move_or_copy_into_a_folder_the_menu_names_and_nothing_is_repla
     write(&home, "Documents/report.pdf", "the older report");
     std::fs::create_dir_all(home.join("Archive")).expect("a folder");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Downloads")]);
     app.call("select_all", vec![app.root_value()]);
 
-    app.call("copy_into", vec![app.root_value(), app.text("~/Documents")]);
+    app.call(
+        "copy_into",
+        vec![app.root_value(), Files::text("~/Documents")],
+    );
     assert_eq!(
         std::fs::read_to_string(home.join("Documents/report.pdf")).expect("the older one"),
         "the older report",
@@ -873,7 +879,10 @@ fn chosen_entries_move_or_copy_into_a_folder_the_menu_names_and_nothing_is_repla
     );
 
     app.call("select_all", vec![app.root_value()]);
-    app.call("move_into", vec![app.root_value(), app.text("~/Archive")]);
+    app.call(
+        "move_into",
+        vec![app.root_value(), Files::text("~/Archive")],
+    );
     assert!(home.join("Archive/report.pdf").exists() && home.join("Archive/photo.jpg").exists());
     assert!(
         !home.join("Downloads/report.pdf").exists() && !home.join("Downloads/photo.jpg").exists(),
@@ -888,9 +897,9 @@ fn a_name_with_a_slash_or_one_already_taken_is_refused_in_the_persons_words() {
     write(&home, "Documents/notes.md", "notes");
     write(&home, "Documents/plan.md", "plan");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Documents")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Documents")]);
 
-    app.call("new_folder", vec![app.root_value(), app.text("a/b")]);
+    app.call("new_folder", vec![app.root_value(), Files::text("a/b")]);
     assert!(
         !home.join("Documents/a").exists(),
         "no folder is made under a slash"
@@ -901,8 +910,8 @@ fn a_name_with_a_slash_or_one_already_taken_is_refused_in_the_persons_words() {
         "rename_entry",
         vec![
             app.root_value(),
-            app.text("~/Documents/notes.md"),
-            app.text("plan.md"),
+            Files::text("~/Documents/notes.md"),
+            Files::text("plan.md"),
         ],
     );
     assert_eq!(
@@ -917,16 +926,16 @@ fn a_name_with_a_slash_or_one_already_taken_is_refused_in_the_persons_words() {
         "rename_entry",
         vec![
             app.root_value(),
-            app.text("~/Documents/notes.md"),
-            app.text("  ")
+            Files::text("~/Documents/notes.md"),
+            Files::text("  ")
         ],
     ));
     assert!(app.refuses(
         "rename_entry",
         vec![
             app.root_value(),
-            app.text("~/Documents/notes.md"),
-            app.text("x/y.md")
+            Files::text("~/Documents/notes.md"),
+            Files::text("x/y.md")
         ],
     ));
     assert!(home.join("Documents/notes.md").exists());
@@ -938,7 +947,7 @@ fn a_file_dropped_on_the_window_lands_in_the_folder_shown() {
     let home = app.disk.home.clone();
     std::fs::create_dir_all(home.join("Documents")).expect("a folder");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Documents")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Documents")]);
 
     let dropped = app.store.keeping("notes.md", "text/markdown", b"# Notes");
     app.call(
@@ -969,11 +978,11 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
     }
 
     // The workspace's mount and the open drive are places: choosing one shows what it holds.
-    app.call("go", vec![app.root_value(), app.text("~/Media")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Media")]);
     assert!(has(&mut app.window(), "Media"));
 
     // The Applications place lists the workspace's apps, and pressing one opens it.
-    app.call("go", vec![app.root_value(), app.text("applications")]);
+    app.call("go", vec![app.root_value(), Files::text("applications")]);
     let mut window = app.window();
     assert!(has(&mut window, "Notes"), "the apps stand in the place");
     let row = window
@@ -1011,7 +1020,10 @@ fn showing_a_file_opens_the_folder_that_holds_it_with_the_file_chosen() {
     app.call("arrive", vec![app.root_value()]);
     app.call(
         "show",
-        vec![app.root_value(), app.text("~/Documents/Projects/plan.md")],
+        vec![
+            app.root_value(),
+            Files::text("~/Documents/Projects/plan.md"),
+        ],
     );
 
     let mut window = app.window();
@@ -1038,7 +1050,7 @@ fn the_folder_above_a_place_in_the_home_folder_is_in_the_home_folder() {
     app.call("arrive", vec![app.root_value()]);
     app.call(
         "go",
-        vec![app.root_value(), app.text("~/Documents/Projects")],
+        vec![app.root_value(), Files::text("~/Documents/Projects")],
     );
 
     app.call("up", vec![app.root_value()]);
@@ -1055,7 +1067,7 @@ fn a_picture_shows_the_preview_the_device_made_and_the_entries_draw_larger_or_sm
     let home = app.disk.home.clone();
     write(&home, "Pictures/beach.png", "the bytes of a picture");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Pictures")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Pictures")]);
     app.call("choose_view", vec![app.root_value(), Value::Int(1)]);
 
     // Before the device made one, the card shows the kind's glyph.
@@ -1131,7 +1143,7 @@ fn an_entry_is_picked_up_as_the_file_it_is_so_another_app_takes_it() {
     let home = app.disk.home.clone();
     write(&home, "Pictures/beach.png", "the bytes of a picture");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Pictures")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Pictures")]);
 
     let mut window = app.window();
     let source = nodes_of(&mut window, "ui.DragSource")
@@ -1140,7 +1152,7 @@ fn an_entry_is_picked_up_as_the_file_it_is_so_another_app_takes_it() {
         .expect("the entry's row is a drag source");
     assert_eq!(
         source.props.get("files"),
-        Some(&Value::List(vec![app.text("~/Pictures/beach.png")])),
+        Some(&Value::List(vec![Files::text("~/Pictures/beach.png")])),
         "dragging it carries the entry's own path: {:?}",
         source.props.get("files")
     );
@@ -1159,10 +1171,9 @@ fn drop_on_folder(app: &Files, folder: &str, dragged: &[&str]) {
             said.iter().any(|word| word == folder)
         })
         .unwrap_or_else(|| panic!("{folder}'s row takes a drop"))
-        .key
-        .clone();
+        .key;
     let carried = Value::List(vec![
-        Value::List(dragged.iter().map(|path| app.text(path)).collect()),
+        Value::List(dragged.iter().map(|path| Files::text(path)).collect()),
         Value::List(vec![Value::Int(12), Value::Int(8)]),
     ]);
     window
@@ -1179,7 +1190,7 @@ fn entries_dragged_onto_a_folders_row_move_into_it() {
     write(&home, "Downloads/notes.md", "notes");
     std::fs::create_dir_all(home.join("Downloads/Archive")).expect("a folder");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Downloads")]);
 
     // Only folders take a drop: a file's row is no target.
     let mut window = app.window();
@@ -1205,8 +1216,8 @@ fn entries_dragged_onto_a_folders_row_move_into_it() {
         vec![
             app.root_value(),
             Value::List(vec![
-                app.text("~/Downloads/photo.jpg"),
-                app.text("~/Downloads/notes.md"),
+                Files::text("~/Downloads/photo.jpg"),
+                Files::text("~/Downloads/notes.md"),
             ]),
         ],
     );
@@ -1215,8 +1226,8 @@ fn entries_dragged_onto_a_folders_row_move_into_it() {
         nodes_of(&mut window, "ui.DragSource").iter().any(|source| {
             source.props.get("files")
                 == Some(&Value::List(vec![
-                    app.text("~/Downloads/photo.jpg"),
-                    app.text("~/Downloads/notes.md"),
+                    Files::text("~/Downloads/photo.jpg"),
+                    Files::text("~/Downloads/notes.md"),
                 ]))
         }),
         "a chosen row carries every chosen file"
@@ -1244,15 +1255,18 @@ fn a_move_says_how_far_it_got_and_stops_when_asked() {
     write(&home, "Downloads/report.pdf", "report");
     std::fs::create_dir_all(home.join("Archive")).expect("a folder");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Downloads")]);
     app.call(
         "choose",
         vec![
             app.root_value(),
-            Value::List(vec![app.text("~/Downloads/report.pdf")]),
+            Value::List(vec![Files::text("~/Downloads/report.pdf")]),
         ],
     );
-    app.call("move_into", vec![app.root_value(), app.text("~/Archive")]);
+    app.call(
+        "move_into",
+        vec![app.root_value(), Files::text("~/Archive")],
+    );
 
     // The device is asked to do the work, and the window says what it does.
     let asked = app.transfers.asked.borrow().clone();
@@ -1280,8 +1294,7 @@ fn a_move_says_how_far_it_got_and_stops_when_asked() {
         .into_iter()
         .find(|button| button.props.get("label") == Some(&Value::Text("Stop".into())))
         .expect("a Stop button")
-        .key
-        .clone();
+        .key;
     window.fire(&stop, "press").expect("the stop runs");
     assert_eq!(
         *app.transfers.stopped.borrow(),
@@ -1306,10 +1319,10 @@ fn the_inspector_says_how_long_a_recording_plays_and_how_many_pages_a_document_h
     write(&home, "Videos/plan.pdf", "document");
     write(&home, "Videos/notes.txt", "notes");
     app.call("arrive", vec![app.root_value()]);
-    app.call("go", vec![app.root_value(), app.text("~/Videos")]);
+    app.call("go", vec![app.root_value(), Files::text("~/Videos")]);
 
     let properties = |path: &str| {
-        app.call("show", vec![app.root_value(), app.text(path)]);
+        app.call("show", vec![app.root_value(), Files::text(path)]);
         shown(&mut app.window())
     };
     let words = properties("~/Videos/holiday.mp4");

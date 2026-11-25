@@ -142,10 +142,10 @@ impl Sent {
         let Invocation::Action { args, .. } = self.last() else {
             panic!("the pane sends an action: {:?}", self.last());
         };
-        args.iter()
-            .find(|(name, _)| name == named)
-            .map(|(_, value)| value.clone())
-            .unwrap_or_else(|| panic!("the verb takes `{named}`: {args:?}"))
+        args.iter().find(|(name, _)| name == named).map_or_else(
+            || panic!("the verb takes `{named}`: {args:?}"),
+            |(_, value)| value.clone(),
+        )
     }
 }
 
@@ -155,8 +155,6 @@ impl Invoker for Sent {
         Invoked::Done(Value::Unit)
     }
 }
-
-/// The widgets' choices as the person's settings keep them, each on the shell and shown after a
 
 fn widgets(enabled: &[(&str, bool)]) -> serde_json::Value {
     let widget = |on: bool| {
@@ -172,7 +170,7 @@ fn widgets(enabled: &[(&str, bool)]) -> serde_json::Value {
         enabled
             .iter()
             .find(|(widget, _)| *widget == name)
-            .map_or(false, |(_, on)| *on)
+            .is_some_and(|(_, on)| *on)
     };
     serde_json::json!({
         "music": widget(on("music")),
@@ -217,7 +215,7 @@ fn appearance_readings(host: &Host) {
 fn the_widgets_section_keeps_and_shapes_the_shell_widgets() {
     let (host, _) = settings();
     appearance_readings(&host);
-    let mut view = open(&host, "appearance_pane");
+    let view = open(&host, "appearance_pane");
 
     let shown = texts(&view);
     for word in ["Widgets", "Music", "People here", "Calendar", "System load"] {

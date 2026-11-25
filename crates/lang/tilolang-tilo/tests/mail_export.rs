@@ -2,15 +2,12 @@
 //! Markdown, JSON and `.eml`. The system's one Export… lists them; Mail keeps no export menu of
 //! its own.
 
-#[path = "support/export_probe.rs"]
-mod export_probe;
-
 use tilo_render_protocol::patch::{self as wire, ToApp};
 use tilolang_runtime::Value;
 use tilolang_runtime::value::ResourceRef;
 use tilolang_tilo::instance::Instance;
 
-use export_probe::{call, row_export_formats, tell, window};
+use crate::export_probe::{call, row_export_formats, tell, window};
 
 const MAIL_APP: &str = "so.tilo.mail";
 
@@ -72,7 +69,7 @@ fn a_messages_menu_lists_the_formats_it_exports() {
         ToApp::Open {
             resource: wire::ResourceRef {
                 id: thread.id_string(),
-                ty: thread.ty.clone(),
+                ty: thread.ty,
             },
         },
     );

@@ -158,7 +158,7 @@ fn invoked(asked: &Asked) -> Vec<(String, String)> {
             // By the declaration's name: the session's surface names its actions by its own
             // types (`Window/focus`), and the name a person reads is what the shell calls.
             Invocation::Action { app, name, .. } => (app.as_str().to_owned(), name.clone()),
-            other => panic!("an action invocation: {other:?}"),
+            other @ Invocation::Edit { .. } => panic!("an action invocation: {other:?}"),
         })
         .collect()
 }

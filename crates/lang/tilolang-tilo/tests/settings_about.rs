@@ -132,10 +132,10 @@ impl Sent {
         let Invocation::Action { args, .. } = self.last() else {
             panic!("the pane sends an action: {:?}", self.last());
         };
-        args.iter()
-            .find(|(name, _)| name == named)
-            .map(|(_, value)| value.clone())
-            .unwrap_or_else(|| panic!("the verb takes `{named}`: {args:?}"))
+        args.iter().find(|(name, _)| name == named).map_or_else(
+            || panic!("the verb takes `{named}`: {args:?}"),
+            |(_, value)| value.clone(),
+        )
     }
 }
 
@@ -146,30 +146,26 @@ impl Invoker for Sent {
     }
 }
 
-/// The widgets' choices as the person's settings keep them, each on the shell and shown after a
-
 const STOPPED: &str = "2026-10-25-081400-3f9a0c1d2e4b5a69-stopped.log";
 const FREEZE: &str = "2026-10-24-225201-412-freeze.log";
 
-/// About lists the problems this computer recorded and opens one's page: what happened, when,
-/// why, and the record itself, read only when it is opened.
-#[test]
-fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
-    let (host, _) = settings();
+/// The readings the About page lists, as the session publishes them: this computer's update and
+/// apps, what it is, the problems it recorded, and the record of the one a person opens.
+fn serve_about_readings(host: &Host) {
     reading(
-        &host,
+        host,
         "system-update",
         "so.tilo.device#SystemUpdate",
         serde_json::json!({}),
     );
     reading(
-        &host,
+        host,
         "session:apps",
         "so.tilo.device#Apps",
         serde_json::json!({}),
     );
     reading(
-        &host,
+        host,
         "host-info",
         "so.tilo.device#HostInfo",
         serde_json::json!({ "hostname": "build", "arch": "x86_64" }),
@@ -195,13 +191,13 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
         }
     ]);
     reading(
-        &host,
+        host,
         "crash-reports",
         "tilo.crash-reports#CrashReports",
-        serde_json::json!({ "reports": reports.clone() }),
+        serde_json::json!({ "reports": reports }),
     );
     reading(
-        &host,
+        host,
         &format!("crash-report:{STOPPED}"),
         "tilo.crash-reports#CrashReportText",
         serde_json::json!({
@@ -210,6 +206,51 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
             "truncated": false
         }),
     );
+}
+
+/// Send the opened problem where the people who make Tilo read problems: Chat's own problem
+/// report, carrying what happened, when, and the record itself with its stacks. The page's own
+/// action runs, and what it asks of other packages is recorded, so what is read here is the report
+/// the app really files.
+fn send_the_opened_problem(host: &Host, view: &ViewInstance) -> Sent {
+    let sent = Sent::new();
+    host.runtime().set_foreign_invoker(sent.clone());
+    let send_button = labelled(view.tree(), "ui.Button", "Send a report");
+    view.press(&send_button)
+        .expect("the person sends the report");
+    assert_eq!(
+        sent.called(),
+        ("tilo.actions".to_owned(), "call".to_owned())
+    );
+    assert_eq!(
+        sent.argument("address"),
+        Value::text("so.tilo.chat/conversations#report_problem"),
+        "a report is a problem report, the one place the workspace keeps them"
+    );
+    let arguments = sent.argument("arguments");
+    let body = match &arguments {
+        Value::Json(document) => document["body"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the report's words: {document:#?}"))
+            .to_owned(),
+        other => panic!("a call's arguments are a document: {other:?}"),
+    };
+    for word in ["The computer stopped", "25 Oct 2026, 08:14"] {
+        assert!(body.contains(word), "{word} is in the report: {body}");
+    }
+    assert!(
+        body.contains("Kernel panic - not syncing"),
+        "the record goes with the report: {body}"
+    );
+    sent
+}
+
+/// About lists the problems this computer recorded and opens one's page: what happened, when,
+/// why, and the record itself, read only when it is opened.
+#[test]
+fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
+    let (host, _) = settings();
+    serve_about_readings(&host);
     let mut view = open(&host, "about_pane");
 
     let shown = texts(&view);
@@ -249,38 +290,8 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
         "the record as it was written: {page:?}"
     );
 
-    // The page sends the record where the people who make Tilo read problems: Chat's own problem
-    // report, carrying what happened, when, and the record itself with its stacks.
-    // The page's own action runs here; what it and the removal ask of other packages is what is
-    // recorded, so the report is the one the app really files.
-    let sent = Sent::new();
-    host.runtime().set_foreign_invoker(sent.clone());
-    let send = labelled(view.tree(), "ui.Button", "Send a report");
-    view.press(&send).expect("the person sends the report");
-    assert_eq!(
-        sent.called(),
-        ("tilo.actions".to_owned(), "call".to_owned())
-    );
-    assert_eq!(
-        sent.argument("address"),
-        Value::text("so.tilo.chat/conversations#report_problem"),
-        "a report is a problem report, the one place the workspace keeps them"
-    );
-    let arguments = sent.argument("arguments");
-    let body = match &arguments {
-        Value::Json(document) => document["body"]
-            .as_str()
-            .unwrap_or_else(|| panic!("the report's words: {document:#?}"))
-            .to_owned(),
-        other => panic!("a call's arguments are a document: {other:?}"),
-    };
-    for word in ["The computer stopped", "25 Oct 2026, 08:14"] {
-        assert!(body.contains(word), "{word} is in the report: {body}");
-    }
-    assert!(
-        body.contains("Kernel panic - not syncing"),
-        "the record goes with the report: {body}"
-    );
+    // The page sends the record where the people who make Tilo read problems.
+    let sent = send_the_opened_problem(&host, &view);
 
     // Removing it takes the record off this computer, through the reports' own verb.
     let remove = labelled(view.tree(), "ui.Button", "Remove it from this computer");

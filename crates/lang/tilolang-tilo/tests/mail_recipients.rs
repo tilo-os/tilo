@@ -23,7 +23,7 @@ fn compiled(dir: &str, metas: &[tilolang::PackageMeta]) -> tilolang::Compiled {
     )
     .expect("its ids parse");
     tilolang::compile_package_source(&source, &ids, metas)
-        .unwrap_or_else(|diagnostics| panic!("{dir:?}: {diagnostics:#?}"))
+        .unwrap_or_else(|diagnostics| panic!("{}: {diagnostics:#?}", dir.display()))
 }
 
 fn call(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
@@ -91,7 +91,7 @@ fn mailbox() -> (Replica, ResourceRef) {
     host.load_compiled(&contacts)
         .expect("the contacts package loads");
     let mut metas = platform;
-    metas.push(contacts.meta.clone());
+    metas.push(contacts.meta);
     let mail = compiled("mail", &metas);
     host.load_compiled(&mail).expect("the mail package loads");
     let book = host.root_of(CONTACTS).expect("the contacts' book");

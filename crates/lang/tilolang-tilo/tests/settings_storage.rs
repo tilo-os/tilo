@@ -347,7 +347,7 @@ fn the_pane_shows_what_this_device_holds_of_each_workspace() {
 
 #[test]
 fn a_workspace_is_kept_here_or_its_fetched_files_freed_on_the_storage_resource() {
-    let (host, mut view) = installed(READING);
+    let (host, view) = installed(READING);
     let sent = Sent::default();
     host.runtime().set_invoker(sent.clone());
 

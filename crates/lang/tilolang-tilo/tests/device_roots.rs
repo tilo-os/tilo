@@ -147,9 +147,8 @@ fn each_device_keeps_its_own_readings_and_people_share_the_places() {
         Value::text(""),
         "and the other device reads nothing of it"
     );
-    assert_eq!(
-        second.host.store().contains(&readings_of("ada-1", &meta)),
-        false,
+    assert!(
+        !second.host.store().contains(&readings_of("ada-1", &meta)),
         "the other device holds no copy of this one's readings"
     );
 

@@ -223,7 +223,7 @@ fn menu_rows(node: &UiNode, item: &ResourceRef) -> Option<Vec<(String, String, S
 
 /// The rows of the menu on `item` as the tree row that shows it offers them, from whichever
 /// list of the window's page holds it.
-fn row_menu(instance: &mut Instance, item: &ResourceRef) -> Vec<(String, String, String)> {
+fn row_menu(instance: &Instance, item: &ResourceRef) -> Vec<(String, String, String)> {
     let view = instance.view(Level::Root).expect("the notebook's window");
     let tree = view.borrow().tree().clone();
     let lists: Vec<String> = ["ui.VirtualList", "ui.TreeView", "list"]
@@ -266,7 +266,7 @@ fn a_notes_window_exports_each_format_its_app_publishes() {
 
     // The note's row lists the one format Notes publishes for a note, under the system's one
     // Export…, and no export row of the app's own.
-    let rows = row_menu(&mut instance, &note);
+    let rows = row_menu(&instance, &note);
     assert_eq!(
         rows.iter()
             .filter(|(_, group, _)| group == "Export…")

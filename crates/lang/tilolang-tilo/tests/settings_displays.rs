@@ -149,10 +149,10 @@ impl Invoker for Sent {
 
 /// The value of `named` among `args` .
 fn arg(args: &[(String, Value)], named: &str) -> Value {
-    args.iter()
-        .find(|(name, _)| name == named)
-        .map(|(_, value)| value.clone())
-        .unwrap_or_else(|| panic!("an argument `{named}`: {args:?}"))
+    args.iter().find(|(name, _)| name == named).map_or_else(
+        || panic!("an argument `{named}`: {args:?}"),
+        |(_, value)| value.clone(),
+    )
 }
 
 /// A screen that can show HDR and vary its refresh rate, offering two colour profiles.
@@ -192,7 +192,7 @@ fn the_pane_sets_a_screen_s_hdr_its_sdr_brightness_vrr_and_its_colour_profile() 
     host.runtime()
         .set_reading(&displays(), READING)
         .expect("the displays are set");
-    let mut view = displays_pane(&host);
+    let view = displays_pane(&host);
     let sent = Sent::default();
     host.runtime().set_invoker(sent.clone());
 
@@ -280,7 +280,7 @@ fn the_pane_asks_a_trusted_display_tool_again() {
     host.runtime()
         .set_reading(&displays(), READING)
         .expect("the displays are set");
-    let mut view = displays_pane(&host);
+    let view = displays_pane(&host);
     let sent = Sent::default();
     host.runtime().set_invoker(sent.clone());
 
