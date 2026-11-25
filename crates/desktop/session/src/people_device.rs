@@ -689,11 +689,18 @@ impl PeopleDevice {
                     .push(crate::people::PeopleAsk::Wave { who });
             }
             PeopleEffect::Message { person } => {
-                self.asks
-                    .borrow_mut()
-                    .push(crate::people::PeopleAsk::Message {
-                        key: person.trim().to_owned(),
-                    });
+                // Chat holds the conversation each pair of people shares on the record their root
+                // keys name: someone whose key is not known here has none to open.
+                let key = self.sync.as_ref().and_then(|sync| {
+                    let here = sync.here();
+                    let here = here.borrow();
+                    here.user_of(person.trim()).map(str::to_owned)
+                });
+                if let Some(key) = key {
+                    self.asks
+                        .borrow_mut()
+                        .push(crate::people::PeopleAsk::Message { key });
+                }
                 self.taken_elsewhere();
             }
             PeopleEffect::GoTo { person } => {

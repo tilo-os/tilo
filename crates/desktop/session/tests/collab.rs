@@ -743,7 +743,7 @@ fn ada_here_on_two_devices(sync: &Client) {
 /// Ada is here on two of her devices, heard once the shell is up: presence written before the
 /// session has read its workspace is what its own start replaces, and her face in the bar is what
 /// says it landed.
-fn ada_arrives(session: &mut Session, sync: &Rc<Client>) {
+fn ada_arrives(session: &mut Session) {
     wait_for(session, "the bar", |session| {
         session.shell_control("Top bar")
     });
@@ -756,32 +756,36 @@ fn ada_arrives(session: &mut Session, sync: &Rc<Client>) {
         if heard % 20 != 1 {
             return false;
         }
-        ada_here_on_two_devices(sync);
-        // What her devices say of her, as the roster reads who is here: the certificate heard
-        // above names the person, and these are her two devices with what they said.
-        sync.here().borrow_mut().set_members(
-            None,
-            Some(vec![
-                tilo_session_core::desktop::here::LiveMember {
-                    publisher: device(0xaa).to_string(),
-                    kind: "person".to_owned(),
-                    label: "Ada".to_owned(),
-                    device: "Framework 16".to_owned(),
-                    user: Some(person(0xaa)),
-                    availability: Some("available".to_owned()),
-                    ..tilo_session_core::desktop::here::LiveMember::default()
-                },
-                tilo_session_core::desktop::here::LiveMember {
-                    publisher: device(0xac).to_string(),
-                    kind: "person".to_owned(),
-                    label: "Ada".to_owned(),
-                    device: "ThinkPad".to_owned(),
-                    user: Some(person(0xaa)),
-                    availability: Some("focusing".to_owned()),
-                    ..tilo_session_core::desktop::here::LiveMember::default()
-                },
-            ]),
-        );
+        // Her two devices, each with what it says of her, as the roster reads who is here: the
+        // certificate names the person and the key a conversation with her is kept on.
+        session
+            .sync()
+            .expect("the session takes part in the app wire")
+            .here()
+            .borrow_mut()
+            .set_members(
+                None,
+                Some(vec![
+                    tilo_session_core::desktop::here::LiveMember {
+                        publisher: device(0xaa).to_string(),
+                        kind: "person".to_owned(),
+                        label: "Ada".to_owned(),
+                        device: "Framework 16".to_owned(),
+                        user: Some(person(0xaa)),
+                        availability: Some("available".to_owned()),
+                        ..tilo_session_core::desktop::here::LiveMember::default()
+                    },
+                    tilo_session_core::desktop::here::LiveMember {
+                        publisher: device(0xac).to_string(),
+                        kind: "person".to_owned(),
+                        label: "Ada".to_owned(),
+                        device: "ThinkPad".to_owned(),
+                        user: Some(person(0xaa)),
+                        availability: Some("focusing".to_owned()),
+                        ..tilo_session_core::desktop::here::LiveMember::default()
+                    },
+                ]),
+            );
         false
     });
 }
@@ -875,18 +879,14 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     env.set("TILO_APPS_DATA_DIR", &store);
 
     let host = Rc::new(Host::default());
-    let mine = OwnPresence {
-        label: "Quinten".to_owned(),
-        user: Some(person(QUINTEN)),
-        ..OwnPresence::default()
-    };
-    let sync = Rc::new(Client::untethered(device(0xf0), mine));
-    let mut session = session_over(&sync, Some(host.clone() as Rc<dyn AppActions>));
+    let mut session = crate::common::headless(Options {
+        apps: Some(host.clone() as Rc<dyn AppActions>),
+        ..Options::default()
+    });
 
     // Another person, at two of their devices, in the same workspace: their face stands in the bar,
     // under their name and never their machine's.
-    // The bar draws who is here, their face under their name and never their machine's.
-    ada_arrives(&mut session, &sync);
+    ada_arrives(&mut session);
     // Who is here stands open, listing the people here.
     press_faces(&mut session);
     until(&mut session, "the roster lists who is here", |session| {
@@ -956,14 +956,8 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
 #[test]
 fn a_persons_card_offers_everyone_here() {
     let _settled = ui::motion::testing::settled();
-    let mine = OwnPresence {
-        label: "Quinten".to_owned(),
-        user: Some(person(QUINTEN)),
-        ..OwnPresence::default()
-    };
-    let sync = Rc::new(Client::untethered(device(0xf0), mine));
-    let mut session = session_over(&sync, None);
-    ada_arrives(&mut session, &sync);
+    let mut session = crate::common::headless(Options::default());
+    ada_arrives(&mut session);
     press_faces(&mut session);
     press_named(&mut session, "Ada");
     wait_for(&mut session, "the card offers everyone here", |session| {
