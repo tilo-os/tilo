@@ -173,16 +173,28 @@ pub fn answer_at(
     ceiling: Option<Reach>,
     cx: &Context<'_>,
 ) -> (Answer, Vec<GrantId>) {
+    let verdict = verdict_at(authority, (node, kind, privileged), ceiling, cx);
+    (verdict.answer, verdict.spent())
+}
+
+/// The verdict of `answer_at`, kept whole: what it was decided by, so admission can tell the
+/// answer a person gave in advance ([`Authority::answered_in_advance`]) from one asking them
+/// now.
+fn verdict_at<'a>(
+    authority: &'a Authority<'_>,
+    (node, kind, privileged): (&TreePath, crate::ActionKind, bool),
+    ceiling: Option<Reach>,
+    cx: &Context<'_>,
+) -> crate::Verdict<'a> {
     let mut verdict = authority.decide(node, kind, cx);
     if privileged {
         verdict = verdict.privileged();
     }
     let exceeds = ceiling.is_some_and(|ceiling| !ceiling.covers(kind, privileged));
-    let answer = match verdict.answer {
-        Answer::Allow if exceeds => Answer::Ask,
-        answer => answer,
-    };
-    (answer, verdict.spent())
+    if verdict.answer == Answer::Allow && exceeds {
+        verdict.answer = Answer::Ask;
+    }
+    verdict
 }
 
 /// Admit `invocation` for `authority`, asked of `asker`, at `cx`: whether
@@ -196,12 +208,17 @@ pub fn admit_invocation(
     invocation: Invocation<'_>,
     cx: &Context<'_>,
 ) -> Result<(Admission, Vec<GrantId>), Refused> {
-    let (answer, spent) = answer_at(
+    let verdict = verdict_at(
         authority,
         (invocation.node, invocation.kind, invocation.privileged),
         invocation.ceiling,
         cx,
     );
+    // What its person already answered for this very action or resource was not theirs to ask
+    // again, though it reaches outside the system: asking would put to them what they answered.
+    let answered_in_advance = authority.answered_in_advance(&verdict);
+    let answer = verdict.answer;
+    let spent = verdict.spent();
     let resource = invocation.resource.map(|resource| {
         answer_at(
             authority,
@@ -216,6 +233,7 @@ pub fn admit_invocation(
             answer,
             attended: invocation.attended,
             outside: invocation.kind == crate::ActionKind::Outside,
+            answered_in_advance,
             resource,
         },
         asker,
@@ -600,6 +618,150 @@ mod tests {
             assert!(
                 !agent.asker(false).reachable,
                 "with nobody to ask, an ask refuses"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_persons_answer_in_advance_lifts_the_ask_of_what_their_agent_sends;
+
+        phase an_agents_send_asks_its_person;
+        {
+            let policy = policy();
+            let turn = [
+                Grant::new(
+                    "turn:scribe:0",
+                    Grantee::agent("scribe", "editor"),
+                    TreePath::workspace(WORKSPACE),
+                    KindSet::READ_UNDOABLE,
+                    Answer::Allow,
+                    Grantee::person("editor"),
+                ),
+                Grant::new(
+                    "turn:scribe:1",
+                    Grantee::agent("scribe", "editor"),
+                    TreePath::workspace(WORKSPACE),
+                    KindSet::OUTSIDE,
+                    Answer::Ask,
+                    Grantee::person("editor"),
+                ),
+            ];
+            let acting = Acting::agent("scribe", "editor").acting_for(Acting::person("editor"));
+            let send = TreePath::workspace(WORKSPACE)
+                .app("so.tilo.notes")
+                .kind("note")
+                .resource("n1")
+                .action("send");
+            let asked = |turn: &[Grant]| {
+                admit_invocation(
+                    &Authority::of_acting(&acting, &policy, turn),
+                    Asker {
+                        reachable: true,
+                        delegated: true,
+                    },
+                    Invocation {
+                        node: &send,
+                        kind: ActionKind::Outside,
+                        privileged: false,
+                        attended: false,
+                        resource: None,
+                        ceiling: None,
+                    },
+                    &Context::at_secs(1),
+                )
+                .expect("it is admitted, or asks")
+                .0
+            };
+            assert_eq!(
+                asked(&turn),
+                Admission::AsksFirst,
+                "an agent's send waits for its person"
+            );
+
+            // The person's own "Always allow this" for that very action lifts the ask.
+            let scope = crate::agent_answers::AnswerScope::action("so.tilo.notes", "note", "send");
+            let mut answered = turn.to_vec();
+            answered.push(crate::agent_answers::grant(
+                WORKSPACE,
+                ("scribe", "editor"),
+                (&scope, ActionKind::Outside),
+                Answer::Allow,
+                Grantee::person("editor"),
+            ));
+            assert_eq!(
+                asked(&answered),
+                Admission::Runs,
+                "what its person answered in advance runs unasked"
+            );
+
+            // An answer for another action is no answer for this one.
+            let elsewhere =
+                crate::agent_answers::AnswerScope::action("so.tilo.notes", "note", "archive");
+            let mut other = turn.to_vec();
+            other.push(crate::agent_answers::grant(
+                WORKSPACE,
+                ("scribe", "editor"),
+                (&elsewhere, ActionKind::Outside),
+                Answer::Allow,
+                Grantee::person("editor"),
+            ));
+            assert_eq!(
+                asked(&other),
+                Admission::AsksFirst,
+                "only an answer for that very action lifts its ask"
+            );
+        }
+
+        phase an_attended_action_its_person_answered_in_advance_runs_unasked_too;
+        {
+            let policy = policy();
+            let mut turn = vec![Grant::new(
+                "turn:scribe:0",
+                Grantee::agent("scribe", "editor"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("editor"),
+            )];
+            let acting = Acting::agent("scribe", "editor").acting_for(Acting::person("editor"));
+            let act = TreePath::workspace(WORKSPACE)
+                .app("so.tilo.notes")
+                .kind("note")
+                .resource("n1")
+                .action("edit");
+            let admission = |turn: &[Grant]| {
+                admit_invocation(
+                    &Authority::of_acting(&acting, &policy, turn),
+                    Asker {
+                        reachable: true,
+                        delegated: true,
+                    },
+                    Invocation {
+                        node: &act,
+                        kind: ActionKind::Undoable,
+                        privileged: false,
+                        attended: true,
+                        resource: None,
+                        ceiling: None,
+                    },
+                    &Context::at_secs(1),
+                )
+                .expect("it is admitted, or asks")
+                .0
+            };
+            assert_eq!(admission(&turn), Admission::AsksFirst);
+            let scope = crate::agent_answers::AnswerScope::action("so.tilo.notes", "note", "edit");
+            turn.push(crate::agent_answers::grant(
+                WORKSPACE,
+                ("scribe", "editor"),
+                (&scope, ActionKind::Undoable),
+                Answer::Allow,
+                Grantee::person("editor"),
+            ));
+            assert_eq!(
+                admission(&turn),
+                Admission::Runs,
+                "an attended action its person answered in advance runs unasked"
             );
         }
     }

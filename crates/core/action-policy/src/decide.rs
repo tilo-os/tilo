@@ -536,7 +536,7 @@ impl<'g> Authority<'g> {
         let mut parts = Vec::with_capacity(self.bounds.len().saturating_add(1));
         parts.push(self.person.decide(node, kind, cx));
         parts.extend(self.bounds.iter().map(|bound| bound.decide(node, kind, cx)));
-        let mut answer = if self.answered_in_advance(&parts) {
+        let mut answer = if self.answers_in_advance(&parts) {
             Answer::Allow
         } else {
             parts
@@ -634,7 +634,7 @@ impl Authority<'_> {
                 },
                 bound.decide(node, kind, cx),
             ];
-            if self.answered_in_advance(&parts) {
+            if self.answers_in_advance(&parts) {
                 return Answer::Allow;
             }
         }
@@ -642,6 +642,15 @@ impl Authority<'_> {
             .iter()
             .map(|bound| bound.decide(node, kind, cx).answer)
             .fold(person, Answer::min)
+    }
+
+    /// Whether `verdict` is the answer the person gave in advance for this very action or
+    /// resource, for their agent ([`Self::answers_in_advance`]): a call such an answer allows
+    /// runs unasked, though it reaches outside Tilo, because asking would put to them what they
+    /// already answered.
+    #[must_use]
+    pub fn answered_in_advance(&self, verdict: &Verdict<'_>) -> bool {
+        self.answers_in_advance(&verdict.parts)
     }
 
     /// Whether `parts` (the person's decision, then each delegation's) answer an
@@ -653,7 +662,7 @@ impl Authority<'_> {
     /// put to them what they already answered. What the person may not do at
     /// all stays refused, and no answer for a whole app or kind of resource
     /// stands in for them.
-    fn answered_in_advance(&self, parts: &[Decision<'_>]) -> bool {
+    fn answers_in_advance(&self, parts: &[Decision<'_>]) -> bool {
         let [person, agent] = parts else {
             return false;
         };

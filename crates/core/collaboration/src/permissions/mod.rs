@@ -1601,6 +1601,7 @@ pub fn admit_in_window(
             answer,
             attended: action.contract.is_attended(),
             outside: action.contract.kind == tilo_actions::ActionKind::Outside,
+            answered_in_advance: false,
             resource: None,
         },
         asker,

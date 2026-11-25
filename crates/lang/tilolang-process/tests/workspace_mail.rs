@@ -347,9 +347,9 @@ fn nobody_outside_the_workspace_reads_its_mail() {
         assert!(ada.window.shows().contains(what), "Ada's Mail shows {what}");
     }
 
-    // Through the API, a person who is no member asks Ada's instance to search the account's
-    // server: refused, and nothing is read for them.
-    let search = ada
+    // Through the API, a person who is no member asks Ada's instance for an action of its mail:
+    // refused, and nothing is read or changed for them.
+    let archive = ada
         .hosted()
         .published()
         .iter()
@@ -360,13 +360,9 @@ fn nobody_outside_the_workspace_reads_its_mail() {
     ada.inbox.borrow_mut().push_back(CollabEvent::Invocation {
         id: 1,
         invocation: tilo_actions::InvocationId::new(),
-        resource: search.resource.clone(),
-        action: search.action.clone(),
-        argument: Some(format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({ "text": "launch" })
-        )),
+        resource: archive.resource.clone(),
+        action: archive.action.clone(),
+        argument: None,
         actor: tilo_actions::MemberId::person(CY).into(),
         context: None,
     });

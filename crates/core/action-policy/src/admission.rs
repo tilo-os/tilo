@@ -70,6 +70,10 @@ pub struct Invoked {
     /// Whether the action changes something outside Tilo (sends a message, calls a service):
     /// what someone acting for its person never does unasked.
     pub outside: bool,
+    /// Whether this Allow is the person's own answer given in advance for this very action or
+    /// resource ([`crate::Authority::answered_in_advance`]): asking them again would put to
+    /// them what they answered.
+    pub answered_in_advance: bool,
     /// The answer for the resource the invocation changes, where it is one.
     pub resource: Option<Answer>,
 }
@@ -103,8 +107,11 @@ pub enum Refused {
 pub const fn admit(invoked: Invoked, asker: Asker) -> Result<Admission, Refused> {
     let mut asks = match invoked.answer {
         // Someone acting for a person never leaves the system, or does what its person
-        // attends, unasked: what they allow is what they were shown.
-        Answer::Allow => asker.delegated && (invoked.attended || invoked.outside),
+        // attends, unasked: what they allow is what they were shown. What they already
+        // answered for this very action or resource is no question to put to them again.
+        Answer::Allow => {
+            asker.delegated && (invoked.attended || invoked.outside) && !invoked.answered_in_advance
+        }
         Answer::Ask if asker.reachable => true,
         Answer::Ask | Answer::Deny => return Err(Refused::Action),
     };
@@ -131,6 +138,7 @@ mod tests {
             answer,
             attended: false,
             outside: false,
+            answered_in_advance: false,
             resource: None,
         }
     }
