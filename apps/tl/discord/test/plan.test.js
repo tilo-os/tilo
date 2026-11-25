@@ -13,6 +13,9 @@ import {
   changeTarget,
   messageOf,
   sizeOf,
+  textToDiscord,
+  textFromDiscord,
+  reactionToDiscord,
   importOf,
   sidebarOf,
   SELF as SELF_APP,
@@ -624,4 +627,37 @@ test("a thread started in Discord under a message here is started here, and what
   });
   expect(relayed.action).toBe("relay");
   expect(relayed.args.to).toBe("tl:so.tilo.chat:t1");
+});
+
+test("a server's emoji is the workspace's :name: here and itself there, in words and reactions", () => {
+  const held = state({
+    emojis: [
+      { id: "22", name: "party", animated: false },
+      { id: "23", name: "wave", animated: true },
+    ],
+  });
+  expect(textToDiscord(held, "done :party: :wave: :nope: <:party:22>")).toBe(
+    "done <:party:22> <a:wave:23> :nope: <:party:22>",
+  );
+  expect(textFromDiscord("done <:party:22> and <a:wave:23>")).toBe("done :party: and :wave:");
+  expect(reactionToDiscord(held, ":party:")).toBe("party:22");
+  expect(reactionToDiscord(held, "🎉")).toBe("🎉");
+  expect(reactionToDiscord(held, ":nope:")).toBeNull();
+
+  // A message carries them so; a reaction of the server's emoji arrives as its :name:.
+  const [op] = toDiscord(held, "tl:so.tilo.chat:design", { id: "m9", text: "yay :party:", author: ADA });
+  expect(op.content).toBe("yay <:party:22>");
+  const [relayed] = fromDiscord(held, {
+    source: "REACTION_ADDED",
+    payload: { message_id: "777", user_id: "3001", user_name: "ada", emoji: { name: "party", id: "22" } },
+  });
+  expect(relayed.args.emoji).toBe(":party:");
+  const [said] = fromDiscord(held, {
+    source: "MESSAGE_CREATED",
+    payload: { id: "780", channel_id: "456", content: "hi <:party:22>", author: { id: "3003", name: "cleo" } },
+  });
+  expect(said.args.body).toBe("hi :party:");
+  expect(said.args.outside_emoji).toEqual([
+    { name: "party", picture: "https://cdn.discordapp.com/emojis/22.png" },
+  ]);
 });

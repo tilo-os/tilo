@@ -275,14 +275,55 @@ export function blocked(state, user) {
   return (state.blocked_personas ?? []).includes(user);
 }
 
+/// The server's custom emoji called `name`, as the bridge last observed them: `{id, animated}`,
+/// or `null`. The record keeps them as a list; an older one as an object of name to id.
+export function serverEmoji(state, name) {
+  const emojis = state?.emojis;
+  if (Array.isArray(emojis)) {
+    const found = emojis
+      .map((entry) => entry?.value ?? entry)
+      .find((emoji) => emoji?.name === name && emoji?.id);
+    return found ? { id: String(found.id), animated: Boolean(found.animated) } : null;
+  }
+  const id = emojis?.[name];
+  return id ? { id: String(id), animated: false } : null;
+}
+
 /// The custom emoji a message's words name, each with the address of its picture.
 export function emojiIn(state, text) {
   const found = [];
-  for (const match of String(text ?? "").matchAll(/:([a-zA-Z0-9_]{2,32}):/g)) {
-    const id = state.emojis?.[match[1]];
-    if (id) found.push({ name: match[1], picture: `https://cdn.discordapp.com/emojis/${id}.png` });
+  for (const match of textFromDiscord(text).matchAll(/:([a-zA-Z0-9_]{2,32}):/g)) {
+    const emoji = serverEmoji(state, match[1]);
+    if (emoji) found.push({ name: match[1], picture: `https://cdn.discordapp.com/emojis/${emoji.id}.png` });
   }
   return found;
+}
+
+/// Discord's words as the workspace writes them: a server emoji, `<:name:id>` or `<a:name:id>`,
+/// is the workspace's `:name:`.
+export function textFromDiscord(text) {
+  return String(text ?? "").replace(/<a?:([a-zA-Z0-9_]{2,32}):\d+>/g, ":$1:");
+}
+
+/// The workspace's words as Discord writes them: a `:name:` the server has an emoji of is that
+/// emoji, `<:name:id>`; any other stays as it is written.
+export function textToDiscord(state, text) {
+  return String(text ?? "").replace(/(?<!<|<a):([a-zA-Z0-9_]{2,32}):(?!\d+>)/g, (whole, name) => {
+    const emoji = serverEmoji(state, name);
+    return emoji ? `<${emoji.animated ? "a" : ""}:${name}:${emoji.id}>` : whole;
+  });
+}
+
+/// The reaction Discord's routes take for the workspace's `emoji`: a `:name:` the server has is
+/// `name:id`, a Unicode emoji itself, and anything else written with colons is no emoji Discord
+/// knows, so it stays here (`null`).
+export function reactionToDiscord(state, emoji) {
+  const named = /^:([a-zA-Z0-9_]{2,32}):$/.exec(emoji ?? "");
+  if (named) {
+    const found = serverEmoji(state, named[1]);
+    return found ? `${named[1]}:${found.id}` : null;
+  }
+  return emoji && !emoji.includes(":") ? emoji : null;
 }
 
 /// A call to Chat's generically bridged words.
@@ -311,7 +352,7 @@ export function fromDiscord(state, event) {
     const linked = linkOfUser(state, payload.author.id);
     const call = chat("relay", {
       to: channel.tilo,
-      body: payload.content ?? "",
+      body: textFromDiscord(payload.content),
       by: payload.author.name,
       written_in: "Discord",
       written: payload.timestamp_ms ?? 0,
@@ -355,7 +396,7 @@ export function fromDiscord(state, event) {
     const payload = event.payload;
     const found = byDiscord(state, "message", payload.id);
     if (!found) return [];
-    return [chat("edit", { m: found.tilo, body: payload.content ?? "" })];
+    return [chat("edit", { m: found.tilo, body: textFromDiscord(payload.content) })];
   }
   if (event.source === "MESSAGE_DELETED") {
     const payload = event.payload;
@@ -373,7 +414,8 @@ export function fromDiscord(state, event) {
     return [
       chat("relay_reaction", {
         m: found.tilo,
-        emoji: payload.emoji?.name ?? payload.emoji?.id ?? "",
+        // A server's own emoji is the workspace's `:name:`; a Unicode one crosses as itself.
+        emoji: payload.emoji?.id ? `:${payload.emoji.name}:` : (payload.emoji?.name ?? ""),
         persona: payload.user_id,
         by: payload.user_name ?? "Someone",
         given: event.source === "REACTION_ADDED",
@@ -557,7 +599,7 @@ export function toDiscord(state, conversation, message) {
       username: author.name,
       avatar_url: author.avatar || null,
       avatar_blob: null,
-      content: fit(text),
+      content: fit(textToDiscord(state, text)),
       attachments: sent,
       created_ms: message.written ?? 0,
       tilo: published(message.id),
@@ -576,7 +618,7 @@ export function editToDiscord(state, conversation, message, there) {
       webhook: carriedTo.webhook,
       message: there,
       thread: carriedTo.thread,
-      content: fit(message.text ?? ""),
+      content: fit(textToDiscord(state, message.text ?? "")),
     },
   ];
 }
@@ -615,12 +657,14 @@ export function threadToDiscord(state, conversation, message, there, name, tilo)
 /// The REST calls carrying a reaction, or taking it back.
 export function reactToDiscord(state, conversation, message, emoji, added, there) {
   if (!carried(state, conversation)) return [];
+  const discordEmoji = reactionToDiscord(state, emoji);
+  if (!discordEmoji) return [];
   return [
     {
       op: added ? "react" : "unreact",
       channel: carried(state, conversation).channel,
       message: there,
-      emoji,
+      emoji: discordEmoji,
     },
   ];
 }
