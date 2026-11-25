@@ -321,6 +321,149 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
     assert_eq!(bo.host.take_ended(), [1]);
 }
 
+/// Ada's workspace, with a reply being written from her account and sent: the effect waits for
+/// its author, and the store it is kept in is returned beside its entry's id.
+fn sent_reply() -> (Rc<Bus>, String) {
+    use collab_types::store::Query;
+    use collab_types::store::wire::{Command, Reply};
+    use tilolang_tilo::resources::OUTBOX;
+
+    let bundle = Arc::new(mail());
+    let workspace = uuid::Uuid::new_v4();
+    let bus = Rc::new(Bus::default());
+    let mut ada = member(&bus, workspace, ADA, &bundle);
+    let mut bo = member(&bus, workspace, BO, &bundle);
+    ada.settle();
+    bo.settle();
+    // A reply being written, from Ada's account: sending it queues the message to go.
+    ada.host
+        .instances_mut()
+        .next()
+        .unwrap()
+        .stage("a reply being written");
+    ada.settle();
+    bo.settle();
+    let send = ada
+        .hosted()
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Send")
+        .expect("the draft offers Send")
+        .address
+        .clone();
+    ada.inbox.borrow_mut().push_back(CollabEvent::Invocation {
+        id: 1,
+        invocation: tilo_actions::InvocationId::new(),
+        resource: send.resource.clone(),
+        action: send.action,
+        argument: None,
+        actor: tilo_actions::MemberId::person(ADA).into(),
+        context: None,
+    });
+    ada.settle();
+    assert!(
+        ada.answer(1).contains("Succeeded"),
+        "Ada sends the reply: {}",
+        ada.answer(1)
+    );
+    // It waits in her outbox, holding what it says and where it goes.
+    let store = bus.workspace();
+    let listed = store
+        .command(Command::Query(Query::of(OUTBOX, 10)), ADA)
+        .expect("the outbox is read");
+    let Reply::Page(page) = listed else {
+        panic!("the outbox reads as a page: {listed:?}");
+    };
+    let (id, entry) = page
+        .resources
+        .first()
+        .expect("the send queues its message to go")
+        .clone();
+    assert!(
+        entry.fields.contains_key("payload"),
+        "Ada reads what her entry carries: {:?}",
+        entry.fields
+    );
+    (bus, id)
+}
+
+/// A queued effect waits for its author alone: another member of the workspace reads none of it,
+/// by its id or in the kind's list.
+#[test]
+fn another_member_reads_nothing_of_a_queued_effect() {
+    use collab_types::store::Query;
+    use collab_types::store::wire::{Command, Reply};
+    use tilolang_tilo::resources::OUTBOX;
+
+    let (bus, id) = sent_reply();
+    let store = bus.workspace();
+    let get = store
+        .command(
+            Command::Get {
+                kind: OUTBOX.to_owned(),
+                id,
+            },
+            BO,
+        )
+        .expect("the read is answered");
+    assert!(
+        matches!(get, Reply::Resource(None)),
+        "Bo reads no entry of Ada's: {get:?}"
+    );
+    let listed = store
+        .command(Command::Query(Query::of(OUTBOX, 10)), BO)
+        .expect("the list is answered");
+    let Reply::Page(page) = listed else {
+        panic!("the outbox lists as a page: {listed:?}");
+    };
+    assert!(
+        page.resources.is_empty(),
+        "Bo lists none of Ada's outbox: {:?}",
+        page.resources
+    );
+    let counted = store
+        .command(
+            Command::Count {
+                kind: OUTBOX.to_owned(),
+                filters: Vec::new(),
+            },
+            BO,
+        )
+        .expect("the count is answered");
+    assert!(
+        matches!(counted, Reply::Count(0)),
+        "Bo counts none of Ada's outbox: {counted:?}"
+    );
+}
+
+/// What search reads of a queued effect: another member finds nothing of it.
+#[test]
+fn another_members_search_finds_nothing_of_a_queued_effect() {
+    use collab_types::store::Query;
+    use collab_types::store::wire::{Command, Reply};
+    use tilolang_tilo::resources::OUTBOX;
+
+    let (bus, _) = sent_reply();
+    let searched = bus
+        .workspace()
+        .command(
+            Command::Fields {
+                query: Query::of(OUTBOX, 10),
+                fields: vec!["payload".to_owned(), "capability".to_owned()],
+            },
+            BO,
+        )
+        .expect("the search is answered");
+    let Reply::Page(page) = searched else {
+        panic!("search reads a page: {searched:?}");
+    };
+    assert!(
+        page.resources.is_empty(),
+        "Bo finds nothing of Ada's outbox: {:?}",
+        page.resources
+    );
+}
+
 /// Nobody outside the workspace reads its mail: a person who is no member of it asks another
 /// member's instance for its account's mail and is allowed nothing of it. A member the workspace
 /// removes loses its mail the same way, as the test above shows.

@@ -2477,8 +2477,14 @@ impl Store {
         let index = &self.index;
         let stamp = Stamp::of(&received.change);
         for schema in std::iter::once(&self.schema).chain(schema) {
-            crate::admit::declared(schema, &touched, &writes, &|id| index.kind_anywhere(id))
-                .map_err(Refusal::Undeclared)?;
+            crate::admit::declared(
+                schema,
+                &touched,
+                &writes,
+                &|id| index.kind_anywhere(id),
+                &|kind| self.rules.contains_key(kind),
+            )
+            .map_err(Refusal::Undeclared)?;
             crate::admit::within_verb(schema, &touched, stamp.as_ref(), received.change.len())
                 .map_err(Refusal::Undeclared)?;
         }

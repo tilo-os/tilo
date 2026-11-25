@@ -40,6 +40,10 @@ pub struct Workspace {
     declared: std::cell::Cell<Option<u64>>,
 }
 
+/// Who a write of the test's store is made by, as the workspace takes a write from a device that
+/// named no author of its own: one author for every write the test's workspace takes.
+const AUTHOR: [u8; 32] = [7; 32];
+
 impl Workspace {
     /// Carries `command` out, as the workspace's store does for a connection of the person
     /// `reader`: a read answers only what that person reads.
@@ -77,7 +81,15 @@ impl Workspace {
             | Command::Records) => self.documents.command(command),
             command if command.writes() => {
                 let stamps = stamps_of(&command);
-                match wire::write(&mut self.store.borrow_mut(), command) {
+                let mut store = self.store.borrow_mut();
+                // Every write is judged as the workspace's store judges one: the types and verbs
+                // the apps named, and the readers their types give.
+                let draft = tilo_resource_store::wire::draft(&mut store, command.clone())
+                    .map_err(|refused| refused.to_string())?;
+                store
+                    .check_batch(&draft, AUTHOR)
+                    .map_err(|refusal| format!("{refusal:?}"))?;
+                match wire::write(&mut store, command) {
                     Ok(_) => {
                         self.written.borrow_mut().extend(stamps);
                         Ok(Reply::Written)

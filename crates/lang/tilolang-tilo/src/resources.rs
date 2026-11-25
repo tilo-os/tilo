@@ -70,23 +70,24 @@ const PLATFORM_WRITES: &[&str] = &[
 const STANDS_IN: &str = "$in";
 
 /// The kind an outside effect waiting in the workspace is kept as: one resource per entry,
-/// nested in the resource whose action queued it, so it is placed and carried with that
-/// resource's document. Its fields are the `OUT_*` names below.
+/// nested in the resource whose action queued it so it leaves with that resource, and read by
+/// its author alone so what it carries (a message's words, an address) reaches no other member.
+/// Its fields are the `OUT_*` names below.
 pub const OUTBOX: &str = "tilolang.outbox";
-const OUT_DOC: &str = "doc";
-const OUT_ENTRY: &str = "entry";
-const OUT_CAPABILITY: &str = "capability";
+pub(crate) const OUT_DOC: &str = "doc";
+pub(crate) const OUT_ENTRY: &str = "entry";
+pub(crate) const OUT_CAPABILITY: &str = "capability";
 /// What is handed over, as JSON text.
-const OUT_PAYLOAD: &str = "payload";
-const OUT_HELD_UNTIL: &str = "held_until";
+pub(crate) const OUT_PAYLOAD: &str = "payload";
+pub(crate) const OUT_HELD_UNTIL: &str = "held_until";
 /// The device that carries it out.
-const OUT_OWNER: &str = "owner";
+pub(crate) const OUT_OWNER: &str = "owner";
 /// Where it is on its way out: empty while queued, `sending` or `waiting`, with `detail`.
-const OUT_STATE: &str = "state";
-const OUT_DETAIL: &str = "detail";
-const OUT_SETTLED: &str = "settled";
-const OUT_OUTCOME: &str = "outcome";
-const OUT_REASON: &str = "reason";
+pub(crate) const OUT_STATE: &str = "state";
+pub(crate) const OUT_DETAIL: &str = "detail";
+pub(crate) const OUT_SETTLED: &str = "settled";
+pub(crate) const OUT_OUTCOME: &str = "outcome";
+pub(crate) const OUT_REASON: &str = "reason";
 
 /// The id the outbox entry `entry` of the document `doc` is kept under.
 fn outbox_id(doc: &str, entry: &str) -> String {

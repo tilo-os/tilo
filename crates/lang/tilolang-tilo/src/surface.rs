@@ -827,6 +827,87 @@ pub fn personal_surface() -> Surface {
     }
 }
 
+/// The surface of an outside effect waiting in the workspace: the record any app's action
+/// queues when it reaches beyond it ([`crate::resources::OUTBOX`]), read by its author alone
+/// because it carries what the effect sends, and the verbs the device that owns it writes under.
+/// Every app's surface declares it, as it declares the host's notice, so every holder judges an
+/// effect alike.
+#[must_use]
+pub fn queued_effect_surface() -> Surface {
+    use crate::resources::{
+        OUT_CAPABILITY, OUT_DETAIL, OUT_DOC, OUT_ENTRY, OUT_HELD_UNTIL, OUT_OUTCOME, OUT_OWNER,
+        OUT_PAYLOAD, OUT_REASON, OUT_SETTLED, OUT_STATE, OUTBOX,
+    };
+    let text = |name: &str, optional: bool| FieldSurface {
+        path: name.to_owned(),
+        owner: String::new(),
+        title: String::new(),
+        stored: "value".to_owned(),
+        ty: if optional {
+            FieldType::Option(Box::new(FieldType::Text))
+        } else {
+            FieldType::Text
+        },
+        readonly: false,
+        unit: false,
+        label: false,
+        whole: false,
+        ops: None,
+    };
+    let mut fields: Vec<FieldSurface> = [
+        OUT_DOC,
+        OUT_ENTRY,
+        OUT_CAPABILITY,
+        OUT_PAYLOAD,
+        OUT_OWNER,
+        OUT_STATE,
+        OUT_DETAIL,
+        OUT_OUTCOME,
+        OUT_REASON,
+    ]
+    .into_iter()
+    .map(|name| text(name, false))
+    .collect();
+    fields.push(text(OUT_HELD_UNTIL, true));
+    fields.push(FieldSurface {
+        ty: FieldType::Bool,
+        ..text(OUT_SETTLED, false)
+    });
+    let verb = |id: &str, label: &str| VerbSurface {
+        id: id.to_owned(),
+        name: String::new(),
+        label: label.to_owned(),
+        description: None,
+        kind: ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes: vec![RESOURCE_UNIT.to_owned()],
+        field: None,
+        tags: Vec::new(),
+    };
+    Surface {
+        kind: OUTBOX.to_owned(),
+        label: "A queued effect".to_owned(),
+        version: VERSION,
+        person: false,
+        readers: Some(ReaderRule::Author { until: None }),
+        // The device that owns an entry marks it going (`$send`), says why it waits (`$wait`),
+        // and says how it went (`$settle`): the platform's writes, which no app declares.
+        verbs: vec![
+            verb("$send", "Hand the effect over"),
+            verb("$wait", "Say why it waits"),
+            verb("$settle", "Say how it went"),
+        ],
+        fields,
+        types: Vec::new(),
+        shows: Vec::new(),
+        live: None,
+        setters: false,
+    }
+}
+
 /// The surface of the workspace's moderation record (`tilo.moderation`), which Chat keeps and
 /// the workspace's moderators change: the file beside the record's own model, written from that
 /// model by its crate's test, so a package keeping the record publishes what its changes are
@@ -893,7 +974,7 @@ pub fn surface_bytes_reading(
     reads: &[Meta],
     words: &dyn Words,
 ) -> Result<Vec<u8>, String> {
-    let mut resources = vec![host_surface(), personal_surface()];
+    let mut resources = vec![host_surface(), personal_surface(), queued_effect_surface()];
     resources.extend(notice_surfaces(words));
     for meta in packages {
         resources.extend(package_surfaces(meta, words));

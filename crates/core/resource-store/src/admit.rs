@@ -109,13 +109,19 @@ pub(crate) fn declared(
     touched: &Touched,
     writes: &[(String, String, Option<ScalarValue>)],
     kind_of: &dyn Fn(&str) -> Option<String>,
+    ruled: &dyn Fn(&str) -> bool,
 ) -> Result<(), String> {
     if schema.types.is_empty() {
         return Ok(());
     }
-    // A resource is nested only where its parent's type nests its kind.
+    // A resource is nested only where its parent's type nests its kind, unless its own type says
+    // who reads it: such a one is placed in a document of those readers, never in its parent's,
+    // so what nests it is not its kind's to hold.
     for touch in touched.resources.values() {
         if let (Some(kind), Some(parent)) = (&touch.kind, &touch.parent) {
+            if ruled(kind) {
+                continue;
+            }
             let parent_kind = touched
                 .resources
                 .get(parent)
@@ -285,6 +291,11 @@ fn verb_admits(
         if kind == HOST_NOTICE_KIND && verb.writes.keys().any(|own| own.starts_with("tl.")) {
             return Ok(());
         }
+        // A queued effect is how any action's code reaches beyond the workspace: a tilolang verb
+        // writes one wherever it writes its own package's records.
+        if kind == QUEUED_EFFECT_KIND && verb.writes.keys().any(|own| own.starts_with("tl.")) {
+            return Ok(());
+        }
         return Err(format!("`{}` writes no `{kind}`", verb.name));
     };
     if writes.sets_only
@@ -320,6 +331,10 @@ fn verb_admits(
 /// The tilolang package a kind of one (`tl.<app>.<Type>`) is of: none for another kind.
 /// The kind of the tilolang host's `Notice`, which any package's action writes to tell a person.
 const HOST_NOTICE_KIND: &str = "tl.tilo.host.Notice";
+
+/// The kind an outside effect waits as, which any package's action queues one of
+/// (`tilolang.outbox`).
+const QUEUED_EFFECT_KIND: &str = "tilolang.outbox";
 
 fn tilolang_package(kind: &str) -> Option<&str> {
     let (package, _) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
