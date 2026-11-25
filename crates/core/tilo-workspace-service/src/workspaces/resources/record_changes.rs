@@ -706,6 +706,9 @@ impl Workspaces {
             return Ok(result);
         }
         let changes = doc.get_changes(&heads);
+        // Counted before it lands: a list of agents read from here on is known to be behind it
+        // until it is read again.
+        self.begins_write(workspace, app, record);
         self.keep_record_change(
             (workspace, self.signing_device()),
             (app, Some(kind), record),

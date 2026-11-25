@@ -20,6 +20,8 @@
 mod actions;
 /// The invitation actions a member asks a workspace for, beside its `invite`.
 pub use actions::{CANCEL_INVITATION, INVITATIONS};
+#[cfg(feature = "apps")]
+pub use actions::agents::FollowedAgents;
 /// The route a workspace's record is addressed at, as this service's record reads take it: a
 /// program answers with its app's route without naming the store's own crates.
 pub use tilo_peer_state::document_frame::DocumentRoute;
@@ -1243,6 +1245,10 @@ struct WorkspacesInner {
     web_ui: std::sync::RwLock<Option<Arc<dyn WebUi>>>,
     /// Each record write of a member the host's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
+    /// How many writes each workspace's list of its agents has begun, by workspace: moved
+    /// before the write lands, so a list read before it is known to be behind
+    /// ([`Workspaces::agents_written`]).
+    agents_written: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     /// Moves whenever a person's own settings kept here — their mail
     /// accounts — changed, so a window following them reads them again
     /// ([`person_settings`]).
@@ -1650,6 +1656,7 @@ impl Workspaces {
                 person_names: std::sync::RwLock::default(),
                 web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
+                agents_written: std::sync::Mutex::default(),
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
                 secret_clipboard: std::sync::OnceLock::new(),
@@ -2171,6 +2178,35 @@ impl Workspaces {
     #[must_use]
     pub fn document_writes(&self) -> tokio::sync::broadcast::Receiver<ResourceWrite> {
         self.inner.document_writes.subscribe()
+    }
+
+    /// How many writes `workspace`'s list of its agents has begun here: a list read when this
+    /// was lower is behind it, and an agent it names may have been retired since.
+    #[must_use]
+    pub fn agents_written(&self, workspace: &str) -> u64 {
+        self.inner
+            .agents_written
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(workspace)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Count a write of `app`'s record `record` in `workspace` that begins now, when it is the
+    /// workspace's list of its agents ([`Self::agents_written`]).
+    pub(crate) fn begins_write(&self, workspace: &str, app: &str, record: &str) {
+        if app == tilo_workspace_agent::OWNER
+            && record == collab_types::workspace_document_id(tilo_workspace_agent::KIND)
+        {
+            *self
+                .inner
+                .agents_written
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(workspace.to_owned())
+                .or_default() += 1;
+        }
     }
 
     /// Told whenever a write this device made to a member copy is noted, answered or refused.

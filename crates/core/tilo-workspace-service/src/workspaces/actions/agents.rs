@@ -248,59 +248,6 @@ impl Workspaces {
             .collect()
     }
 
-    /// Hand `seen` each workspace held here with the agents its list of its agents names
-    /// ([`Self::listed_agents`]): every workspace now, one again on each write to its records of
-    /// the workspace app, and every workspace again when one comes to be held here or a write
-    /// went by unread. From a task of the runtime this is called on. What keeps the list it hands
-    /// on answers a synchronous caller without waiting on the workspaces.
-    #[cfg(feature = "apps")]
-    pub fn follow_listed_agents(
-        &self,
-        seen: impl Fn(String, Vec<tilo_broker_core::services::ListedAgent>) + Send + 'static,
-    ) {
-        let workspaces = self.downgrade();
-        let mut writes = self.document_writes();
-        let mut holds = self.holds_changed();
-        holds.borrow_and_update();
-        tokio::spawn(async move {
-            let mut every = true;
-            let mut written = None::<String>;
-            loop {
-                let Some(held) = workspaces.upgrade() else {
-                    return;
-                };
-                if every {
-                    for workspace in held.ids().await {
-                        let workspace = workspace.to_string();
-                        let listed = held.listed_agents(&workspace).await;
-                        seen(workspace, listed);
-                    }
-                } else if let Some(workspace) = written.take() {
-                    let listed = held.listed_agents(&workspace).await;
-                    seen(workspace, listed);
-                }
-                drop(held);
-                every = false;
-                tokio::select! {
-                    write = writes.recv() => match write {
-                        Ok(write) if write.app == tilo_workspace_agent::OWNER => {
-                            written = Some(write.workspace);
-                        }
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => every = true,
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    },
-                    changed = holds.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                        every = true;
-                    }
-                }
-            }
-        });
-    }
-
     /// Whether the agent `agent` still works in `workspace`: the workspace's list of its
     /// agents names it and it is not retired.
     pub async fn agent_is_active(&self, workspace: &str, agent: &str) -> bool {
@@ -552,4 +499,122 @@ pub(in crate::workspaces) fn read_resource_bytes<R: tilo_resource::Resource>(
     collab_types::document::founding::bring_up_resource::<R>(id, &mut doc)
         .map_err(|error| format!("bring the resource up to version {}: {error}", R::VERSION))?;
     R::read(&doc).map_err(|error| error.to_string())
+}
+
+/// The agents each workspace held here records, as its list was last read, kept current by
+/// [`FollowedAgents::follow`]: what answers a caller that cannot wait on the workspaces. A list
+/// read before a write of it began is behind, and names no agent until it is read again: an agent
+/// retired is refused at once, one added waits for the read.
+#[cfg(feature = "apps")]
+pub struct FollowedAgents {
+    workspaces: super::super::WeakWorkspaces,
+    /// Each workspace's list as last read, with how many writes of it had begun then.
+    lists: std::sync::Mutex<
+        std::collections::HashMap<String, (u64, Vec<tilo_broker_core::services::ListedAgent>)>,
+    >,
+}
+
+#[cfg(feature = "apps")]
+impl FollowedAgents {
+    /// The agents `workspaces` record, read once [`Self::follow`] runs.
+    #[must_use]
+    pub fn new(workspaces: &Workspaces) -> Arc<Self> {
+        Arc::new(Self {
+            workspaces: workspaces.downgrade(),
+            lists: std::sync::Mutex::default(),
+        })
+    }
+
+    /// The agents `workspace`'s list names, as last read, when no write of it began since; none
+    /// otherwise.
+    #[must_use]
+    pub fn listed(&self, workspace: &str) -> Vec<tilo_broker_core::services::ListedAgent> {
+        let Some(workspaces) = self.workspaces.upgrade() else {
+            return Vec::new();
+        };
+        let written = workspaces.agents_written(workspace);
+        match self
+            .lists
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(workspace)
+        {
+            Some((read_at, listed)) if *read_at == written => listed.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Read every workspace's list now, one again on each write to it, and every one again when
+    /// a workspace comes to be held here or a write went by unread; until the workspaces or this
+    /// are gone. Spawned on the runtime the workspaces run on.
+    pub async fn follow(self: Arc<Self>) {
+        let following = Arc::downgrade(&self);
+        drop(self);
+        let Some(workspaces) = following
+            .upgrade()
+            .and_then(|followed| followed.workspaces.upgrade())
+        else {
+            return;
+        };
+        let mut writes = workspaces.document_writes();
+        let mut holds = workspaces.holds_changed();
+        holds.borrow_and_update();
+        drop(workspaces);
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let mut every = true;
+        let mut written = None::<String>;
+        loop {
+            let Some(followed) = following.upgrade() else {
+                return;
+            };
+            let Some(workspaces) = followed.workspaces.upgrade() else {
+                return;
+            };
+            let read = if every {
+                workspaces
+                    .ids()
+                    .await
+                    .into_iter()
+                    .map(|workspace| workspace.to_string())
+                    .collect()
+            } else {
+                written.take().into_iter().collect::<Vec<_>>()
+            };
+            for workspace in read {
+                // Counted before the read: a write that begins while it reads leaves it behind.
+                let read_at = workspaces.agents_written(&workspace);
+                let listed = workspaces.listed_agents(&workspace).await;
+                followed
+                    .lists
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(workspace, (read_at, listed));
+            }
+            drop((workspaces, followed));
+            every = false;
+            tokio::select! {
+                write = writes.recv() => match write {
+                    Ok(write) if write.app == tilo_workspace_agent::OWNER && write.record == list => {
+                        written = Some(write.workspace);
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => every = true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                changed = holds.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    every = true;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "apps")]
+impl tilo_broker_core::services::AgentRoster for FollowedAgents {
+    fn listed(&self, workspace: &str) -> Vec<tilo_broker_core::services::ListedAgent> {
+        FollowedAgents::listed(self, workspace)
+    }
 }

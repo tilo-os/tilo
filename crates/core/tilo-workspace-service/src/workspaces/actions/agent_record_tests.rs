@@ -601,3 +601,69 @@ fn the_agents_actions_declare_the_records_own_steps() {
         "only where an agent waits or runs is left to the device that runs it"
     );
 }
+
+/// An agent retired is refused by the followed roster at once, before its follower has read the
+/// list again: what the app runtime's own thread admits and routes by never lets a removed agent
+/// in for a turn. Until a write of the list begins, the roster names what it last read.
+#[tokio::test]
+async fn a_retired_agent_leaves_the_followed_roster_before_it_is_read_again() {
+    use tilo_broker_core::services::AgentRoster;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Studio").await.unwrap().workspace;
+    let made = ask(
+        workspaces,
+        &workspace,
+        &owner,
+        (WORKSPACE_AGENT_CREATE, json!({ "name": "Scout" })),
+    )
+    .await
+    .expect("the owner makes an agent");
+    let scout = made["agent"].as_str().expect("the agent's id").to_owned();
+
+    let followed = crate::workspaces::FollowedAgents::new(workspaces);
+    let following = tokio::spawn(std::sync::Arc::clone(&followed).follow());
+    let roster: &dyn AgentRoster = &*followed;
+    let names = |roster: &dyn AgentRoster| -> Vec<String> {
+        roster
+            .listed(&workspace)
+            .into_iter()
+            .map(|agent| agent.id)
+            .collect()
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while names(roster) != vec![scout.clone()] {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the roster reads the agent the list names: {:?}",
+            names(roster)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    // The follower stops here, so nothing reads the list again after this.
+    following.abort();
+    let _ = following.await;
+    assert_eq!(
+        names(roster),
+        vec![scout.clone()],
+        "a list no write began on since it was read is answered as read"
+    );
+
+    ask(
+        workspaces,
+        &workspace,
+        &owner,
+        (WORKSPACE_AGENT_DELETE, json!({ "agent": scout })),
+    )
+    .await
+    .expect("the owner retires it");
+    assert!(
+        names(roster).is_empty(),
+        "the retired agent is refused before the list is read again: {:?}",
+        names(roster)
+    );
+    server.shutdown().await;
+}

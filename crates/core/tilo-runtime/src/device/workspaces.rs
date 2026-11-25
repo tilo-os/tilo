@@ -998,10 +998,9 @@ impl WorkspaceGrants for MemberListGrants {
 pub(crate) struct RecordedAgents {
     workspaces: std::sync::Weak<ServiceWorkspaces>,
     session: Arc<tilo_workspace_service::apps::seat::SeatAgents>,
-    /// Each workspace's agents as its list last read, kept current by a follower of its writes:
-    /// what a broker asking on the app runtime's own thread is answered from, since that thread
-    /// never waits on the workspaces.
-    followed: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<tilo_workspace_service::apps::services::ListedAgent>>>>,
+    /// Each workspace's agents as its list was last read, followed from its writes: what the
+    /// app runtime's own thread is answered from, since it never waits on the workspaces.
+    followed: Arc<tilo_workspace_service::workspaces::FollowedAgents>,
 }
 
 impl RecordedAgents {
@@ -1010,19 +1009,8 @@ impl RecordedAgents {
         workspaces: &Arc<ServiceWorkspaces>,
         session: Arc<tilo_workspace_service::apps::seat::SeatAgents>,
     ) -> Self {
-        let followed = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        let keeping = Arc::downgrade(&followed);
-        let copies = workspaces.copies().clone();
-        tilo_rt::app().spawn(async move {
-            copies.follow_listed_agents(move |workspace, listed| {
-                if let Some(followed) = keeping.upgrade() {
-                    followed
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(workspace, listed);
-                }
-            });
-        });
+        let followed = tilo_workspace_service::workspaces::FollowedAgents::new(workspaces.copies());
+        tilo_rt::app().spawn(Arc::clone(&followed).follow());
         Self {
             workspaces: Arc::downgrade(workspaces),
             session,
@@ -1037,15 +1025,10 @@ impl tilo_workspace_service::apps::services::AgentRoster for RecordedAgents {
             return Vec::new();
         };
         // The app runtime's own thread never waits on the workspaces: it is answered from the
-        // list as last followed. Any other thread reads the list as it stands.
+        // list as last followed, which names nobody while a write of it is newer than the read.
+        // Any other thread reads the list as it stands.
         if tilo_rt::app().is_runtime_thread() {
-            return self
-                .followed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(workspace)
-                .cloned()
-                .unwrap_or_default();
+            return self.followed.listed(workspace);
         }
         let workspace = workspace.to_owned();
         block_on_owned(async move { workspaces.copies().listed_agents(&workspace).await })

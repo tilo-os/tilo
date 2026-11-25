@@ -1281,6 +1281,7 @@ impl super::Workspaces {
     /// This is the one notice an admitted frame and a local write both raise,
     /// from the single point each reaches, so a watcher hears a write once.
     pub(crate) fn wrote(&self, workspace: &str, app: &str, record: &str) {
+        self.begins_write(workspace, app, record);
         let _ = self.inner.document_writes.send(super::ResourceWrite {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
