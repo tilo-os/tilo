@@ -25,6 +25,7 @@ use collab_types::is_store_document;
 use tilo_resource_store::{Admit, Received, Refusal, Schema, Store};
 
 use super::{HostedWorkspace, Workspaces};
+use verb_grants::VerbGrants;
 
 /// Why a command of this device's own roles on an app's record did not carry out
 /// ([`Workspaces::record_command`]).
@@ -974,6 +975,9 @@ impl HostedWorkspace {
             .map(|(_, stamp)| stamp)
             .collect();
         let origin = self.origin_leave(doc, author, &stamps, false);
+        // Every other change is its author's to make: the grant the governance it was written
+        // under gives them at its verb and each kind it touches, read once for the batch.
+        let grants = self.verb_grants(app, doc, envelope, author, now);
         let admit = move |proposal: &tilo_resource_store::Proposal<'_>| {
             if proposal
                 .stamp
@@ -981,7 +985,16 @@ impl HostedWorkspace {
             {
                 origin.as_ref().is_some_and(|leave| leave.admits(proposal))
             } else {
-                permitted && platform_write_belongs(proposal.stamp, author_person)
+                permitted
+                    && platform_write_belongs(proposal.stamp, author_person)
+                    && proposal.stamp.as_ref().is_none_or(|stamp| {
+                        proposal.touched.resources.iter().all(|(_, touch)| {
+                            touch
+                                .kind
+                                .as_deref()
+                                .is_none_or(|kind| grants.may(&author, &stamp.verb, kind))
+                        })
+                    })
             }
         };
         // A sealed write was decided, by members without its key, by the kinds its claims name;
@@ -1087,6 +1100,23 @@ impl HostedWorkspace {
                     .map(|leave| (doc, leave))
             })
             .collect()
+    }
+
+    /// The grant lookup for a write of `app` by `author`: what the governance the write names
+    /// gives them, read once for the batch.
+    fn verb_grants(
+        &self,
+        app: &str,
+        doc: &str,
+        envelope: &collab_types::SignedOp,
+        author: [u8; 32],
+        now: web_time::SystemTime,
+    ) -> VerbGrants {
+        let access = self
+            .peer()
+            .permissions_as_written(app, doc, envelope, now)
+            .ok();
+        VerbGrants::of(access, app, author, now)
     }
 
     async fn draft_resource_document(
@@ -3088,6 +3118,7 @@ fn may_read(reader: String) -> impl Fn(&str) -> bool {
 #[cfg(any(feature = "apps", feature = "agents"))]
 mod app_records;
 mod record_changes;
+mod verb_grants;
 
 // The tests write and read a device's resources through the store (`apps`) and
 // the members around it (`agents`, for the device the sealed fixtures make).

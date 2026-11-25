@@ -1,0 +1,207 @@
+//! Who may make a change, by the verb it names and the kind it writes: the grant the workspace's
+//! governance gives the change's author, read once for a batch of proposals and judged at the
+//! governance the change was written under ([`tilo_peer_state::StatePeer::permissions_as_written`]).
+//!
+//! The store checks that what a change writes lies within what its verb declares it writes; this
+//! decides whether its author may invoke that verb on each kind it touches. Platform verbs go on
+//! keeping their own checks ([`keeps_its_own_check`]): what they admit is the store's rule, not a
+//! grant. An agent's change is judged by the lesser of the agent and the person it acts for, which
+//! the authority of the access it was written under already is.
+
+use web_time::SystemTime;
+
+use tilo_action_policy::MemberAccess;
+
+/// The grant lookup for one proposal batch: the author's access at the governance the batch's
+/// write names, and the app whose kinds its verbs are judged on.
+pub(super) struct VerbGrants {
+    access: Option<MemberAccess>,
+    app: String,
+    author: [u8; 32],
+    now: SystemTime,
+}
+
+impl VerbGrants {
+    /// The lookup for a write of `app` by `author`, its access `access` as the governance the
+    /// write was made under names it. No access refuses every change but a platform verb's.
+    pub(super) fn of(
+        access: Option<MemberAccess>,
+        app: &str,
+        author: [u8; 32],
+        now: SystemTime,
+    ) -> Self {
+        Self {
+            access,
+            app: app.to_owned(),
+            author,
+            now,
+        }
+    }
+
+    /// Whether `author` may invoke `verb` on a record of `kind`, at the batch's basis: the grant
+    /// the workspace's governance gives them at that verb's node, for a change that is undoable
+    /// ground. A platform verb keeps its own check. Another author's change is not this batch's.
+    pub(super) fn may(&self, author: &[u8; 32], verb: &str, kind: &str) -> bool {
+        if keeps_its_own_check(verb) {
+            return true;
+        }
+        if *author != self.author {
+            return false;
+        }
+        let Some(access) = &self.access else {
+            return false;
+        };
+        let node = access
+            .policy
+            .node()
+            .app(self.app.as_str())
+            .kind(kind)
+            .action(verb);
+        access.allows(&node, tilo_action_policy::ActionKind::Undoable, self.now)
+    }
+}
+
+/// Whether `verb`'s admission is the store's own, never a grant's: the platform's verbs (every
+/// name it writes under, `$create`, `$move`, `$branch`, `$origin` and the outbox's) and the verbs
+/// of history (`checkpoint`, `describe`, `link`) and of migration, which declare what they write
+/// and are judged by it.
+pub(super) fn keeps_its_own_check(verb: &str) -> bool {
+    verb.starts_with('$') || matches!(verb, "migrate" | "checkpoint" | "describe" | "link")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tilo_action_policy::{
+        Actor, Answer, Grant, Grantee, KindSet, MemberAccess, MemberId, Role, TreePath,
+        WorkspacePolicy,
+    };
+
+    use super::VerbGrants;
+
+    const WORKSPACE: &str = "11111111-1111-4111-8111-111111111111";
+    const OWNER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const EDITOR: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const DEVICE: [u8; 32] = [7; 32];
+    const APP: &str = "so.tilo.tasks";
+    const KIND: &str = "tl.so.tilo.tasks.Task";
+    const VERB: &str = "archive";
+
+    fn node() -> TreePath {
+        TreePath::workspace(WORKSPACE)
+            .app(APP)
+            .kind(KIND)
+            .action(VERB)
+    }
+
+    /// A workspace whose editor does or does not hold `archive` on the task kind: the grant a
+    /// workspace adds or takes away at that verb's node.
+    fn policy(answer: Answer) -> WorkspacePolicy {
+        let mut policy = WorkspacePolicy::new(WORKSPACE, OWNER);
+        policy.members.insert(EDITOR.to_owned(), Role::Editor);
+        policy.grants.push(Grant::new(
+            "verb",
+            Grantee::person(EDITOR),
+            node(),
+            KindSet::UNDOABLE,
+            answer,
+            Grantee::role(Role::Owner),
+        ));
+        policy
+    }
+
+    fn grants(policy: WorkspacePolicy) -> VerbGrants {
+        let access = MemberAccess::person(Arc::new(policy), EDITOR);
+        VerbGrants::of(Some(access), APP, DEVICE, tilo_clock::wall())
+    }
+
+    #[test]
+    fn a_member_without_the_verb_may_not_make_its_change_and_one_with_it_may() {
+        let refused = grants(policy(Answer::Deny));
+        assert!(
+            !refused.may(&DEVICE, VERB, KIND),
+            "an editor without it is refused"
+        );
+        assert!(
+            refused.may(&DEVICE, "edit", KIND),
+            "the editor's ordinary edits stand"
+        );
+        let admitted = grants(policy(Answer::Allow));
+        assert!(
+            admitted.may(&DEVICE, VERB, KIND),
+            "a granted verb is admitted"
+        );
+    }
+
+    #[test]
+    fn the_lookup_judges_at_the_basis_it_was_built_from() {
+        // The change was written while the verb was granted, and arrives after it was taken
+        // away: every holder judges it by the grants the write named, which are these.
+        let before = grants(policy(Answer::Allow));
+        let after = grants(policy(Answer::Deny));
+        assert!(
+            before.may(&DEVICE, VERB, KIND),
+            "the grant it was written under admits it"
+        );
+        assert!(
+            !after.may(&DEVICE, VERB, KIND),
+            "the revoking grant refuses it"
+        );
+    }
+
+    #[test]
+    fn an_agents_change_is_judged_by_its_person_too() {
+        let policy = policy(Answer::Deny);
+        let access = MemberAccess::person(Arc::new(policy), EDITOR)
+            .acting_as(Actor::Member(MemberId::agent("scout", EDITOR)), Vec::new());
+        let grants = VerbGrants::of(Some(access), APP, DEVICE, tilo_clock::wall());
+        assert!(
+            !grants.may(&DEVICE, VERB, KIND),
+            "an agent does no more than the person it acts for"
+        );
+    }
+
+    #[test]
+    fn another_devices_change_is_no_business_of_this_lookup() {
+        let grants = grants(policy(Answer::Allow));
+        assert!(!grants.may(&[9; 32], VERB, KIND));
+    }
+
+    #[test]
+    fn a_platform_verb_keeps_its_own_check() {
+        let no_access = VerbGrants::of(None, APP, DEVICE, tilo_clock::wall());
+        for verb in [
+            "$create", "$move", "$branch", "$origin", "$settle", "migrate",
+        ] {
+            assert!(
+                no_access.may(&DEVICE, verb, KIND),
+                "`{verb}` is judged by the store, not a grant"
+            );
+        }
+        assert!(
+            !no_access.may(&DEVICE, VERB, KIND),
+            "no access admits no app verb"
+        );
+    }
+
+    /// The lookup's cost on a realistic batch: one access read, then a grant question per
+    /// touched kind. Run with `--nocapture` to read the numbers.
+    #[test]
+    fn a_batchs_grant_questions_are_cheap() {
+        const TOUCHED: usize = 1_000;
+        let grants = grants(policy(Answer::Allow));
+        let at = std::time::Instant::now();
+        let mut allowed = 0;
+        for _ in 0..TOUCHED {
+            allowed += usize::from(grants.may(&DEVICE, VERB, KIND));
+        }
+        let took = at.elapsed();
+        assert_eq!(allowed, TOUCHED);
+        eprintln!(
+            "verb grants: {TOUCHED} questions in {took:?} ({:.3} µs each); the old closure \
+             answered the batch in one bool",
+            took.as_secs_f64() * 1e6 / TOUCHED as f64
+        );
+    }
+}
