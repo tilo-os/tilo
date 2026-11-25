@@ -446,11 +446,15 @@ impl Peer {
         let entering = async {
             let Some(hint) = entry.entered_at.clone() else {
                 // The login entry alone says where the person's workspaces are entered: with no
-                // hint from the person's list yet, this computer enters from it, as a member
-                // that takes work does.
-                let login = login.get().await.ok_or(
+                // hint from the person's list yet, this computer enters this workspace through
+                // the login's server, as a member that takes work does.
+                let mut login = login.get().await.ok_or(
                     "this computer's login names nowhere to enter your workspaces from yet",
                 )?;
+                if login.workspace != workspace.to_string() {
+                    login.workspace = workspace.to_string();
+                    login.workspace_name.clone_from(&entry.name);
+                }
                 return Box::pin(super::take_work::enter_from_login(own, key, &login)).await;
             };
             own.copies()
