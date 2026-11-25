@@ -2586,7 +2586,9 @@ fn each_member_reads_only_their_own_drafts_in_the_drafts_place() {
     assert_eq!(count_in(watching.tree(), "ui.NavShell"), Some(1));
     let _second = ada.made("new_draft", &ada_root, &json!({}));
     bo.settle();
-    watching.poll_patches().expect("the place follows the workspace");
+    watching
+        .poll_patches()
+        .expect("the place follows the workspace");
     assert_eq!(
         count_in(watching.tree(), "ui.NavShell"),
         Some(1),
@@ -2596,6 +2598,134 @@ fn each_member_reads_only_their_own_drafts_in_the_drafts_place() {
         drafts_count(&ada),
         Some(2),
         "Ada's Drafts place lists both drafts she wrote"
+    );
+}
+
+/// A history read in one member's words: what a change of a record that names its readers is
+/// listed to.
+struct MemberWords(tilo_actions::MemberId);
+
+impl collab_types::history::authors::ResolveAuthor for MemberWords {
+    fn resolve(&self, actor_hex: &str) -> collab_types::history::authors::HistoryAuthor {
+        collab_types::history::authors::HistoryAuthor::new(
+            collab_types::history::authors::UNKNOWN_AUTHOR_NAME,
+            0.0,
+            actor_hex,
+        )
+    }
+}
+
+impl collab_types::history::words::HistoryWords for MemberWords {
+    fn sentence(&self, entry: &tilo_actions::ActionContext) -> String {
+        match &entry.what {
+            Some(tilo_actions::Did::Verb(verb)) => verb.action.action.clone(),
+            _ => entry.purpose.clone().unwrap_or_default(),
+        }
+    }
+
+    fn reader(&self) -> Option<tilo_actions::MemberId> {
+        Some(self.0.clone())
+    }
+}
+
+// USER REQUIREMENT: a draft's changes are its author's alone while it is being written. Another
+// member's history and change feed list none of them; once it is sent, every member reads the
+// change that sent it. A change to a record whose type names no readers is every member's.
+#[test]
+fn a_drafts_changes_are_its_authors_alone_until_it_is_sent() {
+    use super::{RouteSpec, spec_of};
+    use std::rc::Rc;
+    use tilolang_process::testing::Bus;
+
+    let bus = Rc::new(Bus::default());
+    bus.member(tilo_actions::MemberId::person("ada"), "Ada");
+    bus.member(tilo_actions::MemberId::person("bo"), "Bo");
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let mut ada = Session::on_bus(&bus, &route, spec_of(&route, "ada"));
+    let mut bo = Session::on_bus(&bus, &route, spec_of(&route, "bo"));
+    ada.settle();
+    bo.settle();
+
+    let root = ada.mail_root();
+    let draft = ada.made("new_draft", &root, &json!({}));
+    bo.settle();
+    let kind = format!("tl.{APP}.Draft");
+    let held = |kind: &str, id: &str| {
+        bus.workspace()
+            .document_of(kind, id)
+            .unwrap_or_else(|| panic!("the store holds {kind} {id}"))
+    };
+    // What the history of `kind`/`id` lists `who`, as their window shows it.
+    let history = |who: &str, kind: &str, id: &str| {
+        let words = MemberWords(tilo_actions::MemberId::person(who));
+        collab_types::history::verbs::history_with(&held(kind, id), &[], 50, &words)
+    };
+    // What the change feed hands `who` of `kind`/`id`: every change its history lists, kept only
+    // for the reader it names.
+    let feed = |who: &str, kind: &str, id: &str| {
+        let member = tilo_actions::MemberId::person(who);
+        let words = MemberWords(member.clone());
+        let entries =
+            collab_types::history::verbs::entries_after((&held(kind, id), id), &[], &words);
+        entries
+            .into_iter()
+            .filter(|entry| collab_types::history::verbs::reads_entry(entry, Some(&member)))
+            .collect::<Vec<_>>()
+    };
+    let listed =
+        |history: serde_json::Value| history["versions"].as_array().cloned().unwrap_or_default();
+
+    // Ada wrote the draft: its history is hers, and Bo's lists none of it.
+    let id = draft.id_string();
+    assert!(
+        !listed(history("ada", &kind, &id)).is_empty(),
+        "Ada's history lists the draft she wrote"
+    );
+    assert!(
+        listed(history("bo", &kind, &id)).is_empty(),
+        "Bo's history lists none of the draft Ada wrote"
+    );
+    assert!(!feed("ada", &kind, &id).is_empty(), "Ada's feed has it");
+    assert!(
+        feed("bo", &kind, &id).is_empty(),
+        "Bo's change feed lists none of the draft Ada wrote"
+    );
+
+    // Sent, the draft is every member's: Bo's history and feed list the change that sent it.
+    let resource = tilolang_tilo::publish::resource_id(APP, &id);
+    ada.invoke(
+        None,
+        None,
+        &resource,
+        "edit-flag",
+        &json!({"field": "sent", "value": true})
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .expect("the send flag is set");
+    bo.settle();
+    assert!(
+        !feed("bo", &kind, &id).is_empty(),
+        "Bo's change feed lists the change that sent the draft"
+    );
+    assert!(
+        !listed(history("bo", &kind, &id)).is_empty(),
+        "Bo's history lists the change that sent the draft"
+    );
+
+    // A change to a record whose type names no readers is every member's.
+    let mail = format!("tl.{APP}.Mail");
+    let root_id = root.id_string();
+    ada.call("set_hold", &root, &json!({"seconds": 5}));
+    bo.settle();
+    assert!(
+        !feed("bo", &mail, &root_id).is_empty(),
+        "Bo's change feed lists a change to the mailbox, which every member reads"
+    );
+    assert!(
+        !listed(history("bo", &mail, &root_id)).is_empty(),
+        "Bo's history lists a change to the mailbox"
     );
 }
 

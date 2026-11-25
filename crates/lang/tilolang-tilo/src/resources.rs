@@ -3618,6 +3618,30 @@ impl ResourceStore {
         (acted.person.clone(), context)
     }
 
+    /// The context a change's stamp carries: how an agent acted for its person
+    /// ([`Self::acted_for`]), and the members who alone read the change where what it touched
+    /// says who reads it ([`ChangeNote::readers`]), as history lists it to them alone
+    /// ([`tilo_actions::READERS_FACET`]). `None` for a change every member reads that records
+    /// nothing else.
+    fn change_context(
+        acting: Option<Box<tilo_actions::ActionContext>>,
+        readers: Option<&[tilo_actions::policy::MemberId]>,
+    ) -> Option<Box<tilo_actions::ActionContext>> {
+        let Some(readers) = readers else {
+            return acting;
+        };
+        let mut context =
+            acting.map_or_else(tilo_actions::ActionContext::default, |context| *context);
+        context
+            .facets
+            .retain(|facet| facet.key != tilo_actions::READERS_FACET);
+        context.facets.push(tilo_actions::ActionFacet::new(
+            tilo_actions::READERS_FACET,
+            tilo_actions::contract::readers_facet(readers),
+        ));
+        Some(Box::new(context))
+    }
+
     /// The writes made from now on serve the call `call` as its caller signed it (none: none),
     /// and each change keeps it.
     pub fn serve_signed(&self, call: Option<Box<tilo_actions::remote::SignedCall>>) {
@@ -3629,6 +3653,12 @@ impl ResourceStore {
     /// may have made one that is no more.
     pub fn take_made(&self) -> Vec<ResourceRef> {
         std::mem::take(&mut *self.inner.made.borrow_mut())
+    }
+
+    /// The resources made here since [`Self::take_made`] last took them, without taking them.
+    #[must_use]
+    pub fn made_since(&self) -> Vec<ResourceRef> {
+        self.inner.made.borrow().clone()
     }
 
     /// Where the writes since this was last asked put text, as the anchor an invocation names
@@ -3716,7 +3746,8 @@ impl ResourceStore {
     /// step of, who proposed it).
     fn stamp(&self, note: &ChangeNote) -> Stamp {
         let burst = self.burst_invocation(note);
-        let (acted_for, context) = self.acted_for();
+        let (acted_for, acting) = self.acted_for();
+        let context = Self::change_context(acting, note.readers.as_deref());
         // A write made while serving an invocation is that invocation's, whatever run of the
         // runtime made it: the caller's id is what history and the workspace know it by.
         let invocation = self

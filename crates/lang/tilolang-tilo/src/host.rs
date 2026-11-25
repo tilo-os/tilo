@@ -958,14 +958,18 @@ impl HostInner {
                 ..*request
             });
         }
+        // The runtime sees the invoker the API admitted: an agent's task delegate for itself,
+        // the person at the window otherwise.
+        let invoker = request
+            .caller
+            .map_or_else(|| self.viewer.clone(), |caller| caller.actor.clone());
         // A bound control's edit of a field is no declared action: it writes the field itself.
         if let Some(edit) = crate::publish::plan_edit(
             &self.store,
             &package.meta,
             request,
-            &request
-                .caller
-                .map_or_else(|| self.viewer.clone(), |caller| caller.actor.clone()),
+            &invoker,
+            &|at: &ResourceRef| self.runtime.readers(at),
         ) {
             return edit;
         }
@@ -977,11 +981,6 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id && !action.scenario)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        // The runtime sees the invoker the API admitted: an agent's task delegate for itself,
-        // the person at the window otherwise.
-        let invoker = request
-            .caller
-            .map_or_else(|| self.viewer.clone(), |caller| caller.actor.clone());
         // A requirement is the app's, and the app is what can read it: an action published
         // while its rule held, or one an agent addresses by name, is refused here, before it
         // runs, with its rule's reason, decided for the invoker it then runs as.
@@ -1002,6 +1001,7 @@ impl HostInner {
                 .and_then(|caller| caller.on_behalf_of.clone()),
             request.caller.and_then(crate::publish::Caller::acting_for),
         );
+        let mut readers = None;
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {
                 self.store.take_made();
@@ -1034,6 +1034,15 @@ impl HostInner {
                     }
                     InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
                 }
+                // What it touched says who reads the change: a draft's author alone, and
+                // everyone for a record whose type names no readers.
+                let mut touched = self.store.made_since();
+                if let Some(target) = request.resource
+                    && let Some(at) = ResourceRef::parse_id(target, String::new())
+                {
+                    touched.push(at);
+                }
+                readers = self.change_readers(touched);
                 recorded
             }
             // The one line typed names nothing — only space and what the action's other
@@ -1055,9 +1064,33 @@ impl HostInner {
                 count: 1,
                 invocation: None,
                 gesture: None,
-                readers: None,
+                readers,
             },
         })
+    }
+
+    /// The members who alone read the change that touched `targets`: those every record among
+    /// them that names its readers names ([`tilolang_runtime::Runtime::readers`]), so a change
+    /// to a draft is its author's alone and a change to a record whose type names none is every
+    /// member's. `None` when none of them names its readers.
+    fn change_readers(
+        &self,
+        targets: impl IntoIterator<Item = ResourceRef>,
+    ) -> Option<Vec<tilo_actions::policy::MemberId>> {
+        let mut readers: Option<Vec<tilo_actions::policy::MemberId>> = None;
+        for at in targets {
+            let Some(of) = self.runtime.readers(&at) else {
+                continue;
+            };
+            readers = Some(match readers.take() {
+                None => of,
+                Some(held) => held
+                    .into_iter()
+                    .filter(|member| of.contains(member))
+                    .collect(),
+            });
+        }
+        readers
     }
 
     /// The action's arguments as its invocation records them: those the API was given, and
@@ -1423,12 +1456,21 @@ impl Host {
         value: Option<&Value>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let package = self.inner.package_of(app)?;
-        let declared = package
-            .meta
-            .actions
-            .iter()
-            .find(|declared| declared.id == action)
-            .ok_or_else(|| format!("no action {action} in {app}"))?;
+        let Some(declared) = package.meta.actions.iter().find(|declared| declared.id == action)
+        else {
+            // A bound control's edit is no declared action: its plan writes the field, and it
+            // answers no value of its own, as a press of the control answers none.
+            let bound = crate::action::BLOCK_EDITS
+                .iter()
+                .map(|edit| edit.id)
+                .chain(crate::action::DIRECT_EDITS.iter().map(|edit| edit.id))
+                .any(|edit| edit == action);
+            return if bound {
+                Ok(tilo_actions::ActionOutput::default())
+            } else {
+                Err(format!("no action {action} in {app}"))
+            };
+        };
         let mut output = tilo_actions::ActionOutput::default();
         if let Some(value) = value {
             resources_named(value, &mut output.resources);

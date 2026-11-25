@@ -136,6 +136,15 @@ impl Workspace {
             .collect()
     }
 
+    /// The document the record `id` of `kind` is held in, as the store keeps it: what a window's
+    /// history lists the record's changes from, before they are filtered to its reader.
+    #[must_use]
+    pub fn document_of(&self, kind: &str, id: &str) -> Option<automerge::AutoCommit> {
+        let store = self.store.borrow();
+        let doc = store.index().get(kind, id)?.doc.clone();
+        automerge::AutoCommit::load(&store.document(&doc)?.save()).ok()
+    }
+
     /// The records `command` moves: each resource it writes, by the document it lives in. A
     /// write that names no resource (an undo) may move every record the store holds.
     #[must_use]

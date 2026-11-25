@@ -282,6 +282,7 @@ tilo_test_env::scenario! {
             &json!({"rich": [{"id": "", "kind": "paragraph", "text": "milk and eggs",
                               "marks": [], "attrs": {}, "children": []}]}),
             None,
+            &|_: &tilolang_runtime::value::ResourceRef| None,
         )
         .expect("`body` names the note's body");
         assert_eq!(
