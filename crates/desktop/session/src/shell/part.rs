@@ -50,7 +50,7 @@ pub use tilo_session_core::shell::{
 mod settings;
 mod surface;
 
-use tilolang_tilo::shell::{AskedReading, AskingWriter, LayoutWriter};
+use tilolang_tilo::shell::LayoutWriter;
 /// The shell's package, as every host compiles it.
 pub use tilolang_tilo::shell::{
     catalogues as shell_catalogues, compile as compile_shell, sources as shell_sources,
@@ -163,10 +163,6 @@ pub struct SessionLink {
     /// part reads it on its own runtime, so a second display's part never misses one the first
     /// part took.
     layout_generation: Cell<u64>,
-    /// What waits for the person's yes, as the session last read it, and how often it was
-    /// published: every part applies each generation once, as with the layout.
-    asking: RefCell<Vec<AskedReading>>,
-    asking_generation: Cell<u64>,
     /// The readings of the resources the places name, by their session id: each with its type
     /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
     readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
@@ -219,18 +215,6 @@ impl SessionLink {
         *self.layout.borrow_mut() = Some(reading);
         self.layout_generation
             .set(self.layout_generation.get().wrapping_add(1));
-        true
-    }
-
-    /// The session read `questions`, what waits for the person's yes now: the shell writes them
-    /// on its next frame when they differ from the last. Whether they did.
-    pub fn publish_asking(&self, questions: Vec<AskedReading>) -> bool {
-        if *self.asking.borrow() == questions {
-            return false;
-        }
-        *self.asking.borrow_mut() = questions;
-        self.asking_generation
-            .set(self.asking_generation.get().wrapping_add(1));
         true
     }
 
@@ -291,15 +275,12 @@ pub struct SessionOrigin {
     link: Rc<SessionLink>,
     /// What it wrote of the person's layout into the shell's `Layout` root.
     layout: LayoutWriter,
-    /// What it wrote of the questions into the shell's `Asking` root.
-    asking: AskingWriter,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
     /// The layout generation this part applied last, and each reading's: what a part has read of
     /// what the session published, so a second display's part reads every one too.
     layout_seen: Cell<u64>,
-    asking_seen: Cell<u64>,
     readings_seen: RefCell<BTreeMap<String, u64>>,
     packages_seen: Cell<u64>,
     published_seen: Cell<u64>,
@@ -323,9 +304,7 @@ impl SessionOrigin {
             loaded: BTreeMap::new(),
             link,
             layout: LayoutWriter::default(),
-            asking: AskingWriter::default(),
             layout_seen: Cell::new(0),
-            asking_seen: Cell::new(0),
             readings_seen: RefCell::new(BTreeMap::new()),
             packages_seen: Cell::new(0),
             published_seen: Cell::new(0),
@@ -376,17 +355,6 @@ impl SessionOrigin {
         };
         self.layout.write(cx, &reading)
     }
-
-    /// Write what waits for the person's yes into the shell's `Asking` root, when the session
-    /// read questions the origin has not written yet. Whether anything was written.
-    fn poll_asking(&mut self, cx: &OriginCx<'_>) -> bool {
-        let generation = self.link.asking_generation.get();
-        if generation <= self.asking_seen.get() {
-            return false;
-        }
-        self.asking_seen.set(generation);
-        self.asking.write(cx, &self.link.asking.borrow())
-    }
 }
 
 impl Origin for SessionOrigin {
@@ -402,7 +370,6 @@ impl Origin for SessionOrigin {
 
     fn due(&self) -> bool {
         self.link.layout_generation.get() > self.layout_seen.get()
-            || self.link.asking_generation.get() > self.asking_seen.get()
             || self.link.packages_generation.get() > self.packages_seen.get()
             || self.link.published_generation.get() > self.published_seen.get()
             || self.screen_generation.get() > self.screen_seen.get()
@@ -424,7 +391,6 @@ impl Origin for SessionOrigin {
         };
         let wrote_layout = self.poll_layout(cx);
         polled.wrote |= wrote_layout;
-        polled.wrote |= self.poll_asking(cx);
         // The packages the places need first: a reading of a resource is read as its app's
         // package declares it.
         polled.wrote |= self.poll_packages(cx);
