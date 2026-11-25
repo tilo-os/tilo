@@ -344,10 +344,10 @@ struct Inner {
     refused: RefCell<Option<String>>,
     /// What each reader that watches the store has not seen yet.
     watches: RefCell<Vec<Weak<RefCell<Moved>>>>,
-    /// The invocations written from here, oldest first, and the undos of them since: what the
-    /// person's undo and redo at this window take back.
-    written: RefCell<Vec<String>>,
-    undone: RefCell<Vec<String>>,
+    /// The invocation of the last write made from here, when one was since this store opened:
+    /// what a reader of this instance's own writes tells a change by. Undo and redo read the
+    /// record's history, never a list kept here.
+    last_write: RefCell<Option<String>>,
     /// The burst of typing the person is in: its keystrokes are one invocation.
     burst: RefCell<Option<Burst>>,
     /// How long a pause in the typing ends the burst.
@@ -580,6 +580,7 @@ fn invocations_of(command: &Command) -> Vec<String> {
         | Command::Remove { stamp, .. }
         | Command::Edit { stamp, .. }
         | Command::Undo { stamp, .. }
+        | Command::UndoMany { stamp, .. }
         | Command::Checkpoint { stamp, .. }
         | Command::Restore { stamp, .. } => vec![stamp.invocation.clone()],
         Command::Batch(commands) => {
@@ -680,8 +681,7 @@ impl ResourceStore {
                 sample: RefCell::default(),
                 refused: RefCell::default(),
                 watches: RefCell::default(),
-                written: RefCell::default(),
-                undone: RefCell::default(),
+                last_write: RefCell::default(),
                 now: RefCell::new(Rc::new(crate::host::system_time)),
             }),
         }
@@ -922,6 +922,100 @@ impl ResourceStore {
         Ok(own)
     }
 
+    /// Takes back `steps` of `invoker`'s last steps still in effect, read from the record's own
+    /// log rather than from a list kept by this store: what the person's undo at a window, and an
+    /// app's undo of its last steps where its store is opened for each call, both are. Answers how
+    /// many it took back.
+    ///
+    /// # Errors
+    /// When the store refused it.
+    pub fn undo_steps(&self, steps: u32, invoker: Option<&Actor>) -> Result<u32, StoreError> {
+        self.step_back(steps, invoker, false)
+    }
+
+    /// Brings back `steps` of the last undos by `invoker` that are still in effect, read from the
+    /// record's own log. Answers how many it brought back.
+    ///
+    /// # Errors
+    /// When the store refused it.
+    pub fn redo_steps(&self, steps: u32, invoker: Option<&Actor>) -> Result<u32, StoreError> {
+        self.step_back(steps, invoker, true)
+    }
+
+    /// Takes back [`Self::undo_steps`]'s steps, or brings back [`Self::redo_steps`]'s: the steps
+    /// the record's log names, as one move of `invoker`'s, and answers how many there were.
+    fn step_back(
+        &self,
+        steps: u32,
+        invoker: Option<&Actor>,
+        redo: bool,
+    ) -> Result<u32, StoreError> {
+        let read = self
+            .inner
+            .serving_invoker
+            .borrow()
+            .clone()
+            .or_else(|| invoker.map(Stamp::by))
+            .unwrap_or_default();
+        // The kinds this app's record keeps: its undo takes back its own steps, never a change of
+        // another app's record the same store holds.
+        let kinds: Vec<String> = self
+            .inner
+            .kinds
+            .borrow()
+            .types()
+            .map(|entry| entry.kind.clone())
+            .collect();
+        let message = self.command(Command::Steps {
+            steps,
+            invoker: read,
+            kinds,
+            redo,
+        })?;
+        let Reply::Ids(invocations) = message else {
+            return Err(backend("a read of the last steps answered no steps"));
+        };
+        if invocations.is_empty() {
+            return Ok(0);
+        }
+        // As any write: the invocation served, else the run's, and only a move nobody called (a
+        // person's own undo at a window serving nothing) is an invocation of its own.
+        let served = self.inner.serving.borrow().clone().or_else(|| {
+            self.inner
+                .runs
+                .borrow()
+                .first()
+                .map(|(_, _, invocation)| invocation.clone())
+        });
+        let stamp = self.history_stamp("undo", invoker);
+        let stamp = Stamp {
+            invocation: served.unwrap_or_else(|| stamp.invocation.clone()),
+            ..stamp
+        };
+        let count = u32::try_from(invocations.len()).unwrap_or(u32::MAX);
+        self.command(Command::UndoMany { invocations, stamp })?;
+        self.moved();
+        Ok(count)
+    }
+
+    /// Takes back the last step of `invoker`'s still in effect, read from the record's log.
+    /// Whether there was one.
+    ///
+    /// # Errors
+    /// When the store refused it.
+    pub fn undo_last(&self, invoker: Option<&Actor>) -> Result<bool, StoreError> {
+        Ok(self.undo_steps(1, invoker)? > 0)
+    }
+
+    /// Brings back the last undo by `invoker` still in effect, read from the record's log.
+    /// Whether there was one.
+    ///
+    /// # Errors
+    /// When the store refused it.
+    pub fn redo_last(&self, invoker: Option<&Actor>) -> Result<bool, StoreError> {
+        Ok(self.redo_steps(1, invoker)? > 0)
+    }
+
     /// Names the version `at` stands at now `name`, as `invoker`'s checkpoint: a version its
     /// history lists, which a restore can go back to.
     ///
@@ -970,9 +1064,8 @@ impl ResourceStore {
             live,
             stamp,
         })?;
-        // The person's own step: their next undo takes it back.
-        self.inner.written.borrow_mut().push(own.clone());
-        self.inner.undone.borrow_mut().clear();
+        // The person's own step: their next undo, read from the record's history, takes it back.
+        *self.inner.last_write.borrow_mut() = Some(own.clone());
         self.moved();
         Ok(own)
     }
@@ -1070,6 +1163,7 @@ impl ResourceStore {
                 | Command::Remove { stamp, .. }
                 | Command::Edit { stamp, .. }
                 | Command::Undo { stamp, .. }
+                | Command::UndoMany { stamp, .. }
                 | Command::Checkpoint { stamp, .. }
                 | Command::Restore { stamp, .. } => stamps.push(stamp),
                 Command::Batch(inner) => commands.extend(inner.iter_mut()),
@@ -1158,37 +1252,12 @@ impl ResourceStore {
         Some(invocation)
     }
 
-    /// Takes back the last change written from here that is not taken back yet. Whether there
-    /// was one.
-    ///
-    /// # Errors
-    /// When the store refused it.
-    pub fn undo_last(&self, invoker: Option<&Actor>) -> Result<bool, StoreError> {
-        let Some(last) = self.inner.written.borrow_mut().pop() else {
-            return Ok(false);
-        };
-        let undo = self.undo(&last, invoker)?;
-        self.inner.undone.borrow_mut().push(undo);
-        Ok(true)
-    }
-
-    /// Brings back what the last [`Self::undo_last`] took back. Whether there was one.
-    ///
-    /// # Errors
-    /// When the store refused it.
-    pub fn redo_last(&self, invoker: Option<&Actor>) -> Result<bool, StoreError> {
-        let Some(undo) = self.inner.undone.borrow_mut().pop() else {
-            return Ok(false);
-        };
-        let redo = self.undo(&undo, invoker)?;
-        self.inner.written.borrow_mut().push(redo);
-        Ok(true)
-    }
-
-    /// The invocation of the last change written from here.
+    /// The invocation of the last change written from here, when one was since this store
+    /// opened. A window reads it to tell its own write from nothing having happened; undo and
+    /// redo read the record's history, which every replica agrees on.
     #[must_use]
     pub fn last_written(&self) -> Option<String> {
-        self.inner.written.borrow().last().cloned()
+        self.inner.last_write.borrow().clone()
     }
 
     /// A reader's watch over the store: everything has moved until it first takes it.
@@ -1332,8 +1401,8 @@ impl ResourceStore {
                     stamps.push(stamp);
                 }
                 Command::Batch(inner) => commands.extend(inner),
-                // An undo or a restore takes back changes of any resource.
-                Command::Undo { .. } | Command::Restore { .. } => {
+                // An undo, a redo or a restore takes back changes of any resource.
+                Command::Undo { .. } | Command::UndoMany { .. } | Command::Restore { .. } => {
                     versions.clear();
                     return;
                 }
@@ -2050,14 +2119,9 @@ impl ResourceStore {
         let invocations = invocations_of(&command);
         match self.command(command) {
             Ok(_) => {
-                let mut written = self.inner.written.borrow_mut();
-                for invocation in invocations {
-                    if !written.contains(&invocation) {
-                        written.push(invocation);
-                    }
+                if let Some(last) = invocations.last() {
+                    *self.inner.last_write.borrow_mut() = Some(last.clone());
                 }
-                drop(written);
-                self.inner.undone.borrow_mut().clear();
                 // What was sent is what the store holds now, so it is read from here.
                 let mut cache = self.inner.cache.borrow_mut();
                 for (id, held) in local {
@@ -6238,7 +6302,7 @@ fn ids_written(command: &Command, written: &mut BTreeMap<String, BTreeSet<String
             true
         }
         Command::Batch(commands) => commands.iter().all(|command| ids_written(command, written)),
-        Command::Undo { .. } | Command::Restore { .. } => false,
+        Command::Undo { .. } | Command::UndoMany { .. } | Command::Restore { .. } => false,
         _ => true,
     }
 }

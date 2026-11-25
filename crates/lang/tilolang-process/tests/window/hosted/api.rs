@@ -61,7 +61,7 @@ fn what_an_agent_session_does_is_its_own_for_the_person() {
         .unwrap();
     assert_eq!(answer.value.unwrap()["state"], "done");
     app.invoke(
-        Some(agent),
+        Some(agent.clone()),
         Some(&ambient),
         &notebook,
         &new_note,
@@ -104,12 +104,11 @@ fn what_an_agent_session_does_is_its_own_for_the_person() {
         .filter(|version| version.who.as_ref() != Some(&agent_actor))
         .count();
     assert!(person >= 1, "the person's own changes are in history too");
-    assert!(
-        app.instance_host()
-            .store()
-            .undo_last(Some(&agent_actor))
-            .expect("the store takes it back")
-    );
+    // The app's undo, as its record publishes it: it takes back the agent's last step, read from
+    // the store's own log.
+    let record = tilolang_tilo::publish::package_resource_id(NOTES);
+    app.invoke(Some(agent), Some(&ambient), &record, "undo", &Map::new())
+        .expect("the store takes it back");
     settle(&mut app);
     assert_eq!(notes_in(&mut app), 2, "the agent's last note is taken back");
 }

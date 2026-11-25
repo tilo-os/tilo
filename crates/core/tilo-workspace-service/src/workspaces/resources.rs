@@ -1710,6 +1710,13 @@ fn read_from(
         }
         // A record the caller may not read has no versions for them.
         Command::Versions { .. } | Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
+        // The caller's last steps still in effect, read from the documents' change graph.
+        Command::Steps {
+            steps,
+            invoker,
+            kinds,
+            redo,
+        } => tilo_resource_store::wire::steps(&mut store, *steps, invoker, kinds, *redo),
         Command::ChildrenAt {
             parent,
             change,
@@ -2405,7 +2412,9 @@ fn stamp_resource_invoker(
         | Command::Remove { kind, stamp, .. }
         | Command::Edit { kind, stamp, .. }
         | Command::Checkpoint { kind, stamp, .. } => (kind.as_str(), stamp),
-        Command::Undo { stamp, .. } | Command::Restore { stamp, .. } => ("", stamp),
+        Command::Undo { stamp, .. }
+        | Command::UndoMany { stamp, .. }
+        | Command::Restore { stamp, .. } => ("", stamp),
         Command::Batch(commands) => {
             for command in commands {
                 stamp_resource_invoker(command, device, served, otherwise, person, unserved);
@@ -2434,6 +2443,7 @@ fn stamp_resource_invoker(
         | Command::RecordChanges { .. }
         | Command::RecordChange { .. }
         | Command::ReviewRestore { .. }
+        | Command::Steps { .. }
         | Command::Records => return,
     };
     let mut acting = served(&stamp.invocation).unwrap_or_else(|| {

@@ -2933,26 +2933,21 @@ impl Hosted {
                 Ok(Some(serde_json::json!({ "undone": [named] })))
             }
             HistoryEdit::Undo { steps, .. } => {
-                let mut undone = 0_u32;
-                for _ in 0..steps.unwrap_or(1).max(1) {
-                    if !self.store.undo_last(Some(by)).map_err(failed)? {
-                        break;
-                    }
-                    undone = undone.saturating_add(1);
-                }
+                // The last steps read from the record's log, not from a list this instance kept.
+                let undone = self
+                    .store
+                    .undo_steps(steps.unwrap_or(1).max(1), Some(by))
+                    .map_err(failed)?;
                 if undone == 0 {
                     return Err("there is nothing to undo".to_owned());
                 }
                 Ok(Some(serde_json::json!({ "undone": undone })))
             }
             HistoryEdit::Redo { steps, undos: None } => {
-                let mut redone = 0_u32;
-                for _ in 0..steps.unwrap_or(1).max(1) {
-                    if !self.store.redo_last(Some(by)).map_err(failed)? {
-                        break;
-                    }
-                    redone = redone.saturating_add(1);
-                }
+                let redone = self
+                    .store
+                    .redo_steps(steps.unwrap_or(1).max(1), Some(by))
+                    .map_err(failed)?;
                 if redone == 0 {
                     return Err("there is nothing to redo".to_owned());
                 }

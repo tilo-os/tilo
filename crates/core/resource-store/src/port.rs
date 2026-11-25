@@ -309,6 +309,18 @@ impl Port for LocalPort {
                     .map(|((_, id), _)| id.clone())
                     .collect(),
             )),
+            Command::Steps {
+                steps,
+                invoker,
+                kinds,
+                redo,
+            } => Ok(wire::steps(
+                &mut self.store.borrow_mut(),
+                steps,
+                &invoker,
+                &kinds,
+                redo,
+            )),
             command if command.writes() => {
                 let written = wire::write(&mut self.store.borrow_mut(), command);
                 match written {

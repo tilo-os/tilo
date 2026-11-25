@@ -195,6 +195,30 @@ pub enum Command {
         resources: Vec<(String, String)>,
         change: String,
     },
+    /// The invocations of `invoker`'s last `steps` steps still in effect, newest first, read from
+    /// the store's own change graph rather than from a list kept by whoever wrote them: what an
+    /// app's `undo` of its last steps takes back, also where the store was opened for the call
+    /// that asked and holds nothing it wrote. A step is one invocation; a change an undo took
+    /// back is no step until a redo brings it back. `invoker` names the caller as a stamp writes
+    /// it ([`Stamp::by`]'s text); `kinds` names the kinds whose records are read, so an app takes
+    /// back its own steps and no other app's (empty for every kind). With `redo`, the undos of
+    /// theirs still in effect instead, which [`Self::UndoMany`] brings back. Answered as
+    /// [`Reply::Ids`].
+    Steps {
+        steps: u32,
+        invoker: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kinds: Vec<String>,
+        #[serde(default)]
+        redo: bool,
+    },
+    /// Take back the invocations `invocations`, as `stamp` names: each change it writes names the
+    /// invocation it takes back in its stamp, so a redo is this of the undo's own invocation.
+    /// Answered as [`Reply::Written`].
+    UndoMany {
+        invocations: Vec<String>,
+        stamp: Stamp,
+    },
 }
 
 /// One edit of a resource's content.
@@ -460,6 +484,7 @@ impl Command {
                 | Self::RecordChange { .. }
                 | Self::Checkpoint { .. }
                 | Self::Restore { .. }
+                | Self::UndoMany { .. }
         )
     }
 }

@@ -1142,6 +1142,102 @@ impl Store {
         Ok(written)
     }
 
+    /// The invocations of `invoker`'s last `steps` steps still in effect, newest first: a step is
+    /// one invocation, and a change an undo took back is no step of its own until a redo brings it
+    /// back. With `redo`, the invocations of the undos of theirs still in effect instead, newest
+    /// first: taking each back is bringing back the step it took back.
+    ///
+    /// Read from the change graph of every document the store holds that keeps a record of
+    /// `kinds` (every document when it names none), so it says the same on every replica and after
+    /// a restart, and needs no list of what the caller wrote. What an app's `undo` of its last
+    /// steps takes back, where the store was opened for the call that asked.
+    pub fn steps(
+        &mut self,
+        steps: usize,
+        invoker: &str,
+        kinds: &[String],
+        redo: bool,
+    ) -> Vec<String> {
+        let named = Stamp {
+            invoker: invoker.to_owned(),
+            ..Stamp::default()
+        };
+        // A step names nobody the store could take back: no change of it is any caller's.
+        let Some(by) = named.invoked_by() else {
+            return Vec::new();
+        };
+        // The documents a record of `kinds` is kept in, by what each holds: a content document by
+        // the resource its id names, a store document by the resources the index places in it.
+        let of_kinds = |kind: &str| kinds.is_empty() || kinds.iter().any(|named| named == kind);
+        let mut documents: Vec<String> = Vec::new();
+        for document in self.index.documents() {
+            let kept = if let Some((kind, _)) = collab_types::touch::content_resource(document) {
+                of_kinds(kind)
+            } else {
+                self.index.held(document).any(|(kind, _)| of_kinds(kind))
+            };
+            if kept {
+                documents.push(document.to_owned());
+            }
+        }
+        struct Step {
+            moment: u64,
+            op: u64,
+            invocation: String,
+            undoes: Option<String>,
+        }
+        let mut all: Vec<Step> = Vec::new();
+        for document in documents {
+            let Ok(Some(doc)) = self.existing(&document) else {
+                continue;
+            };
+            for change in doc.get_changes(&[]) {
+                let Some(stamp) = collab_types::Stamp::of(change) else {
+                    continue;
+                };
+                if stamp.invocation.is_empty() || stamp.invoked_by().as_ref() != Some(&by) {
+                    continue;
+                }
+                all.push(Step {
+                    moment: stamp.moment,
+                    op: change.start_op().get(),
+                    invocation: stamp.invocation,
+                    undoes: stamp.undoes,
+                });
+            }
+        }
+        // An undo stands while nothing has taken it back since: the newest changes decide which
+        // steps are in effect.
+        let undos: Vec<(String, String)> = all
+            .iter()
+            .filter_map(|step| Some((step.invocation.clone(), step.undoes.clone()?)))
+            .collect();
+        let undone: std::collections::HashSet<&str> = undos
+            .iter()
+            .filter(|(undo, _)| !undos.iter().any(|(_, taken)| taken == undo))
+            .map(|(_, taken)| taken.as_str())
+            .collect();
+        all.sort_by(|one, other| (other.moment, other.op).cmp(&(one.moment, one.op)));
+        let mut seen = std::collections::HashSet::new();
+        let mut picked = Vec::new();
+        for step in all {
+            let in_effect = !undone.contains(step.invocation.as_str());
+            let claimed = if redo {
+                step.undoes.is_some() && in_effect
+            } else {
+                step.undoes.is_none() && in_effect
+            };
+            if !claimed || !seen.insert(step.invocation.clone()) {
+                continue;
+            }
+            picked.push(step.invocation);
+            if picked.len() >= steps {
+                break;
+            }
+        }
+        picked
+    }
+
     /// The document `doc` when it exists, in memory or at the source; `None` for one never
     /// written.
     fn existing(&mut self, doc: &str) -> Result<Option<&mut Automerge>, StoreError> {

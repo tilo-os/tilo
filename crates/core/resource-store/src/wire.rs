@@ -98,8 +98,11 @@ impl DraftScope {
             | Command::Checkpoint { kind, id, .. } => {
                 self.resources.insert((kind.clone(), id.clone()));
             }
-            // A restore writes resources it does not name: those nested in what it names.
-            Command::Undo { .. } | Command::Restore { .. } => self.undo = true,
+            // A restore writes resources it does not name: those nested in what it names, and an
+            // undo of several steps whichever documents those steps touched.
+            Command::Undo { .. } | Command::Restore { .. } | Command::UndoMany { .. } => {
+                self.undo = true
+            }
             Command::Batch(commands) => {
                 for step in commands {
                     self.add(step);
@@ -124,6 +127,11 @@ fn write_into(
         } => written.extend(store.put(&kind, &id, resource, &stamp)?),
         Command::Remove { kind, id, stamp } => written.push(store.remove(&kind, &id, &stamp)?),
         Command::Undo { invocation, stamp } => written.extend(store.undo(&invocation, &stamp)?),
+        Command::UndoMany { invocations, stamp } => {
+            for invocation in &invocations {
+                written.extend(store.undo(invocation, &stamp)?);
+            }
+        }
         Command::Checkpoint {
             kind,
             id,
@@ -181,9 +189,20 @@ fn write_into(
         | Command::RecordChanges { .. }
         | Command::RecordChange { .. }
         | Command::ReviewRestore { .. }
+        | Command::Steps { .. }
         | Command::Records => return Err(StoreError::NotAWrite),
     }
     Ok(())
+}
+
+/// Answers [`Command::Steps`] from `store`: the invocations of `invoker`'s last `steps` steps
+/// still in effect, newest first (with `redo`, the undos of theirs still in effect), read from the
+/// store's own change graph, in the documents holding records of `kinds` (every document when it
+/// names none). What an undo or redo is carried out by, also where the store was opened for the
+/// call that asked.
+#[must_use]
+pub fn steps(store: &mut Store, steps: u32, invoker: &str, kinds: &[String], redo: bool) -> Reply {
+    Reply::Ids(store.steps(steps as usize, invoker, kinds, redo))
 }
 
 /// Whether the person `reader` (their key as a reader set names them) reads what the reader set
@@ -291,6 +310,10 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::RecordChange { .. }
         | Command::Checkpoint { .. }
         | Command::Restore { .. }
+        | Command::UndoMany { .. }
+        // A read of the caller's last steps that reads the documents' change graph, which only
+        // [`steps`] can do: a store that reads without it cannot answer.
+        | Command::Steps { .. }
         | Command::Records => return None,
     })
 }

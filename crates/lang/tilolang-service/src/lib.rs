@@ -820,17 +820,17 @@ impl ResourceService {
                 step: None,
                 chosen: None,
             } => {
-                let mut undone = 0_u32;
-                while undone < steps.unwrap_or(1) && store.undo_last(Some(by)).map_err(failed)? {
-                    undone = undone.saturating_add(1);
-                }
+                // The last steps read from the record's log, not from a list this instance kept:
+                // the store may have been opened for the call that asked.
+                let undone = store
+                    .undo_steps(steps.unwrap_or(1), Some(by))
+                    .map_err(failed)?;
                 Ok(serde_json::json!({ "undone": undone }))
             }
             HistoryEdit::Redo { steps, undos: None } => {
-                let mut redone = 0_u32;
-                while redone < steps.unwrap_or(1) && store.redo_last(Some(by)).map_err(failed)? {
-                    redone = redone.saturating_add(1);
-                }
+                let redone = store
+                    .redo_steps(steps.unwrap_or(1), Some(by))
+                    .map_err(failed)?;
                 Ok(serde_json::json!({ "redone": redone }))
             }
             HistoryEdit::Redo { undos: Some(_), .. } => {

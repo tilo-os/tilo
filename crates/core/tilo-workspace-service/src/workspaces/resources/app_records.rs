@@ -27,6 +27,7 @@ pub(super) fn written_by_app(command: &Command, app: &str) -> bool {
         | Command::Edit { stamp, .. }
         | Command::Checkpoint { stamp, .. }
         | Command::Undo { stamp, .. }
+        | Command::UndoMany { stamp, .. }
         | Command::Restore { stamp, .. } => by_app(stamp, app),
         Command::Batch(commands) => commands.iter().any(|command| written_by_app(command, app)),
         _ => false,
@@ -37,9 +38,10 @@ pub(super) fn written_by_app(command: &Command, app: &str) -> bool {
 /// a member's, and says which, so admission decides it by that one's grants.
 pub(super) fn names_no_one(command: &Command) -> bool {
     match command {
-        Command::Put { stamp, .. } | Command::Remove { stamp, .. } | Command::Edit { stamp, .. } => {
-            stamp.invoked_by().is_none()
-        }
+        Command::Put { stamp, .. }
+        | Command::Remove { stamp, .. }
+        | Command::Edit { stamp, .. }
+        | Command::UndoMany { stamp, .. } => stamp.invoked_by().is_none(),
         Command::Batch(commands) => commands.iter().any(names_no_one),
         _ => false,
     }
