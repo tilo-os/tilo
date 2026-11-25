@@ -38,7 +38,7 @@ const QUIET_SIGN_INS: usize = 4;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PanelInfo {
     /// `side` for an extension's side panel, `sign-in` for the page it asked the person to sign
-    /// in on.
+    /// in on, `popup` for a page a script opened in a window the site sized.
     pub kind: String,
     /// The engine's identifier of the extension whose page it is.
     pub id: String,
@@ -410,8 +410,9 @@ impl PageSession {
                 request_id: self.media_next,
             });
         }
-        // Pages a script opened in a window of their own: a popup the site sized, or a plain new
-        // tab. The app keeps them as pages; the window that holds one is the system's.
+        // Pages a script opened: a plain new tab is the app's page, which the system shows in a
+        // window of its own, and a popup the site sized is adopted into the window's second
+        // engine and shown beside the page, as the deleted app showed one.
         while let Ok(answer) = self.vault_answers.1.try_recv() {
             self.vault_pending = self.vault_pending.saturating_sub(1);
             self.vault_answered(answer);
@@ -421,7 +422,23 @@ impl PageSession {
         }
         self.engine.accept_popups();
         for popup in self.engine.take_popups() {
-            self.notes.push(codec::open_note(&popup.url, true));
+            match self.engine.adopt_popup(popup.id) {
+                Ok(engine) => {
+                    self.panel = Some(PanelPage {
+                        engine,
+                        info: PanelInfo {
+                            kind: "popup".to_owned(),
+                            id: popup.id.to_string(),
+                            url: popup.url,
+                            interactive: true,
+                        },
+                    });
+                    let info = self.panel_info();
+                    self.notes.push(codec::panel_note(info.as_ref()));
+                }
+                // A window that cannot hold the page beside it still keeps it as one.
+                Err(_) => self.notes.push(codec::open_note(&popup.url, true)),
+            }
         }
         // The window's second page, and the sign-in pages nobody is shown: what they said since
         // the last frame, and whether they are still there at all.
@@ -483,8 +500,9 @@ impl PageSession {
         self.panel.as_ref().map(|panel| &panel.info)
     }
 
-    /// The engine of the window's second page (an extension's side panel, a sign-in page), when
-    /// one is open: the page the window draws beside or over the one the person browsed.
+    /// The engine of the window's second page (an extension's side panel, a sign-in page, a
+    /// popup a script opened), when one is open: the page the window draws beside or over the
+    /// one the person browsed.
     #[must_use]
     pub fn panel_engine(&self) -> Option<SharedEngine> {
         self.panel.as_ref().map(|panel| panel.engine.clone())
@@ -1592,8 +1610,16 @@ mod tests {
         assert_eq!(parsed[0]["note"], "open");
         assert_eq!(parsed[0]["url"], "https://example.org/new");
         assert_eq!(parsed[0]["popup"], false);
+        // The popup is adopted into the window's second engine, which is the panel the window
+        // draws beside the page, and it is there the app is told of it.
+        assert_eq!(parsed[1]["note"], "panel");
+        assert_eq!(parsed[1]["open"], true);
+        assert_eq!(parsed[1]["kind"], "popup");
         assert_eq!(parsed[1]["url"], "https://example.org/sign-in");
-        assert_eq!(parsed[1]["popup"], true);
+        let panel = session.panel().expect("the popup is shown beside the page");
+        assert_eq!(panel.kind, "popup");
+        assert_eq!(panel.url, "https://example.org/sign-in");
+        assert!(session.panel_engine().is_some());
     }
 
     /// An action nobody waits for any more is dropped, and the page is told to stop it.
