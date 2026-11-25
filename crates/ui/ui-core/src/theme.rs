@@ -11,8 +11,6 @@ pub use crate::theme_layers::{
     PINNABLE, TRANSLUCENCY_KEY, THEME_PACKAGE_KEY, ThemeLayerStack, UI_FACE_KEY,
     WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document, workspace_temperature_override,
 };
-#[cfg(all(feature = "model", not(target_arch = "wasm32")))]
-pub use crate::theme_layers::applied_theme_package;
 #[cfg(feature = "model")]
 pub use crate::theme_record::{
     Ink as ThemeInk, Presence as ThemePresence, Status as ThemeStatus,

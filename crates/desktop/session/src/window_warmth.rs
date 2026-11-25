@@ -41,6 +41,13 @@ pub(crate) struct Windows {
     document: Map<String, Value>,
     /// What version of the settings `document` is, so it is read again only when it changed.
     settings: settings_store::SettingsFollower,
+    /// The directory the applied theme's bundle is staged in, as a window's sandbox sees it: the
+    /// sets its process draws with. `None` for the theme the mode names, or a bundle this device
+    /// does not have.
+    bundle: Option<String>,
+    /// The package `bundle` was staged for, so the staged files follow the appearance and are not
+    /// rewritten on every pass.
+    bundled: Option<String>,
 }
 
 impl Windows {
@@ -52,12 +59,16 @@ impl Windows {
         settings.changed(settings_store::stamp());
         let document = settings_store::load();
         let your_colour = PresenceHue::worn_in(&Value::Object(document.clone()), person);
-        Self {
+        let mut windows = Self {
             warmth: WindowWarmth::new(your_colour),
             theme: theme.with_your_colour(your_colour),
             document,
             settings,
-        }
+            bundle: None,
+            bundled: None,
+        };
+        windows.stage_applied_bundle();
+        windows
     }
 
     /// The theme the shell and its windows wear, in the person's own colour.
@@ -77,18 +88,30 @@ impl Windows {
         let your_colour = PresenceHue::worn_in(&Value::Object(self.document.clone()), person);
         self.warmth.set_your_colour(your_colour);
         self.theme = shell_theme(&self.document).with_your_colour(your_colour);
+        // The staged bundle follows the appearance: a package the person installs and applies while
+        // their apps run is in the directory the running windows read, without a relaunch.
+        self.stage_applied_bundle();
         Some(self.theme.clone())
     }
 
-    /// The theme package the appearance applied, by its installed id: the bundle every window's own
-    /// process loads its painter sets from, so the theme it is told draws as the shell does. `None`
-    /// for the theme the mode names.
-    pub(crate) fn applied_theme_package(&self) -> Option<String> {
-        self.document
+    /// Stage the applied theme's bundle below this device's data home, where the launcher mounts it
+    /// read-only for every window's process, unless it is already staged for that package. Nothing
+    /// of the package store reaches a sandbox: only the bundle's document and the modules of the
+    /// sets it names.
+    fn stage_applied_bundle(&mut self) {
+        let package = self
+            .document
             .get(ui::theme::APPEARANCE_SECTION)
             .and_then(|appearance| appearance.get(ui::theme::THEME_PACKAGE_KEY))
             .and_then(Value::as_str)
-            .map(str::to_owned)
+            .map(str::to_owned);
+        if package == self.bundled {
+            return;
+        }
+        self.bundle = package
+            .as_deref()
+            .and_then(settings_sections::prefs::applied_theme_bundle);
+        self.bundled = package;
     }
 
     /// Give every open window its appearance, and look at the temperatures
@@ -105,7 +128,7 @@ impl Windows {
         network: HostNetworkStatus,
         now: Instant,
     ) {
-        let theme_package = self.applied_theme_package();
+        let theme_bundle = self.bundle.clone();
         handle.read(|tree| {
             let active = Some(tree.active);
             if self.warmth.due(active, now) {
@@ -128,7 +151,7 @@ impl Windows {
                 |app| self.warmth.appearance_of(tree, app, &self.theme),
                 |app, instance| workspace_sync(tree, app, instance, person, &persons),
                 &self.theme,
-                theme_package.as_deref(),
+                theme_bundle.as_deref(),
                 network,
             );
         });

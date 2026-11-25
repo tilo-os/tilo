@@ -136,3 +136,66 @@ fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
             .is_some()
     );
 }
+
+/// Staging places the bundle's document and one module for each set it names that is not built in,
+/// and nothing else: what a process reads there is the theme package's bundle, never the package.
+#[test]
+fn staging_places_only_the_bundle_files_a_theme_names() {
+    use crate::theme::PresetDesign as _;
+
+    const SET: &str = "test.staged-files";
+    let source = tempfile::tempdir().expect("a bundle");
+    let dest = tempfile::tempdir().expect("a staged directory");
+    let document = BAUHAUS.replace("\"bauhaus\"", &format!("{SET:?}"));
+    std::fs::write(source.path().join(DOCUMENT), &document).expect("the document");
+    std::fs::write(source.path().join(format!("{SET}.wasm")), module()).expect("the module");
+    std::fs::write(source.path().join("payload-extra.txt"), b"not a theme file")
+        .expect("a file a bundle does not carry");
+    std::fs::write(dest.path().join("stale.txt"), b"yesterday").expect("a stale file");
+
+    stage(source.path(), dest.path()).expect("the bundle stages");
+    let mut staged: Vec<String> = std::fs::read_dir(dest.path())
+        .expect("the staged directory")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    staged.sort();
+    assert_eq!(
+        staged,
+        [DOCUMENT.to_owned(), format!("{SET}.wasm")],
+        "the document and the set it names, and nothing else"
+    );
+    assert_eq!(
+        std::fs::read(dest.path().join(format!("{SET}.wasm"))).expect("the staged module"),
+        module(),
+        "the set's own module"
+    );
+
+    // A document naming only built-in sets carries no module, and the one staged before is gone.
+    std::fs::write(
+        source.path().join(DOCUMENT),
+        serde_json::to_string(&crate::theme::Preset::Dark.document()).expect("the theme writes"),
+    )
+    .expect("the document");
+    stage(source.path(), dest.path()).expect("the bundle stages again");
+    let staged: Vec<String> = std::fs::read_dir(dest.path())
+        .expect("the staged directory")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        staged,
+        [DOCUMENT.to_owned()],
+        "no module for a built-in set"
+    );
+}

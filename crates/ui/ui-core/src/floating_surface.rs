@@ -2189,4 +2189,91 @@ mod tests {
             !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists()
         });
     }
+/// A window's process reads the theme the shell sends with the directory its bundle was staged in:
+/// the bundle's set draws, and a directory holding no such bundle leaves the document unread so the
+/// window keeps the theme it has.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_window_loads_the_staged_theme_bundle_the_host_names() {
+    use crate::theme::PresetDesign as _;
+    use crate::tokens::SurfaceRole;
+
+    const SET: &str = "test.staged-in-a-process";
+
+    /// A painter module that draws nothing: the bundle needs one file per set it names.
+    fn module() -> Vec<u8> {
+        use std::fmt::Write as _;
+
+        let params = tilo_theme_sdk::wire::params_answer(&[]);
+        let answer = tilo_theme_sdk::wire::paint_answer(Some(
+            &crate::part_paint::PaintedPart::new(crate::part_paint::PartScene::new()),
+        ));
+        let data = |bytes: &[u8]| {
+            let mut text = String::new();
+            for byte in bytes {
+                let _ = write!(text, "\\{byte:02x}");
+            }
+            text
+        };
+        let params = data(&params);
+        let answer = data(&answer);
+        wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 2)
+                (data (i32.const 1024) "{params}")
+                (data (i32.const 8192) "{answer}")
+                (func (export "tilo_theme_buffer") (param i32) (result i32) (i32.const 65536))
+                (func (export "tilo_theme_call") (param i32) (result i64)
+                    (if (result i64) (i32.eq (i32.load8_u (i32.const 65536)) (i32.const 3))
+                        (then (i64.or (i64.shl (i64.const 1024) (i64.const 32)) (i64.const {params_len})))
+                        (else (i64.or (i64.shl (i64.const 8192) (i64.const 32)) (i64.const {answer_len}))))))"#,
+            params_len = params.len() / 3,
+            answer_len = answer.len() / 3,
+        ))
+        .expect("the module reads")
+    }
+
+    let bundle = tempfile::tempdir().expect("a staged bundle");
+    // A compiled store nothing wrote: the set runs on the interpreter.
+    let compiled = tempfile::tempdir().expect("a compiled store");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_COMPILED_MODULES", compiled.path());
+    let mut document = serde_json::to_value(crate::theme::Preset::Dark.document())
+        .expect("the theme writes");
+    document["material"]["window"] = serde_json::json!({ "painter": SET });
+    std::fs::write(
+        bundle.path().join(crate::theme_bundle::DOCUMENT),
+        serde_json::to_string(&document).expect("the document writes"),
+    )
+    .expect("the document");
+    std::fs::write(bundle.path().join(format!("{SET}.wasm")), module()).expect("the module");
+
+    let message = |theme: serde_json::Value, staged: Option<&std::path::Path>| {
+        FloatingSurfaceHostMessage::Appearance {
+            theme: Some(theme),
+            theme_bundle: staged.map(|dir| dir.display().to_string()),
+            network_status: None,
+            workspace_hue: None,
+            your_colour: None,
+            workspace_sync: None,
+            corner_radius: None,
+        }
+    };
+    let theme = message(document.clone(), Some(bundle.path()))
+        .configured_theme()
+        .expect("the host's theme draws");
+    assert_eq!(
+        theme.finish(SurfaceRole::Window).painter(),
+        SET,
+        "the staged bundle's set draws the window"
+    );
+
+    // Nothing staged there: the set is never registered, the document naming it does not read, and
+    // the window keeps the theme it has.
+    let absent = bundle.path().join("not-staged");
+    assert!(
+        message(document, Some(&absent)).configured_theme().is_none(),
+        "a document naming a set nothing staged is no theme"
+    );
+}
 }

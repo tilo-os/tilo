@@ -80,18 +80,16 @@ pub fn compiled_modules() -> Option<std::path::PathBuf> {
         .or_else(|| tilo_paths::data_dir().map(|data| data.join("tilolang-compiled")))
 }
 
-/// Where a process reads the store the device installs its packages in, mounted read-only by the
-/// launcher: the registry's rows and the payload trees, so the toolkit resolves the appearance's
-/// applied theme package and loads its bundle. Unset for a process the launcher started outside a
-/// sandbox, and such a process reads the store its own data home names.
-pub const THEME_PACKAGES_ENV: &str = "TILO_THEME_PACKAGES";
+/// Where a sandbox sees the theme bundles this device staged for its apps, mounted read-only by the
+/// launcher. Only bundles a theme package carries are staged there, never the package store.
+pub const THEME_BUNDLES_MOUNT: &str = "/run/tilo/theme-bundles";
 
-/// The store [`THEME_PACKAGES_ENV`] names, when the launcher mounted one.
+/// Where this device stages the theme bundles its apps load: below its data home, where the session
+/// writes the applied package's bundle and the launcher mounts the directory read-only. `None` when
+/// no data home can be located.
 #[must_use]
-pub fn theme_packages() -> Option<std::path::PathBuf> {
-    std::env::var_os(THEME_PACKAGES_ENV)
-        .filter(|dir| !dir.is_empty())
-        .map(std::path::PathBuf::from)
+pub fn theme_bundles_dir() -> Option<std::path::PathBuf> {
+    tilo_paths::data_dir().map(|data| data.join("theme-bundles"))
 }
 
 /// Set on a launch whose window shows an instance a tilolang process runs.

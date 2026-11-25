@@ -91,48 +91,10 @@ pub const ACCENT_KEY: &str = "accent";
 /// theme sets it and `0` opaque (`settings_store::appearance::TRANSLUCENCY`).
 pub const TRANSLUCENCY_KEY: &str = "translucency";
 /// `appearance` key: the theme package the person applied, by the id it is installed under
-/// (`settings/appearance#apply-theme`). The package's bundle is loaded through
-/// [`crate::theme_bundle::load_from`]; absent, or installed nowhere on this device, draws the
-/// theme the mode names.
+/// (`settings/appearance#apply-theme`). The session stages its bundle for the device's app
+/// processes and tells each window where that bundle is; absent, or installed nowhere on this
+/// device, draws the theme the mode names.
 pub const THEME_PACKAGE_KEY: &str = "theme_package";
-
-/// The theme package `id` installed on this device: its painter sets registered on the machine
-/// code the device compiled for them when the package arrived (`compiled_modules`), and its
-/// document. `None` when the package is not installed here or its bundle is refused: the device
-/// then draws the theme its mode names, as it does for an appearance that names no package.
-#[cfg(all(feature = "model", not(target_arch = "wasm32")))]
-#[must_use]
-pub fn applied_theme_package(id: &str) -> Option<ThemeDocument> {
-    let id = id.trim();
-    if id.is_empty() {
-        return None;
-    }
-    // A sandboxed process reads the store the launcher mounted for it, the one the session reads
-    // the same rows of; any other process reads the store its data home names.
-    #[cfg(feature = "local-daemons")]
-    let installed = match runtime_portal::process_link::theme_packages() {
-        Some(root) => package_store::Catalog::at(root, package_store::SystemStore::from_env())
-            .find(id)
-            .ok()
-            .flatten(),
-        None => package_store::find_installed(id).ok().flatten(),
-    };
-    #[cfg(not(feature = "local-daemons"))]
-    let installed = package_store::find_installed(id).ok().flatten();
-    load_applied(&installed?.payload_root)
-}
-
-/// The document of the bundle at `payload_root`, with the painter sets it names registered on the
-/// device's compiled store first, so the sets that draw are the bundle's.
-#[cfg(all(feature = "model", not(target_arch = "wasm32")))]
-fn load_applied(payload_root: &std::path::Path) -> Option<ThemeDocument> {
-    #[cfg(feature = "local-daemons")]
-    let compiled = runtime_portal::process_link::compiled_modules();
-    #[cfg(not(feature = "local-daemons"))]
-    let compiled = None;
-    crate::theme_bundle::load_from(payload_root, compiled.as_deref()).ok()?;
-    crate::theme_bundle::document(payload_root).ok()
-}
 
 fn distribution_schema() -> u32 {
     DISTRIBUTION_DEFAULTS_SCHEMA_VERSION
@@ -760,122 +722,6 @@ mod tests {
     use crate::tokens::PresenceHue;
     use crate::tokens::contrast::audit;
 
-    /// A painter module that draws nothing: what a bundle's set is, for a test of which set draws.
-    #[cfg(all(feature = "model", not(target_arch = "wasm32")))]
-    fn empty_module() -> Vec<u8> {
-        use std::fmt::Write as _;
-
-        let params = tilo_theme_sdk::wire::params_answer(&[]);
-        let answer = tilo_theme_sdk::wire::paint_answer(Some(&crate::part_paint::PaintedPart::new(
-            crate::part_paint::PartScene::new(),
-        )));
-        let data = |bytes: &[u8]| {
-            let mut text = String::new();
-            for byte in bytes {
-                let _ = write!(text, "\\{byte:02x}");
-            }
-            text
-        };
-        let params = data(&params);
-        let answer = data(&answer);
-        wat::parse_str(format!(
-            r#"(module
-                (memory (export "memory") 2)
-                (data (i32.const 1024) "{params}")
-                (data (i32.const 8192) "{answer}")
-                (func (export "tilo_theme_buffer") (param i32) (result i32) (i32.const 65536))
-                (func (export "tilo_theme_call") (param i32) (result i64)
-                    (if (result i64) (i32.eq (i32.load8_u (i32.const 65536)) (i32.const 3))
-                        (then (i64.or (i64.shl (i64.const 1024) (i64.const 32)) (i64.const {params_len})))
-                        (else (i64.or (i64.shl (i64.const 8192) (i64.const 32)) (i64.const {answer_len}))))))"#,
-            params_len = params.len() / 3,
-            answer_len = answer.len() / 3,
-        ))
-        .expect("the module reads")
-    }
-
-    /// A window's process reads the theme the shell sends with the package it applied: the
-    /// bundle's set draws, and a package this device lacks leaves the document unread so the
-    /// window keeps the theme it has.
-    #[cfg(all(feature = "model", not(target_arch = "wasm32")))]
-    #[test]
-    fn a_window_loads_the_applied_package_s_sets_from_the_host_s_message() {
-        use crate::tokens::SurfaceRole;
-
-        const PACKAGE: &str = "so.tilo.theme.applied-in-a-process";
-        const SET: &str = "test.applied-in-a-process";
-        let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-
-        // The package as an install leaves it: a bundle in the device's store, a row naming it, and
-        // the device's compiled artifact for its set.
-        let store = package_store::layout::default_user_root().expect("the device's store");
-        let payload = store.join("pkgs").join("applied-in-a-process");
-        std::fs::create_dir_all(&payload).expect("the payload tree");
-        let mut document =
-            serde_json::to_value(Preset::Dark.document()).expect("the theme writes");
-        document["material"]["window"] = serde_json::json!({ "painter": SET });
-        std::fs::write(
-            payload.join(crate::theme_bundle::DOCUMENT),
-            serde_json::to_string(&document).expect("the document writes"),
-        )
-        .expect("the document");
-        let bytes = empty_module();
-        std::fs::write(payload.join(format!("{SET}.wasm")), &bytes).expect("the module");
-        tilo_wasm_aot::Cache::at(
-            tilo_paths::data_dir()
-                .expect("the test home")
-                .join("tilolang-compiled"),
-        )
-        .expect("the device compiles")
-        .ensure(&bytes)
-        .expect("the set compiles");
-        let mut registry = package_store::Registry::load(&store.join("registry.toml"))
-            .expect("the registry reads");
-        let mut row = package_store::InstalledPackage::detached(
-            PACKAGE,
-            String::new(),
-            payload.clone(),
-            payload.join("manifest.toml"),
-        );
-        "1.0.0".clone_into(&mut row.version);
-        registry.upsert(row);
-        registry
-            .save(&store.join("registry.toml"))
-            .expect("the registry is written");
-
-        // The message the shell sends every window names the package it applied; the app's own
-        // process loads the bundle from the device's store before it reads the document.
-        let app_appearance = |document: serde_json::Value, package: &str| {
-            crate::floating_surface::FloatingSurfaceHostMessage::Appearance {
-                theme: Some(document),
-                theme_package: Some(package.to_owned()),
-                network_status: None,
-                workspace_hue: None,
-                your_colour: None,
-                workspace_sync: None,
-                corner_radius: None,
-            }
-        };
-        let theme = app_appearance(document.clone(), PACKAGE)
-            .configured_theme()
-            .expect("the host's theme draws");
-        assert_eq!(
-            theme.finish(SurfaceRole::Window).painter(),
-            SET,
-            "the package's bundle is the set the process's window draws with"
-        );
-
-        // A package no device here has: its set is never registered, the document naming it does
-        // not read, and the window keeps the theme it has.
-        let mut absent = document;
-        absent["material"]["window"] = serde_json::json!({ "painter": "test.absent-in-a-process" });
-        assert!(
-            app_appearance(absent, "so.tilo.theme.not-installed")
-                .configured_theme()
-                .is_none(),
-            "a document naming a set nothing installed is no theme"
-        );
-    }
 
     fn light_stack() -> ThemeLayerStack {
         ThemeLayerStack {

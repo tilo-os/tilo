@@ -506,15 +506,14 @@ pub enum FloatingSurfaceHostMessage {
     Appearance {
         /// The host's configured theme document as JSON; apps cannot read its settings file
         /// through their private sandbox configuration directory. Held as JSON because a document
-        /// naming a theme package's painter set reads only once that set is registered
-        /// ([`Self::configured_theme`]), which the package below names.
+        /// naming a theme's painter set reads only once that set is registered
+        /// ([`Self::configured_theme`]), from the bundle below.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theme: Option<serde_json::Value>,
-        /// The theme package the appearance applied, by its installed id: the app's own process
-        /// loads its bundle's painter sets from the device's store, so the document above draws
-        /// with the sets the shell draws with. Absent for the theme the mode names.
+        /// The directory the appearance's applied theme bundle was staged in, as this process's
+        /// sandbox sees it: its document and painter sets. Absent for the theme the mode names.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        theme_package: Option<String>,
+        theme_bundle: Option<String>,
         /// Absent on older hosts or launches without network access.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         network_status: Option<HostNetworkStatus>,
@@ -596,7 +595,7 @@ impl FloatingSurfaceHostMessage {
     pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
         Self::Appearance {
             theme: None,
-            theme_package: None,
+            theme_bundle: None,
             network_status: None,
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
@@ -605,46 +604,54 @@ impl FloatingSurfaceHostMessage {
         }
     }
 
-    /// The host's configured theme, the package it applied, and the window's workspace appearance.
+    /// The host's configured theme, the directory its bundle was staged in, and the window's
+    /// workspace appearance.
     #[must_use]
     pub fn appearance_with_theme(
         appearance: &crate::theme::WindowAppearance,
         theme: &crate::Theme,
-        theme_package: Option<&str>,
+        theme_bundle: Option<&str>,
     ) -> Self {
         let mut message = Self::appearance(appearance);
         if let Self::Appearance {
             theme: document,
-            theme_package: named,
+            theme_bundle: staged,
             ..
         } = &mut message
         {
             *document = serde_json::to_value(&theme.document).ok();
-            named.clone_from(&theme_package.map(str::to_owned));
+            staged.clone_from(&theme_bundle.map(str::to_owned));
         }
         message
     }
 
-    /// The host's theme, with the painter sets of the theme package it applied registered first: an
-    /// app's process cannot read the person's settings, so the host names the package whose bundle
-    /// it loads from the device's store, and the document it sent then draws with that bundle's
-    /// sets.
+    /// The host's theme, with the painter sets of the bundle it names registered first: an app's
+    /// process cannot read the person's settings, so the host stages the applied theme package's
+    /// bundle where the sandbox reads it and names that directory here, and the document it sent
+    /// then draws with that bundle's sets.
     #[must_use]
     pub fn configured_theme(&self) -> Option<crate::Theme> {
         let Self::Appearance {
             theme: Some(document),
-            theme_package,
+            theme_bundle,
             ..
         } = self
         else {
             return None;
         };
-        #[cfg(all(feature = "model", not(target_arch = "wasm32")))]
-        if let Some(package) = theme_package.as_deref() {
-            let _ = crate::theme::applied_theme_package(package);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(directory) = theme_bundle.as_deref() {
+            #[cfg(feature = "local-daemons")]
+            let compiled = runtime_portal::process_link::compiled_modules();
+            #[cfg(not(feature = "local-daemons"))]
+            let compiled = None;
+            let _ = crate::theme_bundle::load_from(
+                std::path::Path::new(directory),
+                compiled.as_deref(),
+            );
         }
-        #[cfg(not(all(feature = "model", not(target_arch = "wasm32"))))]
-        let _ = theme_package;
+        #[cfg(target_arch = "wasm32")]
+        let _ = theme_bundle;
         let document: crate::theme_document::ThemeDocument =
             serde_json::from_value(document.clone()).ok()?;
         crate::Theme::from_document(&document)

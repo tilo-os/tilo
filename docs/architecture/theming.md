@@ -397,10 +397,14 @@ loads the bundle through the same loader, registering its sets on the machine
 code the device compiled when the package arrived. The choice follows the
 person; a device without the package draws the theme its mode names and
 Settings' Appearance page says the package is missing. A window's own process
-cannot read the person's settings: the shell names the package beside the theme
-it tells every window, and the process loads the bundle's sets from the device's
-store before it reads that theme — at start-up and on a change of it — so an
-app's window is drawn by the same sets the shell is.
+cannot read the person's settings or the package store: the session stages the
+applied bundle below the device's data home, where the launcher mounts that
+directory read-only into every window's sandbox, and names the staged directory
+beside the theme it tells every window. The process loads that bundle's sets
+before it reads the theme — at start-up and on a change of it, the staged
+directory following the appearance while windows run — so an app's window is
+drawn by the same sets the shell is, and no package's payload is exposed to an
+app beyond the theme bundles the device staged.
 
 **Writing a set.** A set is a crate that depends on `tilo-theme-sdk`
 alone, built as a `cdylib` for `wasm32-unknown-unknown`, exporting its

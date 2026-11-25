@@ -50,10 +50,12 @@ fn set_name_ok(name: &str) -> bool {
         && !name.starts_with('.')
 }
 
-fn named_sets(document: &serde_json::Value) -> Vec<String> {
+fn named_sets_in(document: &str) -> Result<Vec<String>, BundleError> {
+    let value: serde_json::Value =
+        serde_json::from_str(document).map_err(|e| BundleError::Document(e.to_string()))?;
     let mut names: Vec<String> = Vec::new();
     for role in ROLES {
-        let name = document
+        let name = value
             .pointer(&format!("/material/{role}/painter"))
             .and_then(serde_json::Value::as_str);
         if let Some(name) = name
@@ -63,7 +65,7 @@ fn named_sets(document: &serde_json::Value) -> Vec<String> {
             names.push(name.to_owned());
         }
     }
-    names
+    Ok(names)
 }
 
 /// The theme of the bundle whose document is `document`, taking each painter module it
@@ -86,9 +88,7 @@ pub fn load_with(
     mut module: impl FnMut(&str) -> Result<Option<Vec<u8>>, BundleError>,
     mut compiled: impl FnMut(&str, &[u8]) -> Option<Vec<u8>>,
 ) -> Result<Theme, BundleError> {
-    let value: serde_json::Value =
-        serde_json::from_str(document).map_err(|e| BundleError::Document(e.to_string()))?;
-    for name in named_sets(&value) {
+    for name in named_sets_in(document)? {
         if !set_name_ok(&name) {
             return Err(BundleError::SetName(name));
         }
@@ -102,6 +102,8 @@ pub fn load_with(
         })?;
         part_paint::register_painter_set(set);
     }
+    let value: serde_json::Value =
+        serde_json::from_str(document).map_err(|e| BundleError::Document(e.to_string()))?;
     let document: crate::theme::ThemeDocument =
         serde_json::from_value(value).map_err(|e| BundleError::Document(e.to_string()))?;
     document
@@ -166,6 +168,61 @@ pub fn document(dir: &std::path::Path) -> Result<crate::theme::ThemeDocument, Bu
 fn read_document(dir: &std::path::Path) -> Result<String, BundleError> {
     std::fs::read_to_string(dir.join(DOCUMENT))
         .map_err(|error| BundleError::Read(format!("{}: {error}", dir.join(DOCUMENT).display())))
+}
+
+/// Stage the bundle at `source` into `dest`, the directory a sandbox mounts read-only for the
+/// device's apps: its document and one module for each painter set it names that is not built in.
+/// Each file is replaced atomically — hard-linked where the filesystem links the two, copied
+/// otherwise — and anything else `dest` held is removed, so a process reading it finds a whole
+/// bundle of the theme the session applied, and nothing of another package.
+///
+/// # Errors
+/// A file cannot be read, written or replaced.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn stage(source: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(source.join(DOCUMENT))?;
+    let sets = named_sets_in(&text).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let mut wanted = vec![DOCUMENT.to_owned()];
+    wanted.extend(sets.iter().map(|name| format!("{name}.wasm")));
+    std::fs::create_dir_all(dest)?;
+    for name in &wanted {
+        place(&source.join(name), &dest.join(name))?;
+    }
+    for entry in std::fs::read_dir(dest)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let ours = name
+            .to_str()
+            .is_some_and(|name| wanted.iter().any(|wanted| wanted == name));
+        if ours {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Place `source` at `dest` atomically: linked where the filesystem links the two, copied
+/// otherwise, written beside `dest` and renamed over it.
+#[cfg(not(target_arch = "wasm32"))]
+fn place(source: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    let name = dest
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("a bundle file has no name"))?;
+    let mut staged = std::ffi::OsString::from(".");
+    staged.push(name);
+    staged.push(".new");
+    let staged = dest.with_file_name(staged);
+    let _ = std::fs::remove_file(&staged);
+    if std::fs::hard_link(source, &staged).is_err() {
+        std::fs::copy(source, &staged)?;
+    }
+    std::fs::rename(&staged, dest)
 }
 
 #[cfg(test)]

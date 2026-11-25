@@ -1803,13 +1803,47 @@ impl Default for AppearancePrefs {
 }
 
 /// The theme the installed package `id` draws on this device: its bundle loaded through
-/// [`ui::theme::applied_theme_package`], which registers each painter set it names on the machine
-/// code the device's daemon compiled when the package arrived, and its document. `None` when the
+/// [`ui::theme_bundle::load_from`], which registers each painter set it names on the machine code
+/// the device's daemon compiled when the package arrived, and its document. `None` when the
 /// package is not installed here, or its bundle is refused: the device then shows the theme the
 /// appearance's mode names, and Settings says the package is missing.
 #[must_use]
 pub fn applied_theme(id: &str) -> Option<ui::theme::ThemeDocument> {
-    ui::theme::applied_theme_package(id)
+    let installed = package_store::find_installed(id).ok().flatten()?;
+    let compiled = runtime_portal::process_link::compiled_modules();
+    ui::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).ok()?;
+    ui::theme_bundle::document(&installed.payload_root).ok()
+}
+
+/// The directory the applied theme's bundle was staged in for this device's app processes, as their
+/// sandboxes see it: the process a window runs in cannot read the person's settings or the package
+/// store, so the session stages the bundle below the device's data home, where the launcher mounts
+/// it read-only. `None` when the package is not installed here, its bundle is refused, or it cannot
+/// be staged; the window then keeps the built-in sets.
+#[must_use]
+pub fn applied_theme_bundle(id: &str) -> Option<String> {
+    let id = id.trim();
+    if !bundle_component(id) {
+        return None;
+    }
+    let installed = package_store::find_installed(id).ok().flatten()?;
+    let directory = runtime_portal::process_link::theme_bundles_dir()?.join(id);
+    ui::theme_bundle::stage(&installed.payload_root, &directory).ok()?;
+    Some(format!(
+        "{}/{id}",
+        runtime_portal::process_link::THEME_BUNDLES_MOUNT
+    ))
+}
+
+/// Whether `id` names one directory below the staged bundles: a package id is letters, digits,
+/// dots, hyphens and underscores, and nothing that could leave the directory it is placed in.
+fn bundle_component(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
+        })
+        && !id.starts_with('.')
 }
 
 impl AppearancePrefs {

@@ -559,65 +559,35 @@ pub(crate) fn push_compiled_modules(argv: &mut Vec<String>) {
     ]);
 }
 
-/// The store this device installs its packages in as the launcher reads it: the directory
-/// `TILO_APPS_DATA_DIR` names, else the person's own store. `None` when no data home names one.
-pub(crate) fn theme_package_store() -> Option<PathBuf> {
-    let root = package_store::layout::default_user_root()?;
-    root.is_absolute().then_some(root)
-}
-
-/// What a process reads the store the device installs its packages in from: the user store's
-/// registry and payload trees, and the system store where the image ships one. Never the content
-/// store or the leases.
-fn theme_package_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(root) = theme_package_store() {
-        for path in [
-            root.join(package_store::layout::REGISTRY_FILE),
-            root.join(package_store::layout::PACKAGES_DIR),
-        ] {
-            if path.exists() {
-                paths.push(path);
-            }
-        }
-    }
-    if let Some(system) = package_store::layout::system_data_dir()
-        && system.exists()
-    {
-        paths.push(system);
-    }
-    paths
-}
-
-/// Bind the store the device's packages are installed in read-only, and name it so a process reads
-/// the same rows the session does ([`runtime_portal::process_link::THEME_PACKAGES_ENV`]). The
-/// toolkit resolves the appearance's applied theme package from it and loads its bundle, so an
-/// app's own process draws the theme the shell draws. Nothing is bound on a device with no store.
-pub(crate) fn push_theme_packages(argv: &mut Vec<String>) {
-    let Some(root) = theme_package_store() else {
+/// Bind the directory the device stages theme bundles in ([`theme_bundles_dir`]) read-only at
+/// [`THEME_BUNDLES_MOUNT`]: the document and painter modules of the theme package the appearance
+/// applied, and nothing of the package store — no registry, no other package's payload. The
+/// directory is bound rather than its files, so a bundle staged after the process started is read
+/// without a relaunch. Nothing is bound when no data home names one.
+pub(crate) fn push_theme_bundles(argv: &mut Vec<String>) {
+    let Some(dir) = runtime_portal::process_link::theme_bundles_dir() else {
         return;
     };
-    argv.extend([
-        "--setenv".to_string(),
-        runtime_portal::process_link::THEME_PACKAGES_ENV.to_string(),
-        root.display().to_string(),
-    ]);
-    for path in theme_package_paths() {
-        argv.extend([
-            "--ro-bind".to_string(),
-            path.display().to_string(),
-            path.display().to_string(),
-        ]);
+    // The session stages the bundles here; the sandbox only reads them.
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
     }
+    argv.extend([
+        "--ro-bind".to_string(),
+        dir.display().to_string(),
+        runtime_portal::process_link::THEME_BUNDLES_MOUNT.to_string(),
+    ]);
 }
 
-/// The Landlock rules for [`push_theme_packages`] and [`push_compiled_modules`]: the stores a
-/// process reads the applied theme's bundle and its compiled painter sets from. It names the same
-/// paths [`push_theme_packages`] binds, so the content store and the leases stay out of reach; a
-/// rule for a path nothing bound is skipped, so a call may name one unconditionally.
-pub(crate) fn push_theme_packages_landlock(argv: &mut Vec<String>) {
-    for path in theme_package_paths() {
-        argv.extend(["--ro".to_string(), path.display().to_string()]);
+/// The Landlock rules for [`push_theme_bundles`] and [`push_compiled_modules`]: the staged bundles
+/// and the compiled painter sets a process reads its theme from. A rule for a path nothing bound is
+/// skipped, so a call may name one unconditionally.
+pub(crate) fn push_theme_bundles_landlock(argv: &mut Vec<String>) {
+    if runtime_portal::process_link::theme_bundles_dir().is_some_and(|dir| dir.is_dir()) {
+        argv.extend([
+            "--ro".to_string(),
+            runtime_portal::process_link::THEME_BUNDLES_MOUNT.to_string(),
+        ]);
     }
     if tilo_paths::data_dir().is_some_and(|data| data.join("tilolang-compiled").is_dir()) {
         argv.extend(["--ro".to_string(), COMPILED_MOUNT.to_string()]);
@@ -690,9 +660,9 @@ pub fn build_bwrap_argv_for_entry(
     push_bind(&mut argv, "--ro-bind", payload_root, &payload_mount);
     // The machine code the device's daemon compiled for this app's modules.
     push_compiled_modules(&mut argv);
-    // The store the device's theme packages are installed in: the process reads the applied one's
-    // bundle from it and draws the theme the shell draws.
-    push_theme_packages(&mut argv);
+    // The bundles this device staged for its apps: the process reads the applied theme's bundle
+    // from there and draws the theme the shell draws.
+    push_theme_bundles(&mut argv);
 
     // TILO_PACKAGE_ID picks a per-app fallback state dir in standalone mode.
     argv.push("--setenv".to_string());
@@ -2538,6 +2508,67 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_theme_bundle_reaches_a_sandbox_and_no_package_payload_does;
+
+        phase only_the_staged_theme_bundles_are_bound_and_landlocked;
+        {
+            let home = tempfile::tempdir().expect("a home");
+            let data = home.path().join("data");
+            let bundles = data.join("theme-bundles");
+            let staged = bundles.join("so.tilo.theme.applied");
+            std::fs::create_dir_all(&staged).expect("the staged bundle");
+            std::fs::write(staged.join("theme.json"), b"{}").expect("the document");
+            // A package store beside the staged bundles: its registry and another app's payload
+            // are what a sandbox must never see.
+            let store = data.join("tilo-apps");
+            let other = store.join("pkgs").join("another-app");
+            std::fs::create_dir_all(&other).expect("the store's payload tree");
+            std::fs::write(other.join("secret.txt"), b"not this app's").expect("the payload");
+            std::fs::write(store.join("registry.toml"), b"").expect("the registry");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", &data);
+
+            let argv = plain_argv(&mk_manifest("off"));
+            let mount = runtime_portal::process_link::THEME_BUNDLES_MOUNT;
+            assert!(
+                argv.windows(3).any(|w| {
+                    w[0] == "--ro-bind"
+                        && w[1] == bundles.display().to_string()
+                        && w[2] == mount
+                }),
+                "the staged bundles are bound read-only for the app: {argv:?}"
+            );
+            for bind in argv.windows(3).filter(|w| {
+                matches!(w[0].as_str(), "--ro-bind" | "--ro-bind-try" | "--bind" | "--rw-bind")
+            }) {
+                for forbidden in [
+                    store.to_str().expect("a path"),
+                    "registry.toml",
+                    "another-app",
+                ] {
+                    assert!(
+                        !bind[1].contains(forbidden) && !bind[2].contains(forbidden),
+                        "{forbidden} reaches the sandbox: {bind:?}"
+                    );
+                }
+            }
+            // The same mount, and nothing of the package store, is what Landlock lets it read.
+            let mut rules = Vec::new();
+            push_theme_bundles_landlock(&mut rules);
+            assert!(
+                rules.windows(2).any(|rule| rule[0] == "--ro" && rule[1] == mount),
+                "the bind is named to Landlock: {rules:?}"
+            );
+            assert!(
+                !rules
+                    .iter()
+                    .any(|rule| rule.contains("tilo-apps") || rule.contains("registry.toml")),
+                "no rule reaches the package store: {rules:?}"
+            );
         }
     }
 }
