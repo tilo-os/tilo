@@ -131,7 +131,7 @@ mod tests {
         }
     }
 
-    fn save(remote: &mut Replica<Remote>, connection: &Connection) {
+    fn save(remote: &mut Replica<Remote, ui::tilo_resource::AppNamed>, connection: &Connection) {
         let at = remote.state().unwrap().connections.len();
         let saved = Remote::paths().connections;
         remote
@@ -142,7 +142,7 @@ mod tests {
             .unwrap();
     }
 
-    fn only(remote: &Replica<Remote>) -> Connection {
+    fn only(remote: &Replica<Remote, ui::tilo_resource::AppNamed>) -> Connection {
         let list = remote.state().unwrap().list();
         assert_eq!(list.len(), 1);
         list.into_iter().next().unwrap()
@@ -154,7 +154,7 @@ mod tests {
         phase connections_round_trip_and_edits_write_only_their_fields;
         {
             for kind in ConnectionKind::all() {
-                let mut remote = Replica::<Remote>::new();
+                let mut remote = Replica::<Remote>::new().in_app("so.tilo.model", "Model");
                 let mut connection = sample(Uuid::new_v4(), "Build Box");
                 connection.kind = kind;
                 connection.auth = AuthMethod::available_for(kind)[0];
@@ -166,7 +166,7 @@ mod tests {
                 assert_eq!(only(&remote), connection, "{kind:?} round-trips");
             }
 
-            let mut remote = Replica::<Remote>::new();
+            let mut remote = Replica::<Remote>::new().in_app("so.tilo.model", "Model");
             let id = Uuid::new_v4();
             let connection = sample(id, "Box");
             save(&mut remote, &connection);
@@ -206,7 +206,7 @@ mod tests {
         // The latest use wins; deleting asks first; a verb on a connection
         // that is gone is refused and changes nothing.
         {
-            let mut remote = Replica::<Remote>::new();
+            let mut remote = Replica::<Remote>::new().in_app("so.tilo.model", "Model");
             let id = Uuid::new_v4();
             save(&mut remote, &sample(id, "Box"));
             let used = |at_ms| {
@@ -239,7 +239,7 @@ mod tests {
         // Whatever writes a connection is held to what a saved connection
         // is: a name, a host, a usable port and a supported sign-in.
         {
-            let mut remote = Replica::<Remote>::new();
+            let mut remote = Replica::<Remote>::new().in_app("so.tilo.model", "Model");
             let id = Uuid::new_v4();
             save(&mut remote, &sample(id, "Box"));
             let paths = Remote::paths().connections.item(&Remote::item(id));
@@ -258,7 +258,7 @@ mod tests {
         // Two devices editing the list at once converge: both new machines
         // land, renames merge as text, the pin and the port both hold.
         {
-            let mut ours = Replica::<Remote>::new();
+            let mut ours = Replica::<Remote>::new().in_app("so.tilo.model", "Model");
             let id = Uuid::new_v4();
             save(&mut ours, &sample(id, "Box"));
             let mut theirs = ours.fork();

@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
 
     phase the_resource_takes_valid_facts_only;
     {
-        let mut session = Replica::<Terminal>::new();
+        let mut session = Replica::<Terminal>::new().in_app("so.tilo.model", "Model");
         assert!(
             session
                 .apply(Terminal::RECORD_TARGET.with(("not a target".to_owned(), None::<String>)))
@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
     phase history_reads_a_requested_run_from_the_stored_resource;
     {
         use ui::tilo_resource::Settled;
-        let mut session = Replica::<Terminal>::new().as_member(ui::permissions::MemberId::agent("claude-code"));
+        let mut session = Replica::<Terminal>::new().in_app("so.tilo.model", "Model").as_member(ui::permissions::MemberId::agent("claude-code"));
         session
             .apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
             .unwrap();
@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn replicas_converge_on_one_pane() {
-    let mut ours = Replica::<Terminal>::new();
+    let mut ours = Replica::<Terminal>::new().in_app("so.tilo.model", "Model");
     let mut theirs = ours.fork();
     ours.apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
         .unwrap();

@@ -21,7 +21,9 @@ fn hex(bytes: &[u8]) -> String {
 #[ignore = "writes the fixture the tilolang Discord carries; run it by name to write it again"]
 fn native_discord_fixture() {
     // Ada connects the Lounge, confined to one channel, with channels and roles mirrored.
-    let mut ada = Replica::<Guild>::new().as_author("ada");
+    let mut ada = Replica::<Guild>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("ada");
     ada.apply(Guild::CONNECT.with(guild::Connect {
         guild_id: "123".into(),
         name: "The Lounge".into(),
