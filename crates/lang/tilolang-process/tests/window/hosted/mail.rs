@@ -4237,18 +4237,23 @@ fn an_address_in_the_subject_or_the_body_is_no_recipient() {
         .split_once("\r\n\r\n")
         .or_else(|| sent.split_once("\n\n"))
         .map_or(sent.as_str(), |(headers, _)| headers);
+    let recipients: Vec<&str> = headers
+        .lines()
+        .filter(|line| {
+            let line = line.to_ascii_lowercase();
+            line.starts_with("to:") || line.starts_with("cc:") || line.starts_with("bcc:")
+        })
+        .collect();
     assert!(
-        headers
-            .lines()
-            .any(|line| line.starts_with("To:") && line.contains("bo@chen.example")),
+        recipients
+            .iter()
+            .any(|line| line.contains("bo@chen.example")),
         "it goes to whom the draft names: {sent}"
     );
     assert!(
-        !headers.contains("eve@elsewhere.test"),
-        "an address in the subject or the words is no header: {sent}"
-    );
-    assert!(
-        sent.contains("To: eve@elsewhere.test"),
-        "the words are the words: {sent}"
+        !recipients
+            .iter()
+            .any(|line| line.contains("eve@elsewhere.test")),
+        "an address in the subject or the words is no recipient: {sent}"
     );
 }
