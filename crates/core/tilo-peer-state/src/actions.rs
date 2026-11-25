@@ -91,8 +91,8 @@ use std::time::{Duration, Instant};
 use tilo_action_policy::{Actor, MemberId};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, ExecutionLease, InvocationReceipt, InvocationState,
-    Pending, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, ResourceAddress, ResourceCopy,
-    ResourceReadRequest, ResourceReads, ResourceWake, UpdateMark, pending,
+    ReadingAnswer, ReadsAnswer, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::invocation::InvocationReplay;
@@ -2238,6 +2238,49 @@ impl Following {
 /// of its own.
 const RESOURCE_READ_DEADLINE: Duration = Duration::from_secs(60);
 
+impl RemoteDevice {
+    /// The device's answer to `read`, asked on its link's runtime and waited on for at most
+    /// [`RESOURCE_READ_DEADLINE`] beyond the read's own wait.
+    fn read_there(
+        &self,
+        read: ResourceReadRequest,
+    ) -> impl std::future::Future<Output = Result<String, ActionCallError>> + Send + 'static {
+        let deadline = RESOURCE_READ_DEADLINE
+            .saturating_add(Duration::from_millis(read.wait_ms.map_or(0, u64::from)));
+        let message = RemoteActionMessage::ResourceRead {
+            correlation: 0,
+            on_behalf_of: None,
+            read,
+        };
+        let device = Arc::clone(&self.0);
+        let asked = self.0.runtime.spawn(async move {
+            tokio::time::timeout(deadline, device.request(message))
+                .await
+                .unwrap_or_else(|_| Err(unexpected()))
+        });
+        async move {
+            match asked.await {
+                Ok(Ok(RemoteActionMessage::ResourceReading { result, .. })) => result,
+                Ok(Ok(_)) | Err(_) => Err(unexpected()),
+                Ok(Err(error)) => Err(error),
+            }
+        }
+    }
+}
+
+/// A read of `address` that answers `answer`.
+fn read_of(address: &ResourceAddress, answer: tilo_actions::remote::ReadAnswer) -> ResourceReadRequest {
+    ResourceReadRequest {
+        workspace: address.workspace.clone(),
+        app: address.app.clone(),
+        record: address.record.clone(),
+        joined: false,
+        after: None,
+        wait_ms: None,
+        answer,
+    }
+}
+
 impl ResourceReads for RemoteDevice {
     /// A read of a record this device keeps is asked of it whole, its wait included, so a held
     /// read on another device's job wakes there and answers here.
@@ -2246,156 +2289,88 @@ impl ResourceReads for RemoteDevice {
         _caller: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        let message = RemoteActionMessage::ResourceRead {
-            correlation,
-            on_behalf_of: None,
-            read,
-        };
-        let (complete, answer) = pending();
-        self.ask(message, move |answer| match answer {
-            RemoteActionMessage::ResourceReading { result, .. } => {
-                Ok(RemoteActionMessage::ResourceReading {
-                    correlation,
-                    result,
-                })
+    ) -> ReadingAnswer {
+        let result = self.read_there(read);
+        Box::pin(async move {
+            RemoteActionMessage::ResourceReading {
+                correlation,
+                result: result.await,
             }
-            _ => Err(unexpected()),
         })
-        .then(move |answer| {
-            let message = answer
-                .unwrap_or_else(|| Err(unexpected()))
-                .unwrap_or_else(|_| RemoteActionMessage::ResourceReading {
-                    correlation,
-                    result: Err(unexpected()),
-                });
-            complete.complete(message);
-        });
-        answer
     }
 
-    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
-        let (complete, answer) = pending();
-        let asked = ResourceReadRequest {
-            workspace: address.workspace.clone(),
-            app: address.app.clone(),
-            record: address.record.clone(),
-            joined: false,
-            after: None,
-            wait_ms: None,
-            answer: tilo_actions::remote::ReadAnswer::Reading,
-        };
-        let message = RemoteActionMessage::ResourceRead {
-            correlation: 0,
-            on_behalf_of: None,
-            read: asked,
-        };
-        self.ask(message, |answer| match answer {
-            RemoteActionMessage::ResourceReading { result, .. } => result,
-            _ => Err(unexpected()),
-        })
-        .then(move |answer| complete.complete(answer.unwrap_or_else(|| Err(unexpected()))));
-        let reading = answer
-            .wait_timeout(RESOURCE_READ_DEADLINE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| Err(unexpected()))?;
-        reading_of(&reading, &address.record)
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        let reading = self.read_there(read_of(address, tilo_actions::remote::ReadAnswer::Reading));
+        Box::pin(async move { reading_of(&reading.await?, &address.record) })
     }
 
-    fn may_read(
-        &self,
-        _: &Caller,
-        address: &ResourceAddress,
-    ) -> Pending<Result<(), ActionCallError>> {
-        let message = RemoteActionMessage::ResourceRead {
-            correlation: 0,
-            on_behalf_of: None,
-            read: ResourceReadRequest {
-                workspace: address.workspace.clone(),
-                app: address.app.clone(),
-                record: address.record.clone(),
-                joined: false,
-                after: None,
-                wait_ms: None,
-                answer: tilo_actions::remote::ReadAnswer::Decision,
-            },
-        };
-        let (complete, answer) = pending();
-        self.ask(message, |answer| match answer {
-            RemoteActionMessage::ResourceReading { result, .. } => result.map(|_| ()),
-            _ => Err(unexpected()),
-        })
-        .then(move |answer| complete.complete(answer.unwrap_or_else(|| Err(unexpected()))));
-        answer
+    fn may_read<'a>(
+        &'a self,
+        _: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ()> {
+        let decision =
+            self.read_there(read_of(address, tilo_actions::remote::ReadAnswer::Decision));
+        Box::pin(async move { decision.await.map(|_| ()) })
     }
 
-    fn list(
-        &self,
-        _: &Caller,
-        workspace: &str,
-        app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        let message = RemoteActionMessage::ResourceRead {
-            correlation: 0,
-            on_behalf_of: None,
-            read: ResourceReadRequest {
+    fn list<'a>(
+        &'a self,
+        _: &'a Caller,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+        let listing = self.read_there(read_of(
+            &ResourceAddress {
                 workspace: workspace.to_owned(),
                 app: app.to_owned(),
                 record: String::new(),
-                joined: false,
-                after: None,
-                wait_ms: None,
-                answer: tilo_actions::remote::ReadAnswer::Listing,
             },
-        };
-        let (complete, answer) = pending();
-        self.ask(message, |answer| match answer {
-            RemoteActionMessage::ResourceReading { result, .. } => result,
-            _ => Err(unexpected()),
+            tilo_actions::remote::ReadAnswer::Listing,
+        ));
+        Box::pin(async move {
+            let listing: serde_json::Value = serde_json::from_str(&listing.await?).map_err(
+                |error| ActionCallError::Unavailable {
+                    reason: format!("the listing does not read: {error}"),
+                },
+            )?;
+            Ok(listing
+                .get("records")
+                .and_then(serde_json::Value::as_array)
+                .map(|records| {
+                    records
+                        .iter()
+                        .map(|record| ResourceAddress {
+                            workspace: workspace.to_owned(),
+                            app: record
+                                .get("app")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or(app)
+                                .to_owned(),
+                            record: record
+                                .get("record")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default())
         })
-        .then(move |answer| complete.complete(answer.unwrap_or_else(|| Err(unexpected()))));
-        let listing = answer
-            .wait_timeout(RESOURCE_READ_DEADLINE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| Err(unexpected()))?;
-        let listing: serde_json::Value =
-            serde_json::from_str(&listing).map_err(|error| ActionCallError::Unavailable {
-                reason: format!("the listing does not read: {error}"),
-            })?;
-        Ok(listing
-            .get("records")
-            .and_then(serde_json::Value::as_array)
-            .map(|records| {
-                records
-                    .iter()
-                    .map(|record| ResourceAddress {
-                        workspace: workspace.to_owned(),
-                        app: record
-                            .get("app")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or(app)
-                            .to_owned(),
-                        record: record
-                            .get("record")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default())
     }
 
     /// A remote record wakes by its own held read ([`Self::answer_read`]): nothing here waits.
-    fn watch(
-        &self,
-        _: &Caller,
-        _: &ResourceAddress,
-        _: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a ResourceAddress,
+        _: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
     }
 }
 

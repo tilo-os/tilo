@@ -15,7 +15,7 @@ use tilo_desktop_search::model::{OPEN_ANCHOR, Source as _, Target};
 use tilo_resource::search_index::{IndexEntry, IndexState, Publisher};
 use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_runtime::host_work::{EngineHost, VaultCode, VaultHost};
+use tilolang_runtime::host_work::{EngineHost, JobHandlers, VaultCode, VaultHost};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{UiNode, Value};
 use tilolang_tilo::publish::resource_id;
@@ -44,12 +44,18 @@ impl EngineHost for Engine {
         }
     }
 
-    fn start(&self, _app: &str, _op: &str, _input: &str) -> Result<String, String> {
+    fn start(
+        &self,
+        _app: &str,
+        _op: &str,
+        _input: &str,
+        _handlers: &JobHandlers,
+    ) -> Result<String, String> {
         Err("this device starts no job".to_owned())
     }
 
-    fn status(&self, _job: &str) -> Result<String, String> {
-        Err("this device starts no job".to_owned())
+    fn job(&self, _path: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(None)
     }
 
     fn cancel(&self, _job: &str) -> bool {
@@ -215,7 +221,7 @@ fn search(entries: Vec<IndexEntry>, needle: &str) -> Vec<tilo_desktop_search::Hi
             .publish("workspace", APP, "vault", delta)
             .expect("the index takes what the app publishes");
     }
-    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| true));
+    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| Box::pin(async { true })));
     IndexedContent::new(
         Arc::new(search),
         tilo_actions::remote::Caller::local_person("ada"),

@@ -3784,9 +3784,8 @@ impl Hosted {
     }
 
     /// Answer the shell's handoff step `request`: a checkpoint writes the document's on-disk copy
-    /// and is done; a retirement is refused with why, as the tilolang host does not move a
-    /// document to another workspace; an owner view is presentation the instance has no window
-    /// of its own for, and wants no answer.
+    /// and is done; an owner view is presentation the instance has no window of its own for, and
+    /// wants no answer.
     fn handoff(&self, request: &collaboration::handoff::HandoffRequest) {
         use collaboration::handoff::{HandoffReport, HandoffRequest};
         let report = match request {
@@ -3795,19 +3794,6 @@ impl Hosted {
                 token: *token,
                 heads: Vec::new(),
             },
-            HandoffRequest::Retire { token, .. } => {
-                tracing::warn!(
-                    app = self.spec.app,
-                    instance = self.spec.instance,
-                    "the shell asked a tilolang instance to retire its document, which it cannot"
-                );
-                HandoffReport::Failed {
-                    token: *token,
-                    reason: "a tilolang app's instance does not move its document to another \
-                             workspace"
-                        .to_owned(),
-                }
-            }
             HandoffRequest::OwnerView { .. } => return,
         };
         if let Err(error) = self

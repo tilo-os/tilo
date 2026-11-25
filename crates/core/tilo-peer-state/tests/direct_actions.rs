@@ -2129,14 +2129,14 @@ impl ActionProvider for JobReads {
 }
 
 impl tilo_actions::remote::ResourceReads for JobReads {
-    fn read(
-        &self,
-        _: &Caller,
-        _: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        Err(ActionCallError::Unavailable {
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        Box::pin(std::future::ready(Err(ActionCallError::Unavailable {
             reason: "this test answers held reads only".into(),
-        })
+        })))
     }
 
     /// A held read waits here until the job moves: the wait is the device's, not the asker's.
@@ -2145,13 +2145,12 @@ impl tilo_actions::remote::ResourceReads for JobReads {
         _: &Caller,
         correlation: u64,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_actions::remote::Pending<RemoteActionMessage> {
-        let (complete, answer) = tilo_actions::remote::pending();
+    ) -> tilo_actions::remote::ReadingAnswer {
         let mut moved = self.moved.subscribe();
         let seen = *moved.borrow_and_update();
         let held = read.after.as_deref() == Some("running") && read.wait_ms.is_some();
         let record = read.record;
-        tokio::spawn(async move {
+        Box::pin(async move {
             if held {
                 let _ = moved.changed().await;
             }
@@ -2160,12 +2159,11 @@ impl tilo_actions::remote::ResourceReads for JobReads {
             } else {
                 "running"
             };
-            complete.complete(RemoteActionMessage::ResourceReading {
+            RemoteActionMessage::ResourceReading {
                 correlation,
                 result: Ok(JobReads::reading(&record, state)),
-            });
-        });
-        answer
+            }
+        })
     }
 }
 
@@ -2205,8 +2203,7 @@ async fn a_jobs_read_from_another_device_is_answered_there_and_followed_to_its_e
         Arc::clone(&remote).answer_read(&caller, 0, request),
     )
     .await
-    .expect("the device answers")
-    .expect("the asker is not dropped");
+    .expect("the device answers");
     let RemoteActionMessage::ResourceReading { result, .. } = answer else {
         panic!("a read is answered by a reading");
     };
@@ -2230,8 +2227,7 @@ async fn a_jobs_read_from_another_device_is_answered_there_and_followed_to_its_e
     let answer = tokio::time::timeout(PATIENCE, held)
         .await
         .expect("the held read wakes")
-        .expect("the read ran")
-        .expect("the asker is not dropped");
+        .expect("the read ran");
     let RemoteActionMessage::ResourceReading { result, .. } = answer else {
         panic!("a read is answered by a reading");
     };
