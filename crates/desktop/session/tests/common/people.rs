@@ -107,10 +107,21 @@ pub fn share_view_periods(again: Duration, expiry: Duration) {
 
 /// How long a device is given to hold the workspace it joined and to show it in front: the join is
 /// the product's own, which gives it [`tilo_session::sync::JOIN_PATIENCE`] before the person is told
-/// it did not happen, and the suite's hang bound after that.
+/// it did not happen, and [`JOIN_OUTCOME_READ`] after that to read the outcome it settled on.
+///
+/// The whole hang bound after the patience would outlast the test: nextest's ci profile stops a
+/// test after eight minutes, and a device's setup before its join can take minutes of that on a
+/// busy machine. A join that never took would then be killed before its wait could say why, with
+/// the device's log, and every test that joins would fail without a message.
 pub fn joined_within() -> Duration {
-    tilo_session::sync::JOIN_PATIENCE.saturating_add(tilo_test_env::hang_bound())
+    tilo_session::sync::JOIN_PATIENCE
+        .saturating_add(tilo_test_env::hang_bound().min(JOIN_OUTCOME_READ))
 }
+
+/// How long after the join's own patience a test reads what the device settled on: by then the
+/// device has held the workspace or told the person the join did not happen, so this only covers
+/// its session answering on a loaded machine.
+const JOIN_OUTCOME_READ: Duration = Duration::from_secs(30);
 
 /// A site: a server of this machine that governs one workspace, hosts it for the people in it and
 /// admits people to it at its entry.
