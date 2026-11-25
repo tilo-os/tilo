@@ -2022,15 +2022,20 @@ view start_sub_agent(all: Conversations) {
 /// makes it, through the workspace's own record of its agents.
 // The entry fills the action's job with what is typed; typing enter starts it.
 view no_assistant(record: workspace.WorkspaceAgent) {
-    stack(gap: .group) {
-        ui.EmptyState(
-            "You have no assistant in this workspace",
-            icon: .bot,
-            message: "An assistant works for the workspace and answers in the direct conversation under Direct messages.",
-        )
-        ui.Button("Create assistant", role: .primary) {
-            on press: workspace.create_agent(record, name: "Assistant")
-        } as create_assistant
+    // A record the session has not published here yet is not a workspace without an assistant:
+    // a reading that has not arrived reads as none of its fields, so the pane says it could not
+    // be read until it comes, and the empty state stands only once the record answered.
+    std.readable(of: workspace.agents, message: "The workspace's agents could not be read") {
+        stack(gap: .group) {
+            ui.EmptyState(
+                "You have no assistant in this workspace",
+                icon: .bot,
+                message: "An assistant works for the workspace and answers in the direct conversation under Direct messages.",
+            )
+            ui.Button("Create assistant", role: .primary) {
+                on press: workspace.create_agent(record, name: "Assistant")
+            } as create_assistant
+        }
     }
 }
 
