@@ -997,6 +997,49 @@ d-pfjepyyc-op = Aufruf
 
 d-pfjepyyc-ask = Anfrage
 
+d-ipe3wuqn = Dauer als Text
+    .w-ms = { $ms } ms
+    .w-0-s = { $value },0{ $part } s
+    .w-s = { $value },{ $part } s
+
+d-7w3h372c = Prüfungstitel
+    .w-passed = { $check_id } bestanden
+    .w-failed-with-exit-code = { $check_id } fehlgeschlagen mit Exit-Code { $code }
+    .w-ended-on-a-signal = { $check_id } wurde durch ein Signal beendet
+    .w-ran-out-of-time = { $check_id } lief aus der Zeit
+    .w-printed-more-than-the-host-keeps = { $check_id } gab mehr aus, als der Host behält
+    .w-was-stopped-by-the-host = { $check_id } wurde vom Host gestoppt
+    .w-the-host-could-not-run = Der Host konnte { $check_id } nicht ausführen
+
+d-bgsmx5zg = Kennzeichen
+    .w-a = A
+    .w-m = M
+    .w-d = D
+    .w-r = R
+    .w-u = U
+    .w-c = C
+
+d-xtveqfbk = Bereichswort
+    .w-staged = Index
+    .w-not-staged = Arbeitsverzeichnis
+    .w-untracked = Unverfolgt
+
+d-bcal6hl7 = Repository-Titel
+    .w-git = Git
+
+d-fw76d6i7 = Verfolgung
+    .w-up-to-date-with = Auf dem Stand von { $up }
+    .w-ahead-of = { $ahead } voraus gegenüber { $up }
+    .w-behind = { $behind } zurück gegenüber { $up }
+    .w-ahead-behind = { $ahead } voraus, { $behind } zurück gegenüber { $up }
+    .w-no-upstream-branch = Kein Upstream-Zweig
+
+d-khr57jl2 = Vor gesagt
+    .w-just-now = gerade eben
+    .w-min-ago = vor { $value } Min.
+    .w-h-ago = vor { $value } Std.
+    .w-d-ago = vor { $value } T.
+
 d-lre4z2mt = Festschreiben
 
 d-qmat4wnw = Anlegen

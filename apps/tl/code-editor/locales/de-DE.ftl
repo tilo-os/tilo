@@ -413,6 +413,9 @@ d-qzi3lurf = Document ask
         [one] document ask
        *[other] document asks
     }
+    .doc = Was eine Datei jetzt hält, dem Sprachserver des Projekts gesagt.
+
+d-h63xj7zy = Vorgang
 
 d-cimxyukl = Path
 
@@ -429,6 +432,9 @@ d-3ayhgfzm = Ask ask
         [one] ask ask
        *[other] ask asks
     }
+    .doc = Worum der Editor den Sprachserver des Projekts an einer Stelle einer Datei fragt.
+
+d-vxmeoszq = Vorgang
 
 d-ysxutqlg = Path
 
@@ -545,6 +551,7 @@ d-uaoqlskg = Server state
         [one] server state
        *[other] server states
     }
+    .doc = Was der Sprachserver des Projekts über sich sagt, wie es seine gehaltene Verbindung zuletzt sagte.
 
 d-mxvtycpj = State
 
@@ -993,6 +1000,17 @@ d-34fbxyr2 = Announce
 
 d-34fbxyr2-entry = Entry
 
+d-mgvhust2 = Server fragen
+    .doc = Fragt den Server `what` an einer Stelle einer Datei; seine Antwort kommt als das, was er als Nächstes sagt.
+
+d-mgvhust2-entry = Eintrag
+
+d-mgvhust2-what = Was
+
+d-mgvhust2-line = Zeile
+
+d-mgvhust2-column = Spalte
+
 d-2p3qz2ll = Vorschlagen
     .doc = Asks the server for completions at a place in a file.
 
@@ -1055,6 +1073,29 @@ d-qn4iboa3 = Die Suchergebnisse zeigen
 
 d-l7lwb6q5 = Add child
     .doc = Starts a file inside the folder `e`: a row's "+", pressed.
+
+d-th4eoeff = Probleme gesagt
+    .w-no-problems-in-this-file = Keine Probleme in dieser Datei
+    .w-no-problems = { $source }: keine Probleme
+    .w-1-problem = 1 Problem
+    .w-problems = { $len } Probleme
+
+d-k327ltzd = Suche gesagt
+    .w-type-words-to-find-in-every = Tippe Wörter ein, um sie in jeder Datei des Projekts zu finden
+    .w-searching = Wird gesucht…
+    .w-no-file-holds = Keine Datei enthält „{ $search_text }“
+    .w-1-result = 1 Treffer
+    .w-results-in-1-file = { $len } Treffer in 1 Datei
+    .w-results-in-files = { $len } Treffer in { $files } Dateien
+    .w-still-searching = { $head }, die Suche läuft noch
+    .w-the-search-stopped-after-files = { $head }; die Suche brach nach { $search_files } Dateien ab
+    .w-files-searched = { $head }, { $search_files } Dateien durchsucht
+
+d-ivtbrldm = Befehl gesagt
+    .w-running = läuft
+    .w-stopped = gestoppt
+    .w-done = fertig
+    .w-exit = Exit { $exit }
 
 d-k7r3ven6 = Einstellungen anlegen
     .doc = This person's settings, made by their own first change so they are theirs to read and write.

@@ -672,6 +672,67 @@ d-umcbmlvs = Rumpfart setzen
 
 d-umcbmlvs-mode = Art
 
+d-jvl26cy3 = Methodentext
+    .w-get = GET
+    .w-post = POST
+    .w-put = PUT
+    .w-patch = PATCH
+    .w-delete = DELETE
+    .w-head = HEAD
+    .w-options = OPTIONS
+
+d-6wtw73wo = Variablenhinweis
+    .w-1-variable-resolved = 1 Variable aufgelöst
+    .w-variables-resolved = { $len } Variablen aufgelöst
+    .w-unresolved-variable = Nicht aufgelöste Variable: { $join }
+    .w-unresolved-variables = Nicht aufgelöste Variablen: { $join }
+
+d-tjbrnghg = Dauertext
+    .w-ms = { $ms } ms
+    .w-s = { $value },{ $two_digits } s
+
+d-le75uzfp = Größentext
+    .w-b = { $bytes } B
+    .w-kb = { $value },{ $value2 } KB
+    .w-mb = { $value },{ $value2 } MB
+    .w-gb = { $value },{ $value2 } GB
+
+d-wsttivix = Größenbeschriftung
+    .w-more-than = Mehr als { $size_text }
+
+d-7jn7wdbj = Anzeigebeschriftung
+    .w-first-shown-as-hex = Die ersten { $size_text } als Hex angezeigt
+    .w-shown-as-hex = Als Hex angezeigt
+    .w-first-shown = Die ersten { $size_text } angezeigt
+
+d-trvx3jrh = Entwurfstitel
+    .w-new-request = Neue Anfrage
+
+d-lgqsqfed = Benannt
+    .w-new-request = Neue Anfrage
+
+d-xfsg2tqx = Zugangsbezeichnung
+    .w-change-the-token = Token ändern…
+    .w-change-the-password = Passwort ändern…
+    .w-change-the-key = Schlüssel ändern…
+    .w-set-sign-in = Anmeldung festlegen
+    .w-set-the-token = Token festlegen…
+    .w-set-the-password = Passwort festlegen…
+    .w-set-the-key = Schlüssel festlegen…
+
+d-24pdgk5a = Zugangsfeld
+    .w-token = Token
+    .w-password = Passwort
+    .w-key = Schlüssel
+    .w-sign-in = Anmeldung
+
+d-tm277isq = Sammlungswarnung
+    .w-the-collection-and-the-requests-saved = Die Sammlung und die in ihr gespeicherten Anfragen werden gelöscht. Das lässt sich nicht rückgängig machen.
+
+d-ekvrhzbi = Umgebungswarnung
+    .w-and-its-variables-are-deleted-this = { $name } und seine Variablen werden gelöscht. Das lässt sich nicht rückgängig machen.
+    .w-the-environment-is-deleted-this-cannot = Die Umgebung wird gelöscht. Das lässt sich nicht rückgängig machen.
+
 d-l6jtvmn5 = Neue Sammlung
 
 d-wle7pvzd = Sammlung umbenennen

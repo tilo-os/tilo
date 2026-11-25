@@ -142,6 +142,16 @@ d-rnz74k4z = Zeile der nächsten Ausführung
     .w-by-hand = Von Hand
     .w-not-known = Nicht bekannt
 
+d-4qyas4qh = Belegungszeile
+    .w-used = { $size_text } belegt
+    .w-of = { $size_text } von { $size_text2 }
+
+d-ucmdxqos = Seitentitel
+    .w-this-device = Dieses Gerät
+    .w-where-they-go = Wohin sie gehen
+    .w-retention = Aufbewahrung
+    .w-all-backups = Alle Sicherungen
+
 d-v3i3cihq = Zielname
     .doc = Der Name des Zielordners und was er enthält.
 
@@ -639,3 +649,47 @@ d-7rulekdp-s = Stand
 d-7rulekdp-path = Pfad
 
 d-7rulekdp-folded = Eingeklappt
+
+d-42zsjizr = Größe als Text
+    .w-b = { $bytes } B
+    .w-kb = { $tenths } kB
+    .w-mb = { $tenths } MB
+    .w-gb = { $tenths } GB
+    .w-tb = { $tenths } TB
+
+d-y33jk65h = Dateien als Text
+    .w-1-file = 1 Datei
+    .w-files = { $n } Dateien
+
+d-fod4tqpx = Aufnahmewörter
+    .w-automatic = Automatisch
+    .w-manual = Manuell
+    .w-unknown = Unbekannt
+
+d-7dqa36tk = Aufbewahrungswörter
+    .w-hourly = Stündlich
+    .w-daily = Täglich
+    .w-weekly = Wöchentlich
+    .w-monthly = Monatlich
+    .w-until-removed = Bis entfernt
+    .w-unknown = Unbekannt
+
+d-ho6s7tjb = Gesundheitswörter
+    .w-verifying = Wird geprüft
+    .w-failed = Fehlgeschlagen
+    .w-complete = Vollständig
+
+d-x6mjn5zz = Rhythmuswörter
+    .w-every-hour = Jede Stunde
+    .w-every-day = Jeden Tag
+    .w-every-week = Jede Woche
+    .w-by-hand = Von Hand
+
+d-v7fwyqef = Herkunftswörter
+    .w-home-folder = Home-Ordner
+    .w-system-files = Systemdateien
+    .w-workspace = Arbeitsbereich
+    .w-custom-folder = Eigener Ordner
+
+d-iadmcosj = Letzte Sicherung
+    .w-never = Nie
