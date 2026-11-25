@@ -555,24 +555,6 @@ impl Workspaces {
         )))
     }
 
-    /// Change `workspace`'s record of its agents by its own action `action` (its typed id:
-    /// `pause-agent`, `resume-agent`, `rename-agent`, …) with `arguments`, as `caller` asks: the
-    /// record's action, decided by the record's grants on this device and written as its own.
-    ///
-    /// # Errors
-    /// The action is no action of the record, the caller may not take it, or the write fails.
-    pub async fn agents_apply(
-        &self,
-        workspace: &str,
-        caller: &Caller,
-        action: &str,
-        arguments: Map<String, Value>,
-    ) -> Result<(), ActionCallError> {
-        let invoke = declared(action)?.with_arguments(arguments);
-        self.act_on_agents((workspace, caller.acting(), None), invoke)
-            .await
-    }
-
     /// What `caller` may change of the workspace's agents: whether the record's grants let it
     /// pause or resume one, which is what a settings view offers the switch by.
     ///
