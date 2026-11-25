@@ -16,7 +16,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
 use tilo_device_protocol::{
-    Call, RpcError, Status, StatusResult, TreeFile, TreeManifest, TreeSymlink,
+    Call, LayerImport, RpcError, Status, StatusResult, TreeFile, TreeManifest, TreeSymlink,
 };
 use tilo_peer_state::actions::{ActionService, NoActions, REPLY_DEADLINE, RemoteDevice};
 
@@ -301,9 +301,22 @@ impl Remote {
         self.put(&bytes)
     }
 
+    /// The action the bytes are for: a layer, a boot asset or a tree the device imports through
+    /// its own `devices/<device>/vm` actions. Naming it keeps them on the device that imports
+    /// them rather than in the workspace's store.
+    fn target(&self) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.into(),
+            address: ActionAddress::new(&self.resource, <LayerImport as Call>::ACTION),
+        }
+    }
+
     /// Send `size` bytes from `reader`, which hash to `hash`, in chunks the device takes.
     fn send(&self, size: u64, mut reader: impl Read, hash: &str) -> Result<(), CliError> {
-        let ContentPutAnswer::Begun { upload } = self.put_step(ContentPutStep::Begin { size })?
+        let ContentPutAnswer::Begun { upload } = self.put_step(ContentPutStep::Begin {
+            size,
+            target: Some(self.target()),
+        })?
         else {
             return Err(unexpected("begin"));
         };
