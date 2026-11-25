@@ -3249,13 +3249,16 @@ fn start_broker(
     BrokerHandle,
 )> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
+    // A check's commands are ush's, which runs only on Linux: elsewhere a host approves none.
+    #[cfg(target_os = "linux")]
+    approved_checks(&parts)?;
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         parts.sockets.collab.clone(),
         Some(Arc::new(parts.workspaces.copies().clone()) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_commits(ServiceCommits::new(parts.workspaces)
             as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>),
         None,
-        broker_services(parts, policy_time)?,
+        broker_services(parts, policy_time),
         channels,
         fanout,
     )?;
@@ -3572,7 +3575,7 @@ fn shell_services(
 fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
-) -> io::Result<ProcessServices> {
+) -> ProcessServices {
     let document_content = super::content::document_content(
         parts.workspaces,
         &parts.sockets.blobs,
@@ -3622,9 +3625,6 @@ fn broker_services(
         shell: shell_published,
         apps: published,
     } = published_here(&parts);
-    // A check's commands are ush's, which runs only on Linux: elsewhere a host approves none.
-    #[cfg(target_os = "linux")]
-    approved_checks(&parts)?;
     let mut services = ProcessServices {
         action_offload,
         document_content: Some(document_content),
@@ -3633,7 +3633,7 @@ fn broker_services(
     seat_services(&mut services, &parts, seat, forwarded);
     record_services(&mut services, &parts, policy_time);
     shell_services(&mut services, parts, &published, shell_published, &hosts);
-    Ok(services)
+    services
 }
 
 /// The device's tilolang processes, as the person's shell hands them its windows' instances on
