@@ -5338,143 +5338,154 @@ mod surface_tests {
         // beyond their own documents: what the session publishes as `workspace/access`,
         // in the words the workspace's Permissions tab lists them.
         if kind == "access" {
-            // The two actions the access view offers: take a grant or a device-record choice
-            // back, and turn one of an app's outside capabilities off or on. The session that
-            // publishes this reading answers both where the person's own device keeps the
-            // choice and the workspace keeps its grants.
-            resource["verbs"] = json!([
-                {
-                    "id": "revoke",
-                    "kind": "outside",
-                    "params": [
-                        { "name": "id", "required": true, "schema": { "type": "string" } },
-                    ],
-                },
-                {
-                    "id": "set-outside",
-                    "kind": "outside",
-                    "params": [
-                        { "name": "workspace", "required": true, "schema": { "type": "string" } },
-                        { "name": "app", "required": true, "schema": { "type": "string" } },
-                        { "name": "capability", "required": true, "schema": { "type": "string" } },
-                        { "name": "allowed", "required": true, "schema": { "type": "boolean" } },
-                    ],
-                },
-            ]);
-            resource["fields"] = json!([
-                { "path": "known", "type": "bool", "readonly": true },
-                {
-                    "path": "workspaces",
-                    "type": { "list": { "named": "WorkspaceAccess" } },
-                    "readonly": true,
-                },
-                {
-                    "path": "outside",
-                    "type": { "list": { "named": "OutsideAccess" } },
-                    "readonly": true,
-                },
-            ]);
-            resource["types"] = json!([
-                {
-                    "name": "WorkspaceAccess",
-                    "doc": "The grants one workspace gives.",
-                    "fields": [
-                        { "name": "id", "type": "text", "title": "The workspace's id." },
-                        { "name": "name", "type": "text", "title": "What the workspace is called." },
-                        {
-                            "name": "grants",
-                            "type": { "list": { "named": "AccessEntry" } },
-                            "title": "What it gives, in the order its Permissions tab lists them.",
-                        },
-                    ],
-                },
-                {
-                    "name": "AccessEntry",
-                    "doc": "One grant a workspace gives.",
-                    "fields": [
-                        { "name": "id", "type": "text", "title": "What revoking it names." },
-                        { "name": "section", "type": "text", "title": "Who holds it: people, agents or apps." },
-                        { "name": "holder", "type": "text", "title": "Whom it is given to." },
-                        { "name": "allows", "type": "text", "title": "What it allows." },
-                        { "name": "expiry", "type": "text", "title": "How long it lasts." },
-                        { "name": "granted_by", "type": "text", "title": "Who gave it, where the workspace knows." },
-                        { "name": "app", "type": "text", "title": "The app it is for, empty for a person." },
-                        { "name": "path", "type": "text", "title": "The file or folder it reaches, where it is on this device." },
-                        { "name": "workspace", "type": "text", "title": "The workspace it is in." },
-                        { "name": "holder_kind", "type": "text", "title": "What holds it: a person, an agent or an app." },
-                        { "name": "granted_by_name", "type": "text", "title": "Who gave it, by name." },
-                        { "name": "granted_by_kind", "type": "text", "title": "What the giver is: you, a person, an agent or an app." },
-                        { "name": "granted_by_you", "type": "bool", "title": "Whether the viewer gave it." },
-                        { "name": "device", "type": "bool", "title": "Whether this device's own record keeps it." },
-                        { "name": "can_revoke", "type": "bool", "title": "Whether the viewer may take it back." },
-                    ],
-                },
-                {
-                    "name": "OutsideAccess",
-                    "doc": "The outside capabilities the apps of one workspace declare.",
-                    "fields": [
-                        { "name": "workspace", "type": "text", "title": "The workspace's id." },
-                        { "name": "workspace_name", "type": "text", "title": "What the workspace is called." },
-                        {
-                            "name": "apps",
-                            "type": { "list": { "named": "OutsideApp" } },
-                            "title": "The apps that declare outside capabilities, by id.",
-                        },
-                    ],
-                },
-                {
-                    "name": "OutsideApp",
-                    "doc": "One app that declares outside capabilities, and what it may reach.",
-                    "fields": [
-                        { "name": "app", "type": "text", "title": "The app, by its package id." },
-                        { "name": "name", "type": "text", "title": "What the app is called." },
-                        {
-                            "name": "capabilities",
-                            "type": { "list": { "named": "OutsideCapability" } },
-                            "title": "Each capability its code can queue, in name order.",
-                        },
-                    ],
-                },
-                {
-                    "name": "OutsideCapability",
-                    "doc": "One capability an app's code can queue, and whether it goes.",
-                    "fields": [
-                        { "name": "capability", "type": "text", "title": "The capability, as the app's package names it." },
-                        { "name": "allowed", "type": "bool", "title": "Whether the app may carry it out now." },
-                        { "name": "can_change", "type": "bool", "title": "Whether the viewer may turn it." },
-                    ],
-                },
-            ]);
+            access_reading(&mut resource);
         }
         if kind == "content" {
-            resource["fields"] = json!([
-                { "path": "file_bytes", "type": "int", "readonly": true },
-                { "path": "member_bytes", "type": "int", "readonly": true },
-                { "path": "hourly_bytes", "type": "int", "readonly": true },
-                {
-                    "path": "refusals",
-                    "type": { "list": { "named": "Refusal" } },
-                    "readonly": true,
-                },
-            ]);
-            resource["types"] = json!([
-                {
-                    "name": "Refusal",
-                    "doc": "Content a host stopped keeping because a limit said so.",
-                    "fields": [
-                        { "name": "record", "type": "text", "title": "The record whose content it is." },
-                        { "name": "hash", "type": "text", "title": "The content's address, BLAKE3 hex." },
-                        { "name": "bytes", "type": "int", "title": "How many bytes it is." },
-                        { "name": "limit", "type": "text", "title": "The limit it went over: file, member, hourly, workspace or host." },
-                        { "name": "allowed", "type": "int", "title": "What that limit allowed, in bytes." },
-                        { "name": "member", "type": "text", "title": "Who posted it, by person id." },
-                        { "name": "at", "type": "int", "title": "When it was refused, Unix milliseconds." },
-                        { "name": "raise", "type": "text", "title": "Who can raise the limit: owners or host." },
-                    ],
-                },
-            ]);
+            content_reading(&mut resource);
         }
         resource
+    }
+
+    /// The access reading's actions, fields and types, in the words the workspace's
+    /// Permissions tab lists them.
+    fn access_reading(resource: &mut Value) {
+        // The two actions the access view offers: take a grant or a device-record choice
+        // back, and turn one of an app's outside capabilities off or on. The session that
+        // publishes this reading answers both where the person's own device keeps the
+        // choice and the workspace keeps its grants.
+        resource["verbs"] = json!([
+            {
+                "id": "revoke",
+                "kind": "outside",
+                "params": [
+                    { "name": "id", "required": true, "schema": { "type": "string" } },
+                ],
+            },
+            {
+                "id": "set-outside",
+                "kind": "outside",
+                "params": [
+                    { "name": "workspace", "required": true, "schema": { "type": "string" } },
+                    { "name": "app", "required": true, "schema": { "type": "string" } },
+                    { "name": "capability", "required": true, "schema": { "type": "string" } },
+                    { "name": "allowed", "required": true, "schema": { "type": "boolean" } },
+                ],
+            },
+        ]);
+        resource["fields"] = json!([
+            { "path": "known", "type": "bool", "readonly": true },
+            {
+                "path": "workspaces",
+                "type": { "list": { "named": "WorkspaceAccess" } },
+                "readonly": true,
+            },
+            {
+                "path": "outside",
+                "type": { "list": { "named": "OutsideAccess" } },
+                "readonly": true,
+            },
+        ]);
+        resource["types"] = json!([
+            {
+                "name": "WorkspaceAccess",
+                "doc": "The grants one workspace gives.",
+                "fields": [
+                    { "name": "id", "type": "text", "title": "The workspace's id." },
+                    { "name": "name", "type": "text", "title": "What the workspace is called." },
+                    {
+                        "name": "grants",
+                        "type": { "list": { "named": "AccessEntry" } },
+                        "title": "What it gives, in the order its Permissions tab lists them.",
+                    },
+                ],
+            },
+            {
+                "name": "AccessEntry",
+                "doc": "One grant a workspace gives.",
+                "fields": [
+                    { "name": "id", "type": "text", "title": "What revoking it names." },
+                    { "name": "section", "type": "text", "title": "Who holds it: people, agents or apps." },
+                    { "name": "holder", "type": "text", "title": "Whom it is given to." },
+                    { "name": "allows", "type": "text", "title": "What it allows." },
+                    { "name": "expiry", "type": "text", "title": "How long it lasts." },
+                    { "name": "granted_by", "type": "text", "title": "Who gave it, where the workspace knows." },
+                    { "name": "app", "type": "text", "title": "The app it is for, empty for a person." },
+                    { "name": "path", "type": "text", "title": "The file or folder it reaches, where it is on this device." },
+                    { "name": "workspace", "type": "text", "title": "The workspace it is in." },
+                    { "name": "holder_kind", "type": "text", "title": "What holds it: a person, an agent or an app." },
+                    { "name": "granted_by_name", "type": "text", "title": "Who gave it, by name." },
+                    { "name": "granted_by_kind", "type": "text", "title": "What the giver is: you, a person, an agent or an app." },
+                    { "name": "granted_by_you", "type": "bool", "title": "Whether the viewer gave it." },
+                    { "name": "device", "type": "bool", "title": "Whether this device's own record keeps it." },
+                    { "name": "can_revoke", "type": "bool", "title": "Whether the viewer may take it back." },
+                ],
+            },
+            {
+                "name": "OutsideAccess",
+                "doc": "The outside capabilities the apps of one workspace declare.",
+                "fields": [
+                    { "name": "workspace", "type": "text", "title": "The workspace's id." },
+                    { "name": "workspace_name", "type": "text", "title": "What the workspace is called." },
+                    {
+                        "name": "apps",
+                        "type": { "list": { "named": "OutsideApp" } },
+                        "title": "The apps that declare outside capabilities, by id.",
+                    },
+                ],
+            },
+            {
+                "name": "OutsideApp",
+                "doc": "One app that declares outside capabilities, and what it may reach.",
+                "fields": [
+                    { "name": "app", "type": "text", "title": "The app, by its package id." },
+                    { "name": "name", "type": "text", "title": "What the app is called." },
+                    {
+                        "name": "capabilities",
+                        "type": { "list": { "named": "OutsideCapability" } },
+                        "title": "Each capability its code can queue, in name order.",
+                    },
+                ],
+            },
+            {
+                "name": "OutsideCapability",
+                "doc": "One capability an app's code can queue, and whether it goes.",
+                "fields": [
+                    { "name": "capability", "type": "text", "title": "The capability, as the app's package names it." },
+                    { "name": "allowed", "type": "bool", "title": "Whether the app may carry it out now." },
+                    { "name": "can_change", "type": "bool", "title": "Whether the viewer may turn it." },
+                ],
+            },
+        ]);
+    }
+
+    /// The content reading's fields and the refusal it lists.
+    fn content_reading(resource: &mut Value) {
+        resource["fields"] = json!([
+            { "path": "file_bytes", "type": "int", "readonly": true },
+            { "path": "member_bytes", "type": "int", "readonly": true },
+            { "path": "hourly_bytes", "type": "int", "readonly": true },
+            {
+                "path": "refusals",
+                "type": { "list": { "named": "Refusal" } },
+                "readonly": true,
+            },
+        ]);
+        resource["types"] = json!([
+            {
+                "name": "Refusal",
+                "doc": "Content a host stopped keeping because a limit said so.",
+                "fields": [
+                    { "name": "record", "type": "text", "title": "The record whose content it is." },
+                    { "name": "hash", "type": "text", "title": "The content's address, BLAKE3 hex." },
+                    { "name": "bytes", "type": "int", "title": "How many bytes it is." },
+                    { "name": "limit", "type": "text", "title": "The limit it went over: file, member, hourly, workspace or host." },
+                    { "name": "allowed", "type": "int", "title": "What that limit allowed, in bytes." },
+                    { "name": "member", "type": "text", "title": "Who posted it, by person id." },
+                    { "name": "at", "type": "int", "title": "When it was refused, Unix milliseconds." },
+                    { "name": "raise", "type": "text", "title": "Who can raise the limit: owners or host." },
+                ],
+            },
+        ]);
     }
 
     /// The surface file's text: every action a workspace publishes, on the resource it holds,
