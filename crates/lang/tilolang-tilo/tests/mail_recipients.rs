@@ -7,7 +7,7 @@ use std::path::Path;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
-use crate::fixtures::{Replica, Workspace, action_id, field_id, target};
+use crate::fixtures::{Replica, Workspace, field_id, target};
 
 const CONTACTS: &str = "so.tilo.contacts";
 const MAIL: &str = "so.tilo.mail";
@@ -29,7 +29,33 @@ fn compiled(dir: &str, metas: &[tilolang::PackageMeta]) -> tilolang::Compiled {
 fn call(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
     let id = {
         let package = r.host.package(app).expect("the package");
-        action_id(&package.meta, action)
+        let named: Vec<_> = package
+            .meta
+            .actions
+            .iter()
+            .filter(|declared| declared.name == action)
+            .collect();
+        // A name the mailbox's root shares with a type's (`open_link` on a message, and the
+        // mailbox's that a `mailto:` link reaches) is the root's here: the test calls the app
+        // on its own root's actions.
+        let root = package
+            .meta
+            .types
+            .iter()
+            .find(|ty| package.meta.roots.contains(&ty.id))
+            .map(|ty| ty.name.as_str());
+        named
+            .iter()
+            .find(|declared| {
+                declared
+                    .params
+                    .first()
+                    .is_some_and(|param| Some(param.ty.as_str()) == root)
+            })
+            .or_else(|| named.first())
+            .unwrap_or_else(|| panic!("the action `{action}`"))
+            .id
+            .clone()
     };
     let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
         r.name.clone(),
