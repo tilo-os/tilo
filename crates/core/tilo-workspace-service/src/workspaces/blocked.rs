@@ -343,14 +343,12 @@ impl Workspaces {
                             && [BLOCKED, DEVICES].iter().any(|(app, record)| {
                                 write.app == *app && write.record == *record
                             }) => {}
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
                     change = governance.recv() => match change {
                         Ok(workspace) if workspace == admin => {}
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
                 }

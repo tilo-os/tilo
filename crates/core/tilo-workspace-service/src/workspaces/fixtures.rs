@@ -26,6 +26,16 @@ use super::{
 };
 use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
+/// `result`, which a fixture's setup cannot go without: failing there fails the test that stands
+/// on it, loudly, rather than leaving a test to pass over a setup that did nothing.
+///
+/// # Panics
+///
+/// `result` is an `Err`.
+pub fn needed<T, E: std::fmt::Display>(result: Result<T, E>, what: &str) -> T {
+    result.unwrap_or_else(|error| panic!("{what}: {error}"))
+}
+
 /// A holder certified only to keep workspaces: it governs them without taking part in
 /// their channels.
 #[must_use]

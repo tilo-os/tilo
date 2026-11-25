@@ -67,6 +67,39 @@ fn root(person: &str) -> Result<[u8; 32], String> {
         .ok_or_else(|| "a member is named by their user root key".to_owned())
 }
 
+/// Settle what a committed moderation change leaves behind outside the member list: a ban
+/// withdraws the member's invitations and keeps them out of the copy, an unban clears what kept
+/// them out.
+fn settle_moderation(
+    workspace: &mut GovernedWorkspace,
+    change: &tilo_action_policy::Change,
+    target: Option<[u8; 32]>,
+    now: u64,
+) -> Result<(), CollaborationError> {
+    match change {
+        tilo_action_policy::Change::Ban { .. } => {
+            if let Some(target) = target {
+                let mut state = workspace.collaboration().clone();
+                state.withdraw_invitations(&std::collections::BTreeSet::from([target]));
+                workspace.commit_state(state)?;
+                workspace
+                    .keep_out_removed(&std::collections::BTreeSet::from([target]), None, now)
+                    .map_err(CollaborationError::new)?;
+            }
+        }
+        tilo_action_policy::Change::Unban { .. } => {
+            if let Some(target) = target {
+                workspace
+                    .removals
+                    .clear(target)
+                    .map_err(CollaborationError::new)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub use tilo_peer_state::workspace_membership::MemberPlace;
 
 /// Hold a person in a workspace by their key ([`Workspaces::add_member`]).
@@ -636,22 +669,25 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         let by = self.authorize_role_change(&workspace, administrator, &request, now)?;
         let key = self.inner.host.key.clone();
-        self.administer_as(
-            &mut workspace,
-            request.request_id,
-            request_digest(&request)?,
-            |peer| {
-                peer.governance_mut().set_member_role(
-                    request.user_public_key,
-                    request.role,
-                    &key,
-                    system_time(now),
-                )
-            },
-            stamped(governance::SET_ROLE, actor_of(&by)),
-            now,
-        )
-        .await
+        let completion = self
+            .administer_as(
+                &mut workspace,
+                request.request_id,
+                request_digest(&request)?,
+                |peer| {
+                    peer.governance_mut().set_member_role(
+                        request.user_public_key,
+                        request.role,
+                        &key,
+                        system_time(now),
+                    )
+                },
+                stamped(governance::SET_ROLE, actor_of(&by)),
+                now,
+            )
+            .await;
+        drop(workspace);
+        completion
     }
 
     /// Make `change`, a custom role's, to `workspace`'s member list as `caller`, whom the
@@ -679,18 +715,21 @@ impl Workspaces {
         )
         .then(|| stamped(governance::SET_ROLE, actor_of(&by)))
         .flatten();
-        self.administer_as(
-            &mut workspace,
-            request_id,
-            request_digest(&("custom-role", &change))?,
-            |peer| {
-                peer.governance_mut()
-                    .change_member_list(change, &key, system_time(now))
-            },
-            stamp,
-            now,
-        )
-        .await
+        let completion = self
+            .administer_as(
+                &mut workspace,
+                request_id,
+                request_digest(&("custom-role", &change))?,
+                |peer| {
+                    peer.governance_mut()
+                        .change_member_list(change, &key, system_time(now))
+                },
+                stamp,
+                now,
+            )
+            .await;
+        drop(workspace);
+        completion
     }
 
     pub(super) async fn set_document_access(
@@ -1302,27 +1341,7 @@ impl Workspaces {
                 now,
             )
             .await?;
-        match &change {
-            tilo_action_policy::Change::Ban { .. } => {
-                if let Some(target) = target {
-                    let mut state = workspace.collaboration().clone();
-                    state.withdraw_invitations(&std::collections::BTreeSet::from([target]));
-                    workspace.commit_state(state)?;
-                    workspace
-                        .keep_out_removed(&std::collections::BTreeSet::from([target]), None, now)
-                        .map_err(CollaborationError::new)?;
-                }
-            }
-            tilo_action_policy::Change::Unban { .. } => {
-                if let Some(target) = target {
-                    workspace
-                        .removals
-                        .clear(target)
-                        .map_err(CollaborationError::new)?;
-                }
-            }
-            _ => {}
-        }
+        settle_moderation(&mut workspace, &change, target, now)?;
         tracing::info!(
             workspace = %workspace.workspace(),
             %bot,
@@ -1715,10 +1734,13 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let locked = workspace.lock().await;
         let peer = locked.peer();
-        Ok((
+        let trust = (
             peer.governance().trusted_attestors(),
             peer.governance().revoked_publishers(),
-        ))
+        );
+        drop(peer);
+        drop(locked);
+        Ok(trust)
     }
 
     /// The releases of `app` `workspace` ran before the one it runs, the most recent first.

@@ -224,63 +224,84 @@ impl Workspaces {
         {
             return answered;
         }
-        let changed = match request.target.address.action.as_str() {
-            model_providers::LIST => return answer(&Ok(providers(&root))),
-            model_providers::ADD_PROVIDER => {
-                let adding: model_providers::AddProvider = argument(request, "a provider to add")?;
-                answer(&add_provider(&root, &adding, reach.destinations))
-            }
-            model_providers::ADD_PRESET => {
-                let adding: AddPreset = argument(request, "a provider to add")?;
-                answer(&add_preset(&root, &adding))
-            }
-            model_providers::SET_ENABLED => {
-                let setting: SetEnabled = argument(request, "a provider to offer to agents")?;
-                answer(&set_enabled(&root, &setting))
-            }
-            model_providers::SET_KEY => {
-                let setting: SetKey = argument(request, "a key to keep")?;
-                answer(&take_key((keys, &root), setting, None, &reach).await)
-            }
-            model_providers::REMOVE_KEY => {
-                let provider = provider_argument(request)?;
-                answer(&remove_key((keys, &root), &provider).await)
-            }
-            model_providers::REMOVE_PROVIDER => {
-                let provider = provider_argument(request)?;
-                answer(&remove_provider((keys, &root), &provider).await)
-            }
-            model_providers::REFRESH_MODELS => {
-                let provider = provider_argument(request)?;
-                answer(&refresh_models((keys, &root), &provider, &reach).await)
-            }
-            model_providers::ADD_MODEL => {
-                let adding: AddModel = argument(request, "a model to add")?;
-                answer(&add_model(&root, &adding))
-            }
-            model_providers::SET_DEFAULT => {
-                let choosing: SetDefault = argument(request, "a model choice")?;
-                answer(&set_default(&root, &choosing))
-            }
-            model_providers::SET_ASSIGNMENT => {
-                let choosing: SetAssignment = argument(request, "a model choice")?;
-                answer(&set_assignment(&root, choosing))
-            }
-            model_providers::SET_ASSIGNMENTS => {
-                let choosing: SetAssignments = argument(request, "a model choice")?;
-                answer(&set_assignments(&root, choosing))
-            }
-            model_providers::SET_REASONING => {
-                let setting: SetReasoning = argument(request, "a thinking level to keep")?;
-                answer(&set_reasoning(&root, &setting))
-            }
-            model_providers::LINK_THIS_COMPUTER => answer(&self.link_from_this_computer(&here)),
-            _ => return Err(ActionCallError::UnknownAction),
-        };
+        // Listing the providers changes nothing, so the person's settings are not said to have
+        // changed by it.
+        if action == model_providers::LIST {
+            return answer(&Ok(providers(&root)));
+        }
+        let changed = self
+            .model_providers_changed(action, request, &here, &root, keys, reach)
+            .await;
         if changed.is_ok() {
             self.person_settings_changed();
         }
         changed
+    }
+
+    /// The [`model_providers::PROVIDER`] action of `request` that changes `workspace`'s
+    /// providers under `root`, or their keys, made with `keys` and the `reach` the policy
+    /// allowed.
+    async fn model_providers_changed(
+        &self,
+        action: &str,
+        request: &InvokeRequest,
+        here: &str,
+        root: &Path,
+        keys: ProviderKeys<'_>,
+        reach: Reach,
+    ) -> Result<Value, ActionCallError> {
+        match action {
+            model_providers::ADD_PROVIDER => {
+                let adding: model_providers::AddProvider = argument(request, "a provider to add")?;
+                answer(&add_provider(root, &adding, reach.destinations))
+            }
+            model_providers::ADD_PRESET => {
+                let adding: AddPreset = argument(request, "a provider to add")?;
+                answer(&add_preset(root, &adding))
+            }
+            model_providers::SET_ENABLED => {
+                let setting: SetEnabled = argument(request, "a provider to offer to agents")?;
+                answer(&set_enabled(root, &setting))
+            }
+            model_providers::SET_KEY => {
+                let setting: SetKey = argument(request, "a key to keep")?;
+                answer(&take_key((keys, root), setting, None, &reach).await)
+            }
+            model_providers::REMOVE_KEY => {
+                let provider = provider_argument(request)?;
+                answer(&remove_key((keys, root), &provider).await)
+            }
+            model_providers::REMOVE_PROVIDER => {
+                let provider = provider_argument(request)?;
+                answer(&remove_provider((keys, root), &provider).await)
+            }
+            model_providers::REFRESH_MODELS => {
+                let provider = provider_argument(request)?;
+                answer(&refresh_models((keys, root), &provider, &reach).await)
+            }
+            model_providers::ADD_MODEL => {
+                let adding: AddModel = argument(request, "a model to add")?;
+                answer(&add_model(root, &adding))
+            }
+            model_providers::SET_DEFAULT => {
+                let choosing: SetDefault = argument(request, "a model choice")?;
+                answer(&set_default(root, &choosing))
+            }
+            model_providers::SET_ASSIGNMENT => {
+                let choosing: SetAssignment = argument(request, "a model choice")?;
+                answer(&set_assignment(root, choosing))
+            }
+            model_providers::SET_ASSIGNMENTS => {
+                let choosing: SetAssignments = argument(request, "a model choice")?;
+                answer(&set_assignments(root, choosing))
+            }
+            model_providers::SET_REASONING => {
+                let setting: SetReasoning = argument(request, "a thinking level to keep")?;
+                answer(&set_reasoning(root, &setting))
+            }
+            model_providers::LINK_THIS_COMPUTER => answer(&self.link_from_this_computer(here)),
+            _ => Err(ActionCallError::UnknownAction),
+        }
     }
 }
 
@@ -1685,5 +1706,6 @@ mod tests {
             "a workspace that keeps no key sends none: {}",
             asked[1]
         );
+        drop(asked);
     }
 }

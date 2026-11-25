@@ -46,6 +46,7 @@ struct Version5 {
 fn without_what_it_sent(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     let (_, rest) = postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
     let kept: Version5 = postcard::from_bytes(rest).map_err(|error| error.to_string())?;
+    drop(bytes);
     postcard::to_stdvec(&StoredResource {
         version: 6,
         workspace: kept.workspace,

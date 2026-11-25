@@ -141,48 +141,7 @@ impl super::Workspaces {
             None => None,
         };
         let _turn = self.inner.creating.turn().await;
-        if let Some(workspace) = workspace
-            && self.inner.workspaces.lock().await.contains_key(workspace)
-        {
-            return Err("this host has that workspace already".into());
-        }
-        if let Some(workspace) = workspace
-            && self
-                .inner
-                .dir
-                .join(workspace)
-                .with_extension(RELEASED)
-                .exists()
-        {
-            return Err("this host released that workspace; its files stay here".into());
-        }
-        if let Some(workspace) = workspace
-            && self
-                .inner
-                .dir
-                .join(workspace)
-                .with_extension(delete::DELETED)
-                .exists()
-        {
-            return Err("that workspace was deleted here".into());
-        }
-        // A workspace this host serves already is the one it serves: founding
-        // it here as well would fork it.
-        if let Some(workspace_id) = workspace.and_then(WorkspaceId::parse) {
-            let bound = self
-                .inner
-                .host
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace_id)
-                .cloned();
-            if let Some(bound) = bound
-                && bound.lock().await.workspace_authority.is_some()
-            {
-                return Err("this host has that workspace already".into());
-            }
-        }
+        self.refuse_held_workspace(workspace).await?;
         let device = self.device_keys();
         // The apps this workspace starts with, as `workspace/apps#install` would record them.
         // Made here so the lookup runs once, on the device that makes the workspace.
@@ -243,5 +202,53 @@ impl super::Workspaces {
                 .await;
         }
         Ok(summary)
+    }
+
+    /// Refuse a workspace `workspace` names that this host already holds, has released, has
+    /// deleted, or serves.
+    async fn refuse_held_workspace(&self, workspace: Option<&str>) -> Result<(), String> {
+        if let Some(workspace) = workspace
+            && self.inner.workspaces.lock().await.contains_key(workspace)
+        {
+            return Err("this host has that workspace already".into());
+        }
+        if let Some(workspace) = workspace
+            && self
+                .inner
+                .dir
+                .join(workspace)
+                .with_extension(RELEASED)
+                .exists()
+        {
+            return Err("this host released that workspace; its files stay here".into());
+        }
+        if let Some(workspace) = workspace
+            && self
+                .inner
+                .dir
+                .join(workspace)
+                .with_extension(delete::DELETED)
+                .exists()
+        {
+            return Err("that workspace was deleted here".into());
+        }
+        // A workspace this host serves already is the one it serves: founding
+        // it here as well would fork it.
+        if let Some(workspace_id) = workspace.and_then(WorkspaceId::parse) {
+            let bound = self
+                .inner
+                .host
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned();
+            if let Some(bound) = bound
+                && bound.lock().await.workspace_authority.is_some()
+            {
+                return Err("this host has that workspace already".into());
+            }
+        }
+        Ok(())
     }
 }

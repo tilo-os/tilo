@@ -796,10 +796,33 @@ fn content_policy_json(policy: &tilo_action_policy::ContentPolicy) -> Value {
     })
 }
 
-/// The limit a caller names: a size, or 0 for no limit at all. `None` when
-/// they named none, which leaves the limit as it is.
-fn named_limit(named: Option<u64>) -> Option<Option<u64>> {
-    named.map(|bytes| (bytes > 0).then_some(bytes))
+/// The app an app change is about: named by `app`, or by its `flatpak` reference, which must name
+/// the same app where both are given.
+fn named_app(app: Option<&str>, flatpak: Option<&str>) -> Result<String, ActionCallError> {
+    use tilo_peer_state::workspace_membership::flatpak_app_id;
+    let unreadable = || {
+        ActionCallError::invalid_request("`flatpak` names `app/<application id>/<arch>/<branch>`")
+    };
+    match (app, flatpak) {
+        (Some(app), None) => Ok(app.to_owned()),
+        (Some(app), Some(reference)) => {
+            let named = flatpak_app_id(reference).ok_or_else(unreadable)?;
+            if named != app {
+                return Err(ActionCallError::invalid_request(format!(
+                    "the Flatpak `{reference}` is {named} in this workspace, not `{app}`"
+                )));
+            }
+            Ok(named)
+        }
+        (None, Some(reference)) => flatpak_app_id(reference).ok_or_else(unreadable),
+        (None, None) => Err(ActionCallError::invalid_request("`app` is required")),
+    }
+}
+
+/// The limit `named`, kept over `current`: a size, or 0 for no limit at all. A
+/// caller who named none leaves the limit as it is.
+fn named_limit(named: Option<u64>, current: Option<u64>) -> Option<u64> {
+    named.map_or(current, |bytes| (bytes > 0).then_some(bytes))
 }
 
 /// The limits a workspace's owners set on what members post there, each one
@@ -1370,8 +1393,9 @@ fn app_rows(
             (verb.id == governance::INSTALL_APP || ON_EACH_APP.contains(&verb.id)) && offered(verb)
         })
         .collect();
+    let installed_apps = workspace.peer().governance().app_versions();
     let mut rows = Vec::new();
-    for installed in workspace.peer().governance().app_versions() {
+    for installed in installed_apps {
         let release = installed.release;
         let resource = workspace_app(workspace.workspace(), &release.app);
         for verb in &verbs {
@@ -2033,73 +2057,8 @@ impl Workspaces {
         if wants(WORKSPACE_GOVERNANCE_PROVIDER)
             && let Some(workspace_id) = workspace_id
         {
-            let operating = self
-                .server_operator(workspace_id, caller, certificate)
+            self.offer_governance(workspace_id, caller, certificate, query, &mut offer)
                 .await;
-            if let Some((governed, device)) = self.governed_by(workspace_id, caller).await {
-                // What an agent's grants here refuse it is not offered to it.
-                let person = agents::is_the_person(caller, &device, Some(workspace_id));
-                let grants = if person {
-                    None
-                } else {
-                    Some(self.agent_grants(Some(workspace_id), caller).await)
-                };
-                let workspace = governed.lock().await;
-                offer.generation = workspace.peer().governance().generation();
-                let now = tilo_clock::unix_now_ns();
-                let offered = |verb: &Verb| {
-                    self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)
-                };
-                // Removing is published on each person, under the workspace's people, and
-                // what changes one app on that app, under its apps.
-                let mut rows: Vec<CatalogueRow> = VERBS
-                    .iter()
-                    .filter(|verb| {
-                        verb.id != governance::REMOVE_MEMBER
-                            && !ON_EACH_APP.contains(&verb.id)
-                            && offered(verb)
-                    })
-                    .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
-                    .collect();
-                let own = device.user_public_key;
-                rows.extend(self.member_rows(&workspace, (query, own), offered));
-                rows.extend(app_rows(&workspace, query, offered));
-                if operating.is_some() {
-                    rows.extend(server::rows(&workspace));
-                }
-                let id = workspace.workspace().to_owned();
-                let name = workspace.name();
-                drop(workspace);
-                // The workspace's agents, as far as the record's grants let the caller change them.
-                #[cfg(not(target_arch = "wasm32"))]
-                rows.extend(self.agents_rows(&id, &name, caller.acting()).await);
-                // The workspace's mail accounts, as its policy on its mail
-                // lets the caller ask them.
-                #[cfg(not(target_arch = "wasm32"))]
-                rows.extend(
-                    self.mail_account_rows((Some(workspace_id), caller, certificate), &id)
-                        .await,
-                );
-                // Its vault and the model providers its agents run on, as its
-                // policy on each lets the caller ask them.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    rows.extend(
-                        self.vault_rows((Some(workspace_id), caller, certificate), &id)
-                            .await,
-                    );
-                    rows.extend(
-                        self.models_rows((Some(workspace_id), caller, certificate), &id)
-                            .await,
-                    );
-                }
-                offer.add(GOVERNANCE, &id, governance_tree(rows, &name));
-            } else if let Some((governed, _device)) = operating {
-                // An agent of the person's asks what they ask of their
-                // servers: the workspace's governance is not theirs.
-                let workspace = governed.lock().await;
-                offer.add(GOVERNANCE, workspace.workspace(), server::rows(&workspace));
-            }
         }
         if wants(HOST_ACTIONS_PROVIDER)
             && let Some(certificate) = certificate
@@ -2150,6 +2109,87 @@ impl Workspaces {
             offer.add(connections::CONNECTIONS, "", connections::agent_rows());
         }
         offer.page(query)
+    }
+
+    /// Offer the governance of `workspace_id` to `caller`: the governance of the workspace it
+    /// carries, or, for an agent of the person's asking what it asks of its servers, the serving
+    /// device's own operations there.
+    async fn offer_governance(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        query: &CatalogueQuery,
+        offer: &mut Offer,
+    ) {
+        let operating = self
+            .server_operator(workspace_id, caller, certificate)
+            .await;
+        let Some((governed, device)) = self.governed_by(workspace_id, caller).await else {
+            // An agent of the person's asks what they ask of their servers: the workspace's
+            // governance is not theirs.
+            if let Some((governed, _device)) = operating {
+                let workspace = governed.lock().await;
+                offer.add(GOVERNANCE, workspace.workspace(), server::rows(&workspace));
+            }
+            return;
+        };
+        // What an agent's grants here refuse it is not offered to it.
+        let person = agents::is_the_person(caller, &device, Some(workspace_id));
+        let grants = if person {
+            None
+        } else {
+            Some(self.agent_grants(Some(workspace_id), caller).await)
+        };
+        let workspace = governed.lock().await;
+        offer.generation = workspace.peer().governance().generation();
+        let now = tilo_clock::unix_now_ns();
+        let offered =
+            |verb: &Verb| self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now);
+        // Removing is published on each person, under the workspace's people, and
+        // what changes one app on that app, under its apps.
+        let mut rows: Vec<CatalogueRow> = VERBS
+            .iter()
+            .filter(|verb| {
+                verb.id != governance::REMOVE_MEMBER
+                    && !ON_EACH_APP.contains(&verb.id)
+                    && offered(verb)
+            })
+            .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
+            .collect();
+        let own = device.user_public_key;
+        rows.extend(self.member_rows(&workspace, (query, own), offered));
+        rows.extend(app_rows(&workspace, query, offered));
+        if operating.is_some() {
+            rows.extend(server::rows(&workspace));
+        }
+        let id = workspace.workspace().to_owned();
+        let name = workspace.name();
+        drop(workspace);
+        // The workspace's agents, as far as the record's grants let the caller change them.
+        #[cfg(not(target_arch = "wasm32"))]
+        rows.extend(self.agents_rows(&id, &name, caller.acting()).await);
+        // The workspace's mail accounts, as its policy on its mail
+        // lets the caller ask them.
+        #[cfg(not(target_arch = "wasm32"))]
+        rows.extend(
+            self.mail_account_rows((Some(workspace_id), caller, certificate), &id)
+                .await,
+        );
+        // Its vault and the model providers its agents run on, as its
+        // policy on each lets the caller ask them.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            rows.extend(
+                self.vault_rows((Some(workspace_id), caller, certificate), &id)
+                    .await,
+            );
+            rows.extend(
+                self.models_rows((Some(workspace_id), caller, certificate), &id)
+                    .await,
+            );
+        }
+        offer.add(GOVERNANCE, &id, governance_tree(rows, &name));
     }
 
     /// Run `request` from `caller`, on the device `certificate` when the
@@ -2773,7 +2813,8 @@ impl Workspaces {
                     )));
                 }
                 let path = call.args.text("path")?.map(str::to_owned);
-                let id = format!("wh_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+                let simple = uuid::Uuid::new_v4().simple().to_string();
+                let id = format!("wh_{}", simple.get(..12).unwrap_or(&simple));
                 let shortcut = webhooks::shortcut(
                     &id,
                     &url,
@@ -2795,8 +2836,10 @@ impl Workspaces {
                     "events": events,
                     "key": hex::encode(self.device_cert().device_public_key),
                 });
-                if let Some(path) = path {
-                    made["path"] = json!(path);
+                if let Some(path) = path
+                    && let Some(object) = made.as_object_mut()
+                {
+                    object.insert("path".into(), json!(path));
                 }
                 Ok(made)
             }
@@ -2871,6 +2914,7 @@ impl Workspaces {
         self.revoke_grants(&mut workspace, tilo_clock::wall(), &[grant.id])
             .await
             .map_err(ActionCallError::refused)?;
+        drop(workspace);
         Ok(json!({ "revoked": id }))
     }
 
@@ -2986,7 +3030,7 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
         use tilo_peer_state::workspace_membership::{
-            AppPayload, AppRelease, WorkspaceMembershipCommand, flatpak_app_id,
+            AppPayload, AppRelease, WorkspaceMembershipCommand,
         };
         let GovernanceCall {
             workspace,
@@ -2997,28 +3041,7 @@ impl Workspaces {
         // A Flatpak is named by its reference; the record its app id. Every other change names the
         // app it is about.
         let flatpak = args.text("flatpak")?.map(str::to_owned);
-        let app = match (args.text("app")?, flatpak.as_deref()) {
-            (Some(app), None) => app.to_owned(),
-            (Some(app), Some(reference)) => {
-                let named = flatpak_app_id(reference).ok_or_else(|| {
-                    ActionCallError::invalid_request(
-                        "`flatpak` names `app/<application id>/<arch>/<branch>`",
-                    )
-                })?;
-                if named != app {
-                    return Err(ActionCallError::invalid_request(format!(
-                        "the Flatpak `{reference}` is {named} in this workspace, not `{app}`"
-                    )));
-                }
-                named
-            }
-            (None, Some(reference)) => flatpak_app_id(reference).ok_or_else(|| {
-                ActionCallError::invalid_request(
-                    "`flatpak` names `app/<application id>/<arch>/<branch>`",
-                )
-            })?,
-            (None, None) => return Err(ActionCallError::invalid_request("`app` is required")),
-        };
+        let app = named_app(args.text("app")?, flatpak.as_deref())?;
         let running = self
             .app_versions(workspace)
             .await
@@ -3686,11 +3709,9 @@ impl Workspaces {
             return Ok(content_policy_json(&current));
         }
         let policy = tilo_action_policy::ContentPolicy {
-            file_bytes: named_limit(call.args.integer("file_bytes")?).unwrap_or(current.file_bytes),
-            member_bytes: named_limit(call.args.integer("member_bytes")?)
-                .unwrap_or(current.member_bytes),
-            hourly_bytes: named_limit(call.args.integer("hourly_bytes")?)
-                .unwrap_or(current.hourly_bytes),
+            file_bytes: named_limit(call.args.integer("file_bytes")?, current.file_bytes),
+            member_bytes: named_limit(call.args.integer("member_bytes")?, current.member_bytes),
+            hourly_bytes: named_limit(call.args.integer("hourly_bytes")?, current.hourly_bytes),
         };
         let settled = self
             .settle_content_policy(workspace, call.device, policy)
@@ -3876,11 +3897,14 @@ pub(crate) struct Shared {
     /// The running asks of people's models, each with the signal that moves
     /// whenever it wrote more or ended.
     model_asks: Mutex<std::collections::HashMap<InvocationId, tokio::sync::watch::Receiver<u64>>>,
-    /// The calls that wait in their asked records, each with the workspace and the device
-    /// certificate it was asked under: what a person's approve admits it again with.
-    pub(super) asked_calls:
-        Mutex<std::collections::HashMap<InvocationId, (Option<WorkspaceId>, Option<DeviceCert>)>>,
+    /// The calls that wait in their asked records (`asked_calls`).
+    pub(super) asked_calls: AskedCalls,
 }
+
+/// The calls that wait in their asked records, each with the workspace and the device certificate
+/// it was asked under: what a person's approve admits it again with.
+pub(super) type AskedCalls =
+    Mutex<std::collections::HashMap<InvocationId, (Option<WorkspaceId>, Option<DeviceCert>)>>;
 
 impl ServiceWorkspaceActions {
     /// Governance for workspaces [`attach`](Self::attach)ed later. Call it inside
@@ -5071,6 +5095,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         };
         let mut asking = server.shared.asked_calls.lock_recover();
         asking.remove(&invocation);
+        drop(asking);
         let mut log = server.log();
         if log
             .get(caller, &invocation)
@@ -5087,6 +5112,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
                 ),
             );
         }
+        drop(log);
     }
 
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
@@ -5096,6 +5122,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             // Kept from before this host started again: it ended with it.
             return Ok(());
         }
+        drop(asking);
         let mut log = server.log();
         if !log
             .get(caller, &invocation)
@@ -5113,6 +5140,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
                 },
             ),
         );
+        drop(log);
         Ok(())
     }
 }
@@ -5135,8 +5163,8 @@ mod surface_tests {
 
     use super::{VERBS, Verb};
 
-    /// The header the file carries: written by this test, so a change to it reads in review as
-    /// an API change.
+    // The header the file carries: written by this test, so a change to it reads in review as
+    // an API change.
 
     /// The verbs a member change names, declared on the members root it changes beside the
     /// actions that make it: a change names the governance operation it is (`remove-member`,
@@ -5191,6 +5219,117 @@ mod surface_tests {
         }
     }
 
+    /// The resource of `kind`, labelled `label`, publishing `verbs`: the fields and types a
+    /// workspace's members, its content and its access reading answer with.
+    fn described_resource(kind: &str, label: &str, verbs: &[Value]) -> Value {
+        let mut resource = json!({
+            "kind": format!("workspace.{kind}"),
+            "label": label,
+            "version": 1,
+            "verbs": verbs,
+        });
+        // The members read as everyone in the workspace now: what every host is handed
+        // from the member list it decides by (the language runtime's `Host::follow_members`).
+        if kind == "members" {
+            resource["fields"] = json!([
+                { "path": "people", "type": { "list": "actor" }, "readonly": true },
+            ]);
+        }
+        // The content reads as its owners' limits and the content a limit refused: what
+        // every host is handed as `workspace.content` (the language runtime's
+        // `Host::give_content`), each refusal only to whoever reads it.
+        // The workspace's grants read as what its apps, people and agents were given
+        // beyond their own documents: what the session publishes as `workspace/access`,
+        // in the words the workspace's Permissions tab lists them.
+        if kind == "access" {
+            // The one action the access view offers: take a grant or a device-record
+            // choice back. The session that publishes this reading answers it where the
+            // person's own device keeps the choice.
+            resource["verbs"] = json!([
+                {
+                    "id": "revoke",
+                    "kind": "outside",
+                    "params": [
+                        { "name": "id", "required": true, "schema": { "type": "string" } },
+                    ],
+                },
+            ]);
+            resource["fields"] = json!([
+                { "path": "known", "type": "bool", "readonly": true },
+                {
+                    "path": "workspaces",
+                    "type": { "list": { "named": "WorkspaceAccess" } },
+                    "readonly": true,
+                },
+            ]);
+            resource["types"] = json!([
+                {
+                    "name": "WorkspaceAccess",
+                    "doc": "The grants one workspace gives.",
+                    "fields": [
+                        { "name": "id", "type": "text", "title": "The workspace's id." },
+                        { "name": "name", "type": "text", "title": "What the workspace is called." },
+                        {
+                            "name": "grants",
+                            "type": { "list": { "named": "AccessEntry" } },
+                            "title": "What it gives, in the order its Permissions tab lists them.",
+                        },
+                    ],
+                },
+                {
+                    "name": "AccessEntry",
+                    "doc": "One grant a workspace gives.",
+                    "fields": [
+                        { "name": "id", "type": "text", "title": "What revoking it names." },
+                        { "name": "section", "type": "text", "title": "Who holds it: people, agents or apps." },
+                        { "name": "holder", "type": "text", "title": "Whom it is given to." },
+                        { "name": "allows", "type": "text", "title": "What it allows." },
+                        { "name": "expiry", "type": "text", "title": "How long it lasts." },
+                        { "name": "granted_by", "type": "text", "title": "Who gave it, where the workspace knows." },
+                        { "name": "app", "type": "text", "title": "The app it is for, empty for a person." },
+                        { "name": "path", "type": "text", "title": "The file or folder it reaches, where it is on this device." },
+                        { "name": "workspace", "type": "text", "title": "The workspace it is in." },
+                        { "name": "holder_kind", "type": "text", "title": "What holds it: a person, an agent or an app." },
+                        { "name": "granted_by_name", "type": "text", "title": "Who gave it, by name." },
+                        { "name": "granted_by_kind", "type": "text", "title": "What the giver is: you, a person, an agent or an app." },
+                        { "name": "granted_by_you", "type": "bool", "title": "Whether the viewer gave it." },
+                        { "name": "device", "type": "bool", "title": "Whether this device's own record keeps it." },
+                        { "name": "can_revoke", "type": "bool", "title": "Whether the viewer may take it back." },
+                    ],
+                },
+            ]);
+        }
+        if kind == "content" {
+            resource["fields"] = json!([
+                { "path": "file_bytes", "type": "int", "readonly": true },
+                { "path": "member_bytes", "type": "int", "readonly": true },
+                { "path": "hourly_bytes", "type": "int", "readonly": true },
+                {
+                    "path": "refusals",
+                    "type": { "list": { "named": "Refusal" } },
+                    "readonly": true,
+                },
+            ]);
+            resource["types"] = json!([
+                {
+                    "name": "Refusal",
+                    "doc": "Content a host stopped keeping because a limit said so.",
+                    "fields": [
+                        { "name": "record", "type": "text", "title": "The record whose content it is." },
+                        { "name": "hash", "type": "text", "title": "The content's address, BLAKE3 hex." },
+                        { "name": "bytes", "type": "int", "title": "How many bytes it is." },
+                        { "name": "limit", "type": "text", "title": "The limit it went over: file, member, hourly, workspace or host." },
+                        { "name": "allowed", "type": "int", "title": "What that limit allowed, in bytes." },
+                        { "name": "member", "type": "text", "title": "Who posted it, by person id." },
+                        { "name": "at", "type": "int", "title": "When it was refused, Unix milliseconds." },
+                        { "name": "raise", "type": "text", "title": "Who can raise the limit: owners or host." },
+                    ],
+                },
+            ]);
+        }
+        resource
+    }
+
     /// The surface file's text: every action a workspace publishes, on the resource it holds,
     /// with the parameters and kind its action declares, and the record of its agents, which
     /// the apps of the workspace read from the same package.
@@ -5227,112 +5366,7 @@ mod surface_tests {
                         })
                     }));
                 }
-                let mut resource = json!({
-                    "kind": format!("workspace.{kind}"),
-                    "label": label,
-                    "version": 1,
-                    "verbs": verbs,
-                });
-                // The members read as everyone in the workspace now: what every host is handed
-                // from the member list it decides by (the language runtime's `Host::follow_members`).
-                if *kind == "members" {
-                    resource["fields"] = json!([
-                        { "path": "people", "type": { "list": "actor" }, "readonly": true },
-                    ]);
-                }
-                // The content reads as its owners' limits and the content a limit refused: what
-                // every host is handed as `workspace.content` (the language runtime's
-                // `Host::give_content`), each refusal only to whoever reads it.
-                // The workspace's grants read as what its apps, people and agents were given
-                // beyond their own documents: what the session publishes as `workspace/access`,
-                // in the words the workspace's Permissions tab lists them.
-                if *kind == "access" {
-                    // The one action the access view offers: take a grant or a device-record
-                    // choice back. The session that publishes this reading answers it where the
-                    // person's own device keeps the choice.
-                    resource["verbs"] = json!([
-                        {
-                            "id": "revoke",
-                            "kind": "outside",
-                            "params": [
-                                { "name": "id", "required": true, "schema": { "type": "string" } },
-                            ],
-                        },
-                    ]);
-                    resource["fields"] = json!([
-                        { "path": "known", "type": "bool", "readonly": true },
-                        {
-                            "path": "workspaces",
-                            "type": { "list": { "named": "WorkspaceAccess" } },
-                            "readonly": true,
-                        },
-                    ]);
-                    resource["types"] = json!([
-                        {
-                            "name": "WorkspaceAccess",
-                            "doc": "The grants one workspace gives.",
-                            "fields": [
-                                { "name": "id", "type": "text", "title": "The workspace's id." },
-                                { "name": "name", "type": "text", "title": "What the workspace is called." },
-                                {
-                                    "name": "grants",
-                                    "type": { "list": { "named": "AccessEntry" } },
-                                    "title": "What it gives, in the order its Permissions tab lists them.",
-                                },
-                            ],
-                        },
-                        {
-                            "name": "AccessEntry",
-                            "doc": "One grant a workspace gives.",
-                            "fields": [
-                                { "name": "id", "type": "text", "title": "What revoking it names." },
-                                { "name": "section", "type": "text", "title": "Who holds it: people, agents or apps." },
-                                { "name": "holder", "type": "text", "title": "Whom it is given to." },
-                                { "name": "allows", "type": "text", "title": "What it allows." },
-                                { "name": "expiry", "type": "text", "title": "How long it lasts." },
-                                { "name": "granted_by", "type": "text", "title": "Who gave it, where the workspace knows." },
-                                { "name": "app", "type": "text", "title": "The app it is for, empty for a person." },
-                                { "name": "path", "type": "text", "title": "The file or folder it reaches, where it is on this device." },
-                                { "name": "workspace", "type": "text", "title": "The workspace it is in." },
-                                { "name": "holder_kind", "type": "text", "title": "What holds it: a person, an agent or an app." },
-                                { "name": "granted_by_name", "type": "text", "title": "Who gave it, by name." },
-                                { "name": "granted_by_kind", "type": "text", "title": "What the giver is: you, a person, an agent or an app." },
-                                { "name": "granted_by_you", "type": "bool", "title": "Whether the viewer gave it." },
-                                { "name": "device", "type": "bool", "title": "Whether this device's own record keeps it." },
-                                { "name": "can_revoke", "type": "bool", "title": "Whether the viewer may take it back." },
-                            ],
-                        },
-                    ]);
-                }
-                if *kind == "content" {
-                    resource["fields"] = json!([
-                        { "path": "file_bytes", "type": "int", "readonly": true },
-                        { "path": "member_bytes", "type": "int", "readonly": true },
-                        { "path": "hourly_bytes", "type": "int", "readonly": true },
-                        {
-                            "path": "refusals",
-                            "type": { "list": { "named": "Refusal" } },
-                            "readonly": true,
-                        },
-                    ]);
-                    resource["types"] = json!([
-                        {
-                            "name": "Refusal",
-                            "doc": "Content a host stopped keeping because a limit said so.",
-                            "fields": [
-                                { "name": "record", "type": "text", "title": "The record whose content it is." },
-                                { "name": "hash", "type": "text", "title": "The content's address, BLAKE3 hex." },
-                                { "name": "bytes", "type": "int", "title": "How many bytes it is." },
-                                { "name": "limit", "type": "text", "title": "The limit it went over: file, member, hourly, workspace or host." },
-                                { "name": "allowed", "type": "int", "title": "What that limit allowed, in bytes." },
-                                { "name": "member", "type": "text", "title": "Who posted it, by person id." },
-                                { "name": "at", "type": "int", "title": "When it was refused, Unix milliseconds." },
-                                { "name": "raise", "type": "text", "title": "Who can raise the limit: owners or host." },
-                            ],
-                        },
-                    ]);
-                }
-                resource
+                described_resource(kind, label, &verbs)
             })
             .collect();
         resources.push(

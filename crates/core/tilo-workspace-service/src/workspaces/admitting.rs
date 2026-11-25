@@ -100,7 +100,7 @@ pub(super) enum Admitted {
     /// The device that entered is in: what its entry answers.
     Entered(JoinReply),
     /// The device that answered the challenge is in: the workspace as the admission committed it.
-    Joined(JoinBootstrap),
+    Joined(Box<JoinBootstrap>),
     /// Refused: why, and the code the join exchange answers it with
     /// ([`CollaborationError::code`]).
     Refused { reason: String, code: u16 },
@@ -113,6 +113,20 @@ impl From<&CollaborationError> for Admitted {
             code: error.code(),
         }
     }
+}
+
+/// One admission proven, before the change that admits it decides whether it is.
+struct Proven {
+    /// The device the admission came from.
+    remote_endpoint: [u8; 32],
+    /// What the admission's proof digests to, as the change files it.
+    proof_digest: [u8; 32],
+    /// The invitation it redeemed, and the person's device that holds it.
+    redemption: VerifiedRedemption,
+    /// The workspace changes the device signed to let itself in.
+    admission: Vec<Vec<u8>>,
+    /// How it came, which decides what it is answered.
+    way: Way,
 }
 
 /// One admission checked, waiting for the change that admits it.
@@ -365,7 +379,7 @@ impl Workspaces {
         now: u64,
     ) -> Result<Result<Checked, Admitted>, CollaborationError> {
         let answering = self.device_cert();
-        let (remote_endpoint, proof_digest, redemption, admission, way) = match admission {
+        let proven = match admission {
             Admitting::Entry {
                 invitation,
                 certificate,
@@ -406,12 +420,18 @@ impl Workspaces {
                         Way::PreAdmitted {
                             label: grant.label.clone(),
                             role,
-                            name: name.clone(),
+                            name,
                         }
                     }
                     None => Way::Entered,
                 };
-                (device, presented.digest()?, redemption, admission, way)
+                Proven {
+                    remote_endpoint: device,
+                    proof_digest: presented.digest()?,
+                    redemption,
+                    admission,
+                    way,
+                }
             }
             Admitting::Answered { proof, admission } => {
                 let remote_endpoint =
@@ -430,9 +450,9 @@ impl Workspaces {
                     now,
                 )?;
                 if let Some(prior) = prior {
-                    return Ok(Err(Admitted::Joined(
+                    return Ok(Err(Admitted::Joined(Box::new(
                         workspace.governed(answering).filled(prior)?,
-                    )));
+                    ))));
                 }
                 let redemption = workspace.collaboration().redeem(
                     &workspace.governed(answering),
@@ -440,15 +460,36 @@ impl Workspaces {
                     &proof,
                     now,
                 )?;
-                (
+                Proven {
                     remote_endpoint,
                     proof_digest,
                     redemption,
                     admission,
-                    Way::Answered,
-                )
+                    way: Way::Answered,
+                }
             }
         };
+        self.admit_checked(workspace, index, issuer, invites, now, proven)
+    }
+
+    /// Admit `proven`, the `index`th asked, to `workspace` in this change: what admits it, or why
+    /// it is refused. `invites` holds the invitations already admitted in this change.
+    fn admit_checked(
+        &self,
+        workspace: &GovernedWorkspace,
+        index: usize,
+        issuer: Option<[u8; 32]>,
+        invites: &mut std::collections::BTreeSet<[u8; 32]>,
+        now: u64,
+        proven: Proven,
+    ) -> Result<Result<Checked, Admitted>, CollaborationError> {
+        let Proven {
+            remote_endpoint,
+            proof_digest,
+            redemption,
+            admission,
+            way,
+        } = proven;
         let invite_id = redemption.join().invite_id();
         if workspace.redeemed(invite_id) || !invites.insert(invite_id) {
             return Err(CollaborationError::new("invitation was already redeemed"));
@@ -528,7 +569,7 @@ impl Workspaces {
             Way::Answered => workspace
                 .governed(self.device_cert())
                 .filled(bootstrap)
-                .map(Admitted::Joined),
+                .map(|bootstrap| Admitted::Joined(Box::new(bootstrap))),
         }
     }
 
@@ -699,7 +740,7 @@ impl Workspaces {
             .await?
             .pop()
         {
-            Some(Admitted::Joined(bootstrap)) => Ok(bootstrap),
+            Some(Admitted::Joined(bootstrap)) => Ok(*bootstrap),
             Some(Admitted::Refused { reason, code }) => {
                 Err(CollaborationError::coded(reason, code))
             }

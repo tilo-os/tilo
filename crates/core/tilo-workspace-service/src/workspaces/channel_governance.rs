@@ -108,32 +108,10 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let (workspace_id, governed_by) = {
             let governed = state.lock().await;
-            let peer = governed.peer();
-            let governance = peer.governance();
-            let access = governance.governed_access(tilo_clock::wall());
-            let access = access.as_ref().ok();
-            let member = access.is_some_and(|access| access.member_devices.contains(&author));
-            // A device is one the workspace governs by the same rule wherever it asks: it is a
-            // member's device, or a device of a person the workspace has as a member, as the
-            // person's laptop is. What it certifies is its certificate's user key, held here
-            // among the devices the workspace knows or the holders it names.
-            let their_person = peer
-                .certificates()
-                .iter()
-                .find(|cert| cert.device_public_key == author)
-                .map(|cert| cert.user_public_key)
-                .or_else(|| {
-                    governance
-                        .keeping_devices()
-                        .into_iter()
-                        .find(|hint| hint.host.device_public_key == author)
-                        .map(|hint| hint.host.user_public_key)
-                });
-            let person = their_person.is_some_and(|person| {
-                person == governance.owner_user_public_key()
-                    || access.is_some_and(|access| access.member_user_roots.contains(&person))
-            });
-            (governed.workspace_id(), member || person)
+            (
+                governed.workspace_id(),
+                governs_device(&governed.peer(), author),
+            )
         };
         if !governed_by {
             return Ok(());
@@ -209,4 +187,32 @@ impl Workspaces {
         sink.take(waiting);
         Ok(())
     }
+}
+
+/// Whether `author`, a device, is one the workspace governs by the same rule wherever it asks:
+/// it is a member's device, or a device of a person the workspace has as a member, as the
+/// person's laptop is. What it certifies is its certificate's user key, held here among the
+/// devices the workspace knows or the holders it names.
+fn governs_device(peer: &tilo_peer_state::StatePeer, author: [u8; 32]) -> bool {
+    let governance = peer.governance();
+    let access = governance.governed_access(tilo_clock::wall());
+    let access = access.as_ref().ok();
+    let member = access.is_some_and(|access| access.member_devices.contains(&author));
+    let their_person = peer
+        .certificates()
+        .iter()
+        .find(|cert| cert.device_public_key == author)
+        .map(|cert| cert.user_public_key)
+        .or_else(|| {
+            governance
+                .keeping_devices()
+                .into_iter()
+                .find(|hint| hint.host.device_public_key == author)
+                .map(|hint| hint.host.user_public_key)
+        });
+    let person = their_person.is_some_and(|person| {
+        person == governance.owner_user_public_key()
+            || access.is_some_and(|access| access.member_user_roots.contains(&person))
+    });
+    member || person
 }

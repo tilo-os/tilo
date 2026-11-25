@@ -253,6 +253,7 @@ impl Admits for TaskPrograms {
                 previewed.clear();
             }
             previewed.insert(request.invocation, found);
+            drop(previewed);
             Ok(())
         }))
     }
@@ -267,7 +268,8 @@ impl Admits for TaskPrograms {
     ) -> Result<Pending<Outcome>, String> {
         program_request(caller, request, admitted, Go::Run, |run| {
             if matches!(run.caller, ProgramCaller::Agent { .. }) && request.approval().is_none() {
-                match self.previewed.lock_recover().remove(&request.invocation) {
+                let previewed = self.previewed.lock_recover().remove(&request.invocation);
+                match previewed {
                     Some(Previewed::Answered(outcome)) => return Ok(Pending::ready(outcome)),
                     Some(Previewed::Runs) => {}
                     None => return Err("an agent's program is previewed before it runs".into()),
@@ -457,7 +459,7 @@ mod tests {
     }
 
     impl Previews {
-        fn answer(program: &str, go: Go) -> Outcome {
+        fn answer(program: &str, go: Go) -> tilo_actions::ActionOutput {
             let shown = if program.contains("delete") && go == Go::Preview {
                 serde_json::json!({
                     "state": "preview",
@@ -470,7 +472,7 @@ mod tests {
             } else {
                 serde_json::json!({ "state": "done", "output": [program] })
             };
-            Ok(tilo_actions::ActionOutput {
+            tilo_actions::ActionOutput {
                 value: Some(
                     serde_json::to_value(task_wire::ProgramAnswer {
                         text: program.to_owned(),
@@ -480,14 +482,17 @@ mod tests {
                     .unwrap(),
                 ),
                 resources: Vec::new(),
-            })
+            }
         }
     }
 
     impl Programs for Previews {
         fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
             self.went.lock_recover().push(request.go);
-            Ok(Pending::ready(Self::answer(&request.program, request.go)))
+            Ok(Pending::ready(Ok(Self::answer(
+                &request.program,
+                request.go,
+            ))))
         }
     }
 
@@ -703,7 +708,7 @@ mod tests {
                 "a program that changes nothing asks nobody"
             );
             let answered = wait(programs.start(&agent, &read, &admitted).expect("answered"));
-            assert_eq!(answered, Previews::answer("notes.ls()", Go::Preview));
+            assert_eq!(answered, Ok(Previews::answer("notes.ls()", Go::Preview)));
             assert_eq!(
                 *host.went.lock_recover(),
                 vec![Go::Preview],

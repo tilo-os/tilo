@@ -32,8 +32,11 @@ pub struct Authoring {
     /// The document a resource starts as, where the workspace holds none of it yet.
     pub genesis: Option<Box<automerge::AutoCommit>>,
     /// The change, made on the document as it stands.
-    pub edit: Box<dyn FnOnce(&mut automerge::AutoCommit) -> Result<(), String> + Send>,
+    pub edit: Edit,
 }
+
+/// One change made to a document of the person's workspace, as [`Authoring::edit`] makes it.
+pub type Edit = Box<dyn FnOnce(&mut automerge::AutoCommit) -> Result<(), String> + Send>;
 
 /// What the store says moved in the person's workspace.
 pub enum Moved {

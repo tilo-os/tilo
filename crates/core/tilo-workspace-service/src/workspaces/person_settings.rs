@@ -173,7 +173,10 @@ impl Workspaces {
     /// on: a test's mail server, whose certificate no authority signed, answers over real
     /// sockets. Its connections go where they did before.
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
-    pub fn trust_mail_servers(&self, extra: Vec<rustls::pki_types::CertificateDer<'static>>) {
+    pub fn trust_mail_servers(
+        &self,
+        extra: impl IntoIterator<Item = rustls::pki_types::CertificateDer<'static>>,
+    ) {
         let reach = self.inner.models.mail_reach();
         *self
             .inner
@@ -182,8 +185,8 @@ impl Workspaces {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Arc::new(tilo_account_probe::TrustingMailTester {
-                reach: reach,
-                extra: extra.clone(),
+                reach,
+                extra: extra.into_iter().collect(),
             });
     }
 
@@ -239,7 +242,7 @@ impl Workspaces {
 
     /// Control this device's cloud mounts through `cloud` from now on: a
     /// test's service stands in for the files service that mounts them.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(all(test, feature = "agents"))]
     pub(crate) fn cloud_control_through(
         &self,
         cloud: std::sync::Arc<dyn cloud_control::CloudControl>,
@@ -257,14 +260,16 @@ impl Workspaces {
         &self,
     ) -> std::sync::Arc<dyn cloud_control::CloudControl> {
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(cloud) = self
-            .inner
-            .cloud_control
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
         {
-            return cloud;
+            let chosen = self
+                .inner
+                .cloud_control
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(cloud) = chosen {
+                return cloud;
+            }
         }
         std::sync::Arc::new(cloud_control::DeviceCloud::here())
     }
@@ -522,25 +527,19 @@ pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, Actio
         .ok_or_else(|| ActionCallError::invalid_request("the provider is named by its id"))
 }
 
-/// Add `adding` once `tester` saw its server accept its sign-in: the secret
-/// into the workspace's vault first, then the account into the shared store, so
-/// an account never shows without the sign-in it needs. Where the sign-in is an
-/// entry the vault keeps already (`kept`), the account names that entry and the
-/// password `adding` carries is only what is proved; nothing is kept twice. A
-/// test's tester proves the store's side without a server.
-pub(super) async fn add_mail_with(
-    tester: Arc<dyn AccountTester>,
-    (vault, root): (VaultAt<'_>, &Path),
-    adding: AddMailAccount,
-    kept: Option<tilo_actions::remote::person_vault::ItemRef>,
+/// The account `adding` describes, as the store keeps it before its sign-in is proved: its
+/// settings, which of its services its person uses, and the calendar account `linked` keeps
+/// beside it.
+fn described_account(
+    adding: &AddMailAccount,
     provider: person_accounts::Provider,
-    linked: Option<(accounts::Account, String)>,
-) -> Result<MailAccount, String> {
-    let keeps_identities = adding.identities.is_empty();
+    linked: Option<&(accounts::Account, String)>,
+) -> Result<(accounts::Account, accounts::email::AccountConfig), String> {
     let config = accounts::email::AccountConfig {
         display_name: adding.display_name.trim().to_owned(),
         username: adding
             .username
+            .clone()
             .filter(|username| !username.trim().is_empty())
             .unwrap_or_else(|| adding.address.trim().to_owned()),
         email: adding.address.trim().to_owned(),
@@ -559,7 +558,7 @@ pub(super) async fn add_mail_with(
         // sign-in its person completes in Settings.
         import_pending: adding.password.is_empty(),
         password: String::new(),
-        identities: accounts::email::sender_identities(adding.identities)?,
+        identities: accounts::email::sender_identities(adding.identities.clone())?,
     };
     if let Some((_, problem)) = config.validate().first() {
         return Err(problem.clone());
@@ -584,12 +583,31 @@ pub(super) async fn add_mail_with(
         );
         // The calendar account kept as its service: what reads the link back
         // when the account's services, or the account itself, go.
-        if let Some((calendar, server)) = &linked {
+        if let Some((calendar, server)) = linked {
             settings.insert("calendar_account".into(), calendar.id.as_str().into());
             settings.insert("server".into(), server.clone().into());
         }
     }
     account.config = settings;
+    Ok((account, config))
+}
+
+/// Add `adding` once `tester` saw its server accept its sign-in: the secret
+/// into the workspace's vault first, then the account into the shared store, so
+/// an account never shows without the sign-in it needs. Where the sign-in is an
+/// entry the vault keeps already (`kept`), the account names that entry and the
+/// password `adding` carries is only what is proved; nothing is kept twice. A
+/// test's tester proves the store's side without a server.
+pub(super) async fn add_mail_with(
+    tester: Arc<dyn AccountTester>,
+    (vault, root): (VaultAt<'_>, &Path),
+    adding: AddMailAccount,
+    kept: Option<tilo_actions::remote::person_vault::ItemRef>,
+    provider: person_accounts::Provider,
+    linked: Option<(accounts::Account, String)>,
+) -> Result<MailAccount, String> {
+    let keeps_identities = adding.identities.is_empty();
+    let (mut account, config) = described_account(&adding, provider, linked.as_ref())?;
 
     // An edit that names no identities keeps the ones the account had, as it keeps every other
     // setting this form does not own.

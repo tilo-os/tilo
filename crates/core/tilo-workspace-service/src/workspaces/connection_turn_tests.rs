@@ -12,11 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
+use tilo_actions::ActionOutput;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, InvokeRequest, Pending,
     ReceiptStatus,
 };
-use tilo_actions::ActionOutput;
 use tilo_automation::{AutomationInvocationId, InvocationReport};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -67,51 +67,55 @@ impl Has {
 impl Device {
     fn with(has: Has) -> Arc<Self> {
         let device = Arc::new(Self::default());
-        *device.has.lock().unwrap() = has;
+        {
+            let mut state = locked(&device.has);
+            *state = has;
+        }
         device
     }
 
     fn runs_bridge(&self) -> bool {
-        !self.running.lock().unwrap().is_empty()
+        !locked(&self.running).is_empty()
     }
+}
+
+/// What the mutex `held` keeps, for a fixture whose state no thread panicked on.
+fn locked<T>(held: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    let Ok(kept) = held.lock() else {
+        unreachable!("a fixture's state is not poisoned")
+    };
+    kept
 }
 
 impl HostConnections for Device {
     fn connections(&self) -> Vec<(String, Vec<String>)> {
-        if self.has.lock().unwrap().installed {
+        if locked(&self.has).installed {
             vec![(BRIDGE.to_owned(), NEEDS.map(str::to_owned).to_vec())]
         } else {
             Vec::new()
         }
     }
     fn installed(&self, app: &str) -> bool {
-        app == BRIDGE && self.has.lock().unwrap().installed
+        app == BRIDGE && locked(&self.has).installed
     }
     fn gives(&self, _: &str, _: &str, capability: &str) -> bool {
-        NEEDS.contains(&capability) && self.has.lock().unwrap().capabilities
+        NEEDS.contains(&capability) && locked(&self.has).capabilities
     }
     fn on_power(&self) -> bool {
-        self.has.lock().unwrap().power
+        locked(&self.has).power
     }
     fn start(&self, workspace: &str, app: &str) -> Result<(), String> {
-        *self.starts.lock().unwrap() += 1;
-        self.running
-            .lock()
-            .unwrap()
-            .insert((workspace.to_owned(), app.to_owned()));
+        let mut starts = locked(&self.starts);
+        *starts = starts.saturating_add(1);
+        drop(starts);
+        locked(&self.running).insert((workspace.to_owned(), app.to_owned()));
         Ok(())
     }
     fn runs(&self, workspace: &str, app: &str) -> bool {
-        self.running
-            .lock()
-            .unwrap()
-            .contains(&(workspace.to_owned(), app.to_owned()))
+        locked(&self.running).contains(&(workspace.to_owned(), app.to_owned()))
     }
     fn stop(&self, workspace: &str, app: &str) {
-        self.running
-            .lock()
-            .unwrap()
-            .remove(&(workspace.to_owned(), app.to_owned()));
+        locked(&self.running).remove(&(workspace.to_owned(), app.to_owned()));
     }
 }
 
@@ -148,7 +152,9 @@ async fn two_devices(
     let (desktop, laptop, created, invitation) =
         shared_with(states.0, "Bridged", seed, laptop).await;
     let laptop = member_service(states.1, laptop).await;
-    laptop.workspaces().join_member(&invitation).await.unwrap();
+    if laptop.workspaces().join_member(&invitation).await.is_err() {
+        unreachable!("the laptop joins the workspace it was invited to");
+    }
     desktop
         .workspaces()
         .run_connections(Arc::clone(hosts.0) as Arc<dyn HostConnections>);
@@ -160,9 +166,10 @@ async fn two_devices(
 
 /// The device the workspace, as `workspaces` reads it, says holds the bridge's lease.
 async fn holder(workspaces: &Workspaces, workspace: &str) -> Option<[u8; 32]> {
-    connection_holder(workspaces, workspace, BRIDGE)
-        .await
-        .unwrap()
+    let Ok(held) = connection_holder(workspaces, workspace, BRIDGE).await else {
+        unreachable!("the bridge's lease can be read")
+    };
+    held
 }
 
 /// Wait until `workspaces` reads `device` holding the bridge's lease.
@@ -401,11 +408,14 @@ fn reach(
     device: [u8; 32],
     workspace: &str,
 ) -> tilo_peer_state::actions::RemoteDevice {
+    let Ok(endpoint) = iroh_base::EndpointId::from_bytes(&device) else {
+        unreachable!("a device's key is an endpoint id")
+    };
     let service = workspaces.action_service();
     service.remote_held(device, workspace).unwrap_or_else(|| {
         service.remote(
             &workspaces.inner.host.endpoint,
-            &iroh_base::EndpointAddr::new(iroh_base::EndpointId::from_bytes(&device).unwrap()),
+            &iroh_base::EndpointAddr::new(endpoint),
             workspace,
         )
     })
@@ -456,7 +466,7 @@ type Completer = tilo_actions::remote::Completer<Result<InvocationReceipt, Actio
 impl BridgeProcess {
     /// End every call it keeps running.
     fn end_running(&self) {
-        for (invocation, done) in self.running.lock().unwrap().drain(..) {
+        for (invocation, done) in locked(&self.running).drain(..) {
             done.complete(Ok(InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Completed {
@@ -472,17 +482,17 @@ const CHANNEL: &str = "channel";
 
 impl ActionProvider for BridgeProcess {
     fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
+        let Ok(send) = tilo_actions::ActionSpec::operation(
+            "send",
+            "Send",
+            tilo_actions::OperationKind::Effect,
+            "test.bridge-send",
+            &(),
+        ) else {
+            unreachable!("the bridge's send declares its operation")
+        };
         vec![
-            tilo_actions::ResourceSpec::new(CHANNEL, "bridge.channel", "Channel").with_action(
-                tilo_actions::ActionSpec::operation(
-                    "send",
-                    "Send",
-                    tilo_actions::OperationKind::Effect,
-                    "test.bridge-send",
-                    &(),
-                )
-                .unwrap(),
-            ),
+            tilo_actions::ResourceSpec::new(CHANNEL, "bridge.channel", "Channel").with_action(send),
         ]
     }
 
@@ -529,10 +539,10 @@ impl ActionProvider for BridgeProcess {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        self.ran.lock().unwrap().push((caller.clone(), request));
+        locked(&self.ran).push((caller.clone(), request));
         if self.keep_open.load(std::sync::atomic::Ordering::SeqCst) {
             let (done, answer) = tilo_actions::remote::pending();
-            self.running.lock().unwrap().push((invocation, done));
+            locked(&self.running).push((invocation, done));
             return answer;
         }
         Pending::ready(Ok(InvocationReceipt {
@@ -569,10 +579,10 @@ fn app_calls(
     journal: &std::path::Path,
 ) -> Arc<AppBrokerState> {
     use crate::apps::test_support::Grants as _;
-    let mut tree_workspace = crate::apps::test_support::Workspace::new(
-        crate::apps::test_support::WorkspaceId::parse(workspace).unwrap(),
-        "Bridged",
-    );
+    let Some(workspace_id) = crate::apps::test_support::WorkspaceId::parse(workspace) else {
+        unreachable!("the workspace the devices share parses as an id")
+    };
+    let mut tree_workspace = crate::apps::test_support::Workspace::new(workspace_id, "Bridged");
     tree_workspace
         .policy
         .set_owner(hex::encode(persons_root().verifying_key().to_bytes()));
@@ -623,9 +633,14 @@ fn app_calls(
 async fn admit_scribe(workspaces: &Workspaces, workspace: &str) -> (SigningKey, DeviceCert) {
     let root = persons_root();
     let (key, mut cert) = device_cert(&root, "Agent: Scribe", DeviceCapabilities::nothing());
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    if tilo_user_identity::sign_device_cert(&mut cert, &root).is_err() {
+        unreachable!("a fixture's agent certificate signs");
+    }
     let now = tilo_clock::unix_now_ns();
-    let delegation = tilo_server_protocol::delegation::Delegation::sign(
+    let Some(workspace_id) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
+        unreachable!("the workspace the devices share parses as an id")
+    };
+    let Ok(delegation) = tilo_server_protocol::delegation::Delegation::sign(
         &root,
         cert.device_public_key,
         tilo_server_protocol::delegation::Delegate::Agent {
@@ -634,21 +649,27 @@ async fn admit_scribe(workspaces: &Workspaces, workspace: &str) -> (SigningKey, 
         "Scribe",
         [10, 20, 30],
         tilo_server_protocol::delegation::DelegateScope {
-            workspaces: vec![tilo_server_protocol::WorkspaceId::parse(workspace).unwrap()],
+            workspaces: vec![workspace_id],
             apps: Vec::new(),
         },
-        now - 1_000_000_000,
-        now + 3_600_000_000_000,
-    )
-    .unwrap();
+        now.saturating_sub(1_000_000_000),
+        now.saturating_add(3_600_000_000_000),
+    ) else {
+        unreachable!("a fixture's agent delegation signs")
+    };
     {
-        let state = workspaces.workspace(workspace).await.unwrap();
+        let Ok(state) = workspaces.workspace(workspace).await else {
+            unreachable!("the workspace the devices share is held")
+        };
         let governed = state.lock().await;
-        governed
+        if governed
             .peer()
             .governance_mut()
             .admit_agent(cert.clone(), delegation, &key, tilo_clock::wall())
-            .unwrap();
+            .is_err()
+        {
+            unreachable!("the agent is admitted to the workspace");
+        }
     }
     let person = hex::encode(root.verifying_key().to_bytes());
     super::super::fixtures::record_grants(
@@ -685,23 +706,23 @@ fn send(workspace: &str, signer: Option<(&DeviceCert, &SigningKey)>) -> InvokeRe
         signed: None,
     };
     if let Some((cert, key)) = signer {
-        request.signed = Some(Box::new(
-            tilo_server_protocol::invocation::sign_invocation_now(
-                workspace,
-                &request,
-                cert,
-                key,
-                tilo_clock::unix_now_ns(),
-            )
-            .unwrap(),
-        ));
+        let Ok(attached) = tilo_server_protocol::invocation::sign_invocation_now(
+            workspace,
+            &request,
+            cert,
+            key,
+            tilo_clock::unix_now_ns(),
+        ) else {
+            unreachable!("a fixture's invocation signs")
+        };
+        request.signed = Some(Box::new(attached));
     }
     request
 }
 
 /// How `request` ends when `provider` is asked it as `caller`: its receipt once settled.
 async fn ends(
-    provider: &(impl ActionProvider + ?Sized),
+    provider: &(impl ActionProvider + Sync + ?Sized),
     caller: &Caller,
     request: InvokeRequest,
 ) -> Result<ReceiptStatus, ActionCallError> {
@@ -770,20 +791,7 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
         Arc::new(BridgeProcess::default()),
         Arc::new(BridgeProcess::default()),
     );
-    for (workspaces, bridge) in [
-        (desktop.workspaces(), &desktop_bridge),
-        (laptop.workspaces(), &laptop_bridge),
-    ] {
-        workspaces
-            .providers()
-            .serve(
-                "test.bridge-process",
-                BRIDGE,
-                Reach::Devices,
-                Arc::clone(bridge) as Arc<dyn ActionProvider + Send + Sync>,
-            )
-            .unwrap();
-    }
+    serve_bridges((&desktop, &laptop), (&desktop_bridge, &laptop_bridge));
 
     // The desktop has the lease first, then lets it go to the laptop.
     on_desktop.pass(Vec::new()).await;
@@ -803,33 +811,107 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     wall.release();
     reads_holder(desktop.workspaces(), &workspace, laptop_device).await;
 
-    // The agent asks the desktop; its call runs on the laptop, as the agent, brought by the
-    // desktop.
+    // The agent asks the desktop; its call runs on the laptop.
     let agent = Caller::delegated_agent(
         "scribe",
         persons_root().verifying_key().to_bytes(),
         scribe.device_public_key,
     )
     .in_workspace(workspace.clone());
+    let pair = Pair {
+        desktop: &desktop,
+        laptop: &laptop,
+        workspace: &workspace,
+        desktop_device,
+        laptop_device,
+    };
+    the_agents_call_runs_on_the_laptops_bridge(
+        &pair,
+        &on_desktop_calls,
+        (&desktop_bridge, &laptop_bridge),
+        (&agent, (&scribe, &scribe_key)),
+    )
+    .await;
+    a_call_without_its_signature_runs_nowhere(&pair, &on_desktop_calls, &laptop_bridge, &agent)
+        .await;
+    a_call_to_the_device_that_lost_the_lease_is_refused(
+        &pair,
+        (&scribe, &scribe_key),
+        (&desktop_bridge, &desktop_has),
+    )
+    .await;
+    the_bridges_own_call_runs_for_the_agent_and_ends(
+        &pair,
+        &on_desktop_calls,
+        &laptop_bridge,
+        (&agent, (&scribe, &scribe_key)),
+    )
+    .await;
+}
+
+/// Serve the bridge's process on each device, answering the calls its channel's `send` brings.
+fn serve_bridges(
+    (desktop, laptop): (&TestHost, &TestHost),
+    (desktop_bridge, laptop_bridge): (&Arc<BridgeProcess>, &Arc<BridgeProcess>),
+) {
+    for (workspaces, bridge) in [
+        (desktop.workspaces(), desktop_bridge),
+        (laptop.workspaces(), laptop_bridge),
+    ] {
+        if workspaces
+            .providers()
+            .serve(
+                "test.bridge-process",
+                BRIDGE,
+                Reach::Devices,
+                Arc::clone(bridge) as Arc<dyn ActionProvider + Send + Sync>,
+            )
+            .is_err()
+        {
+            unreachable!("both devices serve the bridge's process");
+        }
+    }
+}
+
+/// The two devices an agent's call crosses, as the phases of its test keep them.
+struct Pair<'a> {
+    desktop: &'a TestHost,
+    laptop: &'a TestHost,
+    workspace: &'a str,
+    desktop_device: [u8; 32],
+    laptop_device: [u8; 32],
+}
+
+/// The agent's call, asked of the desktop, runs on the laptop that holds the connection: as the
+/// agent, brought by the desktop, its signature with it.
+async fn the_agents_call_runs_on_the_laptops_bridge(
+    pair: &Pair<'_>,
+    on_desktop_calls: &Arc<AppBrokerState>,
+    (desktop_bridge, laptop_bridge): (&Arc<BridgeProcess>, &Arc<BridgeProcess>),
+    (agent, (scribe, scribe_key)): (&Caller, (&DeviceCert, &SigningKey)),
+) {
     let ran = tilo_test_env::within(
         "the agent's call runs once its grant reached the laptop",
         async {
             loop {
-                let call = send(&workspace, Some((&scribe, &scribe_key)));
-                match ends(&AppCallsOf(Arc::clone(&on_desktop_calls)), &agent, call).await {
+                let call = send(pair.workspace, Some((scribe, scribe_key)));
+                match ends(&AppCallsOf(Arc::clone(on_desktop_calls)), agent, call).await {
                     Ok(ReceiptStatus::Completed { .. }) => break,
                     Err(ActionCallError::NotPermitted) => {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
-                    other => panic!("the agent's call runs on the laptop: {other:?}"),
+                    other => unreachable!("the agent's call runs on the laptop: {other:?}"),
                 }
             }
-            laptop_bridge.ran.lock().unwrap().pop().unwrap()
+            let Some(ran) = locked(&laptop_bridge.ran).pop() else {
+                unreachable!("the laptop's bridge ran the agent's call")
+            };
+            ran
         },
     )
     .await;
     assert!(
-        desktop_bridge.ran.lock().unwrap().is_empty(),
+        locked(&desktop_bridge.ran).is_empty(),
         "never where the lease is not"
     );
     let (ran_as, request) = ran;
@@ -842,65 +924,92 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
         "the call runs as the agent"
     );
     assert_eq!(ran_as.device_public_key(), Some(&scribe.device_public_key));
-    assert_eq!(ran_as.forwarder(), Some(&desktop_device));
+    assert_eq!(ran_as.forwarder(), Some(&pair.desktop_device));
     assert!(
         request.signed.is_some(),
         "the agent's signature travelled with it"
     );
+}
 
-    // Its call without its signature never leaves the desktop, nor runs on the laptop when the
-    // desktop sends it on anyway.
-    let ran_before = laptop_bridge.ran.lock().unwrap().len();
+/// Its call without its signature never leaves the desktop, nor runs on the laptop when the
+/// desktop sends it on anyway.
+async fn a_call_without_its_signature_runs_nowhere(
+    pair: &Pair<'_>,
+    on_desktop_calls: &Arc<AppBrokerState>,
+    laptop_bridge: &Arc<BridgeProcess>,
+    agent: &Caller,
+) {
+    let ran_before = locked(&laptop_bridge.ran).len();
     let unsigned = ends(
-        &AppCallsOf(Arc::clone(&on_desktop_calls)),
-        &agent,
-        send(&workspace, None),
+        &AppCallsOf(Arc::clone(on_desktop_calls)),
+        agent,
+        send(pair.workspace, None),
     )
     .await;
     assert!(
         matches!(&unsigned, Err(ActionCallError::Refused { reason }) if reason.contains("no signature")),
         "{unsigned:?}"
     );
-    let to_laptop = reach(desktop.workspaces(), laptop_device, &workspace);
-    let mut naming_the_agent = send(&workspace, None);
+    let to_laptop = reach(
+        pair.desktop.workspaces(),
+        pair.laptop_device,
+        pair.workspace,
+    );
+    let mut naming_the_agent = send(pair.workspace, None);
     naming_the_agent.context = Some(tilo_actions::ActionContext {
         invoker: Some(tilo_actions::ActionInvoker::admitted(agent.acting())),
         ..tilo_actions::ActionContext::default()
     });
-    let sent_on = ends(&to_laptop, &agent, naming_the_agent).await;
+    let sent_on = ends(&to_laptop, agent, naming_the_agent).await;
     assert!(
         matches!(&sent_on, Err(ActionCallError::Refused { reason }) if reason.contains("no signature")),
         "{sent_on:?}"
     );
-    assert_eq!(
-        laptop_bridge.ran.lock().unwrap().len(),
-        ran_before,
-        "neither ran"
-    );
+    assert_eq!(locked(&laptop_bridge.ran).len(), ran_before, "neither ran");
+}
 
-    // The desktop no longer has the lease: a call the laptop brings it is refused there.
-    let to_desktop = reach(laptop.workspaces(), desktop_device, &workspace);
-    let laptop_caller =
-        Caller::authenticated(persons_root().verifying_key().to_bytes(), laptop_device)
-            .in_workspace(workspace.clone());
+/// The desktop no longer has the lease: a call the laptop brings it is refused there.
+async fn a_call_to_the_device_that_lost_the_lease_is_refused(
+    pair: &Pair<'_>,
+    (scribe, scribe_key): (&DeviceCert, &SigningKey),
+    (desktop_bridge, desktop_has): (&Arc<BridgeProcess>, &Arc<Device>),
+) {
+    let to_desktop = reach(
+        pair.laptop.workspaces(),
+        pair.desktop_device,
+        pair.workspace,
+    );
+    let laptop_caller = Caller::authenticated(
+        persons_root().verifying_key().to_bytes(),
+        pair.laptop_device,
+    )
+    .in_workspace(pair.workspace.to_owned());
     let lost = ends(
         &to_desktop,
         &laptop_caller,
-        send(&workspace, Some((&scribe, &scribe_key))),
+        send(pair.workspace, Some((scribe, scribe_key))),
     )
     .await;
     assert!(
         matches!(&lost, Err(ActionCallError::Refused { reason }) if reason.contains("no longer runs")),
         "{lost:?}"
     );
-    assert!(desktop_bridge.ran.lock().unwrap().is_empty());
+    assert!(locked(&desktop_bridge.ran).is_empty());
     assert!(!desktop_has.runs_bridge(), "never on both");
+}
 
-    // The bridge, running the agent's call, makes a call of its own for it to what the desktop
-    // keeps of the bridge: it runs there as the agent while the agent's call runs, and proves
-    // nothing once that call ended.
+/// The bridge, running the agent's call, makes a call of its own for it to what the desktop keeps
+/// of the bridge: it runs there as the agent while the agent's call runs, and proves nothing once
+/// that call ended.
+async fn the_bridges_own_call_runs_for_the_agent_and_ends(
+    pair: &Pair<'_>,
+    on_desktop_calls: &Arc<AppBrokerState>,
+    laptop_bridge: &Arc<BridgeProcess>,
+    (agent, (scribe, scribe_key)): (&Caller, (&DeviceCert, &SigningKey)),
+) {
     let records = Arc::new(BridgeProcess::default());
-    desktop
+    if pair
+        .desktop
         .workspaces()
         .providers()
         .serve(
@@ -909,25 +1018,38 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
             Reach::Devices,
             Arc::clone(&records) as Arc<dyn ActionProvider + Send + Sync>,
         )
-        .unwrap();
+        .is_err()
+    {
+        unreachable!("the desktop serves what the bridge keeps");
+    }
     laptop_bridge
         .keep_open
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let original = send(&workspace, Some((&scribe, &scribe_key)));
+    let original = send(pair.workspace, Some((scribe, scribe_key)));
     let running = {
         let (to, agent, original) = (
-            AppCallsOf(Arc::clone(&on_desktop_calls)),
+            AppCallsOf(Arc::clone(on_desktop_calls)),
             agent.clone(),
             original.clone(),
         );
         tokio::spawn(async move { ends(&to, &agent, original).await })
     };
     tilo_test_env::within("the bridge runs the agent's call", async {
-        while laptop_bridge.running.lock().unwrap().is_empty() {
+        while locked(&laptop_bridge.running).is_empty() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
+    let to_desktop = reach(
+        pair.laptop.workspaces(),
+        pair.desktop_device,
+        pair.workspace,
+    );
+    let laptop_caller = Caller::authenticated(
+        persons_root().verifying_key().to_bytes(),
+        pair.laptop_device,
+    )
+    .in_workspace(pair.workspace.to_owned());
     let for_it = || InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
@@ -936,14 +1058,16 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
         },
         on_behalf_of: Some(original.invocation),
         signed: original.signed.clone(),
-        ..send(&workspace, None)
+        ..send(pair.workspace, None)
     };
     let served = ends(&to_desktop, &laptop_caller, for_it()).await;
     assert!(
         matches!(served, Ok(ReceiptStatus::Completed { .. })),
         "the bridge's call for the agent runs: {served:?}"
     );
-    let (ran_as, _) = records.ran.lock().unwrap().pop().unwrap();
+    let Some((ran_as, _)) = locked(&records.ran).pop() else {
+        unreachable!("the desktop's records ran the bridge's call")
+    };
     assert_eq!(
         ran_as.acting().member_id(),
         Some(&tilo_action_policy::MemberId::agent(
@@ -952,12 +1076,14 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
         )),
         "the bridge's call runs as the agent it serves, never as the laptop"
     );
-    assert_eq!(ran_as.forwarder(), Some(&laptop_device));
+    assert_eq!(ran_as.forwarder(), Some(&pair.laptop_device));
 
     // The bridge finishes the agent's call: the desktop hands the agent what became of it, and
     // a call carrying it is refused from then on.
     laptop_bridge.end_running();
-    let ended = running.await.unwrap();
+    let Ok(ended) = running.await else {
+        unreachable!("the agent's call runs on a task that was not cancelled")
+    };
     assert!(
         matches!(ended, Ok(ReceiptStatus::Completed { .. })),
         "the agent's call settles where it was asked: {ended:?}"
@@ -967,7 +1093,7 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
         matches!(&after, Err(ActionCallError::Refused { reason }) if reason.contains("has ended")),
         "an ended invocation proves nothing: {after:?}"
     );
-    assert!(records.ran.lock().unwrap().is_empty());
+    assert!(locked(&records.ran).is_empty());
 }
 
 /// A device's app calls as the device's dispatch hands them to it.

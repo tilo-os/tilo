@@ -6,9 +6,10 @@
     reason = "a fixture failing is its test failing, and each test keeps both devices to the end"
 )]
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
-use tilo_resource::{Id, Resource as _};
+use tilo_resource::{Id, Invoke, Resource as _};
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -18,6 +19,7 @@ use super::super::person_workspace::{
     self, apply_on,
     devices::{DEVICES, Devices, OwnerSession, UnlockAnswer},
     read_on,
+    wake::{self, Ipv4Subnet, WAKE_FACT, WakeInterfaceKind, WakeRoute, WakeState},
 };
 use super::tests::{catching_up, group_keys, member_service};
 
@@ -79,6 +81,122 @@ async fn reads(reader: &Workspaces, workspace: &str, what: &str, done: fn(&Devic
         }
     })
     .await;
+}
+
+/// The wake interface a device keeps on `lan`, its MAC ending `mac`.
+fn on_lan(lan: Ipv4Subnet, mac: u8, magic_packet: bool) -> WakeRoute {
+    WakeRoute {
+        mac: [0x02, 0, 0, 0, 0, mac],
+        kind: WakeInterfaceKind::Ethernet,
+        magic_packet,
+        subnet: Some(lan),
+    }
+}
+
+/// The write that keeps `cert`'s wake interfaces as `routes` in the record of the person's
+/// devices.
+fn keeps(cert: &DeviceCert, routes: &[WakeRoute]) -> Invoke<Devices> {
+    let Ok(encoded_cert) = postcard::to_allocvec(cert) else {
+        unreachable!("a device certificate encodes");
+    };
+    Devices::KEEP_FACT.with((
+        hex::encode(cert.device_public_key),
+        hex::encode(encoded_cert),
+        WAKE_FACT.to_owned(),
+        wake::encoded(routes),
+    ))
+}
+
+/// Each device keeps the interface it wakes through in the record of the person's devices, and
+/// the laptop's reaches the desktop.
+async fn keep_the_wake_interfaces(
+    desk: &TestHost,
+    laptop: &TestHost,
+    own: &str,
+    desk_cert: &DeviceCert,
+    laptop_cert: &DeviceCert,
+    lan: Ipv4Subnet,
+) {
+    let Ok(()) = apply_on(
+        laptop.workspaces(),
+        own,
+        DEVICES,
+        keeps(laptop_cert, &[on_lan(lan, 9, true)]),
+    )
+    .await
+    else {
+        unreachable!("the laptop keeps the interface it wakes through");
+    };
+    let Ok(()) = apply_on(
+        desk.workspaces(),
+        own,
+        DEVICES,
+        keeps(desk_cert, &[on_lan(lan, 1, false)]),
+    )
+    .await
+    else {
+        unreachable!("the desktop keeps its own");
+    };
+    reads(
+        desk.workspaces(),
+        own,
+        "the laptop's interface reaches the desktop",
+        |devices| devices.devices.values().any(wake::wakeable),
+    )
+    .await;
+}
+
+/// The laptop, back on its LAN, reads the ask of itself and says so in the record, where the
+/// desktop reads that it woke.
+async fn the_laptop_says_it_is_back(
+    laptop: &TestHost,
+    desk: &TestHost,
+    own: &str,
+    laptop_key: &str,
+    desk_key: &str,
+    lan: Ipv4Subnet,
+    now_ns: i64,
+    send: impl FnMut([u8; 6], Ipv4Subnet) -> bool,
+) {
+    reads(
+        laptop.workspaces(),
+        own,
+        "the wake reaches the laptop",
+        |devices| devices.wakes.values().any(|ask| ask.sent_ns > 0),
+    )
+    .await;
+    let Ok(record) = read_on::<Devices>(laptop.workspaces(), own, DEVICES).await else {
+        unreachable!("the laptop holds the record of its devices");
+    };
+    let writes = wake::answering(
+        &record,
+        laptop_key,
+        &[on_lan(lan, 9, true)],
+        now_ns,
+        &mut BTreeSet::new(),
+        send,
+    );
+    for write in writes {
+        let Ok(()) = apply_on(laptop.workspaces(), own, DEVICES, write).await else {
+            unreachable!("the laptop says it is back");
+        };
+    }
+    reads(
+        desk.workspaces(),
+        own,
+        "the laptop's word reaches the desktop",
+        |devices| devices.wakes.values().any(|ask| ask.awake_ns > 0),
+    )
+    .await;
+    let Ok(record) = read_on::<Devices>(desk.workspaces(), own, DEVICES).await else {
+        unreachable!("the desktop holds the record of its devices");
+    };
+    let Some(ask) = record.wakes.get(&Id::from_raw(laptop_key)) else {
+        unreachable!("the record lists the laptop's wake");
+    };
+    assert_eq!(ask.asked_by, desk_key);
+    assert_eq!(ask.sent_by, desk_key, "the desktop sent the packets");
+    assert_eq!(ask.state(i64::MAX), WakeState::Awake);
 }
 
 /// A lock the person says on their desktop shows on their laptop: the desktop writes it into the
@@ -197,53 +315,11 @@ async fn an_answer_on_one_device_reads_in_the_others_record_and_history() {
 /// the laptop, once back, says so in the record, where the desktop reads that it woke.
 #[tokio::test]
 async fn a_device_woken_from_another_says_it_is_back_in_the_record() {
-    use std::collections::BTreeSet;
-
-    use super::super::person_workspace::wake::{
-        self, WAKE_FACT, WakeInterfaceKind, WakeRoute, WakeState,
-    };
-
     let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let (desk, desk_cert, laptop, own) = desk_and_laptop(one.path(), two.path()).await;
     let laptop_cert = laptop.workspaces().device_cert().clone();
     let lan = "192.168.1.0/24".parse().unwrap();
-    let on_lan = |mac: u8, magic_packet: bool| WakeRoute {
-        mac: [0x02, 0, 0, 0, 0, mac],
-        kind: WakeInterfaceKind::Ethernet,
-        magic_packet,
-        subnet: Some(lan),
-    };
-    let keeps = |cert: &DeviceCert, routes: &[WakeRoute]| {
-        Devices::KEEP_FACT.with((
-            hex::encode(cert.device_public_key),
-            hex::encode(postcard::to_allocvec(cert).unwrap()),
-            WAKE_FACT.to_owned(),
-            wake::encoded(routes),
-        ))
-    };
-    apply_on(
-        laptop.workspaces(),
-        &own,
-        DEVICES,
-        keeps(&laptop_cert, &[on_lan(9, true)]),
-    )
-    .await
-    .expect("the laptop keeps the interface it wakes through");
-    apply_on(
-        desk.workspaces(),
-        &own,
-        DEVICES,
-        keeps(&desk_cert, &[on_lan(1, false)]),
-    )
-    .await
-    .expect("the desktop keeps its own");
-    reads(
-        desk.workspaces(),
-        &own,
-        "the laptop's interface reaches the desktop",
-        |devices| devices.devices.values().any(wake::wakeable),
-    )
-    .await;
+    keep_the_wake_interfaces(&desk, &laptop, &own, &desk_cert, &laptop_cert, lan).await;
 
     let (desk_key, laptop_key) = (
         hex::encode(desk_cert.device_public_key),
@@ -274,7 +350,7 @@ async fn a_device_woken_from_another_says_it_is_back_in_the_record() {
     let writes = wake::answering(
         &record,
         &desk_key,
-        &[on_lan(1, false)],
+        &[on_lan(lan, 1, false)],
         asked_ns + 1,
         &mut done,
         |mac, subnet| {
@@ -296,7 +372,7 @@ async fn a_device_woken_from_another_says_it_is_back_in_the_record() {
         wake::answering(
             &record,
             &desk_key,
-            &[on_lan(1, false)],
+            &[on_lan(lan, 1, false)],
             asked_ns + 2,
             &mut done,
             |_, _| { panic!("a wake taken up is not sent again") }
@@ -305,43 +381,17 @@ async fn a_device_woken_from_another_says_it_is_back_in_the_record() {
     );
 
     // The laptop is back: its daemon reads the ask of itself and says so.
-    reads(
-        laptop.workspaces(),
+    the_laptop_says_it_is_back(
+        &laptop,
+        &desk,
         &own,
-        "the wake reaches the laptop",
-        |devices| devices.wakes.values().any(|ask| ask.sent_ns > 0),
-    )
-    .await;
-    let record = read_on::<Devices>(laptop.workspaces(), &own, DEVICES)
-        .await
-        .unwrap();
-    let writes = wake::answering(
-        &record,
         &laptop_key,
-        &[on_lan(9, true)],
+        &desk_key,
+        lan,
         asked_ns + 3,
-        &mut BTreeSet::new(),
         |_, _| panic!("the laptop does not wake itself"),
-    );
-    for write in writes {
-        apply_on(laptop.workspaces(), &own, DEVICES, write)
-            .await
-            .expect("the laptop says it is back");
-    }
-    reads(
-        desk.workspaces(),
-        &own,
-        "the laptop's word reaches the desktop",
-        |devices| devices.wakes.values().any(|ask| ask.awake_ns > 0),
     )
     .await;
-    let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
-        .await
-        .unwrap();
-    let ask = record.wakes.get(&Id::from_raw(laptop_key)).unwrap();
-    assert_eq!(ask.asked_by, desk_key);
-    assert_eq!(ask.sent_by, desk_key, "the desktop sent the packets");
-    assert_eq!(ask.state(i64::MAX), WakeState::Awake);
     drop(desk);
 }
 
@@ -445,13 +495,7 @@ async fn an_accessory_moves_to_another_device_through_the_record() {
     let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
         .await
         .unwrap();
-    let kept = record.moves.get(&Id::from_raw(speaker.to_owned())).unwrap();
-    assert_eq!(
-        (kept.from.as_str(), kept.to.as_str()),
-        (desk_key.as_str(), laptop_key.as_str())
-    );
-    assert_eq!(kept.name, "Speaker");
-    assert_eq!(kept.released_ns, asked_ns + 2);
+    the_move_is_recorded(&record, &desk_key, &laptop_key, speaker, asked_ns + 2);
     // A move that ended asks nothing more of either device.
     assert!(
         accessory::turns(&record, &desk_key, here, asked_ns + 4, &mut on_desk)
@@ -459,6 +503,26 @@ async fn an_accessory_moves_to_another_device_through_the_record() {
             .is_empty()
     );
     drop(desk);
+}
+
+/// The move is in the record: from the desktop to the laptop, named as the person's speaker, let
+/// go before the laptop took it.
+fn the_move_is_recorded(
+    record: &Devices,
+    desk_key: &str,
+    laptop_key: &str,
+    speaker: &str,
+    released_ns: i64,
+) {
+    let Some(kept) = record.moves.get(&Id::from_raw(speaker)) else {
+        unreachable!("the record lists the move of the speaker");
+    };
+    assert_eq!(
+        (kept.from.as_str(), kept.to.as_str()),
+        (desk_key, laptop_key)
+    );
+    assert_eq!(kept.name, "Speaker");
+    assert_eq!(kept.released_ns, released_ns);
 }
 
 /// A computer seals the records of the person's own workspace with its own key service from the

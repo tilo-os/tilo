@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tilo_actions::remote::asked::{self, AskedDispatch, AskedFacts, Offer, RecordRef, Resolve};
+use tilo_actions::remote::asked::{
+    self, AskedDispatch, AskedFacts, AskedRecords, Offer, RecordRef, Resolve,
+};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
@@ -17,6 +19,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
 use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, Watching, WorkspaceShell};
 
+use super::Workspaces;
 use super::providers::Reach;
 use super::terminal::{self, TerminalService};
 use super::tests::{governor, test_host};
@@ -62,7 +65,10 @@ struct App {
 
 impl App {
     fn confirmations(&self) -> Vec<Option<Confirmation>> {
-        self.calls.lock().unwrap().clone()
+        let Ok(calls) = self.calls.lock() else {
+            unreachable!("the app's calls are not poisoned");
+        };
+        calls.clone()
     }
 
     fn ran(&self) -> usize {
@@ -84,10 +90,12 @@ impl ActionProvider for App {
         _: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(request.confirmation.clone());
+        {
+            let Ok(mut calls) = self.calls.lock() else {
+                unreachable!("the app's calls are not poisoned");
+            };
+            calls.push(request.confirmation.clone());
+        }
         if !matches!(request.confirmation, Some(Confirmation::Asked(_))) {
             let facts = AskedFacts {
                 verb: "hand".into(),
@@ -100,7 +108,12 @@ impl ActionProvider for App {
             return Pending::ready(Err(ActionCallError::asks(facts)));
         }
         self.ran.fetch_add(1, Ordering::SeqCst);
-        self.runs.lock().unwrap().push(request.argument.clone());
+        {
+            let Ok(mut runs) = self.runs.lock() else {
+                unreachable!("the app's runs are not poisoned");
+            };
+            runs.push(request.argument.clone());
+        }
         Pending::ready(Ok(InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {
@@ -142,7 +155,12 @@ impl AskedDispatch for Kept {
         let Some(resent) = self.providers.invoke(caller, request) else {
             return Err(ActionCallError::UnknownAction);
         };
-        *self.resent.lock().unwrap() = Some(resent);
+        {
+            let Ok(mut kept) = self.resent.lock() else {
+                unreachable!("the calls kept are not poisoned");
+            };
+            *kept = Some(resent);
+        }
         Ok(())
     }
 
@@ -158,10 +176,13 @@ async fn answered<T: Send + 'static>(pending: Pending<T>) -> T {
     pending.then(move |value| {
         let _ = sender.send(value);
     });
-    tilo_test_env::within("a Terminal action's answer", receiver)
-        .await
-        .expect("the answer comes")
-        .expect("answered")
+    let Ok(answer) = tilo_test_env::within("a Terminal action's answer", receiver).await else {
+        unreachable!("the answer comes");
+    };
+    let Some(answer) = answer else {
+        unreachable!("answered");
+    };
+    answer
 }
 
 /// The call that names Terminal's machine secrets record.
@@ -192,19 +213,19 @@ fn answer(record: &RecordRef, answer: Offer) -> InvokeRequest {
         resolution: answer,
         ..Resolve::default()
     };
+    let Ok(resolution) = serde_json::to_value(resolving) else {
+        unreachable!("a resolution is JSON");
+    };
+    let Some(resolution) = resolution.as_object().cloned() else {
+        unreachable!("a resolution is a JSON object");
+    };
     InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: workspace_invocations::PROVIDER.to_owned(),
             address: ActionAddress::new(&record.record, asked::RESOLVE),
         },
-        argument: InvokeArgument::Json(
-            serde_json::to_value(resolving)
-                .unwrap()
-                .as_object()
-                .cloned()
-                .unwrap(),
-        ),
+        argument: InvokeArgument::Json(resolution),
         context: None,
         confirmation: None,
         revision: None,
@@ -276,19 +297,69 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
         .expect("their question is kept");
 
     // Their approve sends the same call again, and the app runs it carrying their yes.
-    let answered_ok = answered(workspaces.resolve_asked(&caller, &answer(&at, Offer::Approve)))
-        .await
-        .expect("their approve is taken");
+    approve_runs_the_call(&workspaces, &caller, &at, &kept).await;
+    let confirmations = app.confirmations();
+    assert_eq!(confirmations.len(), 2, "{confirmations:?}");
+    assert!(
+        matches!(confirmations[1], Some(Confirmation::Asked(_))),
+        "the app's own call carried their approve: {confirmations:?}"
+    );
+    assert_eq!(app.ran(), 1, "the app ran it once");
+    {
+        let runs = app.runs.lock().unwrap();
+        let InvokeArgument::Json(arguments) = &runs[0] else {
+            panic!("the app ran the call it was asked: {runs:?}");
+        };
+        assert_eq!(arguments.get("variable"), Some(&json!("GITHUB_TOKEN")));
+        assert_eq!(arguments.get("item"), Some(&json!(ITEM)));
+        drop(runs);
+    }
+
+    // Answered once: the same record answers no more.
+    let again = answered(workspaces.resolve_asked(&caller, &answer(&at, Offer::Approve))).await;
+    assert!(again.is_err(), "approved once: {again:?}");
+
+    // Another call they decline runs nothing.
+    a_declined_call_runs_nothing(
+        &workspaces,
+        &caller,
+        &provider,
+        &workspace,
+        &records,
+        &app,
+        &kept,
+    )
+    .await;
+
+    server.shutdown().await;
+}
+
+/// Their approve of the asked record sends the same call again, and the app runs it carrying
+/// their yes.
+async fn approve_runs_the_call(
+    workspaces: &Workspaces,
+    caller: &Caller,
+    at: &RecordRef,
+    kept: &Kept,
+) {
+    let Ok(answered_ok) =
+        answered(workspaces.resolve_asked(caller, &answer(at, Offer::Approve))).await
+    else {
+        unreachable!("their approve is taken");
+    };
     assert!(
         matches!(answered_ok.status, ReceiptStatus::Completed { .. }),
         "their answer is done: {answered_ok:?}"
     );
-    let resent = kept
-        .resent
-        .lock()
-        .unwrap()
-        .take()
-        .expect("their approve sent the call again");
+    let resent = {
+        let Ok(mut resent) = kept.resent.lock() else {
+            unreachable!("the calls kept are not poisoned");
+        };
+        resent.take()
+    };
+    let Some(resent) = resent else {
+        unreachable!("their approve sent the call again");
+    };
     let ran = answered(resent).await;
     assert!(
         matches!(
@@ -300,45 +371,36 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
         ),
         "the app ran the call they approved: {ran:?}"
     );
-    let confirmations = app.confirmations();
-    assert_eq!(confirmations.len(), 2, "{confirmations:?}");
-    assert!(
-        matches!(confirmations[1], Some(Confirmation::Asked(_))),
-        "the app's own call carried their approve: {confirmations:?}"
-    );
-    assert_eq!(app.ran(), 1, "the app ran it once");
-    let runs = app.runs.lock().unwrap();
-    let InvokeArgument::Json(arguments) = &runs[0] else {
-        panic!("the app ran the call it was asked: {runs:?}");
+}
+
+/// Another call they decline runs nothing: the app is asked once and never runs it.
+async fn a_declined_call_runs_nothing(
+    workspaces: &Workspaces,
+    caller: &Caller,
+    provider: &str,
+    workspace: &str,
+    records: &Arc<dyn AskedRecords>,
+    app: &App,
+    kept: &Kept,
+) {
+    let declined_call = call(provider);
+    let Some(held) = workspaces.providers().invoke(caller, declined_call.clone()) else {
+        unreachable!("Terminal serves its records");
     };
-    assert_eq!(arguments.get("variable"), Some(&json!("GITHUB_TOKEN")));
-    assert_eq!(arguments.get("item"), Some(&json!(ITEM)));
-    drop(runs);
-
-    // Answered once: the same record answers no more.
-    let again = answered(workspaces.resolve_asked(&caller, &answer(&at, Offer::Approve))).await;
-    assert!(again.is_err(), "approved once: {again:?}");
-
-    // Another call they decline runs nothing.
-    let declined_call = call(&provider);
-    let held = answered(
-        workspaces
-            .providers()
-            .invoke(&caller, declined_call.clone())
-            .expect("Terminal serves its records"),
-    )
-    .await;
+    let held = answered(held).await;
     let Err(ActionCallError::ConfirmationRequired(facts)) = held else {
-        panic!("the person is asked: {held:?}");
+        unreachable!("the person is asked: {held:?}");
     };
     // Asking reaches the app's own ask once; after the decline nothing more reaches it.
     let reached = app.confirmations().len();
-    let other = records
-        .write_asked(&workspace, &caller, &declined_call, &facts)
-        .expect("their question is kept");
-    answered(workspaces.resolve_asked(&caller, &answer(&other, Offer::Decline)))
-        .await
-        .expect("their decline is taken");
+    let Ok(other) = records.write_asked(workspace, caller, &declined_call, &facts) else {
+        unreachable!("their question is kept");
+    };
+    let Ok(_declined) =
+        answered(workspaces.resolve_asked(caller, &answer(&other, Offer::Decline))).await
+    else {
+        unreachable!("their decline is taken");
+    };
     assert_eq!(kept.declined.load(Ordering::SeqCst), 1, "it was declined");
     assert_eq!(app.ran(), 1, "a decline runs nothing");
     assert_eq!(
@@ -346,6 +408,4 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
         reached,
         "the declined call never reached the app to run"
     );
-
-    server.shutdown().await;
 }

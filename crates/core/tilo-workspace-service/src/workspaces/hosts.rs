@@ -477,7 +477,8 @@ impl Workspaces {
             && workspace
                 == tilo_server_protocol::servers::person_workspace_id(&host.cert.user_public_key)
         {
-            let bounded = tilo_workspace_keys::founding_wait() + std::time::Duration::from_secs(2);
+            let bounded = tilo_workspace_keys::founding_wait()
+                .saturating_add(std::time::Duration::from_secs(2));
             if !matches!(
                 tokio::time::timeout(bounded, self.join_keys(workspace)).await,
                 Ok(true)
@@ -1314,6 +1315,7 @@ impl Workspaces {
             let hint = self
                 .transport_hint(&governed)
                 .map_err(|error| error.to_string())?;
+            drop(governed);
             (hint, bootstrap)
         };
         let mut arguments = Map::new();

@@ -538,6 +538,7 @@ impl Workspaces {
             .readings
             .hold(workspace, state, governed.reading());
         self.serve_direct(&governed)?;
+        drop(governed);
         tracing::info!(%workspace, "a member copy held here holds the workspace from now on");
         Ok(())
     }

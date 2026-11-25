@@ -77,6 +77,9 @@ pub const RECORDED_OUTPUT: usize = 4 * 1024 * 1024;
 /// workspace: `(workspace, hash, bytes)`. Where the record's readers ask for it, on its route.
 pub type KeepContent = Arc<dyn Fn(&str, &str, &[u8]) -> Result<(), String> + Send + Sync>;
 
+/// The runs going in each session this device serves, by workspace and shell session.
+type SessionStops = Arc<Mutex<HashMap<(String, String), Vec<Arc<AtomicBool>>>>>;
+
 /// The host-side Terminal: a workspace's shells, and the records of their sessions.
 #[derive(Clone)]
 pub struct TerminalService {
@@ -89,7 +92,7 @@ pub struct TerminalService {
     moved: tokio::sync::watch::Sender<u64>,
     /// The runs going in each session this device serves, by workspace and shell session:
     /// what a `stop` ends.
-    stops: Arc<Mutex<HashMap<(String, String), Vec<Arc<AtomicBool>>>>>,
+    stops: SessionStops,
     /// What stops one invocation's run: what a cancel of it ends.
     running: Arc<Mutex<HashMap<InvocationId, Arc<AtomicBool>>>>,
     /// Where a command's output too long to live in its record is kept.
@@ -135,13 +138,11 @@ impl TerminalService {
         if app != TERMINAL_APP {
             return Err(ActionCallError::UnknownAction);
         }
-        let workspace =
-            caller
-                .workspace()
-                .map(str::to_owned)
-                .ok_or(ActionCallError::InvalidRequest {
-                    reason: "a Terminal session's shell runs in one workspace".into(),
-                })?;
+        let workspace = caller.workspace().map(str::to_owned).ok_or_else(|| {
+            ActionCallError::InvalidRequest {
+                reason: "a Terminal session's shell runs in one workspace".into(),
+            }
+        })?;
         Ok((workspace, record.to_owned()))
     }
 
@@ -207,7 +208,8 @@ impl TerminalService {
         }
         let invocation = request.invocation;
         let caller = caller.clone();
-        match self.log.lock_recover().reserve(&caller, request) {
+        let reserved = self.log.lock_recover().reserve(&caller, request);
+        match reserved {
             Ok(Reservation::Reserved) => {}
             // The same invocation, asked again: it is already running or ended here.
             Ok(Reservation::Admitted) => {

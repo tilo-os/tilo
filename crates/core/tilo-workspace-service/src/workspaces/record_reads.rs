@@ -382,20 +382,17 @@ impl RecordReads {
             .and_then(|workspaces| workspaces.asked_store())
             .map(|store| store.waiting_in(&address.workspace))
             .unwrap_or_default();
-        match self.broker() {
-            Some(broker) => {
-                broker.read_invocations(caller, &address.workspace, &address.record, asked)
-            }
+        if let Some(broker) = self.broker() {
+            broker.read_invocations(caller, &address.workspace, &address.record, asked)
+        } else {
             // A host that runs no apps keeps no invocations of its own: what it reads is the
             // calls that wait here for the caller's own person, and nobody else's.
-            None => {
-                let person = caller.user_public_key().map(hex::encode);
-                let asked = asked
-                    .into_iter()
-                    .filter(|waiting| Some(&waiting.person) == person.as_ref())
-                    .collect();
-                crate::apps::collab_app_broker::questions_reading(asked, &address.record)
-            }
+            let person = caller.user_public_key().map(hex::encode);
+            let asked = asked
+                .into_iter()
+                .filter(|waiting| Some(&waiting.person) == person.as_ref())
+                .collect();
+            crate::apps::collab_app_broker::questions_reading(asked, &address.record)
         }
     }
 

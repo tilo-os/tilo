@@ -312,7 +312,7 @@ impl Resources {
     }
 
     /// The store, while its workspace is held alone.
-    fn store_mut(&mut self) -> std::sync::MutexGuard<'_, Store> {
+    fn store_mut(&self) -> std::sync::MutexGuard<'_, Store> {
         use tilo_lock::MutexRecover as _;
         self.store.lock_recover()
     }
@@ -337,7 +337,7 @@ impl Resources {
     }
 
     /// The reader set the store knows `doc` by.
-    fn readers(&mut self, doc: &str) -> Option<String> {
+    fn readers(&self, doc: &str) -> Option<String> {
         self.store_mut().index().readers(doc).map(str::to_owned)
     }
 
@@ -382,7 +382,7 @@ impl Resources {
     }
 
     /// The heads `doc` stands at, as the index knows it.
-    fn heads(&mut self, doc: &str) -> Vec<ChangeHash> {
+    fn heads(&self, doc: &str) -> Vec<ChangeHash> {
         self.store_mut()
             .index()
             .heads(doc)
@@ -723,7 +723,7 @@ impl GovernedWorkspace {
     /// Every resource of the store `query` finds, page after page, with what the index holds
     /// of each ([`Store::query`]): what this device itself holds, read for its own work.
     pub(super) fn store_found(
-        &mut self,
+        &self,
         mut query: collab_types::store::Query,
     ) -> Vec<(String, collab_types::store::Indexed)> {
         let mut found = Vec::new();
@@ -743,11 +743,7 @@ impl GovernedWorkspace {
     }
 
     /// The resource `id` of `kind` in the store, as its index holds it ([`Store::get`]).
-    pub(super) fn store_held(
-        &mut self,
-        kind: &str,
-        id: &str,
-    ) -> Option<collab_types::store::Indexed> {
+    pub(super) fn store_held(&self, kind: &str, id: &str) -> Option<collab_types::store::Indexed> {
         self.resources.store_mut().get(kind, id, &|_| true).cloned()
     }
 
@@ -1110,12 +1106,20 @@ impl Workspaces {
     /// resources stand on, the app running where it runs, on a device.
     #[cfg(all(any(test, feature = "test-support"), feature = "apps"))]
     pub async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
-        let state = self.workspace(workspace).await.unwrap();
+        let state = super::fixtures::needed(
+            self.workspace(workspace).await,
+            &format!("a test's documents reach the workspace {workspace}"),
+        );
         let mut governed = state.lock().await;
         let mut store = governed.store_with_surfaces(&self.inner.host.surfaces);
         for (doc, bytes) in documents {
-            store.load(&doc, &bytes).unwrap();
+            super::fixtures::needed(
+                store.load(&doc, &bytes),
+                &format!("a test's document {doc} loads"),
+            );
         }
+        drop(store);
+        drop(governed);
     }
 }
 
@@ -1503,36 +1507,7 @@ impl Workspaces {
             .publication()
             .held_document(app, document)
             .is_some_and(|held| held.is_sealed());
-        let landed = if sealed {
-            accepted
-        } else {
-            Automerge::load(&opened.document)
-                .map_err(|error| error.to_string())?
-                .has_change(&write.change.hash())
-        };
-        if !landed {
-            // As for a document that opens to nothing: a change the workspace holds back or
-            // refuses leaves the document short of it, and only these counters and what the open
-            // left out say which.
-            let left_out: Vec<String> = opened
-                .unmerged
-                .iter()
-                .map(|write| format!("{}: {:?}", hex::encode(write.author), write.reason))
-                .collect();
-            return Err(format!(
-                "the staged resource change did not pass document admission: {decided}, held \
-                 back {}, waiting for {}, duplicate {}, refused {}, left out {}",
-                taken.deferred,
-                taken.incomplete.as_deref().unwrap_or("nothing"),
-                taken.duplicate,
-                taken.rejected,
-                if left_out.is_empty() {
-                    "nothing".to_owned()
-                } else {
-                    left_out.join("; ")
-                }
-            ));
-        }
+        resource_write_landed(&opened, sealed, accepted, write, &decided, &taken)?;
         Ok(envelopes)
     }
 
@@ -1850,43 +1825,8 @@ impl Workspaces {
         // same device `record_command` signs as.
         let device = self.signing_device();
         let writing = command.writes();
-        // What a view's caller writes outside an invocation: each write's resource type and verb.
-        let mut unserved = Vec::new();
-        // Who the app writes as outside an invocation it serves.
-        let mut acting = None;
-        if writing {
-            let caller = context.caller();
-            if caller.workspace() != Some(workspace)
-                || caller.user_public_key() != Some(&device.cert.user_public_key)
-                || caller.device_public_key() != Some(&device.device())
-            {
-                return Err("the resource write requires the certified caller's own signer".into());
-            }
-            let person = caller
-                .acting()
-                .person_id()
-                .ok_or("this resource route has no caller-scoped signer for the write")?;
-            // What the app writes outside an invocation it serves is the person's at the window,
-            // or the caller's the device opened the view for.
-            let otherwise = context.viewer().map_or_else(
-                || tilo_actions::Acting::person(person),
-                |viewer| viewer.acting().clone(),
-            );
-            acting = Some(otherwise.by.clone());
-            // The device the write is made on is where a resource it makes live is live.
-            let written_on = (
-                hex::encode(device.device()),
-                device.cert.device_label.clone(),
-            );
-            stamp_resource_invoker(
-                &mut command,
-                &written_on,
-                &|invocation| context.invoker_of(invocation).cloned(),
-                &otherwise,
-                person,
-                &mut unserved,
-            );
-        }
+        let (acting, unserved) =
+            stamp_resource_write(context, workspace, &mut command, &device, writing)?;
         if let collab_types::store::wire::Command::RecordChange {
             changes,
             more,
@@ -1894,47 +1834,16 @@ impl Workspaces {
             ..
         } = &command
         {
-            // The broker gathers a write's runs and hands the store the write whole.
-            if *more {
-                return Err("the record's changes reach this device only as a whole write".into());
-            }
-            // Whether a change is the app's own, made with no person at it: a refusal of one is
-            // said as the app's ([`Self::app_write_refused`]).
-            let by_app = std::sync::atomic::AtomicBool::new(false);
-            // A change's label names whoever made it: the caller writing, or the invoker of an
-            // invocation the app serves for them. One naming nobody is its signer's own.
-            let names_caller = |stamp: &tilo_resource_store::Stamp| {
-                if app_records::by_app(stamp, context.app_id()) {
-                    by_app.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                match stamp.invoked_by() {
-                    None => true,
-                    Some(named) => {
-                        acting.as_ref() == Some(&named)
-                            || context
-                                .invoker_of(&stamp.invocation)
-                                .is_some_and(|invoker| invoker.by == named)
-                    }
-                }
-            };
-            let written = self
-                .opened_record_change(
+            return self
+                .record_change_command(
+                    context,
                     workspace,
                     (context.app_id(), context.kind(), opened()?),
                     (&changes.0, commit.as_ref()),
-                    &names_caller,
-                    context.founding_refusal(),
+                    *more,
+                    acting.as_ref(),
                 )
                 .await;
-            if let Err(error) = written {
-                return Err(if by_app.load(std::sync::atomic::Ordering::Relaxed) {
-                    self.app_write_refused(workspace, context.app_id(), error)
-                        .await
-                } else {
-                    error
-                });
-            }
-            return Ok(collab_types::store::wire::Reply::Written);
         }
         if !writing {
             return self.read_store(context, workspace, &command).await;
@@ -1957,6 +1866,60 @@ impl Workspaces {
                 .await),
             written => written,
         }
+    }
+
+    /// Carry out the record change `command` names, saying a refusal of the app's own change as
+    /// the app's.
+    #[cfg(feature = "apps")]
+    async fn record_change_command(
+        &self,
+        context: &crate::apps::services::ResourceRequestContext,
+        workspace: &str,
+        (app, kind, record): (&str, Option<&str>, &str),
+        (changes, commit): (&[u8], Option<&collab_types::WorkspaceCommit>),
+        more: bool,
+        acting: Option<&tilo_actions::Actor>,
+    ) -> Result<collab_types::store::wire::Reply, String> {
+        // The broker gathers a write's runs and hands the store the write whole.
+        if more {
+            return Err("the record's changes reach this device only as a whole write".into());
+        }
+        // Whether a change is the app's own, made with no person at it: a refusal of one is
+        // said as the app's ([`Self::app_write_refused`]).
+        let by_app = std::sync::atomic::AtomicBool::new(false);
+        // A change's label names whoever made it: the caller writing, or the invoker of an
+        // invocation the app serves for them. One naming nobody is its signer's own.
+        let names_caller = |stamp: &tilo_resource_store::Stamp| {
+            if app_records::by_app(stamp, app) {
+                by_app.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            match stamp.invoked_by() {
+                None => true,
+                Some(named) => {
+                    acting == Some(&named)
+                        || context
+                            .invoker_of(&stamp.invocation)
+                            .is_some_and(|invoker| invoker.by == named)
+                }
+            }
+        };
+        let written = self
+            .opened_record_change(
+                workspace,
+                (app, kind, record),
+                (changes, commit),
+                &names_caller,
+                context.founding_refusal(),
+            )
+            .await;
+        if let Err(error) = written {
+            return Err(if by_app.load(std::sync::atomic::Ordering::Relaxed) {
+                self.app_write_refused(workspace, app, error).await
+            } else {
+                error
+            });
+        }
+        Ok(collab_types::store::wire::Reply::Written)
     }
 
     /// Carry out `command` on `app`'s record of `workspace` for this device's own roles (the agent
@@ -2216,7 +2179,7 @@ fn action_of(
 ) -> Option<collab_types::WorkspaceCommit> {
     let mut parts: Vec<collab_types::CommitPart> = Vec::new();
     for write in writes.iter().filter(|write| {
-        !(write.change.deps().is_empty() && !governed.peer().holds_document(app, &write.doc))
+        !write.change.deps().is_empty() || governed.peer().holds_document(app, &write.doc)
     }) {
         let hash = write.change.hash().0;
         match parts.iter_mut().find(|part| part.document == write.doc) {
@@ -2390,6 +2353,106 @@ impl Workspaces {
         drop(self.store_of(&mut governed));
         Ok(governed.resources.open_query(query, reader))
     }
+}
+
+/// Whether the resource change `write` landed in `opened`, and what says it did not: `sealed`
+/// makes it the disposition the admission reported (`accepted`), where a document that travels
+/// in the clear is looked for in the document itself.
+#[cfg(any(feature = "apps", feature = "agents"))]
+fn resource_write_landed(
+    opened: &tilo_peer_state::OpenedDocument,
+    sealed: bool,
+    accepted: bool,
+    write: &tilo_resource_store::Written,
+    decided: &str,
+    taken: &tilo_peer_state::ReceiveOutcome,
+) -> Result<(), String> {
+    let landed = if sealed {
+        accepted
+    } else {
+        Automerge::load(&opened.document)
+            .map_err(|error| error.to_string())?
+            .has_change(&write.change.hash())
+    };
+    if landed {
+        return Ok(());
+    }
+    // As for a document that opens to nothing: a change the workspace holds back or
+    // refuses leaves the document short of it, and only these counters and what the open
+    // left out say which.
+    let left_out: Vec<String> = opened
+        .unmerged
+        .iter()
+        .map(|write| format!("{}: {:?}", hex::encode(write.author), write.reason))
+        .collect();
+    Err(format!(
+        "the staged resource change did not pass document admission: {decided}, held \
+         back {}, waiting for {}, duplicate {}, refused {}, left out {}",
+        taken.deferred,
+        taken.incomplete.as_deref().unwrap_or("nothing"),
+        taken.duplicate,
+        taken.rejected,
+        if left_out.is_empty() {
+            "nothing".to_owned()
+        } else {
+            left_out.join("; ")
+        }
+    ))
+}
+
+/// What a write the app makes outside an invocation it serves carries beside the command: who
+/// it writes as, and the resource types and verbs whose invocation it does not serve.
+#[cfg(feature = "apps")]
+type Stamped = (Option<tilo_actions::Actor>, Vec<(String, String)>);
+
+/// Stamp the writes `command` carries as this device's, the way `record_command` signs its own:
+/// each write's invoker, and who the app writes as outside an invocation it serves. None of it,
+/// and nothing to stamp, for a command that writes nothing.
+#[cfg(feature = "apps")]
+fn stamp_resource_write(
+    context: &crate::apps::services::ResourceRequestContext,
+    workspace: &str,
+    command: &mut collab_types::store::wire::Command,
+    device: &super::MemberDevice,
+    writing: bool,
+) -> Result<Stamped, String> {
+    if !writing {
+        return Ok((None, Vec::new()));
+    }
+    let caller = context.caller();
+    if caller.workspace() != Some(workspace)
+        || caller.user_public_key() != Some(&device.cert.user_public_key)
+        || caller.device_public_key() != Some(&device.device())
+    {
+        return Err("the resource write requires the certified caller's own signer".into());
+    }
+    let person = caller
+        .acting()
+        .person_id()
+        .ok_or("this resource route has no caller-scoped signer for the write")?;
+    // What the app writes outside an invocation it serves is the person's at the window,
+    // or the caller's the device opened the view for.
+    let otherwise = context.viewer().map_or_else(
+        || tilo_actions::Acting::person(person),
+        |viewer| viewer.acting().clone(),
+    );
+    let acting = otherwise.by.clone();
+    // The device the write is made on is where a resource it makes live is live.
+    let written_on = (
+        hex::encode(device.device()),
+        device.cert.device_label.clone(),
+    );
+    // What a view's caller writes outside an invocation: each write's resource type and verb.
+    let mut unserved = Vec::new();
+    stamp_resource_invoker(
+        command,
+        &written_on,
+        &|invocation| context.invoker_of(invocation).cloned(),
+        &otherwise,
+        person,
+        &mut unserved,
+    );
+    Ok((Some(acting), unserved))
 }
 
 /// The command names the verb and invocation, and the workspace service names who made it: whoever invoked

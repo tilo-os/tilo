@@ -52,6 +52,30 @@ use crate::workspace_documents::HostCommit;
 pub const CONFINED_HOLDS_NONE: &str =
     "this device reaches its one workspace through that workspace's host and keeps no copy of it";
 
+/// The route `join`'s invitation names to redeem it over: a device that holds the workspace's
+/// keys where the invitation names one, since only such a device lets a new member in, else the
+/// first it names.
+fn invitation_route(
+    join: &tilo_peer_state::join::VerifiedJoin,
+) -> Result<(TransportHint, WorkspaceDeviceHintV1), String> {
+    let routes: Vec<_> = join
+        .grant()
+        .transport
+        .iter()
+        .filter(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1)
+        .filter_map(|hint| {
+            let (address, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(hint).ok()?;
+            Some((hint.clone(), address))
+        })
+        .collect();
+    Ok(routes
+        .iter()
+        .find(|(_, address)| address.holds_keys)
+        .or_else(|| routes.first())
+        .cloned()
+        .ok_or("invitation has no authenticated native Iroh route")?)
+}
+
 /// [`CONFINED_HOLDS_NONE`] for a device whose certificate `cert` confines it to one workspace.
 ///
 /// # Errors
@@ -208,7 +232,7 @@ impl Members {
     }
 
     /// What the device serving `workspace` answered of one of this device's writes there.
-    fn answered_served(&self, workspace: WorkspaceId, answered: Answered) {
+    fn answered_served(&self, workspace: WorkspaceId, answered: &Answered) {
         let Ok(mut served) = self.served.lock() else {
             return;
         };
@@ -645,24 +669,7 @@ impl Workspaces {
         if workspace.is_nil() {
             return Err("invitation names no valid workspace".into());
         }
-        // A device that holds the workspace's keys, where the invitation names one: only such a
-        // device lets a new member in.
-        let routes: Vec<_> = join
-            .grant()
-            .transport
-            .iter()
-            .filter(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1)
-            .filter_map(|hint| {
-                let (address, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(hint).ok()?;
-                Some((hint.clone(), address))
-            })
-            .collect();
-        let (hint, address) = routes
-            .iter()
-            .find(|(_, address)| address.holds_keys)
-            .or_else(|| routes.first())
-            .cloned()
-            .ok_or("invitation has no authenticated native Iroh route")?;
+        let (hint, address) = invitation_route(&join)?;
         address
             .validate_invitation(join.grant())
             .map_err(|e| e.to_string())?;
@@ -1389,7 +1396,9 @@ impl Workspaces {
                     return;
                 };
                 match answered {
-                    Some(Ok(answered)) => workspaces.inner.member.answered_served(workspace, answered),
+                    Some(Ok(answered)) => {
+                        workspaces.inner.member.answered_served(workspace, &answered);
+                    }
                     Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(missed))) => {
                         tracing::debug!(
                             %workspace,

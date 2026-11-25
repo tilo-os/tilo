@@ -76,10 +76,7 @@ impl Workspaces {
         {
             let route = (app_id.as_str(), document_id.as_str());
             let checked = match &followed.taken_behind {
-                Some(compaction) => {
-                    self.keep_checkpoint_check(workspace, route, compaction)
-                        .await
-                }
+                Some(compaction) => self.keep_checkpoint_check(workspace, route, compaction),
                 None if followed.changed && envelope.kind == collab_types::OpKind::Compaction => {
                     self.check_leading_checkpoint(workspace, route).await
                 }

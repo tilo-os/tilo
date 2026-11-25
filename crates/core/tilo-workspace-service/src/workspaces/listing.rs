@@ -1550,11 +1550,25 @@ pub(crate) mod entry_tests {
             Ok(JoinReply::Admitted { .. })
         ));
 
+        an_invitation_is_let_in(workspaces, &workspace, &owner, &guest, &guest_key, &join).await;
+        server.shutdown().await;
+    }
+
+    /// The owner removes the person again, and the invitation the owner answers it with lifts
+    /// the removal: the person is admitted when they redeem it.
+    async fn an_invitation_is_let_in(
+        workspaces: &Workspaces,
+        workspace: &str,
+        owner: &DeviceCert,
+        guest: &DeviceCert,
+        guest_key: &SigningKey,
+        join: &EntryJoin,
+    ) {
         // A removal the person answers with an invitation is lifted by it too.
         workspaces
             .remove_member(
-                &workspace,
-                &owner,
+                workspace,
+                owner,
                 RemoveMemberRequest {
                     request_id: [9; 32],
                     user_public_key: guest.user_public_key,
@@ -1563,19 +1577,16 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
         assert_eq!(
-            workspaces
-                .admit_listed(&workspace, &join)
-                .await
-                .unwrap_err(),
+            workspaces.admit_listed(workspace, join).await.unwrap_err(),
             EntryRefusal::Removed
         );
         let WorkspacesReply::Invitation {
             signed_invitation, ..
         } = workspaces
             .page_workspaces(
-                &owner,
+                owner,
                 WorkspacesRequest::Invite {
-                    workspace: workspace.clone(),
+                    workspace: workspace.to_owned(),
                     request_id: [10; 32],
                     role: Role::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
@@ -1593,7 +1604,7 @@ pub(crate) mod entry_tests {
             workspaces
                 .admit_proven(
                     signed_invitation,
-                    (guest.clone(), &guest_key),
+                    (guest.clone(), guest_key),
                     rand::random(),
                     "Troll",
                     None
@@ -1603,10 +1614,9 @@ pub(crate) mod entry_tests {
         ));
         assert!(
             !workspaces
-                .removed_within_the_day(&workspace, guest.user_public_key)
+                .removed_within_the_day(workspace, guest.user_public_key)
                 .await
         );
-        server.shutdown().await;
     }
 
     /// A ban is not a removal: it is lifted only through `unban`, and neither

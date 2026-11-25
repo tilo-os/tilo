@@ -147,15 +147,14 @@ enum Status {
     Never,
 }
 
-/// The kind `type_id` names, or `None` for an account the reading does not list (a browser
-/// identity, which connects no service).
-fn kind_of(type_id: &str) -> Option<Kind> {
+/// The kind `type_id` names; a kind this build does not know is [`Kind::Other`].
+fn kind_of(type_id: &str) -> Kind {
     use accounts::cloud_types;
     if type_id == accounts::email::TYPE_ID {
-        return Some(Kind::Mail);
+        return Kind::Mail;
     }
     if type_id == accounts::calendar::TYPE_ID {
-        return Some(Kind::Calendar);
+        return Kind::Calendar;
     }
     if [
         cloud_types::GOOGLE_DRIVE,
@@ -167,10 +166,10 @@ fn kind_of(type_id: &str) -> Option<Kind> {
     ]
     .contains(&type_id)
     {
-        return Some(Kind::Cloud);
+        return Kind::Cloud;
     }
     // A kind this build does not know still signs in somewhere, and its person may remove it.
-    Some(Kind::Other)
+    Kind::Other
 }
 
 /// One account as the reading shows it, or `None` for an account it does not list.
@@ -182,7 +181,7 @@ fn view_of(
     if account.type_id.as_str() == accounts::person::TILO_IDENTITY_TYPE {
         return None;
     }
-    let kind = kind_of(account.type_id.as_str())?;
+    let kind = kind_of(account.type_id.as_str());
     let address = address_of(account);
     let name = if account.display_name.trim().is_empty() {
         address.clone()

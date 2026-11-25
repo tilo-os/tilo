@@ -56,6 +56,15 @@ fn reads_all(id: &str, grantee: Grantee, workspace: &str, by: &str) -> Grant {
     )
 }
 
+/// The address of the device setting `record` in the person's own workspace `own`.
+fn setting(own: &str, record: &str) -> ResourceAddress {
+    ResourceAddress {
+        workspace: own.to_owned(),
+        app: DEVICE_SETTINGS.to_owned(),
+        record: record.to_owned(),
+    }
+}
+
 /// A grant of `grantee` reading all of `workspace` and changing nothing of it.
 fn reads_only(id: &str, grantee: Grantee, workspace: &str, by: &str) -> Grant {
     Grant::new(
@@ -933,32 +942,55 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
         std::sync::Arc::new(Settings),
     );
     let reads = workspaces.resource_reads();
-    let setting = |record: &str| ResourceAddress {
-        workspace: own.clone(),
-        app: DEVICE_SETTINGS.to_owned(),
-        record: record.to_owned(),
-    };
 
     // The person's own laptop: a device of theirs this computer never saw, reading any setting.
     let laptop = Caller::authenticated(h.cert.user_public_key, [21; 32]).in_workspace(own.clone());
     for record in ["server", "displays"] {
         assert!(
-            reads.read(&laptop, &setting(record)).await.is_ok(),
+            reads.read(&laptop, &setting(&own, record)).await.is_ok(),
             "the person reads {record} from another of their devices"
         );
     }
 
     // Bob administers a workspace this device serves, and no grant names him: he reads nothing,
     // and neither does his agent.
+    an_administrator_with_no_grant_reads_nothing(
+        &reads, &own, &h.kitchen, &bob_root, &bob_key, &bob,
+    )
+    .await;
+
+    // Carol was granted one setting in the person's own workspace, so she reads that one. Her
+    // administrator role in Kitchen, which this device serves, reached nothing of it.
+    a_granted_setting_reads_alone_until_it_is_taken_back(
+        workspaces,
+        &reads,
+        &own,
+        &h.kitchen,
+        &carol_root,
+        &carol_key,
+    )
+    .await;
+    h.server.shutdown().await;
+}
+
+/// An administrator of a workspace this device serves, named by no grant, reads no setting of
+/// this device, and neither does his agent.
+async fn an_administrator_with_no_grant_reads_nothing(
+    reads: &super::RecordReads,
+    own: &str,
+    kitchen: &str,
+    bob_root: &SigningKey,
+    bob_key: &SigningKey,
+    bob: &str,
+) {
     let bob_caller = Caller::authenticated(
         bob_root.verifying_key().to_bytes(),
         bob_key.verifying_key().to_bytes(),
     )
-    .in_workspace(h.kitchen.clone());
-    let refusal = reads
-        .read(&bob_caller, &setting("server"))
-        .await
-        .expect_err("an administrator with no grant reads no setting of this device");
+    .in_workspace(kitchen.to_owned());
+    let Err(refusal) = reads.read(&bob_caller, &setting(own, "server")).await else {
+        unreachable!("an administrator with no grant is refused a setting");
+    };
     assert!(
         matches!(refusal, ActionCallError::Refused { .. }),
         "an administrator with no grant is refused: {refusal:?}"
@@ -967,26 +999,38 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
         refusal.to_string().contains("Only this device's person"),
         "the refusal says who reads them: {refusal}"
     );
-    let agent = Caller::local_agent("bob-agent", bob.clone()).in_workspace(h.kitchen.clone());
+    let agent = Caller::local_agent("bob-agent", bob.to_owned()).in_workspace(kitchen.to_owned());
     assert!(
-        reads.read(&agent, &setting("server")).await.is_err(),
+        reads.read(&agent, &setting(own, "server")).await.is_err(),
         "an administrator's agent reads none of them"
     );
+}
 
-    // Carol was granted one setting in the person's own workspace, so she reads that one. Her
-    // administrator role in Kitchen, which this device serves, reached nothing of it.
+/// Carol, granted one setting in the person's own workspace, reads that one, and none of it once
+/// the person takes the grant back.
+async fn a_granted_setting_reads_alone_until_it_is_taken_back(
+    workspaces: &super::super::Workspaces,
+    reads: &super::RecordReads,
+    own: &str,
+    kitchen: &str,
+    carol_root: &SigningKey,
+    carol_key: &SigningKey,
+) {
     let carol_caller = Caller::authenticated(
         carol_root.verifying_key().to_bytes(),
         carol_key.verifying_key().to_bytes(),
     )
-    .in_workspace(h.kitchen.clone());
+    .in_workspace(kitchen.to_owned());
     assert!(
-        reads.read(&carol_caller, &setting("server")).await.is_ok(),
+        reads
+            .read(&carol_caller, &setting(own, "server"))
+            .await
+            .is_ok(),
         "whoever the person granted the setting reads it"
     );
     assert!(
         reads
-            .read(&carol_caller, &setting("displays"))
+            .read(&carol_caller, &setting(own, "displays"))
             .await
             .is_err(),
         "a grant on one setting reaches no other"
@@ -995,13 +1039,15 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
     // The person takes the grant back: Carol reads nothing of that setting.
     crate::workspaces::fixtures::revoke_grants(
         workspaces,
-        &own,
+        own,
         &[tilo_action_policy::GrantId::new("carol-server")],
     )
     .await;
     assert!(
-        reads.read(&carol_caller, &setting("server")).await.is_err(),
+        reads
+            .read(&carol_caller, &setting(own, "server"))
+            .await
+            .is_err(),
         "the setting reads nothing after the person revokes the grant"
     );
-    h.server.shutdown().await;
 }

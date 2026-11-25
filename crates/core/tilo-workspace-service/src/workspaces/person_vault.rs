@@ -47,7 +47,7 @@ use tilo_actions::remote::person_vault::{
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
-use super::workspace_stores::Store;
+use super::workspace_stores::{Reach, Store};
 use super::{GovernedWorkspace, WorkspaceId, Workspaces};
 
 /// Where a device puts a secret its person copies from the vault ([`person_vault::COPY`]): the
@@ -159,9 +159,38 @@ impl Workspaces {
             .await?;
         let workspace = reach.workspace.to_string();
         match action {
+            person_vault::CODE | person_vault::USES | person_vault::TAKE_BACK => {
+                self.vault_code_and_uses_invoke(
+                    workspace_id,
+                    certificate,
+                    &workspace,
+                    caller,
+                    request,
+                    action,
+                )
+                .await
+            }
+            _ => {
+                self.vault_item_invoke(&workspace, caller, request, action, &reach)
+                    .await
+            }
+        }
+    }
+
+    /// Answer the vault's listing, adding, removing, copying or showing of one item, for
+    /// `request`, in the vault `workspace`, acted on by `reach`'s person or agent.
+    async fn vault_item_invoke(
+        &self,
+        workspace: &str,
+        caller: &Caller,
+        request: &InvokeRequest,
+        action: &str,
+        reach: &Reach,
+    ) -> Result<Value, ActionCallError> {
+        match action {
             person_vault::LIST => {
                 let opened = self
-                    .open_vault(&workspace)
+                    .open_vault(workspace)
                     .await
                     .map_err(ActionCallError::refused)?;
                 answer(kept(&opened.items()))
@@ -172,11 +201,9 @@ impl Workspaces {
                     "an item to keep names its kind, where it belongs and its secret",
                 )?;
                 said(
-                    self.changing_vault(
-                        &workspace,
-                        (Some(&reach.acting), Some(request)),
-                        |items| add(items, adding),
-                    )
+                    self.changing_vault(workspace, (Some(&reach.acting), Some(request)), |items| {
+                        add(items, adding)
+                    })
                     .await,
                 )
             }
@@ -184,11 +211,9 @@ impl Workspaces {
                 let removing: RemoveItem =
                     argument(request, "an item to forget is named by its reference")?;
                 said(
-                    self.changing_vault(
-                        &workspace,
-                        (Some(&reach.acting), Some(request)),
-                        |items| remove(items, &removing.item),
-                    )
+                    self.changing_vault(workspace, (Some(&reach.acting), Some(request)), |items| {
+                        remove(items, &removing.item)
+                    })
                     .await,
                 )
             }
@@ -210,7 +235,7 @@ impl Workspaces {
                     allowed: None,
                 };
                 let shown = self
-                    .changing_vault(&workspace, (Some(&reach.acting), Some(request)), |items| {
+                    .changing_vault(workspace, (Some(&reach.acting), Some(request)), |items| {
                         show(items, &showing, &by, purpose)
                     })
                     .await
@@ -224,11 +249,27 @@ impl Workspaces {
                     }))
                 }
             }
+            _ => Err(ActionCallError::UnknownAction),
+        }
+    }
+
+    /// Answer the code an item's seed makes now, and an item's uses with the grants that take
+    /// back what an agent may always use, for `request` in the vault `workspace`.
+    async fn vault_code_and_uses_invoke(
+        &self,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        certificate: Option<&DeviceCert>,
+        workspace: &str,
+        caller: &Caller,
+        request: &InvokeRequest,
+        action: &str,
+    ) -> Result<Value, ActionCallError> {
+        match action {
             // The code of this moment from a code generator's seed, shown where the vault is:
             // a read, so nothing is written and no use stands in its history. The item is the
             // action's resource, so a grant covers that one account.
             person_vault::CODE => {
-                self.using_vault(&workspace, caller, None, true)
+                self.using_vault(workspace, caller, None, true)
                     .await
                     .map_err(ActionCallError::refused)?;
                 let reference = request
@@ -240,7 +281,7 @@ impl Workspaces {
                     .ok_or(ActionCallError::UnknownAction)?;
                 let reference = format!("{}:{}", person_vault::ITEM_KIND, reference.as_str());
                 let code = self
-                    .vault_code(&workspace, &reference)
+                    .vault_code(workspace, &reference)
                     .await
                     .map_err(ActionCallError::refused)?;
                 let now = tilo_clock::unix_now();
@@ -257,7 +298,7 @@ impl Workspaces {
                 let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
                 let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
                 let opened = self
-                    .open_vault(&workspace)
+                    .open_vault(workspace)
                     .await
                     .map_err(ActionCallError::refused)?;
                 let mut history = uses(&opened.items(), &of.item)
@@ -275,7 +316,7 @@ impl Workspaces {
                 let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
                 let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
                 let opened = self
-                    .open_vault(&workspace)
+                    .open_vault(workspace)
                     .await
                     .map_err(ActionCallError::refused)?;
                 let mut history = uses(&opened.items(), &taking.item)

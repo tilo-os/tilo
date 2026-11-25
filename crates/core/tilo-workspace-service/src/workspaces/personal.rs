@@ -468,10 +468,12 @@ impl Workspaces {
                 return;
             };
             client.clone_into(&mut session.name);
-            session
+            let listed = session
                 .cert
                 .clone()
-                .map(|cert| (cert, Arc::clone(&session.stop)))
+                .map(|cert| (cert, Arc::clone(&session.stop)));
+            drop(sessions);
+            listed
         };
         if let Some((cert, stop)) = listed {
             self.note_agent(&cert, client, &stop);
@@ -516,6 +518,7 @@ impl Workspaces {
                 return false;
             };
             session.stopped = true;
+            drop(sessions);
         }
         presence_changed();
         true
@@ -546,6 +549,7 @@ impl Workspaces {
                 return true;
             }
             session.stopped = false;
+            drop(sessions);
         }
         presence_changed();
         true

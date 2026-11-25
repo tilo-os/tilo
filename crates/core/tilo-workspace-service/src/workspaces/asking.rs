@@ -177,8 +177,8 @@ impl AskedRecords for Told {
         let record = self
             .records
             .write_asked(workspace, caller, request, facts)?;
-        if let (Some(person), Some(workspaces)) = (asked_person(caller), self.workspaces.upgrade())
-        {
+        let value = (asked_person(caller), self.workspaces.upgrade());
+        if let (Some(person), Some(workspaces)) = value {
             self.waiting.lock_recover().insert((person, record.clone()));
             let told = telling(&record, facts);
             tokio::spawn(async move {

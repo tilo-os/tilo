@@ -691,6 +691,7 @@ impl Workspaces {
                             tracing::debug!(%error, "a content answer did not reach its asker");
                         }
                     }
+                    drop(room);
                 });
             }
         });

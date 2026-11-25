@@ -289,6 +289,7 @@ mod tests {
             "the most recent first, each once, never the version it runs"
         );
         assert!(governance.earlier_app_versions("so.tilo.writer").is_empty());
+        drop(peer);
     }
 
     #[test]

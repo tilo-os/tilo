@@ -54,8 +54,11 @@ impl Workspaces {
             return Err("it would allow more than you may do yourself".to_owned());
         }
         drop(access);
-        self.put_grants(&mut governed, at, std::slice::from_ref(&grant))
-            .await
+        let written = self
+            .put_grants(&mut governed, at, std::slice::from_ref(&grant))
+            .await;
+        drop(governed);
+        written
     }
 
     /// Write `grants` in `workspace`, as the host's change to it.

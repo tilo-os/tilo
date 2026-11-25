@@ -2229,40 +2229,8 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
         before.tail_bytes,
         before.base_bytes
     );
-    let governed = workspaces.workspace(&workspace).await.unwrap();
-    let mut doc = governed
-        .lock()
-        .await
-        .peer()
-        .admitted_workspace()
-        .unwrap()
-        .clone();
-    let root = tilo_peer_state::workspace::base::root(&mut doc).expect("the workspace has a base");
-    assert_eq!(
-        tilo_peer_state::workspace::compaction::compacted_by(
-            &doc,
-            &workspace,
-            &cert.user_public_key
-        ),
-        Ok(cert.user_public_key),
-        "the base is the compaction the owner's device signed"
-    );
-    let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } =
-        governed.lock().await.peer().workspace_message()
-    else {
-        panic!("the workspace as a newcomer is sent it");
-    };
-    let state = changes
-        .iter()
-        .find(|bytes| {
-            automerge::Change::try_from(bytes.as_slice()).is_ok_and(|change| change.hash() == root)
-        })
-        .expect("a newcomer is sent the base");
-    assert_eq!(
-        state.get(8),
-        Some(&2),
-        "the base's state is sent as a compressed change chunk"
-    );
+    // The base is the compaction its owner's device signed, and a newcomer is sent it.
+    the_base_is_the_owners_signed_compaction(&workspaces, &workspace, cert.user_public_key).await;
 
     // Every arrival is a member.
     let members = workspaces.summary(&workspace).await.unwrap().members;
@@ -2276,6 +2244,48 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
     }
     drop(workspaces);
     server.shutdown().await;
+}
+
+/// The workspace started over from a base that is the compaction its owner's device signed,
+/// and a newcomer is sent that base as one compressed change.
+async fn the_base_is_the_owners_signed_compaction(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: [u8; 32],
+) {
+    let Ok(governed) = workspaces.workspace(workspace).await else {
+        unreachable!("the workspace is held here");
+    };
+    let mut doc = {
+        let admitted = governed.lock().await;
+        let peer = admitted.peer();
+        let Some(doc) = peer.admitted_workspace() else {
+            unreachable!("the workspace has a base");
+        };
+        doc.clone()
+    };
+    let Some(root) = tilo_peer_state::workspace::base::root(&mut doc) else {
+        unreachable!("the workspace has a base");
+    };
+    assert_eq!(
+        tilo_peer_state::workspace::compaction::compacted_by(&doc, workspace, &owner),
+        Ok(owner),
+        "the base is the compaction the owner's device signed"
+    );
+    let message = governed.lock().await.peer().workspace_message();
+    let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = message else {
+        unreachable!("the workspace as a newcomer is sent it");
+    };
+    let Some(state) = changes.iter().find(|bytes| {
+        automerge::Change::try_from(bytes.as_slice()).is_ok_and(|change| change.hash() == root)
+    }) else {
+        unreachable!("a newcomer is sent the base");
+    };
+    assert_eq!(
+        state.get(8),
+        Some(&2),
+        "the base's state is sent as a compressed change chunk"
+    );
 }
 
 /// A host that renamed its own governor certificate — the same device key,

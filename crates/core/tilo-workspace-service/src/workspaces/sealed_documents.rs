@@ -952,7 +952,6 @@ impl Workspaces {
             return Ok(());
         }
         self.keep_checkpoint_check(workspace, (app, record), &checkpoint)
-            .await
     }
 
     /// Keep that this host checked `checkpoint`, the checkpoint leading `record`, as the
@@ -962,7 +961,7 @@ impl Workspaces {
     /// # Errors
     /// The workspace cannot be committed, or the check cannot be kept.
     #[cfg(feature = "device-keys")]
-    pub(super) async fn keep_checkpoint_check(
+    pub(super) fn keep_checkpoint_check(
         &self,
         workspace: &mut GovernedWorkspace,
         (app, record): (&str, &str),

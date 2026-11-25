@@ -7,7 +7,7 @@
 //! against the workspace's policy under that application, asks the person where the action's
 //! contract says so, keeps the call's record and hands it to the provider's
 //! [`run`](ActionProvider::run). A call from another device over the device action service
-//! (`tilo-actions/1`) reaches a provider registered to reach devices ([`Providers::from_device`]),
+//! (`tilo-actions/1`) reaches a provider registered to reach devices ([`Providers::device_call`]),
 //! admitted by the grants of the workspace it asks in for the asking device. A provider decides no
 //! grant itself.
 //!
@@ -446,6 +446,7 @@ impl Providers {
                 placed_for,
             },
         );
+        drop(served);
         Ok(())
     }
 
@@ -666,7 +667,7 @@ impl Providers {
     /// the address it calls, once the workspace `caller` asks in admits that device to the action
     /// by its grants, read from this device's copy in `workspaces`. `None` when no provider
     /// reaching devices answers it.
-    pub(super) fn from_device(
+    pub(super) fn device_call(
         &self,
         caller: &Caller,
         request: InvokeRequest,

@@ -761,10 +761,14 @@ pub(crate) async fn certificate_of(
     let peer = kept.peer();
     // A device placed for records is listed in no roster: the certificate it proved itself with
     // is the one this copy decides it by.
-    peer.certificates()
+    let found = peer
+        .certificates()
         .into_iter()
         .find(|certificate| certificate.device_public_key == device)
-        .or_else(|| peer.placed_device_certificate(&device))
+        .or_else(|| peer.placed_device_certificate(&device));
+    drop(peer);
+    drop(kept);
+    found
 }
 
 /// The workspaces this device holds, as the action service reads them: each is
@@ -923,11 +927,13 @@ impl ActionProvider for Answers {
             .as_deref()
             .is_some_and(|name| self.work.providers.serves(name))
         {
+            // A provider that serves the call answers its query: one that answers nothing offers
+            // no such action.
             return self
                 .work
                 .providers
                 .query(caller, query)
-                .expect("a provider that serves the call answers its query");
+                .unwrap_or_else(|| Pending::ready(Err(ActionCallError::UnknownAction)));
         }
         if let Some(served) = self.apps() {
             let answered = served.query(caller, query.clone());
@@ -1372,7 +1378,7 @@ impl Answers {
             return self
                 .work
                 .providers
-                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
+                .device_call(caller, request, &self.work.workspaces, &self.work.runtime)
                 .expect("a provider that serves the call takes it");
         }
         // An address a provider registered on this device publishes is that provider's, whichever
@@ -1387,7 +1393,7 @@ impl Answers {
             return self
                 .work
                 .providers
-                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
+                .device_call(caller, request, &self.work.workspaces, &self.work.runtime)
                 .expect("a provider that publishes the call takes it");
         }
         if let Some(served) = self.apps() {
@@ -1482,6 +1488,23 @@ async fn serves_live(
     if target_app != app {
         app_may(work, forwarder, workspace, (&app, &target_app), request).await?;
     }
+    served_invocation_running(work, (workspace, forwarder), signed).await
+}
+
+/// Whether the invocation `signed` names still runs, as the device that runs the app answers for
+/// it: an answer that holds no status, an ended invocation, or a device this one cannot reach
+/// refuses the call.
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+async fn served_invocation_running(
+    work: &Arc<DeviceWork>,
+    (workspace, forwarder): (&str, [u8; 32]),
+    signed: &tilo_actions::remote::SignedInvocation,
+) -> Result<(), ActionCallError> {
+    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+    let refused = |reason: &str| ActionCallError::Refused {
+        reason: reason.into(),
+    };
+    let unavailable = |reason: String| ActionCallError::Unavailable { reason };
     // The record is read where the call came from, the way a call to the app's connection
     // reaches that device.
     // Without the apps this device runs no app connection, so it reaches no device for one.
@@ -1530,18 +1553,19 @@ async fn serves_live(
                 .ok()
             )
         }),
-        Some(Ok(tilo_actions::remote::RemoteActionMessage::ResourceReading {
-            result: Err(error),
-            ..
-        })) => return Err(error),
-        Some(Err(error)) => return Err(error),
+        Some(
+            Ok(tilo_actions::remote::RemoteActionMessage::ResourceReading {
+                result: Err(error),
+                ..
+            })
+            | Err(error),
+        ) => return Err(error),
         _ => {
             return Err(unavailable(
                 "the device that runs the app did not answer for the invocation".into(),
             ));
         }
     };
-    use tilo_actions::remote::workspace_invocations::InvocationStatus;
     match status {
         Some(InvocationStatus::Running | InvocationStatus::Waiting) => Ok(()),
         _ => Err(refused(
