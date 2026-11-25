@@ -65,7 +65,7 @@ const SINGLE_P99_CEILING_MS: f64 = SINGLE_CEILING_MS * 3.0;
 
 /// The app whose issues the first kind makes, and the app whose conversations the second does.
 const TASKS_APP: &str = "so.tilo.tasks";
-const CHAT_APP: &str = "chat";
+const CHAT_APP: &str = "so.tilo.chat";
 /// Where the tracker's issues are listed, as `tilo ls` names them.
 const ISSUES_AT: &str = "so.tilo.tasks/Tasks";
 
@@ -314,7 +314,7 @@ async fn heard_file(
 #[ignore = "fills workspaces to thousands of records and times every path in a release build; \
             the throughput check runs it"]
 fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
-    host::run(|host| async move {
+    host::run_with_packages(&["tasks", "chat"], &[], |host| async move {
         let singles = count("TILO_THROUGHPUT_SINGLES", 40);
         let bulk = count("TILO_THROUGHPUT_BULK", 1000);
         let key = host.page_key("Bench");

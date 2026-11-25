@@ -261,7 +261,7 @@ fn middle(counts: &mut [u64]) -> u64 {
 /// next land while it reads.
 #[test]
 fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
-    host::run(|host| async move {
+    host::run_with_packages(&["tasks"], &[], |host| async move {
         let (lists, calls) = import_beside_the_person(&host).await;
         let moved =
             |lists: &[List]| middle(&mut lists.iter().map(|list| list.moved).collect::<Vec<_>>());
@@ -290,7 +290,7 @@ fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
 #[test]
 #[ignore = "timed: the throughput check runs it alone"]
 fn an_import_lands_at_its_floor_while_the_person_works_beside_it() {
-    host::run(|host| async move {
+    host::run_with_packages(&["tasks"], &[], |host| async move {
         let (lists, calls) = import_beside_the_person(&host).await;
         let mut lists: Vec<Duration> = lists.iter().map(|list| list.took).collect();
         let calls: Vec<(usize, &str, Duration)> = calls

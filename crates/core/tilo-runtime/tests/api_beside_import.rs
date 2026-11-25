@@ -30,9 +30,8 @@ use serde_json::{Value, json};
 
 use crate::host;
 
-/// The app the import writes into: Chat, another app than the ones listed.
-const CHAT: &str = "chat";
-/// The app whose conversations the chat's actions name.
+/// The app the import writes into, Chat, another app than the ones listed, whose conversations
+/// the chat's actions name.
 const CHAT_APP: &str = "so.tilo.chat";
 /// The app whose `open` founds the tracker.
 const TASKS_APP: &str = "so.tilo.tasks";
@@ -182,14 +181,18 @@ async fn upload(key: &host::Key, workspace: &str, bytes: &[u8]) -> String {
 
 #[test]
 fn a_keys_listings_answer_whole_beside_an_import_into_another_app() {
-    host::run(|host| async move { beside_an_import(&host).await });
+    host::run_with_packages(&["tasks", "chat"], &[], |host| async move {
+        beside_an_import(&host).await;
+    });
 }
 
 /// The same, alone on its machine for the throughput check, whose log keeps the times it prints.
 #[test]
 #[ignore = "the throughput check runs it alone, for the times it prints"]
 fn an_import_into_another_app_never_slows_a_keys_listings() {
-    host::run(|host| async move { beside_an_import(&host).await });
+    host::run_with_packages(&["tasks", "chat"], &[], |host| async move {
+        beside_an_import(&host).await;
+    });
 }
 
 /// The key's listings, round after round beside the import. Every listing answers whole, asks
@@ -204,7 +207,7 @@ async fn beside_an_import(host: &host::Host) {
 
     // Her computer keeps the workspace's apps, her tasks, her devices and her folder.
     open_app(host, TASKS_APP).await;
-    open_app(host, CHAT).await;
+    open_app(host, CHAT_APP).await;
     // The device's own agent, what the import writes through, and the channel it writes into,
     // made once as a person makes one.
     let agent = host.agent();
