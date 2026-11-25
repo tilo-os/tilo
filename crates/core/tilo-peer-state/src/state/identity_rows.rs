@@ -360,13 +360,19 @@ mod tests {
             read.device_cert.device_public_key,
             identity.device_cert.device_public_key
         );
+        // The bytes a build wrote after the mark and before the entry: the
+        // same fields with the mark's one byte after them.
+        let with_mark = [before.as_slice(), &[1]].concat();
+        let read = DeviceRow::decode(&with_mark).expect("a row before the entry reads");
+        assert!(read.removed, "the mark reads back");
+        assert_eq!(read.entry, None, "a row before the entry names none");
         let mut marked = identity;
         marked.removed = true;
         let bytes = marked.encode().expect("a marked row writes");
         assert_eq!(
-            bytes.len(),
-            before.len().saturating_add(1),
-            "the mark is one byte"
+            bytes,
+            [with_mark.as_slice(), &[0]].concat(),
+            "today's row is the earlier one with an absent entry after it"
         );
         assert!(
             DeviceRow::decode(&bytes)
