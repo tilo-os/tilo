@@ -108,7 +108,6 @@ impl LiveRows {
         self.moved();
     }
 
-    #[cfg(any(feature = "apps", feature = "agents"))]
     /// This device is `device` (its key): what is live on it is live here whoever it reaches.
     pub(crate) fn here_is(&self, device: [u8; 32]) {
         let device = hex::encode(device);

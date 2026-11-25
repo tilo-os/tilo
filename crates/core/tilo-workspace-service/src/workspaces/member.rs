@@ -1644,7 +1644,6 @@ impl Workspaces {
 
     /// Waits until the member copy's link is up, for a write that must reach the device serving
     /// it: the workspaces that write resources ask it, and so do the tests of the link itself.
-    #[cfg(any(feature = "apps", feature = "agents", test))]
     pub(super) async fn wait_member_link(&self, workspace_id: WorkspaceId) -> Result<(), String> {
         let mut up = self.member_up(workspace_id)?;
         tokio::time::timeout(REACHED_WITHIN, up.wait_for(|up| *up))
@@ -1839,7 +1838,6 @@ impl Workspaces {
 
     /// Keep a locally drafted document, using its authenticated writer, and
     /// carry it on the workspace's link.
-    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(super) fn retain_local_document(
         &self,
         workspace_id: WorkspaceId,
@@ -1944,7 +1942,6 @@ impl Workspaces {
 
     /// Ticks true when `workspace`'s member copy is linked to the device
     /// serving it, and false when that link ends.
-    #[cfg(any(feature = "apps", feature = "agents", test))]
     fn member_up(
         &self,
         workspace: WorkspaceId,

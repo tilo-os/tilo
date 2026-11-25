@@ -1594,6 +1594,7 @@ impl Workspaces {
 
     /// Answer a read of `workspace`'s store, `command`, as `context`'s reader reads it: what an
     /// app's window, or the agent engine, reads of the store it writes in.
+    #[cfg(feature = "apps")]
     async fn read_store(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
@@ -1788,6 +1789,7 @@ impl Workspaces {
     /// # Errors
     /// The workspace is not held here, the store refused the write, or the workspace refused a
     /// document's write.
+    #[cfg(feature = "apps")]
     pub async fn resource_command(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
@@ -1943,6 +1945,7 @@ impl Workspaces {
     /// # Errors
     /// [`RecordFailure::Refused`] when the store or the workspace refused a write, with why;
     /// [`RecordFailure::Failed`] when the workspace is not held here.
+    #[cfg(any(feature = "apps", feature = "agents"))]
     pub async fn record_command(
         &self,
         workspace: &str,
@@ -2051,6 +2054,7 @@ impl Workspaces {
 
     /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
     /// holding the workspace until the last of its frames is kept.
+    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn write_resources(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
@@ -2297,6 +2301,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::resource_command`], or this service serves no device.
+    #[cfg(feature = "apps")]
     pub async fn own_resource_command(
         &self,
         workspace: &str,
@@ -2313,6 +2318,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::own_resource_command`].
+    #[cfg(feature = "apps")]
     pub async fn own_kind_command(
         &self,
         workspace: &str,
@@ -2353,6 +2359,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The workspace is not held here, or this service serves no device.
+    #[cfg(feature = "apps")]
     pub(crate) async fn open_resources(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
@@ -2372,7 +2379,6 @@ impl Workspaces {
 /// Whether the resource change `write` landed in `opened`, and what says it did not: `sealed`
 /// makes it the disposition the admission reported (`accepted`), where a document that travels
 /// in the clear is looked for in the document itself.
-#[cfg(any(feature = "apps", feature = "agents"))]
 fn resource_write_landed(
     opened: &tilo_peer_state::OpenedDocument,
     sealed: bool,
