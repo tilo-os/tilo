@@ -438,6 +438,10 @@ enum Cmd {
         /// The system's own record, as JSON.
         #[arg(long)]
         json: bool,
+        /// Only whether this computer's daemon answers. Nothing is started for asking, and this
+        /// exits 1, naming the socket, when it does not.
+        #[arg(long)]
+        daemon: bool,
     },
     /// Start the previous system version from now on.
     #[command(hide = true)]
@@ -1433,8 +1437,11 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         Cmd::Store { args } => run_app(&args, "tilo store"),
         // Read-only, so it never needs to become anything. A person diagnosing a machine should not
         // have to authenticate to be told what is on it.
-        Cmd::Status { json } if !system_available() && login::logged_in() => Ok(peer_status(json)),
-        Cmd::Status { json } => system_status(json),
+        Cmd::Status { daemon: true, json } => daemon_status(json),
+        Cmd::Status { json, .. } if !system_available() && login::logged_in() => {
+            Ok(peer_status(json))
+        }
+        Cmd::Status { json, .. } => system_status(json),
         Cmd::Rollback { yes } => {
             require_system_provider()?;
             privileged(
@@ -1537,7 +1544,10 @@ compdef _tilo_with_app_completion tilo
 
 fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
     match cmd {
-        DeviceCmd::Status { json } => run(Cli::of(Cmd::Status { json })),
+        DeviceCmd::Status { json } => run(Cli::of(Cmd::Status {
+            json,
+            daemon: false,
+        })),
         DeviceCmd::Rollback { yes } => run(Cli::of(Cmd::Rollback { yes })),
         DeviceCmd::Upgrade {
             to,
@@ -1733,6 +1743,47 @@ fn app_available() -> bool {
 
 fn system_available() -> bool {
     command_available(std::ffi::OsStr::new(&helper()))
+}
+
+/// How long `tilo status --daemon` waits for the daemon's answer. A daemon that runs answers in
+/// milliseconds, and a check that asks it waits on nothing else.
+const DAEMON_ANSWERING: Duration = Duration::from_secs(2);
+
+/// `tilo status --daemon`: whether this computer's daemon answers. It is found as every client
+/// finds it ([`tilo_api::daemon::this_computer`]) and asked a status call it must answer, so a
+/// socket a daemon left behind is no answer. Nothing is started for asking, and nothing is
+/// waited on beyond a moment: a unit's check reads a daemon that runs, and is told at once when
+/// none does.
+fn daemon_status(json: bool) -> Result<ExitCode> {
+    let place = tilo_api::daemon::this_computer().map_err(anyhow::Error::msg)?;
+    let native = place.native();
+    let status = place.status(DAEMON_ANSWERING);
+    let answering = status.is_some();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "answering": answering,
+                "native": native.display().to_string(),
+                "status": status,
+            })
+        );
+    } else if answering {
+        println!(
+            "Tilo's daemon answers on this computer ({}).",
+            native.display()
+        );
+    } else {
+        eprintln!(
+            "Tilo's daemon isn't answering on this computer ({}).",
+            native.display()
+        );
+    }
+    Ok(if answering {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 /// `tilo status` on a computer logged in as one of the person's devices:
@@ -2266,7 +2317,7 @@ mod tests {
             // system's record, the health check, a new identity.
             let cli = Cli::try_parse_from(["tilo", "status", "--json"]).expect("status --json");
             assert!(
-                matches!(cli.cmd, Cmd::Status { json: true }),
+                matches!(cli.cmd, Cmd::Status { json: true, .. }),
                 "status --json still asks for the system's record"
             );
             let cli = Cli::try_parse_from(["tilo", "login", "--new-identity", "--json"])
@@ -2664,7 +2715,7 @@ mod tests {
             {
                 let cli = Cli::try_parse_from(["tilo", "status"]).expect("parses");
                 assert!(
-                    matches!(cli.cmd, Cmd::Status { json: false }),
+                    matches!(cli.cmd, Cmd::Status { json: false, .. }),
                     "status must parse without flags"
                 );
             }
@@ -2882,5 +2933,53 @@ mod tests {
                 Cmd::Complete { what: desktop::Completing::Apps, prefix: Some(ref prefix) } if prefix == "cal"
             ));
         }
+    }
+
+    /// `tilo status --daemon` answers at once when nothing answers: it asks the daemon a status
+    /// call, starts no service, and exits 1 naming the socket that stayed silent. A socket a
+    /// daemon left behind is no answer, and a check that waited for a daemon would sleep this
+    /// out rather than read it.
+    #[cfg(unix)]
+    #[test]
+    fn status_daemon_says_at_once_when_nothing_answers() {
+        let cli =
+            Cli::try_parse_from(["tilo", "status", "--daemon"]).expect("status --daemon parses");
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Status {
+                daemon: true,
+                json: false
+            }
+        ));
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let profile = home.state().join("hosted");
+        std::fs::create_dir_all(&profile).unwrap();
+        let no_programs = home.root().join("no-programs");
+        std::fs::create_dir_all(&no_programs).unwrap();
+        home.env()
+            .set("TILO_RUNTIME_PROFILE", &profile)
+            .set("PATH", &no_programs)
+            .remove("TILO_IDENTITY_ROOT");
+        // The socket a daemon that ran here left behind: the file is there, and nothing answers.
+        let native = tilo_api::daemon::profile_sockets(&profile)
+            .unwrap()
+            .join("native.sock");
+        drop(std::os::unix::net::UnixListener::bind(&native).unwrap());
+        assert!(
+            native.exists(),
+            "the ended daemon's socket file is left behind"
+        );
+        let asked = Instant::now();
+        let code = daemon_status(false).expect("the status is read");
+        assert_eq!(
+            code,
+            ExitCode::from(1),
+            "nothing answers, so the status is not good"
+        );
+        assert!(
+            asked.elapsed() < Duration::from_secs(1),
+            "the check waits for no daemon: {:?}",
+            asked.elapsed()
+        );
     }
 }

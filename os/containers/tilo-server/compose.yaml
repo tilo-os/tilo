@@ -28,9 +28,10 @@ services:
       # endpoint secret. Back this volume up as server state.
       - tilo-server-state:/var/lib/tilo-server:Z
     healthcheck:
-      # Written only after the daemon has started and its periodic metrics
-      # task is live. It is not a claim that an external peer can reach us.
-      test: ["CMD-SHELL", "test -S /var/lib/tilo-server/native.sock"]
+      # The daemon answers a status call, asked through the one function that finds it and run in
+      # the daemon's own environment: the probe starts nothing, and returns within a couple of
+      # seconds either way. It is not a claim that an external peer can reach us.
+      test: ["CMD-SHELL", "HOME=/var/lib/tilo-server TILO_IDENTITY_ROOT=/var/lib/tilo XDG_STATE_HOME=/var/lib/tilo/state TILO_RUNTIME_PROFILE=/var/lib/tilo-server /usr/bin/tilo status --daemon"]
       interval: 10s
       timeout: 3s
       retries: 6

@@ -28,7 +28,10 @@ done
 need "$compose" "./identity:/var/lib/tilo:Z"
 need "$compose" "tilo-server-state:/var/lib/tilo-server:Z"
 need "$compose" "network_mode: host"
-need "$compose" "test -S /var/lib/tilo-server/native.sock"
+# The daemon must answer a status call, in its own environment, and nothing is started for
+# asking: the socket a native endpoint leaves behind outlives the daemon it belonged to.
+need "$compose" "TILO_RUNTIME_PROFILE=/var/lib/tilo-server /usr/bin/tilo status --daemon"
+forbid "$compose" "/var/lib/tilo-server/native.sock"
 
 # Parse the template with the standard-library TOML parser rather than trusting
 # a visually plausible example that the daemon cannot load.

@@ -47,7 +47,8 @@ metrics. Back it up together with the non-secret `server.toml`; protect the
 identity directory separately. Replacing either volume changes availability
 properties, so restore rather than recreate them after a failure.
 
-The health check reports ready once the server is live and writing its metrics.
+The health check reports ready once the daemon answers a status call, asked in its
+own environment; it starts nothing and never waits on a socket file alone.
 
 ## The web UI
 

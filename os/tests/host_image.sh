@@ -147,6 +147,13 @@ done
 grep -q 'Environment=TILO_BOOT_HEALTH_UNIT=tilo-server-health.service' \
   "$root/usr/lib/systemd/system/tilo-boot-health.service.d/10-tilo-server.conf" \
   || die 'boot health is not judged by the server probe'
+# The server's verdict asks the daemon a status call, as the daemon's own account and in its
+# environment: the socket file a native endpoint leaves behind outlives the daemon, and the
+# daemon's 0700 directories are not even readable by root without capabilities.
+grep -q 'status --daemon' "$root/usr/libexec/tilo-server-health" \
+  || die 'the server health check does not ask the daemon a status call'
+grep -q '^User=tilo-server$' "$root/usr/lib/systemd/system/tilo-server-health.service" \
+  || die 'the server health check does not run as the daemon account'
 grep -q '^ExecStartPre=+/usr/libexec/tilo-hosted-prepare' \
   "$root/usr/lib/systemd/system/tilo-hosted.service" \
   || die 'the hosted-VM service does not run its machine setup as root'

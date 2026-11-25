@@ -163,6 +163,27 @@ impl DaemonPlace {
         tilo_files::native::socket::is_bound(&self.native)
     }
 
+    /// The daemon's answer to a status call ([`PEER_STATUS`]), asked of the daemon that answers
+    /// now: `None` when none does in `within`. Nothing is started for asking, so a command that
+    /// only reads waits on the daemon a host runs and is told at once when there is none. A
+    /// socket a daemon left behind is no answer either: the daemon itself must say who it is.
+    #[must_use]
+    pub fn status(&self, within: Duration) -> Option<serde_json::Value> {
+        use std::io::{BufRead as _, Write as _};
+        let mut stream = self.connect()?;
+        stream.set_read_timeout(Some(within)).ok()?;
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": PEER_STATUS})
+        )
+        .ok()?;
+        let mut line = String::new();
+        std::io::BufReader::new(stream).read_line(&mut line).ok()?;
+        let answer: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+        answer.get("result").cloned()
+    }
+
     /// Whether a live process holds this device's lock. The kernel drops the lock with its
     /// process, so a daemon that ended never reads as one that is there.
     #[must_use]
@@ -529,6 +550,109 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    /// A daemon that answers its status call: the answer is read from the daemon, not from a file
+    /// that names it, and it is the daemon's own status ([`PEER_STATUS`]) that is asked.
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_that_answers_is_read_its_status() {
+        use std::io::{BufRead as _, Write as _};
+        let dir = tempfile::tempdir().unwrap();
+        let sockets = dir.path().join("sockets");
+        std::fs::create_dir_all(&sockets).unwrap();
+        let native = tilo_device_identity::login::daemon::native_in(&sockets);
+        let listener = std::os::unix::net::UnixListener::bind(&native).unwrap();
+        let answering = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut lines = std::io::BufReader::new(stream.try_clone().unwrap()).lines();
+            assert_eq!(lines.next().unwrap().unwrap(), AGENT_LINE);
+            let asked: serde_json::Value =
+                serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            assert_eq!(
+                asked["method"], PEER_STATUS,
+                "the daemon is asked its own status"
+            );
+            writeln!(
+                stream,
+                "{}",
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"who": "this computer"}})
+            )
+            .unwrap();
+        });
+        let place = DaemonPlace::at(&sockets, dir.path());
+        let status = place
+            .status(Duration::from_secs(5))
+            .expect("the daemon answers");
+        assert_eq!(status["who"], "this computer");
+        answering.join().unwrap();
+    }
+
+    /// A socket a daemon left behind is no daemon: the file is there and nothing answers it, so
+    /// the status call says so. A call that waited for a daemon instead of reading one would
+    /// sleep its bound out here.
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_a_daemon_left_behind_answers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sockets = dir.path().join("sockets");
+        std::fs::create_dir_all(&sockets).unwrap();
+        let native = tilo_device_identity::login::daemon::native_in(&sockets);
+        let listener = std::os::unix::net::UnixListener::bind(&native).unwrap();
+        drop(listener);
+        assert!(
+            native.exists(),
+            "the ended daemon's socket file is left behind"
+        );
+        let place = DaemonPlace::at(&sockets, dir.path());
+        let asked = Instant::now();
+        assert!(
+            place.status(Duration::from_secs(2)).is_none(),
+            "a socket nothing answers is no daemon"
+        );
+        assert!(
+            asked.elapsed() < Duration::from_secs(1),
+            "nothing is waited for: {:?}",
+            asked.elapsed()
+        );
+    }
+
+    /// A status call starts nothing: the service manager this account's own daemon would be
+    /// started through is not asked, and a place whose service is this account's to start is
+    /// still only read.
+    #[cfg(unix)]
+    #[test]
+    fn a_status_call_starts_no_service() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let programs = home.root().join("programs");
+        std::fs::create_dir_all(&programs).unwrap();
+        let asked = home.root().join("service-manager-was-asked");
+        let systemctl = programs.join("systemctl");
+        std::fs::write(
+            &systemctl,
+            format!("#!/bin/sh\necho \"$@\" >> '{}'\n", asked.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        home.env()
+            .set("PATH", &programs)
+            .remove("TILO_RUNTIME_PROFILE")
+            .remove("TILO_IDENTITY_ROOT");
+        let place = this_computer().unwrap();
+        assert!(
+            place.starts,
+            "this place's own daemon is one this account's service starts"
+        );
+        assert!(
+            place.status(Duration::from_millis(200)).is_none(),
+            "no daemon answers here"
+        );
+        assert!(
+            !asked.exists(),
+            "a status call asked no service manager: {}",
+            std::fs::read_to_string(&asked).unwrap_or_default()
+        );
+    }
 
     /// A client of a daemon serving a profile named apart waits for the daemon the host that
     /// named the profile started, and starts no service of its own: this account's service

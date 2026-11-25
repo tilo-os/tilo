@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use tilo_api::daemon::{PEER_STATUS, this_computer, unreachable_answer};
+use tilo_api::daemon::{this_computer, unreachable_answer};
 
 use crate::login::NOT_LOGGED_IN;
 
@@ -119,24 +119,16 @@ fn answer_alone(line: &str, problem: &str) -> Option<String> {
     Some(unreachable_answer(&request, problem)?.to_string())
 }
 
-/// Ask this computer's daemon for its [`PEER_STATUS`]; `None` when none runs (it is not started
-/// for asking).
+/// How long a status read waits for the daemon, when a command reads one rather than checking
+/// it: an answer comes in milliseconds, and a command that only reads waits no longer.
+const PEER_ANSWERING: Duration = Duration::from_secs(5);
+
+/// Ask this computer's daemon for its [`tilo_api::daemon::PEER_STATUS`]; `None` when none runs
+/// (it is not started for asking).
 pub(crate) fn ask_peer() -> Option<Value> {
-    use std::io::{BufRead as _, Write as _};
     let login = crate::login::Place::here(crate::identity::paths()).ok()?;
     crate::login::served_device_key(login.keys())?;
-    let mut stream = this_computer().ok()?.connect()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    writeln!(
-        stream,
-        "{}",
-        json!({"jsonrpc": "2.0", "id": 1, "method": PEER_STATUS})
-    )
-    .ok()?;
-    let mut line = String::new();
-    std::io::BufReader::new(stream).read_line(&mut line).ok()?;
-    let answer: Value = serde_json::from_str(&line).ok()?;
-    answer.get("result").cloned()
+    this_computer().ok()?.status(PEER_ANSWERING)
 }
 
 #[cfg(test)]
