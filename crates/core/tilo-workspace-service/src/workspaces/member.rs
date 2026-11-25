@@ -656,6 +656,17 @@ impl Workspaces {
         invitation: &str,
         name: Option<&str>,
     ) -> Result<WorkspaceId, String> {
+        // The join's steps keep the invitation, its routes and every answer it waits on: the box
+        // keeps them off the stack of whoever asks, as a server's start keeps its own.
+        Box::pin(self.join_member_as_inner(invitation, name)).await
+    }
+
+    /// [`Self::join_member_as`]'s steps.
+    async fn join_member_as_inner(
+        &self,
+        invitation: &str,
+        name: Option<&str>,
+    ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
         holds_copies(&device.cert)?;
         let now_ns = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
