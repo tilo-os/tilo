@@ -10,8 +10,8 @@
 //!   the device's identity;
 //! - [`ENDORSE_IMAGE`]: an image endorsement the device signs, under the image-signing grant its
 //!   person's root gave it;
-//! - [`ENROL_BOOT`]: a boot's enrolment asked of the person's other devices, over the device's
-//!   one endpoint;
+//! - [`ENROL_BOOT`]: this device's boot key enrolled for disk unlock, certified by the person's
+//!   root where it is kept and asked of them there;
 //! - [`SIGN`]: a message the device signs, for a program that proves it is this device.
 //!
 //! The daemon answers these from the moment it took the key, before its person's services run
@@ -229,115 +229,21 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
         ),
         descriptor(
             ENROL_BOOT,
-            "Enrol a boot with another device",
-            "Ask the person's other devices to enrol this device's boot, over its endpoint.",
+            "Enrol this computer's disk unlock",
+            "Have the person's identity certify this computer's boot key, asking them at a device \
+             of theirs that keeps it, and publish its unlock to their devices.",
             &[
                 ActionParam::required(
                     "request",
                     ParamType::Text,
-                    "The enrolment request, its frame in hex.",
+                    "The enrolment request, postcard in hex.",
                 ),
                 ActionParam::required(
-                    "devices",
-                    ParamType::Array,
-                    "The devices to ask, each its key in hex.",
+                    "half",
+                    ParamType::Secret,
+                    "The sibling half, in hex.",
                 ),
             ],
         ),
     ]
-}
-
-/// How long a device asked to enrol a boot takes to be dialled.
-const DIAL_FOR: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// Ask `devices` in turn, over `endpoint`, to enrol the boot `args` names, until one answers:
-/// what it answered, as the frame's body in hex.
-///
-/// # Errors
-/// The arguments cannot be read, or no device could be asked.
-pub(crate) async fn enrol_boot(endpoint: &iroh::Endpoint, args: &Value) -> Result<Value, Refusal> {
-    use tilo_unlock_protocol::{APPROVAL_TIMEOUT_NS, ENROL_ALPN, EnrolRequest, decode_frame};
-    let frame = bytes(args, "request")?;
-    // The request is an enrolment request, whole: nothing else is carried for the caller.
-    let (prefix, body) = frame
-        .split_first_chunk::<4>()
-        .ok_or_else(|| malformed("the request is no frame"))?;
-    if tilo_unlock_protocol::frame_len(*prefix).ok() != Some(body.len()) {
-        return Err(malformed("the request's frame is cut short"));
-    }
-    decode_frame::<EnrolRequest>(body)
-        .map_err(|error| malformed(format!("the request is no enrolment request: {error}")))?;
-    let devices = args
-        .get("devices")
-        .and_then(Value::as_array)
-        .ok_or_else(|| malformed("devices are needed"))?
-        .iter()
-        .map(|device| {
-            let key: [u8; 32] = device
-                .as_str()
-                .and_then(|key| hex::decode(key).ok())
-                .and_then(|key| key.try_into().ok())
-                .ok_or_else(|| malformed("a device is its key, 32 bytes in hex"))?;
-            iroh::EndpointId::from_bytes(&key).map_err(|error| malformed(error.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    // How long a device may take to put the request to its person.
-    let decide_for = std::time::Duration::from_secs(APPROVAL_TIMEOUT_NS / 1_000_000_000 + 60);
-    // The person's devices are reached over the relays this device's endpoint was made with
-    // ([`super::services`]): with no lookup to resolve a key, a bare key reaches no one, and the
-    // endpoint names its home relay only once it reached it.
-    let relays: Vec<iroh::RelayUrl> = tilo_endpoint_reachability::relays().relays.urls();
-    let mut unable = None;
-    for device in devices {
-        let address = relays.iter().cloned().fold(
-            iroh::EndpointAddr::new(device),
-            iroh::EndpointAddr::with_relay_url,
-        );
-        let asked = async {
-            let connection = tokio::time::timeout(DIAL_FOR, endpoint.connect(address, ENROL_ALPN))
-                .await
-                .map_err(|_| "no answer".to_owned())?
-                .map_err(|error| error.to_string())?;
-            let answered = async {
-                let (mut send, mut recv) = connection
-                    .open_bi()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                send.write_all(&frame)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let mut prefix = [0_u8; 4];
-                recv.read_exact(&mut prefix)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let mut body = vec![
-                    0_u8;
-                    tilo_unlock_protocol::frame_len(prefix)
-                        .map_err(|error| error.to_string())?
-                ];
-                recv.read_exact(&mut body)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok::<_, String>(body)
-            };
-            // The person is asked on their device, and may take their time: the other side's own
-            // answering window bounds it.
-            let body = tokio::time::timeout(decide_for, answered)
-                .await
-                .map_err(|_| "the device took too long to answer".to_owned())??;
-            connection.close(0u32.into(), b"done");
-            Ok::<_, String>(body)
-        };
-        match asked.await {
-            Ok(body) => return Ok(json!({ "reply": hex::encode(body) })),
-            Err(error) => unable = Some(error),
-        }
-    }
-    Err(Refusal {
-        code: "device-action",
-        message: unable.map_or_else(
-            || "no device was named to ask".to_owned(),
-            |error| format!("none of your other devices answered: {error}"),
-        ),
-    })
 }

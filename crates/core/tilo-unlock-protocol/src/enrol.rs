@@ -1,22 +1,27 @@
-//! The enrolment exchange: a boot key asks the person's root to certify it.
+//! The enrolment: a boot key asks the person's root to certify it.
+//!
+//! The request travels to a device that keeps the root as the `certifyKey`
+//! device action, through the same ask every action only that root signs
+//! takes: the person answers it there. The sibling half never leaves the
+//! enrolling device in the clear: the root answers the certificate and the
+//! person's secret-sync public key, and the enrolling device seals the half
+//! to it itself.
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::half::Half;
 use crate::{PROTOCOL_VERSION, SlotId, digest};
 
-const ENROL_PROOF_CONTEXT: &str = "tilo-unlock enrol proof v1";
+const ENROL_PROOF_CONTEXT: &str = "tilo-unlock enrol proof v2";
 
-/// What `tilo-disk-encrypt enrol --sibling` hands the service on the
-/// enrolling device (the typed `device.unlock.enrol` action).
+/// A boot key's request to be certified by the person's root, as `certifyKey`
+/// carries it: the key, the slot it unlocks, and the boot key's proof that the
+/// caller has it.
 ///
-/// The caller generated the boot key pair and both halves, enrolled the
-/// derived key into `slot`, and keeps only the device half afterwards. The
-/// service certifies the boot key with the person's identity, seals the
-/// sibling half to the person's secret-sync key and replicates it to every
-/// device of theirs.
+/// The caller generated the boot key pair and both halves and enrolled the
+/// derived key into `slot`; the sibling half stays with it until it seals the
+/// half to the person's secret-sync key the certificate's answer names.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrolRequest {
@@ -30,11 +35,9 @@ pub struct EnrolRequest {
     pub attestation_key: Option<Vec<u8>>,
     /// The PCR 4 + 7 composite this device measured now, when the owner is
     /// enrolling it to unlock unattended: the enrolled device asks for its
-    /// own boot chain to be accepted, and the session holding the root signs
-    /// that acceptance for the person.
+    /// own boot chain to be accepted, and the person's root signs that
+    /// acceptance with the certificate.
     pub unattended_chain: Option<[u8; 32]>,
-    /// The half the other devices will hold. Wiped on drop.
-    pub sibling_half: Half,
     /// Boot key signature over [`EnrolRequest::proof_digest`]: proof that the
     /// caller holds the key it asks to have certified.
     #[serde(with = "serde_bytes")]
@@ -48,7 +51,6 @@ struct EnrolProofView<'a> {
     slot: &'a SlotId,
     attestation_key: &'a Option<Vec<u8>>,
     unattended_chain: &'a Option<[u8; 32]>,
-    half_commitment: [u8; 32],
 }
 
 /// Why a boot key's request to be certified is not acceptable.
@@ -79,7 +81,6 @@ impl EnrolRequest {
         slot: SlotId,
         attestation_key: Option<Vec<u8>>,
         unattended_chain: Option<[u8; 32]>,
-        sibling_half: Half,
     ) -> Result<Self, RequestError> {
         let mut request = Self {
             version: PROTOCOL_VERSION,
@@ -87,15 +88,13 @@ impl EnrolRequest {
             slot,
             attestation_key,
             unattended_chain,
-            sibling_half,
             proof: [0; 64],
         };
         request.proof = boot_key.sign(&request.proof_digest()?).to_bytes();
         Ok(request)
     }
 
-    /// The digest the boot key signs. It commits to the half without
-    /// exposing it.
+    /// The digest the boot key signs.
     ///
     /// # Errors
     ///
@@ -107,10 +106,6 @@ impl EnrolRequest {
             slot: &self.slot,
             attestation_key: &self.attestation_key,
             unattended_chain: &self.unattended_chain,
-            half_commitment: blake3::derive_key(
-                "tilo-unlock enrol half commitment v1",
-                self.sibling_half.expose(),
-            ),
         };
         digest(ENROL_PROOF_CONTEXT, &view).map_err(|_| RequestError::Encoding)
     }
@@ -145,7 +140,8 @@ pub struct SiblingContact {
     pub endpoint: String,
 }
 
-/// The service's answer to an [`EnrolRequest`].
+/// What an enrolled boot key keeps: the root's certificate, and the person's
+/// devices its sealed half is published to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrolResponse {
@@ -154,20 +150,4 @@ pub struct EnrolResponse {
     pub cert: tilo_user_identity::DeviceCert,
     /// The person's devices that hold the sibling half.
     pub siblings: Vec<SiblingContact>,
-}
-
-/// The service's answer on the enrolment socket, and to another of the
-/// person's devices that asks over [`crate::ENROL_ALPN`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EnrolReply {
-    /// Enrolled; the half now replicates to the devices listed.
-    Enrolled(Box<EnrolResponse>),
-    /// Not enrolled, with a reason for the person.
-    Refused(String),
-    /// This device does not hold the person's root, so it cannot certify the
-    /// key: another of their devices must. The asking device moves on to
-    /// another.
-    NotKeyHolder,
-    /// The person refused the enrolment, or nobody answered in time.
-    Denied,
 }

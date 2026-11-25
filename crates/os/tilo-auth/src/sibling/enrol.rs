@@ -4,15 +4,14 @@
 //! 1. Draw the device half, the sibling half and a boot-only key pair.
 //! 2. Add a key slot opened by the key the two halves derive, authorised by an
 //!    existing secret of the volume.
-//! 3. Hand the sibling half and the boot key's public half to a device of the
-//!    person that holds their root ([`Registrar`]): the session on this
-//!    machine, or, on a machine that holds none of it, one of their devices
-//!    over the peer network ([`PeerRegistrar`]), which this machine's daemon
-//!    dials as the device and which asks its person first. It
-//!    certifies the boot key with the person's identity, seals the sibling
-//!    half to the person's secret-sync key and replicates it to their other
-//!    devices, and answers with the certificate and the devices that hold the
-//!    half.
+//! 3. Hand the boot key's request and the sibling half to this machine's
+//!    daemon ([`Registrar`]). The person's root certifies the boot key: on
+//!    this machine where it keeps the root, and otherwise at one of their
+//!    devices that does, where they are asked which computer wants it. The
+//!    daemon seals the sibling half to the person's secret-sync key, publishes
+//!    the enrolment to their devices, and answers with the certificate and the
+//!    devices that carry the half. A no, or no device of theirs that keeps the
+//!    root within reach, is said in words the person can act on.
 //! 4. Store the token: the certificate, those devices, and the device half,
 //!    boot key and chosen unlock networks, sealed to the TPM where there is
 //!    one and otherwise in the clear.
@@ -39,14 +38,10 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tilo_api::daemon::DaemonPlace;
-use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::login::daemon::DeviceRefusal;
 use tilo_rollback::exec::Runner;
 use tilo_rollback::policy::Workspace;
-use tilo_unlock_protocol::{
-    ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half, SlotId, decode_frame,
-    derive_slot_key, encode_frame, frame_len,
-};
+use tilo_unlock_protocol::{EnrolRequest, EnrolResponse, Half, SlotId, derive_slot_key};
 use tilo_user_identity::{DeviceCapabilities, verify_device_cert};
 
 /// Where the enrolment is described for Settings, without secrets.
@@ -72,11 +67,9 @@ pub struct Args {
     /// wired links only. Needs no passphrase and no signed-in session.
     #[arg(long)]
     pub replace_networks: bool,
-    /// The person whose session registers the enrolment with their devices
-    /// (its `tilo-session/device-unlock.sock`), and whose identity directory
-    /// names the devices this one asks when it holds no root of theirs.
-    /// Without it the one session that serves the socket is used, and this
-    /// process's own account when none does.
+    /// The account whose daemon enrols the boot key, on a machine whose
+    /// daemon runs as that person's own service. Without it this process's
+    /// own account's daemon is asked.
     #[arg(long)]
     pub session_uid: Option<u32>,
     /// Refuse enrollment unless the device factor can be sealed to the TPM.
@@ -91,20 +84,22 @@ pub struct Args {
     pub unattended: bool,
 }
 
-/// Hands an [`EnrolRequest`] to the sibling service.
+/// Has the person's root certify a boot key, and the enrolment published to their devices.
 pub trait Registrar {
-    /// Registers the request and returns the certificate and siblings.
-    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled>;
+    /// Certifies `request`'s boot key, seals `half` to the person's secret-sync key and
+    /// publishes the enrolment: the certificate and the devices that carry the half.
+    fn register(&self, request: &EnrolRequest, half: &Half) -> Result<EnrolResponse, NotEnrolled>;
 }
 
-/// Why a registrar did not enrol this device.
+/// Why the person's root did not certify this device's boot key: each in the words this device's
+/// daemon gives it, in the person's language.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotEnrolled {
-    /// This device does not hold the person's root: another of their devices
-    /// must sign the enrolment.
-    NotKeyHolder,
-    /// The person refused the enrolment, or did not answer in time.
-    Denied,
+    /// The person said no where they were asked: the disk stays as locked as it was.
+    Declined(String),
+    /// This device keeps no root of theirs and none of their devices that keeps it is reachable
+    /// to ask them.
+    NoRootDevice(String),
     /// Not enrolled, with a reason for the person.
     Failed(String),
 }
@@ -112,274 +107,74 @@ pub enum NotEnrolled {
 impl std::fmt::Display for NotEnrolled {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotKeyHolder => formatter.write_str(
-                "this device does not hold the person's root, and none of their other devices \
-                 could enrol it",
-            ),
-            Self::Denied => formatter.write_str("your device refused the enrolment"),
-            Self::Failed(reason) => formatter.write_str(reason),
+            Self::Declined(words) | Self::NoRootDevice(words) | Self::Failed(words) => {
+                formatter.write_str(words)
+            }
         }
     }
 }
 
 impl std::error::Error for NotEnrolled {}
 
-impl From<EnrolReply> for NotEnrolled {
-    fn from(reply: EnrolReply) -> Self {
-        match reply {
-            EnrolReply::Enrolled(response) => Self::Failed(format!(
-                "the enrolment answered with a certificate for boot key {} instead of replying",
-                hex::encode(response.cert.device_public_key)
-            )),
-            EnrolReply::NotKeyHolder => Self::NotKeyHolder,
-            EnrolReply::Denied => Self::Denied,
-            EnrolReply::Refused(reason) => Self::Failed(reason),
+impl From<DeviceRefusal> for NotEnrolled {
+    fn from(refusal: DeviceRefusal) -> Self {
+        match refusal.code.as_str() {
+            tilo_device_identity::login::ENROL_DECLINED => Self::Declined(refusal.message),
+            tilo_device_identity::login::NO_ROOT_DEVICE => Self::NoRootDevice(refusal.message),
+            _ => Self::Failed(refusal.message),
         }
     }
 }
 
-/// The sibling service in the person's session, over its unix socket
-/// ([`ENROL_SOCKET`] under their runtime directory): one framed
-/// `EnrolRequest` in, one framed `EnrolReply` out.
-pub struct SessionRegistrar(pub PathBuf);
-
-impl SessionRegistrar {
-    /// The socket of `uid`'s session, or of the one session serving one.
-    pub fn find(uid: Option<u32>) -> Result<Self> {
-        if let Some(uid) = uid {
-            return Ok(Self(
-                Path::new("/run/user")
-                    .join(uid.to_string())
-                    .join(ENROL_SOCKET),
-            ));
-        }
-        let mut found: Vec<PathBuf> = std::fs::read_dir("/run/user")
-            .context("no signed-in session")?
-            .filter_map(|entry| entry.ok().map(|entry| entry.path().join(ENROL_SOCKET)))
-            .filter(|socket| socket.exists())
-            .collect();
-        match (found.pop(), found.is_empty()) {
-            (Some(socket), true) => Ok(Self(socket)),
-            (None, _) => bail!("no signed-in session can register the unlock; sign in first"),
-            _ => bail!("several sessions are signed in; name one with --session-uid"),
-        }
-    }
-}
-
-impl Registrar for SessionRegistrar {
-    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
-        use std::io::{Read as _, Write as _};
-        // No session is running here to ask: another of the person's devices
-        // is, over the peer network.
-        if !self.0.exists() {
-            return Err(NotEnrolled::NotKeyHolder);
-        }
-        let mut stream = tilo_files::native::socket::connect(&self.0)
-            .with_context(|| format!("could not reach your session at {}", self.0.display()))
-            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(120)))
-            .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
-        let frame = zeroize::Zeroizing::new(
-            encode_frame(request).map_err(|error| NotEnrolled::Failed(error.to_string()))?,
-        );
-        stream
-            .write_all(&frame)
-            .context("your session stopped reading")
-            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
-        let mut prefix = [0_u8; 4];
-        stream
-            .read_exact(&mut prefix)
-            .context("your session did not answer")
-            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
-        let mut body =
-            vec![0_u8; frame_len(prefix).map_err(|error| NotEnrolled::Failed(error.to_string()))?];
-        stream
-            .read_exact(&mut body)
-            .context("your session's answer was cut short")
-            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
-        let reply = decode_frame(&body).map_err(|error| NotEnrolled::Failed(error.to_string()))?;
-        match reply {
-            EnrolReply::Enrolled(response) => Ok(*response),
-            reply => Err(reply.into()),
-        }
-    }
-}
-
-/// Asks the session on this device first, and the person's other devices over
-/// the peer network when it holds no root: one enrolment flow, whichever side
-/// can sign it.
-struct Choosing(Vec<Box<dyn Registrar>>);
-
-impl Registrar for Choosing {
-    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
-        let mut unable = None;
-        for registrar in &self.0 {
-            match registrar.register(request) {
-                Ok(response) => return Ok(response),
-                // This device cannot sign it; another might.
-                Err(NotEnrolled::NotKeyHolder) => unable = Some(NotEnrolled::NotKeyHolder),
-                // The person answered, or something went wrong: asking again elsewhere would ask
-                // them the same question twice or hide the reason.
-                Err(error) => return Err(error),
-            }
-        }
-        Err(unable.unwrap_or_else(|| {
-            NotEnrolled::Failed("no device of yours could enrol the unlock".into())
-        }))
-    }
-}
-
-/// The person's devices, asked over the peer network: for a machine that holds
-/// no root of its own, such as a desktop that joined the identity or a server
-/// with no session.
-///
-/// This machine's daemon asks them ([`ENROL_BOOT`]): it is the one process that
-/// dials as the device, on the device's one endpoint and over its relays, so
-/// nothing here reads the device key or opens a second endpoint under it. The
-/// device that keeps the root asks its person, then certifies the boot key. A
-/// device that keeps no root says so, or cannot be reached, and the
-/// next is asked; the person's own answer is final.
+/// This machine's daemon, which alone keeps the device key: it has the person's root certify the
+/// boot key ([`ENROL_BOOT`]), here where it keeps it and otherwise at a device of theirs that does,
+/// which asks them, and publishes the enrolment.
 ///
 /// [`ENROL_BOOT`]: tilo_device_identity::login::ENROL_BOOT
-pub struct PeerRegistrar {
-    /// The daemon that dials them as this device.
-    daemon: DaemonPlace,
-    /// The person's other personal devices, in the order their record lists
-    /// them.
-    devices: Vec<[u8; 32]>,
-}
+pub struct DaemonRegistrar(DaemonPlace);
 
-/// The device action that answers which device the daemon is: `{device}`, its
-/// key in hex.
-const DEVICE_INFO: &str = "info";
-
-impl PeerRegistrar {
-    /// `devices`, asked in turn through `daemon`.
+impl DaemonRegistrar {
+    /// The daemon `daemon`.
     #[must_use]
-    pub fn new(daemon: DaemonPlace, devices: Vec<[u8; 32]>) -> Self {
-        Self { daemon, devices }
+    pub const fn new(daemon: DaemonPlace) -> Self {
+        Self(daemon)
     }
 
-    /// The person's other devices, as the daemon this machine runs lists them, asked through
-    /// it: the daemon `session_uid`'s account runs, or this account's.
+    /// The daemon `session_uid`'s account runs, or this account's.
     ///
     /// # Errors
-    /// As [`Self::asking`].
+    /// No daemon of that account can be named.
     pub fn find(session_uid: Option<u32>) -> Result<Self> {
-        Self::asking(local_daemon(session_uid)?)
-    }
-
-    /// The person's other devices, as `daemon` lists them: the record of their own workspace,
-    /// read through the daemon's one record API. Boot unlock exists only where that daemon runs,
-    /// and a daemon that is not running is said so.
-    ///
-    /// # Errors
-    /// The daemon does not answer, this device's certificate names another key than the
-    /// daemon's, or none of the person's other devices can enrol this one.
-    pub fn asking(daemon: DaemonPlace) -> Result<Self> {
-        use tilo_server_protocol::devices::{DEVICES, kept, record_value};
-        // This device's key, as the daemon that alone keeps it answers it.
-        let info = daemon
-            .ask(DEVICE_INFO, serde_json::json!({}))
-            .map_err(|refused| anyhow!("{refused}"))?;
-        let this: [u8; 32] = info
-            .get("device")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|key| hex::decode(key).ok())
-            .and_then(|key| key.try_into().ok())
-            .ok_or_else(|| anyhow!("the device service named no device key: {info}"))?;
-        // The certificate names whose this device is, and so whose devices are asked; one left
-        // from a key the daemon no longer keeps would ask another person's.
-        let cert = tilo_device_identity::persist::read_device_cert(&identity_paths().device_cert)
-            .map_err(|error| anyhow!("this device's certificate: {error}"))?;
-        if cert.device_public_key != this {
-            bail!("this device's key is not the one its certificate names");
-        }
-        let reading = daemon
-            .read_record(DEVICES.0, DEVICES.1)
-            .map_err(|error| anyhow!("your devices: {error}"))?;
-        let records = record_value(&reading);
-        let now = tilo_clock::unix_now_ns();
-        let devices: Vec<[u8; 32]> = records
-            .get("devices")
-            .and_then(serde_json::Value::as_object)
-            .into_iter()
-            .flatten()
-            .filter_map(|(key, _)| {
-                // Each device is whose its certificate says, verified with the revocation their
-                // root signed for it. Every one of theirs but this: this device asks the others,
-                // and holds the half like any other, so a person with two has one to ask at boot.
-                let (kept_cert, revocation) = kept(&records, key, &cert.user_public_key)?;
-                (kept_cert.capabilities.is_personal_device()
-                    && tilo_user_identity::verify_device_cert_at(&kept_cert, now).is_ok()
-                    && revocation.is_none()
-                    && kept_cert.device_public_key != this)
-                    .then_some(kept_cert.device_public_key)
-            })
-            .collect();
-        if devices.is_empty() {
-            bail!("none of your other devices can enrol this one");
-        }
-        Ok(Self::new(daemon, devices))
-    }
-
-    /// Ask `device` through the daemon: its reply, or why the daemon gave none.
-    fn ask_one(&self, device: &[u8; 32], request: &str) -> Result<EnrolReply, DeviceRefusal> {
-        let answer = self.daemon.actions().ask_followed(
-            tilo_device_identity::login::ENROL_BOOT,
-            serde_json::json!({ "request": request, "devices": [hex::encode(device)] }),
-        )?;
-        let body = answer
-            .get("reply")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|reply| hex::decode(reply).ok())
-            .ok_or_else(|| {
-                DeviceRefusal::said(format!("the device service answered no reply: {answer}"))
-            })?;
-        decode_frame::<EnrolReply>(&body).map_err(|error| DeviceRefusal::said(error.to_string()))
+        local_daemon(session_uid).map(Self)
     }
 }
 
-impl Registrar for PeerRegistrar {
-    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
-        let request = zeroize::Zeroizing::new(hex::encode(zeroize::Zeroizing::new(
-            encode_frame(request)
+impl Registrar for DaemonRegistrar {
+    fn register(&self, request: &EnrolRequest, half: &Half) -> Result<EnrolResponse, NotEnrolled> {
+        let request = hex::encode(
+            postcard::to_allocvec(request)
                 .map_err(|error| NotEnrolled::Failed(format!("the request: {error}")))?,
-        )));
-        let mut unable = None;
-        for device in &self.devices {
-            match self.ask_one(device, &request) {
-                Ok(EnrolReply::Enrolled(response)) => return Ok(*response),
-                // It keeps no root: another might.
-                Ok(EnrolReply::NotKeyHolder) => unable = Some(NotEnrolled::NotKeyHolder),
-                // The person answered: asking again elsewhere would ask them the same question
-                // twice.
-                Ok(reply) => return Err(reply.into()),
-                // Nothing can be asked without the daemon: it is said once, in its words.
-                Err(refused) if refused.not_running() => {
-                    return Err(NotEnrolled::Failed(refused.message));
-                }
-                // It could not be reached: another might.
-                Err(refused) => unable = Some(NotEnrolled::Failed(refused.message)),
-            }
-        }
-        Err(unable.unwrap_or(NotEnrolled::NotKeyHolder))
+        );
+        let half = zeroize::Zeroizing::new(hex::encode(half.expose()));
+        let answer = self.0.actions().ask_followed(
+            tilo_device_identity::login::ENROL_BOOT,
+            serde_json::json!({ "request": request, "half": half.as_str() }),
+        )?;
+        answer
+            .get("enrolled")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|enrolled| hex::decode(enrolled).ok())
+            .and_then(|enrolled| postcard::from_bytes(&enrolled).ok())
+            .ok_or_else(|| {
+                NotEnrolled::Failed(format!("the device service answered no enrolment: {answer}"))
+            })
     }
-}
-
-/// This device's identity paths, with the test and development root override
-/// the session's own reads ([`tilo_identity::provisioning::collaboration_identity_paths`]).
-fn identity_paths() -> IdentityPaths {
-    std::env::var_os("TILO_IDENTITY_ROOT")
-        .filter(|value| !value.is_empty())
-        .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
 }
 
 /// Where a login account keeps its identity records, relative to its home.
 const IDENTITY_DIR_IN_HOME: &str = ".config/tilo/identity";
 
-/// The daemon to ask for the person's devices: this account's, or the one `session_uid` names on
+/// The daemon that enrols the boot: this account's, or the one `session_uid` names on
 /// a machine whose daemon runs as the system unit.
 fn local_daemon(session_uid: Option<u32>) -> Result<DaemonPlace> {
     let ours = rustix::process::geteuid().as_raw();
@@ -586,17 +381,6 @@ pub fn existing_passphrase(
 /// # Errors
 /// When any step fails; the slot is removed again.
 pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
-    run_with_peers(args, machine, None)
-}
-
-/// [`run`] with the person's devices named rather than read from this machine's daemon: what a
-/// machine holding the identity asks, with a daemon that lists them there. `None` reads them from
-/// the daemon, as every command does.
-pub fn run_with_peers(
-    args: &Args,
-    machine: Machine<'_>,
-    peers: Option<PeerRegistrar>,
-) -> Result<()> {
     let sealing = enrollment_sealing(machine.sealing(), args.require_tpm)?;
     machine.require(args.unattended)?;
     let enrolled = luks::sibling(machine.runner, &args.device)?.is_some();
@@ -619,7 +403,7 @@ pub fn run_with_peers(
     if args.replace_networks {
         return replace_networks(machine.runner, &args.device, networks);
     }
-    let registrar = registrars(args.session_uid, peers)?;
+    let registrar = DaemonRegistrar::find(args.session_uid)?;
     let existing = existing_passphrase(&args.device, args.key_file.as_deref())?;
     enrol(
         machine,
@@ -630,27 +414,6 @@ pub fn run_with_peers(
         sealing,
         args.unattended,
     )
-}
-
-/// This machine's registrars in the order they are asked: its own session,
-/// then the person's devices over the peer network. A machine that holds no
-/// root reaches the same devices either way.
-fn registrars(session_uid: Option<u32>, peers: Option<PeerRegistrar>) -> Result<Choosing> {
-    let mut candidates: Vec<Box<dyn Registrar>> = Vec::new();
-    match SessionRegistrar::find(session_uid) {
-        Ok(session) => candidates.push(Box::new(session)),
-        Err(error) if session_uid.is_some() => return Err(error),
-        Err(_) => {}
-    }
-    match peers.map_or_else(|| PeerRegistrar::find(session_uid), Ok) {
-        Ok(peer) => candidates.push(Box::new(peer)),
-        Err(error) => {
-            if candidates.is_empty() {
-                return Err(error);
-            }
-        }
-    }
-    Ok(Choosing(candidates))
 }
 
 fn enrollment_sealing(available: Sealing, require_tpm: bool) -> Result<Sealing> {
@@ -715,16 +478,10 @@ pub fn enrol(
             volume_uuid,
             keyslot: u16::try_from(keyslot).context("key slot out of range")?,
         };
-        let request = EnrolRequest::new(
-            &boot_key,
-            slot,
-            attestation_key,
-            unattended_chain,
-            sibling_half,
-        )
-        .map_err(|error| anyhow!("{error}"))?;
-        let response = registrar.register(&request)?;
-        drop(request);
+        let request = EnrolRequest::new(&boot_key, slot, attestation_key, unattended_chain)
+            .map_err(|error| anyhow!("{error}"))?;
+        let response = registrar.register(&request, &sibling_half)?;
+        drop(sibling_half);
         let cert = &response.cert;
         verify_device_cert(cert).map_err(|error| anyhow!("the issued certificate: {error}"))?;
         if cert.device_public_key != boot_key.verifying_key().to_bytes() {

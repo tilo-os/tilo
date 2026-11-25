@@ -92,3 +92,14 @@ so-tilo-device-server-set-work-while-charging = Arbeit nur beim Laden annehmen
 ## Wo dieses Gerät ist
 
 so-tilo-device-location-locate = Wo dieses Gerät gerade ist, als Breiten- und Längengrad
+
+# A computer of the person's asks their identity to certify the key it unlocks its disk with at
+# boot: what they read where they answer, and what the computer is told. $computer is its name.
+boot-enrol-asked = Entsperren für { $computer } einrichten?
+boot-enrol-detail = Es entsperrt seine Festplatte beim Start mit Hilfe deiner Geräte.
+boot-enrol-unattended = Danach startet es, ohne dich erneut zu fragen.
+boot-enrol-computer = Computer
+boot-enrol-key = Startschlüssel
+boot-enrol-declined = Du hast auf deinem anderen Gerät abgelehnt, daher entsperrt dieser Computer seine Festplatte nicht mit deinen Geräten. Er öffnet sich weiterhin mit seinem Passwort oder Wiederherstellungsschlüssel.
+boot-enrol-unanswered = Auf deinem anderen Gerät hat niemand rechtzeitig geantwortet, daher entsperrt dieser Computer seine Festplatte nicht mit deinen Geräten. Versuche es noch einmal, wenn du an diesem Gerät bist.
+boot-enrol-no-root-device = Keines deiner Geräte, die deine Identität bewahren, ist gerade erreichbar. Schalte eines ein, verbinde es mit dem Internet und melde dich an, dann versuche es noch einmal.

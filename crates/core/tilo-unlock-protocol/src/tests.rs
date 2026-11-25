@@ -64,15 +64,14 @@ fn certificates_are_root_signed_and_tamper_evident() {
 
 #[test]
 fn enrol_request_proves_the_boot_key() {
-    let request =
-        EnrolRequest::new(&boot_key(), slot(), None, None, Half::from_bytes([5; 32])).unwrap();
+    let request = EnrolRequest::new(&boot_key(), slot(), None, None).unwrap();
     assert_eq!(request.verify(), Ok(()));
     let mut swapped = request.clone();
     swapped.boot_public_key = SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes();
     assert_eq!(swapped.verify(), Err(RequestError::BadSignature));
-    let mut other_half = request;
-    other_half.sibling_half = Half::from_bytes([6; 32]);
-    assert_eq!(other_half.verify(), Err(RequestError::BadSignature));
+    let mut other_slot = request;
+    other_slot.slot.keyslot += 1;
+    assert_eq!(other_slot.verify(), Err(RequestError::BadSignature));
 }
 
 #[test]

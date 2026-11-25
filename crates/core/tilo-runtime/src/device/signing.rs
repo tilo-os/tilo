@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use tilo_server_protocol::WorkspaceId;
 use tilo_unlock_protocol::{
     EnrolRequest, Half, Release, SealedSiblingHalf, open_sibling_half, seal_release,
-    seal_sibling_half,
 };
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, StatementSigner as _,
@@ -275,15 +274,16 @@ pub fn certify_key(
 }
 
 /// The `for: "boot"` case of [`certify_key`]: certify the boot key `key` that `request` proves,
-/// seal its sibling half to the person's secret-sync key, name the person's other devices that
-/// hold the half, and sign the acceptance of an unattended boot chain when one is asked for.
+/// answer the person's secret-sync public key the enrolling device seals its sibling half to,
+/// name the person's other devices that carry the half, and sign the acceptance of an unattended
+/// boot chain when one is asked for. The half itself never reaches the root.
 ///
 /// # Errors
 /// This daemon keeps no root, the request does not read, the key is not the one it proves, or it
 /// could not sign.
 #[expect(
     clippy::too_many_lines,
-    reason = "one boot key's certificate, its sealed half and the devices that carry it"
+    reason = "one boot key's certificate, the key its half is sealed to and the devices that carry it"
 )]
 fn certify_boot_key(
     workspaces: Option<&Arc<ServiceWorkspaces>>,
@@ -355,8 +355,6 @@ fn certify_boot_key(
     let secret_sync = secret_sync
         .public_key()
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let sealed_half = seal_sibling_half(&secret_sync, &cert, &request.sibling_half)
-        .map_err(|error| io::Error::other(error.to_string()))?;
     // Every one of the person's devices carries the half, named as the record names them.
     let siblings = devices
         .listed(&person)
@@ -392,7 +390,7 @@ fn certify_boot_key(
         "identity": identity,
         "expires_at_ns": Value::Null,
         "cert": hex::encode(cert),
-        "sealed_half": hex::encode(postcard::to_allocvec(&sealed_half).unwrap_or_default()),
+        "secret_sync": hex::encode(secret_sync.to_bytes()),
         "siblings": siblings,
         "approval_signature": approval_signature.map(hex::encode),
     }))

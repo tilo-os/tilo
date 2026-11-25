@@ -32,11 +32,12 @@
 //!
 //! # Enrolment
 //!
-//! A device without the person's root enrols its boot key by asking one of
-//! their devices that holds it, over [`ENROL_ALPN`]: one framed
-//! [`EnrolRequest`] in, one framed [`EnrolReply`] out. The device that holds
-//! the root asks the person first, then certifies the key exactly as a
-//! session on the enrolling device would.
+//! A device enrols its boot key with the `certifyKey` device action and an
+//! [`EnrolRequest`]: run under the person's root where the device keeps it,
+//! and otherwise asked of a device of theirs that does, where the person
+//! answers it. The enrolling device seals its sibling half to the person's
+//! secret-sync key itself and publishes the enrolment
+//! ([`published::UnlockEnrolment`]) in its own entry of their devices.
 //!
 //! # Wire ABI
 //!
@@ -57,10 +58,11 @@ pub mod attest;
 mod enrol;
 mod half;
 pub mod opened;
+pub mod published;
 pub mod startup_secret;
 mod wire;
 
-pub use enrol::{EnrolReply, EnrolRequest, EnrolResponse, RequestError, SiblingContact};
+pub use enrol::{EnrolRequest, EnrolResponse, RequestError, SiblingContact};
 pub use half::{
     HALF_LEN, Half, SealedSiblingHalf, derive_slot_key, open_sibling_half, seal_sibling_half,
 };
@@ -73,21 +75,6 @@ pub use wire::{
 
 /// ALPN of the boot-time unlock exchange. Frozen wire ABI.
 pub const UNLOCK_ALPN: &[u8] = b"tilo-device-unlock/1";
-/// ALPN of the enrolment a device without the person's root asks a device
-/// that holds it for: one framed [`EnrolRequest`] in, one framed
-/// [`EnrolReply`] out, on one bidirectional stream. The connection is bound
-/// to the asking device's fleet key, the device the enrolment is recorded
-/// for. Frozen wire ABI.
-pub const ENROL_ALPN: &[u8] = b"tilo-device-enrol/1";
-/// The enrolment socket, relative to the session user's `$XDG_RUNTIME_DIR`.
-///
-/// `tilo-disk-encrypt enrol --sibling` connects here (as root or as the
-/// session user; the socket is the user's, mode 0600), writes one
-/// [`encode_frame`]d [`EnrolRequest`] and reads one [`EnrolReply`]. The
-/// session's shell holds the person's identity: it certifies the boot key,
-/// seals the half to the secret-sync key and publishes the enrolment to the
-/// person's devices.
-pub const ENROL_SOCKET: &str = "tilo-session/device-unlock.sock";
 /// Version carried in every versioned message of this protocol.
 pub const PROTOCOL_VERSION: u16 = 1;
 /// Largest frame either side accepts, length prefix excluded.

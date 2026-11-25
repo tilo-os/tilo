@@ -99,13 +99,10 @@ impl World {
             sealed_half,
             slot: slot(),
             attestation_key,
-            stamp: FabricStamp {
-                counter: 1,
-                device: DeviceId::new(hex::encode(device())).unwrap(),
-            },
+            kept_by: device(),
         };
         enrolment
-            .validate(&DeviceId::new(hex::encode(device())).unwrap())
+            .validate(&device())
             .unwrap();
         let mut enrolments = BTreeMap::new();
         enrolments.insert(enrolment.id().unwrap(), enrolment);
@@ -169,7 +166,7 @@ impl World {
             return;
         };
         record
-            .validate(&DeviceId::new(hex::encode(sibling())).unwrap())
+            .validate(&sibling())
             .unwrap();
         self.decisions.insert(record.key(), record.clone());
     }
@@ -863,7 +860,7 @@ fn answers_merge_from_the_person_devices_only_while_they_hold() {
         .record
         .unwrap();
 
-    let answering = DeviceId::new(hex::encode(sibling())).unwrap();
+    let answering = sibling();
     let state = UnlockFabricState {
         decisions: vec![record.clone()],
         ..UnlockFabricState::default()
@@ -872,7 +869,7 @@ fn answers_merge_from_the_person_devices_only_while_they_hold() {
     // A device writing another's answer is not believed.
     assert!(
         state
-            .validate(&DeviceId::new(hex::encode(device())).unwrap())
+            .validate(&device())
             .is_err()
     );
     // Nor are two answers to one boot, or one that holds for no time at all.

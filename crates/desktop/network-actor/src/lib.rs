@@ -459,18 +459,6 @@ impl ProtocolHandler for DeviceUnlockProtocol {
     }
 }
 
-/// Another of the person's devices asking for this one to enrol its boot key.
-/// The peer is the device its connection names: its fleet key.
-#[derive(Clone, Debug)]
-struct DeviceEnrolProtocol;
-
-impl ProtocolHandler for DeviceEnrolProtocol {
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        services::device_enrol(connection);
-        Ok(())
-    }
-}
-
 #[derive(Clone)]
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -1447,7 +1435,6 @@ async fn run(
             },
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
-        .accept(tilo_unlock_protocol::ENROL_ALPN, DeviceEnrolProtocol)
         .accept(
             tilo_server_protocol::transport::SIBLING_ALPN,
             device_sessions::SiblingProtocol(internal_tx.clone()),

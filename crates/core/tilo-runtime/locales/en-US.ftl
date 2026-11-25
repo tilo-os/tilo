@@ -94,3 +94,14 @@ so-tilo-device-server-set-work-while-charging = Take work only while charging
 ## Where this device is
 
 so-tilo-device-location-locate = Where this device is now, as its latitude and longitude
+
+# A computer of the person's asks their identity to certify the key it unlocks its disk with at
+# boot: what they read where they answer, and what the computer is told. $computer is its name.
+boot-enrol-asked = Set up unlock for { $computer }?
+boot-enrol-detail = It will unlock its disk at boot with your devices’ help.
+boot-enrol-unattended = It will then start without asking you again.
+boot-enrol-computer = Computer
+boot-enrol-key = Boot key
+boot-enrol-declined = You said no on your other device, so this computer won’t unlock its disk with your devices. It still opens with its passphrase or recovery key.
+boot-enrol-unanswered = Nobody answered on your other device in time, so this computer won’t unlock its disk with your devices. Try again when you’re at that device.
+boot-enrol-no-root-device = None of your devices that keep your identity can be reached right now. Turn one on, connect it to the internet and sign in, then try again.

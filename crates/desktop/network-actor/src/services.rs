@@ -20,15 +20,11 @@ pub type PeerVersion = Arc<dyn Fn(String, u32) + Send + Sync>;
 /// Another of the person's devices asks for its unlock half at early boot.
 pub type DeviceUnlock = Arc<dyn Fn(Connection) + Send + Sync>;
 
-/// Another of the person's devices asks this one to enrol its boot key.
-pub type DeviceEnrol = Arc<dyn Fn(Connection) + Send + Sync>;
-
 /// The session's side of the actor's work, installed once ([`install`]).
 #[derive(Clone)]
 pub struct Services {
     pub peer_version: PeerVersion,
     pub device_unlock: DeviceUnlock,
-    pub device_enrol: DeviceEnrol,
 }
 
 static SERVICES: OnceLock<Services> = OnceLock::new();
@@ -52,13 +48,6 @@ pub fn peer_version(endpoint: String, theirs: u32) {
 pub fn device_unlock(connection: Connection) {
     match SERVICES.get() {
         Some(services) => (services.device_unlock)(connection),
-        None => connection.close(0u32.into(), b"not served"),
-    }
-}
-
-pub fn device_enrol(connection: Connection) {
-    match SERVICES.get() {
-        Some(services) => (services.device_enrol)(connection),
         None => connection.close(0u32.into(), b"not served"),
     }
 }

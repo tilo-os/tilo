@@ -23,6 +23,9 @@ use tilo_device_identity::login::{
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 
+/// How long a device of the person's has to answer before it counts as out of reach.
+const REACH_WITHIN: Duration = Duration::from_secs(10);
+
 use std::sync::Arc;
 
 use collab_types::signer::DeviceSigner;
@@ -180,6 +183,17 @@ impl Tickets {
                 bail!("that device did not answer: it may be off or away from its network")
             }
         }
+    }
+
+    /// Whether the person's device `device` answers this one now, within [`REACH_WITHIN`]: what
+    /// it says of itself, asked over the action service between their devices.
+    pub(crate) async fn reaches(&self, device: [u8; 32]) -> bool {
+        tokio::time::timeout(
+            REACH_WITHIN,
+            self.ask_device(device, (RESOURCE, super::INFO), &json!({})),
+        )
+        .await
+        .is_ok_and(|answered| answered.is_ok())
     }
 
     /// Start this device's updates with `start` rather than `tilo update`.

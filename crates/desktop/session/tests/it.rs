@@ -171,8 +171,6 @@ mod machine_plan;
 mod mcp_server_workspace;
 #[path = "network_unlock.rs"]
 mod network_unlock;
-#[path = "network_unlock_enrolment.rs"]
-mod network_unlock_enrolment;
 #[path = "no_locale_leaks.rs"]
 mod no_locale_leaks;
 // The session that holds nothing of its own: it turns on with the commit that deletes the

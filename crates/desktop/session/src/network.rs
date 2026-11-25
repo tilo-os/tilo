@@ -2,7 +2,7 @@
 //!
 //! The actor is the transport, and what some of its APIs ask is the
 //! session's business: another of the person's devices asking for its
-//! disk-unlock half or for this device to enrol its own, a member's device at
+//! disk-unlock half, a member's device at
 //! another peer protocol version. Each is served here by the part of the session that owns it,
 //! installed once before the actor starts ([`install`]).
 
@@ -12,14 +12,12 @@ use std::sync::{Arc, Mutex};
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use iroh::endpoint::Connection;
-use tilo_network_actor::services::{self, DeviceEnrol, DeviceUnlock, PeerVersion, Services};
+use tilo_network_actor::services::{self, DeviceUnlock, PeerVersion, Services};
 use tilo_service::AskSender;
 
 mod unlock;
 
-pub(crate) use unlock::{
-    ENROL_KIND as DEVICE_ENROL, EnrolQuestion, KIND as DEVICE_UNLOCK, UnlockQuestion, kept_unlock,
-};
+pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, kept_unlock};
 
 /// A member's device heard at another peer protocol version: one of the two devices must
 /// update before the two work together again.
@@ -62,14 +60,10 @@ pub(crate) fn install(
         return requests;
     };
     let unlocking = Arc::new(unlock::Unlock::new(link, record, local, questions));
-    let installed = services::install(Services {
+    let _ = services::install(Services {
         peer_version: peer_versions(updates),
-        device_unlock: device_unlock(unlocking.clone()),
-        device_enrol: device_enrol(unlocking.clone()),
+        device_unlock: device_unlock(unlocking),
     });
-    if installed {
-        unlocking.spawn_enrol_socket();
-    }
     requests
 }
 
@@ -78,14 +72,6 @@ fn device_unlock(unlocking: Arc<unlock::Unlock>) -> DeviceUnlock {
     Arc::new(move |connection: Connection| {
         let unlocking = Arc::clone(&unlocking);
         tokio::spawn(unlocking.serve(connection));
-    })
-}
-
-/// Another of the person's devices holds no root and asks this one to enrol its boot key.
-fn device_enrol(unlocking: Arc<unlock::Unlock>) -> DeviceEnrol {
-    Arc::new(move |connection: Connection| {
-        let unlocking = Arc::clone(&unlocking);
-        tokio::spawn(unlocking.serve_enrol(connection));
     })
 }
 

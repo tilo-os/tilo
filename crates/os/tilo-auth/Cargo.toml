@@ -31,8 +31,8 @@ path = "tests/daemon.rs"
 required-features = ["service"]
 
 [[test]]
-name = "peer_enrol"
-path = "tests/peer_enrol.rs"
+name = "sibling_enrol"
+path = "tests/sibling_enrol.rs"
 required-features = ["service"]
 
 [[test]]
@@ -139,7 +139,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # A loopback relay for the endpoints these tests start.
 tilo-test-relay = { path = "../../../tools/test-relay" }
 # The device's daemon, started in a test's process as the enrolling machine's.
-tilo-runtime = { path = "../../core/tilo-runtime" }
+tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support"] }
 # The worker process the daemon's documents are opened in, served by the test binary.
 tilo-automerge-isolate.workspace = true
 # The daemon's log, written to the test's own output, which says why a step it took failed.

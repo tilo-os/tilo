@@ -90,10 +90,19 @@ pub const CHECK_CALLER_PROOF: &str = "checkCallerProof";
 /// unsigned), an image endorsement under the image-signing grant the person's root gave this
 /// device. Answers the signed `endorsement` (hex).
 pub const ENDORSE_IMAGE: &str = "endorseImage";
-/// The action the device's system asks its daemon: ask `devices` (each a key in hex) in turn, over
-/// the device's one endpoint, to enrol the boot `request` (an enrolment request's frame, hex)
-/// names. Answers the first device's `reply` (its frame's body, hex).
+/// The action the device's system asks its daemon: enrol this device's boot key `request` (an
+/// enrolment request, postcard in hex) with its sibling `half` (hex). The person's root certifies
+/// the key, here where this device keeps it and otherwise at a device of theirs that does, which
+/// asks them ([`CERTIFY_KEY`]); the daemon seals the half to their secret-sync key and publishes
+/// the enrolment in its own entry of their devices. Answers `enrolled` (the enrolment response,
+/// postcard in hex), or refuses with [`ENROL_DECLINED`] or [`NO_ROOT_DEVICE`].
 pub const ENROL_BOOT: &str = "enrolBoot";
+/// The refusal [`ENROL_BOOT`] ends with when the person said no at their device: the boot key is
+/// not certified, and the disk stays as locked as it was.
+pub const ENROL_DECLINED: &str = "enrol-declined";
+/// The refusal [`ENROL_BOOT`] ends with when this device keeps no root of the person's and none of
+/// their devices that keeps it could be reached to ask them.
+pub const NO_ROOT_DEVICE: &str = "no-root-device";
 /// The action the device's shell runtime asks its daemon: carry out `command` (a resource store
 /// command, as JSON) on Terminal's documents in `workspace`, where it keeps its environment
 /// records. Only a record's changes, a record's write and the record list are carried out.

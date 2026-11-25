@@ -741,6 +741,18 @@ pub enum FabricError {
     InvalidUnlockEnrolment,
 }
 
+impl From<tilo_unlock_protocol::published::PublishedError> for FabricError {
+    fn from(error: tilo_unlock_protocol::published::PublishedError) -> Self {
+        use tilo_unlock_protocol::published::PublishedError;
+        match error {
+            PublishedError::TooLarge => Self::TooLarge,
+            PublishedError::ForeignAuthorship => Self::ForeignAuthorship,
+            PublishedError::DuplicateItem => Self::DuplicateItem,
+            PublishedError::InvalidUnlockEnrolment => Self::InvalidUnlockEnrolment,
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;

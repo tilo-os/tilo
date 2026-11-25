@@ -346,7 +346,6 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
         tilo_bluetooth_agent::KIND => pairing(details)?,
         crate::mcp_server::KIND => admitted(&who, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(details)?,
-        crate::network::DEVICE_ENROL => device_enrol(details)?,
         crate::network_reach::KIND => reach(&who, details)?,
         #[cfg(target_os = "linux")]
         tilo_workspace_service::apps::nearby_send::VERIFY_QUESTION => receiver(details)?,
@@ -601,23 +600,6 @@ fn device_unlock(details: Value) -> Kind {
         word("network-device-unlock-code"),
         asked.approval_code,
     ));
-    facts.by = device(&asked.device);
-    Some((facts, Reply::Confirm))
-}
-
-/// Another of the person's devices asks this one to sign the key it unlocks its disk with.
-fn device_enrol(details: Value) -> Kind {
-    let asked: crate::network::EnrolQuestion = serde_json::from_value(details).ok()?;
-    let mut facts = asking(
-        words("network-device-enrol-title", &[("device", &asked.device)]),
-        Some(word("network-device-enrol-detail")),
-    );
-    if asked.unattended {
-        facts
-            .facts
-            .push(line(word("network-device-enrol-unattended")));
-        facts.destructive = true;
-    }
     facts.by = device(&asked.device);
     Some((facts, Reply::Confirm))
 }

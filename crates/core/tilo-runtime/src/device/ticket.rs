@@ -1036,11 +1036,6 @@ impl Tickets {
         self
     }
 
-    /// The device's one endpoint: what it dials the person's other devices from.
-    pub(crate) fn endpoint(&self) -> &Endpoint {
-        &self.0.endpoint
-    }
-
     /// Whether `request` is one of the device actions.
     pub(crate) fn answers(request: &InvokeRequest) -> bool {
         request.target.provider == PROVIDER

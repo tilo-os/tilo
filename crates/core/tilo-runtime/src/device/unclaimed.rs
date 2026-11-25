@@ -86,6 +86,8 @@ pub(crate) type Calls = Arc<std::sync::Mutex<HashMap<InvocationId, InvocationSta
 pub(crate) struct Founding {
     /// The person's services, and the person they serve, once they run.
     serving: std::sync::Mutex<Option<([u8; 32], Arc<super::ticket::Tickets>)>>,
+    /// What enrols this device's boot key, once the person's services run.
+    enrolling: std::sync::Mutex<Option<Arc<super::boot_enrol::BootEnrolment>>>,
     /// Told when they do.
     announced: tokio::sync::Notify,
     /// The calls the device took while it had no person: its services answer them too, so a
@@ -105,6 +107,11 @@ impl Founding {
     pub(crate) fn serving(&self, person: [u8; 32], tickets: Arc<super::ticket::Tickets>) {
         *self.serving.lock_recover() = Some((person, tickets));
         self.announced.notify_waiters();
+    }
+
+    /// Have `enrolling` enrol this device's boot key from now on: the person's services run.
+    pub(crate) fn enrolling(&self, enrolling: Arc<super::boot_enrol::BootEnrolment>) {
+        *self.enrolling.lock_recover() = Some(enrolling);
     }
 
     /// The tickets `kinds` names, each issued as `person`'s own act on this device: as
@@ -816,18 +823,18 @@ impl DeviceOnly {
             let update = ended(super::key_use::answer(action, &args, &self.0.key));
             return Pending::ready(Ok(self.keep(invocation, update)));
         }
-        // A boot is enrolled over the device's one endpoint, which its person's services run.
-        let Some((_, tickets)) = self.0.founding.serving.lock_recover().clone() else {
+        // A boot is enrolled through the person's own dispatch, which their services run.
+        let Some(enrolling) = self.0.founding.enrolling.lock_recover().clone() else {
             let update = failed(
                 invocation,
-                "this device's services are not running yet, so it cannot ask your other devices",
+                "this device's services are not running yet, so it cannot enrol its disk unlock",
             );
             return Pending::ready(Ok(self.keep(invocation, update)));
         };
         let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
         let answering = self.clone();
         self.0.runtime.spawn(async move {
-            let update = ended(super::key_use::enrol_boot(tickets.endpoint(), &args).await);
+            let update = ended(enrolling.enrol(&args).await);
             answering.keep(invocation, update);
         });
         Pending::ready(Ok(receipt))

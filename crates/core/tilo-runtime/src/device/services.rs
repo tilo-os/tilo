@@ -2145,6 +2145,7 @@ impl Daemon {
         // on: the tickets, the endpoint they name and what serves it are up, and nothing the
         // rest of the part opens is needed to issue one. The founder waits for a start, not for
         // every service of it.
+        let founding_for_enrolment = founding.clone();
         if let Some(founding) = founding {
             founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
         }
@@ -2381,6 +2382,16 @@ impl Daemon {
             admits_again(&broker, &workspaces, &actor),
         );
         asked.withdraw_what_ended();
+        // This device's boot key is enrolled through the same dispatch, asked of the person.
+        if let Some(founding) = founding_for_enrolment {
+            founding.enrolling(Arc::new(super::boot_enrol::BootEnrolment {
+                device: workspaces.device_cert(),
+                tickets: Arc::clone(&tickets),
+                invocations: Arc::clone(&invocations),
+                asked: Arc::clone(&asked),
+                workspaces: Arc::clone(&workspaces),
+            }));
+        }
         // A person whose workspace is founded here after the start, or comes in from their
         // desktop, is held as the start holds one it finds: done by whatever first reaches it.
         first.when_here(super::host_runs::settling(
@@ -4951,13 +4962,14 @@ fn hand_on_to_root(
         });
     };
     let listed = Tickets::listed(request);
+    // A boot key's certificate names the computer that asks and the key, as the person reads it.
     let facts = tilo_actions::remote::asked::AskedFacts {
         verb: listed
             .as_ref()
             .map(|action| action.action_label.clone())
             .unwrap_or_default(),
         on: listed.map(|action| action.resource_label),
-        ..Default::default()
+        ..super::boot_enrol::asked_facts(request).unwrap_or_default()
     };
     // An agent asking for the person's root answers as the agent it is, so the card says who
     // wants it; the person's own call is theirs.

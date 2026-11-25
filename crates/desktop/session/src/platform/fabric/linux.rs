@@ -8,7 +8,7 @@ mod store;
 
 pub use session::Continuity;
 pub(crate) use session::{Reach, SessionFabric, about};
-pub(crate) use store::{ABOUT, decoded, keep_own};
+pub(crate) use store::{ABOUT, decoded};
 
 pub use tilo_network_actor::fabric::clock;
 pub use tilo_network_actor::fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};

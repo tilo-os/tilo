@@ -491,9 +491,6 @@ agent-ask-pick = Wähle eine Antwort.
 ## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.
 network-device-unlock-title = { $device } entsperren?
 network-device-unlock-detail = Es startet gerade und bittet dich um die Hälfte seines Datenträgerschlüssels, die dieses Gerät für es hält, für { $slot }. Vergleiche den Code oben mit dem auf seinem Startbildschirm.
-network-device-enrol-title = Entsperren für { $device } einrichten?
-network-device-enrol-detail = Es entsperrt seine Festplatte beim Start mit Hilfe dieses Geräts.
-network-device-enrol-unattended = Danach startet es, ohne dich erneut zu fragen.
 
 ## Wie die Ressource jeder Karte heißt, nach ihrer Art benannt, mit
 ## Bindestrichen statt Punkten (`power.session` ist `power-session`). Der

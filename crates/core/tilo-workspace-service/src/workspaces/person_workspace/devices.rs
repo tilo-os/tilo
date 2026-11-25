@@ -1857,6 +1857,35 @@ pub async fn keep(workspaces: &super::Workspaces, cert: &DeviceCert) -> Result<(
     super::apply(workspaces, DEVICES, Devices::keeping(cert)?).await
 }
 
+/// Keep `value` as the fact `name` in the entry of `cert`'s device, in the record of its person's
+/// own workspace as `workspaces` keeps it: what a device says of itself, each written by that device
+/// alone.
+///
+/// # Errors
+/// The certificate does not encode, this device keeps no copy of the person's workspace, or the
+/// record refused the fact.
+pub async fn keep_own_fact(
+    workspaces: &super::Workspaces,
+    cert: &DeviceCert,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let certificate = hex::encode(postcard::to_allocvec(cert).map_err(|error| error.to_string())?);
+    let workspace = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
+    super::apply_on(
+        workspaces,
+        &workspace,
+        DEVICES,
+        Devices::KEEP_FACT.with((
+            hex::encode(cert.device_public_key),
+            certificate,
+            name.to_owned(),
+            value.to_owned(),
+        )),
+    )
+    .await
+}
+
 /// Keep `entry`, the root of `person`'s revocation of one of their devices, in the record of their
 /// own workspace `workspaces` holds: the one way a device becomes one every host of theirs refuses.
 ///

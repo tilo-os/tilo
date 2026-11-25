@@ -11,21 +11,17 @@
 //! it to their other devices: a boot whose stream went away before the answer reached it hears the
 //! same answer again, with a half sealed to its own new key where the person allowed it, instead
 //! of asking them twice, and the record's history is their list of what they answered.
-//! `tilo-disk-encrypt enrol --sibling` reaches [`Unlock::enrol`] through the session's enrolment
-//! socket ([`tilo_unlock_protocol::ENROL_SOCKET`]): the boot key is certified by the person's root,
-//! the sibling half is sealed to the secret-sync key, and the enrolment is kept in this device's
-//! entry of that record for their other devices to carry ([`UNLOCK`]). A device that holds no root asks
-//! one that does over [`tilo_unlock_protocol::ENROL_ALPN`] instead ([`Unlock::serve_enrol`]); that
-//! device asks its person first.
+//! A device's enrolment is its daemon's to publish, in its own entry of that record ([`UNLOCK`]):
+//! the boot key certified by the person's root, and the sibling half sealed to their secret-sync
+//! key.
 
-use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{
-    AutoApproval, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
+    Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
     UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
     decision_for, merged_unlock_state,
 };
@@ -34,12 +30,11 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tilo_service::{AskSender, Asked, Question};
 use tilo_unlock_protocol::{
-    APPROVAL_TIMEOUT_NS, CHALLENGE_LIFETIME_NS, ClientFrame, ENROL_SOCKET, EnrolReply,
-    EnrolRequest, EnrolResponse, RefusalReason, SiblingContact, SiblingFrame, SlotId, UnlockHello,
+    APPROVAL_TIMEOUT_NS, CHALLENGE_LIFETIME_NS, ClientFrame, RefusalReason, SiblingFrame, SlotId, UnlockHello,
     UnlockRequest, decode_frame, encode_frame, frame_len,
 };
 use tilo_user_identity::{
-    CertifiedFleet, DeviceCert, DeviceCertification, device_cert_signing_digest, verify_device_cert,
+    CertifiedFleet, DeviceCert, device_cert_signing_digest,
 };
 use tilo_workspace_service::workspaces::person_workspace::devices::{
     DEVICES, Device, Devices, UnlockAnswer,
@@ -54,8 +49,6 @@ const UNLOCK: &str = "unlock";
 
 /// The kind the session's sheet reads a disk-unlock request as.
 pub(crate) const KIND: &str = "network.device-unlock";
-/// The kind it reads another device's enrolment request as.
-pub(crate) const ENROL_KIND: &str = "network.device-enrol";
 
 /// How long a boot may take to answer its challenge.
 const ANSWER_TIMEOUT: Duration = Duration::from_nanos(CHALLENGE_LIFETIME_NS);
@@ -73,30 +66,12 @@ pub(crate) struct UnlockQuestion {
     pub slot: String,
 }
 
-/// Another device's enrolment waiting for the person, as the sheet shows it.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct EnrolQuestion {
-    /// The device that asks, as this device's fabric knows it.
-    pub device: String,
-    /// Whether it asked to unlock its disk without being asked again each boot.
-    pub unattended: bool,
-}
-
 /// The person's devices this session answers as, read from the record of their own workspace
 /// through this computer's daemon, and whether that daemon keeps their root.
 struct Ownership {
     fleet: CertifiedFleet,
     /// Whether this device holds the person's root, so it can release.
     key_holder: bool,
-}
-
-/// Why an enrolment was not signed here: another device must, or this
-/// request is not one this device accepts.
-enum NotEnrolled {
-    /// This device does not hold the person's root.
-    NotKeyHolder,
-    /// Anything else, with a reason for the person.
-    Reason(String),
 }
 
 /// The sibling side of disk unlock, served by one session.
@@ -111,9 +86,6 @@ pub(crate) struct Unlock {
     /// The challenges this device issued, the boots it served and the requests waiting for it. One
     /// session answers as one device.
     sibling: Mutex<UnlockSibling>,
-    /// Serializes what this device publishes about disk unlock: two boots answered at once must not
-    /// overwrite each other's record.
-    published: Mutex<()>,
 }
 
 impl Unlock {
@@ -131,7 +103,6 @@ impl Unlock {
             questions,
             local,
             sibling: Mutex::new(UnlockSibling::new(local)),
-            published: Mutex::new(()),
         }
     }
 
@@ -242,86 +213,6 @@ impl Unlock {
             tracing::warn!(%error, "an unlock decision did not reach the boot that asked");
         }
         let _ = tokio::time::timeout(WRITE_GRACE, send.stopped()).await;
-    }
-
-    /// Answer one peer-network enrolment: another of the person's devices
-    /// holds no root and asks this one to certify its boot key. The person is
-    /// asked on this device's sheet first, and only their approval signs
-    /// anything.
-    pub(crate) async fn serve_enrol(self: Arc<Self>, connection: Connection) {
-        let Ok((mut send, mut recv)) = connection.accept_bi().await else {
-            return;
-        };
-        let Some(request) = read_frame::<EnrolRequest>(&mut recv).await else {
-            connection.close(0u32.into(), b"not an enrolment");
-            return;
-        };
-        // The connection is this device's proof of who asks: its endpoint key is its fleet key.
-        let device = *connection.remote_id().as_bytes();
-        let reply = match read_ownership() {
-            Some(ownership) if ownership.key_holder => {
-                if ownership
-                    .fleet
-                    .certification(&device, tilo_clock::unix_now_ns())
-                    != DeviceCertification::Certified
-                {
-                    // Nobody is asked for a device that is not the person's.
-                    EnrolReply::Refused("this device is not one of the person's".into())
-                } else if request.verify().is_err() {
-                    EnrolReply::Refused("the enrolment request does not prove its boot key".into())
-                } else if self.ask_enrol(&request, device, &connection).await {
-                    self.enrol_from(&request, device)
-                } else {
-                    EnrolReply::Denied
-                }
-            }
-            Some(_) => EnrolReply::NotKeyHolder,
-            None => EnrolReply::Refused(
-                "this session holds no identity for the person's devices".into(),
-            ),
-        };
-        if let Ok(frame) = encode_frame(&reply)
-            && let Err(error) = send.write_all(&frame).await
-        {
-            tracing::warn!(%error, "an enrolment answer did not reach the device that asked");
-        }
-        if let Err(error) = send.finish() {
-            tracing::warn!(%error, "an enrolment answer did not reach the device that asked");
-        }
-        let _ = tokio::time::timeout(WRITE_GRACE, send.stopped()).await;
-    }
-
-    /// Put another device's enrolment to the person, and wait for their answer.
-    /// No answer, or the asking device going away, leaves it unenrolled.
-    async fn ask_enrol(
-        &self,
-        request: &EnrolRequest,
-        device: [u8; 32],
-        connection: &Connection,
-    ) -> bool {
-        let Some(questions) = self.questions.as_ref() else {
-            return false;
-        };
-        let label = self.label_of(&device);
-        let asked = questions.ask(Question {
-            handle: format!("device-enrol:{}", hex::encode(device)),
-            kind: ENROL_KIND.to_owned(),
-            app_id: None,
-            label: label.clone(),
-            details: serde_json::to_value(EnrolQuestion {
-                device: label,
-                unattended: request.unattended_chain.is_some(),
-            })
-            .unwrap_or_default(),
-        });
-        let wait = tokio::time::timeout(Duration::from_nanos(APPROVAL_TIMEOUT_NS), async {
-            tokio::select! {
-                answer = asked => Some(answer),
-                _ = connection.closed() => None,
-            }
-        })
-        .await;
-        matches!(wait, Ok(Some(Some(_))))
     }
 
     /// Challenge the boot, or refuse its hello.
@@ -477,155 +368,6 @@ impl Unlock {
         )
     }
 
-    /// Serve `tilo-disk-encrypt enrol --sibling` on this device: certify the boot key, seal its
-    /// sibling half, and publish the enrolment to the person's other devices.
-    pub(crate) fn enrol(&self, request: &EnrolRequest) -> EnrolReply {
-        self.enrol_from(request, self.local)
-    }
-
-    /// Enrol `device`'s boot key: the device that asked, which on the local socket is this one.
-    fn enrol_from(&self, request: &EnrolRequest, device: [u8; 32]) -> EnrolReply {
-        match self.try_enrol(request, device) {
-            Ok(response) => EnrolReply::Enrolled(Box::new(response)),
-            Err(NotEnrolled::NotKeyHolder) => EnrolReply::NotKeyHolder,
-            Err(NotEnrolled::Reason(reason)) => EnrolReply::Refused(reason),
-        }
-    }
-
-    fn try_enrol(
-        &self,
-        request: &EnrolRequest,
-        enrollee: [u8; 32],
-    ) -> Result<EnrolResponse, NotEnrolled> {
-        request
-            .verify()
-            .map_err(|error| NotEnrolled::Reason(format!("enrolment request: {error}")))?;
-        let ownership = read_ownership().ok_or_else(|| {
-            NotEnrolled::Reason("this session holds no identity for the person's devices".into())
-        })?;
-        if !ownership.key_holder {
-            return Err(NotEnrolled::NotKeyHolder);
-        }
-        let refused = NotEnrolled::Reason;
-        let person = *ownership.fleet.user_public_key();
-        // An enrolment for an unattended unlock asks, with the boot chain it measures now, to be
-        // released without a prompt: the daemon that holds the root signs that acceptance.
-        let mut approval = request.unattended_chain.map(|chain| {
-            AutoApproval::unsigned(person, enrollee, vec![chain], tilo_clock::unix_now_ns())
-        });
-        let approval_digest = match &approval {
-            Some(approval) => Some(
-                approval
-                    .digest()
-                    .ok_or_else(|| refused("the unlock policy could not be encoded".into()))?,
-            ),
-            None => None,
-        };
-        let mut args = serde_json::json!({
-            "key": hex::encode(request.boot_public_key),
-            "for": "boot",
-            "request": hex::encode(
-                postcard::to_allocvec(request)
-                    .map_err(|error| refused(format!("the boot's request: {error}")))?,
-            ),
-            "device": hex::encode(enrollee),
-        });
-        if let Some(digest) = &approval_digest {
-            args["approval_digest"] = serde_json::Value::String(hex::encode(digest));
-        }
-        let answer = tilo_api::daemon::this_computer()
-            .and_then(|daemon| daemon.act(tilo_device_identity::login::CERTIFY_KEY, args))
-            .map_err(refused)?;
-        let cert: DeviceCert = answer
-            .get("cert")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|cert| hex::decode(cert).ok())
-            .and_then(|cert| tilo_user_identity::canonical::from_canonical_bytes(&cert).ok())
-            .ok_or_else(|| {
-                refused("the person's root gave no certificate for the boot key".into())
-            })?;
-        verify_device_cert(&cert)
-            .map_err(|error| refused(format!("the boot key's certificate: {error}")))?;
-        let sealed_half: tilo_unlock_protocol::SealedSiblingHalf = answer
-            .get("sealed_half")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|half| hex::decode(half).ok())
-            .and_then(|half| postcard::from_bytes(&half).ok())
-            .ok_or_else(|| refused("the boot key's half was not sealed".into()))?;
-        // Every one of the person's devices holds the half once the enrolment reaches them,
-        // whatever is beside this device at this moment: the list is their record, named as it
-        // names them.
-        let siblings = answer
-            .get("siblings")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|sibling| {
-                Some(SiblingContact {
-                    device_public_key: hex::decode(sibling.get("device")?.as_str()?)
-                        .ok()?
-                        .try_into()
-                        .ok()?,
-                    label: sibling
-                        .get("label")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    endpoint: String::new(),
-                })
-            })
-            .collect();
-        if let Some(approval) = &mut approval {
-            approval.signature = answer
-                .get("approval_signature")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|signature| hex::decode(signature).ok())
-                .ok_or_else(|| refused("the unlock policy was not signed".into()))?;
-            approval.validate().map_err(|error| {
-                refused(format!("the unlock policy is not admissible: {error}"))
-            })?;
-        }
-        let holder =
-            DeviceId::new(hex::encode(self.local)).map_err(|error| refused(error.to_string()))?;
-        let enrolment = UnlockEnrolment {
-            cert: cert.clone(),
-            device_public_key: enrollee,
-            sealed_half,
-            slot: request.slot,
-            attestation_key: request.attestation_key.clone(),
-            stamp: tilo_network_actor::fabric::FabricStamp {
-                counter: 0,
-                device: holder,
-            },
-        };
-        self.publish(enrolment, approval);
-        tracing::info!(
-            device = %hex::encode(enrollee),
-            slot = %slot_name(&request.slot),
-            "device unlock: enrolled",
-        );
-        Ok(EnrolResponse { cert, siblings })
-    }
-
-    /// Add `enrolment`, and the owner's acceptance of the boot chain it asked
-    /// for, to this device's own part of the person's store, keeping what else
-    /// it published there.
-    fn publish(&self, enrolment: UnlockEnrolment, approval: Option<AutoApproval>) {
-        self.update_state(|state| {
-            state
-                .enrolments
-                .retain(|current| current.slot != enrolment.slot);
-            state.enrolments.push(enrolment);
-            if let Some(approval) = approval {
-                let device = approval.device_public_key;
-                state
-                    .auto_approvals
-                    .retain(|current| current.device_public_key != device);
-                state.auto_approvals.push(approval);
-            }
-        });
-    }
-
     /// Keep the person's answer in the record of their devices, so their other devices answer the
     /// same boot the same way while it holds.
     fn keep(&self, record: &UnlockDecisionEntry) {
@@ -637,78 +379,6 @@ impl Unlock {
         resources.apply(DEVICES, move || Devices::answering(&answer));
     }
 
-    /// Change what this device keeps about disk unlock: its own entry of the person's devices is
-    /// the only one it may write.
-    fn update_state(&self, change: impl FnOnce(&mut UnlockFabricState)) {
-        let _serialized = self
-            .published
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fabric = self.link.devices();
-        let key = hex::encode(self.local);
-        let mut state = fabric
-            .devices()
-            .iter()
-            .find(|(id, _)| id.as_str() == key)
-            .map(|(_, device)| device.unlock.clone())
-            .unwrap_or_default();
-        change(&mut state);
-        // The answers are the record's own, never part of the fact.
-        state.decisions.clear();
-        let Some((resources, cert)) = &self.record else {
-            tracing::warn!("this device's disk unlock is not kept: no record of its devices");
-            return;
-        };
-        if let Err(error) = crate::platform::fabric::keep_own(resources, cert, UNLOCK, &state) {
-            tracing::warn!(%error, "this device's disk unlock is not kept");
-        }
-    }
-
-    /// Serve the session's enrolment socket, one request per connection.
-    pub(crate) fn spawn_enrol_socket(self: &Arc<Self>) {
-        let runtime = tilo_paths::xdg::runtime_dir_or_default();
-        let path = runtime.join(ENROL_SOCKET);
-        let service = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("device-unlock-enrol".into())
-            .spawn(move || {
-                let listener = match crate::mcp_server::bind_private(&path) {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        tilo_failure::ignored!(
-                            "a session without the enrolment socket enrolls nothing",
-                            tracing::debug!(%error, "disk-unlock enrolment socket unavailable")
-                        );
-                        return;
-                    }
-                };
-                for stream in listener.incoming().flatten() {
-                    if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
-                        // Without it a boot that says nothing holds this connection open for as
-                        // long as it likes.
-                        tracing::warn!(%error, "an enrolment connection has no read timeout");
-                    }
-                    let _ = service.answer_enrolment(stream);
-                }
-            });
-        if let Err(error) = spawned {
-            tracing::warn!(%error, "could not start the disk-unlock enrolment socket");
-        }
-    }
-
-    fn answer_enrolment(&self, mut stream: std::os::unix::net::UnixStream) -> Option<()> {
-        let mut prefix = [0_u8; 4];
-        stream.read_exact(&mut prefix).ok()?;
-        let len = frame_len(prefix).ok()?;
-        let mut body = zeroize::Zeroizing::new(vec![0_u8; len]);
-        stream.read_exact(&mut body).ok()?;
-        let reply = decode_frame::<EnrolRequest>(&body).map_or_else(
-            |_| EnrolReply::Refused("malformed enrolment request".into()),
-            |request| self.enrol(&request),
-        );
-        let frame = encode_frame(&reply).ok()?;
-        stream.write_all(&frame).ok()
-    }
 }
 
 /// What the sibling state machine reads: the fleet this device trusts and the person's fabric as it
@@ -793,7 +463,10 @@ pub(crate) fn kept_unlock(record: &Devices, kept: &Device, device: &DeviceId) ->
     let over = answers.len().saturating_sub(MAX_UNLOCK_DECISIONS);
     answers.drain(..over);
     state.decisions = answers;
-    if state.validate(device).is_err() {
+    let owner = hex::decode(device.as_str())
+        .ok()
+        .and_then(|key| <[u8; 32]>::try_from(key).ok());
+    if owner.is_none_or(|owner| state.validate(&owner).is_err()) {
         return UnlockFabricState::default();
     }
     state

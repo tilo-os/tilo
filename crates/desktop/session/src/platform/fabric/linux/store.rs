@@ -2,16 +2,15 @@
 //!
 //! Each device writes what lasts of it under its own key
 //! ([`tilo_workspace_service::workspaces::person_workspace::devices`]): what it is ([`ABOUT`])
-//! and its disk-unlock enrolments, which the session's disk unlock keeps and reads
+//! and, from its daemon, its disk-unlock enrolments, which the session's disk unlock reads
 //! ([`crate::network::kept_unlock`]). Its speaker groups are typed actions on the same record
 //! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]). The workspace carries all
 //! of it between the person's devices, a device that comes up later included.
 //!
 //! Every value is the postcard bytes of its type, written only when it changed; a value that does
-//! not read, or does not hold for the device it is under, is left out, and so is a device whose
-//! certificate the person's root did not sign or no longer holds.
+//! not read, or is not true of the device it is under, is left out, and so is a device whose
+//! certificate the person's root did not sign or has since revoked.
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
@@ -22,43 +21,6 @@ use crate::platform::fabric::DeviceId;
 
 /// What a device is: its [`DeviceAbout`].
 pub(crate) const ABOUT: &str = "about";
-
-/// Keep `value` under `name` among what `device` says of itself. Returns whether it changed.
-///
-/// # Errors
-///
-/// The value or the certificate does not encode.
-pub(crate) fn keep_own<T: Serialize>(
-    resources: &PersonResources,
-    device: &DeviceCert,
-    name: &'static str,
-    value: &T,
-) -> Result<bool, String> {
-    let value = hex::encode(postcard::to_allocvec(value).map_err(|error| error.to_string())?);
-    let certificate =
-        hex::encode(postcard::to_allocvec(device).map_err(|error| error.to_string())?);
-    let key = hex::encode(device.device_public_key);
-    let held = resources.read::<Devices>(DEVICES).is_some_and(|devices| {
-        devices
-            .devices
-            .get(&tilo_resource::Id::from_raw(key.clone()))
-            .is_some_and(|kept| {
-                kept.certificate == certificate && kept.facts.get(name) == Some(&value)
-            })
-    });
-    if held {
-        return Ok(false);
-    }
-    resources.apply(DEVICES, move || {
-        Devices::KEEP_FACT.with((
-            key.clone(),
-            certificate.clone(),
-            name.to_owned(),
-            value.clone(),
-        ))
-    });
-    Ok(true)
-}
 
 /// What the person's devices keep of themselves: each device of `person` whose certificate holds,
 /// with what it said of itself.
