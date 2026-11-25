@@ -45,7 +45,8 @@ const SESSION: &str = "so.tilo.session";
 /// What the devices' sessions log here: the live session, the shares, the channels whose keys seal
 /// the live session and the routes between the devices say how far a share came only below `info`.
 const LOGGED: &str = "info,tilo_session::live=debug,tilo_session::window_share=debug,\
-                      tilo_workspace_keys=debug,tilo_network_actor=debug,tilo_session_client=warn";
+                      tilo_workspace_keys=debug,tilo_network_actor=debug,tilo_session_client=warn,\
+                      tilo_workspace_service::workspaces::servers=debug";
 /// How many kinds of line a failed step shows of one part of a session's log.
 const SHOWN: usize = 90;
 /// How many lines a failed step shows of what a session said in order.
@@ -238,7 +239,8 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
              -- the windows' messages --\n{}\n-- warnings --\n{}\n\
              -- the live_session's keys and states, in order --\n{}\n\
              -- the workspace's channel frames, in order --\n{}\n\
-             -- the links to the workspaces' hosts, in order --\n{}",
+             -- the links to the workspaces' hosts, in order --\n{}\n\
+             -- the person's list and the workspaces the daemon enters, in order --\n{}",
             device.label,
             hex::encode(device.cert.device_public_key),
             shares(device),
@@ -282,6 +284,16 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
                     "workspace's link",
                     "tilo_peer_state::direct",
                     "tilo_peer_state::owner::session",
+                ]
+                .iter()
+                .any(|word| line.contains(word))
+            }),
+            in_order(&log, |line| {
+                [
+                    "tilo_workspace_service::workspaces::servers",
+                    "tilo_workspace_service::workspaces::member",
+                    "tilo_workspace_service::workspaces::person",
+                    "tilo::join_flow",
                 ]
                 .iter()
                 .any(|word| line.contains(word))

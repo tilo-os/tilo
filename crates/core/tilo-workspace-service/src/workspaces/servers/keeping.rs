@@ -67,6 +67,7 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
     // serving it: every device of the person's, listed or not, and never its desktop session.
     let mut kept = enter_as_this_device(workspaces).await;
     if !holds_person_workspace(workspaces).await {
+        tracing::debug!("this device holds no copy of its person's own workspace: no list to keep");
         return Ok(kept);
     }
     // A server keeps what its entry keeps; every other device what the list shows on it.

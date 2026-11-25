@@ -1676,6 +1676,9 @@ impl Device {
                 ),
             )
             .env("TILO_APP_STDERR_DIR", logs)
+            // The daemon writes the same log as the session, and its lines read as the session's:
+            // plain text a failed step's report finds by target and level.
+            .env("NO_COLOR", "1")
             // Every launch writes its startup timeline, which the open-budget test reads.
             .env(tilo_startup_metrics::STARTUP_TIMELINE_ENV, "1")
             // The tests of this process mount the trees this device's session serves, so the
