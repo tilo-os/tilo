@@ -282,8 +282,10 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     assert_eq!(documents.workspaces(), vec![WORKSPACE.to_owned()]);
     let listed = documents.listing(WORKSPACE).unwrap();
     assert!(
-        listed.iter().any(|listed| listed.address.app == DESKTOP_APP
-            && listed.address.record == DESKTOP_DOCUMENT),
+        listed
+            .iter()
+            .any(|listed| listed.address.app == DESKTOP_APP
+                && listed.address.record == DESKTOP_DOCUMENT),
         "{listed:?}"
     );
     // A workspace the daemon does not keep is refused as the daemon says it.
@@ -408,11 +410,8 @@ fn a_desktop_the_daemon_did_not_start_frames_no_write_of_its_own() {
             b"a moved window",
             DocumentWriting {
                 app: "so.tilo.desktop",
-                document: "layout",
-                readers: None,
-                founding: false,
-                snapshot: false,
-                sealed: None,
+                kind: Some(DESKTOP_KIND),
+                record: "layout",
             },
         ))
         .err()
