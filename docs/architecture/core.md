@@ -1198,7 +1198,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   session is still present: its daemon states the device's presence, and an app
   that joins a call there is admitted on its first carry and given the call's
   media keys under its own grants. An app acting by itself is decided as that
-  app, under the grants that name it; it is never read as an empty person. A project
+  app, under the grants that name it; it is never read as an empty person. An undo is
+  a write like any other: it carries the invocation it serves, and a call may declare
+  it as an effect naming the records it takes changes back from, so an agent under
+  its own key undoes what its grants let it, as a person would. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
