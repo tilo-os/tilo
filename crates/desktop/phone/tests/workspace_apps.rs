@@ -7,6 +7,11 @@
 //! A phone starts no process for an app, and one it does not carry it runs from the package its
 //! device installed, verified as a launch verifies it.
 //!
+//! What the app keeps there is the workspace's: the phone is someone's once it signed in, so the
+//! window joins the workspace over the connection the phone's daemon makes for it, as any of the
+//! person's devices' windows do. A note made in it reaches the person's server, which keeps the
+//! workspace for their other devices.
+//!
 //! The daemon reads its places from the process's environment, so this binary is one test, as
 //! `ticket.rs` is.
 
@@ -32,6 +37,18 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     let mut home = support::Home::new();
     let server = Server::start();
     home.relay(&server.relay_url());
+    // The person's server runs the language its program links, as a computer's daemon does: what
+    // reads the workspace's Notes record there, as their other devices read it.
+    let tilolang = tilolang_workspace::host();
+    server
+        .workspaces()
+        .provide_tilolang(tilolang.clone())
+        .expect("the build's tilolang apps declare their surfaces");
+    {
+        // A record's writes wait on the reactor its records were registered on: the server's.
+        let _entered = server.runtime.enter();
+        tilolang.records.serve(&server.workspaces());
+    }
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.
     server.install(&server::notes_tapp(scratch.path()));
@@ -79,18 +96,20 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     );
 
     // And it opens: the app the workspace runs, from the package the phone's device installed,
-    // in the window the phone's view shows it in. The phone lists Notes and opens it; the
-    // window that comes up is Notes'.
-    let storage = tempfile::tempdir().unwrap();
+    // in the window the phone's view shows it in, joined to the workspace over the connection the
+    // phone's daemon made for it. The phone lists Notes and opens it; the window that comes up is
+    // Notes'.
     let bundles = std::collections::BTreeMap::new();
     let mut window = support::until("the phone opens Notes, which its workspace runs", || {
+        let connection = phone
+            .window_connection(server::NOTES, &server.workspace)
+            .map_err(|error| format!("{error:#}"))?;
         tilo_phone::view::open(
             server::NOTES,
             &server.workspace,
             &bundles,
-            Some(storage.path().to_path_buf()),
+            tilo_phone::view::Records::Workspace(connection),
         )
-        .map_err(|error| error)
     });
     assert_eq!(
         window.app(),
@@ -105,6 +124,62 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
             other => Err(format!("the window shows {other:?}")),
         }
     });
+
+    // The person presses New note in it, as Notes' window offers it.
+    let new_note = support::until("Notes offers New note", || {
+        window.update(&(), &());
+        let view = window.view().ok_or("the window is not connected")?;
+        view.actions()
+            .iter()
+            .find(|action| action.address.action.ends_with("new_note"))
+            .map(|action| action.address.clone())
+            .ok_or_else(|| format!("Notes offers {:?}", view.actions()))
+    });
+    window
+        .view_mut()
+        .expect("the window is connected")
+        .invoke_action(new_note, None);
+
+    // The note is the workspace's: the person's server, which keeps it for their other devices,
+    // holds it.
+    let person = hex::encode(server.person.verifying_key().to_bytes());
+    let packages = server::notes_packages();
+    let mut said = Vec::new();
+    support::until(
+        "the note made on the phone is on the person's server",
+        || {
+            window.update(&(), &());
+            if let Some(view) = window.view_mut() {
+                said.extend(view.take_notices());
+            }
+            let who =
+                tilolang_workspace::records::member(tilo_actions::MemberId::person(person.clone()));
+            let changes = server
+                .runtime
+                .block_on(tilolang_workspace::records::with_tl_record(
+                    &server.workspaces(),
+                    &server.workspace,
+                    &packages,
+                    (who, &person),
+                    |opened| opened.changes(),
+                ))?;
+            // A note is made in the notebook: a resource created under the notebook's root.
+            let made = changes.iter().any(|change| {
+                change["happened"] == "created"
+                    && change["resource"].as_str().is_some_and(|resource| {
+                        resource.contains(":root-") && resource.contains('/')
+                    })
+            });
+            if made {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the window said {said:?}; the server keeps {}",
+                    serde_json::Value::Array(changes)
+                ))
+            }
+        },
+    );
 
     phone.stop().expect("the phone's daemon stops");
     drop(laptop);

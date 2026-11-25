@@ -37,14 +37,8 @@ use crate::device::processes::{Instance, Launcher, Processes};
 pub(super) enum Shows {
     /// Nothing: it takes the calls the dispatch delivers.
     Nothing,
-    /// A window the daemon launched, for the member the device acts as.
-    #[cfg_attr(
-        all(not(any(target_os = "macos", windows)), not(test)),
-        expect(
-            dead_code,
-            reason = "the desktop session launches a Linux device's windows"
-        )
-    )]
+    /// A window the daemon launched, or one whose instance runs in the daemon's own process (a
+    /// phone's), for the member the device acts as.
     Window,
     /// A view opened for a caller the dispatch admitted.
     View(Box<Caller>),
@@ -464,6 +458,33 @@ impl Instances {
             instance,
             patch: window,
         })
+    }
+
+    /// The connections of a window of `app` in `workspace` whose instance runs in this process, as
+    /// a phone's do: the daemon is the app's own process there, so the window's instance takes
+    /// them itself instead of a process the daemon starts. Answers the member the device acts as,
+    /// who is at the window, its collaboration connection, which the collaboration service
+    /// attests as that window ([`Self::take`]) exactly as it attests a window the daemon
+    /// starts on macOS or Windows, the instance it names, and its identity-service connection.
+    ///
+    /// # Errors
+    /// The device is no one's yet, or a service of the daemon could not be reached.
+    pub(crate) fn window_here(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<(String, u64, Descriptor, Descriptor), String> {
+        let person = self.person()?;
+        let instance = self.next.fetch_add(1, Ordering::Relaxed);
+        let collaboration = self.connect(app, workspace, instance, Shows::Window)?;
+        let identity = match self.identity(app, workspace) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = self.take(app, workspace, instance);
+                return Err(error);
+            }
+        };
+        Ok((person, instance, collaboration, identity))
     }
 
     /// Hand an instance of `app` in `workspace`, with `person` at it and reaching its origin's

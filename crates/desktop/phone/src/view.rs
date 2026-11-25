@@ -137,9 +137,31 @@ impl PhoneView {
         let Some(app) = self.to_open.borrow_mut().take() else {
             return false;
         };
-        let Seen { workspace, .. } = self.worker.seen();
+        let Seen {
+            workspace, devices, ..
+        } = self.worker.seen();
         let workspace = workspace.unwrap_or_default();
-        match open(&app, &workspace, &self.bundles, self.storage.clone()) {
+        // Once a person's identity has the device, what an app keeps is the workspace's: its
+        // window joins it over the connection the device's daemon makes for it. Before that
+        // nothing is anyone's, and the app's records stay on the phone.
+        let records = if devices.signed_in {
+            let (asked, wanted) = (app.clone(), workspace.clone());
+            match self
+                .worker
+                .files()
+                .ask(move |device| device.window_connection(&asked, &wanted))
+                .and_then(|made| made.map_err(|error| format!("{error:#}")))
+            {
+                Ok(connection) => Records::Workspace(connection),
+                Err(error) => {
+                    tracing::error!(app, %error, "the app's window has no connection to its workspace");
+                    return false;
+                }
+            }
+        } else {
+            Records::Here(self.storage.clone())
+        };
+        match open(&app, &workspace, &self.bundles, records) {
             Ok(window) => {
                 self.opened = Some((app, window));
                 true
@@ -238,19 +260,31 @@ impl ui::widget::Decorator for PhoneView {
     }
 }
 
+/// Where an app the phone opens keeps its records.
+pub enum Records {
+    /// On the phone, under the path given (in memory without one): only before a person's
+    /// identity has the device, when there is no workspace for them to be in.
+    Here(Option<PathBuf>),
+    /// In the workspace, over the connection the device's daemon made for the app's window
+    /// ([`tilo_runtime::in_process::Device::window_connection`]): kept in its one store and
+    /// synced to the person's other devices, as any device's window keeps them.
+    Workspace(tilo_runtime::in_process::WindowConnection),
+}
+
 /// The app `app` of `workspace`, run in this process: the bundle the APK carries, or the tilolang
 /// package this device installed from the workspace and verified as a launch of it verifies it,
-/// shown in tilolang-process's in-process window. One path for either: the phone starts no
-/// process, and a fetched app is as much the app's own threads as a carried one.
+/// shown in tilolang-process's in-process window, keeping its records where `records` says. One
+/// path for either: the phone starts no process, and a fetched app is as much the app's own
+/// threads as a carried one.
 ///
 /// # Errors
 /// The phone carries no bundle of the app and holds no verified install of it, or the app's
-/// instance does not start.
+/// instance does not start or join its workspace.
 pub fn open(
     app: &str,
     workspace: &str,
     bundles: &BTreeMap<String, Arc<Bundle>>,
-    storage: Option<PathBuf>,
+    records: Records,
 ) -> Result<tilolang_process::window::hosted::HostedWindow, String> {
     // A thing told names the app that holds what it is about by its id, which a telling written
     // elsewhere may spell whole (`so.tilo.notes`) where the phone carries `notes`.
@@ -267,10 +301,33 @@ pub fn open(
     };
     let id = uuid::Uuid::parse_str(workspace)
         .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()));
-    let route = tilolang_process::route_of(&bundle.meta, id, ME);
-    let spec = tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, ME);
-    tilolang_process::window::hosted::HostedWindow::in_process(spec, route, bundle, storage)
-        .map_err(|error| format!("{app} did not start: {error}"))
+    let opened = match records {
+        Records::Here(storage) => {
+            let route = tilolang_process::route_of(&bundle.meta, id, ME);
+            let spec =
+                tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, ME);
+            tilolang_process::window::hosted::HostedWindow::in_process(spec, route, bundle, storage)
+        }
+        Records::Workspace(connection) => {
+            // The person at the window is the one the device acts for: who their records and
+            // their own workspace's documents are kept as.
+            let person = connection.person;
+            let route = tilolang_process::route_of(&bundle.meta, id, &person);
+            let spec = tilolang_process::hosted::Spec::new(
+                bundle.meta.app.clone(),
+                workspace,
+                connection.instance,
+                &person,
+            );
+            tilolang_process::window::hosted::HostedWindow::in_process_joined(
+                spec,
+                route,
+                bundle,
+                (connection.collaboration, connection.identity),
+            )
+        }
+    };
+    opened.map_err(|error| format!("{app} did not start: {error}"))
 }
 
 /// The phone's device as the origin of what the shell's view reads of it.

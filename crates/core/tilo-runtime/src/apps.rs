@@ -287,6 +287,28 @@ impl Apps {
         self.instances.serve_own_lines(lines);
     }
 
+    /// The connections of a window of `app` in `workspace` whose instance runs in this process
+    /// (`Instances::window_here`): the member at it, the instance it is, and its collaboration
+    /// and identity connections.
+    ///
+    /// # Errors
+    /// The device is no one's yet, or a service of the daemon could not be reached.
+    pub(crate) fn window_in_this_process(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<
+        (
+            String,
+            u64,
+            runtime_portal::process_link::Descriptor,
+            runtime_portal::process_link::Descriptor,
+        ),
+        String,
+    > {
+        self.instances.window_here(app, workspace)
+    }
+
     /// Run the code of an app whose calls name no view as `person`, the member the device acts
     /// as, from now on.
     pub(crate) fn keep_person(&self, person: &str) {

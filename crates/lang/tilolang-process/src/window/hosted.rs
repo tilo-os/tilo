@@ -356,6 +356,68 @@ pub fn start(
         None => tilolang_tilo::resources::LocalPort::in_memory(),
     };
     let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(port));
+    host_over(
+        spec,
+        (crate::connection::Connection::local(route), store),
+        bundle,
+        phrases,
+        wake,
+    )
+}
+
+/// [`start`] over the workspace's one store: the instance joins `route` on `collaboration`, the
+/// connection the device's daemon made for this window and attests as it, signing what it writes
+/// as the person `identity` holds, and every record it reads and writes is the workspace's, as
+/// an instance a tilolang host runs reads and writes its own. Waits for the workspace to take the
+/// join. `identity` must outlive the host.
+///
+/// # Errors
+/// The connection was refused or ended before the workspace took the join, or the patch
+/// connection cannot be made.
+pub fn start_joined(
+    spec: Spec,
+    route: crate::connection::Route,
+    bundle: Arc<Bundle>,
+    phrases: &Rc<Phrases>,
+    (collaboration, identity): (
+        runtime_portal::process_link::Descriptor,
+        &runtime_portal::process_link::Descriptor,
+    ),
+    wake: tilolang_tilo::background::Waker,
+) -> Result<(TilolangProcess, PatchConnection), StartError> {
+    // Receivers decide each change against the app's surface: its package's own.
+    let surface = bundle
+        .surface()
+        .map_err(|error| StartError::Join(error.to_string()))?;
+    collab_types::app_surface::register_package(&bundle.meta.app, &surface);
+    let manager = collaboration::CollaborationManager::join_instance(
+        &collab_types::document::ResourceType::new(tilolang_tilo::meta::MetaExt::resource_type(
+            &bundle.meta,
+        )),
+        collaboration,
+        identity,
+        route,
+    )
+    .map_err(|error| StartError::Join(format!("{error:?}")))?
+    .finish_join()
+    .map_err(|error| StartError::Join(error.to_string()))?;
+    let connection = crate::connection::Connection::new(manager).map_err(StartError::Join)?;
+    let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)));
+    host_over(spec, (connection, store), bundle, phrases, wake)
+}
+
+/// The host running the one instance `spec` of `bundle` on `connection`, its resources in
+/// `store`, and the window's end of the instance's patch connection.
+fn host_over(
+    spec: Spec,
+    (connection, store): (
+        crate::connection::Connection,
+        tilolang_tilo::resources::ResourceStore,
+    ),
+    bundle: Arc<Bundle>,
+    phrases: &Rc<Phrases>,
+    wake: tilolang_tilo::background::Waker,
+) -> Result<(TilolangProcess, PatchConnection), StartError> {
     let mut host = TilolangProcess::new(Arc::clone(&wake));
     let (ours, theirs) = crate::patch_pair()?;
     let (transport, watched) = crate::patch_transport(ours)?;
@@ -363,7 +425,7 @@ pub fn start(
     host.follow_builds(&spec.app, super::updates::builds());
     let hosted = Hosted::new(
         spec,
-        crate::connection::Connection::local(route),
+        connection,
         (store, crate::hosted::memory_content()),
         bundle,
         &crate::hosted::Kept::default(),
@@ -382,6 +444,8 @@ pub enum StartError {
     Io(#[from] std::io::Error),
     #[error("the app's resources cannot be kept: {0}")]
     Store(String),
+    #[error("the app did not join its workspace: {0}")]
+    Join(String),
 }
 
 /// The longest a capture waits for the instance it runs to show what it stages.
@@ -399,6 +463,9 @@ struct InProcess {
     /// and what the instance was last told of it: it offers and invokes by that.
     access: Option<AccessSource>,
     told_access: Option<ui::permissions::MemberAccess>,
+    /// The identity connection the instance signs on, when it joined its workspace: it outlives
+    /// the host, which is dropped first.
+    _identity: Option<runtime_portal::process_link::Descriptor>,
 }
 
 /// Where a window running its instance in this process reads the person's access from.
@@ -644,6 +711,55 @@ impl HostedWindow {
         bundle: Arc<Bundle>,
         storage: Option<std::path::PathBuf>,
     ) -> Result<Self, StartError> {
+        let (wake, woken, waker) = Self::wakes();
+        let phrases = Rc::new(Phrases::from_env());
+        let app = spec.app.clone();
+        let (host, channel) = start(spec, route, bundle, &phrases, storage, waker)?;
+        Ok(Self::running(host, channel, (app, wake, woken), None))
+    }
+
+    /// [`Self::in_process`] over the workspace's one store ([`start_joined`]): the instance joins
+    /// `route` on `collaboration`, the connection the device's daemon made for this window, as the
+    /// person `identity` holds, so what it keeps is the workspace's and reaches the person's other
+    /// devices. What a phone opens once a person's identity has it.
+    ///
+    /// # Errors
+    /// As [`start_joined`].
+    pub fn in_process_joined(
+        spec: Spec,
+        route: crate::connection::Route,
+        bundle: Arc<Bundle>,
+        (collaboration, identity): (
+            runtime_portal::process_link::Descriptor,
+            runtime_portal::process_link::Descriptor,
+        ),
+    ) -> Result<Self, StartError> {
+        let (wake, woken, waker) = Self::wakes();
+        let phrases = Rc::new(Phrases::from_env());
+        let app = spec.app.clone();
+        let (host, channel) = start_joined(
+            spec,
+            route,
+            bundle,
+            &phrases,
+            (collaboration, &identity),
+            waker,
+        )?;
+        Ok(Self::running(
+            host,
+            channel,
+            (app, wake, woken),
+            Some(identity),
+        ))
+    }
+
+    /// What wakes a window whose instance runs in this process: the window's handle, what the
+    /// host marks, and the waker the host is handed, which does both.
+    fn wakes() -> (
+        Arc<Mutex<ui::wake::WakeHandle>>,
+        Arc<Woken>,
+        tilolang_tilo::background::Waker,
+    ) {
         let wake = Arc::new(Mutex::new(ui::wake::WakeHandle::new()));
         let woken = Arc::new(Woken::default());
         let waking = Arc::clone(&wake);
@@ -653,9 +769,18 @@ impl HostedWindow {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .wake();
         });
-        let phrases = Rc::new(Phrases::from_env());
-        let app = spec.app.clone();
-        let (host, channel) = start(spec, route, bundle, &phrases, storage, waker)?;
+        (wake, woken, waker)
+    }
+
+    /// The window over `host`, which runs its instance in this process and holds the other end of
+    /// `channel`; `identity` is the identity connection the instance signs on, kept as long as
+    /// the host runs.
+    fn running(
+        host: TilolangProcess,
+        channel: PatchConnection,
+        (app, wake, woken): (String, Arc<Mutex<ui::wake::WakeHandle>>, Arc<Woken>),
+        identity: Option<runtime_portal::process_link::Descriptor>,
+    ) -> Self {
         let mut window = Self::unconnected();
         window.take_channel(channel, wake);
         // The window names the app it runs: the process installs no package, so nothing else here
@@ -670,8 +795,9 @@ impl HostedWindow {
             reveals: Rc::default(),
             access: None,
             told_access: None,
+            _identity: identity,
         });
-        Ok(window)
+        window
     }
 
     /// Have the instance running in this process offer and invoke by the person's access in
@@ -717,6 +843,11 @@ impl HostedWindow {
     #[must_use]
     pub fn view(&self) -> Option<&AppWindow> {
         self.connected.as_ref().map(|connected| &connected.view)
+    }
+
+    /// [`Self::view`], to act on: what the person asks of the app at the window.
+    pub fn view_mut(&mut self) -> Option<&mut AppWindow> {
+        self.connected.as_mut().map(|connected| &mut connected.view)
     }
 
     /// Send its instance what the window owes it, and wait until the instance sends something the

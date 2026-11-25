@@ -51,6 +51,21 @@ pub struct App {
     pub category: String,
 }
 
+/// What a window of an app whose instance runs in this process reads and writes its records over
+/// once a person's identity has the device ([`Device::window_connection`]): the connections the
+/// daemon makes for a window it opens, which its collaboration service attests as that window, so
+/// the records are the workspace's and reach the person's other devices.
+pub struct WindowConnection {
+    /// The member at the window: the person the device acts for.
+    pub person: String,
+    /// The window's instance, as its connection names it.
+    pub instance: u64,
+    /// The window's connection to the workspace, named as the window of its app in its workspace.
+    pub collaboration: runtime_portal::process_link::Descriptor,
+    /// The window's connection to the identity service, which signs what it writes as the person.
+    pub identity: runtime_portal::process_link::Descriptor,
+}
+
 /// The device daemon running in this process, and the runtime its API is called on.
 pub struct Device {
     running: Option<Running>,
@@ -166,6 +181,37 @@ impl Device {
             .collect();
         apps.sort_by(|left, right| left.key.cmp(&right.key));
         Ok(apps)
+    }
+
+    /// The connections a window of `app` in `workspace` running in this process takes, once a
+    /// person's identity has the device: the window's records are then the workspace's, kept in
+    /// its one store and synced to the person's other devices, as a window the daemon starts is.
+    /// Before that the device is no one's, and nothing connects a window to a workspace.
+    ///
+    /// # Errors
+    /// No person's identity has the device yet, the person's services did not start, or the
+    /// daemon's services could not be reached.
+    pub fn window_connection(&self, app: &str, workspace: &str) -> Result<WindowConnection> {
+        if !Self::claimed()? {
+            anyhow::bail!("this device is no one's yet: sign it in before an app opens here");
+        }
+        let running = self
+            .running
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("the daemon is stopped"))?;
+        let services = running
+            .services(SERVICES_STARTING)
+            .context("the person's services did not start")?;
+        let (person, instance, collaboration, identity) = services
+            .apps()
+            .window_in_this_process(app, workspace)
+            .map_err(anyhow::Error::msg)?;
+        Ok(WindowConnection {
+            person,
+            instance,
+            collaboration,
+            identity,
+        })
     }
 
     /// A call of one of the person's own actions in `workspace`, made as them on this device,

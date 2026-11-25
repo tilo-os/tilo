@@ -167,6 +167,31 @@ pub fn tl_apps() -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
 }
 
+/// Notes' packages as the tree holds them, compiled the packages it uses first and Notes last:
+/// what the person's server reads the workspace's Notes record through, as a device that runs
+/// Notes reads it.
+pub fn notes_packages() -> tilolang_workspace::records::Packages {
+    let notes = tl_apps().join("notes");
+    let mut dirs = tilolang_cli::package_dirs(&notes, &[tl_apps()]).unwrap();
+    // The app itself is compiled last, against what it uses.
+    dirs.sort_by_key(|dir| dir.ends_with("notes"));
+    let sources: Vec<(String, String)> = dirs
+        .iter()
+        .map(|dir| {
+            (
+                std::fs::read_to_string(dir.join("app.tl")).unwrap(),
+                std::fs::read_to_string(dir.join("app.ids")).unwrap(),
+            )
+        })
+        .collect();
+    let sources: Vec<(&str, &str)> = sources
+        .iter()
+        .map(|(source, ids)| (source.as_str(), ids.as_str()))
+        .collect();
+    tilolang_workspace::records::Packages::compile(&sources)
+        .unwrap_or_else(|error| panic!("Notes compiles: {error}"))
+}
+
 /// Notes, `apps/tl/notes`, built into a signed `.tapp` under `scratch`: the file a person installs.
 pub fn notes_tapp(scratch: &Path) -> PathBuf {
     use tilolang_cli::package::{self, BuildOptions};

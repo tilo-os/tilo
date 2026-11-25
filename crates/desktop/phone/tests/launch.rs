@@ -1,7 +1,8 @@
 //! The phone's own launch, as far as it goes off Android: its entry starts the device's daemon in
 //! the app's process, and its window opens on that device with its records this device's own.
 //! Nothing hands the phone a connection to a Tilo beside it, since the phone is Tilo here: a
-//! launch that asked for one would end before the first frame.
+//! launch that asked for one would end before the first frame. Before a person signs in the
+//! device is no one's, and its daemon connects no window to a workspace.
 //!
 //! The daemon reads its places from the process's environment, so this binary is one test, as
 //! `ticket.rs` is.
@@ -74,6 +75,27 @@ fn the_phone_opens_its_window_on_the_device_it_started() {
     assert!(
         !devices.signed_in,
         "a new phone shows where a person signs in"
+    );
+    // Before anyone signed in, the device is no one's: it connects no window to a workspace, and
+    // the sign-in window keeps what it has on the phone.
+    let refused = tilo_phone::files()
+        .expect("the device runs")
+        .ask(|device| {
+            device
+                .window_connection("so.tilo.notes", "d1a4f6b2-3c58-4e07-9b6a-70e2c5d81f43")
+                .err()
+                .map(|error| format!("{error:#}"))
+        })
+        .expect("the device answers");
+    assert!(
+        refused
+            .as_deref()
+            .is_some_and(|why| why.contains("no one's")),
+        "a phone no one signed in to connects no window to a workspace: {refused:?}"
+    );
+    assert!(
+        !ui::application::NativeProcess::connected(),
+        "the sign-in window holds no connection"
     );
 
     window.app_mut().close_components();
