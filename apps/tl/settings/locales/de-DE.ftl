@@ -354,6 +354,12 @@ d-ifgepts4 = Accounts pane
     .w-add-from-passwords = Aus Passwörter hinzufügen
     .w-cancel = Abbrechen
     .w-waiting-for-you-to-approve-it-2 = Wartet auf deine Freigabe im Browser. Bis dahin wird nichts weiter aufbewahrt.
+    .w-calendar-server-caldav = Kalenderserver (CalDAV)
+    .w-connect-a-calendar-server = Kalenderserver verbinden
+    .w-the-server-s-address-its-user-2 = Die Adresse des Servers, sein Benutzername und sein Passwort. Seine Dateien werden in Dateien eingebunden.
+    .w-the-server-s-address-such-as-2 = Die Adresse des Servers, etwa dav.example.org
+    .w-read-only-nothing-is-ever-written = Nur lesen: auf diesen Server wird nie geschrieben
+    .w-connect = Verbinden
 
 d-epn7dy5e = Agent models pane
     .w-agents-answer-with = Agenten antworten mit
