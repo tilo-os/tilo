@@ -1874,9 +1874,11 @@ fn write_signed_manifest(
     }
     // The publisher key this machine signs with, when it has one: the manifest is its build's,
     // and the daemon reads the runtime it names only from it.
-    let identity = app_registry::publisher::key::discover(&app_registry::publisher::key::machine_store())?
-        .map(|key| tilo_app_package::pack::SigningIdentity::from_seed(&key.to_bytes()))
-        .unwrap_or_else(tilo_app_package::pack::SigningIdentity::generate);
+    let identity =
+        app_registry::publisher::key::discover(&app_registry::publisher::key::machine_store())?
+            .map_or_else(tilo_app_package::pack::SigningIdentity::generate, |key| {
+                tilo_app_package::pack::SigningIdentity::from_seed(&key.to_bytes())
+            });
     manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
     manifest
         .sign(&identity)
