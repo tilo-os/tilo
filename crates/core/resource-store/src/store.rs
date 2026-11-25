@@ -1172,7 +1172,7 @@ impl Store {
         let mut documents: Vec<String> = Vec::new();
         for document in self.index.documents() {
             let kept = if let Some((kind, _)) = collab_types::touch::content_resource(document) {
-                of_kinds(kind)
+                of_kinds(&kind)
             } else {
                 self.index.held(document).any(|(kind, _)| of_kinds(kind))
             };
@@ -1192,7 +1192,7 @@ impl Store {
                 continue;
             };
             for change in doc.get_changes(&[]) {
-                let Some(stamp) = collab_types::Stamp::of(change) else {
+                let Some(stamp) = collab_types::Stamp::of(&change) else {
                     continue;
                 };
                 if stamp.invocation.is_empty() || stamp.invoked_by().as_ref() != Some(&by) {
