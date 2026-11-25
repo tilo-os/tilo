@@ -1,8 +1,10 @@
 // Every menu of a page, opened in Chromium in both themes, set in the faces the page serves:
 // fails when a label is cut short once the menu has arrived, when a row draws what it only says
 // (an ask-first row shows its label and its marker, its sentence is for assistive technology),
-// or when the page's face did not load, since a measurement in a fallback face says nothing
-// about the product.
+// when the page's face did not load, since a measurement in a fallback face says nothing about
+// the product, or when the menu draws less than the app does: its rules between sections, a
+// toggle's check, a nested menu's chevron, a destructive row's danger ink, one column its labels
+// start at, the panel's own edge, and its button held while it is open.
 //
 // usage: node tools/web/page-menus.mjs DIR
 //
@@ -24,19 +26,57 @@ const APPLY = `(steps) => {
     else if (step.remove) element(step.remove.id)?.remove();
   }
 }`;
-const ROWS = `[...document.querySelectorAll('[data-layer] [role=menu] [role=menuitem]')].map(row => {
+const ROWS = `[...document.querySelectorAll('[data-layer] [role=menu] [role^=menuitem]')].map(row => {
   const words = row.querySelector('.tilo-title') ?? row;
   return {label: row.textContent.trim(), title: words.textContent.trim(), shown: words.clientWidth, needs: words.scrollWidth,
           says: row.getAttribute('aria-description'), name: row.getAttribute('aria-label') ?? '',
           trailing: row.querySelector('.tilo-detail')?.textContent.trim() ?? null};
 })`;
 
+// What the open menu draws, row by row in order, and the colours it should draw them in.
+const DRAWN = `(() => {
+  const menu = document.querySelector('[data-layer] > [role=menu]');
+  const root = getComputedStyle(document.documentElement);
+  const resolved = (property, value) => {
+    const probe = document.createElement('div');
+    probe.style[property] = value;
+    document.body.append(probe);
+    const answer = getComputedStyle(probe)[property];
+    probe.remove();
+    return answer;
+  };
+  const token = name => root.getPropertyValue(name).trim();
+  const rows = [...menu.children].filter(el => el.matches('hr, [role^=menuitem]')).map(el => {
+    if (el.tagName === 'HR') return {separator: true};
+    const first = el.firstElementChild, last = el.lastElementChild;
+    return {
+      separator: false,
+      label: el.querySelector('.tilo-title')?.textContent.trim(),
+      checked: el.hasAttribute('aria-checked') ? el.getAttribute('aria-checked') === 'true' : null,
+      lead: first?.matches('.tilo-glyph') ? (first.querySelector('path') ? 'glyph' : 'empty') : 'none',
+      chevron: !!last?.matches('svg.tilo-glyph') && last !== first,
+      danger: el.hasAttribute('data-danger'),
+      color: getComputedStyle(el).color,
+      textX: el.querySelector('.tilo-title').getBoundingClientRect().left,
+    };
+  });
+  const trigger = document.querySelector('button[aria-expanded=true]:not([role^=menuitem])');
+  return {
+    rows,
+    danger: resolved('color', token('--tilo-danger')),
+    edge: resolved('color', token('--tilo-floating-edge')),
+    press: resolved('backgroundColor', token('--tilo-press')),
+    trigger: trigger && getComputedStyle(trigger).backgroundColor,
+    shadow: getComputedStyle(menu).boxShadow,
+  };
+})()`;
+
 const server = await serve(dir);
 const browser = await launch();
 const failures = [];
 try {
   for (const scheme of ['light', 'dark']) {
-    for (const {menu, patches} of menus) {
+    for (const {menu, rows: items, patches} of menus) {
       const tab = await browser.tab({});
       await tab.send('Emulation.setDeviceMetricsOverride', {width: 720, height: 480, deviceScaleFactor: 1, mobile: false});
       await tab.navigate(`${server.url}/${scheme}.html`);
@@ -60,6 +100,33 @@ try {
       for (const row of rows.filter(row => row.says?.startsWith('Asks first'))) {
         if (row.label !== `${row.name}\u2026`) failures.push(`${scheme} ${menu}: an ask-first row shows "${row.label}", not "${row.name}…"`);
       }
+      const drawn = await tab.evaluate(DRAWN);
+      const fail = words => failures.push(`${scheme} ${menu}: ${words}`);
+      if (drawn.rows.length !== items.length) {
+        fail(`draws ${drawn.rows.length} rows and rules where the app has ${items.length}`);
+      }
+      items.forEach((item, index) => {
+        const row = drawn.rows[index];
+        if (!row) return;
+        if (item.separator !== row.separator) {
+          fail(`row ${index + 1} is ${row.separator ? 'a rule' : `"${row.label}"`} where the app draws ${item.separator ? 'a rule' : 'a row'}`);
+          return;
+        }
+        if (item.separator) return;
+        if (item.checked !== null && row.checked !== item.checked) fail(`"${row.label}" is not shown ${item.checked ? 'on' : 'off'}`);
+        if (item.checked === true && row.lead !== 'glyph') fail(`"${row.label}" is on but draws no check`);
+        if (item.checked === false && row.lead === 'glyph') fail(`"${row.label}" is off but draws a mark`);
+        if (item.submenu !== row.chevron) fail(`"${row.label}" ${item.submenu ? 'opens a menu but draws no chevron' : 'draws a chevron it does not open'}`);
+        if (item.danger !== (row.color === drawn.danger)) fail(`"${row.label}" is ${item.danger ? 'not drawn' : 'drawn'} in danger ink (${row.color})`);
+      });
+      const labelled = drawn.rows.filter(row => !row.separator);
+      if (labelled.some(row => row.lead !== 'none') && labelled.some(row => row.lead === 'none')) {
+        fail('some rows keep a leading column and some do not');
+      }
+      const columns = new Set(labelled.map(row => Math.round(row.textX)));
+      if (columns.size > 1) fail(`labels start at ${[...columns].join(', ')} px, not one column`);
+      if (!drawn.shadow.includes(drawn.edge)) fail(`the panel's edge is not the theme's floating edge ${drawn.edge}: ${drawn.shadow}`);
+      if (drawn.trigger !== drawn.press) fail(`its button is not held while it is open (${drawn.trigger}, not ${drawn.press})`);
       await tab.close();
     }
   }

@@ -759,13 +759,6 @@ fn floating_edge_unsnapped(
     ) {
         return;
     }
-    if !theme
-        .finish(crate::tokens::SurfaceRole::Floating)
-        .hairline()
-        && !theme.tokens.colors.palette.high_contrast
-    {
-        return;
-    }
     let edge = crate::chrome::panel_border(theme);
     if edge.a() == 0 {
         return;

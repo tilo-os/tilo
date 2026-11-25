@@ -1,8 +1,9 @@
 //! A window with menu buttons, as the page shows it, and what opens each of its menus.
 //!
 //! `page-menus OUT` writes `light.html` and `dark.html` (the closed window in each theme) and
-//! `menus.json` (for each menu, the button's name and the patches the page applies when it
-//! opens) into `OUT`. `tools/web/page-menus.mjs` opens each menu in Chromium, set in the faces
+//! `menus.json` (for each menu, the button's name, what its rows are and the patches the page
+//! applies when it opens) into `OUT`; with `--native` it also writes each menu as the app paints
+//! it, open in light, dark and high contrast, as `OUT/native/{theme}-{menu}.png`. `tools/web/page-menus.mjs` opens each menu in Chromium, set in the faces
 //! the page serves, and fails on any label cut short: the page lays a menu's rows out itself,
 //! and only a browser measures them in the face it draws.
 #![allow(
@@ -18,8 +19,8 @@ use tilo_ui::composition::page::{Page, document};
 use tilo_ui::icons::Icon;
 use tilo_ui::widget::{Button, Column, IconWidget, MenuItem, Row, Text};
 
-/// The menus, each on its own button: rows with glyphs and without, a long label, one that asks
-/// first, one with a shortcut, and a nested menu.
+/// The menus, each on its own button: rows with glyphs and without, a long label, a separator, a
+/// destructive row that asks first, one with a shortcut, toggles and a nested menu.
 fn menus() -> Vec<(&'static str, Vec<MenuItem>)> {
     vec![
         (
@@ -38,9 +39,12 @@ fn menus() -> Vec<(&'static str, Vec<MenuItem>)> {
                     "Copy a link anyone in the workspace can open",
                     || {},
                 ),
-                MenuItem::icon_action(Icon::Pin, "Show in History", || {}).with_shortcut("Ctrl+H"),
+                MenuItem::icon_action(Icon::History, "Show in History", || {})
+                    .with_shortcut("Ctrl+H"),
                 MenuItem::separator(),
-                MenuItem::icon_action(Icon::Folder, "Delete this note", || {}).asking_first(),
+                MenuItem::destructive_action("Delete this note", || {})
+                    .with_icon(Icon::Trash2)
+                    .asking_first(),
             ],
         ),
         (
@@ -96,7 +100,7 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
     let mut opened = Vec::new();
     let mut body = None;
-    for (name, _) in menus() {
+    for (name, items) in menus() {
         // A window of its own for each menu, so each opens from the page as first shown.
         let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
         driver.relayout();
@@ -108,7 +112,20 @@ fn main() {
         driver.settle();
         let open = driver.composition();
         assert!(!open.layers.is_empty(), "the {name} menu opens");
-        opened.push(serde_json::json!({"menu": name, "patches": page.patch(&open)}));
+        // What each row is, in order, for the check to find drawn: a rule, a toggle's state, a
+        // nested menu's chevron and a danger.
+        let rows: Vec<_> = items
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "separator": item.is_separator(),
+                    "checked": item.checked(),
+                    "submenu": item.submenu_items().is_some(),
+                    "danger": item.is_destructive(),
+                })
+            })
+            .collect();
+        opened.push(serde_json::json!({"menu": name, "rows": rows, "patches": page.patch(&open)}));
         body.get_or_insert(shown);
     }
     let body = body.expect("a menu");
@@ -127,4 +144,24 @@ fn main() {
         serde_json::to_string(&opened).unwrap(),
     )
     .unwrap();
+    if std::env::args().nth(2).as_deref() == Some("--native") {
+        for (scheme, theme) in [
+            ("light", tilo_ui::Theme::light()),
+            ("dark", tilo_ui::Theme::dark()),
+            ("contrast", tilo_ui::Theme::high_contrast()),
+        ] {
+            for (name, _) in menus() {
+                let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
+                driver.set_theme(theme.clone());
+                driver.relayout();
+                let closed = driver.composition();
+                let [x, y, width, height] =
+                    named(&closed.root, name).expect("each menu's button").rect;
+                driver.click_at(x + width / 2.0, y + height / 2.0);
+                // The menu as it rests, every motion it arrived by at its end.
+                driver.settle_for_capture(std::time::Duration::from_secs(2));
+                driver.render_png(&out.join("native").join(format!("{scheme}-{name}.png")));
+            }
+        }
+    }
 }

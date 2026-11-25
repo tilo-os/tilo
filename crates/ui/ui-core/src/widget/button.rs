@@ -34,6 +34,9 @@ pub struct Button {
     /// A labelled button that opens a menu shows a trailing chevron, so it
     /// reads as a choice rather than an action.
     pub(crate) opens_menu: bool,
+    /// The menu it opens stands open ([`MenuButton`](crate::widget::MenuButton)): it shows held,
+    /// as while it is pressed, until the menu closes.
+    pub(crate) menu_open: bool,
     /// It shows a value chosen from a list ([`Self::showing_choice`]): it wears a field's edge.
     shows_choice: bool,
     /// Accessible name for an icon-only button (empty visible label);
@@ -189,6 +192,7 @@ impl Button {
             primary_on_hover: false,
             toggled: None,
             opens_menu: false,
+            menu_open: false,
             shows_choice: false,
             shortcut: None,
             measured_width: None,
@@ -689,6 +693,12 @@ impl Button {
         }
     }
 
+    /// Whether its face shows held: while a press holds it, and while the menu it opens is open.
+    fn shows_held(&self) -> bool {
+        self.press.is_held() || self.menu_open
+    }
+
+    #[must_use]
     pub fn is_toggled(&self) -> bool {
         self.toggled == Some(true)
     }
@@ -1978,7 +1988,7 @@ impl Button {
             // A hover face is the pointer's answer, so a surface with none never paints one —
             // however the hover was recorded (a pointer replayed where a control was rebuilt).
             hovered: self.is_hovered && self.interaction.supports_hover(),
-            pressed: self.press.is_held(),
+            pressed: self.shows_held(),
             focused: self.focus_visible(),
             disabled: !self.effectively_enabled(),
         });
@@ -2313,7 +2323,7 @@ impl Widget for Button {
         self.observe_i18n_revision();
         let current_state = (
             self.is_hovered,
-            self.press.is_held(),
+            self.shows_held(),
             self.focus_visible(),
             self.effectively_enabled(),
         );
@@ -2330,7 +2340,7 @@ impl Widget for Button {
             // A hover face is the pointer's answer, so a surface with none never paints one —
             // however the hover was recorded (a pointer replayed where a control was rebuilt).
             hovered: self.is_hovered && self.interaction.supports_hover(),
-            pressed: self.press.is_held(),
+            pressed: self.shows_held(),
             focused: self.focus_visible(),
             disabled: !self.effectively_enabled(),
         });
@@ -2370,7 +2380,7 @@ impl Widget for Button {
         if let Some((control, _)) = self.transport {
             let face = crate::widget::TransportFace::new(self.rect, control)
                 .hovered(self.is_hovered)
-                .pressed(self.press.is_held())
+                .pressed(self.shows_held())
                 .focused(self.focus_visible())
                 .disabled(!enabled);
             crate::widget::TransportFace::paint(
@@ -2433,7 +2443,7 @@ impl Widget for Button {
             || self.i18n_revision != crate::i18n::I18nManager::revision()
             || (
                 self.is_hovered,
-                self.press.is_held(),
+                self.shows_held(),
                 self.focus_visible(),
                 self.effectively_enabled(),
             ) != self.last_state

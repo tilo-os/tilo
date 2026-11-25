@@ -474,7 +474,9 @@ impl MenuItem {
         }
     }
 
-    fn is_destructive(&self) -> bool {
+    /// Whether it destroys what it acts on: it is drawn as a danger.
+    #[must_use]
+    pub fn is_destructive(&self) -> bool {
         matches!(
             self,
             MenuItem::Action {
@@ -2154,6 +2156,7 @@ impl Widget for ContextMenu {
             .filter(|&&index| matches!(self.items.get(index), Some(MenuItem::Action { .. })))
             .count();
         let mut action_position: usize = 0;
+        let gutter = self.has_leading_gutter();
         let field = self.query_access_node();
         let rows = self
             .shown
@@ -2175,6 +2178,17 @@ impl Widget for ContextMenu {
                             }),
                     );
                 }
+                if item.is_separator() {
+                    // The rule the menu draws between its sections, so a page draws it too.
+                    return Some(
+                        AccessNode::new(Role::Separator)
+                            .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
+                            .with_state(AccessState {
+                                hidden: !self.open,
+                                ..Default::default()
+                            }),
+                    );
+                }
                 let MenuItem::Action {
                     label,
                     icon,
@@ -2182,6 +2196,7 @@ impl Widget for ContextMenu {
                     enabled,
                     submenu,
                     description,
+                    destructive,
                     ..
                 } = item
                 else {
@@ -2217,6 +2232,8 @@ impl Widget for ContextMenu {
                         .shown_label()
                         .map_or_else(|| label.clone(), std::borrow::Cow::into_owned),
                     trailing: item.trailing_text(self.platform),
+                    gutter,
+                    danger: *destructive,
                 });
                 if let Some(description) = description {
                     node.description = Some(description.clone());
@@ -2563,6 +2580,43 @@ mod nested_and_anchored_tests {
             let node = Widget::accessibility(&counted).expect("an open menu is announced");
             assert_eq!(node.children[0].description.as_deref(), Some("12"));
             assert_eq!(node.children[0].state.checked, Some(true));
+        }
+
+        // What a page draws of a menu comes from its tree: the rule between its sections stands
+        // there in place, a destructive row says it is one, and a row with neither glyph nor
+        // check keeps the column its neighbours' glyphs stand in.
+        phase the_tree_carries_the_rule_the_danger_and_the_leading_column;
+        {
+            let _settled = crate::motion::testing::settled();
+            let mut menu = ContextMenu::with_items(vec![
+                MenuItem::icon_action(crate::icons::Icon::Copy, "Copy link", || {}),
+                MenuItem::action("Rename", || {}),
+                MenuItem::separator(),
+                MenuItem::destructive_action("Delete", || {}),
+            ]);
+            menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            menu.layout_within(&mut TextRenderer::new(), &Theme::light());
+            let node = Widget::accessibility(&menu).expect("an open menu is announced");
+            use crate::a11y::Role;
+            let roles: Vec<_> = node.children.iter().map(|child| child.role).collect();
+            assert_eq!(
+                roles,
+                [Role::MenuItem, Role::MenuItem, Role::Separator, Role::MenuItem]
+            );
+            let bounds = |index: usize| node.children[index].bounds.expect("a row's place");
+            assert!(bounds(2).y1 > bounds(2).y0, "the rule stands where it is drawn");
+            assert!(bounds(2).y0 >= bounds(1).y1 && bounds(2).y1 <= bounds(3).y0);
+            let drawn = |index: usize| node.children[index].drawn.clone().expect("a row's drawing");
+            assert!(drawn(1).gutter, "Rename keeps Copy link's glyph column");
+            assert!(!drawn(0).danger);
+            assert!(drawn(3).danger, "Delete is drawn as a danger");
+            let mut plain = ContextMenu::with_items(vec![MenuItem::action("Rename", || {})]);
+            plain.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            let node = Widget::accessibility(&plain).expect("an open menu is announced");
+            assert!(
+                !node.children[0].drawn.as_ref().expect("a row's drawing").gutter,
+                "a menu with no glyph or check keeps no column for one"
+            );
         }
 
         phase shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier;

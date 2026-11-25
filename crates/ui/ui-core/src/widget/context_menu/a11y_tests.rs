@@ -47,7 +47,7 @@ fn menu_accessibility_reports_state_rows_and_checks() {
         );
     }
 
-    fn accessibility_exposes_named_action_rows_and_skips_separators() {
+    fn accessibility_exposes_named_action_rows_and_the_rule_between_them() {
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action("Keep Offline", || {}));
         menu.push(MenuItem::separator());
@@ -55,8 +55,20 @@ fn menu_accessibility_reports_state_rows_and_checks() {
         menu.open_at([10.0, 20.0]);
 
         let node = Widget::accessibility(&menu).unwrap();
-        assert_eq!(node.children.len(), 2);
-        assert_eq!(node.children[0].role, crate::a11y::Role::MenuItem);
+        // The rule stands in place, as the menu draws it, and is never a row to stop on.
+        let roles: Vec<_> = node.children.iter().map(|child| child.role).collect();
+        assert_eq!(
+            roles,
+            [
+                crate::a11y::Role::MenuItem,
+                crate::a11y::Role::Separator,
+                crate::a11y::Role::MenuItem
+            ]
+        );
+        assert!(!node.children[1].state.focusable);
+        let mut node = node;
+        node.children
+            .retain(|child| child.role != crate::a11y::Role::Separator);
         assert_eq!(node.children[0].name.as_deref(), Some("Keep Offline"));
         assert_eq!(
             node.children[0].action_target.as_deref(),
@@ -89,6 +101,6 @@ fn menu_accessibility_reports_state_rows_and_checks() {
     let _settled = crate::motion::testing::settled();
     accessibility_reports_menu_role_and_collapsed_when_closed();
     a_caption_is_read_among_the_rows_but_never_chosen();
-    accessibility_exposes_named_action_rows_and_skips_separators();
+    accessibility_exposes_named_action_rows_and_the_rule_between_them();
     accessibility_exposes_checked_state_without_polluting_the_label();
 }

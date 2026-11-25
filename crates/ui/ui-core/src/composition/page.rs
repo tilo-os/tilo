@@ -840,13 +840,14 @@ impl Page {
                 element.attr("data-t", target);
             }
         } else if node.children.is_empty() || matches!(element.tag, "button" | "a") {
-            if let Some(icon) = node.icon {
-                // Its glyph stands before its words, as the app paints the row.
-                element.own.push_str(&crate::icons::glyph_svg(icon));
-            }
-            match &node.drawn {
-                Some(drawn) => drawn_into(&mut element, node, drawn),
-                None => words_into(&mut element, node),
+            if let Some(drawn) = &node.drawn {
+                drawn_into(&mut element, node, drawn);
+            } else {
+                if let Some(icon) = node.icon {
+                    // Its glyph stands before its words, as the app paints the row.
+                    element.own.push_str(&crate::icons::glyph_svg(icon));
+                }
+                words_into(&mut element, node);
             }
         }
         if !matches!(element.tag, "button" | "a" | "input" | "textarea") {
@@ -908,7 +909,12 @@ impl Page {
         reason = "the page's own attributes, beside the ones it numbers"
     )]
     fn semantics_attrs(&self, element: &mut Element, access: &AccessNode, shows: Shows) {
-        let role = aria_role(access.role).filter(|role| !native(element.tag, role));
+        // A menu row that is on or off is a menu checkbox, the role whose state is checked.
+        let role = match access.role {
+            Role::MenuItem if access.state.checked.is_some() => Some("menuitemcheckbox"),
+            role => aria_role(role),
+        }
+        .filter(|role| !native(element.tag, role));
         let live = access.live.map(|live| match live {
             crate::a11y::Politeness::Assertive => "alert",
             crate::a11y::Politeness::Polite => "status",
@@ -946,7 +952,9 @@ impl Page {
                     "false"
                 },
             ),
-            Role::Checkbox | Role::Switch | Role::RadioButton if element.tag != "input" => {
+            Role::MenuItem | Role::Checkbox | Role::Switch | Role::RadioButton
+                if element.tag != "input" =>
+            {
                 if state.mixed {
                     element.attr("aria-checked", "mixed");
                 } else if let Some(checked) = state.checked {
@@ -1144,12 +1152,33 @@ fn words_into(element: &mut Element, access: &AccessNode) {
 /// What a row draws ([`AccessNode::drawn`]): its label as shown and its trailing text, with what
 /// it is called and what it says told to assistive technology alone, never drawn.
 fn drawn_into(element: &mut Element, access: &AccessNode, drawn: &crate::a11y::Drawn) {
+    // Its leading column, as the app paints the row: a toggle's check when it is on (its state,
+    // not its glyph), its glyph, or nothing, kept so its label starts with the menu's others.
+    let lead = match access.state.checked {
+        Some(on) => on.then_some(crate::icons::Icon::Check),
+        None => access.icon,
+    };
+    match lead {
+        Some(icon) => element.own.push_str(&crate::icons::glyph_svg(icon)),
+        None if drawn.gutter => element
+            .own
+            .push_str("<span class=\"tilo-glyph\" aria-hidden=\"true\"></span>"),
+        None => {}
+    }
+    if drawn.danger {
+        element.attr("data-danger", "");
+    }
     let _ = write!(
         element.own,
         "<span class=\"tilo-title\">{}</span>",
         escape(&drawn.label)
     );
-    if let Some(trailing) = drawn.trailing.as_deref().filter(|text| !text.is_empty()) {
+    // A row that opens a nested menu ends in its chevron, in place of its trailing text.
+    if access.state.expanded.is_some() {
+        element
+            .own
+            .push_str(&crate::icons::glyph_svg(crate::icons::Icon::ChevronRight));
+    } else if let Some(trailing) = drawn.trailing.as_deref().filter(|text| !text.is_empty()) {
         let _ = write!(
             element.own,
             "<span class=\"tilo-detail\">{}</span>",
@@ -1585,12 +1614,21 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     let tokens = &theme.tokens;
     let inset = crate::widget::floating_surface::menu_inset(theme);
     let line = f64::from(theme.text(TextRole::Body).line_height_px());
+    // A floating panel's edge is the theme's own (`chrome::panel_border`), and a danger row's ink
+    // is the danger colour made legible on the panel, as the app paints them.
+    let danger = colors.ink_on_any(
+        &[crate::chrome::panel_ground(theme)],
+        colors.semantic.danger,
+        crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+    );
     let menu_props = format!(
-        "--tilo-menu-row:{}px;--tilo-menu-inset:{inset}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;",
+        "--tilo-menu-row:{}px;--tilo-menu-inset:{inset}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;--tilo-floating-edge:{};--tilo-danger:{};",
         (line + f64::from(tokens.spacing.s2)).max(f64::from(tokens.metrics.menu_row_height)),
         crate::widget::context_menu::label_inset(theme) - inset,
         tokens.metrics.icon_sm,
         tokens.spacing.s2,
+        rgba(crate::chrome::panel_border(theme)),
+        rgba(danger),
     );
     format!(
         ":root{{color-scheme:{look};{motion_props}{menu_props}--tilo-hover:{};--tilo-press:{};--tilo-selected:{};--tilo-ground:{};--tilo-sidebar:{};--tilo-raised:{};--tilo-overlay:{};--tilo-text:{};--tilo-text-dim:{};--tilo-text-tertiary:{};--tilo-border:{};--tilo-focus:{};--tilo-accent:{};--tilo-on-accent:{};--tilo-radius:{:.1}px;--tilo-control-radius:{}px;{type_roles}}}",

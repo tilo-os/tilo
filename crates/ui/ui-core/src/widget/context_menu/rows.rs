@@ -92,7 +92,6 @@ impl FloatingRow for MenuRow {
         let (content_x0, content_x1) = (row.x0 + inset, row.x1 - inset);
         match &self.item {
             MenuItem::Action {
-                label,
                 icon,
                 image,
                 sample,
@@ -102,7 +101,9 @@ impl FloatingRow for MenuRow {
                 submenu,
                 ..
             } => {
-                let label = label.as_str();
+                // As it is shown: a row that asks first ends in its marker, as the page draws it.
+                let shown = self.item.shown_label().unwrap_or_default();
+                let label = shown.as_ref();
                 paint_action(
                     ctx,
                     row,

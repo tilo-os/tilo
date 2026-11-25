@@ -221,6 +221,16 @@ impl crate::widget::Decorator for MenuButton {
         }
     }
 
+    /// The button shows held while its menu stands open, whatever opened or closed it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+    )]
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        self.button.menu_open = self.menu.is_open();
+        Widget::draw(&mut self.button, ctx);
+    }
+
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
@@ -265,7 +275,9 @@ impl crate::widget::Decorator for MenuButton {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.menu.is_open() || Widget::needs_redraw(&self.button)
+        self.menu.is_open()
+            || self.button.menu_open != self.menu.is_open()
+            || Widget::needs_redraw(&self.button)
     }
 
     fn overlay_surface(&self) -> Option<&dyn Widget> {

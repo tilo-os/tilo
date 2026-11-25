@@ -430,18 +430,27 @@ pub struct AccessNode {
     #[serde(skip)]
     pub icon: Option<crate::icons::Icon>,
     /// What a node with no widget of its own draws, where that differs from what it is called and
-    /// what it says: a menu row's label as shown (an ask-first row's ends in "…") and what stands
-    /// at its trailing edge (its shortcut). A page draws this and gives the name and description to
-    /// assistive technology alone, as the app does.
+    /// what it says: a menu row's label as shown (an ask-first row's ends in "…"), what stands at
+    /// its trailing edge (its shortcut), whether it keeps a leading column and whether it is drawn
+    /// as a danger. A page draws this and gives the name and description to assistive technology
+    /// alone, as the app does.
     #[serde(skip)]
     pub drawn: Option<Drawn>,
 }
 
-/// The words a row draws ([`AccessNode::drawn`]): its label as shown and its trailing text.
+/// What a row draws ([`AccessNode::drawn`]) beside its glyph, check and chevron, which its node
+/// already says.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Drawn {
+    /// Its label as shown.
     pub label: String,
+    /// What stands at its trailing edge.
     pub trailing: Option<String>,
+    /// It keeps a leading column for its glyph or check, empty when it has neither, because a
+    /// row beside it has one: the labels of one menu start at one edge.
+    pub gutter: bool,
+    /// It is drawn in the theme's danger ink: it destroys what it acts on.
+    pub danger: bool,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than owned, from
