@@ -1049,7 +1049,7 @@ lounge_up() {
     invite) ;;
     *) die "TILO_SH_ADMISSION is open (anyone who asks joins as a guest) or invite (only people it invited), not $admission" ;;
   esac
-  if [[ -s $id_file && -s $id_file.placed ]]; then cat "$id_file"; return 0; fi
+  if [[ -s $id_file && -e $id_file.placed ]]; then cat "$id_file"; return 0; fi
   if [[ -s $id_file ]]; then
     id=$(cat "$id_file")
   else
@@ -1444,7 +1444,7 @@ host_ticket() {
   # stack, naming why, and their tickets are there to take.
   stack_person >/dev/null
   issued=$(take_ticket server || true)
-  [[ -n $issued ]] || [[ -s $state/vm-host-started ]] \
+  [[ -n $issued ]] || [[ -e $state/vm-host-started ]] \
     || die "the stack's person has no first ticket for the VM host left: one stack.sh up --fresh makes its person again, with a new Lounge"
   TILO_VM_TICKET=$issued
 }
