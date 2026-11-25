@@ -612,10 +612,9 @@ tilo_test_env::scenario! {
          on show(x: Note): set(opened, x)\n    text(\"the list\")\n}",
         );
         crate::common::validate(&c.wasm);
-        let show = c.meta.views[0]
-            .show
-            .as_ref()
-            .expect("the view answers `on show`");
+        let [show] = c.meta.views[0].shows.as_slice() else {
+            panic!("the view answers `on show` once: {:?}", c.meta.views[0].shows);
+        };
         assert_eq!(show.ty, c.meta.types[0].id);
         assert_eq!(show.func.params.len(), 1, "it is given the item alone");
         assert_eq!(show.func.params[0].name, "x");
