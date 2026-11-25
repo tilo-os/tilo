@@ -715,10 +715,6 @@ impl Apps {
     /// Record `pid` as the process this runtime started to run `app` in `workspace`, so a
     /// connection from it is admitted as that app: a tilolang instance, an origin connector or a
     /// task's host.
-    #[cfg_attr(
-        target_os = "android",
-        expect(dead_code, reason = "Android starts no process to record")
-    )]
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) {
         let _ = self.launched.record_started(pid, app, workspace);
     }
@@ -1710,6 +1706,8 @@ pub(crate) const fn device_cap(device: tilo_capture::DeviceKind) -> collab_types
         tilo_capture::DeviceKind::Microphone => collab_types::caps::DeviceCap::Microphone,
     }
 }
+
+#[cfg(target_os = "linux")]
 impl crate::device::processes::Origins for Apps {
     fn connection(
         &self,

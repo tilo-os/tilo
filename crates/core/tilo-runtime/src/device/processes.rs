@@ -49,9 +49,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use runtime_portal::device_processes::{
-    FromDevice, HandedFds, HandedInstance, MediaChange, Running, ToDevice,
-};
+#[cfg(target_os = "linux")]
+use runtime_portal::device_processes::{FromDevice, HandedFds, HandedInstance, ToDevice};
+use runtime_portal::device_processes::{MediaChange, Running};
 use runtime_portal::process_link::{
     AppAccess, AppBuild, Descriptor, FromProcess, InstanceFds, InstanceRequest, MediaCommand,
     MediaView, OpenRequest, Packet as _, TaskFds, TaskRequest, ToProcess,
@@ -190,6 +190,7 @@ pub struct Instance {
     pub link_home: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
 impl Instance {
     /// The instance a session handed over, with the connections it opened for it.
     fn handed(instance: HandedInstance, fds: HandedFds, origin: Option<Descriptor>) -> Self {
@@ -217,7 +218,8 @@ impl Instance {
 }
 
 /// Whether the device has the person's workspace of this id: the only workspaces the shell's
-/// hand-overs run in.
+/// hand-overs run in. Only a Linux shell hands its windows' instances over.
+#[cfg(target_os = "linux")]
 pub(crate) type Has = dyn Fn(&str) -> bool + Send + Sync;
 
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
@@ -248,6 +250,7 @@ struct Playing {
 
 /// How the shell's hand-overs reach the device's origin connectors, which the daemon runs
 /// ([`crate::apps::Apps`]).
+#[cfg(target_os = "linux")]
 pub(crate) trait Origins: Send + Sync {
     /// The connection an instance of `app` in `workspace` reaches its origin's connector over,
     /// when the app has one.
@@ -559,7 +562,9 @@ impl Processes {
 
     /// Read each workspace's content from `content` from now on: what each window's process
     /// serves as `workspace.content` when it starts, and what they are told again whenever
-    /// [`Self::content_changed`] says the workspace's content moved.
+    /// [`Self::content_changed`] says the workspace's content moved. Only a Linux daemon serves
+    /// the shell's windows a content reading.
+    #[cfg(target_os = "linux")]
     pub(crate) fn read_content_from(&self, content: Arc<dyn ContentOf>) {
         let _ = self.content_of.set(content);
     }
@@ -582,6 +587,7 @@ impl Processes {
     /// or kept it once a limit was raised: say it on every process running a window of it, so the
     /// views that read `workspace.content` show the refusal or its going. A reading that did not
     /// move is said no second time.
+    #[cfg(target_os = "linux")]
     pub(crate) fn content_changed(&self, workspace: &str) {
         let Some(content) = self.content_of.get() else {
             return;
@@ -620,6 +626,7 @@ impl Processes {
 
     /// Read every workspace's content again: what a daemon told of writes it missed does, so no
     /// process keeps a reading that moved without it hearing.
+    #[cfg(target_os = "linux")]
     pub(crate) fn content_refresh_all(&self) {
         let mut workspaces: Vec<String> = {
             let running = self.running();
@@ -724,6 +731,8 @@ impl Processes {
     /// link (`runtime_collab::wire::shell::ShellCall::Processes`), whose one ask is answered on a
     /// thread of its own, for a workspace `has` says the device has for the person. What reaches
     /// an app's origin connector, for a handed instance or a service of the shell, is `origins`.
+    /// Only a Linux shell hands its windows' instances over.
+    #[cfg(target_os = "linux")]
     pub(crate) fn for_the_shell(
         self: &Arc<Self>,
         has: Box<Has>,
@@ -746,6 +755,7 @@ impl Processes {
     }
 
     /// Answer the one ask on `connection`, which the shell opened.
+    #[cfg(target_os = "linux")]
     fn answer(self: &Arc<Self>, connection: &Descriptor, has: &Has, origins: &dyn Origins) {
         let asked = match ToDevice::receive(connection) {
             Ok(Some(asked)) => asked,
@@ -830,6 +840,7 @@ impl Processes {
 
     /// Run the instance the shell handed over, in a workspace the device has for the person:
     /// whether its process started for it, or why it runs nowhere.
+    #[cfg(target_os = "linux")]
     fn take_handed(
         self: &Arc<Self>,
         instance: HandedInstance,
@@ -1519,12 +1530,12 @@ fn spawn_host(
     ))
 }
 
-/// [`spawn_host`] on macOS: the tilolang runtime's own binary, from the installed runtime package
-/// the host runs on (verified as a launch verifies it), in a deny-default Seatbelt sandbox that
-/// reads the runtime, keeps its storage and reaches nothing else: no network, no service socket,
-/// no other app's storage. Its link and a `page` window's connections are inherited at their own
-/// numbers, named in its environment.
+/// [`spawn_host`] on Android: none, since an app runs in the Tilo app's own process.
 #[cfg(target_os = "android")]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the launcher every platform's spawn_host is handed"
+)]
 fn spawn_host(
     (): &Launcher,
     _key: &HostKey,
@@ -1537,6 +1548,11 @@ fn spawn_host(
     ))
 }
 
+/// [`spawn_host`] on macOS: the tilolang runtime's own binary, from the installed runtime package
+/// the host runs on (verified as a launch verifies it), in a deny-default Seatbelt sandbox that
+/// reads the runtime, keeps its storage and reaches nothing else: no network, no service socket,
+/// no other app's storage. Its link and a `page` window's connections are inherited at their own
+/// numbers, named in its environment.
 #[cfg(target_os = "macos")]
 fn spawn_host(
     launcher: &Launcher,

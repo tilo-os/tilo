@@ -137,7 +137,13 @@ pub(crate) struct RemoteUse(Arc<Mutex<Option<Lease>>>);
 
 #[derive(Clone, Copy)]
 struct Lease {
-    #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(test, target_os = "linux")),
+        expect(
+            dead_code,
+            reason = "only Linux holds suspend off until a lease ends; elsewhere a lease is only noted"
+        )
+    )]
     until: Instant,
 }
 
@@ -170,13 +176,13 @@ impl RemoteUse {
     }
 
     /// Whether a lease is held now.
-    #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+    #[cfg(any(test, target_os = "linux"))]
     pub(crate) fn held(&self) -> bool {
         self.0.lock_recover().is_some()
     }
 
     /// The lease `lease` holds now, dropped once it ended.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(target_os = "linux")]
     fn take_ended(&self) -> Option<Lease> {
         let mut held = self.0.lock_recover();
         let lease = (*held)?;

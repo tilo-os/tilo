@@ -51,10 +51,6 @@ pub type Actions = dyn Fn(&Descriptor, &str, &str, u32) -> std::io::Result<()> +
 
 /// The pid a started connector runs as, as the launch record names it: the system's own.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
-#[cfg_attr(
-    any(target_os = "android", windows),
-    expect(dead_code, reason = "Android and Windows start no connector process")
-)]
 pub(crate) fn pid(process: &Process) -> u32 {
     process.id()
 }

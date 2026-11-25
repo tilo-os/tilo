@@ -390,17 +390,18 @@ impl Instances {
         if let Some(processes) = self.processes.get() {
             return Ok(processes);
         }
-        let launcher = (self.launcher)()?;
-        Ok(self.processes.get_or_init(|| {
-            let processes = Processes::new(launcher).attesting(Arc::clone(&self.launched));
-            if let Some(providers) = self.provided.get() {
-                processes.read_provided_from(providers.clone());
-            }
-            if let Some(lines) = self.own_lines.get() {
-                processes.serve_own_lines(Arc::clone(lines));
-            }
-            processes
-        }))
+        (self.launcher)().map(|launcher| {
+            self.processes.get_or_init(|| {
+                let processes = Processes::new(launcher).attesting(Arc::clone(&self.launched));
+                if let Some(providers) = self.provided.get() {
+                    processes.read_provided_from(providers.clone());
+                }
+                if let Some(lines) = self.own_lines.get() {
+                    processes.serve_own_lines(Arc::clone(lines));
+                }
+                processes
+            })
+        })
     }
 
     /// The member the device acts as.

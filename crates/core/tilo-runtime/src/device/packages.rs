@@ -56,7 +56,8 @@ struct Writer {
     content: Arc<DeviceContent>,
     rows: Arc<Rows>,
     /// One Flatpak change at a time: the state of what this device installed is read, changed and
-    /// written under it, so two changes never lose each other's entry.
+    /// written under it, so two changes never lose each other's entry. Flatpak is Linux's.
+    #[cfg(target_os = "linux")]
     flatpaks: Arc<Mutex<()>>,
     /// One change to the record of the apps the follower installed at a time.
     followed: Arc<Mutex<()>>,
@@ -418,6 +419,7 @@ impl PackageCache {
                 personal,
                 content,
                 rows,
+                #[cfg(target_os = "linux")]
                 flatpaks: Arc::default(),
                 followed: Arc::default(),
             },
@@ -929,6 +931,7 @@ fn carried_list() -> String {
 }
 
 /// Where the cache keeps the Flatpak references its daemon installed.
+#[cfg(target_os = "linux")]
 const FLATPAKS_FILE: &str = "flatpaks.json";
 
 /// Where the cache keeps the apps the follower installed: the only ones it removes.

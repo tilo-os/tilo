@@ -2310,21 +2310,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             .strip_suffix(b"\n")
             .and_then(tilo_mcp::devices::forward_request)
         {
-            match &self.other_devices {
-                // A client asks for nothing more before it is told whether the connection
-                // opened.
-                Some(other_devices) if rest.is_empty() => {
-                    other_devices.serve_forward(stream, &forward);
-                }
-                Some(_) => tilo_mcp::devices::refuse_forward(
-                    stream,
-                    "a forward is the only line before its answer".into(),
-                ),
-                None => tilo_mcp::devices::refuse_forward(
-                    stream,
-                    "this runtime reaches none of your other devices".into(),
-                ),
-            }
+            self.forward(stream, &forward, rest.is_empty());
             return None;
         }
         self.serve_session(stream, first, rest, follow, seated, descriptors);
@@ -2390,6 +2376,23 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             self.connections.as_deref(),
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
+        }
+    }
+
+    /// Carry `stream` to another of the person's devices' MCP server, as its first line asked,
+    /// when that line is all it sent (`alone`): a client asks for nothing more before it is told
+    /// whether the connection opened.
+    fn forward(&self, stream: Stream, forward: &tilo_mcp::devices::Forward, alone: bool) {
+        match &self.other_devices {
+            Some(other_devices) if alone => other_devices.serve_forward(stream, forward),
+            Some(_) => tilo_mcp::devices::refuse_forward(
+                stream,
+                "a forward is the only line before its answer".into(),
+            ),
+            None => tilo_mcp::devices::refuse_forward(
+                stream,
+                "this runtime reaches none of your other devices".into(),
+            ),
         }
     }
 

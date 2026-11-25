@@ -92,6 +92,7 @@ pub(super) const INVOCATION_JOURNAL: &str = "invocations";
 const OWN: &str = "own";
 /// The variable a Wayland client takes its connection from: the window a session started from a
 /// session in a window is handed ([`Daemon::start_shell`]).
+#[cfg(target_os = "linux")]
 const WAYLAND_SOCKET_ENV: &str = "WAYLAND_SOCKET";
 
 /// What a daemon says on a computer that holds no Tilo identity and has no login.
@@ -3405,12 +3406,6 @@ fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
     Ok(())
 }
 
-/// Elsewhere, a host approves no checks.
-#[cfg(not(target_os = "linux"))]
-fn approved_checks(_parts: &BrokerParts<'_>) -> io::Result<()> {
-    Ok(())
-}
-
 /// The seat's services, as the broker runs them: what the desktop session serves, the app windows
 /// it opens, and the agents it admitted.
 fn seat_services(
@@ -3627,6 +3622,8 @@ fn broker_services(
         shell: shell_published,
         apps: published,
     } = published_here(&parts);
+    // A check's commands are ush's, which runs only on Linux: elsewhere a host approves none.
+    #[cfg(target_os = "linux")]
     approved_checks(&parts)?;
     let mut services = ProcessServices {
         action_offload,
@@ -4188,11 +4185,7 @@ impl Daemon {
 
     /// A task's programs run on Linux alone.
     #[cfg(not(target_os = "linux"))]
-    #[expect(
-        clippy::unused_self,
-        clippy::needless_pass_by_value,
-        reason = "the one call the Linux daemon answers"
-    )]
+    #[expect(clippy::unused_self, reason = "the one call the Linux daemon answers")]
     pub(crate) fn task_hosts<H>(
         &self,
         host: H,
@@ -5874,6 +5867,26 @@ impl RuntimeActionProvider {
         };
         self.workspaces.action_workspace(actor, workspace).is_ok()
     }
+    /// A person's answer to a question that waits for them, as the run admitted them: an agent
+    /// answers nobody's, its own least. Only the system confirms for them: their own shell's
+    /// confirm view, or the CLI's own prompt on a connection the kernel says is theirs. A
+    /// program, an app and an agent are asked, never answer.
+    fn resolve_asked(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        session: &AdmittedRuntimeSession,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if session.agent.is_some() || !(session.own_shell || caller.is_own_connection()) {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM.to_owned(),
+            }));
+        }
+        self.workspaces
+            .copies()
+            .resolve_asked(session.acting(), request)
+    }
+
     /// A call from an admitted session: the person's own call, or one of an agent the device
     /// admitted to, answered as that session's run, and kept as its asked record where it waits
     /// for the person.
@@ -5909,20 +5922,8 @@ impl RuntimeActionProvider {
             );
             return tree.answers.invoke(&device, request);
         }
-        // A person's answer to a question that waits for them, as the run admitted them: an
-        // agent answers nobody's, its own least. Only the system confirms for them: their own
-        // shell's confirm view, or the CLI's own prompt on a connection the kernel says is
-        // theirs. A program, an app and an agent are asked, never answer.
         if tilo_actions::remote::asked::is_resolve(&request.target) {
-            if session.agent.is_some() || !(session.own_shell || caller.is_own_connection()) {
-                return Pending::ready(Err(ActionCallError::Refused {
-                    reason: tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM.to_owned(),
-                }));
-            }
-            return self
-                .workspaces
-                .copies()
-                .resolve_asked(session.acting(), &request);
+            return self.resolve_asked(caller, &request, session);
         }
         // What an agent asks shown goes on its person's layout, where their devices show it.
         if session.agent.is_some()
