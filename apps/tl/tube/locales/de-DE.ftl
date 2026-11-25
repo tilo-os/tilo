@@ -238,6 +238,25 @@ d-yc4rjoeg = Erneut abspielen
 
 d-yc4rjoeg-h = H
 
+d-uwtnk76u = Aufrufe als Text
+    .w-1-view = 1 Aufruf
+    .w-views = { $count_text } Aufrufe
+
+d-kcnmeu5r = Abonnenten als Text
+    .w-1-subscriber = 1 Abonnent
+    .w-subscribers = { $count_text } Abonnenten
+
+d-xge4w4uy = Grayjay-Zusammenfassung
+    .w-pairing-with-the-device = Kopplung mit dem Gerät…
+    .w-syncing-with-the-approved-devices = Abgleich mit den freigegebenen Geräten…
+    .w-approved-devices-are-ready-to-sync = Freigegebene Geräte sind bereit zum Abgleich.
+    .w-a-device-waits-for-your-approval = Ein Gerät wartet auf deine Freigabe.
+    .w-paste-a-grayjay-invite-to-add = Füge eine Grayjay-Einladung ein, um dein erstes Gerät hinzuzufügen.
+
+d-vzfsraqq = Grayjay-Gerätehinweis
+    .w-not-synced-yet = Noch nicht abgeglichen
+    .w-last-synced = Zuletzt abgeglichen { $last_synced }
+
 d-qgtk64v3 = Uhr des Eintrags
     .w-live = Live
 
@@ -787,6 +806,11 @@ d-vmwnntrw = Jetzt abgleichen
 
 d-o4ztf7zk = Automatischer Abgleich
     .doc = Gleicht auf dem Zeitgeber mit den freigegebenen Geräten ab, sobald die Person einmal von Hand abgeglichen hat.
+
+d-fldyu3r6 = Grayjay beendet
+    .doc = Der Grayjay-Vorgang endete: eine Kopplung behält das Gerät, das sie gemacht hat, ein Abgleich das, was er brachte, und ein Fehlschlag oder ein Stopp sagt es im Fenster.
+
+d-fldyu3r6-j = J
 
 d-aahljsk5 = Kopplung aufnehmen
     .doc = Nimmt das Gerät auf, das eine Kopplung ergab, wartend auf die Freigabe der Person: der Fingerabdruck daneben ist der, den Grayjay auf der anderen Seite zeigt.

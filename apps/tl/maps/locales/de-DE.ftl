@@ -587,6 +587,38 @@ d-at7haufh = Link öffnen
 
 d-at7haufh-link = Link
 
+d-s73hvmpr = Entfernungstext
+    .w-m = { $round } m
+    .w-km = { $value } km
+    .w-km-2 = { $value },{ $value2 } km
+
+d-bhb2qs5b = Dauertext
+    .w-min = { $minutes } min
+    .w-h = { $hours } h
+    .w-h-min = { $hours } h { $rest } min
+
+d-nfdqjdnv = Kategoriename
+    .w-landmark = Wahrzeichen
+    .w-caf = Café
+    .w-restaurant = Restaurant
+    .w-bar = Bar
+    .w-museum = Museum
+    .w-park = Park
+    .w-transit-stop = Haltestelle
+    .w-hotel = Hotel
+    .w-shop = Geschäft
+    .w-hospital = Krankenhaus
+    .w-place = Ort
+
+d-mdesjj5a = Verkehrsart
+    .w-drive = Auto
+    .w-transit = Öffentlich
+    .w-cycle = Rad
+    .w-walk = Zu Fuß
+
+d-r4czgqve = Basiskarte
+    .w-https-tile-openstreetmap-org-z-x = https://tile.openstreetmap.org/%z/%x/%y.png
+
 d-m7wrwwy3 = Ort gespeichert
 
 d-sb4mqylm = Aktionen am Ort

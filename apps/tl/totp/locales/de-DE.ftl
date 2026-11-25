@@ -285,6 +285,27 @@ d-fovma3g4-was_period = Vorheriger Zeitraum
 
 d-htudz4b7 = Hinweis ausblenden
 
+d-hq2cgxdt = Kontofarbe
+    .w-7a5cc4 = #7a5cc4
+    .w-b0568f = #b0568f
+    .w-bf5b45 = #bf5b45
+    .w-a8792a = #a8792a
+    .w-4f8f4a = #4f8f4a
+    .w-2f8f88 = #2f8f88
+    .w-6b7280 = #6b7280
+    .w-3f7fbf = #3f7fbf
+
+d-jahmvkfr = Fenstertitel
+    .w-authenticator = Authenticator
+    .w-and-more = { $name_of } und { $value } weitere
+
+d-wyg2oify = Name von
+    .w-account = Konto
+
+d-3fqtuxxw = Anzahl
+    .w-1-account = 1 Konto
+    .w-accounts = { $n } Konten
+
 d-vmyv2aoh = Konto hinzufügen
 
 d-gd3332fr = Gelesenes Konto hinzufügen

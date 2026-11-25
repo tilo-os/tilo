@@ -463,6 +463,44 @@ d-qtwnyshy = Fotos öffnen
     .doc = Opens the library the captures go to.
 d-iwjcok7m = Kamera-Datenschutz öffnen
     .doc = Opens this device's camera privacy settings.
+
+d-2hcnu3x5 = Code-Beschreibung
+    .w-wi-fi-network = WLAN, { $auth }
+    .w-wi-fi-network-2 = WLAN
+    .w-contact = Kontakt, { $phone }
+    .w-contact-card = Kontaktkarte
+    .w-website = Website
+    .w-email-address = E-Mail-Adresse
+    .w-phone-number = Telefonnummer
+    .w-location = Ort
+    .w-plain-text = Klartext
+
+d-itiefikm = Objektivwörter
+    .w-front = Front
+    .w-ultra-wide = Ultraweit
+    .w-rear = Hinten
+
+d-ffssvo5d = Auslöserwörter
+    .w-stop-recording = Aufnahme stoppen
+    .w-cancel-capture-timer = Auslöseverzögerung abbrechen
+    .w-start-recording = Aufnahme starten
+    .w-take-photo = Foto aufnehmen
+
+d-opd4xq5e = Gerätewörter
+    .w-this-computer-s-default-camera = die Standardkamera dieses Computers
+
+d-3kl4jzy7 = Kein Bild
+    .w-no-camera-connected = Keine Kamera verbunden
+    .w-camera-unavailable = Kamera nicht verfügbar
+
+d-btko33wo = Kein Bild, Wörter
+    .w-connect-a-camera-then-look-again = Verbinde eine Kamera und schau dann wieder.
+
+d-3wgxeb3c = Auflösungswörter
+    .w-12-mp = 12 MP
+    .w-4k = 4K
+    .w-1080p = 1080p
+    .w-720p = 720p
 d-mim6ysmz = Sucher
     .w-photo = Photo
     .w-video = Video

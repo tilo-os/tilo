@@ -400,6 +400,8 @@ d-4faq5fwx = Zeile der öffnenden Apps
     .w-open-with = „{ $name_of }“ öffnen mit
     .w-cancel = Abbrechen
 
+d-jwdlcu14 = Eintragsraster
+
 d-vzs2pkap = Eintrag komprimieren
     .doc = Packt den Eintrag unter `path` in ein neues Archiv daneben, nach ihm benannt: `zip` wählt ein ZIP, sonst TAR.ZST.
 
@@ -590,6 +592,26 @@ d-gcytlgzo = App öffnen
     .doc = Öffnet die App `a`, wie ein Druck auf ihre Zeile es tut.
 
 d-gcytlgzo-app_key = App-Kennung
+
+d-0k4octol = Name von
+    .w-root = Wurzel
+    .w-home = Home
+    .w-trash = Papierkorb
+    .w-recent = Zuletzt
+    .w-applications = Programme
+
+d-gfdx17m7 = Größe von
+    .w-b = { $n } B
+    .w-kb = { $value } KB
+    .w-mb = { $value } MB
+    .w-gb = { $value } GB
+
+d-809samc3 = Art von
+    .w-folder = Ordner
+    .w-image = Bild
+    .w-text = Text
+    .w-file = Datei
+    .w-file-2 =  Datei
 
 d-4dnpiqnl = Apps
     .w-no-apps-yet = Noch keine Apps

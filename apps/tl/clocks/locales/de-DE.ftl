@@ -268,6 +268,30 @@ d-7twb2otm = Runde
 d-qcjegi7p = Stoppuhr zurücksetzen
     .doc = Setzt die Stoppuhr zurück: sie steht auf null und ist gestoppt, ohne Runden.
 
+d-kyp2iaaw = Tagesname
+    .w-mon = Mo
+    .w-tue = Di
+    .w-wed = Mi
+    .w-thu = Do
+    .w-fri = Fr
+    .w-sat = Sa
+    .w-sun = So
+
+d-cy26xrkl = Ortstitel
+    .w-world-clocks = Weltuhren
+    .w-alarms = Wecker
+    .w-stopwatch = Stoppuhr
+    .w-timers = Timer
+
+d-kcf5aijl = Nächstes Klingeln
+    .w-off = Aus
+    .w-next = Nächstes { $day }, { $clock }
+    .w-no-next-ring = Kein nächstes Klingeln
+
+d-unepyab3 = Wiederholungstext
+    .w-once = Einmal
+    .w-every-day = Jeden Tag
+
 d-tv3yomxx = Timer hinzufügen~present
 
 d-qobxx5dl = Uhrenseite
@@ -309,6 +333,8 @@ d-inqk2nou = Weckerseite
     .w-this-device = Dieses Gerät
     .w-every-device = Jedes Gerät
     .w-all-of-yours = Alle deine
+    .w-on = an
+    .w-off = aus
 
 d-g2agvnl7 = Timerseite
     .w-no-timers-yet = Noch keine Timer
