@@ -88,7 +88,7 @@ fn initial_history_app() -> (App, Rc<Cell<usize>>) {
             Rc::new(Cell::new(false)),
         )),
     );
-    app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+    app.local_author = crate::permissions::MemberId::person("fixture-user");
     app.collaboration.manager = manager;
     (app, calls)
 }
@@ -514,7 +514,7 @@ tilo_test_env::scenario! {
             State::new(),
             Box::new(InitialHistoryProbe(calls.clone(), queued.clone())),
         );
-        app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+        app.local_author = crate::permissions::MemberId::person("fixture-user");
         app.collaboration.manager = manager;
         let deadline = tilo_test_env::hang_deadline();
         while app
@@ -578,7 +578,7 @@ tilo_test_env::scenario! {
                 Rc::new(Cell::new(false)),
             )),
         );
-        app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+        app.local_author = crate::permissions::MemberId::person("fixture-user");
         app.collaboration.manager = fixture.manager;
         let deadline = tilo_test_env::hang_deadline();
         while !app.published_action_history_ready() {
@@ -663,7 +663,7 @@ tilo_test_env::scenario! {
                     Rc::new(Cell::new(false)),
                 )),
             );
-            app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+            app.local_author = crate::permissions::MemberId::person("fixture-user");
             app.collaboration.manager = fixture.manager;
             let deadline = tilo_test_env::hang_deadline();
             while !app.published_action_history_ready() {
@@ -758,7 +758,7 @@ tilo_test_env::scenario! {
                 Rc::new(Cell::new(false)),
             )),
         );
-        app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+        app.local_author = crate::permissions::MemberId::person("fixture-user");
         app.collaboration.manager = fixture.manager;
         let deadline = tilo_test_env::hang_deadline();
         while !app.published_action_history_ready() {
@@ -935,7 +935,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
             Rc::new(Cell::new(false)),
         )),
     );
-    app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+    app.local_author = crate::permissions::MemberId::person("fixture-user");
     app.collaboration.manager = fixture.manager;
     let deadline = tilo_test_env::hang_deadline();
     while !app.published_action_history_ready() {
@@ -1019,7 +1019,7 @@ fn an_invocation_waits_for_its_document_to_become_current() {
             Rc::new(Cell::new(false)),
         )),
     );
-    app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+    app.local_author = crate::permissions::MemberId::person("fixture-user");
     app.collaboration.manager = fixture.manager;
     let deadline = tilo_test_env::hang_deadline();
     while !app.published_action_history_ready() {
@@ -1142,7 +1142,7 @@ fn a_resolution_of_a_resource_still_being_read_is_answered_once_it_is_read() {
         );
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(LateRowProbe(Rc::clone(&read))));
-        app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
+        app.local_author = crate::permissions::MemberId::person("fixture-user");
         app.collaboration.manager = manager;
         let deadline = tilo_test_env::hang_deadline();
         while !app.published_action_history_ready() {

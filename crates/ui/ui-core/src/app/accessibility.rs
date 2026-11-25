@@ -590,7 +590,7 @@ impl App {
                 &self.layout.node_map,
                 sweep.nodes.iter().copied(),
                 &self.bindings,
-                &self.collaboration.local_author,
+                &self.local_author,
             )
         };
         // What the whole view says about history is read once per sweep, not
@@ -655,7 +655,7 @@ impl App {
                 changed |= if let Some(binding) = &binding {
                     self.move_bound_history(binding, request)
                 } else {
-                    let author = Some(&self.collaboration.local_author);
+                    let author = Some(&self.local_author);
                     match request {
                         crate::undo::UndoRequest::Undo => self.state.undo_as(author, None, None),
                         crate::undo::UndoRequest::Redo => self.state.redo_as(author, None, None),
@@ -695,13 +695,9 @@ impl App {
                         };
                     }
                     if embedded {
-                        self.state
-                            .undo_status_snapshot(Some(&self.collaboration.local_author))
+                        self.state.undo_status_snapshot(Some(&self.local_author))
                     } else {
-                        crate::undo::state_status(
-                            &self.state,
-                            Some(&self.collaboration.local_author),
-                        )
+                        crate::undo::state_status(&self.state, Some(&self.local_author))
                     }
                 })
             };
@@ -776,7 +772,7 @@ impl App {
         if embedded {
             return;
         }
-        let author = Some(&self.collaboration.local_author);
+        let author = Some(&self.local_author);
         if *history_exists
             .get_or_insert_with(|| self.state.can_undo_as(author) || self.state.can_redo_as(author))
         {
@@ -832,7 +828,7 @@ impl App {
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
-            Some(self.collaboration.local_author.clone()),
+            Some(self.local_author.clone()),
             None,
         );
         self.focus_history.stable_focus_idx = self
@@ -1282,7 +1278,7 @@ impl App {
         if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
             return self.open_action_palette_at(address);
         }
-        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.local_author.clone());
         let accepted = self
             .invoke_resource_action(ResourceInvocation::new(address, &actor).argument(argument))
             .is_ok();
@@ -1803,7 +1799,7 @@ impl App {
         target: &crate::bound_dispatch::BoundActionTarget,
         arg: Option<&str>,
     ) -> Result<bool, String> {
-        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.local_author.clone());
         let invocation = ResourceInvocation::new(&target.address.address, &actor).argument(arg);
         match self.invoke_bound_target(target, &invocation) {
             Ok(_) => Ok(true),
@@ -1877,7 +1873,7 @@ impl App {
                 if arg.is_some() {
                     return Err("Deferred action accepts no argument".into());
                 }
-                let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+                let actor = tilo_actions::Actor::Member(self.local_author.clone());
                 match self.invoke_resource_action(ResourceInvocation::new(&address, &actor)) {
                     Ok(_) => {
                         self.needs_sync = true;

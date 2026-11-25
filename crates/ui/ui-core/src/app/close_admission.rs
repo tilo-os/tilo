@@ -521,7 +521,7 @@ impl App {
             self.actions.local_invocations.keys().copied().collect();
         let broker_request = self.actions.next_broker_request_id;
         let connected = self.collaboration.manager.is_connected();
-        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.local_author.clone());
         // Do not supply an invocation or claim broker admission. This is the
         // ordinary local canonical action API, including permissions/effects.
         let result = self.invoke_resource_action(ResourceInvocation::new(&document.save, &actor));

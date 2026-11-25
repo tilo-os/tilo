@@ -316,12 +316,12 @@ fn capturing_fixture() -> (
     let sent = Rc::new(RefCell::new(Vec::new()));
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.local_author = fixture.bindings[0].author.clone();
     (fixture, sent)
 }
 
 fn capture_address(fixture: &mut ActionFixture) -> tilo_actions::ActionAddress {
-    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.local_author = fixture.bindings[0].author.clone();
     fixture.app.publish_action_surface();
     let alias = fixture
         .app
@@ -1097,7 +1097,7 @@ fn a_local_report_follows_the_executed_child_owner_and_never_another_connection(
     let sent = Rc::new(RefCell::new(Vec::new()));
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
-    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.local_author = fixture.bindings[0].author.clone();
     fixture.app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
         route: fixture.bindings[0].broker_route().unwrap(),
         epoch: uuid::Uuid::new_v4(),

@@ -429,7 +429,7 @@ fn kept_invocation_results_say_what_each_call_answered_and_never_its_arguments()
     assert_eq!(results["schema_version"], 1);
     assert_eq!(
         results["author"],
-        serde_json::json!(driver.app().collaboration.local_author)
+        serde_json::json!(driver.app().local_author)
     );
     let statuses = results["entries"]
         .as_array()

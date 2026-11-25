@@ -848,7 +848,7 @@ impl Driver {
                 resources.push(resource);
             }
         }
-        let actor = tilo_actions::Actor::Member(self.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.app.local_author.clone());
         let grants = self.app.permission_ctx.clone();
         let peer = self.peer_mut();
         for request in asked {

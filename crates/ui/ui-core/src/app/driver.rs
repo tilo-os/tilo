@@ -161,7 +161,7 @@ impl super::part_bar::BarWindow for Surface {
 pub struct DriverInputs {
     pub theme: Theme,
     pub text: TextRenderer,
-    pub author: crate::permissions::MemberId,
+    pub author: tilo_actions::MemberId,
 }
 
 impl DriverInputs {
@@ -171,7 +171,7 @@ impl DriverInputs {
         Self {
             theme,
             text: TextRenderer::new(),
-            author: crate::collaboration::local_user_id(),
+            author: super::local_person(),
         }
     }
 }
@@ -310,7 +310,7 @@ impl Driver {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        author: crate::permissions::MemberId,
+        author: tilo_actions::MemberId,
     ) -> Self {
         Self::with_inputs(
             state,
@@ -449,7 +449,7 @@ impl Driver {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        author: crate::permissions::MemberId,
+        author: tilo_actions::MemberId,
     ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
         Self::from_managed_root_with(
             state,
@@ -2458,7 +2458,7 @@ impl Driver {
         arguments: &serde_json::Map<String, serde_json::Value>,
         approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let actor = tilo_actions::Actor::Member(self.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.app.local_author.clone());
         self.invoke_action_as(&actor, address, arguments, approval)
     }
 
@@ -2497,7 +2497,7 @@ impl Driver {
         // admitted and delivered to the app for them, as the broker delivers it, never handed to
         // the window as one of its own.
         if let Some(member) = actor.member_id()
-            && *member != self.app.collaboration.local_author
+            && *member != self.app.local_author
         {
             let invoker = tilo_actions::ActionInvoker::member(member.clone());
             return self

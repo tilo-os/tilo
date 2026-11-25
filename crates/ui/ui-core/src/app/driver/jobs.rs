@@ -296,9 +296,7 @@ impl Driver {
     /// Keep the outcomes of the scenario invocations run from now on ([`Self::perform`]), for
     /// [`Self::invocation_results_json`]: what each answered, never the arguments it was given.
     pub fn retain_invocation_results(&mut self) {
-        self.jobs.results = Some(InvocationResults::new(
-            self.app.collaboration.local_author.clone(),
-        ));
+        self.jobs.results = Some(InvocationResults::new(self.app.local_author.clone()));
     }
 
     /// The kept outcomes, Completed, Accepted or Refused, in invocation order. Accepted means only

@@ -777,7 +777,7 @@ tilo_test_env::scenario! {
             assert!(app.state.commit_action_authored_with_context(
                 None,
                 None,
-                Some(app.collaboration.local_author.clone()),
+                Some(app.local_author.clone()),
                 Some(context),
             ));
             let changes = app.state.doc.get_changes(&before);
@@ -980,7 +980,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
         ..Default::default()
     }));
     app.service_idle_model();
-    let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+    let actor = tilo_actions::Actor::Member(app.local_author.clone());
     let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
     let invocation = tilo_actions::InvocationId::new();
     assert_eq!(

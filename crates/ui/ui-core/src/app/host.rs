@@ -83,7 +83,10 @@ fn draw_frame_content_owning(
     // marking it: the retained drawings go, and this frame draws them again.
     if app.permissions_moved() {
         app.root_widget.release_scene_cache();
-        app.painted_permissions = crate::permissions::shared_revision();
+        #[cfg(feature = "model")]
+        {
+            app.painted_permissions = crate::permissions::shared_revision();
+        }
     }
     // Every motion this frame reads is read at this instant or later.
     let motions_at = crate::motion::frame_now();
@@ -126,7 +129,9 @@ fn draw_frame_content_owning(
     }
     // Untracked, History's paint is compared with the last presented
     // frame's: an unchanged toolbar under the live app is no layer.
+    #[cfg_attr(not(feature = "model"), allow(unused_mut))]
     let mut history_changed = false;
+    #[cfg(feature = "model")]
     if let Some(history) = &mut app.history {
         if tracked {
             history.draw_child(
@@ -148,14 +153,11 @@ fn draw_frame_content_owning(
     if tracked {
         crate::scene_parts::end(scene, window_bounds.clone());
     }
-    let app_live = app
-        .history
-        .as_ref()
-        .is_none_or(|history| history.live_visible());
+    let app_live = app.app_visible();
     // History mode that hides the live app is a layer over all of it; one
     // that shows it and paints nothing of its own (or paints in a part)
     // leaves the widgets' damage the whole change.
-    let history_shown = history_changed || (app.history.is_some() && !app_live);
+    let history_shown = history_changed || (app.presents_history() && !app_live);
     // The carets and tags this frame draws are the ones its widgets note now: kept from an
     // earlier frame, a write's caret long gone still stood on its row, and the agent's next
     // step there was taken for wearing its tag already and drew none.
@@ -183,16 +185,26 @@ fn draw_frame_content_owning(
             }
             None => &mut *scene,
         };
-        app.presence_ctx
-            .with_permissions(app.permission_ctx.clone(), || {
-                app.root_widget.draw_child(
-                    widgets,
-                    transform,
-                    &mut app.text_renderer,
-                    &app.theme,
-                    &app.presence_ctx.draw_env(),
-                )
-            });
+        let draw = || {
+            app.root_widget.draw_child(
+                widgets,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                &app.presence_ctx.draw_env(),
+            );
+        };
+        // Guarded widgets paint what the workspace's permissions let this window show; a
+        // standalone window shows all of it.
+        #[cfg(feature = "model")]
+        {
+            app.presence_ctx
+                .with_permissions(app.permission_ctx.clone(), draw);
+        }
+        #[cfg(not(feature = "model"))]
+        {
+            draw();
+        }
         crate::draw_cull::unbind();
     }
     // Culled, what is painted over the widgets is drawn apart from them.
@@ -228,11 +240,7 @@ fn draw_frame_content_owning(
     // open menus, popovers and modals composite above everything drawn so
     // far, so a modal's scrim covers the History bar and every region. The
     // window stays the presence viewport: a modal covers all of it.
-    if app
-        .history
-        .as_ref()
-        .is_none_or(|history| history.live_visible())
-    {
+    if app.app_visible() {
         app.root_widget.draw_overlay(&mut crate::draw::DrawCtx::new(
             scene,
             transform,
@@ -250,6 +258,7 @@ fn draw_frame_content_owning(
         ));
     }
     painted(scene, "an overlay of the app's widgets", &mut drawn);
+    #[cfg(feature = "model")]
     if let Some(history) = &mut app.history {
         history.draw_overlay(&mut crate::draw::DrawCtx::new(
             scene,
@@ -396,16 +405,24 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
     crate::backdrop::nest_scene(widgets);
     let prev_vp = app.presence_ctx.push_viewport(drawn.window_rect);
     let secrets = crate::secret_paint::SecretPaint::begin();
-    app.presence_ctx
-        .with_permissions(app.permission_ctx.clone(), || {
-            app.root_widget.draw_child(
-                widgets,
-                drawn.transform,
-                &mut app.text_renderer,
-                &app.theme,
-                &app.presence_ctx.draw_env(),
-            )
-        });
+    let draw = || {
+        app.root_widget.draw_child(
+            widgets,
+            drawn.transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx.draw_env(),
+        );
+    };
+    #[cfg(feature = "model")]
+    {
+        app.presence_ctx
+            .with_permissions(app.permission_ctx.clone(), draw);
+    }
+    #[cfg(not(feature = "model"))]
+    {
+        draw();
+    }
     app.presence_ctx.pop_viewport(prev_vp);
     if secrets.finish() {
         app.set_secret_on_screen(true);
@@ -623,6 +640,7 @@ fn submit_presence_damage(
 /// frame, so dirty state and accessibility publication stay tied to pixels.
 fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
     app.root_widget.mark_drawn();
+    #[cfg(feature = "model")]
     if let Some(history) = &mut app.history {
         history.paint_presented();
     }
@@ -630,7 +648,10 @@ fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOn
     // now repaints whole on its own account.
     app.note_frame_drawn();
     publish_accessibility(app);
-    app.finish_history_return_frame();
+    #[cfg(feature = "model")]
+    {
+        app.finish_history_return_frame();
+    }
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
@@ -704,11 +725,14 @@ fn lay_out_window(
         };
         return Some((true, 0, 0));
     }
-    #[cfg(test)]
-    let history_probe = crate::profiling::frame_probe::span("layout.history");
-    app.refresh_framework_history(logical.0);
-    #[cfg(test)]
-    drop(history_probe);
+    #[cfg(feature = "model")]
+    {
+        #[cfg(test)]
+        let history_probe = crate::profiling::frame_probe::span("layout.history");
+        app.refresh_framework_history(logical.0);
+        #[cfg(test)]
+        drop(history_probe);
+    }
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
     // Another display scale is another pixel grid to round the edges onto: the
     // tree is solved again, though nothing that composes from its size changed.
@@ -716,7 +740,10 @@ fn lay_out_window(
     if !app.layout.layout_dirty && !viewport_changed && !grid_changed {
         // A sync that moved nothing (a worker's answer, a timer) can still
         // have changed what the app publishes.
-        owe_changed_action_surface(app, false);
+        #[cfg(feature = "model")]
+        {
+            owe_changed_action_surface(app, false);
+        }
         // Nothing moved: the pass placed nothing, and kept the tree.
         app.layout.last_pass = runtime::LayoutPass {
             placed_partly: true,
@@ -732,7 +759,7 @@ fn lay_out_window(
     // fixed-size field relayouts on every key; repainting the whole window
     // for it made per-key work scale with the display instead of the field.
     let geometry_before =
-        (!structure_rebuilt && !app.layout.structure_dirty && app.history.is_none())
+        (!structure_rebuilt && !app.layout.structure_dirty && !app.presents_history())
             .then(|| crate::pointer_replay::widget_geometry(app.root_widget.as_ref()));
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
@@ -961,7 +988,7 @@ fn lay_out_window(
                 == Some(runtime::PlacedAll {
                     focus: app.focused_node,
                 })
-            && app.history.is_none();
+            && !app.presents_history();
         if again {
             let tree = crate::widget::layout::TreeId::of(&app.layout.taffy);
             crate::widget::layout::placing_again_in(tree, || {
@@ -1012,6 +1039,7 @@ fn lay_out_window(
         // a change any widget described.
         app.layout.frame_rebuilds_described = false;
     }
+    #[cfg(feature = "model")]
     if app.settle_history_presentation() {
         app.layout.frame_rebuilds_described = false;
         let root = app.layout.root_node?;
@@ -1020,19 +1048,12 @@ fn lay_out_window(
     // NativeView measurement is independent of platform attachment. Mount only
     // the successfully settled tree; mount publishes its retained geometry.
     if (structure_rebuilt || recomposed || remounted)
-        && app
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
+        && app.app_live()
         && let Some(host) = native_host
     {
         crate::widget::mount_native_views(app.root_widget.as_mut(), host);
     }
-    if app
-        .history
-        .as_ref()
-        .is_some_and(|history| !history.live_interactive())
-    {
+    if !app.app_live() {
         crate::widget::unmount_native_views(app.root_widget.as_mut());
     }
     app.layout.last_layout_logical = Some(logical);
@@ -1104,7 +1125,10 @@ fn lay_out_window(
     // as input. Published once the retained control tree has settled, and
     // after the frame is handed to the render thread
     // (`App::publish_owed_action_surface`): no frame waits on it.
-    owe_changed_action_surface(app, structure_rebuilt || recomposed || remounted);
+    #[cfg(feature = "model")]
+    {
+        owe_changed_action_surface(app, structure_rebuilt || recomposed || remounted);
+    }
     let geometry_changed = recomposed
         || remounted
         || viewport_changed
@@ -1123,6 +1147,7 @@ fn lay_out_window(
 /// owes nothing. The frame pays it once it is handed to the render thread
 /// (`App::publish_owed_action_surface`); the publisher diffs the surface and
 /// checks broker connectivity.
+#[cfg(feature = "model")]
 fn owe_changed_action_surface(app: &mut App, rebuilt: bool) {
     if rebuilt || (!app.publication_current() && app.collaboration.manager.is_connected()) {
         app.actions.action_surface_owed = true;

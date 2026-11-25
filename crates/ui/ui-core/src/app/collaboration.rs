@@ -1112,7 +1112,7 @@ impl App {
     }
 
     pub fn local_author(&self) -> &crate::permissions::MemberId {
-        &self.collaboration.local_author
+        &self.local_author
     }
 }
 

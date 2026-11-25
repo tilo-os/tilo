@@ -47,7 +47,7 @@ fn application_action_handoff_requires_workspace_admission_and_routes_exact_dest
         Box::new(CounterCard::with_lazy_resource(resource)),
     );
     app.init_layout();
-    let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+    let actor = tilo_actions::Actor::Member(app.local_author.clone());
     let address = tilo_actions::ActionAddress::new("settings.account:ada", "open-files");
     let invoke = |app: &mut App| {
         app.invoke_resource_action(

@@ -4,11 +4,15 @@
 //! invalidation boundaries explicit without disconnecting actions, resources,
 //! or collaboration from the retained widget tree.
 
+#[cfg(feature = "model")]
+use super::{ActionDirectoryCursor, PresenceBroadcastSink};
 use super::{
-    ActionDirectoryCursor, DirectedInvocation, LocalResourceCache, OpenResourceSearchCache,
-    PresenceBroadcastSink, ResourceCache, ResourceCacheKey,
+    DirectedInvocation, LocalResourceCache, OpenResourceSearchCache, ResourceCache,
+    ResourceCacheKey,
 };
+#[cfg(feature = "model")]
 use crate::collaboration::CollaborationManager;
+#[cfg(feature = "model")]
 use crate::presence::PresenceKey;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -256,8 +260,10 @@ pub(super) struct TreeWalks {
     /// What control availability was last pushed into the tree from.
     pub(super) availability: Option<AvailabilityWalk>,
     /// What the document routes were last reconciled against.
+    #[cfg(feature = "model")]
     pub(super) routes: Option<RouteInputs>,
     /// What the last walk for History surfaces in the tree read and found.
+    #[cfg(feature = "model")]
     pub(super) history: Option<HistoryWalk>,
 }
 
@@ -287,6 +293,7 @@ pub(super) struct AvailabilityWalk {
     pub(super) changes_at: Option<crate::time::Instant>,
 }
 
+#[cfg(feature = "model")]
 /// Every input of reconciling the document routes with the tree.
 #[derive(PartialEq)]
 pub(super) struct RouteInputs {
@@ -296,6 +303,7 @@ pub(super) struct RouteInputs {
     pub(super) document: (Vec<automerge::ChangeHash>, usize),
 }
 
+#[cfg(feature = "model")]
 /// What the last walk for History surfaces read and found.
 pub(super) struct HistoryWalk {
     pub(super) tree: TreeGeneration,
@@ -313,6 +321,7 @@ pub(super) struct HistoryWalk {
     pub(super) needed: bool,
 }
 
+#[cfg(feature = "model")]
 /// What History surfaces read besides the tree and the window's status.
 #[derive(PartialEq)]
 pub(super) struct HistorySurfaceInputs {
@@ -321,6 +330,7 @@ pub(super) struct HistorySurfaceInputs {
     pub(super) narrow: bool,
 }
 
+#[cfg(feature = "model")]
 impl HistoryWalk {
     /// Whether the surfaces this walk found need looking at again.
     pub(super) fn surfaces_owed(&self, inputs: &HistorySurfaceInputs) -> bool {
@@ -430,30 +440,38 @@ pub(super) struct ActionRuntime {
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
     pub(super) resource_cache: RefCell<Option<ResourceCache>>,
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
+    #[cfg(feature = "model")]
     pub(super) bound_document_sync: Option<super::bound_document_sync::BoundDocumentSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
+    #[cfg(feature = "model")]
     pub(super) last_published_bound_route: Option<crate::collaboration::AcceptedRoute>,
     /// Publication refusals already logged, so a surface refused on every
     /// frame logs each distinct reason once rather than at frame rate.
     pub(super) refusals_logged: RefusalLog,
+    #[cfg(feature = "model")]
     #[cfg(test)]
     pub(super) bound_broker_route_for_test: Option<crate::collaboration::AcceptedRoute>,
+    #[cfg(feature = "model")]
     pub(super) action_directory_stamp: Option<(
         std::rc::Rc<super::action_directory_snapshot::DirectoryObservation>,
         String,
     )>,
+    #[cfg(feature = "model")]
     pub(super) action_directory_snapshot:
         Option<std::rc::Rc<super::action_directory_snapshot::ActionDirectorySnapshot>>,
+    #[cfg(feature = "model")]
     /// The directory the last revision named, set aside when a pass made it
     /// stale: re-derived to the same snapshot, it keeps that revision and
     /// its cursors.
     pub(super) action_directory_retired:
         Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
+    #[cfg(feature = "model")]
     /// The snapshot a reader pages at a revision the app has moved past: held
     /// beside what it publishes now, so the read keeps the directory it
     /// started on whatever the app publishes meanwhile.
     pub(super) action_directory_borrowed:
         Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
+    #[cfg(feature = "model")]
     pub(super) local_document_directory_pins:
         Vec<std::rc::Weak<super::action_directory_snapshot::LocalDocumentDirectoryPin>>,
     pub(super) bound_invocations: std::collections::HashMap<
@@ -467,6 +485,7 @@ pub(super) struct ActionRuntime {
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
     pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
+    #[cfg(feature = "model")]
     /// What the broker holds of the surface `last_published_actions` names,
     /// the base of the next delta.
     pub(super) published_surface: Option<crate::collaboration::SurfacePublication>,
@@ -479,11 +498,13 @@ pub(super) struct ActionRuntime {
     pub(super) published_stamp: Option<super::model_lifecycle::PublicationStamp>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
+    #[cfg(feature = "model")]
     /// Opaque, revision-bound continuation state for the broker directory.
     pub(super) action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
     /// Background operations admitted by the retained widget tree.
     pub(super) directed_invocations:
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
+    #[cfg(feature = "model")]
     /// The invoker of each delivered invocation still running, for the
     /// edits its effect submits.
     pub(super) acting_for: std::collections::HashMap<
@@ -569,16 +590,24 @@ impl ActionRuntime {
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
+            #[cfg(feature = "model")]
             bound_document_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
+            #[cfg(feature = "model")]
             last_published_bound_route: None,
             refusals_logged: RefusalLog::default(),
+            #[cfg(feature = "model")]
             #[cfg(test)]
             bound_broker_route_for_test: None,
+            #[cfg(feature = "model")]
             action_directory_stamp: None,
+            #[cfg(feature = "model")]
             action_directory_snapshot: None,
+            #[cfg(feature = "model")]
             action_directory_retired: None,
+            #[cfg(feature = "model")]
             action_directory_borrowed: None,
+            #[cfg(feature = "model")]
             local_document_directory_pins: Vec::new(),
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
@@ -588,13 +617,16 @@ impl ActionRuntime {
             last_control_availability: None,
             local_history_status: None,
             last_published_actions: None,
+            #[cfg(feature = "model")]
             published_surface: None,
             action_surface_owed: false,
             published_stamp: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
+            #[cfg(feature = "model")]
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
             acting_for: std::collections::HashMap::new(),
             waiting_controls: Vec::new(),
             follow_ups: std::collections::HashMap::new(),
@@ -714,6 +746,7 @@ impl AccessibilityRuntime {
     }
 }
 
+#[cfg(feature = "model")]
 /// Continuation publication and deferred restore state.
 pub(super) struct ContinuationRuntime {
     pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
@@ -733,6 +766,7 @@ pub(super) struct ContinuationRuntime {
     pub(super) search_index_route: Option<crate::collaboration::AcceptedRoute>,
 }
 
+#[cfg(feature = "model")]
 impl ContinuationRuntime {
     pub(super) fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
         Self {
@@ -748,10 +782,10 @@ impl ContinuationRuntime {
     }
 }
 
+#[cfg(feature = "model")]
 /// Collaboration transports and local authorship identity.
 pub(super) struct CollaborationRuntime {
     pub(super) manager: CollaborationManager,
-    pub(super) local_author: crate::permissions::MemberId,
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
     pub(super) key_access: Option<crate::collaboration::KeyAccessState>,
@@ -767,17 +801,17 @@ pub(super) struct CollaborationRuntime {
     pub(super) delivery: super::WorkspaceDelivery,
 }
 
+#[cfg(feature = "model")]
 impl CollaborationRuntime {
     pub(super) fn new(
         manager: CollaborationManager,
         delivery: super::WorkspaceDelivery,
-        local_author: crate::permissions::MemberId,
+        local_author: &tilo_actions::MemberId,
     ) -> Self {
-        crate::history_source::authors::read_as(&local_author);
+        crate::history_source::authors::read_as(local_author);
         Self {
             manager,
             delivery,
-            local_author,
             key_access: None,
             shown_sync_status: None,
             held_requests: std::collections::VecDeque::new(),
@@ -785,6 +819,7 @@ impl CollaborationRuntime {
     }
 }
 
+#[cfg(feature = "model")]
 /// Presence publication, follow, and frame-pump state.
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
@@ -799,6 +834,7 @@ pub(super) struct PresenceRuntime {
     pub(super) broadcast_sink: Option<PresenceBroadcastSink>,
 }
 
+#[cfg(feature = "model")]
 impl PresenceRuntime {
     pub(super) fn new() -> Self {
         Self {
@@ -815,12 +851,14 @@ impl PresenceRuntime {
     }
 }
 
+#[cfg(feature = "model")]
 /// Stable focus projection used to delimit undo/redo history entries.
 pub(super) struct HistoryRuntime {
     pub(super) stable_focus_idx: Option<usize>,
     pub(super) stable_metadata: Option<String>,
 }
 
+#[cfg(feature = "model")]
 impl HistoryRuntime {
     pub(super) fn new() -> Self {
         Self {

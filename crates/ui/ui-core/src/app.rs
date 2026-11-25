@@ -37,11 +37,15 @@ mod native_input_isolation;
 #[path = "animation_schedule.rs"]
 pub mod animation_schedule;
 
+#[cfg(feature = "model")]
 mod action_directory_snapshot;
+#[cfg(feature = "model")]
 mod bound_document_sync;
 mod close_admission;
 mod follow_ups;
+#[cfg(feature = "model")]
 mod handoff;
+#[cfg(feature = "model")]
 mod held_answers;
 mod host_commands;
 mod report_point;
@@ -54,25 +58,31 @@ mod presences;
 mod retirement_assembly;
 #[cfg(test)]
 mod retirement_lifecycle_tests;
+#[cfg(feature = "model")]
 mod surface_route;
 include!("app/floating.rs");
 mod part_bar;
 mod runtime;
 mod window_bar;
 use runtime::{
-    AccessibilityRuntime, ActionRuntime, BrokerReply, CollaborationRuntime, ContinuationRuntime,
-    HeldOwnInvocation, HistoryRuntime, InputRuntime, LayoutRuntime, PresenceRuntime, WindowRuntime,
+    AccessibilityRuntime, ActionRuntime, BrokerReply, HeldOwnInvocation, InputRuntime,
+    LayoutRuntime, WindowRuntime,
 };
+#[cfg(feature = "model")]
+use runtime::{CollaborationRuntime, ContinuationRuntime, HistoryRuntime, PresenceRuntime};
+#[cfg(feature = "model")]
 include!("app/continuation.rs");
 include!("app/dev_session.rs");
 include!("app/dev_library.rs");
 include!("app/actions.rs");
 include!("app/app_core.rs");
+#[cfg(feature = "model")]
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
 include!("app/window_targets.rs");
 include!("app/touch_exploration.rs");
+#[cfg(feature = "model")]
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
@@ -121,6 +131,7 @@ mod driver_widget_tests;
 mod driver_window_bar_tests;
 mod held_input;
 mod input_publication;
+#[cfg(feature = "model")]
 mod local_input_capture;
 #[cfg(test)]
 mod session_tests;
@@ -133,6 +144,7 @@ mod embedded;
 #[cfg(feature = "native")]
 pub use embedded::EmbeddedApp;
 
+#[cfg(feature = "model")]
 #[derive(Clone)]
 struct ActionDirectoryCursor {
     revision: String,
@@ -145,12 +157,33 @@ struct ActionDirectoryCursor {
     root_provider_cursor: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "model")]
 const ACTION_DIRECTORY_MAX_RESULTS: usize = ::collaboration::action_directory::MAX_RESULTS;
+#[cfg(feature = "model")]
 const ACTION_DIRECTORY_MAX_WORK: usize = ::collaboration::action_directory::MAX_WORK;
+#[cfg(feature = "model")]
 const ACTION_DIRECTORY_MAX_BYTES: usize = ::collaboration::action_directory::MAX_BYTES;
+#[cfg(feature = "model")]
 const ACTION_DIRECTORY_MAX_DEPTH: u16 = ::collaboration::action_directory::MAX_DEPTH;
+#[cfg(feature = "model")]
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
+
+/// The person at this machine, whom a window acts for unless its host says otherwise: the
+/// workspace's identity of them with Tilo's model, else the operating system's account.
+pub(crate) fn local_person() -> tilo_actions::MemberId {
+    #[cfg(feature = "model")]
+    let person = crate::collaboration::local_user_id();
+    #[cfg(not(feature = "model"))]
+    let person = tilo_actions::MemberId::Person(tilo_actions::PersonId::from(
+        crate::process::environment()
+            .identity
+            .account_name
+            .clone()
+            .unwrap_or_else(|| "local".to_owned()),
+    ));
+    person
+}
 
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real `WindowEvent`(s) and routes
 /// through the same handler, so injected and real-hardware events take the identical code path.
@@ -216,13 +249,17 @@ impl From<accesskit_winit::Event> for UserEvent {
         }
     }
 }
+#[cfg(feature = "model")]
 use crate::collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
 };
 use crate::focus_navigation::Direction;
 use crate::ime::ImeWindowState;
+#[cfg(feature = "model")]
 use crate::permissions::PermissionContext;
-use crate::presence::{PresenceCtx, PresenceKey};
+use crate::presence::PresenceCtx;
+#[cfg(feature = "model")]
+use crate::presence::PresenceKey;
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -256,6 +293,7 @@ fn scroll_opt_disabled() -> bool {
 }
 
 #[cfg(test)]
+#[cfg(feature = "model")]
 mod continuation_tests {
     use super::continuation_publication;
     use crate::collaboration::{CollabRequest, ContinuationMetadata};
@@ -398,6 +436,7 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
     found
 }
 
+#[cfg(feature = "model")]
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
@@ -473,18 +512,23 @@ pub struct App {
     wake_scope: Option<crate::wake::WakeScope>,
     state: Box<State>,
     root_widget: Box<dyn Widget>,
+    #[cfg(feature = "model")]
     history: Option<crate::history_mode::host::HistoryChrome>,
+    #[cfg(feature = "model")]
     #[cfg(any(test, feature = "test-support"))]
     controlled_installed_history_definition:
         Option<&'static crate::history_mode::HistoryDefinition>,
     framework_input: std::rc::Rc<Cell<bool>>,
+    #[cfg(feature = "model")]
     history_key_release: bool,
+    #[cfg(feature = "model")]
     history_focus: Option<crate::widget::layout::CompositionFocus>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
     watch_system_settings: bool,
     layout: LayoutRuntime,
     bindings: crate::bound_dispatch::BoundNodeMap,
+    #[cfg(feature = "model")]
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     close_admission: crate::close_admission::Admission,
     /// A window asked for the thing a report is about, until the person points
@@ -522,12 +566,19 @@ pub struct App {
     theme_schedule: Option<(settings_model::day_schedule::Scheduled, bool)>,
     input: InputRuntime,
 
+    #[cfg(feature = "model")]
     focus_history: HistoryRuntime,
 
+    #[cfg(feature = "model")]
     collaboration: CollaborationRuntime,
+    #[cfg(feature = "model")]
     local_input_capture: local_input_capture::LocalInputCapture,
     pub presence_ctx: PresenceCtx,
+    /// The person this window acts for: who its actions are made by.
+    local_author: tilo_actions::MemberId,
+    #[cfg(feature = "model")]
     pub permission_ctx: PermissionContext,
+    #[cfg(feature = "model")]
     /// [`crate::permissions::shared_revision`] as the last frame painted with it: what widgets paint
     /// follows permissions that can change with nothing in the tree marking it, so a frame draws again
     /// from cleared drawings after it moves.
@@ -540,6 +591,7 @@ pub struct App {
     theme_epoch: u64,
     frame_theme_epoch: u64,
 
+    #[cfg(feature = "model")]
     presence: PresenceRuntime,
 
     accessibility: Box<AccessibilityRuntime>,
@@ -547,18 +599,22 @@ pub struct App {
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each frame so a steady desired
     /// state issues one `set_fullscreen` call — see [`fullscreen_request_decision`].
     window: WindowRuntime,
+    #[cfg(feature = "model")]
     committed_documents: Vec<(
         crate::collaboration::RouteSpec,
         crate::collaboration::CommittedDocument,
     )>,
     autosave_generation: u64,
+    #[cfg(feature = "model")]
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
     actions: Box<ActionRuntime>,
     /// The window presents search itself (its palette), rather than a shell hosting the app.
     search_presented: bool,
     native_document_chrome: bool,
+    #[cfg(feature = "model")]
     continuation: ContinuationRuntime,
+    #[cfg(feature = "model")]
     /// A failed pre-terminal handoff must not re-enter directed effects.
     action_publication_failure: Option<String>,
     profiler: Option<crate::profiling::FrameProfiler>,
@@ -602,7 +658,9 @@ enum PaletteSource {
 
 struct AppConstructionInputs {
     control_domain: Option<crate::ControlDomain>,
+    #[cfg(feature = "model")]
     collab_manager: CollaborationManager,
+    #[cfg(feature = "model")]
     /// How the window takes up what `collab_manager`'s workspace sends it.
     delivery: WorkspaceDelivery,
     configured_theme: ConstructionValue<Theme>,
@@ -611,7 +669,7 @@ struct AppConstructionInputs {
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<crate::settings_source::SettingsStamp>,
-    local_author: ConstructionValue<crate::permissions::MemberId>,
+    local_author: ConstructionValue<tilo_actions::MemberId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
     /// The person's colour before a host says it: the stored choice where
@@ -621,14 +679,17 @@ struct AppConstructionInputs {
     reduce_motion: fn() -> bool,
     text_scale: fn() -> f32,
     ui_scale: fn() -> f32,
+    #[cfg(feature = "model")]
     pending_continuation_restore: fn() -> Option<crate::collaboration::ContinuationMetadata>,
     profiler: fn() -> Option<crate::profiling::FrameProfiler>,
     floating_surface_client: fn() -> Option<crate::floating_surface::FloatingSurfaceServiceClient>,
+    #[cfg(feature = "model")]
     startup_presence_scope: fn() -> Option<PresenceKey>,
     surface_id: ConstructionValue<String>,
 }
 
 impl AppConstructionInputs {
+    #[cfg(feature = "model")]
     fn native_component(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -636,13 +697,14 @@ impl AppConstructionInputs {
         Self::component_with_services(
             inputs,
             binding,
-            Self::production(
+            Self::production().with_manager(
                 crate::collaboration::native_initial::take_manager()
                     .unwrap_or_else(|| CollaborationManager::for_resource(&binding.checkout)),
             ),
         )
     }
 
+    #[cfg(feature = "model")]
     fn component_with_services(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -658,6 +720,7 @@ impl AppConstructionInputs {
         services
     }
 
+    #[cfg(feature = "model")]
     fn component(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -666,7 +729,9 @@ impl AppConstructionInputs {
         presence.set_own_identity([binding.author.clone()]);
         Self {
             control_domain: None,
+            #[cfg(feature = "model")]
             collab_manager: CollaborationManager::disabled(),
+            #[cfg(feature = "model")]
             // A host may put the window on a workspace after it is built.
             delivery: WorkspaceDelivery::LINKED,
             configured_theme: ConstructionValue::Ready(inputs.theme),
@@ -687,14 +752,31 @@ impl AppConstructionInputs {
             reduce_motion: || false,
             text_scale: || 1.0,
             ui_scale: || 1.0,
+            #[cfg(feature = "model")]
             pending_continuation_restore: || None,
             profiler: || None,
             floating_surface_client: || None,
+            #[cfg(feature = "model")]
             startup_presence_scope: || None,
         }
     }
 
-    fn production(collab_manager: CollaborationManager) -> Self {
+    /// What a window opened in the workspace is made with: [`Self::production`], joined to the
+    /// workspace where Tilo's model is built in.
+    fn workspace() -> Self {
+        let inputs = Self::production();
+        #[cfg(feature = "model")]
+        let inputs = inputs.with_manager(CollaborationManager::new());
+        inputs
+    }
+
+    #[cfg(feature = "model")]
+    fn with_manager(mut self, collab_manager: CollaborationManager) -> Self {
+        self.collab_manager = collab_manager;
+        self
+    }
+
+    fn production() -> Self {
         // The screen reader below speaks through the host's services, so a
         // process that never installed any gets the native platform's.
         #[cfg(feature = "native")]
@@ -703,7 +785,9 @@ impl AppConstructionInputs {
         crate::emoji_catalogue::keep_uses_on_the_device();
         Self {
             control_domain: None,
-            collab_manager,
+            #[cfg(feature = "model")]
+            collab_manager: CollaborationManager::disabled(),
+            #[cfg(feature = "model")]
             delivery: WorkspaceDelivery::LINKED,
             configured_theme: ConstructionValue::Lazy(Theme::configured),
             text_renderer: ConstructionValue::Lazy(TextRenderer::new),
@@ -716,8 +800,11 @@ impl AppConstructionInputs {
                 cfg!(debug_assertions) && crate::process::environment().diagnostics.debug_overlay
             },
             theme_store_stamp: crate::settings_source::stamp,
-            local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
+            local_author: ConstructionValue::Lazy(local_person),
+            #[cfg(feature = "model")]
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
+            #[cfg(not(feature = "model"))]
+            presence_ctx: ConstructionValue::Lazy(PresenceCtx::empty),
             screen_reader: || {
                 if crate::process::environment().accessibility.screen_reader
                     || crate::screen_reader::settings().enabled
@@ -742,10 +829,12 @@ impl AppConstructionInputs {
                     .ui_scale
                     .unwrap_or(1.0)
             },
+            #[cfg(feature = "model")]
             pending_continuation_restore: crate::collaboration::continuation_restore_env,
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
                 crate::floating_surface::FloatingSurfaceServiceClient::for_window,
+            #[cfg(feature = "model")]
             startup_presence_scope: crate::presence::local_workspace_key,
             surface_id: ConstructionValue::Lazy(crate::local_surface_id),
         }
@@ -755,7 +844,9 @@ impl AppConstructionInputs {
     fn controlled() -> Self {
         Self {
             control_domain: None,
+            #[cfg(feature = "model")]
             collab_manager: CollaborationManager::disabled(),
+            #[cfg(feature = "model")]
             // A host may put the window on a workspace after it is built.
             delivery: WorkspaceDelivery::LINKED,
             configured_theme: ConstructionValue::Lazy(Theme::dark),
@@ -781,9 +872,11 @@ impl AppConstructionInputs {
             reduce_motion: || false,
             text_scale: || 1.0,
             ui_scale: || 1.0,
+            #[cfg(feature = "model")]
             pending_continuation_restore: || None,
             profiler: || None,
             floating_surface_client: || None,
+            #[cfg(feature = "model")]
             startup_presence_scope: || None,
             surface_id: ConstructionValue::Lazy(|| "fixture-surface".into()),
         }
@@ -808,6 +901,7 @@ impl App {
     }
 
     /// Mount an already prepared component with explicit presentation and local services.
+    #[cfg(feature = "model")]
     pub fn from_component(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -817,6 +911,7 @@ impl App {
     }
 
     /// Mount a checked component on an explicitly admitted collaboration manager.
+    #[cfg(feature = "model")]
     pub fn from_component_with_collaboration(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -832,6 +927,7 @@ impl App {
 
     /// Mount a standalone native component with the process's existing system services, including
     /// record-scoped collaboration and accessibility.
+    #[cfg(feature = "model")]
     pub fn from_component_with_native_services(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -840,6 +936,7 @@ impl App {
             .map(|app| *app)
     }
 
+    #[cfg(feature = "model")]
     fn from_component_using(
         mut component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -938,10 +1035,12 @@ impl App {
     }
 
     /// Current SDK transport health, including fail-closed publication errors.
+    #[cfg(feature = "model")]
     pub fn collaboration_is_connected(&self) -> bool {
         self.collaboration.manager.is_connected()
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
         let accessibility = crate::process::environment().accessibility;
         let theme = Theme::configured().with_a11y(
@@ -986,14 +1085,17 @@ impl App {
         self.mark_semantic_tree_stale();
         self.retire_semantic_root();
         self.control_domain.close();
-        self.actions.bound_document_sync = None;
-        self.component_close_reports
-            .extend(crate::component_lifecycle::close_components(
-                self.root_widget.as_mut(),
-            ));
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
-        );
+        #[cfg(feature = "model")]
+        {
+            self.actions.bound_document_sync = None;
+            self.component_close_reports
+                .extend(crate::component_lifecycle::close_components(
+                    self.root_widget.as_mut(),
+                ));
+            self.component_close_reports.extend(
+                crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+            );
+        }
         self.bindings.clear();
         self.layout.node_map.clear();
     }
@@ -1003,16 +1105,25 @@ impl App {
         crate::widget::unmount_native_views(self.root_widget.as_mut());
     }
 
+    #[cfg(feature = "model")]
+    /// Take what the tree's components reported as they closed.
+    #[cfg(feature = "model")]
+    fn collect_component_close_reports(&mut self) {
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
+    }
+
+    #[cfg(feature = "model")]
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
         &self.component_close_reports
     }
     /// Transfer pending recovery to another owner; ordinary tile destruction cannot lose it.
+    #[cfg(feature = "model")]
     pub fn take_component_close_reports(
         &mut self,
     ) -> Vec<crate::application::ComponentCloseReport> {
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
-        );
+        self.collect_component_close_reports();
         std::mem::take(&mut self.component_close_reports)
     }
 
@@ -1027,6 +1138,7 @@ impl App {
             .or_else(|| self.focusable_order.first().copied())
     }
 
+    #[cfg(feature = "model")]
     fn initial_presence_context() -> PresenceCtx {
         let mut context = PresenceCtx::empty();
         let own = crate::collaboration::local_user_id();
@@ -1041,6 +1153,7 @@ impl App {
     /// launchers construct under their installed wake scope, then install History.
     /// # Errors
     /// Refuses invalid or mismatched managed owner registrations.
+    #[cfg(feature = "model")]
     pub fn from_managed_root(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -1052,7 +1165,10 @@ impl App {
     /// boundary as the public managed constructor.
     /// # Errors
     /// Refuses invalid or mismatched managed owner registrations.
-    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
+    #[cfg(all(
+        any(test, all(feature = "native", feature = "test-support")),
+        feature = "model"
+    ))]
     pub fn from_managed_root_with_controlled_inputs(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -1063,6 +1179,7 @@ impl App {
         })
     }
 
+    #[cfg(feature = "model")]
     fn from_managed_root_with_constructor(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -1079,6 +1196,7 @@ impl App {
         self.control_domain.coverage()
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn install_history(
         &mut self,
         registration: crate::history_mode::HistoryRegistration,
@@ -1113,11 +1231,12 @@ impl App {
     /// Construct an explicitly detached app for headless or test execution.
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
         let _entry = crate::wake::WakeScope::enter_detached();
-        Self::with_collaboration_manager(state, root_widget, CollaborationManager::new())
+        *Self::with_parts(None, state, root_widget, AppConstructionInputs::workspace())
     }
 
     /// Construct an explicitly detached app with a connected collaboration manager for headless or test
     /// execution.
+    #[cfg(feature = "model")]
     pub fn with_collaboration_manager(
         state: State,
         root_widget: Box<dyn Widget>,
@@ -1127,24 +1246,20 @@ impl App {
             None,
             state,
             root_widget,
-            AppConstructionInputs::production(collab_manager),
+            AppConstructionInputs::production().with_manager(collab_manager),
         )
     }
 
     /// Construct a live app whose root factory captures a fresh owner.
     pub fn from_factory(state: State, factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
-        Self::from_factory_with_inputs(state, factory, || {
-            AppConstructionInputs::production(CollaborationManager::new())
-        })
+        Self::from_factory_with_inputs(state, factory, AppConstructionInputs::workspace)
     }
 
     /// A window showing `factory`'s root that joins no workspace: what a launch shows while the record
     /// it opens arrives with the workspace's join ([`crate::launch::window`]).
     #[cfg(feature = "native")]
     pub(crate) fn without_workspace(factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
-        Self::from_factory_with_inputs(State::new(), factory, || {
-            AppConstructionInputs::production(CollaborationManager::disabled())
-        })
+        Self::from_factory_with_inputs(State::new(), factory, AppConstructionInputs::production)
     }
 
     fn from_factory_with_inputs(
@@ -1191,8 +1306,13 @@ impl App {
         root: Box<dyn Widget>,
         domain: crate::ControlDomain,
     ) -> Self {
-        let manager = crate::collaboration::native_initial::take_manager().unwrap_or_default();
-        let mut inputs = AppConstructionInputs::production(manager);
+        let mut inputs = AppConstructionInputs::production();
+        #[cfg(feature = "model")]
+        {
+            inputs = inputs.with_manager(
+                crate::collaboration::native_initial::take_manager().unwrap_or_default(),
+            );
+        }
         inputs.control_domain = Some(domain);
         *Self::with_parts(Some(scope), state, root, inputs)
     }
@@ -1219,9 +1339,12 @@ impl App {
         state: State,
         root_widget: Box<dyn Widget>,
     ) -> Self {
-        Self::from_scoped_parts_with_inputs(wake_scope, state, root_widget, || {
-            AppConstructionInputs::production(CollaborationManager::new())
-        })
+        Self::from_scoped_parts_with_inputs(
+            wake_scope,
+            state,
+            root_widget,
+            AppConstructionInputs::workspace,
+        )
     }
 
     fn from_scoped_parts_with_inputs(
@@ -1300,7 +1423,9 @@ impl App {
             root_widget,
             AppConstructionInputs {
                 control_domain: Some(domain),
+                #[cfg(feature = "model")]
                 collab_manager: CollaborationManager::disabled(),
+                #[cfg(feature = "model")]
                 delivery: WorkspaceDelivery::UNLINKED,
                 configured_theme: ConstructionValue::Ready(theme),
                 text_renderer: ConstructionValue::Ready(text),
@@ -1319,9 +1444,11 @@ impl App {
                 reduce_motion: || false,
                 text_scale: || 1.0,
                 ui_scale: || 1.0,
+                #[cfg(feature = "model")]
                 pending_continuation_restore: || None,
                 profiler: || None,
                 floating_surface_client: || None,
+                #[cfg(feature = "model")]
                 startup_presence_scope: || None,
                 surface_id: ConstructionValue::Lazy(|| "displayless-surface".into()),
             },
@@ -1332,7 +1459,10 @@ impl App {
         app.accessibility.ui_scale = ui_scale;
         app.accessibility.a11y.reduce_motion = reduce_motion;
         app.rebuild_theme();
-        app.set_permission_ctx(PermissionContext::permissive());
+        #[cfg(feature = "model")]
+        {
+            app.set_permission_ctx(PermissionContext::permissive());
+        }
         app
     }
 
@@ -1345,8 +1475,27 @@ impl App {
             reason = "read by the native draw and by embedded apps, which this feature set leaves out"
         )
     )]
+    /// When Tilo's model next needs the loop to run: a local input it could not yet report
+    /// retries then.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(dead_code, reason = "read by the native event loop")
+    )]
+    pub(crate) fn model_deadline(&self) -> Option<crate::time::Instant> {
+        #[cfg(feature = "model")]
+        let at = self.local_input_capture_deadline();
+        #[cfg(not(feature = "model"))]
+        let at = None;
+        at
+    }
+
     pub(crate) fn permissions_moved(&self) -> bool {
-        self.painted_permissions != crate::permissions::shared_revision()
+        #[cfg(feature = "model")]
+        let moved = self.painted_permissions != crate::permissions::shared_revision();
+        // Without the model nothing grants or takes away a permission while the window runs.
+        #[cfg(not(feature = "model"))]
+        let moved = false;
+        moved
     }
 
     /// Whether the theme changed since the last frame drew with it: the frame
@@ -1401,7 +1550,10 @@ impl App {
     }
 
     fn close_wake_scope(&mut self) {
-        self.send_held_answers(true);
+        #[cfg(feature = "model")]
+        {
+            self.send_held_answers(true);
+        }
         self.retire_semantic_root();
         if let Some(scope) = self.wake_scope.as_mut() {
             scope.close();
@@ -1603,6 +1755,7 @@ impl App {
         (key, permission_generation)
     }
 
+    #[cfg(feature = "model")]
     fn directory_explicit_visibilities(
         &self,
         resources: &[tilo_actions::ResourceSpec],
@@ -1654,6 +1807,7 @@ impl App {
             .collect()
     }
 
+    #[cfg(feature = "model")]
     fn directory_explicit_visibility(
         &self,
         resource: &tilo_actions::ResourceSpec,
@@ -1674,6 +1828,7 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     fn directory_descriptor(
         resource: &tilo_actions::ResourceSpec,
         action: &tilo_actions::ActionSpec,
@@ -1712,6 +1867,7 @@ impl App {
 }
 
 impl App {
+    #[cfg(feature = "model")]
     /// Publish what this window's search finds to the session's persistent
     /// search index, over the certified primary route: only what changed
     /// since the last publication on that route, and nothing while the
@@ -1751,6 +1907,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
         let observation = self.collaboration.manager.primary_route()?.clone();
         let instance = self.collaboration.manager.private_window_instance()?;
@@ -2064,6 +2221,7 @@ impl App {
 }
 
 impl App {
+    #[cfg(feature = "model")]
     fn collab_event_may_change_action_surface(event: &CollabEvent) -> bool {
         !matches!(
             event,
@@ -2142,9 +2300,10 @@ impl App {
         tilo_startup_metrics::span("init-layout-actions", || {
             self.refresh_control_action_availability();
         });
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
-        );
+        #[cfg(feature = "model")]
+        {
+            self.collect_component_close_reports();
+        }
         self.bindings.clear();
         self.layout.node_map.clear();
         // The map built now describes the tree as it is: a replacement the
@@ -2155,9 +2314,9 @@ impl App {
         tilo_startup_metrics::span("init-layout-focus-order", || {
             self.update_focusable_order();
         });
-        if let Some(view) = self.continuation.pending_view.take() {
-            <Self as crate::view::FreezeThaw>::restore_view(self, &view);
-        } else if let Some(view) = dev_view {
+        #[cfg(feature = "model")]
+        let dev_view = self.continuation.pending_view.take().or(dev_view);
+        if let Some(view) = dev_view {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first && self.focused_node.is_none() {
@@ -2165,14 +2324,17 @@ impl App {
                 self.set_focused_node(Some(id));
             }
         }
-        self.focus_history.stable_focus_idx = self
-            .focused_node
-            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| crate::undo::get_state(widget))
-                .ok()
-                .flatten()
-        });
+        #[cfg(feature = "model")]
+        {
+            self.focus_history.stable_focus_idx = self
+                .focused_node
+                .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+            self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
+                self.inspect_node(id, |widget| crate::undo::get_state(widget))
+                    .ok()
+                    .flatten()
+            });
+        }
     }
 
     /// Exposed so headless tests can drive modal open/close without a winit loop.
@@ -2188,10 +2350,13 @@ impl App {
     #[track_caller]
     pub(crate) fn take_composition_dirty(&mut self) -> bool {
         let root = self.take_root_structure_dirty();
+        #[cfg(feature = "model")]
         let history = self
             .history
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
+        #[cfg(not(feature = "model"))]
+        let history = false;
         if history {
             self.layout.rebuild_described = false;
         }
@@ -2363,9 +2528,10 @@ impl App {
         self.layout.host_node = None;
         self.layout.host_child = None;
         self.layout.unsolved = true;
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
-        );
+        #[cfg(feature = "model")]
+        {
+            self.collect_component_close_reports();
+        }
         self.bindings.clear();
         self.layout.node_map.clear();
         self.layout.adopted.clear();
@@ -2439,8 +2605,8 @@ impl App {
 
         if self.autofocus_on_structure_change
             && !self.accessibility.focus_trap_active
-            && self.history.is_none()
-            && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+            && !self.presents_history()
+            && !self.embeds_history()
         {
             // A rebuilt tree can already hold focus: a form that re-creates
             // its controls puts the keyboard back on the field the person was
@@ -2928,8 +3094,10 @@ mod person_resource_tests;
 #[path = "app/history.rs"]
 mod framework_history;
 
+#[cfg(feature = "model")]
 mod committed_document;
 
+#[cfg(feature = "model")]
 mod document_routes;
 
 #[cfg(test)]

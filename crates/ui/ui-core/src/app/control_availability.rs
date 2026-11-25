@@ -11,8 +11,13 @@ impl App {
     /// ([`runtime::AvailabilityWalk::changes_at`]). An outside authority
     /// they follow announces its changes, which move the tree generation.
     fn refresh_control_action_availability(&mut self) {
-        let history_captures = self.history.as_ref().is_some_and(|h| h.captures_input());
-        let history_api = self.refresh_history_controls();
+        #[cfg(feature = "model")]
+        let (history_captures, history_api) = (
+            self.history.as_ref().is_some_and(|h| h.captures_input()),
+            self.refresh_history_controls(),
+        );
+        #[cfg(not(feature = "model"))]
+        let (history_captures, history_api) = (false, std::collections::HashSet::new());
         tilo_startup_metrics::startup_mark("actions-history-done");
         let inputs = runtime::AvailabilityInputs {
             tree: self.tree_generation(),
