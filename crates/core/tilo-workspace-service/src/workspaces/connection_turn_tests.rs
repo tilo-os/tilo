@@ -834,7 +834,10 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     let (ran_as, request) = ran;
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("scribe", "ada")),
+        Some(&tilo_action_policy::MemberId::agent(
+            "scribe",
+            hex::encode(persons_root().verifying_key().to_bytes())
+        )),
         "the call runs as the agent"
     );
     assert_eq!(ran_as.device_public_key(), Some(&scribe.device_public_key));
@@ -942,7 +945,10 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     let (ran_as, _) = records.ran.lock().unwrap().pop().unwrap();
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("scribe", "ada")),
+        Some(&tilo_action_policy::MemberId::agent(
+            "scribe",
+            hex::encode(persons_root().verifying_key().to_bytes())
+        )),
         "the bridge's call runs as the agent it serves, never as the laptop"
     );
     assert_eq!(ran_as.forwarder(), Some(&laptop_device));

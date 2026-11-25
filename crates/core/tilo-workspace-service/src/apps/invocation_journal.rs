@@ -448,7 +448,7 @@ pub(super) fn evidence_facts(
         actor_id: match tilo_actions::Actor::deserialize(
             intent.get("actor").ok_or("admission actor missing")?,
         )
-        .map_err(|_| "admission actor missing")?
+        .map_err(|error| format!("admission actor {} does not read: {error}", intent["actor"]))?
         {
             tilo_actions::Actor::Member(member) => member,
             _ => return Err("attested admission names no member".into()),

@@ -861,7 +861,7 @@ mod tests {
             signed,
             [
                 SIGN_DOMAIN,
-                br#"{"facts":{"action":"append","actor":{"AuthenticatedLocal":{"agent":"agent","device":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4],"root":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}},"actor_id":{"agent":"agent"},"app_id":"notes","document_id":"record","host":"00000000-0000-0000-0000-000000000001","invocation":"00000000-0000-0000-0000-000000000002","resource":"document/body","revision":"revision","workspace":"workspace"},"intent_commitment":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}"#,
+                br#"{"facts":{"action":"append","actor":{"AuthenticatedLocal":{"agent":"agent","device":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4],"root":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}},"actor_id":{"agent":{"id":"agent","person":"ada"}},"app_id":"notes","document_id":"record","host":"00000000-0000-0000-0000-000000000001","invocation":"00000000-0000-0000-0000-000000000002","resource":"document/body","revision":"revision","workspace":"workspace"},"intent_commitment":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}"#,
             ]
             .concat()
         );
