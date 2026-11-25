@@ -975,11 +975,18 @@ impl Shell {
     /// loaded over the document its parts draw from, so a REPL or an agent reads and changes the
     /// shell's records by its app, as it does Notes'. The session runs the shell itself, and its
     /// records are the person's, synced with their devices, as an app's are.
+    ///
+    /// A shell whose records the person's workspace keeps publishes nothing here: the device's
+    /// daemon answers for them, so a REPL's or an agent's change runs the same action a press
+    /// does and reaches their other devices, never a copy only this session reads.
     pub(crate) fn share_records(
         &self,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         surfaces: &crate::mcp_server::SessionServices,
     ) {
+        if self.kept_elsewhere {
+            return;
+        }
         let Some(compiled) = self.package() else {
             return;
         };
