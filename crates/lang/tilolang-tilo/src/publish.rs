@@ -862,8 +862,8 @@ fn views_of(
         .collect()
 }
 
-/// The places a window of a root of `declared` can be opened at (`on show week: ...` in its
-/// default view), each with the action that opens the window there: an
+/// The places a window of `declared` can be opened at (`on show week: ...` in its default view,
+/// for a root or for what a window opens, such as one comparison), each with the action that opens the window there: an
 /// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) naming the place, labelled in
 /// the reader's words, which the launcher, the palette, an agent and a script invoke alike. The
 /// window answers it by taking its own view to the place, for the person who opened it: what
@@ -874,9 +874,6 @@ fn places_of(
     words: &dyn Words,
 ) -> Vec<(Arc<ActionType>, String)> {
     use tilo_resource::Effect as _;
-    if !meta.roots.contains(&declared.id) {
-        return Vec::new();
-    }
     meta.places_of(&declared.id)
         .iter()
         .map(|place| {

@@ -805,3 +805,9 @@ d-tzehhxal = Katalogspalten
 
 d-xei4cwt4 = Spalten leeren
     .doc = Leert die Spalten, die ein Fenster hält, damit ein erneut gelesener Katalog nie neben dem vorigen steht.
+
+d-v2conrl7 = Abfrageeditor
+
+d-hmwoone4 = Tabellenzeilen
+
+d-ps6s2ain = Tabellenstruktur

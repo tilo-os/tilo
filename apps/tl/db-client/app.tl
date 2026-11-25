@@ -1236,6 +1236,11 @@ view window(d: Database) {
     state new_password: Text = ""
     // A table system search chose opens here, showing its rows.
     on show(t: TableInfo): browse(root Database, t)
+    // A saved query opens in the editor, ready to run; the window opens at any of its views.
+    on show(q: SavedQuery): load_query(root Database, q)
+    on show query "Query editor": show_tab(d, .query)
+    on show data "Table rows": show_tab(d, .data)
+    on show structure "Table structure": show_tab(d, .structure)
     let asked = found.trim().lower()
     let listed = d.connections.filter(c -> asked == "" or c.name.lower().contains(asked))
     let tables = listing(current, asked)

@@ -201,6 +201,16 @@
       ]
     },
     {
+      "id": "place-structure",
+      "said": "Choose Table structure from the palette, then Query editor: the window goes to each",
+      "ops": [
+        { "do_app": { "app": "so.tilo.db-client", "operation": "show-structure" } },
+        { "must": { "see": ["Columns", "Primary key"] } },
+        { "do_app": { "app": "so.tilo.db-client", "operation": "show-query" } },
+        { "must_not": ["Primary key"] }
+      ]
+    },
+    {
       "id": "disconnect",
       "said": "Close the connection",
       "ops": [

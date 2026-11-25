@@ -1029,6 +1029,10 @@ view session_window(s: Session) {
     // The change whose own text is being written, and what was typed.
     state writing: Int = -1
     state typed: Text = ""
+    // A comparison opens at either of its pages, or at its folders, for whoever asks.
+    on show diff "Two-way diff": set(mode, "diff")
+    on show merging "Three-way merge": set(mode, "merge")
+    on show folders "Folder comparison": set(mode, "folders")
     ui.NavShell(
         content_kind: .page,
         title: if s.name == "" { "Untitled comparison" } else { s.name },

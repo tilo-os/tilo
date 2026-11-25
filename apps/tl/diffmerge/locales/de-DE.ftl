@@ -768,3 +768,9 @@ d-ar4jpl46-folder = Ordner
 d-7ngrbhzk-text = Text
 
 d-rmbq73ft-path = Pfad
+
+d-7cpekxgz = Zwei-Wege-Vergleich
+
+d-lwftwowh = Drei-Wege-Zusammenführung
+
+d-w7qgfrp5 = Ordnervergleich

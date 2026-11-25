@@ -65,6 +65,18 @@
       }
     },
     {
+      "id": "place-merge",
+      "said": "Choose Three-way merge from the palette, then Two-way diff: the comparison goes to each",
+      "ops": {
+        "tl": [
+          { "do_app": { "app": "so.tilo.diffmerge", "operation": "show-merging" } },
+          { "wait_for": { "prefix": "Take theirs" } },
+          { "do_app": { "app": "so.tilo.diffmerge", "operation": "show-diff" } },
+          { "wait_for": { "prefix": "Changes" } }
+        ]
+      }
+    },
+    {
       "id": "dark",
       "said": "The same window in the dark theme",
       "ops": [{ "theme": true }],

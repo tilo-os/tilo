@@ -123,6 +123,15 @@ impl Instance {
         let Some(app) = self.host() else {
             return;
         };
+        // A place of what the window opens (a comparison's merge, a session's tab): the detail
+        // opens on its own view, then goes there.
+        if let Some(place) = with
+            && app.runtime().has_place(&target.ty, place)
+        {
+            self.open_detail(target, None, front);
+            self.show_place(target, place, None);
+            return;
+        }
         // Opening something else closes the window's history: the level shows what it opens.
         if self.leave_history().is_some() {
             self.detail = None;
@@ -300,18 +309,26 @@ impl Instance {
         place: &str,
         front: Option<ui::Front>,
     ) -> bool {
-        let shown = self.root.as_ref().is_some_and(|root| {
-            root.target.doc == target.doc
-                && root.target.item == target.item
-                && match root.view.borrow().show_place(place) {
+        let goes = |shown: &Shown| {
+            shown.target.doc == target.doc
+                && shown.target.item == target.item
+                && match shown.view.borrow().show_place(place) {
                     Ok(shown) => shown,
                     Err(error) => {
                         tracing::warn!(%error, place, "a view did not go to its place");
                         false
                     }
                 }
-        });
-        if !shown {
+        };
+        // The detail level shows it: that page goes to its place and stays.
+        if self.detail.as_ref().is_some_and(goes) {
+            self.leave_history();
+            if let Some(front) = front {
+                self.out.push(ToUi::Front { front, shows: None });
+            }
+            return true;
+        }
+        if !self.root.as_ref().is_some_and(goes) {
             return false;
         }
         self.leave_history();

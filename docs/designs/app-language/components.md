@@ -269,10 +269,12 @@ A window's places are opened the same way. `on show week: set(place, "week")` na
 the window and the action that takes the view there; `on show inbox "Task inbox": ...` gives it
 words of its own where the name does not say them. The action runs over the view's own
 parameters, so a place may also act on what the window shows (`on show print: set(place,
-"print").then(leave_handed(p))`). The host publishes each place of a root's
-window as an action on the root (`show-week`), labelled in the reader's language, so the
-launcher, the palette, an agent and a script open the window at the place by the same address.
-The action is the system's `open` of the root through the place; the window answers it by
+"print").then(leave_handed(p))`). The host publishes each place of a type's default view as
+an action on every resource of the type (`show-week` on the Calendar's root, `show-merging` on
+each comparison of Diff & Merge), labelled in the reader's language, so the launcher, the
+palette, an agent and a script open the window at the place by the same address. The action is
+the system's `open` of the resource through the place: a window not showing the resource opens
+it on its default view first, then goes to the place. The window answers it by
 applying the action in its own view state, the person's alone, so opening Tasks moves nobody
 else's window and changes nothing in the workspace. A place is not a view of its own: the
 window keeps its sidebar, bar and history, and the person moves on from the place as from any

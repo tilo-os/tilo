@@ -1268,6 +1268,20 @@ impl Runtime {
         self.core.registry.borrow().default_view(ty)
     }
 
+    /// Whether `place` (a place's name or id) is one a window of the resource type `ty` (an id)
+    /// can be opened at: one its default view declares with `on show`.
+    #[must_use]
+    pub fn has_place(&self, ty: &str, place: &str) -> bool {
+        let registry = self.core.registry.borrow();
+        registry.type_info(ty).is_some_and(|(package, info)| {
+            package
+                .meta
+                .places_of(&info.id)
+                .iter()
+                .any(|declared| declared.name == place || declared.id == place)
+        })
+    }
+
     /// The metadata of every package this runtime loaded, the apps whose code it does not run
     /// among them ([`Self::load_foreign`]): what a window reads of a reading's roots and types
     /// where the app that publishes them is not this one.
