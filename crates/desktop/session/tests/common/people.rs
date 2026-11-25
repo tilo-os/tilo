@@ -890,6 +890,10 @@ pub fn install_log() {
     });
 }
 
+/// Where a device's home holds the person's root its daemon is handed, as a deployment hands its
+/// daemon its owner's root.
+const OWNER_ROOT: &str = "owner-root";
+
 /// A person: the root their devices are certified under, and the identity this machine provisions
 /// them with before any of their devices run.
 pub struct Person {
@@ -901,9 +905,12 @@ pub struct Person {
     /// The device key this process took as the machine's daemon, so the account store seals and
     /// unseals their root with it: let go of with the directory it is kept in.
     _taken_key: tilo_device_identity::persist::DeviceKeyLock,
-    /// The identity the first use of this machine provisioned for them: the record each of their
-    /// devices carries, and the root secret devices certify their own keys with.
+    /// The identity the first use of this machine provisioned for them, its root sealed to this
+    /// machine's device key.
     identity: tempfile::TempDir,
+    /// Their root's seed as hexadecimal, which each of their devices' daemons is handed as a
+    /// deployment hands its owner's root, and keeps sealed to that device's own key.
+    root_seed: zeroize::Zeroizing<String>,
     /// Whether the next device made is their first: the one that made their root, which founds
     /// their own workspace. Every later device is taken into it by one that holds it.
     first_device: std::sync::atomic::AtomicBool,
@@ -938,6 +945,11 @@ impl Person {
         .expect("this person's identity");
         let record = tilo_identity::store::resolve_active_identity(&identity_dir)
             .expect("the identity this machine provisioned for the person");
+        let words = tilo_identity::store::recovery_words(&record)
+            .expect("the recovery words of the person's root");
+        let root_seed = zeroize::Zeroizing::new(hex::encode(
+            tilo_user_identity::recovery_words::decode(&words).expect("the root's own words"),
+        ));
         let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
         drop(sealing);
         Self {
@@ -946,6 +958,7 @@ impl Person {
             root,
             _taken_key: taken_key,
             identity,
+            root_seed,
             first_device: std::sync::atomic::AtomicBool::new(true),
         }
     }
@@ -1031,25 +1044,39 @@ impl Person {
         for directory in ["config", "data", "state", "cache", "runtime", "home"] {
             std::fs::create_dir_all(root.join(directory)).expect("a device directory");
         }
-        // The record of who the person is, which every device of theirs holds: never the root
-        // secret, which stays with the person.
-        copy_dir(
-            &self.identity.path().join("config/tilo/identity"),
-            &root.join("config/tilo/identity"),
-        );
+        let paths = IdentityPaths::under(root.join("identity"));
+        let cert = self.certify(&paths, label);
+        // The device takes up the person its certificate names, as a device enrolled without the
+        // root does: their public record, its account's active identity.
+        let identity_dir =
+            tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity"));
+        let took_up = tilo_identity::provisioning::take_up_device_person(
+            &identity_dir,
+            &paths,
+            tilo_clock::unix_now_ns(),
+            "",
+        )
+        .expect("the device takes up its person");
+        assert!(took_up, "the device's certificate names its person");
+        // Its daemon is handed the person's root, and restores it the one way a person is brought
+        // back on a computer: kept from then on sealed to this device's own key, which only its
+        // daemon holds. A root sealed to another device's key would open nowhere but there.
+        let handed = root.join(OWNER_ROOT);
+        std::fs::write(&handed, self.root_seed.as_bytes()).expect("the root is handed");
+        std::fs::set_permissions(
+            &handed,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("the handed root is its owner's alone");
         // Only the device that made the person's root founds their own workspace: a later one
-        // carries the record without that mark, and asks a device of theirs to take it in.
-        if !self
+        // asks a device of theirs to take it in.
+        if self
             .first_device
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
-            tilo_identity::provisioning::clear_founding_mark(
-                &tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity")),
-            )
-            .expect("a later device of the person's founds nothing");
+            tilo_identity::provisioning::mark_founding(&identity_dir)
+                .expect("the person's first device founds their workspace");
         }
-        let paths = IdentityPaths::under(root.join("identity"));
-        let cert = self.certify(&paths, label);
         Device {
             person: self.name.clone(),
             label: label.to_owned(),
@@ -1508,6 +1535,11 @@ impl Device {
 
         let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
         self.device_env(&mut daemon, &logs);
+        let handed = root.join(OWNER_ROOT);
+        if handed.is_file() {
+            // The person's root this device's daemon keeps ([`Person::device`]).
+            daemon.env(tilo_runtime::device::services::OWNER_ROOT_FILE, handed);
+        }
         daemon
             // The daemon starts this test's build of the session as the person's shell.
             .env(tilo_runtime::daemon::TEST_SHELL_ENV, &program)
@@ -2641,25 +2673,6 @@ fn link_tree(from: &Path, to: &Path) {
             if std::fs::hard_link(&source, &target).is_err() {
                 std::fs::copy(&source, &target).expect("a copied file");
             }
-        }
-    }
-}
-
-/// Copy the tree `from` to `to` , keeping the modes files are read with.
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).expect("a copied directory");
-    for entry in std::fs::read_dir(from).expect("a readable directory") {
-        let entry = entry.expect("a directory entry");
-        let target = to.join(entry.file_name());
-        let kind = entry.file_type().expect("an entry's kind");
-        if kind.is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).expect("a copied file");
-            let mode = std::fs::metadata(&target).expect("a copied file's mode");
-            let mut permissions = mode.permissions();
-            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o600);
-            std::fs::set_permissions(&target, permissions).expect("a mode");
         }
     }
 }

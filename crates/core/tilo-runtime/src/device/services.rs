@@ -878,7 +878,7 @@ fn device_person_root_record() -> io::Result<std::path::PathBuf> {
 
 /// The variable a deployment hands the owner's root with: a file holding the root's 32-byte seed
 /// as 64 hexadecimal characters, readable by its owner alone.
-pub(crate) const OWNER_ROOT_FILE: &str = "TILO_WORKSPACES_ROOT_FILE";
+pub const OWNER_ROOT_FILE: &str = "TILO_WORKSPACES_ROOT_FILE";
 
 /// Adopt the owner's root a deployment hands this daemon ([`OWNER_ROOT_FILE`]), once: the root
 /// kept here as on any of its person's own devices, which certifies this device's key and makes
