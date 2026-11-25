@@ -425,6 +425,10 @@ pub struct AccessNode {
     /// computer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carries_out: Option<String>,
+    /// The glyph a node with no widget of its own shows before its words (a menu row's icon), so
+    /// a page draws the row the app draws. A picture, not something read: its name says it.
+    #[serde(skip)]
+    pub icon: Option<crate::icons::Icon>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than owned, from
@@ -485,7 +489,15 @@ impl AccessNode {
             item: None,
             action: None,
             carries_out: None,
+            icon: None,
         }
+    }
+
+    /// Show `icon` before its words ([`Self::icon`]).
+    #[must_use]
+    pub fn with_icon(mut self, icon: Option<crate::icons::Icon>) -> Self {
+        self.icon = icon;
+        self
     }
 
     /// Say this control can be dragged out of the window with the files offered under `key`

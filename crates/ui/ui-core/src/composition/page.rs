@@ -817,6 +817,10 @@ impl Page {
                 element.attr("data-t", target);
             }
         } else if node.children.is_empty() || matches!(element.tag, "button" | "a") {
+            if let Some(icon) = node.icon {
+                // Its glyph stands before its words, as the app paints the row.
+                element.own.push_str(&crate::icons::glyph_svg(icon));
+            }
             words_into(&mut element, node);
         }
         if !matches!(element.tag, "button" | "a" | "input" | "textarea") {
@@ -1486,28 +1490,46 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     // (`--tilo-move`), and both follow `ControlChange`'s spring (`--tilo-settle`, a CSS `linear()`
     // curve). A popover, menu or dialog arrives on `Appear`: its opacity and then its scale and
     // reach each on the curve `Appear::arriving` draws them on natively (one `linear()` per property,
-    // in `--tilo-appear-props`' order); under reduced motion it only fades. Reduced motion keeps the
-    // fades and lands the travel; a theme that holds still does neither.
+    // in `--tilo-appear-props`' order); under reduced motion it only fades. What it holds (a menu's
+    // rows) fades in and rises into place on `Appear::holding` (`--tilo-held-curve`,
+    // `--tilo-held-rise`) once its panel is opaque, so its words never read over the page behind it.
+    // Reduced motion keeps the fades and lands the travel; a theme that holds still does neither.
     let motion = theme.motion();
     let fast = motion.tokens().durations.fast();
     let (_, settle) = crate::motion::ControlChange::SHOW.css_entrance(motion, |p| p);
     let appear = crate::motion::Appear::SPEC;
-    let (appear_time, appear_curve, appear_props) = if motion.still() || motion.reduced() {
+    let (appear_time, appear_curve, appear_props, held_curve, held_rise) = if motion.still()
+        || motion.reduced()
+    {
         let (time, curve) = appear.css_entrance(motion, |p| p);
-        (time, curve, "opacity")
+        (time, curve.clone(), "opacity", curve, 0.0)
     } else {
         let (time, opacity) = appear.css_entrance(motion, |p| crate::motion::Appear::arriving(p).0);
         let (_, transform) = appear.css_entrance(motion, |p| crate::motion::Appear::arriving(p).1);
-        (time, format!("{opacity},{transform}"), "opacity,transform")
+        let (_, held) = appear.css_entrance(motion, crate::motion::Appear::holding);
+        (
+            time,
+            format!("{opacity},{transform}"),
+            "opacity,transform",
+            held,
+            crate::motion::Appear::HELD_RISE,
+        )
     };
     let motion_props = format!(
-        "--tilo-fade:{}ms;--tilo-move:{}ms;--tilo-settle:{settle};--tilo-appear-time:{}ms;--tilo-appear-curve:{appear_curve};--tilo-appear-props:{appear_props};",
+        "--tilo-fade:{}ms;--tilo-move:{}ms;--tilo-settle:{settle};--tilo-appear-time:{}ms;--tilo-appear-curve:{appear_curve};--tilo-appear-props:{appear_props};--tilo-held-curve:{held_curve};--tilo-held-rise:{held_rise}px;",
         motion.fade(fast).as_millis(),
         motion.fast().as_millis(),
         appear_time.as_millis(),
     );
+    // A menu's rows stand in the page as the app lays them out: its row height, the inset around
+    // them, the padding before a row's glyph, the glyph's size and the air after it.
+    let menu = crate::widget::FloatingMetrics::of(theme, TextRole::Body, false);
+    let menu_props = format!(
+        "--tilo-menu-row:{}px;--tilo-menu-inset:{}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;",
+        menu.row, menu.inset, menu.pad, menu.icon, menu.spacing,
+    );
     format!(
-        ":root{{color-scheme:{look};{motion_props}--tilo-hover:{};--tilo-press:{};--tilo-selected:{};--tilo-ground:{};--tilo-sidebar:{};--tilo-raised:{};--tilo-overlay:{};--tilo-text:{};--tilo-text-dim:{};--tilo-text-tertiary:{};--tilo-border:{};--tilo-focus:{};--tilo-accent:{};--tilo-on-accent:{};--tilo-radius:{:.1}px;--tilo-control-radius:{}px;{type_roles}}}",
+        ":root{{color-scheme:{look};{motion_props}{menu_props}--tilo-hover:{};--tilo-press:{};--tilo-selected:{};--tilo-ground:{};--tilo-sidebar:{};--tilo-raised:{};--tilo-overlay:{};--tilo-text:{};--tilo-text-dim:{};--tilo-text-tertiary:{};--tilo-border:{};--tilo-focus:{};--tilo-accent:{};--tilo-on-accent:{};--tilo-radius:{:.1}px;--tilo-control-radius:{}px;{type_roles}}}",
         tint(content, true, false),
         tint(content, false, true),
         rgba(colors.surfaces.raised),

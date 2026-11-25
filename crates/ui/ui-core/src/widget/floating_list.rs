@@ -1138,6 +1138,19 @@ impl<R: FloatingRow> FloatingList<R> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.paint_holding(scene, transform, text, theme, crate::motion::Pose::REST);
+    }
+
+    /// [`Self::paint`], its rows drawn under `rows` over the panel: an arriving menu's rows come
+    /// in once its panel is opaque ([`crate::motion::Appear::contents`]).
+    pub fn paint_holding(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rows: crate::motion::Pose,
+    ) {
         self.measure(text, theme);
         let Some(target) = self.rect() else {
             return;
@@ -1166,7 +1179,9 @@ impl<R: FloatingRow> FloatingList<R> {
         }
         let radius = self.panel_radius(theme);
         floating_surface::paint_rounded(scene, transform, panel, radius, theme);
-        self.paint_rows_in(scene, transform, text, theme, panel);
+        rows.paint(scene, transform, panel, |scene, transform| {
+            self.paint_rows_in(scene, transform, text, theme, panel);
+        });
     }
 
     /// Paint the rows alone, into a panel the host draws itself ([`Self::set_rect`] placed

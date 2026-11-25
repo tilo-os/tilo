@@ -1599,7 +1599,9 @@ impl ContextMenu {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.list.paint(scene, transform, text_renderer, theme);
+        let rows = self.appear.contents();
+        self.list
+            .paint_holding(scene, transform, text_renderer, theme, rows);
         let radius = self.list.panel_radius(theme);
         self.paint_query(scene, transform, text_renderer, theme, radius);
     }
@@ -2141,6 +2143,7 @@ impl Widget for ContextMenu {
                 }
                 let MenuItem::Action {
                     label,
+                    icon,
                     checked,
                     enabled,
                     submenu,
@@ -2154,6 +2157,7 @@ impl Widget for ContextMenu {
                 let open_here = self.submenu.as_ref().filter(|(row, _)| *row == index);
                 let mut node = AccessNode::new(Role::MenuItem)
                     .with_name(label.clone())
+                    .with_icon(*icon)
                     .with_action_target(format!("context-menu:item:{index}"))
                     .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
                     .with_position(action_position, action_count)

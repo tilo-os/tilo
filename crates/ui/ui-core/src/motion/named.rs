@@ -67,10 +67,17 @@ impl Appear {
     /// How far toward its anchor it starts arriving and ends leaving, in logical pixels.
     pub const REACH: f64 = 8.0;
     /// The share of its progress by which an arriving surface is opaque: where the spring that settles
-    /// it stands a third of the way through its time (1 − (1 + k)·e^−k for k = ωT / 3, the same at any
-    /// pace). A surface that faded in with its scale let its labels read before it hid what lies behind
-    /// it, and the two sets of text read as one; the scale and reach carry the rest of the motion.
-    const OPAQUE_AT: f64 = 0.8;
+    /// it stands a little over a quarter of the way through its time (1 − (1 + k)·e^−k = 0.7 at
+    /// k = ωt ≈ 2.4, the same at any pace: 57 ms into a 210 ms arrival). A surface that faded in with
+    /// its scale let its labels read before it hid what lies behind it, and the two sets of text read
+    /// as one; the scale and reach carry the rest of the motion.
+    const OPAQUE_AT: f64 = 0.7;
+    /// The share of its progress by which what it holds (a menu's rows) has arrived. What it holds
+    /// starts once the surface is opaque, so its words only ever stand on the surface's own ground,
+    /// and is in place where the spring stands at 0.95, about half way through its time.
+    const HELD_AT: f64 = 0.95;
+    /// How far below its place what it holds starts, in logical pixels.
+    pub const HELD_RISE: f64 = 4.0;
 
     /// How `surface` is drawn `progress` of the way through arriving or leaving `direction`, its anchor
     /// the point nearest the summoning control.
@@ -113,6 +120,34 @@ impl Appear {
     pub fn arriving(progress: f64) -> (f64, f64) {
         let p = progress.clamp(0.0, 1.0);
         (stage(p, 0.0, Self::OPAQUE_AT), p * p)
+    }
+
+    /// How far what an arriving surface holds (a menu's rows) has come `progress` of the way in: none
+    /// of it until the surface is opaque at [`Self::OPAQUE_AT`], all of it by [`Self::HELD_AT`]. Its
+    /// opacity and its rise both follow it.
+    #[must_use]
+    pub fn holding(progress: f64) -> f64 {
+        stage(progress.clamp(0.0, 1.0), Self::OPAQUE_AT, Self::HELD_AT)
+    }
+
+    /// How what `progress` of the way through arriving or leaving `direction` holds is drawn, over
+    /// the surface's own [`Self::pose`]: arriving, it fades in and rises [`Self::HELD_RISE`] into
+    /// place once the surface hides what lies behind it ([`Self::holding`]). It leaves with its
+    /// surface, and under reduced motion it comes with it.
+    #[must_use]
+    pub fn contents(progress: f64, direction: Direction, motion: EffectiveMotion) -> Pose {
+        if motion.reduced() || direction == Direction::Exit {
+            return Pose::REST;
+        }
+        let held = Self::holding(progress);
+        Pose {
+            opacity: unit_opacity(held),
+            transform: if held >= 1.0 {
+                Affine::IDENTITY
+            } else {
+                Affine::translate((0.0, Self::HELD_RISE * (1.0 - held)))
+            },
+        }
     }
 
     /// [`Self::coming`] as a [`Pose`], in the surface's own coordinates.

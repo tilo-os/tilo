@@ -125,6 +125,16 @@ impl Appearing {
             self.motion,
         )
     }
+
+    /// How what the surface holds is drawn over its [`Self::pose`] ([`Appear::contents`]).
+    #[must_use]
+    pub fn contents(&self) -> Pose {
+        Appear::contents(
+            self.progress(),
+            super::Direction::of(self.is_open()),
+            self.motion,
+        )
+    }
 }
 
 /// One [`Appearing`] a surface and the host that draws it share. A dialog belongs to the tree its app

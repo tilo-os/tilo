@@ -342,7 +342,7 @@ tilo_test_env::scenario! {
         );
         let half = Appear::coming(0.5, Direction::Enter, surface, anchor, on());
         assert!(
-            half.opacity > 0.6 && half.opacity < 0.7,
+            half.opacity > 0.7 && half.opacity < 0.75,
             "its surface comes ahead of its scale: {}",
             half.opacity
         );
@@ -357,16 +357,41 @@ tilo_test_env::scenario! {
             half.offset
         );
         let early = Appear::coming(0.35, Direction::Enter, surface, anchor, on());
-        assert!(early.opacity < 0.5, "{}", early.opacity);
+        assert!(early.opacity <= 0.5, "{}", early.opacity);
         assert!(early.scale < 0.94, "more than 6 % smaller: {}", early.scale);
-        // Its surface is opaque a third of the way through its time, before its labels have settled
-        // enough to read, so they never read over what lies behind it; it is still growing then.
+        // Its surface is opaque within 60 ms of a 210 ms arrival, and still growing then. What it
+        // holds only starts once nothing shows through it, so its words never read over what lies
+        // behind it, and has arrived well before the surface settles.
         let base = Duration::from_millis(210);
         let spring = SpringSpec::settling_within(base);
-        let third = 1.0 - spring.state(1.0, 0.0, base.as_secs_f64() / 3.0).0;
-        let opaque = Appear::coming(third, Direction::Enter, surface, anchor, on());
-        assert_eq!(opaque.opacity, 1.0, "opaque at {third}");
+        let at = |ms: u64| 1.0 - spring.state(1.0, 0.0, Duration::from_millis(ms).as_secs_f64()).0;
+        let opaque = Appear::coming(at(60), Direction::Enter, surface, anchor, on());
+        assert_eq!(opaque.opacity, 1.0, "opaque at {}", at(60));
         assert!(opaque.scale < 0.99, "still growing: {}", opaque.scale);
+        for step in 0..=100 {
+            let p = f64::from(step) / 100.0;
+            let held = Appear::contents(p, Direction::Enter, on());
+            if held.opacity > 0.0 {
+                assert_eq!(
+                    Appear::coming(p, Direction::Enter, surface, anchor, on()).opacity,
+                    1.0,
+                    "what it holds shows at {p} only over an opaque surface"
+                );
+            }
+        }
+        let rising = Appear::contents(at(70), Direction::Enter, on());
+        assert!(
+            rising.opacity > 0.0 && rising.opacity < 1.0,
+            "its rows are coming in at 70 ms: {}",
+            rising.opacity
+        );
+        assert!(
+            rising.transform.translation().y > 0.0,
+            "rising into place: {:?}",
+            rising.transform
+        );
+        assert!(Appear::contents(at(120), Direction::Enter, on()).is_rest());
+        assert!(Appear::contents(0.3, Direction::Exit, on()).is_rest());
         assert!(Appear::pose(1.0, Direction::Enter, surface, anchor, on()).is_rest());
 
         // The rest closes in on the origin, which itself leans the same way.
