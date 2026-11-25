@@ -991,7 +991,6 @@ mod wire {
         }
     }
 
-
     /// A field read as `None` when it does not parse, as [`Head`] reads it: an
     /// invoker written in an older form leaves the rest of its entry (the
     /// action, what it did and placed) readable.

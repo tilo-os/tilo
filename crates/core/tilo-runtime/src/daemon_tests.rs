@@ -2689,7 +2689,11 @@ fn a_system_daemons_services_are_the_accounts_and_its_native_endpoint_is_everyon
     // directory every account may enter.
     let listener = std::os::unix::net::UnixListener::bind(&native).unwrap();
     let services = super::service_sockets_at(&shared, true, Some(1000)).unwrap();
-    assert_eq!(services, shared.join("accounts/1000"), "the services are the account's own");
+    assert_eq!(
+        services,
+        shared.join("accounts/1000"),
+        "the services are the account's own"
+    );
     assert_eq!(
         std::fs::symlink_metadata(&shared).unwrap().mode() & 0o777,
         0o755,
@@ -2723,6 +2727,12 @@ fn a_system_daemons_services_are_the_accounts_and_its_native_endpoint_is_everyon
 
     // One account's own daemon keeps its services beside its native endpoint, and a daemon of the
     // computer's that serves no account yet keeps them there too.
-    assert_eq!(super::service_sockets_at(&shared, false, Some(1000)).unwrap(), shared);
-    assert_eq!(super::service_sockets_at(&shared, true, None).unwrap(), shared);
+    assert_eq!(
+        super::service_sockets_at(&shared, false, Some(1000)).unwrap(),
+        shared
+    );
+    assert_eq!(
+        super::service_sockets_at(&shared, true, None).unwrap(),
+        shared
+    );
 }

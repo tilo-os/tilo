@@ -285,7 +285,10 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
         .unwrap();
     let stamps = stamped(&workspaces, &workspace, &before).await;
     // The two changes a ban makes name it; lifting it names the unban after.
-    let mut verbs: Vec<&str> = stamps.iter().map(|(stamp, _)| stamp.verb.as_str()).collect();
+    let mut verbs: Vec<&str> = stamps
+        .iter()
+        .map(|(stamp, _)| stamp.verb.as_str())
+        .collect();
     verbs.dedup();
     assert_eq!(
         verbs,

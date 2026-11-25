@@ -1310,4 +1310,3 @@ impl Widget for Panel {
         Some("people-panel")
     }
 }
-
