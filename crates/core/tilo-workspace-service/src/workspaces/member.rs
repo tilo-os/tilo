@@ -2535,6 +2535,14 @@ impl Workspaces {
         // otherwise a folder's sync hears of the serving device's edits only
         // when it next reads every record.
         if taken || landed {
+            // A resource's document is the workspace's store's: a write the
+            // device serving it sent is taken into the store as this device's
+            // own writes are, so the records it keeps read here as they read
+            // there.
+            if collab_types::is_store_document(document_id) {
+                self.replay_resource_write(&mut hosted, author, message)
+                    .await;
+            }
             self.tell_followers(&hosted, author, message, history).await;
             self.wrote(workspace, app_id, document_id);
             if taken {
