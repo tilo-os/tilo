@@ -186,8 +186,7 @@ pub(super) async fn listed(
         );
         creating = super::super::tests::signed_from(&creating, workspace, (&device, &asking));
         let workspace_id = collab_types::WorkspaceId::parse(workspace).unwrap();
-        workspaces
-            .agents_invoke(workspace_id, &asking, &creating)
+        Box::pin(workspaces.agents_invoke(workspace_id, &asking, &creating))
             .await
             .expect("the person makes their agent");
     }

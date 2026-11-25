@@ -112,14 +112,13 @@ pub(crate) async fn answered(
             return first;
         }
         let workspace = workspace_id.map(|id| id.to_string()).unwrap_or_default();
-        let value = workspaces
-            .invoke(
-                workspace_id,
-                caller,
-                certificate,
-                &approved(request, &workspace),
-            )
-            .await?;
+        let value = Box::pin(workspaces.invoke(
+            workspace_id,
+            caller,
+            certificate,
+            &approved(request, &workspace),
+        ))
+        .await?;
         return Ok(tilo_actions::remote::InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {
