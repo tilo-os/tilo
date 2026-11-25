@@ -56,12 +56,16 @@ fn file_at(_path: &Path) -> Option<(u64, u64)> {
 
 impl Taken {
     /// Whether this is the key kept at `path`, whose file is `file`: by its name, or by the file
-    /// itself, reached through another name. A file is matched only while the one taken is still
-    /// where it was taken from: once that file is gone, another file can be given its device and
-    /// inode, and it is not this key's.
+    /// itself, reached through another name. A key taken from a file answers only while that file
+    /// is still where it was taken from: once it is removed, the device's key is gone and this
+    /// process no longer signs as the device; once another file is put there, that file's key is
+    /// the device's; and another file given the gone one's device and inode is not this key's.
     fn is_at(&self, path: &Path, file: Option<(u64, u64)>) -> bool {
-        self.path == path
-            || (file.is_some() && self.file == file && file_at(&self.path) == self.file)
+        if self.path == path {
+            // A key kept in the platform's store has no file to follow.
+            return self.file.is_none() || self.file == file;
+        }
+        file.is_some() && self.file == file && file_at(&self.path) == self.file
     }
 }
 
@@ -527,6 +531,31 @@ mod tests {
             taken_here(&alias).map(|key| key.to_bytes()),
             Some(lock.key().to_bytes()),
             "another name for the taken file answers the key taken from it"
+        );
+    }
+
+    /// A device key removed from under the process that took it is gone: that process no longer
+    /// signs as the device with the copy it kept, and a key put there later is answered as itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_taken_key_whose_file_is_removed_signs_nothing_more() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = device_key_under(root.path(), false);
+        let lock = take_device_key(&paths).expect("the key is taken");
+        assert_eq!(
+            taken_device_key(&paths).unwrap().to_bytes(),
+            lock.key().to_bytes()
+        );
+        fs::remove_file(&paths.device_privkey).unwrap();
+        assert!(
+            matches!(taken_device_key(&paths), Err(PersistError::NotTheDaemon)),
+            "a removed key is not the device's any more"
+        );
+        let other = SigningKey::from_bytes(&[7; 32]);
+        fs::write(&paths.device_privkey, other.to_bytes()).unwrap();
+        assert!(
+            taken_device_key(&paths).is_err(),
+            "the removed key never answers for a key put in its place, which was not taken"
         );
     }
 
