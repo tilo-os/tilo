@@ -179,8 +179,8 @@ mod tests {
         persist::write_device_cert(&paths.device_cert, &cert).expect("write the certificate");
     }
 
-    /// The device's daemon stand-in at `dir/native.sock`, answering `info` with the fixture
-    /// device's public key, stopped when dropped.
+    /// The device's daemon stand-in at its native endpoint `socket`, answering `info` with the
+    /// fixture device's public key, stopped when dropped.
     #[cfg(unix)]
     struct StandInDaemon {
         socket: PathBuf,
@@ -190,13 +190,11 @@ mod tests {
 
     #[cfg(unix)]
     impl StandInDaemon {
-        fn start(dir: &Path) -> Self {
+        fn start(socket: PathBuf) -> Self {
             use std::io::{BufRead as _, Write as _};
             let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32])
                 .verifying_key()
                 .to_bytes();
-            std::fs::create_dir_all(dir).expect("daemon directory");
-            let socket = dir.join(tilo_paths::machine::DAEMON_NATIVE);
             let listener = std::os::unix::net::UnixListener::bind(&socket).expect("daemon socket");
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let stopping = std::sync::Arc::clone(&stop);
@@ -259,13 +257,25 @@ mod tests {
         .expect("write a kept document");
         certified_identity(&home.join("certified"));
         let runtime = home.join("runtime");
-        let daemon = StandInDaemon::start(&home.join("daemon"));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&runtime)
+            .expect("the runtime directory");
         let mut scoped = tilo_test_env::ScopedEnv::new();
         scoped
             .set("HOME", &home)
             .set("XDG_STATE_HOME", home.join("state"))
             .set("XDG_RUNTIME_DIR", &runtime)
             .set("TILO_RUNTIME_PROFILE", home.join("daemon"));
+        // The daemon listens where the identity's clients dial it: its profile's own sockets.
+        let daemon = StandInDaemon::start(
+            tilo_device_identity::login::daemon::DeviceActions::here(IdentityPaths::under(
+                &home.join("certified"),
+            ))
+            .expect("the daemon's sockets")
+            .native()
+            .to_path_buf(),
+        );
         let env = |name: &str| match name {
             "HOME" => Some(home.clone().into_os_string()),
             "XDG_RUNTIME_DIR" => Some(runtime.clone().into_os_string()),

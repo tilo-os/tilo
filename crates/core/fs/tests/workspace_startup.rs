@@ -111,8 +111,51 @@ impl Profile {
             .expect("write the certificate");
     }
 
+    /// The launch's runtime directory, as the session gives it: this account's own.
+    fn runtime(&self) -> std::path::PathBuf {
+        use std::os::unix::fs::DirBuilderExt as _;
+        let run = self.path("run");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&run)
+            .expect("the runtime directory");
+        run
+    }
+
+    /// What a launch left in its runtime directory beside its device daemon's sockets.
+    fn made_in_runtime(&self) -> Vec<std::path::PathBuf> {
+        let run = self.path("run");
+        let daemon = std::fs::read_dir(run.join("tilo"))
+            .into_iter()
+            .flatten()
+            .map(|entry| entry.expect("runtime entry").path())
+            .filter(|path| {
+                !path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("profile-"))
+            });
+        std::fs::read_dir(&run)
+            .expect("the runtime directory")
+            .map(|entry| entry.expect("runtime entry").path())
+            .filter(|path| *path != run.join("tilo"))
+            .chain(daemon)
+            .collect()
+    }
+
     fn launch(&self, overrides: &[(&str, &str)]) -> std::process::Output {
-        let daemon = DeviceDaemon::start(&self.path("daemon"));
+        // The launch asks its device's daemon where every client of the profile does: among this
+        // account's sockets in its runtime directory.
+        let sockets = {
+            let mut scoped = tilo_test_env::ScopedEnv::new();
+            scoped.set("XDG_RUNTIME_DIR", self.runtime());
+            tilo_device_identity::login::daemon::profile_sockets(
+                self.dir.path(),
+                &self.path("daemon"),
+            )
+            .expect("the daemon's sockets")
+        };
+        let daemon = DeviceDaemon::start(tilo_device_identity::login::daemon::native_in(&sockets));
         let mut command = Command::new(tilo_test_env::package_binary!("fs"));
         command
             .args(["serve-primary", "--dry-run"])
@@ -141,13 +184,11 @@ struct DeviceDaemon {
 }
 
 impl DeviceDaemon {
-    fn start(dir: &std::path::Path) -> Self {
+    fn start(socket: std::path::PathBuf) -> Self {
         use std::io::{BufRead as _, Write as _};
         let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32])
             .verifying_key()
             .to_bytes();
-        std::fs::create_dir_all(dir).expect("daemon directory");
-        let socket = dir.join(tilo_paths::machine::DAEMON_NATIVE);
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("daemon socket");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = std::sync::Arc::clone(&stop);
@@ -215,7 +256,7 @@ tilo_test_env::scenario! {
         assert_not_ready(&output);
         assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files tree"));
         assert!(!profile.path("state").exists());
-        assert!(!profile.path("run").exists());
+        assert_eq!(profile.made_in_runtime(), Vec::<std::path::PathBuf>::new());
         assert!(!profile.path("identity").exists());
     }
 
@@ -225,7 +266,14 @@ tilo_test_env::scenario! {
         profile.identity();
         // The device's daemon serves the trees at `files_tree_socket` of the account: among its
         // sockets, `$XDG_RUNTIME_DIR/tilo` ([`tilo_paths::machine::daemon_sockets`]).
-        std::fs::create_dir_all(profile.path("run/tilo")).expect("create the daemon's sockets dir");
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(profile.path("run/tilo"))
+                .expect("create the daemon's sockets dir");
+        }
         let _service =
             std::os::unix::net::UnixListener::bind(profile.path("run/tilo/files-tree.sock"))
                 .expect("stand in for the workspace service");
@@ -248,7 +296,7 @@ tilo_test_env::scenario! {
         let output = profile.launch(&[]);
         assert_not_ready(&output);
         assert!(!profile.cache().join("mount").exists());
-        assert!(!profile.path("run").exists());
+        assert_eq!(profile.made_in_runtime(), Vec::<std::path::PathBuf>::new());
         assert_eq!(
             std::fs::read(profile.cache().join("namespace/0.automerge")).expect("namespace kept"),
             b"retained namespace"
@@ -264,7 +312,7 @@ tilo_test_env::scenario! {
             .expect("symlink the kept tree");
         assert_not_ready(&profile.launch(&[]));
         assert!(!profile.cache().join("mount").exists());
-        assert!(!profile.path("run").exists());
+        assert_eq!(profile.made_in_runtime(), Vec::<std::path::PathBuf>::new());
     }
 
     phase primary_launch_rejects_relative_paths;
