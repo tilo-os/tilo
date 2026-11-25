@@ -207,6 +207,67 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
             .as_deref(),
         Some("three")
     );
+
+    // The member checks the compaction it wrote, holding every write it folds as its own engine
+    // does. With the copy's check, kept as it took the compaction, every device with the record's
+    // keys has now: the server drops the write the compaction alone holds from here on.
+    {
+        let mut governed = state.lock().await;
+        assert_eq!(
+            governed
+                .checked_checkpoints
+                .get(&(APP.to_owned(), DOCUMENT.to_owned()))
+                .map(|signature| signature[0]),
+            Some(envelope.signature.0[0]),
+            "the copy kept its check of the compaction as it took it"
+        );
+        let mut candidate = governed.peer().clone();
+        let now = tilo_clock::wall();
+        let filed = candidate
+            .workspace_mut()
+            .record_checkpoint_check(
+                &lounge.member_cert,
+                (APP, DOCUMENT),
+                envelope,
+                &lounge.member_key,
+                now,
+            )
+            .unwrap();
+        assert!(filed, "the member's check is kept in its row");
+        governed
+            .commit(candidate, &lounge.governor_key, now, |entry, _| {
+                Ok(entry.collaboration.clone())
+            })
+            .unwrap();
+        lounge.workspaces.settle(&mut governed).await.unwrap();
+    }
+    assert!(
+        state.lock().await.peer().publication().checkpoint_reached(
+            (APP, DOCUMENT),
+            (*envelope.author.as_bytes(), envelope.seq)
+        ),
+        "every device with the record's keys checked the compaction"
+    );
+    // A store retires a checked compaction's writes as the next frame reaches it: the member
+    // writes on.
+    seal_and_send_title(&lounge.member, &session, &lounge.workspace, "four");
+    tilo_test_env::within("the server drops the write the checked compaction covers", async {
+        while retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
+            .await
+            .contains(&second)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    follows(&lounge.workspaces, &lounge.workspace, "four").await;
+    assert_eq!(
+        readable(&lounge.workspaces, &lounge.workspace)
+            .await
+            .as_deref(),
+        Some("four"),
+        "the record reads whole once its covered write is gone"
+    );
     drop((state, lounge.workspaces));
     lounge.server.shutdown().await;
 }

@@ -831,6 +831,7 @@ impl StatePeer {
             own_device: None,
             governance_now: None,
             copied: std::collections::BTreeMap::new(),
+            action_stamp: None,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(

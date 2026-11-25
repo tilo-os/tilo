@@ -433,6 +433,8 @@ tilo-portal = { path = "../portal", features = ["pipewire"] }
 # The files a person chooses for apps: the session mounts the store the
 # portal grants through, so every launcher finds an app's view to bind.
 tilo-notifications-service = { path = "../notifications-service" }
+# The wire an app shows its notifications over, on the socket the launcher hands it.
+tilo-notify = { path = "../../platform/tilo-notify" }
 tilo-polkit-agent = { path = "../../os/polkit-agent" }
 tilo-network-secret-agent = { path = "../../os/network-secret-agent" }
 # What a screenshot sent to another device is staged into: the same private
@@ -478,6 +480,8 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
+# The notification service's socket, as an app connects it in tests.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 # The person's devices as a host holding their record lists them, which the tests' own identities
 # are checked against (`sources::test_trust`).
 tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }

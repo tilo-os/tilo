@@ -11,7 +11,6 @@ use serde_json::json;
 use tilo_actions::remote::ActionCallError;
 use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::DocumentEvent;
-use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::{
@@ -1328,12 +1327,9 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
 
     // Turning the watch off is removing its shortcut: nothing fires any more.
     workspaces
-        .commit_own_membership(
+        .change_own_shortcuts(
             &workspace,
-            WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
-                tilo_automation::ShortcutChange::Delete(triggered::moderation_shortcut_id("scout")),
-            )),
-            None,
+            tilo_automation::ShortcutChange::Delete(triggered::moderation_shortcut_id("scout")),
         )
         .await
         .unwrap();
@@ -1393,11 +1389,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     mount(workspaces);
     workspaces.run_agents(Arc::new(ActsAsScout));
     let workspace = workspaces.create("Chat").await.unwrap().workspace;
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, CHAT);
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
     save_signed(
         workspaces,

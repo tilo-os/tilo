@@ -31,8 +31,8 @@ use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
 use super::collaboration::{
-    AddMemberRequest, CollaborationError, GovernanceCompletion, HeldWorkspace, Redeeming,
-    request_digest,
+    AddMemberRequest, CollaborationError, GovernanceCompletion, HeldWorkspace, Redeeming, actor_of,
+    request_digest, stamped,
 };
 use super::pages::Presented;
 use super::{GovernedWorkspace, Workspaces, system_time};
@@ -175,11 +175,11 @@ impl Workspaces {
         let person = request.user_public_key;
         let place = request.place;
         let op = WorkspaceOp::Place(person, place);
-        self.authorize(administrator, Some(&workspace), op, now)?;
+        let by = self.authorize(administrator, Some(&workspace), op, now)?;
         let key = self.inner.host.key.clone();
         let name = request.name.as_deref();
         let done = self
-            .administer(
+            .administer_as(
                 &mut workspace,
                 request.request_id,
                 request_digest(&("member", person, &place, name))?,
@@ -187,6 +187,10 @@ impl Workspaces {
                     peer.governance_mut()
                         .place_member(person, place, name, &key, system_time(now))
                 },
+                stamped(
+                    tilo_action_policy::roles::governance::ADD_MEMBER,
+                    actor_of(&by),
+                ),
                 now,
             )
             .await;

@@ -1,167 +1,142 @@
-//! The model manager's Hugging Face client and the workspace's Hugging Face sign-in.
+//! The model manager's Hugging Face client, and signing a person in to it from a terminal.
 //!
-//! The sign-in is the workspace's: a Hugging Face account in its accounts names the entry of its
-//! vault that keeps a pasted token or the grant a sign-in left, and Settings keeps both. The
-//! manager asks the session for it on the socket the session serves the model manager
-//! ([`accounts::sign_ins::models_socket`]): it is told the Hugging Face accounts, and is released
-//! the token, or the grant's access token renewed where it was due, never the refresh token.
-//!
-//! On a device without a browser the person signs in here, in a terminal, by device code
-//! ([`sign_in_with_code`]); the session keeps that grant as Settings keeps one. Signing out
-//! ([`sign_out`]) has the session forget the account with its sign-in.
+//! The manager keeps no credential of its own. The Hugging Face sign-in is a key of the
+//! workspace's `tilo.models` provider, kept in the workspace's vault and set through the
+//! published `models#set-key` action — from Settings' AI page, or from [`sign_in_with_code`]
+//! here. Whenever a download needs it, the token comes with that request alone
+//! ([`HubClient::new`]): nothing in this process reads an account, a vault item or a socket.
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use account_credentials::hugging_face::{self, HubSignIn};
-use accounts::sign_ins::{self, Answer, Ask, Client, Held};
-use agent_provider_config::local::hub::{HUB_ORIGIN, HubAccount, HubTokenState};
+use account_credentials::hugging_face;
+use agent_provider_config::local::hub::HUB_ORIGIN;
 use local_model_service::hub::HubApi;
 use local_model_service::{HttpsTransport, ServiceError};
+use tilo_actions::remote::model_providers::{self, ModelProviders, ProviderView};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, InvokeRequest, LineClient, ReceiptStatus,
+    RemoteActionTarget,
+};
 use zeroize::Zeroizing;
 
-/// The token requests carry, and what Settings is told of it.
-pub(crate) struct HubCredentialRead {
-    pub(crate) token: Option<Zeroizing<String>>,
-    pub(crate) state: HubTokenState,
-}
+/// How long the terminal waits for the workspace to answer one action.
+const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
-impl HubCredentialRead {
-    const NONE: Self = Self {
-        token: None,
-        state: HubTokenState::None,
-    };
-}
-
-/// The workspace's Hugging Face credential, as the session releases it to this login.
-///
-/// # Errors
-/// The session does not answer, or refused the sign-in in its own words.
-pub(crate) fn stored_credential() -> Result<HubCredentialRead, String> {
-    sign_ins::models_socket().map_or(Ok(HubCredentialRead::NONE), |socket| {
-        stored_credential_at(&socket)
+/// The manager's connection to this computer's daemon, as the person whose terminal runs it.
+fn daemon() -> Result<LineClient, String> {
+    let socket = tilo_paths::machine::daemon_native()
+        .map_err(|error| format!("this computer's daemon is not known: {error}"))?;
+    LineClient::connect(&socket).map_err(|error| {
+        format!(
+            "this computer's daemon does not answer at {} ({error}): run `tilo status` to start it",
+            socket.display()
+        )
     })
 }
 
-/// [`stored_credential`], asked on the session's socket at `socket`.
-fn stored_credential_at(socket: &Path) -> Result<HubCredentialRead, String> {
-    let mut session = match Client::connect(socket) {
-        Ok(session) => session,
-        // No session runs for this login, so no workspace's account is known here.
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            return Ok(HubCredentialRead::NONE);
-        }
-        Err(error) => {
-            return Err(format!(
-                "the session cannot be asked for the Hugging Face sign-in: {error}"
-            ));
-        }
-    };
-    let asked = |answer: std::io::Result<Answer>| {
-        answer.map_err(|error| format!("the session did not answer: {error}"))
-    };
-    let held = match asked(session.ask(&Ask::Accounts { after: None }))? {
-        Answer::Accounts { accounts, .. } => accounts.into_iter().find(|held| held.account.enabled),
-        Answer::Refused { error } => return Err(error),
-        Answer::SignIn { .. } | Answer::Reported => return Err(sign_ins::NOT_ANSWERED.into()),
-    };
-    let Some(Held {
-        workspace, account, ..
-    }) = held
-    else {
-        return Ok(HubCredentialRead::NONE);
-    };
-    let Some(item) = accounts::email::password_item(&account.config) else {
-        return Ok(HubCredentialRead::NONE);
-    };
-    let signed_in = signed_in_as(&account.config);
-    let ask = Ask::SignIn {
-        workspace,
-        item: item.to_owned(),
-    };
-    match (asked(session.ask(&ask))?, signed_in) {
-        (Answer::SignIn { secret }, None) => Ok(HubCredentialRead {
-            token: Some(secret),
-            state: HubTokenState::Pasted,
-        }),
-        (Answer::SignIn { secret }, Some(account)) => Ok(HubCredentialRead {
-            token: Some(secret),
-            state: HubTokenState::SignedIn { account },
-        }),
-        // A sign-in Hugging Face will not renew any more has ended, and requests go without it.
-        (Answer::Refused { error }, Some(account)) if error == sign_ins::SIGN_IN_AGAIN => {
-            Ok(HubCredentialRead {
-                token: None,
-                state: HubTokenState::Ended { account },
-            })
-        }
-        (Answer::Refused { error }, _) => Err(error),
-        (Answer::Accounts { .. } | Answer::Reported, _) => Err(sign_ins::NOT_ANSWERED.into()),
+/// One `models` action of the person's own workspace, and what it answered.
+fn invoke(
+    line: &dyn ActionProvider,
+    target: RemoteActionTarget,
+    argument: serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let request = InvokeRequest::plain(target, argument);
+    // The daemon decides who calls by the connection; the call names nobody.
+    let caller = Caller::local_person("");
+    let answer = line
+        .invoke(&caller, request)
+        .wait_timeout(ANSWER_WAIT)
+        .ok()
+        .flatten()
+        .ok_or_else(|| "the workspace did not answer".to_owned())?;
+    let receipt = answer.map_err(|error| match error {
+        ActionCallError::Refused { reason } => reason,
+        other => other.own_words(),
+    })?;
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Rejected { error } => Err(error.own_words()),
+        ReceiptStatus::Cancelled { .. } => Err("The call was stopped".to_owned()),
+        ReceiptStatus::Accepted => Err("the workspace did not answer".to_owned()),
     }
 }
 
-/// Who signed in, from the Hugging Face account's settings: `None` for a pasted token.
-fn signed_in_as(config: &serde_json::Value) -> Option<HubAccount> {
-    let text = |key: &str| {
-        config
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
+/// Whether `endpoint` is a server on this computer, which is where the model manager's own
+/// models are served.
+fn on_this_computer(endpoint: &str) -> bool {
+    let rest = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|character| character.is_ascii_digit()) => host,
+        _ => authority,
     };
-    Some(HubAccount {
-        username: text("username")?,
-        name: text("name"),
-    })
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1")
 }
 
-/// What `hub-account` answers: the workspace's Hugging Face credential's state, as JSON.
-pub(crate) fn account_state() -> Result<String, String> {
-    serde_json::to_string(&stored_credential()?.state).map_err(|error| error.to_string())
-}
-
-/// What a sign-in or sign-out without a session to keep it is told.
-const NO_SESSION: &str = "Sign in to Tilo first: the workspace keeps the Hugging Face sign-in";
-
-/// The session's model manager socket, answering now.
-fn session_at(socket: Option<std::path::PathBuf>) -> Result<Client, String> {
-    let socket = socket.ok_or(NO_SESSION)?;
-    Client::connect(&socket).map_err(|error| format!("{NO_SESSION} ({error})"))
-}
-
-/// The answer to `ask`, when the session did what it asks.
-fn done(session: &mut Client, ask: &Ask) -> Result<(), String> {
-    match session.ask(ask) {
-        Ok(Answer::Reported) => Ok(()),
-        Ok(Answer::Refused { error }) => Err(error),
-        Ok(Answer::Accounts { .. } | Answer::SignIn { .. }) => Err(sign_ins::NOT_ANSWERED.into()),
-        Err(error) => Err(format!("the session did not answer: {error}")),
+/// The provider a terminal sign-in sets the key of: the one `named`, or the single provider
+/// this computer runs.
+fn provider_named(line: &dyn ActionProvider, named: Option<&str>) -> Result<String, String> {
+    if let Some(named) = named {
+        return Ok(named.to_owned());
+    }
+    let listed: ModelProviders = serde_json::from_value(invoke(
+        line,
+        model_providers::target(model_providers::LIST),
+        serde_json::Map::new(),
+    )?)
+    .map_err(|error| format!("the workspace's providers do not read: {error}"))?;
+    let mut local: Vec<ProviderView> = listed
+        .providers
+        .into_iter()
+        .filter(|provider| on_this_computer(&provider.endpoint))
+        .collect();
+    match local.len() {
+        1 => Ok(local.remove(0).id),
+        0 => Err(
+            "This workspace keeps no model provider on this computer: add the one this \
+                  computer runs in Settings' AI page, or name its id with `--provider`"
+                .to_owned(),
+        ),
+        _ => {
+            let ids: Vec<String> = local.into_iter().map(|provider| provider.id).collect();
+            Err(format!(
+                "This computer runs several model providers: name the one the Hugging Face \
+                 sign-in is for with `--provider` ({})",
+                ids.join(", ")
+            ))
+        }
     }
 }
 
-/// The workspace's Hugging Face accounts, as the session tells them.
-fn told(session: &mut Client) -> Result<Vec<Held>, String> {
-    match session.ask(&Ask::Accounts { after: None }) {
-        Ok(Answer::Accounts { accounts, .. }) => Ok(accounts),
-        Ok(Answer::Refused { error }) => Err(error),
-        Ok(Answer::SignIn { .. } | Answer::Reported) => Err(sign_ins::NOT_ANSWERED.into()),
-        Err(error) => Err(format!("the session did not answer: {error}")),
-    }
+/// Keep `token` as `provider`'s key in the workspace's `tilo.models`, through the published
+/// `models#set-key` action: the same place Settings' AI page sets a provider's key.
+fn keep_key(line: &dyn ActionProvider, provider: &str, token: &str) -> Result<(), String> {
+    let mut argument = serde_json::Map::new();
+    argument.insert("provider".into(), provider.into());
+    argument.insert("key".into(), token.into());
+    invoke(
+        line,
+        model_providers::target(model_providers::SET_KEY),
+        argument,
+    )
+    .map(|_| ())
 }
 
 /// Sign in with Hugging Face by device code, for a device without a browser: the code and its
-/// page go to standard error, and the session keeps the grant as the workspace's Hugging Face
-/// account's sign-in.
-pub(crate) fn sign_in_with_code() -> Result<Option<String>, String> {
+/// page go to standard error, and the token is kept as the key of the model provider `named`
+/// (`Some`), or of the one provider this computer runs, through `models#set-key`. It is never
+/// printed.
+pub(crate) fn sign_in_with_code(named: Option<&str>) -> Result<Option<String>, String> {
+    let line = daemon()?;
     // Asked first, so nobody enters a code that nothing will keep.
-    drop(session_at(sign_ins::models_socket())?);
+    let provider = provider_named(&line, named)?;
     let device = hugging_face::begin_device().map_err(|error| error.to_string())?;
     eprintln!(
         "To sign in with Hugging Face, open {} and enter {}",
@@ -170,51 +145,72 @@ pub(crate) fn sign_in_with_code() -> Result<Option<String>, String> {
     );
     let sign_in = hugging_face::finish_device(device, hugging_face::USERINFO_ENDPOINT)
         .map_err(|error| error.to_string())?;
-    keep(&mut session_at(sign_ins::models_socket())?, &sign_in)?;
+    keep_key(&line, &provider, &sign_in.tokens.access_token)?;
     Ok(Some(format!(
-        "Signed in to Hugging Face as {}",
+        "Signed in to Hugging Face as {}: {provider} downloads with that account",
         sign_in.username
     )))
 }
 
-/// Have the session keep `sign_in`'s grant: in the workspace whose Hugging Face account it
-/// replaces, or, with none, the session's choice.
-fn keep(session: &mut Client, sign_in: &HubSignIn) -> Result<(), String> {
-    let workspace = told(session)?.into_iter().next().map(|held| held.workspace);
-    done(
-        session,
-        &Ask::Keep {
-            workspace,
-            secret: sign_ins::Withheld(Zeroizing::new(account_credentials::oauth_grant(
-                &sign_in.tokens,
-            ))),
-            username: sign_in.username.clone(),
-            name: sign_in.name.clone(),
-        },
-    )
+/// What `hub-sign-out` does: the provider `named` (or the one this computer runs) forgets its
+/// key, so downloads go without the person's account.
+pub(crate) fn sign_out(named: Option<&str>) -> Result<Option<String>, String> {
+    let line = daemon()?;
+    let provider = provider_named(&line, named)?;
+    let mut argument = serde_json::Map::new();
+    argument.insert("provider".into(), provider.clone().into());
+    invoke(
+        &line,
+        model_providers::target(model_providers::REMOVE_KEY),
+        argument,
+    )?;
+    Ok(Some(format!("Signed out of Hugging Face for {provider}")))
 }
 
-/// What `hub-sign-out` does: the session forgets the workspace's Hugging Face accounts and
-/// their sign-ins, so downloads go without them.
-pub(crate) fn sign_out() -> Result<Option<String>, String> {
-    forget_all(&mut session_at(sign_ins::models_socket())?).map(|()| None)
+/// The token a download carries, read from the file `path` and removed once read: whoever asks
+/// for the download writes it where only this account reads, for that download alone.
+pub(crate) fn token_from_file(path: &Path) -> Result<Zeroizing<String>, String> {
+    let token = Zeroizing::new(
+        std::fs::read_to_string(path)
+            .map_err(|error| format!("{} does not read: {error}", path.display()))?,
+    );
+    let _ = std::fs::remove_file(path);
+    Ok(Zeroizing::new(token.trim().to_owned()))
 }
 
-fn forget_all(session: &mut Client) -> Result<(), String> {
-    for held in told(session)? {
-        done(
-            session,
-            &Ask::Forget {
-                workspace: held.workspace,
-                account: held.account.id.as_str().to_owned(),
-            },
-        )?;
-    }
-    Ok(())
+/// A token written where only this account reads, for a worker the caller starts apart from
+/// itself: its path, which the worker consumes with [`token_from_file`].
+///
+/// # Errors
+/// The private directory or the file cannot be written.
+pub(crate) fn token_file(token: &str) -> Result<PathBuf, String> {
+    let directory = tilo_paths::xdg::runtime_dir()
+        .ok_or_else(|| "this login has no runtime directory".to_owned())?
+        .join("tilo")
+        .join("model-hub");
+    tilo_files::native::private::directory(&directory)
+        .map_err(|error| format!("{} cannot be made: {error}", directory.display()))?;
+    let mut seed = [0_u8; 16];
+    getrandom::fill(&mut seed)
+        .map_err(|error| format!("no randomness for the token file: {error}"))?;
+    let path = directory.join(format!("token-{}", hex::encode(seed)));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|error| format!("{} cannot be written: {error}", path.display()))?;
+    file.write_all(token.as_bytes())
+        .and_then(|()| file.flush())
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&path);
+            format!("{} cannot be written: {error}", path.display())
+        })?;
+    Ok(path)
 }
 
-/// HTTPS to the Hub, with the person's token when one is stored, so their
-/// gated and private models answer too. Downloads redirect to the Hub's
+/// HTTPS to the Hub, with the token the request was asked with — the workspace's Hugging Face
+/// sign-in — so their gated and private models answer too. Downloads redirect to the Hub's
 /// content servers: redirects are followed only to HTTPS, and the client
 /// drops the token when a redirect leaves `huggingface.co`.
 pub(crate) struct HubClient {
@@ -223,8 +219,9 @@ pub(crate) struct HubClient {
 }
 
 impl HubClient {
-    /// A client with the stored token.
-    pub(crate) fn new() -> Result<Self, ServiceError> {
+    /// A client for requests carrying `token`: the workspace's Hugging Face sign-in, handed by
+    /// whoever asked for this download, or none for a model that needs no account.
+    pub(crate) fn new(token: Option<Zeroizing<String>>) -> Result<Self, ServiceError> {
         let client = tilo_net::http::blocking_client()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
@@ -242,10 +239,7 @@ impl HubClient {
             .timeout(Duration::from_secs(60))
             .build()
             .map_err(|error| ServiceError::Backend(error.to_string()))?;
-        Ok(Self {
-            client,
-            token: stored_credential().map_err(ServiceError::Backend)?.token,
-        })
+        Ok(Self { client, token })
     }
 
     /// Whether requests carry the person's token.
@@ -384,123 +378,97 @@ pub(crate) fn copy_range(
 
 #[cfg(test)]
 mod tests {
-    use accounts::sign_ins::fixture::{Fixture, item_for};
+    use std::sync::{Arc, Mutex};
 
     use super::*;
+    use serde_json::json;
+    use tilo_actions::ActionOutput;
+    use tilo_actions::remote::TestProvider;
 
-    fn hub_account(config: serde_json::Value) -> accounts::Account {
-        let mut account = accounts::Account::new(
-            accounts::AccountId::from("hugging-face"),
-            sign_ins::MODEL_HUB_TYPE,
-        );
-        account.config = config;
-        accounts::email::set_password_item(&mut account.config, Some(&item_for("hugging-face")));
-        account
+    /// The provider the terminal sign-in sets a key on: the one this computer runs, or the one
+    /// a person names; several local providers are refused asking for one.
+    #[test]
+    fn the_terminal_finds_the_provider_this_computer_runs() {
+        let listed = json!({"providers": [
+            {"id": "openai", "name": "OpenAI", "protocol": "open-ai-compatible",
+             "endpoint": "https://api.openai.com/v1", "configured": true, "enabled": true,
+             "models": []},
+            {"id": "vllm", "name": "vLLM", "protocol": "open-ai-compatible",
+             "endpoint": "http://127.0.0.1:8000/v1", "configured": false, "enabled": true,
+             "models": []},
+        ]});
+        let provider = TestProvider::new().completing(move |_| ActionOutput {
+            value: Some(listed.clone()),
+            resources: Vec::new(),
+        });
+        assert_eq!(provider_named(&provider, None).unwrap(), "vllm");
+        assert_eq!(provider_named(&provider, Some("named")).unwrap(), "named");
     }
 
-    tilo_test_env::scenario! {
-        /// The credential the manager downloads with is the workspace's Hugging Face account's,
-        /// released by the session: none without one, a pasted token, a sign-in's access token
-        /// with who signed in, and a refusal in the session's words.
-        fn the_workspaces_hugging_face_sign_in_is_what_requests_carry;
+    /// A download carries the token its request was asked with, and none when it asked for
+    /// none; a URL away from the Hub is refused before any token could go to it.
+    #[test]
+    fn a_download_carries_the_token_its_request_was_asked_with() {
+        let url = format!("{HUB_ORIGIN}/acme/Chat-GGUF/resolve/abc/model.gguf");
+        let hub = HubClient::new(Some(Zeroizing::new("hf_asked".to_owned()))).unwrap();
+        assert!(hub.signed_in());
+        let request = hub.request(&url).unwrap().build().unwrap();
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer hf_asked"
+        );
+        let anonymous = HubClient::new(None).unwrap();
+        assert!(!anonymous.signed_in());
+        assert!(
+            anonymous
+                .request(&url)
+                .unwrap()
+                .build()
+                .unwrap()
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .is_none(),
+            "a request with no token carries none"
+        );
+        assert!(matches!(
+            hub.request("https://example.test/acme/model.gguf"),
+            Err(ServiceError::NonHttpsArtifact)
+        ));
+    }
 
-        phase no_session_and_no_account_mean_no_token;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let read = stored_credential_at(&dir.path().join("absent")).unwrap();
-            assert!(read.token.is_none());
-            assert_eq!(read.state, HubTokenState::None);
-            let session = Fixture::serve_models(dir.path());
-            let read = stored_credential_at(&session.socket()).unwrap();
-            assert_eq!(read.state, HubTokenState::None);
-        }
-
-        phase a_pasted_token_is_carried;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let session = Fixture::serve_models(dir.path());
-            session.keep_account(hub_account(serde_json::json!({"server_url": HUB_ORIGIN})));
-            session.keep("hugging-face", "hf_pasted");
-            let read = stored_credential_at(&session.socket()).unwrap();
-            assert_eq!(read.token.as_deref().map(String::as_str), Some("hf_pasted"));
-            assert_eq!(read.state, HubTokenState::Pasted);
-            assert_eq!(session.released(), [item_for("hugging-face")]);
-        }
-
-        phase a_sign_in_is_carried_as_who_signed_in;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let session = Fixture::serve_models(dir.path());
-            session.keep_account(hub_account(serde_json::json!({
-                "server_url": HUB_ORIGIN, "username": "ada", "name": "Ada Lovelace",
-            })));
-            session.keep("hugging-face", "hf_oauth_access");
-            let read = stored_credential_at(&session.socket()).unwrap();
-            assert_eq!(read.token.as_deref().map(String::as_str), Some("hf_oauth_access"));
-            assert_eq!(
-                read.state,
-                HubTokenState::SignedIn {
-                    account: HubAccount {
-                        username: "ada".into(),
-                        name: Some("Ada Lovelace".into()),
-                    }
-                }
-            );
-        }
-
-        phase a_sign_in_in_a_terminal_is_kept_and_signing_out_forgets_it;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let session = Fixture::serve_models(dir.path());
-            let sign_in = HubSignIn {
-                tokens: account_credentials::TokenSet {
-                    access_token: "hf_oauth_access".into(),
-                    refresh_token: "hf_refresh".into(),
-                    ..account_credentials::TokenSet::default()
+    /// Signing in from the terminal keeps the token as the provider's key through the published
+    /// `models#set-key`, and nowhere else: the call carries the provider and the token, and no
+    /// answer carries it back.
+    #[test]
+    fn the_terminal_sign_in_keeps_the_token_as_the_providers_key() {
+        let asked: Arc<Mutex<Vec<InvokeRequest>>> = Arc::default();
+        let seen = Arc::clone(&asked);
+        let provider = TestProvider::new().answering(move |_, request| {
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.clone());
+            tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput::default(),
                 },
-                username: "ada".into(),
-                name: None,
-            };
-            keep(&mut Client::connect(&session.socket()).unwrap(), &sign_in).unwrap();
-            // The session keeps the grant itself, which it renews, and the account names it.
-            let read = stored_credential_at(&session.socket()).unwrap();
-            assert_eq!(
-                read.state,
-                HubTokenState::SignedIn {
-                    account: HubAccount {
-                        username: "ada".into(),
-                        name: None,
-                    }
-                }
-            );
-            let grant = read.token.unwrap();
-            let kept: serde_json::Value = serde_json::from_str(&grant).unwrap();
-            assert_eq!(kept["kind"], "oauth2");
-            assert_eq!(kept["tokens"]["refresh_token"], "hf_refresh");
-
-            forget_all(&mut Client::connect(&session.socket()).unwrap()).unwrap();
-            assert_eq!(
-                stored_credential_at(&session.socket()).unwrap().state,
-                HubTokenState::None
-            );
-            let mut asked = Client::connect(&session.socket()).unwrap();
-            let entry = Ask::SignIn {
-                workspace: accounts::sign_ins::fixture::WORKSPACE.into(),
-                item: item_for(sign_ins::MODEL_HUB_ACCOUNT),
-            };
-            assert!(
-                matches!(asked.ask(&entry), Ok(Answer::Refused { .. })),
-                "the sign-in went with the account"
-            );
-        }
-
-        phase a_refused_sign_in_is_said_in_the_sessions_words;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let session = Fixture::serve_models(dir.path());
-            session.keep_account(hub_account(serde_json::json!({"server_url": HUB_ORIGIN})));
-            let refused = stored_credential_at(&session.socket()).err().unwrap();
-            assert_eq!(refused, "This workspace's vault keeps no such entry");
-        }
+            }))
+        });
+        keep_key(&provider, "vllm", "hf_kept").unwrap();
+        let request = {
+            let asked = asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            asked.last().cloned().expect("the key is kept")
+        };
+        assert_eq!(
+            request.target,
+            model_providers::target(model_providers::SET_KEY)
+        );
+        let tilo_actions::remote::InvokeArgument::Json(argument) = &request.argument else {
+            panic!("the key is kept with its provider");
+        };
+        assert_eq!(argument["provider"], "vllm");
+        assert_eq!(argument["key"], "hf_kept");
     }
 }

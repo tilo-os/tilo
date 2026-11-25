@@ -609,8 +609,15 @@ fn a_window_well_holds_what_its_host_shows_for_the_window() {
         "<a href=\"/w/ws/notes\">Notes</a>".to_owned(),
     );
     let html = page.render(&shown(&mut frame));
+    // The well is the frame's root here, so its element also carries the root's mark: what it
+    // holds starts where its opening tag ends.
+    let well = html
+        .find("data-well=\"tab-7\"")
+        .map(|at| &html[at..])
+        .unwrap_or_else(|| panic!("the page has the window's well: {html}"));
+    let held = well.find('>').map_or("", |end| &well[end + 1..]);
     assert!(
-        html.contains("data-well=\"tab-7\"><a href=\"/w/ws/notes\">Notes</a>"),
+        held.starts_with("<a href=\"/w/ws/notes\">Notes</a>"),
         "the host's window stands in its well: {html}"
     );
 }

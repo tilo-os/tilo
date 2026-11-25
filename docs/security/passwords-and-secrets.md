@@ -34,12 +34,12 @@ The Passwords app has no network access and does not sync secrets through CRDT s
 ## Native, browser and hosted callers
 
 Provider keys and service tokens are the workspace's, entries of its vault like an
-account's password; a device keeps none of its own. The workspace's Hugging Face
-account names the entry holding a pasted token or a sign-in's grant, and the
-model manager asks the session for it on a socket of its own
-(`accounts::sign_ins::models_socket`), which tells it only that account. There it
-may also keep a sign-in made in a terminal, and forget the account with its sign-in
-when the person signs out.
+account's password; a device keeps none of its own. The Hugging Face sign-in that
+downloads models with the person's account is the local model provider's key in
+the workspace's `tilo.models`, set through the published `models#set-key` (from
+Settings' AI page, or from the manager's own sign-in in a terminal). The model
+manager is a device helper and holds no credential: the workspace's models
+provider hands it the token with each download request alone.
 
 The trusted service boundary constructs authorization from authenticated caller
 context and the approved configuration, not from untrusted RPC arguments.

@@ -48,6 +48,7 @@ pub(crate) mod accounts;
 pub(crate) mod app_wire;
 pub(crate) mod chooser;
 pub(crate) mod clipboard;
+pub(crate) mod notify;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +103,9 @@ pub(crate) enum Service {
     /// The person's clipboard, for the apps that hold no display of their own to offer or read a
     /// selection on ([`clipboard`]).
     Clipboard,
+    /// The notifications apps show, and what the person does with them, served to the apps the
+    /// launcher connects ([`notify`]).
+    Notify,
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
@@ -152,6 +156,11 @@ pub(crate) const TABLE: &[Row] = &[
         name: launcher::services::CLIPBOARD_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Session(Service::Clipboard),
+    },
+    Row {
+        name: launcher::services::NOTIFY_SERVICE,
+        reach: Reach::Launcher,
+        owner: Owner::Session(Service::Notify),
     },
     Row {
         name: launcher::services::COMPAT_SERVICE,
@@ -231,6 +240,8 @@ pub(crate) struct Served {
     chooser: Option<chooser::Served>,
     /// The person's clipboard, for the apps that hold no display of their own.
     clipboard: Option<clipboard::Served>,
+    /// The notifications the apps here show, in the same centre as the desktop's own notices.
+    notify: Option<notify::Served>,
     /// The system's media controls over every Playback the apps here play: what the apps told
     /// the loop since its last pass is taken on the loop itself.
     media: std::cell::RefCell<Option<crate::media_controls::Serving>>,
@@ -279,6 +290,9 @@ pub(crate) struct Serving {
     /// the apps sign in through. `None` for a session the host placed in a workspace's VM, which
     /// runs no device daemon and serves its apps' identity itself.
     pub daemon: Option<runtime_collab::ShellClient>,
+    /// The notifications the session shows: what an app sends over its connection reaches the
+    /// same daemon as the desktop's own notices. `None` when the session serves no notifications.
+    pub notifications: Option<tilo_notifications_service::Notifications>,
 }
 
 /// The identity service apps sign in through, held for as long as the session serves it.
@@ -382,6 +396,17 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                         tracing::warn!(%error, "the clipboard service is unavailable");
                     })
                     .ok();
+            }
+            Service::Notify => {
+                served.notify = serving.notifications.take().and_then(|notifications| {
+                    match notify::serve(notifications) {
+                        Ok(served) => Some(served),
+                        Err(error) => {
+                            tracing::warn!(%error, "the notification service is unavailable");
+                            None
+                        }
+                    }
+                });
             }
             Service::DataUsage => {}
         }
@@ -1168,6 +1193,7 @@ mod tests {
                 Service::Accounts,
                 Service::Chooser,
                 Service::Clipboard,
+                Service::Notify,
             ] {
                 assert!(
                     TABLE

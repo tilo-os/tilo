@@ -1057,9 +1057,9 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     server.shutdown().await;
 }
 
-/// A workspace policy whose answers on the agent `caller` acts as are `rules`, set by the
-/// person who gave them: each kind of a rule is its own answer, as setting answers anew does,
-/// and a later answer on the same scope takes the place of an earlier one.
+/// A workspace policy whose answers on the agent `caller` acts as are `rules`, set by its own
+/// person: each kind of a rule is its own answer, as setting answers anew does, and a later
+/// answer on the same scope takes the place of an earlier one.
 pub(super) fn narrowing(
     workspace: &str,
     caller: &Caller,
@@ -1067,17 +1067,17 @@ pub(super) fn narrowing(
 ) -> tilo_action_policy::WorkspacePolicy {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
-    let agent = caller.acting().agent_id().unwrap_or_default();
+    let (agent, person) = crate::workspaces::hosted_use::agent_of(caller).unwrap_or_default();
     for rule in rules {
         let scope = AnswerScope::of_node(&rule.node)
             .expect("a rule of a bound stands at a node an answer names");
         for kind in rule.kinds.iter() {
             let answer = agent_answers::grant(
                 workspace,
-                &agent,
+                agent,
                 (&scope, kind),
                 rule.answer,
-                tilo_action_policy::Grantee::person("owner"),
+                tilo_action_policy::Grantee::person(person.clone()),
             );
             policy.grants.retain(|given| given.id != answer.id);
             policy.grants.push(answer);

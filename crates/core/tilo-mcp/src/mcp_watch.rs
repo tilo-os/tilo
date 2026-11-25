@@ -685,7 +685,15 @@ fn change_event(
         }
     }
     if let (Some(fields), Some(entry)) = (event.as_object_mut(), entry.as_object()) {
-        for key in ["by", "title", "group", "group_kind", "invocation", "undone"] {
+        for key in [
+            "by",
+            "verb",
+            "title",
+            "group",
+            "group_kind",
+            "invocation",
+            "undone",
+        ] {
             if let Some(value) = entry.get(key) {
                 fields.insert(key.to_owned(), value.clone());
             }
@@ -913,6 +921,28 @@ mod tests {
             .expect_err("a change that says nothing is no edit");
         assert!(said.contains("b2"), "{said}");
         assert!(said.contains("notes/Todo"), "{said}");
+    }
+
+    /// A change a watch reports names the action it was made by and the time
+    /// it happened, so a watcher reads a ban from a removal without working it
+    /// out from what it saw before.
+    #[test]
+    fn a_change_event_names_the_action_and_the_time() {
+        let entry = json!({
+            "change": "a1",
+            "happened": "removed",
+            "verb": "ban",
+            "time_ms": 1_700_000_000_000_i64,
+        });
+        let event = change_event(
+            "workspace/members",
+            Some("tilo.workspace"),
+            Some("workspace/members"),
+            &entry,
+        )
+        .expect("a change");
+        assert_eq!(event["verb"], "ban");
+        assert_eq!(event["time_ms"], 1_700_000_000_000_i64);
     }
 
     /// A change a watch reports names the group it is a step of, as the

@@ -91,6 +91,35 @@ impl crate::collaboration::PeerTransport for RecordingPeer {
     }
 }
 
+/// Admit a call of `spec` by its declaration alone, as the workspace admits an action whose
+/// payload its app builds: available, and confirmed as `policy` asks by `confirmation`.
+fn admit_declared(
+    spec: &tilo_actions::ActionSpec,
+    policy: Option<&tilo_actions::ConfirmationPolicy>,
+    confirmation: Option<&tilo_actions::remote::Confirmation>,
+) -> Result<(), tilo_actions::ApiError> {
+    use tilo_actions::ConfirmationPolicy;
+    use tilo_actions::remote::Confirmation;
+    if let tilo_actions::Availability::Unavailable { code, reason } = &spec.contract.availability {
+        return Err(tilo_actions::ApiError::Unavailable {
+            code: code.clone(),
+            reason: reason.clone(),
+        });
+    }
+    let confirmed = match policy {
+        None | Some(ConfirmationPolicy::None) => true,
+        Some(ConfirmationPolicy::Confirm) => matches!(confirmation, Some(Confirmation::Confirmed)),
+        Some(ConfirmationPolicy::Phrase { phrase }) => {
+            matches!(confirmation, Some(Confirmation::Phrase(given)) if given == phrase)
+        }
+    };
+    if confirmed {
+        Ok(())
+    } else {
+        Err(tilo_actions::ApiError::ConfirmationRequired)
+    }
+}
+
 /// How the session finally answered a forwarded request, as its receipt says it; `None` while it
 /// has not finished, since what it says first (that it took the request) may still end refused.
 fn receipt_status(
@@ -166,12 +195,15 @@ impl Peer {
     /// A call whose action asks first and that carries no yes is kept as the device keeps its
     /// asked record, accepted and not run ([`Driver::asking`]); the same call sent again with the
     /// person's approve ([`Driver::confirm_asked`]) answers whatever the action asks, as the
-    /// broker takes it, and its handler reads the approve from the call's context.
+    /// broker takes it, and its handler reads the approve from the call's context. A call the
+    /// person's `grants` leave to them (a guest's effect that reaches outside) is kept the same
+    /// way, as the workspace decides it by the caller's grants; one the grants refuse is refused.
     fn admit_own(
         &mut self,
         resources: &[tilo_actions::ResourceSpec],
         request: tilo_actions::remote::InvokeRequest,
         actor: tilo_actions::Actor,
+        grants: Option<&crate::permissions::PermissionContext>,
     ) {
         use tilo_actions::ConfirmationPolicy;
         use tilo_actions::remote::{
@@ -212,11 +244,46 @@ impl Peer {
             (Some(_), _) => None,
             (None, _) => request.confirmation.clone(),
         };
+        // What the caller's grants say of the call, as the workspace decides it: one they leave to
+        // the person waits for them, one they refuse goes no further.
+        let granted = match (request.approval(), &continued, grants) {
+            (None, None, Some(grants)) => {
+                tilo_actions::api::locate(resources, address).map_or(Ok(()), |(resource, spec)| {
+                    let typed = match &request.argument {
+                        InvokeArgument::Json(arguments) => Some(arguments),
+                        _ => None,
+                    };
+                    crate::bound_dispatch::admit_local_action(
+                        grants,
+                        (&crate::collaboration::local_app_id(), resource, spec),
+                        typed,
+                        slot.as_deref(),
+                    )
+                })
+            }
+            _ => Ok(()),
+        };
+        let grants_ask = match granted {
+            Ok(()) => false,
+            Err(tilo_actions::ApiError::ConfirmationRequired) => true,
+            Err(error) => {
+                let refusal = ActionCallError::from_api(&error);
+                self.refused.push((request.invocation, refusal.clone()));
+                self.answer(tilo_actions::remote::refuse(
+                    &RemoteActionMessage::Invoke(request),
+                    refusal,
+                ));
+                return;
+            }
+        };
         // Nobody asked for an effect's edit, and the person at the device is never asked about it.
         if confirmation.is_none()
             && continued.is_none()
             && let Some(spec) = spec
-            && policy.is_some_and(|policy| policy != ConfirmationPolicy::None)
+            && (grants_ask
+                || policy
+                    .as_ref()
+                    .is_some_and(|policy| *policy != ConfirmationPolicy::None))
         {
             let invocation = request.invocation;
             self.asked = Some(AskedCall {
@@ -230,12 +297,17 @@ impl Peer {
             })));
             return;
         }
-        let admitted = match &request.argument {
-            InvokeArgument::Json(arguments) => {
+        let deferred =
+            spec.filter(|spec| matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. }));
+        let admitted = match (&request.argument, deferred) {
+            // A deferred action's payload is minted at its handler, in the app: the workspace
+            // admits it by its declaration and never builds it.
+            (_, Some(spec)) => admit_declared(spec, policy.as_ref(), confirmation.as_ref()),
+            (InvokeArgument::Json(arguments), None) => {
                 tilo_actions::api::admit(resources, address, arguments, confirmation.as_ref())
                     .map(drop)
             }
-            InvokeArgument::None => tilo_actions::api::admit(
+            (InvokeArgument::None, None) => tilo_actions::api::admit(
                 resources,
                 address,
                 &serde_json::Map::new(),
@@ -244,7 +316,7 @@ impl Peer {
             .map(drop),
             // Typed text binds to the action's own input in the app; the broker checks only
             // that the action is offered.
-            InvokeArgument::Text(_) => spec
+            (InvokeArgument::Text(_), None) => spec
                 .map(drop)
                 .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone())),
         };
@@ -452,12 +524,22 @@ impl Driver {
     /// Answers the action it ran; `None` when nothing waits.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         let approval = self.approval();
+        self.resolve_asked(approval)
+    }
+
+    /// [`Self::confirm_asked`] with `approval`, the approve the person gave: the device admits the
+    /// kept call again in its own dispatch, never on a frame the app sends.
+    pub(super) fn resolve_asked(
+        &mut self,
+        approval: tilo_actions::remote::asked::Approval,
+    ) -> Option<tilo_actions::ActionAddress> {
         let asked = self.peer.as_mut()?.asked.take()?;
         let address = asked.request.target.address.clone();
         let mut request = asked.request;
         request.confirmation = Some(tilo_actions::remote::Confirmation::Asked(approval));
         let resources = self.app.publication_resources();
-        self.peer_mut().admit_own(&resources, request, asked.actor);
+        self.peer_mut()
+            .admit_own(&resources, request, asked.actor, None);
         self.run_frame();
         Some(address)
     }
@@ -517,7 +599,7 @@ impl Driver {
 
     /// Why the peer refused the app's own call `invocation`, as its caller hears it: none when
     /// it admitted the call.
-    pub(super) fn own_refusal(
+    pub(crate) fn own_refusal(
         &self,
         invocation: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::ApiError> {
@@ -726,6 +808,7 @@ impl Driver {
             }
         }
         let actor = tilo_actions::Actor::Member(self.app.collaboration.local_author.clone());
+        let grants = self.app.permission_ctx.clone();
         let peer = self.peer_mut();
         for request in asked {
             let request = match request {
@@ -740,8 +823,22 @@ impl Driver {
                     continue;
                 }
             };
+            // As the workspace's broker refuses it: a person's approve never travels on the app's
+            // own frame, where the app would answer by its own word what its person was asked.
+            // Their yes reaches the call only through the device's re-admission
+            // ([`Driver::confirm_asked`]).
+            if let Err(forged) = tilo_actions::remote::asked::admit_frame(None, &request) {
+                if request.target.provider == tilo_actions::remote::OWN_PROVIDER {
+                    peer.refused.push((request.invocation, forged.clone()));
+                }
+                peer.answer(tilo_actions::remote::refuse(
+                    &RemoteActionMessage::Invoke(request),
+                    forged,
+                ));
+                continue;
+            }
             if request.target.provider == tilo_actions::remote::OWN_PROVIDER {
-                peer.admit_own(&resources, request, actor.clone());
+                peer.admit_own(&resources, request, actor.clone(), Some(&grants));
                 continue;
             }
             if let Some(receipt) = peer.served_by_caller.invoke(&request, &actor) {

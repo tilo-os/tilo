@@ -13,13 +13,20 @@ description = "Dates, times and clocks as the person set them: the format styles
 name = "tilo_formats"
 path = "src/lib.rs"
 
+[features]
+# The styles as resource fields (`locale` in the settings): the `Model` derive that names them
+# in a resource's schema. A crate that only formats dates and money leaves it off and carries
+# no resource model.
+model = ["dep:tilo-resource"]
+
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
-# The styles are resource fields (`locale` in the settings), so they keep the model derive.
-tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+# The styles are resource fields (`locale` in the settings, feature `model`), so they keep the
+# model derive when it is on.
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 
 [lints]
 workspace = true

@@ -2,8 +2,7 @@
 //! workspaces it holds: the cloud service's ask for the file accounts that changed is held until
 //! a workspace keeps one and let go once the asker goes away, and an origin connector the daemon
 //! hands its sign-ins is told its workspace's accounts only and asks only their sign-ins, decided
-//! for its app. The model manager is told the Hugging Face accounts alone, on a socket of its
-//! own, and it alone keeps or forgets a sign-in.
+//! for its app.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -34,13 +33,7 @@ fn person(workspaces: &Workspaces) -> Caller {
 fn served_as(workspaces: &Workspaces, by: Caller) -> AccountSignIns {
     let runtime = tilo_paths::xdg::runtime_dir().expect("the test's runtime directory");
     let at = runtime.join(format!("held-{}", rand::random::<u32>()));
-    daemon_sign_ins::serve(
-        &at.join("socket"),
-        &at.join("models"),
-        workspaces.clone(),
-        by,
-    )
-    .unwrap()
+    daemon_sign_ins::serve(&at.join("socket"), workspaces.clone(), by).unwrap()
 }
 
 /// The daemon's own account sign-ins socket.
@@ -385,106 +378,5 @@ fn a_connector_is_told_an_account_added_while_it_waits() {
             "told when the account was kept, not when the wait ran out"
         );
         assert_eq!(told(&answer), [(workspace, "lab@story.example".to_owned())]);
-    });
-}
-
-/// The workspace's Hugging Face account is told to the model manager on its own socket and to
-/// nobody else: the cloud service's socket lists file accounts only. A sign-in the manager asks
-/// for is Settings', so whoever may not read Settings gets none. Only the model manager keeps a
-/// sign-in or forgets an account: the cloud service is refused before anything is read or
-/// written.
-#[test]
-fn the_model_manager_is_told_the_hugging_face_account_alone() {
-    host::run(|host| async move {
-        let workspace = host.workspace().to_owned();
-        let workspaces = host.daemon().workspaces().clone();
-        let mut hub = account("hugging-face", sign_ins::MODEL_HUB_TYPE, "Hugging Face");
-        hub.config = serde_json::json!({"server_url": sign_ins::MODEL_HUB_ORIGIN});
-        workspaces
-            .keep_workspace_account((&workspace, person(&workspaces).acting(), None), &hub)
-            .await
-            .unwrap();
-        let models = sign_ins::models_socket().expect("the test's runtime directory");
-        let (_, answer) = ask(connect(&models), Ask::Accounts { after: None }).await;
-        assert_eq!(
-            told(&answer),
-            [(workspace.clone(), "hugging-face".to_owned())]
-        );
-        let (_, cloud) = ask(connect(&daemons_socket()), Ask::Accounts { after: None }).await;
-        assert!(
-            told(&cloud).is_empty(),
-            "the cloud service is not told the Hugging Face account"
-        );
-
-        let cert = workspaces.device_cert().clone();
-        // The workspace's policy is what narrows the agent: it may use Passwords, but not read
-        // the app that asks.
-        let answered = |app: &str, answer| {
-            tilo_action_policy::agent_answers::grant(
-                &workspace,
-                "scout",
-                (
-                    &tilo_action_policy::agent_answers::AnswerScope::app(app),
-                    tilo_action_policy::ActionKind::Read,
-                ),
-                answer,
-                tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
-            )
-        };
-        let grants = [
-            answered(
-                tilo_app_id::apps::PASSWORDS,
-                tilo_action_policy::Answer::Allow,
-            ),
-            answered(
-                tilo_app_id::apps::SETTINGS,
-                tilo_action_policy::Answer::Deny,
-            ),
-        ];
-        tilo_workspace_service::workspaces::fixtures::record_grants(
-            &workspaces,
-            &workspace,
-            &grants,
-        )
-        .await;
-        let agent = Caller::delegated_agent("scout", cert.user_public_key, cert.device_public_key)
-            .in_workspace(workspace.clone());
-        let served = served_as(&workspaces, agent);
-        let models = served.path().with_file_name("models");
-        let ask_for = Ask::SignIn {
-            workspace: workspace.clone(),
-            item: ENTRY.into(),
-        };
-        match ask(connect(&models), ask_for).await.1 {
-            Answer::Refused { error } => assert_eq!(error, MAY_NOT_READ_APP),
-            other => panic!("a refusal, not {other:?}"),
-        }
-
-        let keep = Ask::Keep {
-            workspace: Some(workspace.clone()),
-            secret: sign_ins::Withheld(zeroize::Zeroizing::new("hf_grant".into())),
-            username: "ada".into(),
-            name: None,
-        };
-        let forget = Ask::Forget {
-            workspace: workspace.clone(),
-            account: "hugging-face".into(),
-        };
-        for asked in [keep, forget] {
-            match ask(connect(&daemons_socket()), asked).await.1 {
-                Answer::Refused { error } => assert_eq!(error, daemon_sign_ins::KEEPS_NONE),
-                other => panic!("a refusal, not {other:?}"),
-            }
-        }
-        assert_eq!(
-            workspaces
-                .workspace_accounts(&workspace)
-                .await
-                .unwrap()
-                .all()
-                .len(),
-            1,
-            "the workspace still keeps its Hugging Face account"
-        );
     });
 }

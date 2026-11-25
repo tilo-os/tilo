@@ -11596,6 +11596,14 @@
           }
         },
         {
+          "name": "key",
+          "doc": "The key that chooses it while the strip's window has the keyboard, as the app declared it (`key: \"Ctrl+1\"`): the host answers it as a press on the choice.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        },
+        {
           "name": "enabled",
           "doc": "Whether it can be chosen now.",
           "type": "bool"

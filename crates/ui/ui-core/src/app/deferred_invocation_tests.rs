@@ -68,6 +68,8 @@ tilo_test_env::scenario! {
             crate::permissions::MemberId::person("fixture"),
         )
         .unwrap();
+        // The press asks the workspace, which keeps it until the person answers.
+        driver.connect_peer();
         for _ in 0..3 {
             driver.relayout();
         }
@@ -96,6 +98,7 @@ tilo_test_env::scenario! {
             crate::permissions::MemberId::person("fixture"),
         )
         .unwrap();
+        driver.connect_peer();
         driver
             .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
             .unwrap();

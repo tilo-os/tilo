@@ -7,27 +7,26 @@
 /// placement, and conventional number of decimals — `$1,234.50` vs
 /// `1.234,50 €` vs `¥1,235` (yen has no minor unit). The serde repr is the
 /// bare variant name, which equals the ISO code.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
-)]
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Currency {
-    #[model(rename = "USD")]
+    #[cfg_attr(feature = "model", model(rename = "USD"))]
     USD,
-    #[model(rename = "EUR")]
+    #[cfg_attr(feature = "model", model(rename = "EUR"))]
     EUR,
-    #[model(rename = "GBP")]
+    #[cfg_attr(feature = "model", model(rename = "GBP"))]
     GBP,
-    #[model(rename = "JPY")]
+    #[cfg_attr(feature = "model", model(rename = "JPY"))]
     JPY,
-    #[model(rename = "CHF")]
+    #[cfg_attr(feature = "model", model(rename = "CHF"))]
     CHF,
-    #[model(rename = "CAD")]
+    #[cfg_attr(feature = "model", model(rename = "CAD"))]
     CAD,
-    #[model(rename = "AUD")]
+    #[cfg_attr(feature = "model", model(rename = "AUD"))]
     AUD,
-    #[model(rename = "CNY")]
+    #[cfg_attr(feature = "model", model(rename = "CNY"))]
     CNY,
-    #[model(rename = "INR")]
+    #[cfg_attr(feature = "model", model(rename = "INR"))]
     INR,
 }
 

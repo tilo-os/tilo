@@ -2201,7 +2201,7 @@ pub enum RemoteActionMessage {
         read: ResourceReadRequest,
     },
     /// Answer to [`Self::ResourceRead`], same correlation: the readings as
-    /// JSON text ([`ResourceReadings::readable`]).
+    /// JSON text (`ResourceReadings::readable`).
     ResourceReading {
         correlation: u64,
         result: Result<String, ActionCallError>,
@@ -2310,7 +2310,7 @@ pub struct ResourceReadRequest {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadAnswer {
-    /// Each resource as every reader reads it ([`ResourceReadings::readable`]).
+    /// Each resource as every reader reads it (`ResourceReadings::readable`).
     #[default]
     Reading,
     /// Each resource as its document, whole: what a reader that merges or hydrates the resource

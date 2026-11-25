@@ -260,6 +260,10 @@ pub struct InstallerPreview {
     cursor: ui::kurbo::Point,
     error: Option<&'static str>,
     validation_focus: Option<String>,
+    /// The field the page moved the keyboard to in its last composition, until the window takes
+    /// it ([`Widget::take_focus_request`]): the window restores the focus it had across a rebuild,
+    /// and only a request moves it on.
+    focus_request: Option<String>,
     password_next_focus: Rc<Cell<bool>>,
     password_touched: [bool; 2],
     password_focused: Option<String>,
@@ -326,6 +330,7 @@ impl Default for InstallerPreview {
             cursor: ui::kurbo::Point::ZERO,
             error: None,
             validation_focus: None,
+            focus_request: None,
             password_next_focus: Rc::default(),
             password_touched: [false; 2],
             password_focused: None,
@@ -1714,7 +1719,8 @@ impl Widget for InstallerPreview {
         self.profile_breakpoint = f64::from(theme.tokens.metrics.content_min_width);
         let showing_direct = self.direct.active;
         if !showing_direct && (self.dirty || self.composed.is_none()) {
-            let focus = self.validation_focus.take().or_else(|| {
+            let moved = self.validation_focus.take();
+            let focus = moved.clone().or_else(|| {
                 self.composed
                     .as_ref()
                     .and_then(|root| page::focused_id(root.as_ref()))
@@ -1733,6 +1739,9 @@ impl Widget for InstallerPreview {
             }
             if let (Some(focus), Some(root)) = (focus, &mut self.composed) {
                 page::refocus(root.as_mut(), &focus);
+            }
+            if moved.is_some() {
+                self.focus_request = moved;
             }
             self.dirty = false;
         }
@@ -1890,6 +1899,15 @@ impl Widget for InstallerPreview {
             .iter_mut()
             .map(|child| child.as_mut() as &mut dyn Widget)
             .collect()
+    }
+
+    fn take_focus_request(&mut self) -> Option<String> {
+        let own = self.focus_request.take();
+        let asked = self
+            .composed
+            .as_mut()
+            .and_then(|child| child.take_focus_request());
+        own.or(asked)
     }
 
     fn needs_redraw(&self) -> bool {

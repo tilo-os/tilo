@@ -56,6 +56,13 @@ window-follow-follow-detail = Sagt den Apps eines Arbeitsbereichs auf diesem Ger
 window-follow-handoff = Ein Fenster verschieben
 window-follow-handoff-detail = Bittet eine App auf diesem Gerät um den nächsten Schritt, ihr Fenster auf ein anderes Gerät zu verschieben.
 
+# Die Anrufe der Live-Sitzung eines Arbeitsbereichs, denen dieses Gerät beitritt und die es verlässt.
+live-call-resource = Live-Sitzung
+live-call-join = Beitreten
+live-call-join-detail = Auf diesem Gerät einem Anruf dieses Arbeitsbereichs beitreten.
+live-call-leave = Verlassen
+live-call-leave-detail = Den Anruf verlassen, in dem dieses Gerät hier ist.
+
 # Nearby Send between the person's devices, as the daemon carries it and their shell shows it.
 nearby-send-resource = In der Nähe senden
 nearby-send-offer = Eine Datei an ein Gerät senden

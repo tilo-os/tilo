@@ -45,8 +45,6 @@ media = { version = "0.1.0", package = "tilo-media", path = "../tilo-media" }
 tilo-paint-stream = { version = "0.1.0", path = "../paint-stream" }
 # The actors a page action names.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
-# The page resource a person typed into the page travels as the collaboration wire's JSON.
-runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false }
 # The page's URLs, and the lock an engine profile takes on its files.
 url.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
@@ -55,8 +53,8 @@ uuid.workspace = true
 # Only the session vocabulary and the engine launch boundary: capture (with SQLite) must
 # never be unified into the runtime this crate is part of.
 browser-continuity-core.workspace = true
-# The framed transport the Chromium helper speaks.
-wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
+# The framed transport the Chromium helper speaks, and the JSON text a page's data occupies.
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio", "serde_json"] }
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true

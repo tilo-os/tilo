@@ -17,10 +17,17 @@ description = "The settings' typed schema, the theme names and the shared sectio
 name = "settings_model"
 path = "src/lib.rs"
 
+[features]
+default = ["model"]
+# The sections as resource models: `TextAssistancePrefs` with its `Model` impl and the
+# `settings.text-assistance` record the store keeps. A crate that only reads the schema, the
+# theme names and the plain section types turns it off and carries no resource model.
+model = ["dep:tilo-resource"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

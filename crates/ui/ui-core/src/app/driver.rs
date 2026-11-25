@@ -18,6 +18,7 @@ use super::{App, AppSurface, SurfaceDamage};
 
 mod apps_a;
 mod capture;
+mod cards;
 pub(crate) mod chrome;
 pub(crate) mod controls;
 pub(crate) mod drive;
@@ -232,6 +233,8 @@ pub struct Driver {
     overlay: uicore::Overlay,
     /// The pictures last handed to a page's composition ([`pictures`]).
     pictures: pictures::Pictures,
+    /// The cards the app stands over its window ([`cards`]).
+    cards: cards::Cards,
 }
 
 /// The name the window's bar goes by in a scenario's `perform` step: its parts are performed on it
@@ -274,6 +277,7 @@ impl Driver {
             wakes: session::OwnerWakes::default(),
             overlay: uicore::Overlay::default(),
             pictures: pictures::Pictures::default(),
+            cards: cards::Cards::default(),
         }
     }
 
@@ -517,6 +521,12 @@ impl Driver {
                 &mut self.scene,
                 &mut self.damage,
             );
+            // The cards the app asked for in this frame's update stand, and draw over it, before
+            // the next frame takes input: a card that came, went or moved runs that frame now.
+            if self.follow_cards() {
+                again = true;
+            }
+            self.draw_cards();
             self.records.finish(recording, &self.scene);
             // What the app declared for its bar in this frame's sync (a part's new name after a
             // press) shows in the next frame, which runs at once, as a window's bar shows it in
@@ -1016,7 +1026,11 @@ impl Driver {
                 return;
             }
         }
-        self.app.surface_input(&self.surface, event.clone(), false);
+        // A card standing over the window takes what is on it, and the window under it does not
+        // see it, as on a desktop.
+        if !self.route_to_card(event) {
+            self.app.surface_input(&self.surface, event.clone(), false);
+        }
         drop(running);
         if !self.coalesces_input() {
             self.run_frame();
@@ -1646,19 +1660,16 @@ impl Driver {
 
     /// Tab through the whole focus order from the top: the accessible `(role, name)` said at each
     /// stop.
+    /// A stop whose control says nothing to a reader is passed over, as a reader passes it.
     pub fn tab_through(&mut self) -> Vec<(crate::a11y::Role, Option<String>)> {
         self.clear_focus();
-        let mut stops = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        while self.tab(false).is_some() {
-            let Some(node) = self.focused_access_node() else {
-                break;
-            };
-            let key = (node.role, node.name.clone());
-            if !seen.insert(format!("{:?}{:?}", self.app.focused_node, key)) {
-                break;
+        let count = self.focus_order().len();
+        let mut stops = Vec::with_capacity(count);
+        for _ in 0..count {
+            self.tab(false);
+            if let Some(node) = self.focused_access_node() {
+                stops.push((node.role, node.name));
             }
-            stops.push(key);
         }
         stops
     }
@@ -1834,6 +1845,7 @@ impl Driver {
         }
         // The people and agents a frame paints over the widgets are no widgets either.
         root.children.extend(self.presence_inspection());
+        root.children.extend(self.cards_inspection());
         fn owner_path(
             node: &InspectionNode,
             targets: &HashMap<String, NodeId>,
@@ -2490,6 +2502,15 @@ impl Driver {
             other => other,
         };
         self.run_frame();
+        // A call the app hands the workspace carries no yes: the workspace keeps it asked, and the
+        // approve the caller brings is the person's answer to that ask, admitted again by the
+        // device ([`Self::confirm_asked`]).
+        if let Some(approval) = approval
+            && started.is_ok()
+            && self.asking().is_some_and(|(asked, _)| asked == *address)
+        {
+            self.resolve_asked(approval.clone());
+        }
         started
     }
 

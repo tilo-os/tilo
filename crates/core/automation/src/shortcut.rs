@@ -669,10 +669,9 @@ pub enum TriggerSpec {
         device: Option<String>,
     },
     /// A moment before, at or after a time a resource holds: the field
-    /// `field` of each item of a resource of `kind` (`issues.*.due_ms` of a
-    /// `tasks.issues`), or each occurrence of an entry that repeats
-    /// (`entries.*.start` of a person's calendars,
-    /// [`crate::resource_time::PERSON_CALENDARS`]). `offset_secs` is counted
+    /// `field` of each item of a resource of `kind`, and every occurrence of
+    /// an entry that repeats (`start` of the Calendar app's entries,
+    /// [`crate::resource_time::CALENDAR_EVENTS`]). `offset_secs` is counted
     /// from that time, negative for before it. `filter` is equality on the
     /// item's own fields ([`crate::resource_time::matches`]). The trigger
     /// fires once for each time held, again when that time moves, and never

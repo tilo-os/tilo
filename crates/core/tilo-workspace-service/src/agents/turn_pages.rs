@@ -156,8 +156,8 @@ pub(super) struct TurnPages {
     /// The workspace's policy where its answers name the turn's agent, which decide what it
     /// may take here; `None` where its person gave it no answer, so nothing narrows it.
     policy: Option<WorkspacePolicy>,
-    /// The agent the turn works as.
-    agent: String,
+    /// The agent the turn works as, and the person it is the agent of.
+    agent: (String, String),
     /// Whether this turn is offered the window's page at all: one this server carries out
     /// turn, of an agent its person's answers do not keep from Browser.
     offered: bool,
@@ -173,12 +173,19 @@ impl TurnPages {
         reply: &Reply,
     ) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let agent = turn.agent.id.0.clone();
-        let policy = workspaces.agent_policy(&reply.workspace, &agent).await;
+        let person = reply
+            .caller
+            .user_public_key()
+            .map(hex::encode)
+            .unwrap_or_default();
+        let agent = (turn.agent.id.0.clone(), person);
+        let policy = workspaces
+            .agent_policy(&reply.workspace, &agent.0, &agent.1)
+            .await;
         let offered = browsers.is_some()
             && agent_policy_allows(
                 policy.as_ref(),
-                Some(&agent),
+                Some((&agent.0, &agent.1)),
                 &reply.workspace,
                 &on_browser(NAVIGATE),
             )
@@ -203,7 +210,7 @@ impl TurnPages {
     fn granted(&self, action: &str) -> bool {
         agent_policy_grants(
             self.policy.as_ref(),
-            Some(&self.agent),
+            Some((&self.agent.0, &self.agent.1)),
             &self.workspace,
             &on_browser(action),
         )

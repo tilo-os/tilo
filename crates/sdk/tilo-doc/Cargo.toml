@@ -11,6 +11,11 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
+default = ["model"]
+# The document resources: the modules that read and write Automerge documents through
+# `tilo-resource`, and the actions that change them. A layout-only consumer (text breaks,
+# paragraphs and paging) turns it off.
+model = ["dep:automerge", "dep:tilo-automerge", "dep:tilo-resource", "dep:tilo-actions", "dep:tilo-content"]
 # Hooks for tests that compare the bulk import path with the op-by-op reference.
 bulk-instrumentation = []
 
@@ -18,20 +23,20 @@ bulk-instrumentation = []
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
-automerge.workspace = true
-tilo-automerge.workspace = true
+automerge = { workspace = true, optional = true }
+tilo-automerge = { workspace = true, optional = true }
 blake3.workspace = true
 # Binary inputs (images, binary package parts) are referenced by content address; the bytes live
 # in the caller's content store.
-tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # Ordering keys, history, batched writes and diffs shared by every resource.
-tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 # The anchor a change's text is named by, which an action's step carries.
-tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions", optional = true }
 # Line-break opportunities and hyphenation, shared by every setter of text into a measure
 # (the reader's pages and PDF export).
 unicode-linebreak = "0.1.5"
@@ -43,6 +48,12 @@ hypher = { version = "0.1.7", default-features = false, features = ["alloc", "en
 [[test]]
 name = "it"
 path = "tests/it.rs"
+required-features = ["model"]
+
+[[bin]]
+name = "tilo-doc-text"
+path = "src/bin/tilo-doc-text.rs"
+required-features = ["model"]
 
 [lints]
 workspace = true

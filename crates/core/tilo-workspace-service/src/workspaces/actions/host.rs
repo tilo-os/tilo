@@ -1699,6 +1699,8 @@ mod addresses_tests;
 mod asking_tests;
 mod branch;
 #[cfg(test)]
+mod calendars_turn_tests;
+#[cfg(test)]
 mod connections_tests;
 #[cfg(test)]
 mod formats_tests;

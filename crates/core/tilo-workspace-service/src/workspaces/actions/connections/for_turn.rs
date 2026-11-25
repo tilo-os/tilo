@@ -116,7 +116,7 @@ fn names(turn: &HostedTurn<'_>, workspace: &str, id: &str) -> bool {
     let Some(policy) = turn.policy else {
         return true;
     };
-    let Some(agent) = turn.caller.acting().agent_id() else {
+    let Some((agent, person)) = crate::workspaces::hosted_use::agent_of(turn.caller) else {
         return false;
     };
     let resource = person_connections::connection_resource(id);
@@ -125,17 +125,16 @@ fn names(turn: &HostedTurn<'_>, workspace: &str, id: &str) -> bool {
         .kind(person_connections::CONNECTION_KIND)
         .resource(resource.clone())
         .action(person_connections::CALL);
-    let decision = crate::workspaces::hosted_use::agent_decision(policy, agent, &node);
+    let decision = crate::workspaces::hosted_use::agent_decision(policy, (agent, &person), &node);
     // An answer for every connection names none of them.
-    let named = policy.grants.iter().any(|grant| {
-        grant.grantee == tilo_action_policy::Grantee::agent(agent.to_owned())
-            && grant.node.segments().iter().any(|segment| {
-                matches!(
-                    segment,
-                    tilo_action_policy::Segment::Name(tilo_action_policy::Level::Resource, name)
-                        if *name == resource
-                )
-            })
+    let named = policy.grants_of_agent(agent, &person).any(|grant| {
+        grant.node.segments().iter().any(|segment| {
+            matches!(
+                segment,
+                tilo_action_policy::Segment::Name(tilo_action_policy::Level::Resource, name)
+                    if *name == resource
+            )
+        })
     });
     named && decision.answer == Answer::Allow
 }

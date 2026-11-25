@@ -8,19 +8,54 @@ use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
 use std::collections::BTreeSet;
 
+/// The action a governance change is made by, while a copy writes one
+/// ([`StatePeer::stamp_action`]): the verb every change of it names, and
+/// who decided it.
+///
+/// A governance change says who wrote it and when by its actor and its time.
+/// This says which of the workspace's actions it carries out, so an app
+/// watching the workspace reads a ban, a removal and an unban apart, as a
+/// reader of an ordinary store change does ([`collab_types::Stamp`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionStamp {
+    /// The governance action's verb, as its surface declares it (`ban`,
+    /// `remove-member`).
+    pub verb: &'static str,
+    /// Who decided it: the person whose device asked, or the workspace's
+    /// moderation bot.
+    pub by: tilo_action_policy::Actor,
+}
+
+impl ActionStamp {
+    /// The stamp this governance change commits as: its verb and invoker, no
+    /// arguments (one may be a secret) and no invocation of its own.
+    fn as_stamp(&self) -> collab_types::Stamp {
+        collab_types::Stamp {
+            verb: self.verb.to_owned(),
+            invoker: collab_types::Stamp::by(&self.by),
+            ..collab_types::Stamp::default()
+        }
+    }
+}
+
 /// Commit what `doc` holds as one governance change, stamped with `unix_secs`.
 ///
 /// The change says who wrote it and when by itself: its actor names the writing device — or, in a
 /// workspace a server keeps, that server's actor — whose certificate among the workspace's own
-/// rows names the person it belongs to, and its time is `unix_secs`. Nothing writes either again
-/// as a message.
-pub(crate) fn commit_governance(doc: &mut AutoCommit, unix_secs: i64) {
+/// rows names the person it belongs to, and its time is `unix_secs`. `stamp`, when the copy writes
+/// as a governance action, names that action and who decided it as the change's message.
+pub(crate) fn commit_governance(doc: &mut AutoCommit, unix_secs: i64, stamp: Option<&ActionStamp>) {
     if doc.pending_ops() == 0 {
         // Commit would make a change of nobody's: roll the empty transaction back instead.
         doc.rollback();
         return;
     }
-    doc.commit_with(automerge::transaction::CommitOptions::default().with_time(unix_secs));
+    let options = automerge::transaction::CommitOptions::default().with_time(unix_secs);
+    let options = match stamp {
+        Some(stamp) => options.with_message(stamp.as_stamp().message()),
+        None => options,
+    };
+    doc.commit_with(options);
 }
 
 /// The wall clock in the unit automerge stamps a change's time with, for a governance change whose
@@ -30,6 +65,41 @@ pub(crate) fn wall_secs() -> i64 {
 }
 
 impl StatePeer {
+    /// Write this copy's governance changes from now on as the action `verb`
+    /// by `by`, until [`Self::clear_action_stamp`]: each change's message
+    /// names that action and who decided it, so an app watching the workspace
+    /// tells a ban from a removal. Order, admission and what is written stay
+    /// exactly as they are.
+    pub fn stamp_action(&mut self, verb: &'static str, by: tilo_action_policy::Actor) {
+        self.action_stamp = Some(ActionStamp { verb, by });
+    }
+
+    /// Stop naming an action in this copy's governance changes
+    /// ([`Self::stamp_action`]).
+    pub fn clear_action_stamp(&mut self) {
+        self.action_stamp = None;
+    }
+
+    /// Make `run`, this copy's governance write, as the action `verb` by the
+    /// person `who`: each change it makes names that action, and none made
+    /// after it does.
+    pub(super) fn as_action<T>(
+        &mut self,
+        verb: &'static str,
+        who: [u8; 32],
+        run: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.stamp_action(
+            verb,
+            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(
+                who,
+            ))),
+        );
+        let outcome = run(self);
+        self.clear_action_stamp();
+        outcome
+    }
+
     /// Write the governance change `doc` holds as `key`'s device, and take it in
     /// as every member will ([`Self::write_membership`] with no membership
     /// change).
@@ -69,8 +139,9 @@ impl StatePeer {
         membership: Option<crate::members::MembershipOpCommand>,
     ) -> Result<bool, String> {
         // What the caller wrote lands as one governance change by this device, stamped with its
-        // time: the operation recording it is the next one.
-        commit_governance(&mut doc, super::now_secs(now));
+        // time and, when this copy writes as a governance action, that action: the operation
+        // recording it is the next one.
+        commit_governance(&mut doc, super::now_secs(now), self.action_stamp.as_ref());
         // A change that writes no operation leaves the membership as it was.
         let written = doc.get_changes(before);
         crate::members::replay::carry(before, &doc, &written, &self.core.workspace);
@@ -125,8 +196,10 @@ impl StatePeer {
         }
         self.record_governance(&mut doc, rows, key, now)?;
         // The operations, and the policy bound to what they leave, are one change of this
-        // device's, stamped like the one that moved the rows.
-        commit_governance(&mut doc, super::now_secs(now));
+        // device's, stamped like the one that moved the rows: a member change's rows and its
+        // operation are applied here, where a governance write's own operations are in the
+        // change before.
+        commit_governance(&mut doc, super::now_secs(now), self.action_stamp.as_ref());
         // The operations are written on top of every head the state held.
         let recorded = doc.get_changes(&unrecorded);
         crate::members::replay::carry(&unrecorded, &doc, &recorded, &self.core.workspace);

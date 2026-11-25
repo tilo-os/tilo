@@ -117,20 +117,23 @@ impl HostedTurn<'_> {
     /// only what an answer names and none denies.
     #[must_use]
     pub(crate) fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
-        agent_may_take(self.policy, self.caller, workspace, target)
+        let agent = agent_of(self.caller);
+        let agent = agent
+            .as_ref()
+            .map(|(agent, person)| (*agent, person.as_str()));
+        agent_policy_allows(self.policy, agent, workspace, target)
     }
 }
 
-/// Whether the workspace's policy lets the agent `caller` acts as take `target` in `workspace`:
-/// what [`agent_policy_allows`] says of the agent its certificate names.
+/// The agent `caller` acts as and the person it is the agent of, whom its verified certificate
+/// chains to: the one person whose answers narrow it. `None` for a caller that is no agent.
 #[must_use]
-pub fn agent_may_take(
-    policy: Option<&WorkspacePolicy>,
-    caller: &Caller,
-    workspace: &str,
-    target: &RemoteActionTarget,
-) -> bool {
-    agent_policy_allows(policy, caller.acting().agent_id(), workspace, target)
+pub(crate) fn agent_of(caller: &Caller) -> Option<(&str, String)> {
+    let person = caller
+        .user_public_key()
+        .map(hex::encode)
+        .unwrap_or_default();
+    Some((caller.acting().agent_id()?, person))
 }
 
 /// The action `target` of `workspace` as the policy's tree holds it.
@@ -142,29 +145,33 @@ fn target_node(workspace: &str, target: &RemoteActionTarget) -> TreePath {
         .action(target.address.action.clone())
 }
 
-/// The workspace's answers on `agent` deciding it taking `node`: the answer its most specific
-/// grant gives, an ask where no answer covers the action.
+/// The workspace's answers on `agent`, the agent of `person`, deciding it taking `node`: the
+/// answer its most specific grant gives, an ask where no answer covers the action. Another
+/// member's answers for an agent of that id decide nothing here
+/// ([`WorkspacePolicy::grants_of_agent`]).
 #[must_use]
 pub(crate) fn agent_decision<'p>(
     policy: &'p WorkspacePolicy,
-    agent: &str,
+    (agent, person): (&str, &str),
     node: &TreePath,
 ) -> tilo_action_policy::Decision<'p> {
-    Party::new(vec![Grantee::agent(agent.to_owned())], &policy.grants).decide(
-        node,
-        ActionKind::Outside,
-        &Context::at_time(tilo_clock::wall()),
-    )
+    Party::new(vec![Grantee::agent(agent.to_owned())], &[])
+        .with_grants(policy.grants_of_agent(agent, person))
+        .decide(
+            node,
+            ActionKind::Outside,
+            &Context::at_time(tilo_clock::wall()),
+        )
 }
 
-/// Whether the workspace's policy lets `agent` take `target` in `workspace`: its person's
-/// answers, where they name this agent at all, let it take only an action one covers and none
-/// denies. `None` is a workspace whose policy answers nothing for the agent, so nothing
-/// narrows it.
+/// Whether the workspace's policy lets `agent`, an agent and its person, take `target` in
+/// `workspace`: its person's answers, where they name this agent at all, let it take only an
+/// action one covers and none denies. `None` is a workspace whose policy answers nothing for
+/// the agent, so nothing narrows it.
 #[must_use]
 pub fn agent_policy_allows(
     policy: Option<&WorkspacePolicy>,
-    agent: Option<&str>,
+    agent: Option<(&str, &str)>,
     workspace: &str,
     target: &RemoteActionTarget,
 ) -> bool {
@@ -175,28 +182,13 @@ pub fn agent_policy_allows(
     decision.grant().is_some() && decision.answer != Answer::Deny
 }
 
-/// Whether its person narrowed the agent `agent` in `policy`: an answer they gave it stands
-/// there ([`tilo_action_policy::agent_answers::is_answer`]). It then takes only what those
-/// answers name, and is never asked for what they do not. A grant kept for one use of theirs
-/// (the "Always" of a vault item's leave) is no answer and narrows nothing.
-#[must_use]
-pub(crate) fn answers_narrow(policy: &WorkspacePolicy, agent: &str) -> bool {
-    let named = Grantee::agent(agent.to_owned());
-    let now = Context::at_time(tilo_clock::wall());
-    policy.grants.iter().any(|grant| {
-        grant.grantee == named
-            && grant.is_live(&now)
-            && tilo_action_policy::agent_answers::is_answer(grant)
-    })
-}
-
-/// Whether the workspace's policy allows `agent` `target` in `workspace` for sure: an answer
-/// naming that very action with an Allow. A page operation, which changes what a page said, is
-/// carried only where its person allowed it, and nothing less stands for that.
+/// Whether the workspace's policy allows `agent`, an agent and its person, `target` in
+/// `workspace` for sure: an answer naming that very action with an Allow. A page operation,
+/// which changes what a page said, is carried only where its person allowed it.
 #[must_use]
 pub fn agent_policy_grants(
     policy: Option<&WorkspacePolicy>,
-    agent: Option<&str>,
+    agent: Option<(&str, &str)>,
     workspace: &str,
     target: &RemoteActionTarget,
 ) -> bool {
@@ -215,6 +207,9 @@ enum TurnCall {
     Use,
     /// An ask for a secret their vault does not hold yet, which they type into it.
     AskForSecret,
+    /// Their calendars: a sign-in begun, an account's calendars found, or the ones chosen.
+    #[cfg(feature = "agents")]
+    Calendars,
     /// A call of a service they connected.
     Connections,
 }
@@ -236,6 +231,17 @@ impl TurnCall {
         }
         if target.provider == person_connections::PROVIDER {
             return Some(Self::Connections);
+        }
+        if target.provider != person_accounts::PROVIDER
+            || target.address.resource != person_accounts::RESOURCE
+        {
+            return None;
+        }
+        #[cfg(feature = "agents")]
+        if crate::workspaces::person_settings::turn_calendars::TURN_ACTIONS
+            .contains(&target.address.action.as_str())
+        {
+            return Some(Self::Calendars);
         }
         None
     }
@@ -302,13 +308,13 @@ impl Workspaces {
     /// for a caller that is no agent in that list.
     async fn kept_turn(&self, caller: &Caller) -> Option<KeptTurn> {
         let workspace = caller.workspace().and_then(WorkspaceId::parse)?;
-        let agent = caller.acting().agent_id()?;
+        let (agent, person) = agent_of(caller)?;
         let named = workspace.to_string();
         self.policy_of(&named).await?;
         if !self.agent_is_active(&named, agent).await {
             return None;
         }
-        let policy = self.agent_policy(&named, agent).await;
+        let policy = self.agent_policy(&named, agent, &person).await;
         Some(KeptTurn { workspace, policy })
     }
 
@@ -336,6 +342,8 @@ impl Workspaces {
         let value = match call {
             TurnCall::Use => self.use_for_turn(&turn, request).await?,
             TurnCall::AskForSecret => self.secret_for_turn(&turn, request).await?,
+            #[cfg(feature = "agents")]
+            TurnCall::Calendars => self.calendars_for_turn(&turn, request).await?,
             TurnCall::Connections => self.connections_for_turn(&turn, request).await?,
         };
         Ok(tilo_actions::remote::InvocationReceipt {
@@ -364,6 +372,7 @@ impl Workspaces {
         if self.secret_ask_for_turn(&turn).await.is_ok() {
             rows.push(person_vault::ask_row());
         }
+        rows.extend(self.calendars_offered(&turn).await);
         rows.extend(self.connection_rows_for_turn(&turn).await);
         rows.retain(|row| row.provider == provider);
         rows

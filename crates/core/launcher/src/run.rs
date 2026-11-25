@@ -18,7 +18,7 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext,
-    resolve_blob_bind, resolve_chooser_bind, resolve_clipboard_bind,
+    resolve_blob_bind, resolve_chooser_bind, resolve_clipboard_bind, resolve_notify_bind,
     resolve_service_binds_for_launch, resolve_shell_ui_bind, to_service_binds,
 };
 use entrypoint_runtime::preflight_entrypoint_runtime;
@@ -3020,6 +3020,14 @@ pub(crate) fn launch_with_context(
         if let Some(clipboard) = resolve_clipboard_bind(opts.no_services) {
             resolved.push(clipboard);
         }
+        // Notifications, over the session's notifier: a window is what an app has to call the
+        // person to, as the notification portal was granted to a graphical app. What it shows
+        // reaches the same notification centre the desktop's own notices do.
+        if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+            && let Some(notify) = resolve_notify_bind(package_id, opts.no_services)?
+        {
+            resolved.push(notify);
+        }
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && !gpu_granted
@@ -3675,6 +3683,11 @@ fn launch_with_capture_spawn<T>(
     // hands none, and the app's copies and pastes are refused.
     if let Some(clipboard) = resolve_clipboard_bind(opts.no_services) {
         resolved.push(clipboard);
+    }
+    if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+        && let Some(notify) = resolve_notify_bind(package_id, opts.no_services)?
+    {
+        resolved.push(notify);
     }
     #[cfg(target_os = "linux")]
     if matches!(opts.mode, LaunchMode::Gui)

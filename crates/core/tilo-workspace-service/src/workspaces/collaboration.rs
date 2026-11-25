@@ -20,11 +20,34 @@ use tilo_server_protocol::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use tilo_action_policy::roles::governance;
-use tilo_action_policy::{Grantee, Role};
+use tilo_action_policy::{Actor, Grantee, MemberId, Role};
+use tilo_peer_state::ActionStamp;
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
 use tilo_lock::MutexRecover as _;
+
+/// The person `person` (a root key in hex) as the governor's actor: who a
+/// governance change names as the one who decided it. `None` for a key that is
+/// no person.
+pub(super) fn actor_of(person: &str) -> Option<Actor> {
+    tilo_action_policy::PersonId::parse(person)
+        .ok()
+        .map(|person| Actor::Member(MemberId::person(person)))
+}
+
+/// The grantee `by` as the governor's actor: a person, or the workspace's
+/// moderation bot.
+pub(super) fn actor_of_grantee(by: &Grantee) -> Option<Actor> {
+    by.as_member().cloned().map(Actor::Member)
+}
+
+/// The stamp of the governance action `verb`, decided by `by`: what every
+/// governance change of it names, so a watcher of the workspace tells a ban
+/// from a removal.
+pub(super) fn stamped(verb: &'static str, by: Option<Actor>) -> Option<ActionStamp> {
+    by.map(|by| ActionStamp { verb, by })
+}
 
 /// The name an invitation carries for a person: what the workspace shows them
 /// by, where they chose one an invitation may sign.
@@ -608,9 +631,9 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.authorize_role_change(&workspace, administrator, &request, now)?;
+        let by = self.authorize_role_change(&workspace, administrator, &request, now)?;
         let key = self.inner.host.key.clone();
-        self.administer(
+        self.administer_as(
             &mut workspace,
             request.request_id,
             request_digest(&request)?,
@@ -622,6 +645,7 @@ impl Workspaces {
                     system_time(now),
                 )
             },
+            stamped(governance::SET_ROLE, actor_of(&by)),
             now,
         )
         .await
@@ -1084,8 +1108,16 @@ impl Workspaces {
         )?;
         let key = self.inner.host.key.clone();
         let target = request.user_public_key;
+        // What a watcher of the workspace's members reads the change as: a ban
+        // is no removal and an unban no admission.
+        let stamp = match membership {
+            Membership::Remove => stamped(governance::REMOVE_MEMBER, actor_of(&by)),
+            Membership::Ban => stamped(governance::BAN, actor_of(&by)),
+            Membership::Unban => stamped(governance::UNBAN, actor_of(&by)),
+            Membership::Restrict(_) | Membership::Unrestrict => None,
+        };
         let completion = self
-            .administer(
+            .administer_as(
                 &mut workspace,
                 request.request_id,
                 request_digest(&(membership, &request))?,
@@ -1118,6 +1150,7 @@ impl Workspaces {
                         system_time(now),
                     ),
                 },
+                stamp,
                 now,
             )
             .await?;
@@ -1196,8 +1229,18 @@ impl Workspaces {
         let person = change.person().map(str::to_owned);
         let key = self.inner.host.key.clone();
         let digest = request_digest(&(&by, &change))?;
+        // A bot's ban and unban read as the actions they are, as a person's do.
+        let stamp = match &change {
+            tilo_action_policy::Change::Ban { .. } => {
+                stamped(governance::BAN, actor_of_grantee(&by))
+            }
+            tilo_action_policy::Change::Unban { .. } => {
+                stamped(governance::UNBAN, actor_of_grantee(&by))
+            }
+            _ => None,
+        };
         let completion = self
-            .administer(
+            .administer_as(
                 &mut workspace,
                 digest,
                 digest,
@@ -1230,6 +1273,7 @@ impl Workspaces {
                     }
                     _ => Err(format!("`{}` is not a moderation action", change.action())),
                 },
+                stamp,
                 now,
             )
             .await?;
@@ -1823,6 +1867,23 @@ impl Workspaces {
         change: impl FnOnce(&mut tilo_peer_state::StatePeer) -> Result<bool, String>,
         now: u64,
     ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.administer_as(workspace, request_id, digest, change, None, now)
+            .await
+    }
+
+    /// [`Self::administer`], the governance changes `change` makes named as
+    /// the action `stamp` names, by whom it names: what a watcher of the
+    /// workspace's members reads a ban, a removal and an unban apart by. The
+    /// change is otherwise the same, in the same order and admitted the same.
+    pub(super) async fn administer_as(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        request_id: [u8; 32],
+        digest: [u8; 32],
+        change: impl FnOnce(&mut tilo_peer_state::StatePeer) -> Result<bool, String>,
+        stamp: Option<ActionStamp>,
+        now: u64,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
         if let Administered::Done(generation) =
             workspace.collaboration().administered(request_id, digest)?
         {
@@ -1836,7 +1897,14 @@ impl Workspaces {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
             let mut candidate = replica.clone();
+            if let Some(stamp) = stamp {
+                candidate.stamp_action(stamp.verb, stamp.by);
+            }
             change(&mut candidate)?;
+            // The action names the change that moves the rows, and no commit
+            // after it: a base made, a name dropped or a grant reconciled with
+            // it is bookkeeping the change itself is not.
+            candidate.clear_action_stamp();
             let mut state = workspace.collaboration().clone();
             state.record_administration(
                 request_id,

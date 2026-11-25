@@ -64,6 +64,10 @@ pub struct SegmentProps {
     pub icon: Option<Icon>,
     /// Its keyboard shortcut, named in its tooltip: "B", "Shift+R".
     pub hint: Option<String>,
+    /// The key that chooses it while the strip's window has the keyboard, as the app declared it
+    /// (`key: "Ctrl+1"`): the host answers it as a press on the choice.
+    #[component(data)]
+    pub key: Option<String>,
     /// Whether it can be chosen now.
     pub enabled: bool,
     /// Why it cannot be chosen now, where the label does not say (an action whose requirement
@@ -85,6 +89,7 @@ impl Default for SegmentProps {
             short: None,
             icon: None,
             hint: None,
+            key: None,
             enabled: true,
             description: None,
             chosen: false,

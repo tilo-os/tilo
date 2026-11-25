@@ -14,7 +14,7 @@ automerge.workspace = true
 cursor-icon = "1"
 serde.workspace = true
 serde_json.workspace = true
-tilo-actions = { path = "../../core/actions" }
+tilo-actions = { path = "../../core/actions", features = ["document-read"] }
 tilo-desktop-model = { path = "../desktop-model" }
 # The layout as the surfaces draw it and the person arranges it: the handle the layout changes
 # and the search text typed on the canvas places through.

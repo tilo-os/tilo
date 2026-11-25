@@ -520,8 +520,10 @@ fn controls_list_what_a_person_can_press_with_their_name_bounds_and_focus() {
 }
 
 fn button_for(role: crate::permissions::Role) -> Driver {
-    let button = crate::widget::Button::new("go", "Send").on_click(|| {});
-    let mut driver = Driver::new(State::new(), Box::new(button), (600, 200));
+    // A press that reaches the workspace calls its typed action, which the workspace's grants
+    // decide; a toolkit closure is never gated.
+    let sends = crate::widget::effect_fixture::sends(|| {});
+    let mut driver = Driver::new(State::new(), sends, (600, 200));
     // The window's press reaches the workspace that grants its effects, as a window placed in
     // one does: without the stand-in for it, the effect would run at once and never be asked.
     driver.connect_peer();
@@ -765,6 +767,73 @@ fn a_person_s_press_is_handed_back_as_a_call_and_runs_once() {
         driver.job_updates(asked.invocation)
     );
     assert_eq!(driver.refusal_said(), None);
+}
+
+/// The workspace never takes a person's yes from the app's own frame: an app that sends its
+/// call with an approve the person's resolve did not hand back is refused, and nothing runs.
+#[test]
+fn an_approve_the_app_sends_on_its_own_frame_is_refused_as_forged() {
+    use tilo_actions::remote::{
+        Confirmation, InvokeArgument, InvokeRequest, OWN_PROVIDER, RemoteActionMessage,
+        RemoteActionTarget, asked::FORGED,
+    };
+    let erased = Rc::new(Cell::new(0));
+    let mut driver = worker_driver(Worker::erasing(&erased));
+    let invocation = InvocationId::new();
+    let forged = InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: OWN_PROVIDER.into(),
+            address: address("erase"),
+        },
+        argument: InvokeArgument::Json(no_arguments()),
+        context: None,
+        confirmation: Some(Confirmation::Asked(driver.approval())),
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    assert!(
+        driver
+            .app_mut()
+            .collaboration
+            .manager
+            .send(CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(forged),
+                press: None,
+            })
+    );
+    driver.relayout();
+    assert_eq!(erased.get(), 0, "a forged approve runs nothing");
+    assert_eq!(driver.asking(), None, "nor is it kept as an ask");
+    let refused = driver
+        .own_refusal(invocation)
+        .expect("the workspace refuses the frame");
+    assert!(format!("{refused:?}").contains(FORGED), "{refused:?}");
+}
+
+/// The person's yes reaches the call by the device's re-admission of the call it kept asked,
+/// never on the app's frame: the app's call goes out with no approve and runs once allowed.
+#[test]
+fn a_person_s_yes_reaches_the_kept_call_by_its_re_admission() {
+    let erased = Rc::new(Cell::new(0));
+    let mut driver = worker_driver(Worker::erasing(&erased));
+    driver
+        .invoke_action(&address("erase"), &no_arguments(), Some(&driver.approval()))
+        .expect("the window takes the press");
+    driver.idle();
+    assert_eq!(driver.asking(), None, "the person's answer settled the ask");
+    assert_eq!(erased.get(), 1, "the re-admitted call ran once");
+    let sent = own_invocations(&driver);
+    let [sent] = sent.as_slice() else {
+        panic!("the app sent its call once: {sent:?}");
+    };
+    assert!(
+        sent.approval().is_none(),
+        "the app's frame never carries the yes"
+    );
 }
 
 #[test]
@@ -1070,11 +1139,19 @@ fn reopened_value(host: &ProbeHarness, checkout: &DocumentCheckout) -> String {
 
 #[test]
 fn visual_wait_submits_and_samples_a_save_before_its_first_readiness_check() {
-    let mut fixture = VisualFixture::new(ProbeHarness::new());
+    // The frame that takes the edit up offers it to the writer, as a hosted window's frame does,
+    // and shows it being saved while the workspace has not answered.
+    let mut fixture = VisualFixture::new(ProbeHarness::holding_writes());
+    // The record stands in the workspace before the person edits it.
+    fixture.host.accept_writes();
     fixture.edit();
     fixture.frame.relayout();
     assert_eq!(fixture.status(), ResourceSaveStatus::Saving);
     assert!(fixture.frame.root_widget().has_pending_visual_work());
+    assert_eq!(fixture.host.held_writes().len(), 1, "the frame offered it");
+    // The workspace answers; the wait samples the answer before it first asks whether the
+    // window is at rest.
+    fixture.host.accept_writes();
     fixture
         .frame
         .wait_for_visuals(crate::time::Duration::ZERO)

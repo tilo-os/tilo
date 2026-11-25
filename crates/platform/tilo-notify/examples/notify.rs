@@ -2,9 +2,11 @@
 //!
 //! `cargo run -p tilo-notify --example notify -- [APP_ID]`
 //!
-//! On macOS notifications need an app bundle: run the binary from inside a
-//! `.app` whose `Info.plist` names a bundle identifier, or it reports
-//! `Unavailable`.
+//! On Linux an app process inside Tilo shows notifications over the connection its session
+//! serves; outside one, this example needs the desktop's own service:
+//! `cargo run -p tilo-notify --features host-portals --example notify`. On macOS notifications
+//! need an app bundle: run the binary from inside a `.app` whose `Info.plist` names a bundle
+//! identifier, or it reports `Unavailable`.
 fn main() {
     let app_id = std::env::args()
         .nth(1)

@@ -7,38 +7,29 @@ use crate::TimeStyle;
 /// How dates render: the shared `locale.date_format` setting. The serde names are the exact
 /// strings the settings file uses (`Language`/`ISO`/`US`/`EU`/`Long`). Until the person picks
 /// one, dates follow the language ([`DateStyle::Language`]); ISO is a choice like the others.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::Model,
-)]
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DateStyle {
     /// The language's own convention: `Mar 15, 2023` in English, `15.03.2023` in German.
     #[default]
     #[serde(rename = "Language")]
-    #[model(rename = "Language")]
+    #[cfg_attr(feature = "model", model(rename = "Language"))]
     Language,
     /// `2023-03-15`
     #[serde(rename = "ISO")]
-    #[model(rename = "ISO")]
+    #[cfg_attr(feature = "model", model(rename = "ISO"))]
     Iso,
     /// `03/15/2023`
     #[serde(rename = "US")]
-    #[model(rename = "US")]
+    #[cfg_attr(feature = "model", model(rename = "US"))]
     Us,
     /// `15/03/2023`
     #[serde(rename = "EU")]
-    #[model(rename = "EU")]
+    #[cfg_attr(feature = "model", model(rename = "EU"))]
     Eu,
     /// `15 Mar 2023`, the month named in the language.
     #[serde(rename = "Long")]
-    #[model(rename = "Long")]
+    #[cfg_attr(feature = "model", model(rename = "Long"))]
     Long,
 }
 
@@ -81,17 +72,8 @@ impl DateStyle {
 
 /// Decimal and grouping convention. Kept apart from the currency so someone can use EUR with
 /// either continental or English-language formatting.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::Model,
-)]
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NumberStyle {
     /// `1,234,567.89`
     #[default]
@@ -118,17 +100,8 @@ impl NumberStyle {
 }
 
 /// The day a week starts on, for every calendar grid and week number.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::Model,
-)]
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FirstDayOfWeek {
     #[default]
     Monday,

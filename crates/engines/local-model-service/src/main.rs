@@ -40,6 +40,7 @@ use local_model_service::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 mod hub_client;
 mod memory_capacity;
@@ -106,12 +107,19 @@ enum Action {
         /// `gguf` or `safetensors`.
         #[arg(long, default_value = "gguf")]
         format: String,
+        /// The workspace's Hugging Face token, handed by whoever asked for the search. A
+        /// terminal has none of its own.
+        #[arg(skip)]
+        token: Option<String>,
     },
     /// Describe a Hugging Face model, named by id or URL, at a pinned
     /// commit: its variants, their sizes and fit, and its licence.
     HubModel {
         #[arg(long)]
         reference: String,
+        /// The workspace's Hugging Face token, handed by whoever asked.
+        #[arg(skip)]
+        token: Option<String>,
     },
     /// Download one variant of a Hugging Face model at a commit `hub-model`
     /// reported, accepting its licence.
@@ -124,6 +132,9 @@ enum Action {
         variant: String,
         #[arg(long)]
         accept_license: bool,
+        /// The workspace's Hugging Face token, handed by whoever asked for the download.
+        #[arg(skip)]
+        token: Option<String>,
     },
     /// Copy a GGUF file, given as standard input, into the model store. The
     /// person chose it in the file chooser; `name` is its file name. The
@@ -132,14 +143,25 @@ enum Action {
         #[arg(long)]
         name: String,
     },
-    /// The Hugging Face account this workspace keeps, as JSON.
+    /// Retired: what this answered is the workspace's model provider's, as
+    /// Settings' AI page shows it.
     HubAccount,
-    /// Sign in with Hugging Face by entering a code on another device; the
-    /// workspace keeps the sign-in.
-    HubSignIn,
-    /// Sign out of Hugging Face: the workspace forgets the account and its
-    /// sign-in.
-    HubSignOut,
+    /// Sign in with Hugging Face by entering a code on another device: the
+    /// workspace keeps the token as the model provider's key, through the
+    /// published `models#set-key`.
+    HubSignIn {
+        /// The provider whose key it becomes; without one, the single model
+        /// provider this computer runs.
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Sign out of Hugging Face: the provider forgets its key.
+    HubSignOut {
+        /// The provider whose key goes; without one, the single model provider
+        /// this computer runs.
+        #[arg(long)]
+        provider: Option<String>,
+    },
     #[command(hide = true)]
     Worker {
         #[arg(long)]
@@ -159,6 +181,10 @@ enum Action {
     WorkerUser {
         #[arg(long)]
         model: String,
+        /// The workspace's Hugging Face token, written where only this account
+        /// reads it by whoever started this worker; it is read once and removed.
+        #[arg(long, hide = true)]
+        token_file: Option<PathBuf>,
     },
     /// The launcher-owned per-user service endpoint. Sandboxed apps reach it
     /// through `TILO_SVC_MODELS_FD`; it alone has network and storage access.
@@ -196,21 +222,31 @@ enum RpcAction {
     HubSearch {
         query: String,
         format: String,
+        /// The workspace's Hugging Face token the caller hands for this request alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
     },
     HubModel {
         reference: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
     },
     HubInstall {
         repo: String,
         revision: String,
         variant: String,
         accept_license: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
     },
     /// The file itself follows the request, as a descriptor.
     ImportFile {
         name: String,
     },
+    /// Retired: the workspace's model providers carry the Hugging Face sign-in now, so this
+    /// answers what Settings' AI page shows of them.
     HubAccount,
+    /// Signing out: the local model provider forgets the key it downloads with.
     HubSignOut,
 }
 
@@ -711,7 +747,7 @@ fn main() {
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
         // Interactive: it waits for the person in this terminal.
-        Action::HubSignIn => hub_client::sign_in_with_code(),
+        Action::HubSignIn { provider } => hub_client::sign_in_with_code(provider.as_deref()),
         Action::Worker { .. } | Action::WorkerStart { .. } | Action::WorkerUser { .. } => {
             run_local(cli, None, FileCopy::Here)
         }
@@ -779,29 +815,38 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
             model: model.clone(),
         }),
         Action::StageAccelerator => Ok(RpcAction::StageAccelerator),
-        Action::HubSearch { query, format } => Ok(RpcAction::HubSearch {
+        Action::HubSearch {
+            query,
+            format,
+            token,
+        } => Ok(RpcAction::HubSearch {
             query: query.clone(),
             format: format.clone(),
+            token: token.clone(),
         }),
-        Action::HubModel { reference } => Ok(RpcAction::HubModel {
+        Action::HubModel { reference, token } => Ok(RpcAction::HubModel {
             reference: reference.clone(),
+            token: token.clone(),
         }),
         Action::HubInstall {
             repo,
             revision,
             variant,
             accept_license,
+            token,
         } => Ok(RpcAction::HubInstall {
             repo: repo.clone(),
             revision: revision.clone(),
             variant: variant.clone(),
             accept_license: *accept_license,
+            token: token.clone(),
         }),
         Action::ImportFile { name } => Ok(RpcAction::ImportFile { name: name.clone() }),
         Action::HubAccount => Ok(RpcAction::HubAccount),
-        Action::HubSignOut => Ok(RpcAction::HubSignOut),
+        Action::HubSignOut { provider: None } => Ok(RpcAction::HubSignOut),
         Action::RecoverOrphan { .. }
-        | Action::HubSignIn
+        | Action::HubSignOut { provider: Some(_) }
+        | Action::HubSignIn { .. }
         | Action::Worker { .. }
         | Action::WorkerStart { .. }
         | Action::WorkerUser { .. }
@@ -919,22 +964,32 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         RpcAction::Stop { model } => Action::Stop { model },
         RpcAction::Remove { model } => Action::Remove { model },
         RpcAction::StageAccelerator => Action::StageAccelerator,
-        RpcAction::HubSearch { query, format } => Action::HubSearch { query, format },
-        RpcAction::HubModel { reference } => Action::HubModel { reference },
+        RpcAction::HubSearch {
+            query,
+            format,
+            token,
+        } => Action::HubSearch {
+            query,
+            format,
+            token,
+        },
+        RpcAction::HubModel { reference, token } => Action::HubModel { reference, token },
         RpcAction::HubInstall {
             repo,
             revision,
             variant,
             accept_license,
+            token,
         } => Action::HubInstall {
             repo,
             revision,
             variant,
             accept_license,
+            token,
         },
         RpcAction::ImportFile { name } => Action::ImportFile { name },
         RpcAction::HubAccount => Action::HubAccount,
-        RpcAction::HubSignOut => Action::HubSignOut,
+        RpcAction::HubSignOut => Action::HubSignOut { provider: None },
     };
     Cli {
         root: None,
@@ -1227,15 +1282,20 @@ fn open_cli_service(
     root: &Path,
     catalog: &CatalogPayload,
 ) -> Result<LocalModelService<ManagerTransport, SystemdSupervisor>, String> {
-    let transport = if matches!(cli.command, Action::WorkerUser { .. }) {
-        hub_client::HubClient::new().and_then(|hub| {
-            let signed = ManagerTransport::new(cli.artifact_dir.as_deref(), catalog)?;
-            Ok(ManagerTransport::Hub(hub, Box::new(signed)))
-        })
+    let transport = if let Action::WorkerUser { token_file, .. } = &cli.command {
+        // The workspace's Hugging Face token, handed for this download alone and read once.
+        let token = token_file
+            .as_deref()
+            .map(hub_client::token_from_file)
+            .transpose()?;
+        let hub = hub_client::HubClient::new(token).map_err(|error| error.to_string())?;
+        let signed = ManagerTransport::new(cli.artifact_dir.as_deref(), catalog)
+            .map_err(|error| error.to_string())?;
+        ManagerTransport::Hub(hub, Box::new(signed))
     } else {
         ManagerTransport::new(cli.artifact_dir.as_deref(), catalog)
-    }
-    .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+    };
     LocalModelService::open(root, transport, SystemdSupervisor).map_err(|error| error.to_string())
 }
 
@@ -1247,9 +1307,15 @@ fn run_without_store(command: &Action, root: &Path) -> Option<Result<Option<Stri
                 .map(|()| None)
                 .map_err(|error| error.to_string())
         }
-        Action::HubSearch { query, format } => hub_search(query, format).map(Some),
-        Action::HubAccount => hub_client::account_state().map(Some),
-        Action::HubSignOut => hub_client::sign_out(),
+        Action::HubAccount => Err("The workspace's model providers hold the Hugging Face \
+                                   sign-in now: read it in Settings' AI page"
+            .to_owned()),
+        Action::HubSearch {
+            query,
+            format,
+            token,
+        } => hub_search(query, format, token.as_deref()).map(Some),
+        Action::HubSignOut { provider } => hub_client::sign_out(provider.as_deref()),
         _ => return None,
     })
 }
@@ -1290,11 +1356,8 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
         .map(Some);
     }
     let catalog = selected_catalog(&cli, &catalog_path, &key_path)?;
-    if let Action::HubModel { reference } = &cli.command {
-        let offer = hub_offer(&catalog, &local_hardware(&root)?, reference, None)?;
-        return Ok(Some(
-            serde_json::to_string(&offer).map_err(|e| e.to_string())?,
-        ));
+    if let Action::HubModel { reference, token } = &cli.command {
+        return hub_model(&catalog, &root, reference, token.as_deref()).map(Some);
     }
     let mut service = open_cli_service(&cli, &root, &catalog)?;
     let workers = Workers {
@@ -1320,14 +1383,13 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
             revision,
             variant,
             accept_license,
-        } => {
-            if !accept_license {
-                return Err("a Hugging Face model requires --accept-license".into());
-            }
-            let hardware = local_hardware(&root)?;
-            let model = pick_from_hub(&catalog, &hardware, (&repo, &revision, &variant))?;
-            queue_user_model(&mut service, &workers, model)?;
-        }
+            token,
+        } => hub_install(
+            (&mut service, &workers, &catalog),
+            &local_hardware(&root)?,
+            (&repo, &revision, &variant, accept_license),
+            token.as_deref(),
+        )?,
         Action::ImportFile { name } => {
             return import_file(service, catalog, root, (&name, file), copy).map(|()| None);
         }
@@ -1341,7 +1403,7 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
             workers
-                .enqueue("start", "worker-start", &model, None)
+                .enqueue("start", "worker-start", &model, None, None)
                 .inspect_err(|error| {
                     let _ = service.record_failure(&model, error);
                 })?;
@@ -1360,7 +1422,7 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
             run_install_worker(&mut service, &catalog, &model, revision.as_ref(), &root)?;
         }
         Action::WorkerStart { model } => run_start_worker(&mut service, &catalog, &model, &root)?,
-        Action::WorkerUser { model } => {
+        Action::WorkerUser { model, .. } => {
             run_user_worker(&mut service, &catalog, &model, &root, None)?;
         }
         // The dispatcher answers these itself and never hands them over.
@@ -1368,9 +1430,9 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
         | Action::Snapshot { .. }
         | Action::HubSearch { .. }
         | Action::HubModel { .. }
+        | Action::HubSignIn { .. }
+        | Action::HubSignOut { .. }
         | Action::HubAccount
-        | Action::HubSignIn
-        | Action::HubSignOut
         | Action::Serve { .. } => {
             return Err("not a local model action".into());
         }
@@ -1393,7 +1455,7 @@ fn install(
         if revision.is_some_and(|revision| revision != added.revision()) {
             return Err("the model was added at another revision".into());
         }
-        return queue_user_model(service, workers, added);
+        return queue_user_model(service, workers, added, None);
     }
     let release = catalog
         .models
@@ -1414,7 +1476,7 @@ fn install(
         .queue_install(release)
         .map_err(|error| error.to_string())?;
     workers
-        .enqueue("download", "worker", model, revision)
+        .enqueue("download", "worker", model, revision, None)
         .inspect_err(|error| {
             let _ = service.record_failure(model, error);
         })
@@ -1435,14 +1497,47 @@ fn release_for(
         .ok_or_else(|| "model is neither in the signed catalog nor added on this device".into())
 }
 
-/// Search Hugging Face; the results as JSON.
-fn hub_search(query: &str, format: &str) -> Result<String, String> {
+/// What `hub-model` answers: the model `reference` names, as a person may pick from it.
+fn hub_model(
+    catalog: &CatalogPayload,
+    root: &Path,
+    reference: &str,
+    token: Option<&str>,
+) -> Result<String, String> {
+    let offer = hub_offer(catalog, &local_hardware(root)?, reference, None, token)?;
+    serde_json::to_string(&offer).map_err(|error| error.to_string())
+}
+
+/// Queue one variant of a Hub model a person picked, accepting its licence, and download it
+/// with the token the request carried.
+fn hub_install(
+    (service, workers, catalog): (
+        &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
+        &Workers<'_>,
+        &CatalogPayload,
+    ),
+    hardware: &HardwareSnapshot,
+    (repo, revision, variant, accept_license): (&str, &str, &str, bool),
+    token: Option<&str>,
+) -> Result<(), String> {
+    if !accept_license {
+        return Err("a Hugging Face model requires --accept-license".into());
+    }
+    let model = pick_from_hub(catalog, hardware, (repo, revision, variant), token)?;
+    queue_user_model(service, workers, model, token)
+}
+
+/// Search Hugging Face, with the token `token` when the request carried the workspace's
+/// sign-in; the results as JSON.
+fn hub_search(query: &str, format: &str, token: Option<&str>) -> Result<String, String> {
     let format = match format {
         "gguf" => HubFormat::Gguf,
         "safetensors" => HubFormat::Safetensors,
         _ => return Err("search format is gguf or safetensors".into()),
     };
-    let mut client = hub_client::HubClient::new().map_err(|error| error.to_string())?;
+    let mut client =
+        hub_client::HubClient::new(token.map(|token| Zeroizing::new(token.to_owned())))
+            .map_err(|error| error.to_string())?;
     let results = local_model_service::hub::search(&mut client, query, format)
         .map_err(|error| error.to_string())?;
     serde_json::to_string(&results).map_err(|error| error.to_string())
@@ -1455,12 +1550,15 @@ fn hub_offer(
     hardware: &HardwareSnapshot,
     reference: &str,
     revision: Option<&str>,
+    token: Option<&str>,
 ) -> Result<HubModelOffer, String> {
     let mut reference = HubRef::parse(reference).map_err(|error| error.to_string())?;
     if let Some(revision) = revision {
         reference.revision = Some(revision.to_owned());
     }
-    let mut client = hub_client::HubClient::new().map_err(|error| error.to_string())?;
+    let mut client =
+        hub_client::HubClient::new(token.map(|token| Zeroizing::new(token.to_owned())))
+            .map_err(|error| error.to_string())?;
     let info = local_model_service::hub::model_info(&mut client, &reference)
         .map_err(|error| error.to_string())?;
     let signed_in = client.signed_in();
@@ -1483,8 +1581,9 @@ fn pick_from_hub(
     catalog: &CatalogPayload,
     hardware: &HardwareSnapshot,
     (repo, revision, variant): (&str, &str, &str),
+    token: Option<&str>,
 ) -> Result<UserModel, String> {
-    let offer = hub_offer(catalog, hardware, repo, Some(revision))?;
+    let offer = hub_offer(catalog, hardware, repo, Some(revision), token)?;
     if offer.revision != revision {
         return Err("the model changed on Hugging Face; review it again".into());
     }
@@ -1543,13 +1642,14 @@ fn queue_user_model(
     service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
     workers: &Workers<'_>,
     model: UserModel,
+    token: Option<&str>,
 ) -> Result<(), String> {
     let id = model.id.clone();
     service
         .queue_user_model(model)
         .map_err(|error| error.to_string())?;
     workers
-        .enqueue("download", "worker-user", &id, None)
+        .enqueue("download", "worker-user", &id, None, token)
         .inspect_err(|error| {
             let _ = service.record_failure(&id, error);
         })
@@ -1777,8 +1877,12 @@ impl Workers<'_> {
         verb: &str,
         model: &str,
         revision: Option<&str>,
+        token: Option<&str>,
     ) -> Result<(), String> {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        // A download that needs the workspace's sign-in is handed its token in a file only
+        // this account reads, which its worker reads once and removes.
+        let token_file = token.map(hub_client::token_file).transpose()?;
         let digest = hex::encode(Sha256::digest(model.as_bytes()));
         let unit = format!("tilo-model-{kind}-{}", digest.get(..16).unwrap_or(&digest));
         let mut command = Command::new("systemd-run");
@@ -1805,14 +1909,25 @@ impl Workers<'_> {
         if let Some(revision) = revision {
             command.args(["--revision", revision]);
         }
-        let output =
+        if let Some(token_file) = &token_file {
+            command.arg("--token-file").arg(token_file);
+        }
+        let started =
             bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
-                .map_err(|error| format!("could not enqueue model {kind}: {error}"))?;
-        output
-            .status
-            .success()
-            .then_some(())
-            .ok_or_else(|| format!("systemd-run rejected the durable model {kind}"))
+                .map_err(|error| format!("could not enqueue model {kind}: {error}"))
+                .and_then(|output| {
+                    output
+                        .status
+                        .success()
+                        .then_some(())
+                        .ok_or_else(|| format!("systemd-run rejected the durable model {kind}"))
+                });
+        if started.is_err()
+            && let Some(token_file) = &token_file
+        {
+            let _ = std::fs::remove_file(token_file);
+        }
+        started
     }
 }
 
@@ -2564,12 +2679,12 @@ mod tests {
                 Cli::try_parse_from(["manager", "hub-search", "--query=-flag-looking query"]).unwrap();
             assert!(matches!(
                 rpc_action(&search.command).unwrap(),
-                RpcAction::HubSearch { ref query, ref format } if query == "-flag-looking query" && format == "gguf"
+                RpcAction::HubSearch { ref query, ref format, .. } if query == "-flag-looking query" && format == "gguf"
             ));
             let worker =
                 Cli::try_parse_from(["manager", "worker-user", "--model", "hf/acme/x/q4_0"]).unwrap();
             assert!(rpc_action(&worker.command).is_err());
-            assert!(hub_search("chat", "pickle").is_err());
+            assert!(hub_search("chat", "pickle", None).is_err());
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("x.gguf");
             std::fs::write(&file, b"not a model").unwrap();

@@ -1543,27 +1543,40 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         TriggerSpec::Connector { source, .. } if source.trim().is_empty() => {
             Err("a connector trigger names the source the event comes from".into())
         }
-        // The times of a person's calendars are kept by the Calendar app and read there, not by
-        // the host that runs this shortcut, so a moment counted from one cannot be armed here.
-        TriggerSpec::ResourceTime { .. } => Err(
-            "a moment counted from a calendar entry is not available here: the Calendar app \
-             reads its own entries"
-                .into(),
-        ),
+        TriggerSpec::ResourceTime {
+            kind,
+            field,
+            offset_secs,
+            ..
+        } => match tilo_automation::resource_time::refusal(kind, field, *offset_secs) {
+            Some(why) => Err(why),
+            // The Calendar app's entries are the records whose times a shortcut reads, as the app
+            // publishes them; no other app's are read this way yet.
+            None if kind != tilo_automation::resource_time::CALENDAR_EVENTS => Err(format!(
+                "a moment is counted from the start or the end of an entry of the Calendar app: \
+                 `15 minutes before \"{}\" in a \"{}\"`",
+                tilo_automation::resource_time::CALENDAR_START,
+                tilo_automation::resource_time::CALENDAR_EVENTS
+            )),
+            None => Ok(()),
+        },
         TriggerSpec::SourceChanged {
             kind,
             at,
             every_secs,
             ..
         } => {
-            use tilo_automation::source_change::{self, WEB_FEED, WEB_PAGE};
+            use tilo_automation::source_change::{self, PERSON_MAIL, WEB_FEED, WEB_PAGE};
             match source_change::refusal(kind, at)
                 .or_else(|| source_change::look_refusal(kind, at, *every_secs))
             {
                 Some(why) => Err(why),
+                // Mail is read as the Mail app keeps it, as it arrives.
+                None if kind == PERSON_MAIL => Ok(()),
                 // A feed or a page on the web is looked at on a clock; no other source is read.
                 None if !source_change::looked_at(kind) => Err(format!(
-                    "something new is found in a feed on the web (`when something new is in \
+                    "something new is found in the workspace's mail (`when something new is in \
+                     \"{PERSON_MAIL}\"`), in a feed on the web (`when something new is in \
                      \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`) or on a page there \
                      (`when something new is in \"{WEB_PAGE}\" at \"https://example.org/prices\"`)"
                 )),
@@ -1581,9 +1594,9 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         | TriggerSpec::Connector { .. }
         | TriggerSpec::Webhook { .. } => Ok(()),
         other => Err(format!(
-            "`{}` triggers cannot be saved yet; keyboard, schedule, moment, \
+            "`{}` triggers cannot be saved yet; keyboard, schedule, moment, calendar-time, \
              app-opened, workspace-joined, file-changed, focus-mode, record-changed, \
-             incoming-message, app-event, connector, feed and page triggers can",
+             incoming-message, app-event, connector, feed, page and mail triggers can",
             other.kind()
         )),
     }

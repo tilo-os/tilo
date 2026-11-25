@@ -1458,17 +1458,24 @@ impl Workspaces {
                 envelope: Box::new(envelope.clone()),
                 readers: named.map(str::to_owned),
             };
-            taken = Some(
-                candidate
-                    .receive_from(
-                        tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
-                        message,
-                        now,
-                    )
-                    .map_err(|error| error.to_string())?,
-            );
+            let report = candidate
+                .receive_from_report(
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
+                    message,
+                    now,
+                )
+                .map_err(|error| error.to_string())?;
+            taken = Some((
+                report.summary().clone(),
+                format!("{:?}", report.primary()),
+                matches!(
+                    report.primary(),
+                    tilo_peer_state::InputDisposition::Accepted(_)
+                ),
+            ));
         }
-        let taken = taken.ok_or("a resource change was drafted as no write")?;
+        let (taken, decided, accepted) =
+            taken.ok_or("a resource change was drafted as no write")?;
         // One write of an action across several documents reads only once the action is whole:
         // the workspace took it in when nothing held it back or refused it.
         if action.is_some_and(|action| action.parts.len() > 1)
@@ -1485,18 +1492,29 @@ impl Workspaces {
                 // A write the workspace keeps nothing of is held back or refused: saying only
                 // that its document does not open leaves the reason nowhere.
                 format!(
-                    "the workspace took no write of {document} of {app}: held back {} (waiting for \
-                     {}), duplicate {}, refused {}",
+                    "the workspace took no write of {document} of {app}: {decided}, held back {} \
+                     (waiting for {}), duplicate {}, refused {}",
                     taken.deferred,
                     taken.incomplete.as_deref().unwrap_or("nothing"),
                     taken.duplicate,
                     taken.rejected
                 )
             })?;
-        if !Automerge::load(&opened.document)
-            .map_err(|error| error.to_string())?
-            .has_change(&write.change.hash())
-        {
+        // A sealed document's writes are no changes of the cleartext this device opens it to:
+        // what says one landed is the disposition the admission reported for it. A document
+        // that travels in the clear is looked for in the document itself.
+        let sealed = candidate
+            .publication()
+            .held_document(app, document)
+            .is_some_and(|held| held.is_sealed());
+        let landed = if sealed {
+            accepted
+        } else {
+            Automerge::load(&opened.document)
+                .map_err(|error| error.to_string())?
+                .has_change(&write.change.hash())
+        };
+        if !landed {
             // As for a document that opens to nothing: a change the workspace holds back or
             // refuses leaves the document short of it, and only these counters and what the open
             // left out say which.
@@ -1506,8 +1524,8 @@ impl Workspaces {
                 .map(|write| format!("{}: {:?}", hex::encode(write.author), write.reason))
                 .collect();
             return Err(format!(
-                "the staged resource change did not pass document admission: held back {}, \
-                 waiting for {}, duplicate {}, refused {}, left out {}",
+                "the staged resource change did not pass document admission: {decided}, held \
+                 back {}, waiting for {}, duplicate {}, refused {}, left out {}",
                 taken.deferred,
                 taken.incomplete.as_deref().unwrap_or("nothing"),
                 taken.duplicate,

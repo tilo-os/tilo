@@ -100,6 +100,7 @@ impl StatePeer {
             own_device: None,
             governance_now: None,
             copied: std::collections::BTreeMap::new(),
+            action_stamp: None,
         })
     }
     /// Write `identity`'s governed row and roster name into `doc`, this

@@ -41,7 +41,7 @@ const PASSWORDS_REACHES: [&str; 7] = [
     tilo_actions::remote::person_vault::REVEAL,
 ];
 
-use super::hosted_use::answers_narrow;
+use super::hosted_use::agent_of;
 use super::{WorkspaceId, Workspaces};
 
 /// Where a store stands in the workspace's policy: an app's node, and the
@@ -151,12 +151,6 @@ impl Workspaces {
         workspace_store_dir(&self.inner.dir, workspace)
     }
 
-    /// Where every workspace's store stands on this host: a directory for
-    /// each, named by the hex of its id.
-    pub fn workspace_stores_root(&self) -> PathBuf {
-        workspace_store_root(&self.inner.dir)
-    }
-
     /// Whether `caller`, on the device `certificate` certifies, may do
     /// `effect` with `action` of `store` in the workspace `workspace_id`
     /// names, as the workspace's policy decides it now. What the rules ask a
@@ -223,13 +217,11 @@ impl Workspaces {
         let answer = if acting.is_agent() && effect != ActionKind::Read {
             // An agent reads freely. A change it makes is put to its person
             // first, unless they answered that very action in advance.
-            let narrowed = self.agent_narrowed(&workspace.to_string(), acting).await;
-            agent_change(&verdict, narrowed)
+            agent_change(&verdict, narrowed(access.policy.as_ref(), caller))
         } else if acting.is_agent() {
             // An agent reads with its person's access: what they read, unless something denies
             // it the read or its person's answers narrow it.
-            let narrowed = self.agent_narrowed(&workspace.to_string(), acting).await;
-            agent_read(&verdict, narrowed)
+            agent_read(&verdict, narrowed(access.policy.as_ref(), caller))
         } else {
             verdict.answer
         };
@@ -319,32 +311,6 @@ impl Workspaces {
         Ok(reach)
     }
 
-    /// Whether the person `person` may do `effect` with `action` of `store`
-    /// in `workspace` now, as its policy decides for them: what a turn this
-    /// server carries out for them reaches, with no device of theirs behind
-    /// it. A policy that asks them has not refused them: the turn waits on
-    /// their answer for that one change, and this is where the change is
-    /// weighed again after it.
-    pub async fn person_reaches(
-        &self,
-        workspace: WorkspaceId,
-        person: &[u8; 32],
-        store: Store,
-        action: &str,
-        effect: ActionKind,
-    ) -> bool {
-        let Some(policy) = self.policy_of(&workspace.to_string()).await else {
-            return false;
-        };
-        let person = hex::encode(person);
-        if policy.active_role(&person).is_none() {
-            return false;
-        }
-        let node = store.node(&policy.workspace, action);
-        let access = tilo_action_policy::MemberAccess::person(policy, person.as_str());
-        access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
-    }
-
     /// Whether the agent `turn` carries out may do `effect` with `action` of
     /// `store` in its workspace now: the workspace's policy decides it for that
     /// agent acting on its asker's word, as it decides every change the agent
@@ -383,7 +349,7 @@ impl Workspaces {
         let access = access.granted(turn.caller.granted());
         let node = store.node(access.workspace(), action);
         let verdict = access.verdict(&node, effect, &Context::at_time(tilo_clock::wall()));
-        let narrowed = answers_narrow(access.policy.as_ref(), agent);
+        let narrowed = narrowed(access.policy.as_ref(), turn.caller);
         let answer = if effect == ActionKind::Read {
             verdict.answer
         } else {
@@ -442,15 +408,11 @@ fn agent_read(verdict: &tilo_action_policy::Verdict<'_>, narrowed: bool) -> Answ
     theirs.min(own)
 }
 
-impl Workspaces {
-    /// Whether the agent `acting` names is narrowed by its person's answers in `workspace`
-    /// ([`answers_narrow`]).
-    async fn agent_narrowed(&self, workspace: &str, acting: &Acting) -> bool {
-        let Some(agent) = acting.agent_id() else {
-            return false;
-        };
-        self.policy_of(workspace)
-            .await
-            .is_some_and(|policy| answers_narrow(&policy, agent))
-    }
+/// Whether its own person narrowed the agent `caller` acts as in `policy`: another member's
+/// answers for an agent of that id are for their own agent and narrow nothing here
+/// ([`tilo_action_policy::WorkspacePolicy::answers_narrow`]).
+fn narrowed(policy: &tilo_action_policy::WorkspacePolicy, caller: &Caller) -> bool {
+    agent_of(caller).is_some_and(|(agent, person)| {
+        policy.answers_narrow(agent, &person, &Context::at_time(tilo_clock::wall()))
+    })
 }

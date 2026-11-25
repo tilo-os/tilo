@@ -6,7 +6,7 @@
 //! - the device's image model, a provider on the daemon's dispatch;
 //! - the language runtime, whose records, styles and rich text the workspace service reads and
 //!   changes the built-in apps through;
-//! - the account sign-ins a login's cloud service, model manager and origin connectors reach
+//! - the account sign-ins a login's cloud service and origin connectors reach
 //!   ([`account_sign_ins`]);
 //! - on Linux, the hold on suspend a request from another of the person's devices takes, and
 //!   whether a Wi-Fi radio wakes its machine, as the OS actions read it.
@@ -65,11 +65,7 @@ fn account_sign_ins_here(workspaces: &Workspaces, person: Caller) -> Option<Sign
         );
         return None;
     };
-    let Some(models) = accounts::sign_ins::models_socket() else {
-        tracing::warn!("no runtime directory, so the model manager reaches no account's sign-in");
-        return None;
-    };
-    let served = account_sign_ins::serve(&path, &models, workspaces.clone(), person)
+    let served = account_sign_ins::serve(&path, workspaces.clone(), person)
         .inspect_err(|error| {
             tracing::warn!(%error, path = %path.display(), "the account sign-ins socket is not served");
         })

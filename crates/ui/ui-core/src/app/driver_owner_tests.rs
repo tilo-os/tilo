@@ -74,8 +74,15 @@ impl Widget for OwnerProbe {
     }
 
     fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        let (doc, _) = crate::doc::document_ref(model, path);
-        assert!(crate::resource::identity(doc).is_some());
+        let (doc, root) = crate::doc::document_ref(model, path);
+        // The owner syncs over its own record, which holds only its content: who the record is
+        // the workspace's store keeps.
+        assert!(
+            automerge::ReadDoc::get(doc, root, "body")
+                .unwrap()
+                .is_some(),
+            "the owner syncs over its record"
+        );
         self.seen.syncs.set(self.seen.syncs.get() + 1);
         assert!(
             !self.seen.panic.replace(false),
@@ -337,7 +344,10 @@ fn a_save_status_wake_shows_it_without_an_owner_service_or_layout() {
 /// status up, no wake is raised for it, no layout tree is rebuilt and no size is re-solved.
 #[test]
 fn a_save_status_change_is_no_structure_change() {
-    let host = ProbeHarness::new();
+    // The workspace has not answered the record's founding write when the window first syncs,
+    // so the window shows it being written; one that answers at once founds the record before
+    // the window ever looks.
+    let host = ProbeHarness::holding_writes();
     let queue = OwnerWakeQueue::default();
     let (mut owner, seen, wakes) = prepared(&host, &queue, 7000);
     let _ = owner.take_structure_change();

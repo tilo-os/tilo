@@ -25,6 +25,7 @@ use tilo_model_gateway::host_backend::protocol::{
 };
 
 use tilo_workspace_service::agents::{Model, ServerAgents};
+use tilo_workspace_service::workspaces::fixtures::answer_grant;
 
 const CHAT: &str = "so.tilo.chat";
 const MESSAGE: &str = "tl.so.tilo.chat.Message";
@@ -212,14 +213,7 @@ async fn grant_scout(
         tilo_action_policy::Answer::Allow,
         Grantee::person(owner.to_owned()),
     );
-    workspaces
-        .commit_own_membership(
-            workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant { grant },
-            None,
-        )
-        .await
-        .unwrap();
+    answer_grant(workspaces, workspace, grant).await.unwrap();
 }
 
 /// The channel `general`, made by the workspace's agent: the person's own changes are only the
@@ -329,8 +323,7 @@ fn posted(
 /// turn whose saver may not records nothing at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_run() {
-    let surfaces = tempfile::tempdir().unwrap();
-    tilo_workspace_service::surfaces::decide_receipt(&surfaces.path().join("surfaces"));
+    super::set_surfaces();
     let device = moderation_device().await;
     let cert = &device.cert;
     let workspaces = device.workspaces();
@@ -341,7 +334,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     post(&workspaces, &workspace, &cert, "a spam offer").await;
     post(&workspaces, &workspace, &cert, "and another").await;
     let before = workspaces
-        .record_changes(&workspace, &route(&workspace), &owner)
+        .record_changes(&workspace, &super::record_route(&workspace, CHAT), &owner)
         .unwrap();
     let taken = changes_of(&before, &owner);
     assert!(
@@ -388,7 +381,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
 
     // The undo took exactly those back, as one run.
     let after = workspaces
-        .record_changes(&workspace, &route(&workspace), &owner)
+        .record_changes(&workspace, &super::record_route(&workspace, CHAT), &owner)
         .unwrap();
     let undone: Vec<&Value> = after
         .iter()
@@ -429,8 +422,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
 /// nothing is taken back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
-    let surfaces = tempfile::tempdir().unwrap();
-    tilo_workspace_service::surfaces::decide_receipt(&surfaces.path().join("surfaces"));
+    super::set_surfaces();
     let device = moderation_device().await;
     let cert = &device.cert;
     let workspaces = device.workspaces();
@@ -471,7 +463,7 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
         "the turn is told it may not: {shown}"
     );
     let after = workspaces
-        .record_changes(&workspace, &route(&workspace), &owner)
+        .record_changes(&workspace, &super::record_route(&workspace, CHAT), &owner)
         .unwrap();
     assert!(
         !after.iter().any(|version| version["action"]
@@ -479,15 +471,6 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
             .is_some_and(|action| action == tilolang_workspace::runtime::store::STEP_ACTION)),
         "a refused turn takes nothing back: {after:#?}"
     );
-}
-
-/// The record's route.
-fn route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
-    tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.to_owned(),
-        cluster_id: workspace.to_owned(),
-        document: String::new(),
-    }
 }
 
 /// Every tool answer `request` carries, as its text.

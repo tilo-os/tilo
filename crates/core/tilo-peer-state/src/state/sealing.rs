@@ -77,7 +77,7 @@ impl StatePeer {
                 .as_deref_mut()
                 .ok_or("missing workspace governance")?;
             crate::coverage::put(doc, coverage)?;
-            crate::state::commit_governance(doc, crate::state::now_secs(now));
+            crate::state::commit_governance(doc, crate::state::now_secs(now), None);
         }
         self.receive(key.device_public_key(), message.clone(), now)?;
         Ok(message)
@@ -166,7 +166,7 @@ impl StatePeer {
             .as_deref_mut()
             .ok_or("missing workspace governance")?;
         crate::coverage::put(doc, coverage)?;
-        crate::state::commit_governance(doc, crate::state::now_secs(now));
+        crate::state::commit_governance(doc, crate::state::now_secs(now), None);
         Ok(())
     }
 
@@ -403,7 +403,7 @@ impl StatePeer {
             None if !coverages.is_empty() => crate::coverage::put_all(workspace, coverages)?,
             None => {}
         }
-        crate::state::commit_governance(workspace, crate::state::now_secs(now));
+        crate::state::commit_governance(workspace, crate::state::now_secs(now), None);
         for message in &messages {
             self.receive(key.device_public_key(), message.clone(), now)?;
         }

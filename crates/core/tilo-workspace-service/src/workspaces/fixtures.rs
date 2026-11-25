@@ -388,6 +388,28 @@ pub fn declare_built_in_app(host: &TestHost, app: &str) {
     declare_app(host, app, &surface);
 }
 
+/// Take `grant` into `workspace`'s policy as the person this service's device acts for: the
+/// answer they give for an agent of theirs, which the policy then decides that agent's calls by.
+///
+/// # Errors
+///
+/// Why the workspace refused the grant, or does not hold this device as a member.
+pub async fn answer_grant(
+    workspaces: &Workspaces,
+    workspace: &str,
+    grant: tilo_action_policy::Grant,
+) -> Result<(), String> {
+    workspaces
+        .commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(grant),
+            },
+            None,
+        )
+        .await
+}
+
 /// The same host, keeping `grants` pre-admissions per workspace
 /// ([`crate::service::ServiceConfig::max_workspace_grants`]).
 ///
@@ -1111,7 +1133,14 @@ pub async fn invitation(
         )
         .await
         .expect("the serving device issues an invitation");
-    tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
+    invitation_text(&issued.signed_invitation)
+}
+
+/// The text `signed_invitation` is handed to its person in: what a device redeems with
+/// [`Workspaces::join_member`].
+#[must_use]
+pub fn invitation_text(signed_invitation: &[u8]) -> String {
+    tilo_peer_state::join::encode_invitation_text(signed_invitation)
 }
 
 /// The membership a replica holding nothing but `workspace`'s membership log, as `workspaces`

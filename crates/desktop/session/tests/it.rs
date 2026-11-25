@@ -179,6 +179,8 @@ mod no_locale_leaks;
 mod no_view_call;
 #[path = "notification_agent.rs"]
 mod notification_agent;
+#[path = "notifications.rs"]
+mod notifications;
 #[path = "offline_start.rs"]
 mod offline_start;
 #[path = "origin_connector.rs"]

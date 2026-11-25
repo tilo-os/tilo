@@ -3,10 +3,9 @@
 
 pub const SETTINGS_SECTION: &str = "text_assistance";
 
-#[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
-)]
-#[model(defaults)]
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "model", model(defaults))]
 pub struct TextAssistancePrefs {
     /// Underline words the spell checker does not know, in every text field.
     pub check_spelling: bool,
@@ -32,5 +31,6 @@ impl crate::SettingsSchema for TextAssistancePrefs {
 }
 
 /// The section as a record the person edits by path.
+#[cfg(feature = "model")]
 #[tilo_resource::resource(kind = "settings.text-assistance")]
 impl TextAssistancePrefs {}

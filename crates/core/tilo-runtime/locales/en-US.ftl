@@ -58,6 +58,13 @@ window-follow-follow-detail = Tells a workspace's apps on this device whose view
 window-follow-handoff = Move a window
 window-follow-handoff-detail = Asks an app on this device for the next step of moving its window to another device.
 
+# The calls of a workspace's live session this device joins and leaves, as the daemon lists them.
+live-call-resource = Live session
+live-call-join = Join
+live-call-join-detail = Join a call of this workspace on this device.
+live-call-leave = Leave
+live-call-leave-detail = Leave the call this device is in here.
+
 # Nearby Send between the person's devices, as the daemon carries it and their shell shows it.
 nearby-send-resource = Nearby Send
 nearby-send-offer = Send a file to a device

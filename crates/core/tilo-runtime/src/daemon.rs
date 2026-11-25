@@ -177,7 +177,12 @@ fn running(profile: &Path) -> io::Result<Status> {
 /// # Errors
 /// The daemon could not start, or it could not serve.
 pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
-    Running::start_serving(profile, dev)?.wait()
+    // Heard from the daemon's first moment: before there is a person, waiting for one is all it
+    // does, and a signal the caller had ignored is inherited across exec.
+    let stop = crate::device::serve::Stop::default();
+    crate::device::serve::hear_stops(stop.clone(), crate::device::serve::STOPPED_WITHIN)
+        .map_err(|error| io::Error::other(format!("{error:#}")))?;
+    Running::start_serving(profile, dev, stop)?.wait()
 }
 
 /// This computer's daemon running in this process: the native endpoint the apps and `--connect`
@@ -243,11 +248,16 @@ impl Running {
     /// The profile is not a private absolute directory, another daemon has this device, or the
     /// native endpoint cannot be bound.
     pub fn start(profile: &Path) -> io::Result<Self> {
-        Self::start_serving(profile, false)
+        Self::start_serving(profile, false, crate::device::serve::Stop::default())
     }
 
-    /// [`Self::start`], serving builds under development too when `dev`.
-    fn start_serving(profile: &Path, dev: bool) -> io::Result<Self> {
+    /// [`Self::start`], serving builds under development too when `dev`, and told to stop by
+    /// `stop`.
+    fn start_serving(
+        profile: &Path,
+        dev: bool,
+        stop: crate::device::serve::Stop,
+    ) -> io::Result<Self> {
         validate_profile(profile)?;
         let device = crate::device::unclaimed::ThisDevice::lock(profile.to_path_buf())?;
         // Who each connection is: root and this daemon's own account act as the device, and
@@ -288,7 +298,6 @@ impl Running {
                 })?
         };
         tracing::info!("answering this device's actions on its native endpoint");
-        let stop = crate::device::serve::Stop::default();
         let person = Arc::new(Person::default());
         let serving = {
             let (profile, stop, person) = (profile.to_owned(), stop.clone(), Arc::clone(&person));
@@ -517,6 +526,11 @@ fn serve_device(
     let device_key = device.device_key();
     let _lock = device.device_lock();
     loop {
+        // A stop heard while this computer waited for its person ends the daemon without
+        // starting their services.
+        if stop.told() {
+            return Ok(());
+        }
         let mut stage = |stage: &str| tracing::debug!(stage, "starting the person's services");
         let session = match Daemon::start_locked(
             profile,

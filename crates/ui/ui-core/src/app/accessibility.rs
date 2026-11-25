@@ -62,12 +62,17 @@ impl App {
         if self.input.interaction == environment {
             return;
         }
+        let built_alike = builds_alike(self.input.interaction, environment);
         self.input.interaction = environment;
         self.root_widget.set_interaction_environment(environment);
         self.invalidate_widget_resource_cache();
         // A widget takes up the way it is reached when it is built (a finger's target, a hover's
-        // fade), and the composites around it pass the environment on at that same build.
-        self.layout.request_rebuild();
+        // fade), and the composites around it pass the environment on at that same build. A
+        // person moving between the mouse and the keys changes neither: the widgets are told, and
+        // the tree they stand in is kept, with what the key just opened in it.
+        if !built_alike {
+            self.layout.request_rebuild();
+        }
     }
 
     pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
@@ -2158,4 +2163,20 @@ fn box_control(described: &crate::a11y::AccessNode, node: &accesskit::Node) -> O
             .filter(|_| child.name.is_some() && child.name.as_deref() == node.label())
             .or_else(|| box_control(child, node))
     })
+}
+
+/// Whether a tree built for `after` is the tree built for `before`: they differ at most in whether
+/// the person last used the mouse or the keys, which no widget builds from (a finger's target, a
+/// hover and the devices at hand stay as they were).
+fn builds_alike(
+    before: crate::interaction::InteractionEnvironment,
+    after: crate::interaction::InteractionEnvironment,
+) -> bool {
+    use crate::interaction::InputModality::{Keyboard, Pointer};
+    matches!(before.modality, Keyboard | Pointer)
+        && matches!(after.modality, Keyboard | Pointer)
+        && crate::interaction::InteractionEnvironment {
+            modality: before.modality,
+            ..after
+        } == before
 }

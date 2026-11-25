@@ -922,3 +922,90 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result
     ping(profile.path())?;
     Ok(())
 }
+
+/// `daemon`'s exit status once it ends within `within`: the daemon ends as it says it did. One
+/// still running then is killed, and its log says what kept it.
+fn ended_within(
+    daemon: &mut Child,
+    within: Duration,
+    profile: &DaemonProfile,
+) -> Result<std::process::ExitStatus> {
+    let deadline = Instant::now()
+        .checked_add(within)
+        .context("the stop's deadline")?;
+    loop {
+        if let Some(status) = daemon.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            bail!(
+                "a daemon told to stop ran for {within:?} and had to be killed\n{}",
+                profile.log()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A daemon started before there is a person hears the stop a stack sends it: SIGTERM ends it
+/// within the five seconds the stack gives it before it kills it, and with its own exit status,
+/// even where the caller had the signal ignored, which a child inherits across exec. Its wait
+/// for a person is outside any part a signal used to stop, so a daemon started this way ran on.
+#[test]
+fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    /// How long the stack waits for a daemon it stopped before it kills it.
+    const ENDING_WITHIN: Duration = Duration::from_secs(5);
+    let profile = DaemonProfile::unstarted()?;
+    let path = profile.path().to_owned();
+    // No identity: the daemon serves this computer before there is a person, as a stack starts
+    // it while the person it will serve does not exist yet.
+    std::fs::remove_dir_all(path.join("identity"))?;
+    let mut command = host(&path);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(path.join("daemon.log"))?);
+    // SAFETY: the closure runs between fork and exec and calls `signal(2)` alone, which is
+    // async-signal-safe. A caller that had SIGTERM ignored leaves it ignored across exec, as a
+    // supervisor that stopped its own waited for no signal may.
+    unsafe {
+        command.pre_exec(|| {
+            let _ = libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+    let mut daemon = command.spawn_locked()?;
+    let deadline = Instant::now()
+        .checked_add(LAUNCHER_START_CAP)
+        .context("the start's deadline")?;
+    let pid = loop {
+        if let Ok(status) = status(&path)
+            && let Some(pid) = status.get("pid").and_then(Value::as_i64)
+            && let Ok(pid) = i32::try_from(pid)
+        {
+            break pid;
+        }
+        if Instant::now() >= deadline {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            bail!("the daemon did not answer\n{}", profile.log());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    // SAFETY: `kill(2)` with SIGTERM on the daemon this test started, the signal a stop sends.
+    ensure!(
+        unsafe { libc::kill(pid, libc::SIGTERM) } == 0,
+        "SIGTERM did not reach the daemon: {}",
+        std::io::Error::last_os_error()
+    );
+    let ended = ended_within(&mut daemon, ENDING_WITHIN, &profile)?;
+    ensure!(
+        ended.success(),
+        "the daemon ended as {ended}, not of its own stop\n{}",
+        profile.log()
+    );
+    Ok(())
+}

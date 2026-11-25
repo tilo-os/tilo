@@ -56,7 +56,7 @@ pub(super) struct Members {
     syncing: std::sync::Mutex<std::collections::HashMap<WorkspaceId, MemberSyncing>>,
     /// Held while a copy is taken in: a workspace joined while the session holds what it took
     /// part in before is kept once.
-    holding: tokio::sync::Mutex<()>,
+    pub(super) holding: tokio::sync::Mutex<()>,
     /// The device the copies act as, once the embedder hands it to the
     /// service ([`Workspaces::set_member_device`]).
     device: std::sync::OnceLock<Arc<MemberDevice>>,
@@ -407,6 +407,15 @@ pub(super) fn member_of(path: &Path) -> Option<Member> {
             tracing::warn!(path = %file.display(), %error, "a member copy's device does not decode");
             None
         }
+    }
+}
+
+/// Forget that `path`'s copy is a member copy: this device holds it itself now.
+pub(super) fn forget_member(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path.with_extension(MEMBER)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
     }
 }
 

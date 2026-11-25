@@ -5,13 +5,20 @@ edition = "2024"
 publish = true
 license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
-description = "User notifications on Linux, macOS and the web: show, replace by tag, withdraw, and schedule where the platform keeps them."
+description = "User notifications on Linux, macOS and the web: what an app shows its session over its connection, and what each platform keeps."
 repository.workspace = true
 homepage.workspace = true
 
 [lib]
 name = "tilo_notify"
 path = "src/lib.rs"
+
+[features]
+# The desktop's own notification portal and the freedesktop notification service, over the
+# session bus, for a runner hosting an app on a foreign desktop. An app process inside Tilo
+# reaches its session's notifier over the socket the launcher hands it (`service`) and never
+# enables this: no sandboxed app speaks D-Bus.
+host-portals = ["dep:zbus"]
 
 [dependencies]
 # Scheduled notifications name their time on the platform clock.
@@ -21,10 +28,18 @@ tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 tracing.workspace = true
 jiff.workspace = true
 
-# The notification portal (the Tilo shell implements it), else the
+[target.'cfg(unix)'.dependencies]
+# The notification service an app's session serves it, over the socket the launcher hands it: one
+# length-prefixed JSON message per frame.
+serde.workspace = true
+serde_json.workspace = true
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../wire-frame" }
+tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
+
+# The notification portal (a foreign desktop's shell implements it), else the
 # freedesktop notification service, on the session bus.
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { workspace = true, features = ["tokio", "blocking-api"] }
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
@@ -46,6 +61,9 @@ web-sys = { version = "=0.3.85", features = ["console"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 tempfile.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

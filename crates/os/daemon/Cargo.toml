@@ -108,7 +108,8 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 tilo-app-package = { path = "../../core/tilo-app-package" }
 package-actions = { path = "../../core/package-actions" }
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"] }
-tilo-peer-state = { path = "../../core/tilo-peer-state" }
+# The wire a member's write travels to the workspace's host in, as a device speaks it.
+tilo-neighbour-wire = { path = "../../core/neighbour-wire" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-resource-store = { path = "../../core/resource-store" }
 tilo-user-identity = { path = "../../core/tilo-user-identity" }

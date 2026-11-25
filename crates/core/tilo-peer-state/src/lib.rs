@@ -93,14 +93,12 @@ pub use state::DocumentKeysBasis;
 pub use state::GovernanceHeads;
 pub use state::Quarantined;
 pub use state::mail_send_lease;
-pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
-pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub use state::{
-    CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY, DelegateInactive,
-    DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY,
-    HeldCopy, HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY, Lease, LeaseClaim,
-    MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member, MemberId,
-    MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenSealedError,
+    ActionStamp, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY,
+    DelegateInactive, DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow,
+    HELD_COPIES_KEY, HeldCopy, HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY,
+    Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member,
+    MemberId, MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenSealedError,
     OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError,
     PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
     PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, Reseal, RowError,
@@ -110,6 +108,8 @@ pub use state::{
     seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
     workspace_host_actor, workspace_seed,
 };
+pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
+pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub use state::{Captured, changes_since, saved_whole};
 pub use state::{IMPORTED_HISTORY_PREFIX, Imported, ImportedHistory};
 pub use state::{vm_lease, vm_rank};

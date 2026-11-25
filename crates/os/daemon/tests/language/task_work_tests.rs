@@ -286,11 +286,7 @@ mod session_tests {
                 },
             ));
             let workspace = workspaces.create("Tasks").await.unwrap().workspace;
-            let route = tilo_peer_state::document_frame::DocumentRoute {
-                app_id: TASKS.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            };
+            let route = super::super::record_route(&workspace, TASKS);
             let _ = workspaces.own_route_keys(&route, true).await.unwrap();
             let person = hex::encode(cert.user_public_key);
             let (device, asks) = mpsc::channel();

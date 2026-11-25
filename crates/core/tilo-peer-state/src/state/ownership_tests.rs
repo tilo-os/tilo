@@ -265,7 +265,7 @@ fn written_by(
     let base = next.get_heads();
     next.set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
     write(&mut next);
-    commit_governance(&mut next, wall_secs());
+    commit_governance(&mut next, wall_secs(), None);
     next.get_changes(&base)
         .iter()
         .map(|change| change.raw_bytes().to_vec())

@@ -6,27 +6,18 @@ use crate::Words;
 /// How times of day render: the shared `locale.time_format` setting. Until the person picks a
 /// clock, it follows the language ([`TimeStyle::Language`]: 12-hour in US English, 24-hour in
 /// German).
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::Model,
-)]
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TimeStyle {
     /// The language's own clock: `2:05 PM` in US English, `14:05` in German.
     #[default]
-    #[model(rename = "Language")]
+    #[cfg_attr(feature = "model", model(rename = "Language"))]
     Language,
     /// `14:05`
-    #[model(rename = "H24")]
+    #[cfg_attr(feature = "model", model(rename = "H24"))]
     H24,
     /// `2:05 PM`
-    #[model(rename = "H12")]
+    #[cfg_attr(feature = "model", model(rename = "H12"))]
     H12,
 }
 

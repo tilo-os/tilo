@@ -108,9 +108,12 @@ impl Drop for HeldTarget {
     }
 }
 
+/// A file a page chose: its name and the bytes it read.
+type ChosenBytes = (String, Vec<u8>);
+
 /// The bytes the page's chooser answered, each with its name: a page has no descriptor, so the
 /// bytes are the file.
-fn chosen(value: &JsValue) -> Result<Option<Vec<(String, Vec<u8>)>>, String> {
+fn chosen(value: &JsValue) -> Result<Option<Vec<ChosenBytes>>, String> {
     if value.is_null() || value.is_undefined() {
         return Ok(None);
     }

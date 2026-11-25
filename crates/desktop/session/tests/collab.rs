@@ -740,6 +740,26 @@ fn ada_here_on_two_devices(sync: &Client) {
     );
 }
 
+/// Ada is here on two of her devices, heard once the shell is up: presence written before the
+/// session has read its workspace is what its own start replaces, and her face in the bar is what
+/// says it landed.
+fn ada_arrives(session: &mut Session, sync: &Rc<Client>) {
+    wait_for(session, "the bar", |session| {
+        session.shell_control("Top bar")
+    });
+    let mut heard = 0_u32;
+    until(session, "their face is in the bar", |session| {
+        if session.shell_control("Ada").is_some() {
+            return true;
+        }
+        if heard % 20 == 0 {
+            ada_here_on_two_devices(sync);
+        }
+        heard = heard.saturating_add(1);
+        false
+    });
+}
+
 /// What the card says of Ada: her name in its head, the person's root key for its ID, and each of
 /// her devices with how it said it was, in who is here's place rather than beside it.
 fn assert_ada_card(session: &Session) {
@@ -839,11 +859,8 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
 
     // Another person, at two of their devices, in the same workspace: their face stands in the bar,
     // under their name and never their machine's.
-    ada_here_on_two_devices(&sync);
     // The bar draws who is here, their face under their name and never their machine's.
-    wait_for(&mut session, "their face is in the bar", |session| {
-        session.shell_control("Ada").map(|_| ())
-    });
+    ada_arrives(&mut session, &sync);
     // Who is here stands open, listing the people here.
     press_faces(&mut session);
     until(&mut session, "the roster lists who is here", |session| {
@@ -920,10 +937,7 @@ fn a_persons_card_offers_everyone_here() {
     };
     let sync = Rc::new(Client::untethered(device(0xf0), mine));
     let mut session = session_over(&sync, None);
-    ada_here_on_two_devices(&sync);
-    wait_for(&mut session, "their face is in the bar", |session| {
-        session.shell_control("Ada").map(|_| ())
-    });
+    ada_arrives(&mut session, &sync);
     press_faces(&mut session);
     press_named(&mut session, "Ada");
     wait_for(&mut session, "the card offers everyone here", |session| {

@@ -16,7 +16,6 @@
 
 use automerge::ActorId;
 use automerge::transaction::{CommitOptions, Transactable};
-use tilo_automerge::ApplyIncoming;
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
 use crate::context::{ActionContext, CONTINUATION_PREFIX, ChangeKind};
@@ -890,8 +889,26 @@ pub fn replay_decoded(
     let mut replay_base = doc.fork_at(&base_heads)?;
     validate_compensation(&mut replay_base, action, env)?;
     apply_under_envelope(&mut replay_base, action, env, content).map(drop)?;
-    doc.merge_incoming(&mut replay_base)?;
+    merge_replayed(doc, &mut replay_base)?;
     Ok(())
+}
+
+/// Merge `replayed`, made at the envelope's base, into `doc` as it stands, dropping the patch
+/// events the merge logs: an [`automerge::AutoCommit`] logs one per applied operation and never
+/// drops them, and nothing reads them unless the document's owner armed a diff cursor.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the action layer's one merge, dropping what it logs"
+)]
+fn merge_replayed(
+    doc: &mut Doc,
+    replayed: &mut Doc,
+) -> Result<Vec<automerge::ChangeHash>, automerge::AutomergeError> {
+    let merged = doc.merge(replayed);
+    if doc.diff_cursor().is_empty() {
+        doc.reset_diff_cursor();
+    }
+    merged
 }
 
 /// What replaying a received change showed.

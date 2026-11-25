@@ -9,7 +9,9 @@
 //! - opener: `system_opener()`, or `tilo_dialogs::inherited_shell_opener` in
 //!   front of it when the launcher handed a connection;
 //! - speech: the system speech stack via [`tts::default_speaker`];
-//! - notifications: `tilo_notify::system(app_id)`;
+//! - notifications: `tilo_notify::system(app_id)`, the connection the launcher opened to the
+//!   session's notifier (a host running apps on a foreign desktop reads the portal instead, with
+//!   the `host-portals` feature this SDK build leaves off);
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
 //! - location: `tilo_location::system()`;
 //! - screen capture: the XDG `ScreenCast` portal on Linux (with the `portal`

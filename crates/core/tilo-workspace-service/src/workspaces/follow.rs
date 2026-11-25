@@ -54,8 +54,11 @@ pub(super) enum BehindRefusal {
 
 impl Workspaces {
     /// [`GovernedWorkspace::follow_kept`], keeping this host's check of a compaction the copy
-    /// took behind: it was checked as it was taken, against every write here it covers, and no
-    /// later read can check it against the writes only it holds.
+    /// took: one taken behind was checked as it was taken, against every write here it covers,
+    /// and no later read can check it against the writes only it holds; any other is checked
+    /// against the writes it stands in for now. The stores keep those writes until every device
+    /// with the record's keys has checked it, so a copy that took one on a replay and never
+    /// checked it would keep them everywhere for good.
     pub(super) async fn follow_kept_checked(
         &self,
         workspace: &mut GovernedWorkspace,
@@ -64,20 +67,30 @@ impl Workspaces {
     ) -> Followed {
         let followed = workspace.follow_kept(author, message.clone()).await;
         #[cfg(feature = "device-keys")]
-        if let (
-            Some(compaction),
-            neighbour_wire::NeighbourMsg::AppDocument {
-                app_id,
-                document_id,
-                ..
-            },
-        ) = (&followed.taken_behind, &message)
-            && let Err(error) = self
-                .keep_checkpoint_check(workspace, (app_id, document_id), compaction)
-                .await
+        if let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            ..
+        } = &message
         {
-            tracing::warn!(workspace = %workspace.workspace(), %app_id, %document_id, %error,
-                "this host's check of a compaction it took was not kept");
+            let route = (app_id.as_str(), document_id.as_str());
+            let checked = match &followed.taken_behind {
+                Some(compaction) => {
+                    self.keep_checkpoint_check(workspace, route, compaction)
+                        .await
+                }
+                None if followed.changed
+                    && envelope.kind == collab_types::OpKind::Compaction =>
+                {
+                    self.check_leading_checkpoint(workspace, route).await
+                }
+                None => Ok(()),
+            };
+            if let Err(error) = checked {
+                tracing::warn!(workspace = %workspace.workspace(), %app_id, %document_id, %error,
+                    "this host's check of a compaction it took was not kept");
+            }
         }
         #[cfg(not(feature = "device-keys"))]
         let _ = &followed.taken_behind;

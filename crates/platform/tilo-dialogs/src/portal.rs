@@ -243,6 +243,8 @@ pub struct PickedFile {
 }
 
 impl PickedFile {
+    /// The open file. A page has none: its choice is the bytes it read.
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(
         clippy::expect_used,
         reason = "a native host always opened a file; only a page holds bytes instead"
@@ -1205,6 +1207,7 @@ impl OpenedFile {
     }
 
     /// A file or folder the chooser reopened by its reference, called what the chooser calls it.
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub(crate) fn named(file: File, display_name: impl Into<String>, reference: PathBuf) -> Self {
         Self {
@@ -1269,7 +1272,8 @@ impl ChosenHandle {
         }
     }
 
-    /// The opened file, or the opened folder.
+    /// The opened file, or the opened folder. A page has none: its choice is the bytes it read.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn file(&self) -> &File {
         self.file.as_ref()
@@ -1292,6 +1296,7 @@ impl ChosenHandle {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PickedFile {
     fn as_ref(&self) -> &File {
         self.file()

@@ -35,6 +35,7 @@ pub mod capture;
 pub mod clipboard;
 pub mod env;
 pub mod location;
+#[cfg(feature = "models")]
 pub mod models;
 pub mod mpris;
 pub mod process;

@@ -1374,6 +1374,7 @@ impl Session {
                 .map(|desktop| std::sync::Arc::clone(desktop.chosen())),
             view: view.clone(),
             daemon: daemon_link.clone().ok(),
+            notifications: Some(notifications.borrow().daemon()),
         });
         // The system's media controls show every Playback the session's apps play, and a media
         // key reaches the one the person touched last: the host of each app's windows says what

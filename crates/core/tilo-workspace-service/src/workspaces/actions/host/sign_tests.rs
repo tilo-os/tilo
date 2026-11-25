@@ -29,8 +29,8 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit, caller, governed};
 use super::turn_use_tests::{
-    always, approved, asked_by, asks, dispatched, fact, narrowed_elsewhere, not_hosted_turns,
-    on_turn,
+    always, approved, asked_by, asks, dispatched, fact, narrowed_elsewhere, narrowing,
+    not_hosted_turns, on_turn,
 };
 use super::vault_tests::{ask, ask_at, files_holding};
 use super::web_call_tests::logged;
@@ -551,7 +551,7 @@ async fn what_signs_is_an_ssh_key_for_its_own_server_asked_by_a_turn() {
         );
     }
     // An agent something narrows holds no rule that names signing.
-    let policy = narrowing(&workspace, "scout", &narrowed_elsewhere(&workspace));
+    let policy = narrowing(&workspace, &scout, &narrowed_elsewhere(&workspace));
     let narrowed = HostedTurn {
         policy: Some(&policy),
         ..turn
@@ -580,24 +580,4 @@ async fn what_signs_is_an_ssh_key_for_its_own_server_asked_by_a_turn() {
         json!({"uses": []})
     );
     server.shutdown().await;
-}
-
-/// A workspace policy whose grants on `agent` are `rules`.
-fn narrowing(
-    workspace: &str,
-    agent: &str,
-    rules: &[tilo_action_policy::Rule],
-) -> tilo_action_policy::WorkspacePolicy {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
-    for (index, rule) in rules.iter().enumerate() {
-        policy.grants.push(tilo_action_policy::Grant::new(
-            format!("test-narrowing:{index}"),
-            tilo_action_policy::Grantee::agent(agent.to_owned()),
-            rule.node.clone(),
-            rule.kinds,
-            rule.answer,
-            tilo_action_policy::Grantee::person("owner"),
-        ));
-    }
-    policy
 }

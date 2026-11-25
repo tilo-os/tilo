@@ -822,6 +822,26 @@ fn lay_out_window(
                     if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                         app.set_focused_node(app.focusable_order.first().copied());
                     }
+                } else if app.focused_node.is_some()
+                    // SAFETY: rebuild completed, and sync retained this topology.
+                    && unsafe {
+                        focus.resolve(
+                            &app.layout.node_map,
+                            &app.bindings,
+                            Some(&app.focusable_order),
+                        )
+                    } == app.focused_node
+                {
+                    // The trap seated the keyboard on the control it was on before the build: the
+                    // person's place inside it (a selection, a caret) comes back with it.
+                    // SAFETY: as above.
+                    unsafe {
+                        focus.restore(
+                            &app.layout.node_map,
+                            &app.bindings,
+                            Some(&app.focusable_order),
+                        )
+                    };
                 }
                 if refocus {
                     // An action focused this control while replacing

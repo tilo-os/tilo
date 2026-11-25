@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::NeighbourMsg;
+use neighbour_wire::NeighbourMsg;
 use tilo_resource_store::wire::{Command, Reply};
 use tilo_resource_store::{Cell, Query, Resource, Stamp, Store, Value};
 use tilo_workspace_service::workspaces::fixtures::ContentKeys;
@@ -24,7 +24,7 @@ use tilo_workspace_service::workspaces::fixtures::ContentKeys;
 use tilo_actions::remote::CatalogueQuery;
 use tilo_workspace_service::apps::services::ResourceRequestContext;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, TestHost, declare_app, governor_with, guest_device,
+    TestGroupKeys, TestHost, declare_app, governor_with, guest_device, invitation_text,
 };
 use tilo_workspace_service::workspaces::sealed_fixtures::member_device;
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
@@ -161,11 +161,7 @@ impl Writer {
         key: SigningKey,
         of: Option<tilo_action_policy::PersonId>,
     ) -> Self {
-        let route = tilo_peer_state::document_frame::DocumentRoute {
-            app_id: APP.into(),
-            cluster_id: workspace.into(),
-            document: String::new(),
-        };
+        let route = super::record_route(workspace, APP);
         let keys = workspaces
             .own_route_keys(&route, true)
             .await
@@ -283,7 +279,7 @@ impl Writer {
         );
         collab_types::sign_op(&mut envelope, &self.key).unwrap();
         NeighbourMsg::AppDocument {
-            peer: tilo_peer_state::peer_handle(author.as_bytes()),
+            peer: neighbour_wire::peer_handle(author.as_bytes()),
             app_id: APP.into(),
             cluster_id: workspace.into(),
             document_id: doc.into(),
@@ -519,11 +515,7 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
     let workspace = created.workspace;
     let context = context(&workspace, &cert);
     // The workspace's content keys are here before an app writes in it.
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, APP);
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
 
     let stamp = Stamp {
@@ -673,11 +665,7 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     }));
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;
     for app in [APP, ENTRY] {
-        let route = tilo_peer_state::document_frame::DocumentRoute {
-            app_id: app.into(),
-            cluster_id: workspace.clone(),
-            document: String::new(),
-        };
+        let route = super::record_route(&workspace, app);
         let _ = workspaces.own_route_keys(&route, true).await.unwrap();
     }
     let (editor_key, editor) = guest_device();
@@ -890,11 +878,7 @@ async fn an_open_query_is_sent_each_page_a_write_makes_different() {
     }));
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;
     let context = context(&workspace, &cert);
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, APP);
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
     let put = |title: &str, invocation: &str| Command::Put {
         kind: KIND.to_owned(),
@@ -1134,11 +1118,7 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     }));
     let created = workspaces.create("Tasks").await.unwrap();
     let workspace = created.workspace;
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, APP);
     let context = context(&workspace, &cert);
     let records = workspaces.workspace_documents();
     let before = records.retained(created.workspace_id).await.unwrap();
@@ -1240,11 +1220,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
     let owner = test_host_holding(owner_dir.path(), &owner_key, &owner_cert, keys.clone()).await;
     let created = owner.workspaces().create("Tasks").await.unwrap();
     let workspace = created.workspace;
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, APP);
     owner
         .workspaces()
         .own_route_keys(&route, true)
@@ -1276,7 +1252,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
             cert: cert.clone(),
             signer: Arc::new(key),
         }));
-    let invite = tilo_peer_state::join::encode_invitation_text(&invite.signed_invitation);
+    let invite = invitation_text(&invite.signed_invitation);
     assert_eq!(
         member.workspaces().join_member(&invite).await.unwrap(),
         created.workspace_id
@@ -1342,11 +1318,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
     }));
     let created = owner.workspaces().create("Tasks").await.unwrap();
     let workspace = created.workspace;
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, APP);
     owner
         .workspaces()
         .own_route_keys(&route, true)
@@ -1415,7 +1387,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
     let mut shown = member.workspaces().admitted_writes();
     // Whoever follows the copy's records hears of each write that changes one.
     let mut woke = member.workspaces().document_writes();
-    let invite = tilo_peer_state::join::encode_invitation_text(&invite.signed_invitation);
+    let invite = invitation_text(&invite.signed_invitation);
     member.workspaces().join_member(&invite).await.unwrap();
     let kept = |shared: bool| {
         let documents = member.workspace_documents();
@@ -1673,15 +1645,6 @@ async fn let_in(keys: &TestGroupKeys, workspace: &str) {
     keys.hand_every_member_of(&group, workspace);
 }
 
-/// The route of `APP`'s record of `workspace`: what a read of the record names.
-fn record_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
-    tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.into(),
-        document: String::new(),
-    }
-}
-
 /// A workspace holding `tasks` tasks of `APP`'s record: the server, the directory it keeps the
 /// workspace in, the workspaces, the workspace's id and the person whose device holds it.
 async fn workspace_of_tasks(
@@ -1721,7 +1684,7 @@ async fn workspace_of_tasks(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_read_answers_while_a_write_holds_the_workspace() {
     let (server, _dir, workspaces, workspace, person) = workspace_of_tasks(40).await;
-    let route = record_route(&workspace);
+    let route = super::record_route(&workspace, APP);
     let listed = workspaces
         .record_page(&workspace, &route, &person, &CatalogueQuery::default())
         .expect("the record publishes a page")
@@ -1754,7 +1717,7 @@ async fn a_page_read_answers_while_a_write_holds_the_workspace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn page_reads_answer_while_the_records_index_reads_it() {
     let (server, _dir, workspaces, workspace, person) = workspace_of_tasks(400).await;
-    let route = record_route(&workspace);
+    let route = super::record_route(&workspace, APP);
     // What one page costs with nothing else reading the record.
     let mut quiet = Vec::new();
     for _ in 0..5 {

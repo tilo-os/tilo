@@ -47,7 +47,7 @@ pub use dbus::{Server, serve, serve_on};
 pub use flatpak::verified_flatpak_app_id;
 pub use hints::ImageData;
 pub use priority::{ContactProjection, PriorityContacts};
-pub use scheduled::{Occurrence, ScheduleRequest, Schedules};
+pub use scheduled::{AlarmRequest, Occurrence, Owner, ScheduleRequest, Schedules};
 pub use service::{
     NOTIFICATION_KIND, NOTIFICATIONS_KIND, NOTIFICATIONS_RESOURCE, NotificationEffect,
     PRIORITY_CONTACT_KIND, PRIORITY_CONTACTS_KIND, PRIORITY_CONTACTS_RESOURCE,
@@ -288,6 +288,7 @@ enum Signal {
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 type Tap = Arc<dyn Fn(u32, Taken<'_>) + Send + Sync>;
+type ClosedTap = Arc<dyn Fn(u32, CloseReason) + Send + Sync>;
 type Mint = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 #[derive(Default)]
@@ -305,6 +306,8 @@ struct State {
     signals: Option<mpsc::UnboundedSender<Signal>>,
     wake: Option<Wake>,
     taps: Vec<Tap>,
+    /// Told when a notification goes away, for a producer that reports it to its app.
+    closed_taps: Vec<ClosedTap>,
     mint: Option<Mint>,
 }
 
@@ -417,6 +420,12 @@ impl Notifications {
         self.state.lock_recover().taps.push(Arc::new(tap));
     }
 
+    /// Also tell `tap` when a live notification goes away and why, as it is sent: for a
+    /// producer of its own that reports it to its app.
+    pub fn on_closed(&self, tap: impl Fn(u32, CloseReason) + Send + Sync + 'static) {
+        self.state.lock_recover().closed_taps.push(Arc::new(tap));
+    }
+
     /// Mint an activation token for each action invoked through a
     /// notification's resource, so the app may bring its window forward.
     pub fn mint_activation_tokens(
@@ -496,7 +505,7 @@ impl Notifications {
     /// Close live notification `id` for `reason`, telling the app; with
     /// `arrival` the session is told to take its banner away too.
     fn close(&self, id: u32, reason: CloseReason, arrival: bool) -> bool {
-        let wake = {
+        let (wake, taps) = {
             let mut state = self.state.lock_recover();
             if state.live.remove(&id).is_none() {
                 return false;
@@ -504,13 +513,18 @@ impl Notifications {
             state.generation = state.generation.wrapping_add(1);
             state.ongoing_owners.remove(&id);
             send(&state, Signal::Closed(id, reason));
-            if arrival {
+            let taps = state.closed_taps.clone();
+            let wake = if arrival {
                 state.arrivals.push(Arrival::Close(id));
                 state.wake.clone()
             } else {
                 None
-            }
+            };
+            (wake, taps)
         };
+        for tap in &taps {
+            tap(id, reason);
+        }
         if let Some(wake) = wake {
             wake();
         }

@@ -224,14 +224,29 @@ impl Definition {
             TriggerSpec::Once { .. }
             | TriggerSpec::Schedule { .. }
             | TriggerSpec::ResourceChanged { .. } => Ok(trigger),
-            // The times of a person's calendars are kept by the Calendar app and read there, not
-            // by the host that runs this shortcut, so a moment counted from one cannot be armed
-            // here.
-            TriggerSpec::ResourceTime { .. } => Err(
-                "a moment counted from a calendar entry is not available here: the Calendar app \
-                 reads its own entries"
-                    .into(),
-            ),
+            TriggerSpec::ResourceTime {
+                kind,
+                field,
+                offset_secs,
+                ..
+            } => match tilo_automation::resource_time::refusal(kind, field, *offset_secs) {
+                Some(why) => Err(why),
+                // The Calendar app's entries are the records whose times a trigger reads; no
+                // other app's are read this way yet.
+                None if kind != tilo_automation::resource_time::CALENDAR_EVENTS => Err(format!(
+                    "for now a moment is counted from the start or the end of an entry of the \
+                     Calendar app: `15 minutes before \"{}\" in a \"{}\"`",
+                    tilo_automation::resource_time::CALENDAR_START,
+                    tilo_automation::resource_time::CALENDAR_EVENTS
+                )),
+                None => Ok(trigger),
+            },
+            // Mail is heard as it arrives in the workspace's accounts, which the Mail app keeps.
+            TriggerSpec::SourceChanged { kind, filter, .. }
+                if kind == tilo_automation::source_change::PERSON_MAIL =>
+            {
+                mail_refusal(filter).map_or(Ok(trigger.clone()), Err)
+            }
             TriggerSpec::SourceChanged {
                 kind,
                 at,
@@ -245,18 +260,20 @@ impl Definition {
                     Some(why) => Err(why),
                     None if !source_change::looked_at(kind) => Err(format!(
                         "something new is found in a feed on the web (`when something new \
-                             is in \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`) or on \
-                             a page there (`when something new is in \"{WEB_PAGE}\" at \
-                             \"https://example.org/prices\"`)"
+                             is in \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`), on a \
+                             page there (`when something new is in \"{WEB_PAGE}\" at \
+                             \"https://example.org/prices\"`) or in its person's mail"
                     )),
                     None => Ok(trigger),
                 }
             }
             _ => Err(
                 "the host runs an event with every device off: it starts at a time (`once at`, \
-                 `every`), when something new is in a feed or on a page on the web (`when \
-                 something new is in \"tilo.web.feed\" at \"https://example.org/feed.xml\"`) or \
-                 when something in the workspace changes"
+                 `every`), a moment before or after an entry of the Calendar app (`15 minutes \
+                 before \"start\" in a \"tl.so.tilo.calendar.Event\"`), when something new is in \
+                 a feed or on a page on the web (`when something new is in \"tilo.web.feed\" at \
+                 \"https://example.org/feed.xml\"`), in its person's mail (`when something new is \
+                 in \"tilo.accounts.mail\"`) or when something in the workspace changes"
                     .into(),
             ),
         }
@@ -269,6 +286,27 @@ impl Definition {
         self.trigger()
             .is_ok_and(|trigger| Timed::of(&trigger).is_some())
     }
+}
+
+/// The facts of an arrived message an event on mail narrows by.
+const MAIL_FIELDS: [&str; 5] = ["from", "fromName", "to", "cc", "subject"];
+
+/// Why an event on mail cannot narrow by what `filter` names, when it cannot: each field is one
+/// of [`MAIL_FIELDS`], and holds text.
+fn mail_refusal(filter: &Map<String, Value>) -> Option<String> {
+    filter.iter().find_map(|(named, wanted)| {
+        if !MAIL_FIELDS.contains(&named.as_str()) {
+            return Some(format!(
+                "mail is narrowed by {}; `{named}` is none of them",
+                MAIL_FIELDS
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        (!wanted.is_string()).then(|| format!("`{named}` of mail holds text"))
+    })
 }
 
 /// What an event's person wants of it, beside its instruction, and what its last run kept for
@@ -1101,12 +1139,20 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
             "when",
             "What starts it, as one line: `once at 2026-11-17T11:32:00Z` (a moment, with its \
              offset from UTC), `every day at 09:00`, `every Monday, Thursday at 17:30` (the \
-             host's clock), `every 3600 seconds`, \
+             host's clock), `every 3600 seconds`, `15 minutes before \"start\" in a \
+             \"tl.so.tilo.calendar.Event\" where categories is \"Travel\"` (a moment before, `at` \
+             or after the start or the end, `end`, of each entry of the Calendar app, every \
+             occurrence of one that repeats; each `where` names a field of the entry and the \
+             value it holds, and what the assistant is told carries the entry), \
              `when something new is in \"tilo.web.feed\" at \"https://example.org/feed.xml\"` \
              (a feed on the public web lists an entry it did not list before; you are told its \
              title, link, date and summary, as data), `when something new is in \
              \"tilo.web.page\" at \"https://example.org/prices\"` (the text a person reads on a \
-             public page changed; you are told the new lines, as data), or a change in the \
+             public page changed; you are told the new lines, as data), `when something new is \
+             in \"tilo.accounts.mail\"` (a message arrived in the workspace's mail; `at \
+             \"ACCOUNT\"` after the kind keeps it to that account, and each `where` names \
+             `from`, `fromName`, `to`, `cc` or `subject` and the text it holds; you are told who \
+             wrote and what about, and read the message itself in Mail), or a change in the \
              workspace as a Shortcut writes it. A feed or a page is looked at every hour, \
              with no model, and starts you only when something is new; `looked at every 900 \
              seconds` after the address sets how often, 300 at the least. A page behind a \

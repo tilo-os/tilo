@@ -252,7 +252,8 @@ pub(crate) struct Stop(Arc<StopState>);
 
 #[derive(Default)]
 struct StopState {
-    told: std::sync::Mutex<bool>,
+    /// Whether the daemon was told to stop, and by which signal when one told it.
+    told: std::sync::Mutex<(bool, Option<&'static str>)>,
     waiting: std::sync::Condvar,
     heard: tokio::sync::Notify,
 }
@@ -260,9 +261,15 @@ struct StopState {
 impl Stop {
     /// Tell the daemon to stop.
     pub(crate) fn tell(&self) {
-        *self.0.told.lock_recover() = true;
+        self.0.told.lock_recover().0 = true;
         self.0.waiting.notify_all();
         self.0.heard.notify_waiters();
+    }
+
+    /// Tell the daemon to stop, as the signal `signal` told it.
+    fn told_by(&self, signal: &'static str) {
+        self.0.told.lock_recover().1 = Some(signal);
+        self.tell();
     }
 
     /// Wait up to `within` for the daemon to be told to stop: whether it was.
@@ -271,14 +278,20 @@ impl Stop {
         *self
             .0
             .waiting
-            .wait_timeout_while(told, within, |told| !*told)
+            .wait_timeout_while(told, within, |told| !told.0)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
             .0
     }
 
     /// Whether the daemon was told to stop.
     pub(crate) fn told(&self) -> bool {
-        *self.0.told.lock_recover()
+        self.0.told.lock_recover().0
+    }
+
+    /// The signal that told the daemon to stop, while one did.
+    fn signal(&self) -> Option<&'static str> {
+        self.0.told.lock_recover().1
     }
 
     /// Return once the daemon is told to stop.
@@ -361,7 +374,6 @@ async fn serve_device(
     daemon.agents().serve(taking(Arc::clone(&socket)));
     super::serving(Some(Arc::clone(&socket.presence)));
     tokio::spawn(keep_peer(Arc::clone(daemon), home, place.device_dir()));
-    let mut ended = ending(STOPPED_WITHIN)?;
     // A computer that logs in with a ticket while its daemon runs is another device now, perhaps
     // of another person: the person's part ends, and starts again as that device.
     let mut logged_in = daemon.logged_in();
@@ -382,8 +394,13 @@ async fn serve_device(
              again through it".to_owned(),
             super::Ended::LoggedIn(Box::new(device)),
         ),
-        Some(signal) = ended.recv() => (format!("it was told to stop ({signal})"), super::Ended::Stopped),
-        () = stop.heard() => ("it was told to stop".to_owned(), super::Ended::Stopped),
+        () = stop.heard() => (
+            stop.signal().map_or_else(
+                || "it was told to stop".to_owned(),
+                |signal| format!("it was told to stop ({signal})"),
+            ),
+            super::Ended::Stopped,
+        ),
     };
     tracing::error!("this daemon's person's part ends: {why}");
     // No agent's connection is handed here from now on: one that comes waits for the person's
@@ -595,28 +612,31 @@ impl Drop for Watching {
 /// How long a daemon told to stop takes at most to end: every wait of its stop together (the
 /// folders and trees, the session closing, the runtime's threads, the stores closing). Less than
 /// the user service gives a stop, so the service never has to kill it.
-const STOPPED_WITHIN: Duration = STOPPING
+pub(crate) const STOPPED_WITHIN: Duration = STOPPING
     .saturating_add(super::presence::CLOSING)
     .saturating_add(SHUTDOWN)
     .saturating_add(RELEASING)
     .saturating_add(SHUTDOWN);
 
-/// What ends a holder from outside: the user service stopping it, or a
-/// person's Ctrl-C.
+/// What ends this daemon from outside: the user service stopping it, or a person's Ctrl-C,
+/// heard from its first moment and through its whole life.
 ///
-/// The signals are waited for on a thread of their own, with a runtime of its own: the holder's
+/// The signals are waited for on a thread of their own, with a runtime of its own: the daemon's
 /// two workers may both be inside a step that walks a whole folder tree, and a stop that waited
 /// for a free worker was heard only once that step ended. The stop itself runs on those workers
-/// (the folders unmount, the trees are kept, the session closes), so a holder whose workers do
-/// not take it up ends from this thread once `within` went by: a signal always ends
-/// the holder, and its folders' changes are on disk, as a kill would leave them.
+/// (the folders unmount, the trees are kept, the session closes), so a daemon whose workers do
+/// not take it up ends from this thread once `within` went by: a signal always ends the daemon,
+/// and its folders' changes are on disk, as a kill would leave them.
+///
+/// It is installed before the daemon binds anything, so a computer started before its person
+/// exists hears a stop too: until then it only waited for one, and a signal a caller had ignored
+/// is inherited across exec, which left that daemon running with nothing of its own to hear it.
 #[expect(
     clippy::exit,
-    reason = "a holder told to stop whose workers do not take the stop up cannot end through them"
+    reason = "a daemon told to stop whose workers do not take the stop up cannot end through them"
 )]
-fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'static str>> {
+pub(crate) fn hear_stops(stop: Stop, within: Duration) -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
-    let (said, ended) = tokio::sync::mpsc::unbounded_channel();
     std::thread::Builder::new()
         .name("tilo-signals".to_owned())
         .spawn(move || {
@@ -624,7 +644,7 @@ fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'sta
                 .enable_all()
                 .build()
             else {
-                tracing::error!("this holder cannot hear a stop by a signal");
+                tracing::error!("this daemon cannot hear a stop by a signal");
                 return;
             };
             runtime.block_on(async move {
@@ -637,7 +657,7 @@ fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'sta
                     let Ok(mut signal) = signal(kind) else {
                         tracing::error!(
                             signal = name,
-                            "this holder cannot hear a stop by this signal"
+                            "this daemon cannot hear a stop by this signal"
                         );
                         continue;
                     };
@@ -650,11 +670,11 @@ fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'sta
                 }
                 drop(signalled);
                 if let Some(name) = heard.recv().await {
-                    let _ = said.send(name);
+                    stop.told_by(name);
                     tokio::time::sleep(within).await;
                     tracing::error!(
                         signal = name,
-                        "this holder ends: it was told to stop ({name}) {}s ago and its stop did \
+                        "this daemon ends: it was told to stop ({name}) {}s ago and its stop did \
                          not finish, so its workers never took it up",
                         within.as_secs()
                     );
@@ -662,7 +682,7 @@ fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'sta
                 }
             });
         })?;
-    Ok(ended)
+    Ok(())
 }
 
 /// The peer this holder runs, once it does, until it ends.
@@ -1039,19 +1059,19 @@ mod tests {
     const CHILD_STOPPED_WITHIN: Duration = Duration::from_secs(1);
 
     /// The body of [`a_stop_ends_a_holder_whose_workers_never_take_it_up`]'s child, and a no-op in
-    /// every other run: a holder told to stop whose workers never read that it was.
+    /// every other run: a daemon told to stop whose workers never read that it was.
     #[test]
     fn a_child_is_stopped_with_busy_workers() {
         if std::env::var_os(CHILD_STOPPED).is_none() {
             return;
         }
-        let _ended = ending(CHILD_STOPPED_WITHIN).unwrap();
+        hear_stops(Stop::default(), CHILD_STOPPED_WITHIN).unwrap();
         // The signal thread's handlers are in place well before this: a SIGTERM before them
         // would end the child by the signal, which the parent tells apart.
         std::thread::sleep(Duration::from_millis(500));
         rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
             .unwrap();
-        // Workers that never take the stop up: the receiver is never read.
+        // Workers that never take the stop up: the stop is told, and nothing reads it.
         std::thread::sleep(Duration::from_secs(60));
     }
 
