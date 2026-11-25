@@ -99,7 +99,7 @@ fn loads_style(chosen: Text) -> Bool {
 /// left. What runs now — a call, a timer — is a live activity, which the shell shows from the live
 /// views the index derives. The time's name is a text of its own, so a reader hears it. A compact
 /// bar keeps the time alone: the timer's readout stands beside it where the bar has the room for
-/// it, and on a phone the live pill names the timer and its card holds what it has left.
+/// it, and on a phone the live pill reads what the timer has left.
 view clock(compact: Bool) {
     row(gap: .tight, align: .center) {
         ui.Text(device.time.clock, role: .subheading, numeric: true, lines: 1)

@@ -16,20 +16,26 @@ view live_pill(phone: Bool, wide: Bool) {
     let roomy = wide
     if let newest = rows.last() {
         if phone {
-            // A phone's bar has room for one control: it pulls what went live last out as a
-            // card, dropped from under the bar, and folds it back.
-            ui.Button(
-                if newest.expanded {
-                    "Fold {live_name(newest)} back"
-                } else { "{live_name(newest)}, live" },
-                icon: if newest.expanded { .minimize_2 } else { .play },
-                icon_only: true,
-                role: .bar,
-            ) {
-                on press: if newest.expanded {
-                    device.fold_live(device.live, key: newest.key)
-                } else {
-                    device.expand_live(device.live, key: newest.key)
+            // A phone's bar has room for one control and what it reads now ("4:32"): the
+            // control pulls what went live last out as a card, dropped from under the bar, and
+            // folds it back.
+            row(gap: .tight, align: .center) {
+                if newest.value != "" {
+                    ui.Text(newest.value, role: .caption, numeric: true, lines: 1)
+                }
+                ui.Button(
+                    if newest.expanded {
+                        "Fold {live_name(newest)} back"
+                    } else { "{live_name(newest)}, live" },
+                    icon: if newest.expanded { .minimize_2 } else { .play },
+                    icon_only: true,
+                    role: .bar,
+                ) {
+                    on press: if newest.expanded {
+                        device.fold_live(device.live, key: newest.key)
+                    } else {
+                        device.expand_live(device.live, key: newest.key)
+                    }
                 }
             }
         } else if not roomy {
