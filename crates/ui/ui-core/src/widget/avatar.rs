@@ -745,7 +745,7 @@ pub struct Avatar {
 
 // The photo type comes from tilo-identity-client, which only `local-daemons`
 // builds link; portable builds (the browser's) show initials or an image.
-#[cfg(all(feature = "local-daemons", feature = "model"))]
+#[cfg(feature = "local-daemons")]
 pub(crate) fn profile_image(photo: &tilo_identity_client::ProfilePhoto) -> peniko::ImageData {
     peniko::ImageData {
         data: peniko::Blob::new(std::sync::Arc::new(photo.rgba().to_vec())),
