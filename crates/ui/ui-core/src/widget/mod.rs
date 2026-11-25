@@ -1500,6 +1500,7 @@ pub use reach::find_mut;
 mod paint_pass;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
+pub use layout::counts;
 pub use layout::{
     AuthoredExtent, DeviceScaleGuard, ExtentSizing, SkippedFrames, WidgetLayoutError,
     compute_widget_layout, device_scale, enter_device_scale, insets, insets_all, insets_xy,

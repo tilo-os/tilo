@@ -69,9 +69,9 @@ fn opened(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
 fn click(tile: &mut EmbeddedApp, text: &mut TextRenderer, (x, y): (f64, f64)) -> usize {
     let mut solved = 0_usize;
     let mut settle = |tile: &mut EmbeddedApp, text: &mut TextRenderer| {
-        let before = ui::profiling::layout_counts::read().solves;
+        let before = ui::widget::counts::read().solves;
         frame(tile, text);
-        if ui::profiling::layout_counts::read().solves > before {
+        if ui::widget::counts::read().solves > before {
             solved = solved.saturating_add(1);
         }
     };
@@ -172,14 +172,14 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     let mut rounds = Vec::new();
     let mut held = vec![held_mib()];
     for _ in 0..4 {
-        let _ = ui::profiling::layout_counts::take();
+        let _ = ui::widget::counts::take();
         let mut callbacks = 0_usize;
         for y in ROWS {
-            let _ = ui::profiling::layout_counts::take_restyled();
+            let _ = ui::widget::counts::take_restyled();
             let (frames, scopes) = observe(|| click(tile, text, (120.0, y)));
             // What a control's layout follows from (its width, what it holds, where its rows
             // stand) is decided within the solve: nothing is styled again after it.
-            let restyled = ui::profiling::layout_counts::take_restyled();
+            let restyled = ui::widget::counts::take_restyled();
             assert!(
                 restyled.is_empty(),
                 "a page switch (the row at {y}) styles nothing again after its solve: {restyled:?}"
@@ -203,15 +203,14 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
                  frames, {}",
                 said(&scopes)
             );
-            let asking =
-                ui::profiling::layout_counts::asking_for_layout(tile.app_mut().root_widget_mut());
+            let asking = ui::widget::counts::asking_for_layout(tile.app_mut().root_widget_mut());
             assert!(
                 asking.is_empty(),
                 "a settled page asks for no layout: {asking:?}"
             );
             callbacks = callbacks.saturating_add(calls(&scopes, "ui.callback_scope"));
         }
-        let solved = ui::profiling::layout_counts::take();
+        let solved = ui::widget::counts::take();
         held.push(held_mib());
         // A solve that answers a container from its cache measures each leaf a few times a
         // switch; one that solves nested grids again for every constraint probed measured

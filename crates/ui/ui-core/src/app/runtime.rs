@@ -153,7 +153,7 @@ pub(super) struct LayoutPass {
     /// The tree was solved.
     pub(super) measured: bool,
     /// Nodes the solve marked to be measured again, and of those the ones with no children
-    /// ([`crate::profiling::layout_counts::LayoutCounts::marked`]).
+    /// ([`crate::widget::counts::LayoutCounts::marked`]).
     pub(super) marked: (u64, u64),
     /// Only what the views moved was placed: the pass placed nothing else.
     pub(super) placed_partly: bool,

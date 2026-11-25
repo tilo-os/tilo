@@ -14,6 +14,8 @@ use crate::text_selection::{TextAffinity, TextPosition};
 pub mod inline_emoji;
 #[path = "richtext_paragraphs.rs"]
 mod paragraphs;
+#[cfg(any(test, feature = "test-support"))]
+pub mod text_layouts;
 #[cfg(test)]
 pub(crate) use paragraphs::take_prepared_paragraphs;
 
@@ -25,7 +27,7 @@ pub(crate) fn note_text_layout(buffer: &Buffer, width: f32, bytes: usize) {
         .iter()
         .map(|line| line.layout_opt().map_or(0, |rows| rows.len()))
         .sum();
-    crate::profiling::text_layouts::note(width, bytes, rows);
+    text_layouts::note(width, bytes, rows);
 }
 
 /// Note a wrapped layout for the profiler: which text, at which width, onto how many rows.

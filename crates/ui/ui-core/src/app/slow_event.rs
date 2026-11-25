@@ -92,7 +92,7 @@ pub(crate) struct Span {
     /// so it takes it when it ends.
     scopes: bool,
     /// What the thread's layout solver had done as the span began.
-    solved: crate::profiling::layout_counts::LayoutCounts,
+    solved: crate::widget::counts::LayoutCounts,
     /// How many font files text had read as the span began.
     fonts_read: usize,
 }
@@ -118,7 +118,7 @@ impl Span {
             start: crate::time::now(),
             owner,
             scopes,
-            solved: crate::profiling::layout_counts::read(),
+            solved: crate::widget::counts::read(),
             fonts_read: crate::font_catalog::font_files_read_count(),
         }
     }
@@ -162,10 +162,7 @@ impl Drop for Span {
             total.saturating_sub(named).as_millis()
         ));
         line.push_str(&causes_line(&causes));
-        line.push_str(&solved_line(
-            self.solved,
-            crate::profiling::layout_counts::read(),
-        ));
+        line.push_str(&solved_line(self.solved, crate::widget::counts::read()));
         let fonts = crate::font_catalog::font_files_read_after(self.fonts_read);
         if !fonts.is_empty() {
             line.push_str(&format!(" fonts read: {}", fonts.join(" ")));
@@ -208,8 +205,8 @@ impl Drop for Phase {
 /// What the layout solver did between `before` and `after`, as the report
 /// says it: nothing when it solved nothing.
 fn solved_line(
-    before: crate::profiling::layout_counts::LayoutCounts,
-    after: crate::profiling::layout_counts::LayoutCounts,
+    before: crate::widget::counts::LayoutCounts,
+    after: crate::widget::counts::LayoutCounts,
 ) -> String {
     let solves = after.solves.saturating_sub(before.solves);
     if solves == 0 {
@@ -322,7 +319,7 @@ mod tests {
 
     #[test]
     fn the_report_says_what_the_solves_did() {
-        use crate::profiling::layout_counts::LayoutCounts;
+        use crate::widget::counts::LayoutCounts;
         let before = LayoutCounts {
             solves: 4,
             measures: 100,

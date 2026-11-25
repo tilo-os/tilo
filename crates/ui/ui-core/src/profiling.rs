@@ -4,12 +4,7 @@
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod frame_probe;
-/// What the layout solver did, in counts rather than guesses.
-pub mod layout_counts;
 pub(crate) mod resource_trace;
-/// The wrapped text layouts a frame built, and the widths they wrapped to.
-#[cfg(any(test, feature = "test-support"))]
-pub mod text_layouts;
 
 use crate::num::{f32_of_f64, f64_of_u64, f64_of_usize, usize_of_f64};
 use crate::time::{Duration, Instant};

@@ -307,7 +307,7 @@ pub(super) struct Probes {
 impl Probes {
     fn of(&mut self, live: &TaffyTree<()>) -> &mut TaffyTree<()> {
         self.tree.get_or_insert_with(|| {
-            crate::profiling::layout_counts::copy();
+            crate::widget::counts::copy();
             live.clone()
         })
     }
@@ -391,7 +391,7 @@ impl ManualContext<'_> {
         index: usize,
         proposal: Size<MeasureConstraint>,
     ) -> Result<ChildMeasurement, WidgetLayoutError> {
-        crate::profiling::layout_counts::probe();
+        crate::widget::counts::probe();
         let children = self.children;
         let (root, baseline) = children
             .get(index)

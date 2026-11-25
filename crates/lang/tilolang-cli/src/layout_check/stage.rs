@@ -46,7 +46,7 @@ pub struct Work {
     pub shaped: u64,
     /// What the layout solver did for those frames: the trees it solved, the passes it took, the
     /// manual regions it ran and the manual regions it kept, what it probed and what it measured.
-    pub layout: ui::profiling::layout_counts::LayoutCounts,
+    pub layout: ui::widget::counts::LayoutCounts,
 }
 
 impl Work {
@@ -296,7 +296,7 @@ impl Staged {
             frames: frames.saturating_sub(self.work.frames),
             nodes: nodes.saturating_sub(self.work.nodes),
             shaped: misses,
-            layout: ui::profiling::layout_counts::take(),
+            layout: ui::widget::counts::take(),
         };
         self.work.frames = frames;
         self.work.nodes = nodes;

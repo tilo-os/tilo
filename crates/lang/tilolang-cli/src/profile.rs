@@ -208,8 +208,8 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     }
     for interaction in interactions {
         staged.reset_costs();
-        let _ = ui::profiling::layout_counts::take();
-        let _ = ui::profiling::layout_counts::take_restyled();
+        let _ = ui::widget::counts::take();
+        let _ = ui::widget::counts::take_restyled();
         let (done, scopes) = tilo_resource::profiling::observe(|| -> Result<(), String> {
             perform(&mut staged, &interaction)?;
             staged.answer()
@@ -256,12 +256,12 @@ fn perform(staged: &mut stage::Staged, interaction: &Interaction) -> Result<(), 
 /// The scopes a step ran, the costliest first: microseconds, then how often. Scopes nest, so they
 /// do not add up.
 fn print_times(scopes: &[tilo_resource::profiling::Sample]) {
-    let solved = ui::profiling::layout_counts::take();
+    let solved = ui::widget::counts::take();
     println!(
         "    layout  {} solves, {} passes, {} measures",
         solved.solves, solved.passes, solved.measures
     );
-    let restyled = ui::profiling::layout_counts::take_restyled();
+    let restyled = ui::widget::counts::take_restyled();
     if !restyled.is_empty() {
         let named: Vec<String> = restyled
             .iter()
@@ -285,7 +285,7 @@ fn print_times(scopes: &[tilo_resource::profiling::Sample]) {
 /// The widgets still asking for layout once a step settled: each lays the window out again on the
 /// next input it handles.
 fn print_asking(staged: &stage::Staged) {
-    let asking = ui::profiling::layout_counts::asking_for_layout(staged.harness().root_widget());
+    let asking = ui::widget::counts::asking_for_layout(staged.harness().root_widget());
     if !asking.is_empty() {
         let named: Vec<String> = asking
             .iter()

@@ -1215,11 +1215,11 @@ mod tests {
             Theme::light(),
         );
         frame.relayout();
-        let _ = crate::profiling::layout_counts::take();
+        let _ = crate::widget::counts::take();
         let rect = frame.root_widget().get_rect();
         frame.hover_at(rect.center().x, rect.center().y);
         frame.relayout();
-        let solved = crate::profiling::layout_counts::take();
+        let solved = crate::widget::counts::take();
         assert_eq!(solved.solves, 0, "a hover solves no layout: {solved:?}");
         assert!(!frame.last_relayout().rebuilt, "the tree is retained");
         let composed = serde_json::to_string(&frame.composition()).unwrap_or_default();

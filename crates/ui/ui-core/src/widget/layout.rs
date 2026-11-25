@@ -12,6 +12,8 @@ use crate::text_render::TextRenderer;
 use crate::tokens::TextRole;
 use crate::widget::bound_nodes::{BoundNodeMap, layout_bound_node, mutate_bound_node};
 
+pub mod counts;
+
 /// What sizes an extent handed to a responsive shell (HIG §9.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtentSizing {
@@ -607,7 +609,7 @@ unsafe fn solve_widgets(
             // SAFETY: the caller's exact live-tree ownership contract.
             unsafe {
                 layout_bound_node(bindings, nodes, node, |widget| {
-                    crate::profiling::layout_counts::measure();
+                    crate::widget::counts::measure();
                     widget.measure(known, available, &mut text.borrow_mut())
                 })
             }
@@ -630,7 +632,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
     // SAFETY: forwards the caller's exact live-tree ownership contract.
     let settled =
         unsafe { solve_widget_layout(taffy, root, available, nodes, bindings, text, depth) };
-    crate::profiling::layout_counts::solved(started.map_or(0, |started| {
+    crate::widget::counts::solved(started.map_or(0, |started| {
         u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }));
     settled
@@ -684,7 +686,7 @@ unsafe fn solve_widget_layout(
         if needs_measure {
             asked.push(node);
             if depth == 0 {
-                crate::profiling::layout_counts::marked(
+                crate::widget::counts::marked(
                     taffy
                         .children(node)
                         .is_ok_and(|children| children.is_empty()),
@@ -742,20 +744,20 @@ unsafe fn solve_widget_layout(
             );
         }
         still_changing.clear();
-        crate::profiling::layout_counts::pass();
+        crate::widget::counts::pass();
         // SAFETY: the caller's exact live-tree ownership contract.
         unsafe { solve_widgets(taffy, root, available, nodes, bindings, text) }?;
         let mut changed = false;
         for (index, (node, policy, _)) in policies.iter().enumerate() {
             if reusable[index] && policy.settled_at(taffy.unrounded_layout(*node).size) {
-                crate::profiling::layout_counts::kept();
+                crate::widget::counts::kept();
                 continue;
             }
             let binding = crate::widget::component_walk::node_binding(bindings, *node);
             let Some(_owner) = crate::widget::component_walk::enter(binding.as_ref()) else {
                 continue;
             };
-            crate::profiling::layout_counts::region();
+            crate::widget::counts::region();
             let placed = unsafe {
                 super::manual::run_policy(
                     policy,
@@ -782,7 +784,7 @@ unsafe fn solve_widget_layout(
                 sweep.layout(node, |widget| {
                     let adjusted = widget.adjust_layout_style(taffy, node, text);
                     if adjusted {
-                        crate::profiling::layout_counts::restyled(widget.concrete_type_name());
+                        crate::widget::counts::restyled(widget.concrete_type_name());
                     }
                     adjusted
                 })

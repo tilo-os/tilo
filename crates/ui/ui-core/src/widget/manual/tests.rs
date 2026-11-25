@@ -838,7 +838,7 @@ fn retained_resize_reallocates_a_filling_region_both_ways() {
 
 #[test]
 fn a_region_is_solved_again_only_when_what_it_read_changed() {
-    use crate::profiling::layout_counts;
+    use crate::widget::counts;
 
     fn rows_region(rows: usize) -> (Manual, ManualInvalidation) {
         let mut region = Manual::new(|ctx| {
@@ -875,20 +875,20 @@ fn a_region_is_solved_again_only_when_what_it_read_changed() {
     for rows in [4_usize, 200] {
         let (region, invalidation) = rows_region(rows);
         let mut harness = Driver::new(crate::State::new(), Box::new(region), (400, 800));
-        let first = layout_counts::take();
+        let first = counts::take();
         assert!(
             first.regions >= 1,
             "the first frame solves the region ({first:?})"
         );
         harness.relayout_at((400, 800)).unwrap();
-        let still = layout_counts::take();
+        let still = counts::take();
         assert_eq!(still.solves, 0, "a still frame solves no tree ({still:?})");
         assert_eq!(
             still.regions, 0,
             "a still frame runs no region's policy ({still:?})"
         );
         harness.relayout_at((400, 900)).unwrap();
-        let taller = layout_counts::take();
+        let taller = counts::take();
         assert!(
             taller.solves >= 1,
             "a taller window lays the tree out again ({taller:?})"
@@ -899,7 +899,7 @@ fn a_region_is_solved_again_only_when_what_it_read_changed() {
         );
         invalidation.invalidate();
         harness.relayout_at((400, 900)).unwrap();
-        let changed = layout_counts::take();
+        let changed = counts::take();
         assert_eq!(
             changed.regions, 1,
             "one changed row solves the region once ({rows} rows, {changed:?})"

@@ -13,8 +13,8 @@ use super::tests::{given, given_with_views, sample};
 use super::{Registry, Value};
 use crate::component_catalogue::TOOLKIT;
 use crate::headless::Driver;
-use crate::profiling::layout_counts::asking_for_layout;
 use crate::theme::Theme;
+use crate::widget::counts::asking_for_layout;
 use crate::widget::{Element, TaffyTreeExt as _, Widget};
 
 fn scan() -> component_scan::Scan {

@@ -760,7 +760,7 @@ fn lay_out_window(
         };
         return Some((false, 0, 0));
     }
-    let counted = crate::profiling::layout_counts::read();
+    let counted = crate::widget::counts::read();
     // Bounds, and what the widgets lay out, may move.
     app.mark_semantic_tree_stale();
     // A relayout that moves nothing leaves every pixel outside the dirty
@@ -1032,7 +1032,7 @@ fn lay_out_window(
         app.layout.last_layout_logical = None;
         return None;
     }
-    let marked = crate::profiling::layout_counts::read();
+    let marked = crate::widget::counts::read();
     app.layout.last_pass = runtime::LayoutPass {
         rebuilt: structure_rebuilt || recomposed,
         remounted: remounted && !(structure_rebuilt || recomposed),
