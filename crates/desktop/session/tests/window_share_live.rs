@@ -812,7 +812,7 @@ fn a_desktop_and_its_copy() -> (Person, Device, Device, String) {
     });
     let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
-    let (mut copy, _) = ada.branch(&desktop);
+    let (mut copy, _) = ada.branch(&mut desktop);
     desktop.start();
     desktop.wait_holding(&workspace);
     copy.start();
@@ -1240,8 +1240,8 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     });
     let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
-    let (mut copy, _) = ada.branch(&desktop);
-    let (mut later, _) = ada.branch(&desktop);
+    let (mut copy, _) = ada.branch(&mut desktop);
+    let (mut later, _) = ada.branch(&mut desktop);
     // Two copies of one machine are called alike, and a device logs under what it is called.
     later.label = format!("{} made later", later.label);
     desktop.start();
@@ -1338,7 +1338,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     });
     let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
-    let (mut copy, _) = ada.branch(&desktop);
+    let (mut copy, _) = ada.branch(&mut desktop);
     desktop.start();
     desktop.wait_holding(&workspace);
     copy.start();
@@ -1357,7 +1357,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
 
     // The desktop is copied a second time, as it is now. The first copy stays on.
     desktop.stop();
-    let (mut later, _) = ada.branch(&desktop);
+    let (mut later, _) = ada.branch(&mut desktop);
     // Two copies of one machine are called alike but for their keys' first letters, and a device
     // logs under what it is called.
     later.label = format!("{} made later", later.label);

@@ -1146,24 +1146,28 @@ fn provisioning_a_person_leaves_the_process_environment_alone() {
 }
 
 impl Person {
-    /// A machine copied from `source`, one of this person's devices, as
-    /// `tilo-vm vm branch` copies a disk: `source`'s whole directory, taken
-    /// while its session is stopped, after `source` booted once on a build
-    /// that records its machine. The copy boots on a machine of its own, so
-    /// the boot's own re-key ([`branch::settle`]) gives it a device key of
-    /// its own; this person then certifies that key, as one approval on a
-    /// device holding their root does, and the copy installs the certificate
-    /// as a device that joined without the root does.
+    /// A machine copied from `source`, one of this person's devices, as `tilo-vm vm branch`
+    /// copies a disk, and entered as a device of the person's own: [`Self::copy_of`], then
+    /// [`Device::redeem`] with a ticket `source` issues.
+    pub fn branch(&self, source: &mut Device) -> (Device, tilo_device_identity::branch::Branched) {
+        let (mut copy, branched) = self.copy_of(source);
+        copy.redeem(source);
+        (copy, branched)
+    }
+
+    /// `source`'s whole directory, copied while its session is stopped after `source` booted
+    /// once on a build that records its machine. The copy boots on a machine of its own, so the
+    /// boot's own re-key ([`branch::settle`]) gives it a device key of its own, which nobody
+    /// certified yet: until it redeems a ticket ([`Device::redeem`]) it is no device of the
+    /// person's, and opens nothing of theirs.
     ///
-    /// On a real copy the state sits at the same path. Here the copy is
-    /// elsewhere, and the secret store files the master key of the session's
-    /// channel vault under the vault's path, so that key is filed under the
-    /// copy's path as well: what the copied disk would have found.
-    pub fn branch(&self, source: &Device) -> (Device, tilo_device_identity::branch::Branched) {
-        use sha2::Digest as _;
+    /// What `source` keeps of the person's root is sealed to `source`'s key, and the root its
+    /// daemon was handed is `source`'s to keep: neither comes along. A copy alone opens nothing,
+    /// and the copy never holds the source's sealed root beside the one it is let into.
+    pub fn copy_of(&self, source: &Device) -> (Device, tilo_device_identity::branch::Branched) {
         use tilo_device_identity::branch::{self, Branch, Machine, Settled};
         assert!(
-            source.child.is_none(),
+            source.child.is_none() && source.daemon.is_none(),
             "a disk is copied while its machine is off"
         );
         let source_machine = Machine::parse("4c4c4544-0042-3510-8048-b4c04f4d3232").unwrap();
@@ -1173,9 +1177,8 @@ impl Person {
                 paths,
                 Some(machine),
                 &Branch {
-                    // Nothing a test device keeps is sealed to its key: its
-                    // secrets are in the file store `TILO_SECRETS_DIR` names,
-                    // under a key of that store's own.
+                    // Nothing the copy holds sealed to its source's key is opened: it enters as
+                    // a new device does, and keeps what it is let into sealed to its own key.
                     stores: vec![],
                     machine: None,
                     now_ns: tilo_clock::unix_now_ns(),
@@ -1193,19 +1196,7 @@ impl Person {
 
         let home = tempfile::tempdir().expect("a directory for the copy");
         copy_machine(source.directory(), home.path());
-        let vault = |root: &Path| {
-            let root = root.join("state/tilo/collaboration/mls");
-            format!(
-                "mls-master-{}",
-                hex::encode(sha2::Sha256::digest(root.as_os_str().as_encoded_bytes()))
-            )
-        };
-        refile_secret(
-            &home.path().join("secrets"),
-            "so.tilo.collaboration.mls",
-            &vault(source.directory()),
-            &vault(home.path()),
-        );
+        drop_carried_root(home.path());
 
         let paths = IdentityPaths::under(home.path().join("identity"));
         let Settled::Branched(branched) = boot(&paths, &branch_machine) else {
@@ -1216,28 +1207,18 @@ impl Person {
             branched.certification,
             branch::Certification::Pending(_)
         ));
-        let mut cert = DeviceCert {
+        // Signed by nobody: it names the key the copy is to be certified for, and admits
+        // nothing. Redeeming a ticket replaces it with the one the person's root signed.
+        let cert = DeviceCert {
             user_public_key: self.public,
             device_public_key: branched.device,
             device_label: branched.label.clone(),
             capabilities: source.cert.capabilities.clone(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
+            issued_at_ns: 0,
             expires_at_ns: None,
             signature: [0; 64],
             issuer: None,
         };
-        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
-            .expect("a device certificate digest");
-        cert.signature = self
-            .root
-            .sign(&digest)
-            .expect("the person's root signs the copy");
-        tilo_device_identity::persist::install_device_cert(
-            &paths,
-            &cert,
-            tilo_clock::unix_now_ns(),
-        )
-        .expect("the copy installs the certificate its person signed");
         let control = home.path().join("control.sock");
         (
             Device {
@@ -1259,45 +1240,173 @@ impl Person {
     }
 }
 
-/// File the secret `app` keeps under `from` in the file store at `dir` under
-/// `to` as well, as that store seals it: bound to its app and name, under the
-/// store's own key. The store is opened directly because a process opens the
-/// store `TILO_SECRETS_DIR` names once, and this test's is not the copy's.
-fn refile_secret(dir: &Path, app: &str, from: &str, to: &str) {
-    use sha2::Digest as _;
-    use tilo_seal::{Context, Label, SymmetricKey, envelope};
-    let record = |name: &str| [app.as_bytes(), &[0], name.as_bytes()].concat();
-    let file = |record: &[u8]| {
-        dir.join(format!(
-            "{}.secret",
-            hex::encode(sha2::Sha256::digest(record))
-        ))
+/// Leave out of the machine copied to `root` what its source keeps of the person's root: the
+/// record of the root its daemon restored, the share of it sealed to the source's key, and the
+/// root the source's daemon was handed ([`OWNER_ROOT`]). The person's public record, which names
+/// whose device this is, stays.
+fn drop_carried_root(root: &Path) {
+    let gone = |path: &Path| match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            panic!("{} is left out of the copy: {error}", path.display())
+        }
+        _ => {}
     };
-    let key =
-        SymmetricKey::from_slice(&std::fs::read(dir.join("store.key")).expect("the store's key"))
-            .expect("the store's key");
-    let Ok(sealed) = std::fs::read(file(&record(from))) else {
-        return;
-    };
-    let secret = envelope::open(
-        &key,
-        Context::new(Label::FileSecretStore, &record(from)),
-        &sealed,
-    )
-    .expect("the copied secret opens");
-    let resealed = envelope::seal(
-        &key,
-        Context::new(Label::FileSecretStore, &record(to)),
-        &secret,
-    )
-    .expect("the secret seals");
-    let target = file(&record(to));
-    std::fs::write(&target, resealed).expect("the secret is filed");
-    std::fs::set_permissions(
-        &target,
-        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-    )
-    .expect("a mode");
+    gone(&root.join(OWNER_ROOT));
+    let dir = tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity"));
+    let record = tilo_identity::store::held_root(&dir).expect("the source kept its person's root");
+    gone(&record);
+    // The account's sealed shares, the root's alone, and the secret they are sealed with.
+    match std::fs::remove_dir_all(dir.join("secrets")) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            panic!("the source's sealed shares are left out of the copy: {error}")
+        }
+        _ => {}
+    }
+    gone(&dir.join("seal.key"));
+}
+
+impl Device {
+    /// This device's daemon's native endpoint: where a program of the person's on it calls.
+    fn native_socket(&self) -> PathBuf {
+        self.home
+            .path()
+            .join("runtime/tilo")
+            .join(tilo_paths::machine::DAEMON_NATIVE)
+    }
+
+    /// Call the device action `action` of `devices` on this device's daemon, as `tilo login`
+    /// does on a computer no person's certificate names yet: its receipt.
+    fn device_action(&self, action: &str, args: Value) -> ReceiptStatus {
+        let Value::Object(argument) = args else {
+            panic!("a device action is called with its arguments");
+        };
+        let request = RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_device_identity::login::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    tilo_device_identity::login::RESOURCE,
+                    action,
+                ),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: Some(55_000),
+            appearance: None,
+            signed: None,
+        });
+        let stream = UnixStream::connect(self.native_socket()).expect("the daemon answers");
+        stream
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .expect("a read bound");
+        let mut writer = stream.try_clone().expect("the stream's own handle");
+        writer
+            .write_all(&RemoteActionFrame::new(request).encode().expect("a frame"))
+            .expect("the call is sent");
+        writer.write_all(b"\n").expect("the call is sent");
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the daemon answers");
+        match RemoteActionFrame::decode(line.trim_end().as_bytes())
+            .expect("the answer is a frame")
+            .message
+        {
+            RemoteActionMessage::Receipt(receipt) => receipt.status,
+            other => panic!("a call is answered with a receipt, not {other:?}"),
+        }
+    }
+
+    /// A ticket this device's daemon issues for one more computer of its person's, as `tilo
+    /// device add` asks it on the person's own connection: what that computer logs in with.
+    fn issue_ticket(&self) -> String {
+        let socket = self.native_socket();
+        let until = tilo_test_env::hang_deadline();
+        loop {
+            let issued = tilo_rt::app().handle().block_on(async {
+                let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
+                calls.founded_workspace().await?;
+                calls
+                    .start(
+                        None,
+                        tilo_device_identity::login::RESOURCE,
+                        tilo_device_identity::login::ISSUE,
+                        &json!({"wait": false}),
+                        "Add a device",
+                    )
+                    .await
+            });
+            match issued {
+                Ok(issued) => {
+                    return issued["result"]["ticket"]
+                        .as_str()
+                        .filter(|ticket| !ticket.is_empty())
+                        .unwrap_or_else(|| panic!("{} issued no ticket: {issued}", self.label))
+                        .to_owned();
+                }
+                // The person's services start after the daemon answers.
+                Err(error) => assert!(
+                    Instant::now() < until,
+                    "{} issued no ticket: {error:#}\n{}",
+                    self.label,
+                    self.warnings()
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Enter as a device of the person's through the one ticket issue: `issuer`, a device holding
+    /// their root, issues a ticket (`devices#issue`, as `tilo device add` asks), and this device's
+    /// daemon redeems it (`devices#logIn`, as `tilo login` does), which has the root certify this
+    /// device's own key. What this device is let into from then on is sealed to that key, as on
+    /// any device newly added. Each daemon is left as it was: stopped, or running.
+    pub fn redeem(&mut self, issuer: &mut Device) {
+        let issuer_was_off = issuer.daemon.is_none();
+        if issuer_was_off {
+            issuer.restart_daemon();
+        }
+        let ticket = issuer.issue_ticket();
+        let was_off = self.daemon.is_none();
+        if was_off {
+            self.restart_daemon();
+        }
+        let logged_in = self.device_action(
+            tilo_device_identity::login::LOG_IN,
+            json!({"ticket": ticket, "agent": "tilo", "label": self.label}),
+        );
+        assert!(
+            matches!(logged_in, ReceiptStatus::Completed { .. }),
+            "{} logged in with {}'s ticket: {logged_in:?}\n{}",
+            self.label,
+            issuer.label,
+            self.warnings()
+        );
+        if was_off {
+            self.stop();
+        }
+        if issuer_was_off {
+            issuer.stop();
+        }
+        self.cert = tilo_device_identity::persist::read_device_cert(&self.identity().device_cert)
+            .expect("the certificate the ticket's redemption filed");
+    }
+
+    /// The people whose certificates name this device's key, as its daemon says what it is
+    /// (`devices#info`): none on a computer no person let in yet.
+    pub fn people(&self) -> Vec<String> {
+        match self.device_action("info", json!({})) {
+            ReceiptStatus::Completed { output } => output
+                .value
+                .and_then(|value| value.get("people").cloned())
+                .and_then(|people| serde_json::from_value(people).ok())
+                .unwrap_or_default(),
+            other => panic!("{} says what it is: {other:?}", self.label),
+        }
+    }
 }
 
 /// Copy a stopped machine's directory as a disk copy carries it: every file

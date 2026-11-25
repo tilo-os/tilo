@@ -1,7 +1,8 @@
 //! A machine copied from one of a person's devices, in a workspace a site
 //! hosts: the copy re-keys at boot through the production re-key
-//! (`tilo_device_identity::branch::settle`), its person certifies the new key,
-//! and both run as real sessions. What either opens on the workspace's shared
+//! (`tilo_device_identity::branch::settle`), enters as a new device of its
+//! person's by redeeming a ticket its source issues, and both run as real
+//! sessions. What either opens on the workspace's shared
 //! shell — a record sealed under the workspace's channel keys — the other
 //! shows, before and after both restart, and the source stays the member it
 //! was. Before any copy, the same record between two of a person's devices
@@ -43,7 +44,7 @@ fn start(device: &mut Device, site: &Site) {
 
 /// Ada's laptop in a workspace her site hosts, with a window on its shared
 /// shell the site keeps; then its disk copied while it is off, the copy
-/// re-keyed at boot and certified by Ada, and both started.
+/// re-keyed at boot and let in by a ticket the laptop issues, and both started.
 fn laptop_and_its_copy() -> (Site, Person, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
@@ -61,7 +62,7 @@ fn laptop_and_its_copy() -> (Site, Person, Device, Device) {
     // The laptop's disk is copied while it is off; the copy boots on a
     // machine of its own and re-keys.
     laptop.stop();
-    let (mut copy, branched) = ada.branch(&laptop);
+    let (mut copy, branched) = ada.branch(&mut laptop);
     assert_ne!(copy.cert.device_public_key, laptop.cert.device_public_key);
     assert_eq!(branched.previous, laptop.cert.device_public_key);
     assert!(
@@ -276,7 +277,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     );
 
     laptop.stop();
-    let (mut copy, _) = ada.branch(&laptop);
+    let (mut copy, _) = ada.branch(&mut laptop);
     site.stop();
     copy.start();
     copy.wait_holding(&site.workspace);
@@ -401,7 +402,7 @@ fn a_copy_lists_the_logins_its_source_saved() {
     );
     assert!(logins(&laptop).contains(&LOGIN.to_owned()));
     laptop.stop();
-    let (mut copy, _) = ada.branch(&laptop);
+    let (mut copy, _) = ada.branch(&mut laptop);
     start(&mut copy, &site);
     // Opened once the host took the copy in: Passwords joins the workspace as the copy's own.
     wait_admitted(&copy, &site);
@@ -417,6 +418,64 @@ fn a_copy_lists_the_logins_its_source_saved() {
         copy.warnings(),
         laptop.warnings()
     );
+
+    // The laptop is gone for good: the copy keeps what it was let into under its own key, so it
+    // starts again and lists the login without its source.
+    laptop.stop();
+    drop(laptop);
+    copy.stop();
+    start(&mut copy, &site);
+    copy.open(PASSWORDS);
+    copy.wait_for_window(PASSWORDS);
+    let listed = logins(&copy);
+    assert!(
+        listed.contains(&LOGIN.to_owned()),
+        "without its source, the copy's Passwords lists {listed:?}\n{}",
+        copy.warnings()
+    );
+}
+
+/// A copied disk alone opens nothing of its person's: what its source kept of their root is not on
+/// it, and its daemon serves nobody. Once it redeems a ticket its source issues, its own key is
+/// the person's device.
+#[test]
+fn a_copy_opens_nothing_until_it_redeems_a_ticket() {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    let mut laptop = ada.device("Ada's laptop");
+    let hers = site.invite(ada.public, Role::Editor);
+    laptop.join(&hers);
+    laptop.wait_holding(&site.workspace);
+    laptop.stop();
+
+    let (mut copy, branched) = ada.copy_of(&laptop);
+    let identity =
+        tilo_identity::store::account_identity_dir(&copy.directory().join("config/tilo/identity"));
+    assert_eq!(
+        tilo_identity::store::held_root(&identity),
+        None,
+        "the copy carries no root of its source's"
+    );
+    assert!(!identity.join("secrets").exists() && !identity.join("seal.key").exists());
+    copy.restart_daemon();
+    assert_eq!(
+        copy.people(),
+        Vec::<String>::new(),
+        "a copy that redeemed nothing is nobody's device"
+    );
+    copy.stop();
+
+    copy.redeem(&mut laptop);
+    assert_eq!(copy.cert.device_public_key, branched.device);
+    assert_eq!(copy.cert.user_public_key, ada.public);
+    assert!(
+        tilo_user_identity::cert::verify_device_cert_at(&copy.cert, tilo_clock::unix_now_ns())
+            .is_ok(),
+        "the person's root signed the copy's own key"
+    );
+    copy.restart_daemon();
+    assert_eq!(copy.people(), vec![hex::encode(ada.public)]);
+    copy.stop();
 }
 
 /// Whether the workspace `site` serves names `device` among its people's devices: its governance
@@ -510,7 +569,7 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
     );
 
     laptop.stop();
-    let (mut copy, _) = ada.branch(&laptop);
+    let (mut copy, _) = ada.branch(&mut laptop);
     copy.start();
     wait_admitted(&copy, &site);
     copy.wait_for_window(PASSWORDS);
@@ -705,7 +764,7 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
     // restart, as the boxes are on their network.
     let _out = shared_invitation(&laptop, "editor", Person::new("Bob").public);
     laptop.stop();
-    let (mut copy, _) = ada.branch(&laptop);
+    let (mut copy, _) = ada.branch(&mut laptop);
     start_both(&mut laptop, &mut copy, &hosted);
     for round in 0..rounds {
         for device in [&laptop, &copy] {
@@ -755,7 +814,7 @@ fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_ownership_
     }
     let _out = shared_invitation(&laptop, "editor", Person::new("Bob").public);
     laptop.stop();
-    let (mut copy, _) = ada.branch(&laptop);
+    let (mut copy, _) = ada.branch(&mut laptop);
     start_both(&mut laptop, &mut copy, &hosted);
     for device in [&laptop, &copy] {
         show_held(device, &hosted);
