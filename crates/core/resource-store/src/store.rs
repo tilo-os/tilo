@@ -1349,13 +1349,13 @@ impl Store {
     }
 
     /// The change every holder makes alike to found the content of the resource `id` of `kind`:
-    /// the containers its type declares ([`collab_types::document::founding`]). `None` for a kind
-    /// that declares none.
+    /// the containers its type declares ([`collab_types::document::founding`]), none for a kind
+    /// that declares none. `None` for a kind this store declares no type of.
     #[must_use]
     pub fn founding(&self, kind: &str, id: &str) -> Option<AmChange> {
         self.schema
             .get(kind)
-            .and_then(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
+            .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
     }
 
     /// The content of the resource `id` of `kind`: the document it is in and the map at its
@@ -2465,7 +2465,7 @@ impl Store {
             let derived = std::iter::once(&self.schema)
                 .chain(schema)
                 .find_map(|schema| schema.get(kind))
-                .and_then(|ty| collab_types::document::founding::structure(kind, id, &ty.founding));
+                .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding));
             return if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
                 Ok(())
             } else {

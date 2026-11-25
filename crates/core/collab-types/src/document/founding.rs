@@ -51,24 +51,24 @@ pub fn of_kind(surface: &Surface) -> Vec<(String, ObjType)> {
 }
 
 /// The derived founding of the record `id` of `kind`, whose fields keep their items in the
-/// `containers` named at its root: `None` for a kind that keeps none.
+/// `containers` named at its root. A kind that keeps none founds with a change that holds nothing:
+/// every record has its founding as its first head, so a record nothing was written to yet is kept
+/// and read back like any other, and what follows the founding names it as its dependency.
 #[must_use]
-pub fn structure(
-    kind: &str,
-    id: &str,
-    containers: &[(String, ObjType)],
-) -> Option<automerge::Change> {
-    if containers.is_empty() {
-        return None;
-    }
+pub fn structure(kind: &str, id: &str, containers: &[(String, ObjType)]) -> automerge::Change {
     let mut doc = AutoCommit::new().with_actor(tilo_resource::genesis::actor(id, kind, ""));
     for (field, container) in containers {
-        doc.put_object(ROOT, field.as_str(), *container).ok()?;
+        doc.put_object(ROOT, field.as_str(), *container)
+            .expect("a new document takes a container at its root");
     }
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
-            .with_time(0),
-    );
+    let options = CommitOptions::default()
+        .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
+        .with_time(0);
+    if containers.is_empty() {
+        doc.empty_change(options);
+    } else {
+        doc.commit_with(options);
+    }
     doc.get_last_local_change()
+        .expect("the founding was just committed")
 }

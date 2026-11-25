@@ -250,12 +250,13 @@ pub fn content_genesis(
         )));
     }
     let mut made = AutoCommit::new().with_actor(doc.get_actor().clone());
-    if let Some(founding) = founding.and_then(|containers| {
-        collab_types::document::founding::structure(kind, checkout.id.route(), containers)
-    }) {
-        ApplyIncoming::apply_incoming(&mut made, vec![founding])
-            .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
-    }
+    let founding = collab_types::document::founding::structure(
+        kind,
+        checkout.id.route(),
+        founding.unwrap_or_default(),
+    );
+    ApplyIncoming::apply_incoming(&mut made, vec![founding])
+        .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
     for key in first.keys(ROOT).collect::<Vec<_>>() {
         let Some((value, from)) = first.get(ROOT, key.as_str()).map_err(failed)? else {
             continue;
@@ -752,8 +753,7 @@ mod tests {
             LIST,
             "",
             &[("items".to_owned(), ObjType::List)],
-        )
-        .expect("the list keeps its items in a list");
+        );
         let unnamed = found();
         assert_eq!(
             unnamed,
@@ -1033,8 +1033,7 @@ mod tests {
             LIST,
             "",
             &[("items".to_owned(), ObjType::List)],
-        )
-        .expect("the list keeps its items in a list");
+        );
         assert_eq!(made.get_heads(), [derived.hash()]);
     }
 

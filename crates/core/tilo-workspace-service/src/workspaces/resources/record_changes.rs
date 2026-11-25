@@ -740,9 +740,10 @@ mod tests {
 
     const NOTES: &str = "tilo.notes";
     const NOTE: &str = "tilo.notes.note";
-    /// The notes app's surface: one kind, whose content a window types into, keeping its items in
-    /// a list.
-    const SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[{\"path\":\"title\",\"type\":\"string\"},{\"path\":\"items\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tilo.notes.note\",\"label\":\"Note\",\"verbs\":[{\"id\":\"type\",\"kind\":\"undoable\"}],\"version\":1}]}";
+    const TAG: &str = "tilo.notes.tag";
+    /// The notes app's surface: a note, whose content a window types into, keeping its items in a
+    /// list, and a tag, which keeps nothing in a container.
+    const SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[{\"path\":\"title\",\"type\":\"string\"},{\"path\":\"items\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tilo.notes.note\",\"label\":\"Note\",\"verbs\":[{\"id\":\"type\",\"kind\":\"undoable\"}],\"version\":1},{\"fields\":[{\"path\":\"name\",\"type\":\"string\"}],\"kind\":\"tilo.notes.tag\",\"label\":\"Tag\",\"verbs\":[{\"id\":\"type\",\"kind\":\"undoable\"}],\"version\":1}]}";
 
     /// `len` characters of text that compresses poorly.
     fn noise(len: usize, seed: u64) -> String {
@@ -842,13 +843,24 @@ mod tests {
         changes: Vec<u8>,
         action: Option<&collab_types::WorkspaceCommit>,
     ) -> Result<Reply, String> {
+        write_of(workspaces, workspace, (NOTE, record), changes, action).await
+    }
+
+    /// [`write_part`], of the record `record` of `kind`.
+    async fn write_of(
+        workspaces: &Workspaces,
+        workspace: &str,
+        (kind, record): (&str, &str),
+        changes: Vec<u8>,
+        action: Option<&collab_types::WorkspaceCommit>,
+    ) -> Result<Reply, String> {
         let context = ResourceRequestContext::authenticated(
             NOTES,
             workspace,
             caller_of(workspaces, workspace),
         )
         .on_record(record)
-        .of_kind(Some(NOTE.to_owned()));
+        .of_kind(Some(kind.to_owned()));
         workspaces
             .resource_command(
                 &context,
@@ -864,8 +876,17 @@ mod tests {
 
     /// The record's heads as the store holds it.
     async fn heads(workspaces: &Workspaces, workspace: &str, record: &str) -> Vec<String> {
+        heads_of(workspaces, workspace, (NOTE, record)).await
+    }
+
+    /// [`heads`] of the record `record` of `kind`.
+    async fn heads_of(
+        workspaces: &Workspaces,
+        workspace: &str,
+        (kind, record): (&str, &str),
+    ) -> Vec<String> {
         match workspaces
-            .opened_record_changes(workspace, (NOTES, Some(NOTE), record), &[], 0)
+            .opened_record_changes(workspace, (NOTES, Some(kind), record), &[], 0)
             .await
             .unwrap()
         {
@@ -1521,7 +1542,6 @@ mod tests {
             record,
             &[("items".to_owned(), automerge::ObjType::List)],
         )
-        .expect("a note keeps its items in a list")
     }
 
     /// A device's first item of `record`, written on the derived founding as `writer` types it.
@@ -1558,6 +1578,54 @@ mod tests {
         let mut items = items_in(workspaces, &workspace, "groceries").await;
         items.sort();
         assert_eq!(items, ["Bread", "Milk"]);
+    }
+
+    /// A record of a kind that keeps nothing in a container is founded all the same, by a change
+    /// that holds nothing: every device derives the one change, the store keeps it and reads the
+    /// record back at it, and a second device founding the record at once adds nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_record_keeping_no_container_is_founded_kept_and_read_back_alike() {
+        use tilo_automerge::ApplyIncoming as _;
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        let founded_on = |writer: &str| {
+            let mut tag = automerge::AutoCommit::new()
+                .with_actor(automerge::ActorId::from(writer.as_bytes()));
+            tag.apply_incoming([collab_types::document::founding::structure(
+                TAG,
+                "errands",
+                &[],
+            )])
+            .unwrap();
+            tag
+        };
+        let (mut laptop, mut phone) = (founded_on("laptop"), founded_on("phone"));
+        let founding = laptop.get_heads();
+        assert_eq!(founding.len(), 1, "the record is founded with one change");
+        assert_eq!(
+            phone.get_heads(),
+            founding,
+            "both devices derive the one founding"
+        );
+
+        write_of(
+            workspaces,
+            &workspace,
+            (TAG, "errands"),
+            laptop.save(),
+            None,
+        )
+        .await
+        .expect("the laptop founds the tag");
+        write_of(workspaces, &workspace, (TAG, "errands"), phone.save(), None)
+            .await
+            .expect("the phone's founding is the one already kept");
+        assert_eq!(
+            heads_of(workspaces, &workspace, (TAG, "errands")).await,
+            [founding[0].to_string()],
+            "the store reads the record back at its founding"
+        );
     }
 
     /// A founding under the derived actor that holds more than its kind's containers is not the

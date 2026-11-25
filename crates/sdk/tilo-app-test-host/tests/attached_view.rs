@@ -577,8 +577,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             changes.len(),
-            3,
-            "the record's genesis and both pages' changes are in it"
+            4,
+            "the record's founding, its first values and both pages' changes are in it"
         );
         // Both writes are in what the workspace keeps: neither page's change is
         // the one a record holding two of a sequence leaves out.
