@@ -56,6 +56,11 @@ fn locking_down_the_camera_and_sound_stops_them_while_the_session_runs() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let writes = Arc::new(AtomicUsize::new(0));
     media::audio_output::install(Arc::new(Route(Arc::clone(&writes))));
+    // The settings as the running session installs them for everything in its process: the
+    // person's switch is set there, and the session carries it to their workspace.
+    settings_store::install_source(Some(Arc::new(
+        settings_sections::workspace::WorkspaceSettings::new(),
+    )));
     let policy = LockdownBackend::for_session();
     policy
         .set_policy(LockdownPolicy {
