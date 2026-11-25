@@ -151,7 +151,23 @@ impl Founding {
 }
 
 /// Take the device's key in `keys` as this daemon, the one process that writes as the device,
-/// once it has the device's lock: the key read before it, `read`, is the one taken.
+/// once it has the device's lock.
+///
+/// # Errors
+/// Another process took the key ([`io::ErrorKind::WouldBlock`]), or it cannot be read.
+pub(crate) fn take(
+    keys: &tilo_device_identity::IdentityPaths,
+) -> io::Result<tilo_device_identity::persist::DeviceKeyLock> {
+    tilo_device_identity::persist::take_device_key(keys).map_err(|error| {
+        let kind = match error {
+            tilo_device_identity::PersistError::KeyInUse { .. } => io::ErrorKind::WouldBlock,
+            _ => io::ErrorKind::Other,
+        };
+        io::Error::new(kind, error.to_string())
+    })
+}
+
+/// [`take`], once the key read before it, `read`, is the one taken.
 ///
 /// # Errors
 /// Another process took the key, or it changed since it was read.
@@ -159,13 +175,7 @@ pub(crate) fn take_key(
     keys: &tilo_device_identity::IdentityPaths,
     read: &SigningKey,
 ) -> io::Result<tilo_device_identity::persist::DeviceKeyLock> {
-    let taken = tilo_device_identity::persist::take_device_key(keys).map_err(|error| {
-        let kind = match error {
-            tilo_device_identity::PersistError::KeyInUse { .. } => io::ErrorKind::WouldBlock,
-            _ => io::ErrorKind::Other,
-        };
-        io::Error::new(kind, error.to_string())
-    })?;
+    let taken = take(keys)?;
     if taken.key().verifying_key() != read.verifying_key() {
         return Err(io::Error::other(
             "this computer's device key changed while its daemon started",

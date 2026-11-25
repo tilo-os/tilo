@@ -462,13 +462,16 @@ pub(crate) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
 
 /// Found a person on this computer, whose root it has, as a computer is set up explicitly
 /// before its daemon serves anyone, as a daemon of one account's does at its first start.
+///
+/// Founding signs as the device, which only the process that took its key does: this one takes
+/// the computer's key for the founding, made here when the computer has none yet, and lets go of
+/// it after, for the daemon the test starts to take.
 pub(crate) fn found_here() {
-    super::found_account_person(
-        &tilo_identity::provisioning::collaboration_identity_paths(),
-        "",
-        rustix::process::geteuid().as_raw(),
-    )
-    .unwrap();
+    let keys = tilo_identity::provisioning::collaboration_identity_paths();
+    tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
+    super::found_account_person(&keys, "", rustix::process::geteuid().as_raw()).unwrap();
+    drop(taken);
 }
 
 /// An SDK app's collaboration manager once it has joined the broker.

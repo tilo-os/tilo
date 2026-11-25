@@ -30,6 +30,11 @@ fn only_the_identity_the_device_is_enrolled_under_owns_it() {
         )
         .unwrap();
     }
+    // The device's daemon holds its key while a session asks who owns the device: the check
+    // reads the device's key from the one process that took it, and this one takes it as the
+    // daemon does when it starts.
+    let _daemon =
+        tilo_device_identity::persist::take_device_key(&IdentityPaths::under(&device)).unwrap();
     assert_eq!(owns(&owner, &device), ExitCode::SUCCESS);
     assert_eq!(owns(&other, &device), ExitCode::FAILURE);
     assert_eq!(owns(&owner, &other_device), ExitCode::FAILURE);

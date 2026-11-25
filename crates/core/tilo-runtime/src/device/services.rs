@@ -1761,24 +1761,26 @@ impl Daemon {
         // The owner's root a deployment hands this daemon is kept here before the identity is
         // read, so this computer is the person's own device and founds its workspaces under it.
         adopt_owner_root(root)?;
-        let identity = Identity::here(root)?;
-        tilo_files::native::private::directory(identity.place.dir())?;
         let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
+        // The identity signs with the device's key, which only the process that took it reads: a
+        // daemon whose start locked nothing takes it before reading the identity.
         let lock = match locked {
-            Some(device) if device == identity.key.verifying_key().to_bytes() => None,
-            Some(_) => {
-                return Err(io::Error::other(
-                    "the device key this daemon locked at its start is not the one its person's \
-                     certificate names",
-                ));
-            }
+            Some(_) => None,
             None => {
                 stage("locking the device");
                 let lock = super::serve::lock_device(&place)?;
-                let key = super::unclaimed::take_key(identity.place.keys(), &identity.key)?;
+                let key = super::unclaimed::take(&tilo_api::calls::device_keys())?;
                 Some((key, lock))
             }
         };
+        let identity = Identity::here(root)?;
+        tilo_files::native::private::directory(identity.place.dir())?;
+        if locked.is_some_and(|device| device != identity.key.verifying_key().to_bytes()) {
+            return Err(io::Error::other(
+                "the device key this daemon locked at its start is not the one its person's \
+                 certificate names",
+            ));
+        }
         tilo_files::native::private::directory(root)?;
         // The native endpoint every account reaches, and the services' own sockets apart from it:
         // a broker's socket refuses a directory another account can read.
