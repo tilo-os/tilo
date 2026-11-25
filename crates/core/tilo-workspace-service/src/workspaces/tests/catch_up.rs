@@ -1,8 +1,6 @@
 //! A catch-up a device asks of a host that keeps the workspace: answered with
 //! where the host's store stands, whether or not its link is up yet.
 
-use std::collections::BTreeSet;
-
 use tilo_server_protocol::WorkspaceId;
 
 use crate::workspaces::tests::{governor, test_host};

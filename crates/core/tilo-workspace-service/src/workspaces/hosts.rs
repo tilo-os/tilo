@@ -20,9 +20,8 @@
 //! person is also admitted as one of the owner's devices before it is handed
 //! the workspace, whatever role it holds it in.
 
-use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value};

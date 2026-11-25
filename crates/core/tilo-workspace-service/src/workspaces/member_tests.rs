@@ -341,7 +341,9 @@ impl super::super::ContentKeeper for Heard {
         let NeighbourMsg::DocumentContentPieces { responder, .. } = &message else {
             return Err(Box::new(message));
         };
-        drop(self.0.send((from, *responder)));
+        self.0
+            .send((from, *responder))
+            .expect("the test hears every push");
         Ok(())
     }
 }

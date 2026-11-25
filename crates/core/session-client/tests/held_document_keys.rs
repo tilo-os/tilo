@@ -94,7 +94,10 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     laptop.write(&note, op);
 
     // The page joins and opens nothing on its own: the app finds no record to
-    // open, and its only write for the note is the one the host replays.
+    // open, and its only write for the note is the one the host replays. It is
+    // placed in the workspace first, as a page asks its host to be before it
+    // joins: a device outside the roster is admitted to nothing.
+    crate::support::place(&host.server, (&browser.cert, &browser.key)).await;
     let page = start_peer(
         host.iroh(),
         browser.cert.clone(),
