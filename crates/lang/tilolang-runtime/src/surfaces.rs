@@ -233,7 +233,9 @@ impl Core {
 
     /// Each list a person may choose more than one row of is given the choice they hold and
     /// reports every change of a multi-selection back: the choice is the window's, so the bar
-    /// over another boundary reads it, and the list it builds again shows it.
+    /// over another boundary reads it, and the list it builds again shows it. While the person
+    /// holds no choice, the list shows the one its view gave it: the row of the item the window
+    /// has open beside it.
     fn list_selections(&self, at: usize) -> Result<(), RuntimeError> {
         let props = self.props(at)?;
         if crate::view::is_virtual(&self.kind(at)?) && flag_prop(&props, MULTI_SELECT) {
@@ -244,8 +246,12 @@ impl Core {
             };
             // A list reads the choice even before there is one: the moment the person makes
             // one, the list builds again showing it.
-            let chosen = held.unwrap_or_else(|| Value::List(Vec::new()));
-            self.note_state_read(key, generation, &chosen);
+            let held = held.unwrap_or_else(|| Value::List(Vec::new()));
+            self.note_state_read(key, generation, &held);
+            let chosen = match (held, props.get(CHOSEN)) {
+                (Value::List(items), Some(own)) if items.is_empty() => own.clone(),
+                (held, _) => held,
+            };
             self.put_prop(at, CHOSEN, chosen)?;
             let report = ActionRef::new(KEEP_ACTION, vec![Value::text(SELECTION), Value::Event]);
             self.put_event(at, SELECTION_EVENT, Value::Action(report))?;

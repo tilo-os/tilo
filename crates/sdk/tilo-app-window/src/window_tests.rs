@@ -2473,6 +2473,60 @@ fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
     assert!(!selection.is_selected(&"notes/b".to_owned()), "only it is");
 }
 
+/// A list whose own view chooses a row — the item its window's content column holds open — keeps
+/// that choice while no view stands beside the list: the window chooses for the list only the row
+/// of a view it shows after it.
+#[test]
+fn a_lists_own_choice_stands_while_no_view_shows_beside_it() {
+    let (mut app, mut window) = window();
+    let mut page = list_page();
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        let list = &mut tree.children[0].children[0].children[0];
+        list.props.insert(
+            "chosen".to_owned(),
+            Value::List(vec![Value::Ref(note("b"))]),
+        );
+    }
+    send(&mut app, &page);
+    send(
+        &mut app,
+        &[ToUi::Rows {
+            level: Level::Root,
+            list: "list".to_owned(),
+            len: 2,
+            start: 0,
+            keys: vec!["notes/a".to_owned(), "notes/b".to_owned()],
+            rows: vec![
+                UiNode::empty("ui.ListItem", "notes/a"),
+                UiNode::empty("ui.ListItem", "notes/b"),
+            ],
+        }],
+    );
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the list and its rows were taken: {:?}",
+        window.failed()
+    );
+    // The list is laid out and synced as a window shows it: the rows it held its choice for
+    // answer for it.
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.relayout();
+    harness.relayout();
+    let selection = overview_list(drawn_window(&mut harness))
+        .list()
+        .expect("the overview's list")
+        .selection();
+    assert!(
+        selection.is_selected(&"notes/b".to_owned()),
+        "the row the list's view chose stands chosen"
+    );
+    assert!(
+        !selection.is_selected(&"notes/a".to_owned()),
+        "only it does"
+    );
+}
+
 fn shell_node(key: &str, props: &[(&str, Value)], parts: Vec<(&str, Vec<UiNode>)>) -> UiNode {
     let mut shell = UiNode::empty(&kind("NavShell"), key);
     for (name, value) in props {

@@ -165,6 +165,59 @@ mod cases {
         window.poll_patches().unwrap();
     }
 
+    /// The list's key, the one list the window shows.
+    fn list_of(window: &ViewInstance) -> String {
+        let lists = window.tree().of_kind("ui.VirtualList");
+        assert_eq!(lists.len(), 1, "the window shows one list");
+        lists[0].key.clone()
+    }
+
+    /// The rows the window's list shows chosen.
+    fn chosen_rows(window: &ViewInstance) -> Value {
+        let lists = window.tree().of_kind("ui.VirtualList");
+        lists[0]
+            .props
+            .get("chosen")
+            .cloned()
+            .unwrap_or_else(|| Value::List(Vec::new()))
+    }
+
+    /// While the person holds no choice of rows, the list shows chosen the row of the task the
+    /// window has open, so it says what stands beside it; a choice they make is what it shows,
+    /// and once they put it away the open task's row is chosen again.
+    #[test]
+    fn the_open_tasks_row_stands_chosen_while_no_rows_are() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        let three: Vec<ResourceRef> = (1..=3)
+            .map(|n| w.task(&root, &format!("Task {n}")))
+            .collect();
+        let mut window = w.window("home", &root);
+        pick(&mut window, "inbox");
+        let list = list_of(&window);
+        window
+            .fire_with(&list, "opened", Some(&Value::resource(&three[1])))
+            .unwrap();
+        window.poll_patches().unwrap();
+        assert_eq!(
+            chosen_rows(&window),
+            Value::List(vec![Value::resource(&three[1])]),
+            "the open task's row stands chosen"
+        );
+        choose(&mut window, &[&three[0], &three[2]]);
+        assert_eq!(
+            chosen_rows(&window),
+            Value::List(vec![Value::resource(&three[0]), Value::resource(&three[2])]),
+            "the rows the person chose are the ones chosen"
+        );
+        choose(&mut window, &[]);
+        assert_eq!(
+            chosen_rows(&window),
+            Value::List(vec![Value::resource(&three[1])]),
+            "the choice put away, the open task's row stands chosen again"
+        );
+    }
+
     /// Six tasks chosen at once are one command of the bar and one change: each of the six
     /// stands in the same change, which says it changed six, and the bar says what is chosen.
     #[test]

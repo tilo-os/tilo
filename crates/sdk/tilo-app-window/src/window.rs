@@ -280,6 +280,9 @@ pub struct AppWindow {
     limits: PatchLimits,
     root: Option<View>,
     detail: Option<View>,
+    /// The resource of the view shown after the overview whose row the window chose last: while
+    /// it shows none, the overview's list keeps the choice its own view gives it.
+    chose_shown: Option<String>,
     /// Builds the composed shell and reconciles it, reporting what its controls do.
     reconciler: Rc<RefCell<Reconciler>>,
     events: EventSink,
@@ -504,6 +507,7 @@ impl AppWindow {
             limits: PatchLimits::default(),
             root: None,
             detail: None,
+            chose_shown: None,
             reconciler,
             page,
             pip_window: None,
@@ -1627,9 +1631,15 @@ impl AppWindow {
     /// Select, in each list of the overview, the row of the view shown after it: the app keeps no
     /// selection beside it. The sidebar's place follows what the content shows the same way: a
     /// place names the resource it shows by the id alone, so the window chooses the one that names
-    /// the shown resource, and leaves the app's choice when none does.
+    /// the shown resource, and leaves the app's choice when none does. A window that shows no view
+    /// after its overview, and showed none, leaves the list the choice its view gives it (the row
+    /// of the item its own content column holds open); the row of a view that closed is let go.
     fn select_shown(&mut self) {
         let shown = self.detail.as_ref().map(|detail| detail.target.id_string());
+        let showed = std::mem::replace(&mut self.chose_shown, shown.clone());
+        if shown.is_none() && showed.is_none() {
+            return;
+        }
         if let Some(shell) = self.shell() {
             if let Some(shown) = &shown
                 && let Some(sidebar) = shell.sidebar_mut::<ui::widget::NavList>()
