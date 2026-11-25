@@ -133,7 +133,7 @@ impl EmojiSource for Held {
                 image: EmojiImage(png).to_base64(),
             }))
             .map_err(|error| error.to_string())?;
-        self.revision.set(self.revision.get() + 1);
+        self.revision.set(self.revision.get().wrapping_add(1));
         Ok(())
     }
 
@@ -142,7 +142,7 @@ impl EmojiSource for Held {
             .borrow_mut()
             .apply(Record::REMOVE_EMOJI.with(workspace_emoji::RemoveEmoji { name: name.into() }))
             .map_err(|error| error.to_string())?;
-        self.revision.set(self.revision.get() + 1);
+        self.revision.set(self.revision.get().wrapping_add(1));
         Ok(())
     }
 

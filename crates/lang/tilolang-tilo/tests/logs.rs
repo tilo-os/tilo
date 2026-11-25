@@ -428,7 +428,6 @@ fn count(view: &ViewInstance, wanted: &str) -> usize {
 
 /// The nodes of `kind`, in order.
 fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-    let mut found = Vec::new();
     fn walk<'a>(node: &'a UiNode, kind: &str, found: &mut Vec<&'a UiNode>) {
         if node.kind == kind {
             found.push(node);
@@ -437,6 +436,7 @@ fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
             walk(child, kind, found);
         }
     }
+    let mut found = Vec::new();
     walk(tree, kind, &mut found);
     found
 }
