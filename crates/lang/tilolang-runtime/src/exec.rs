@@ -1715,6 +1715,9 @@ impl Core {
     /// new one.
     fn drive_chain(&self, run: &RunId, journal: Journal) -> Result<RunOutcome, RuntimeError> {
         let outermost = !self.running.replace(true);
+        if outermost {
+            self.scenario_stopped.set(false);
+        }
         let invocation = journal.invocation.clone();
         if outermost && !invocation.is_empty() {
             self.store.borrow_mut().begin_run(&invocation);
@@ -1727,6 +1730,9 @@ impl Core {
         };
         if outermost {
             self.running.set(false);
+            // A scenario stopped at a step it may not take keeps the steps before it, which were
+            // changes of their own; it still answers why it stopped.
+            let stopped = self.scenario_stopped.replace(false);
             if !invocation.is_empty() {
                 let mut store = self.store.borrow_mut();
                 let settled = match &outcome {
@@ -1734,6 +1740,7 @@ impl Core {
                     // stays apart until it ends, and a failure after the answer takes it all back.
                     Ok(RunOutcome::Waits { .. }) => Ok(()),
                     Ok(_) => store.end_run(&invocation),
+                    Err(_) if stopped => store.end_run(&invocation),
                     Err(_) => {
                         store.abort_run(&invocation);
                         Ok(())
@@ -3465,6 +3472,8 @@ impl Core {
         if *who == runs_as {
             return Ok(());
         }
+        // The steps before this one stand: the run that ends on this refusal keeps them.
+        self.scenario_stopped.set(true);
         let name = self.named(who);
         if self.member(who).is_none() {
             trap(format!(
@@ -3805,8 +3814,10 @@ impl Core {
                     }
                 };
                 let action = self.text(a.h(3)?)?;
-                self.may_act_as(&who, &action)?;
+                // What the scenario did before this step is a change of its own already, so a
+                // step refused here stops it with that kept.
                 self.scenario_segment()?;
+                self.may_act_as(&who, &action)?;
                 let invocation = Invocation { who, at, from };
                 self.scenario_state(|state| state.invocations.push(invocation))?;
                 ret_void()

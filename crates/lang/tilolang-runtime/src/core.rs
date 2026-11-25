@@ -253,6 +253,9 @@ pub struct Core {
     /// members are the workspace's own, so a scenario stages no one and acts only as whoever
     /// runs it.
     pub members_decided: std::cell::Cell<bool>,
+    /// The running scenario was stopped at a step it may not take here
+    /// (`Runtime::decide_by_workspace`): its run keeps what it wrote before that step.
+    pub scenario_stopped: std::cell::Cell<bool>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// The network came back: entries waiting to go online are tried again on the next settle.
     pub retry_waiting: std::cell::Cell<bool>,
@@ -484,6 +487,7 @@ impl Core {
             members: RefCell::new(crate::members::Members::default()),
             members_root: RefCell::new(None),
             members_decided: std::cell::Cell::new(false),
+            scenario_stopped: std::cell::Cell::new(false),
             sink: RefCell::new(None),
             retry_waiting: std::cell::Cell::new(false),
             words: RefCell::new(Box::new(crate::words::SourceWords)),
