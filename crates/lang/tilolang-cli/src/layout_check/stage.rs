@@ -828,11 +828,12 @@ mod tests {
         );
     }
 
-    /// A window with nothing to act on offers no action: Mail with no account yet says where an
-    /// account comes from and stands no New message in its header row, at every width the row has
-    /// room for the words or not, while a window with an account offers it as the primary button.
+    /// A message is written before there is an account to send it from: it waits in Drafts and
+    /// goes once the person adds one. So Mail with no account yet offers New message as its
+    /// primary button, once, at every width the header row has room for the words or not, as a
+    /// window with an account does: the control acts, so it stands.
     #[test]
-    fn a_mail_window_with_no_account_offers_no_new_message() {
+    fn a_mail_window_with_no_account_offers_new_message() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("mail");
         let app = packages.compiled.last().expect("the app").meta.app.clone();
@@ -863,9 +864,11 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         for (size, text) in [((320, 568), 1.0_f32), ((390, 844), 1.5), ((1280, 800), 1.0)] {
-            assert!(
-                shown("no account yet", size, text).is_empty(),
-                "a window with no account offers nothing to press: {size:?} at text {text}"
+            assert_eq!(
+                shown("no account yet", size, text),
+                [true],
+                "a window with no account offers New message, which starts a draft that waits \
+                 for one, as its primary button: {size:?} at text {text}"
             );
         }
         assert_eq!(
