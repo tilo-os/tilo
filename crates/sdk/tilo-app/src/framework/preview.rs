@@ -485,8 +485,8 @@ fn draw_over(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_resource::AppNamed;
     use crate::prelude::*;
+    use tilo_resource::AppNamed;
     use ui_core::Theme;
     use ui_core::text_render::TextRenderer;
     use ui_core::vello::Scene;
