@@ -1253,3 +1253,197 @@ fn sigterm_ends_a_daemon_held_between_its_person_parts() -> Result<()> {
     );
     Ok(())
 }
+
+/// A computer whose daemon is the account's own, as a person's runs: no profile is named apart,
+/// so its sockets are where every program of the person's looks for them
+/// (`$XDG_RUNTIME_DIR/tilo/native.sock`), and a program the test starts reaches it as a build in
+/// a dev session reaches the session's daemon.
+struct OwnComputer {
+    root: tempfile::TempDir,
+    daemon: Option<Child>,
+}
+
+impl OwnComputer {
+    /// The computer — its home, runtime directory, identity and package store the test's own —
+    /// with its daemon started, answering, and its person founded.
+    fn start() -> Result<Self> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::Builder::new()
+            .prefix("tilo-o-")
+            .tempdir_in(std::fs::canonicalize("/tmp").context("resolving /tmp")?)
+            .context("creating the computer's directories")?;
+        for dir in [
+            root.path().to_owned(),
+            root.path().join("home"),
+            root.path().join("home/.local/state/tilo/runtime"),
+            root.path().join("run"),
+            root.path().join("identity"),
+            root.path().join("apps"),
+        ] {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let mut computer = Self { root, daemon: None };
+        let (relay, loopback) = test_server::loopback_relay();
+        let mut command = Command::new(runtime_binary());
+        tilo_test_env::launch_env(&mut command);
+        command
+            .env(relay, loopback)
+            .env("HOME", computer.home())
+            .env("XDG_RUNTIME_DIR", computer.runtime())
+            .env("XDG_CONFIG_HOME", computer.path().join("home/config"))
+            .env("XDG_DATA_HOME", computer.path().join("home/data"))
+            .env("XDG_CACHE_HOME", computer.path().join("home/cache"))
+            .env("XDG_STATE_HOME", computer.path().join("home/state"))
+            .env("TILO_IDENTITY_ROOT", computer.identity())
+            .env("TILO_APPS_DATA_DIR", computer.path().join("apps"))
+            .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("TILO_SVC_COLLAB_FD")
+            .env_remove("TILO_SVC_IDENTITY_FD")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(computer.path().join("daemon.log"))?);
+        computer.daemon = Some(command.spawn_locked()?);
+        let native = computer.native();
+        let log = computer.path().join("daemon.log");
+        let answered: Result<()> = tilo_test_env::wait_for(
+            ItsLog {
+                log,
+                what: "this computer's own daemon to answer its status",
+            },
+            || match ask_native(&native, &json!({ "native": "status" })) {
+                Ok(status)
+                    if status
+                        .get("pid")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|pid| pid != 0) =>
+                {
+                    Some(Ok(()))
+                }
+                Ok(_) | Err(_) => match computer.daemon.as_mut().map(Child::try_wait) {
+                    Some(Ok(Some(ended))) => Some(Err(anyhow::anyhow!(
+                        "the daemon ended ({ended}) before it answered\n{}",
+                        computer.log()
+                    ))),
+                    Some(Err(error)) => {
+                        Some(Err(anyhow::anyhow!("whether the daemon ended: {error:#}")))
+                    }
+                    _ => None,
+                },
+            },
+        );
+        answered?;
+        let place = tilo_api::daemon::DaemonPlace::at(&computer.sockets(), &computer.identity());
+        place
+            .found(&tilo_api::daemon::Founding::default())
+            .map_err(|why| anyhow::anyhow!("setting this computer up: {why}"))?;
+        Ok(computer)
+    }
+
+    fn path(&self) -> &Path {
+        self.root.path()
+    }
+
+    fn home(&self) -> PathBuf {
+        self.path().join("home")
+    }
+
+    fn runtime(&self) -> PathBuf {
+        self.path().join("run")
+    }
+
+    fn identity(&self) -> PathBuf {
+        self.path().join("identity")
+    }
+
+    fn sockets(&self) -> PathBuf {
+        self.runtime().join("tilo")
+    }
+
+    fn native(&self) -> PathBuf {
+        self.sockets().join(tilo_paths::machine::DAEMON_NATIVE)
+    }
+
+    fn log(&self) -> String {
+        std::fs::read_to_string(self.path().join("daemon.log")).unwrap_or_default()
+    }
+}
+
+impl Drop for OwnComputer {
+    fn drop(&mut self) {
+        if let Some(mut daemon) = self.daemon.take() {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+        }
+    }
+}
+
+/// The daemon at `socket` answering `request` on its native endpoint, one line.
+fn ask_native(socket: &Path, request: &Value) -> Result<Value> {
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("connecting to {}", socket.display()))?;
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .context("bounding the reply")?;
+    stream.write_all(format!("{request}\n").as_bytes())?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    serde_json::from_str(&line).with_context(|| format!("the answer to {request}: {line:?}"))
+}
+
+/// A development build's id is read on the person's own daemon connection, as installing the
+/// build is: `tilolang build --dev` runs `tilo-install dev-id`, which asks the daemon the way
+/// `tilo-install install --dev` does. An MCP client's connection is the person's agent, and the
+/// device answers it no id: only their own connection is admitted.
+#[test]
+fn a_development_builds_id_is_read_on_the_persons_own_connection_alone() -> Result<()> {
+    let computer = OwnComputer::start()?;
+    let keys = tilo_device_identity::persist::IdentityPaths::under(computer.identity());
+    let device = tilo_device_identity::persist::load_device_key(&keys)
+        .context("this computer's device key")?;
+    let app = "org.tilo.tube.playback";
+    let expected = tilo_app_package::dev_app_id(app, &device.verifying_key().to_bytes());
+
+    // The read as `tilolang build --dev` asks it.
+    let mut command = Command::new(tilo_test_env::sibling_binary("install", "tilo-install"));
+    tilo_test_env::launch_env(&mut command);
+    command
+        .args(["dev-id", app])
+        .env("HOME", computer.home())
+        .env("XDG_RUNTIME_DIR", computer.runtime())
+        .stdin(Stdio::null());
+    let output = command.output_locked()?;
+    ensure!(
+        output.status.success(),
+        "tilo-install dev-id failed: {}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        computer.log()
+    );
+    ensure!(
+        String::from_utf8_lossy(&output.stdout).trim() == expected,
+        "the device named {:?} for {app}, not {expected}",
+        String::from_utf8_lossy(&output.stdout).trim()
+    );
+
+    // The connection the read was refused on while it was asked over the daemon's MCP endpoint.
+    let reply = ask_native(
+        &computer.native(),
+        &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"tilo_do",
+                "arguments":{"path":"devices#dev-id","args":{"app": app}}}}),
+    )?;
+    let refused = reply.get("error").is_some()
+        || reply.pointer("/result/isError") == Some(&Value::Bool(true));
+    ensure!(
+        refused,
+        "an MCP client was answered a development build's id: {reply}\n{}",
+        computer.log()
+    );
+    ensure!(
+        reply.to_string().contains("not_permitted"),
+        "the refusal must be the device's, not another's: {reply}\n{}",
+        computer.log()
+    );
+    Ok(())
+}

@@ -1110,17 +1110,7 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             payload_from,
         }),
         Cmd::DevId { app } => {
-            let answer = app_cli::device::Daemon::reach()?.call(
-                "tilo_do",
-                &serde_json::json!({"path": "devices#dev-id", "args": {"app": app}}),
-            )?;
-            let id = answer
-                .get("result")
-                .unwrap_or(&answer)
-                .get("app")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| format!("the device named no id: {answer}"))?;
-            println!("{id}");
+            println!("{}", package_actions::device::dev_id(&app)?);
             Ok(())
         }
         Cmd::List {

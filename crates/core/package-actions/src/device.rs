@@ -21,11 +21,15 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, CatalogueQuery, ContentPut as _, InvokeArgument,
     InvokeRequest, LineClient, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget,
-    UpdateMark,
+    UpdateMark, device_tickets,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
 use crate::{Change, Report};
+
+/// The device action that names the id a development build of an app runs under on this computer
+/// (`devices#dev-id`): asked of the device, as installing the build is.
+const DEV_ID: &str = "dev-id";
 
 /// How long a change made through the daemon may take to run.
 const CHANGE_WAIT: Duration = Duration::from_millis(CHANGE_WAIT_MS);
@@ -54,6 +58,21 @@ pub fn change(change: &Change) -> Result<Report, String> {
 pub fn change_at(socket: &Path, change: &Change) -> Result<Report, String> {
     let daemon = Connection::at(socket)?;
     ask(&daemon, change)
+}
+
+/// The id `app`'s development build runs under on this computer: the daemon derives it from the
+/// device key it keeps (`devices#dev-id`), and a build is compiled for it before the device
+/// installs it ([`change`] with [`Change::InstallDev`]).
+///
+/// The read is asked over the action wire, the connection an install of the build is made on:
+/// the daemon admits that connection as the person themselves. Its MCP endpoint admits a
+/// connection as the person's MCP client agent, which a device action only the person may take
+/// is refused to, so the read is never asked there.
+///
+/// # Errors
+/// The daemon could not be reached, refused the read, or named no id.
+pub fn dev_id(app: &str) -> Result<String, String> {
+    Connection::reach()?.dev_id(app)
 }
 
 /// One connection to the daemon over its action wire, as this computer's own account, and the
@@ -111,6 +130,35 @@ impl Connection {
         target: &RemoteActionTarget,
         arguments: Map<String, Value>,
     ) -> Result<Report, String> {
+        let answer = self.invoke_value(target, arguments)?;
+        Ok(report_in(&answer).unwrap_or_else(|| Report {
+            lines: vec![answer.to_string()],
+            warnings: Vec::new(),
+            installed: None,
+        }))
+    }
+
+    /// The id `app`'s development build runs under on this computer, as its daemon derives it
+    /// from the key it keeps (`devices#dev-id`).
+    fn dev_id(&self, app: &str) -> Result<String, String> {
+        let mut arguments = Map::new();
+        arguments.insert("app".to_owned(), Value::String(app.to_owned()));
+        let answer = self.invoke_value(&device_tickets::target(DEV_ID), arguments)?;
+        answer
+            .get("app")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                format!("the device named no id {app}'s development build runs under: {answer}")
+            })
+    }
+
+    /// `target`'s action with `arguments`, to its end: the value it answered.
+    fn invoke_value(
+        &self,
+        target: &RemoteActionTarget,
+        arguments: Map<String, Value>,
+    ) -> Result<Value, String> {
         let request = InvokeRequest {
             invocation: InvocationId::new(),
             target: target.clone(),
@@ -125,13 +173,6 @@ impl Connection {
         };
         let id = request.invocation;
         let receipt = waited(self.line.invoke(&self.caller, request), CHANGE_WAIT)?;
-        let said = |answer: Value| {
-            report_in(&answer).unwrap_or_else(|| Report {
-                lines: vec![answer.to_string()],
-                warnings: Vec::new(),
-                installed: None,
-            })
-        };
         let deadline = Instant::now().checked_add(CHANGE_WAIT);
         let mut status = receipt.status;
         let mut seen = UpdateMark::Accepted;
@@ -139,7 +180,7 @@ impl Connection {
             match status {
                 ReceiptStatus::Accepted => {}
                 ReceiptStatus::Completed { output } => {
-                    return Ok(said(output.value.unwrap_or_default()));
+                    return Ok(output.value.unwrap_or_default());
                 }
                 ReceiptStatus::Failed { error } => {
                     return Err(format!("{}: {}", error.code, error.message));

@@ -123,6 +123,21 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session)"
 setup = "session-siblings"
 
+# The device daemon's process tests ask this computer's `tilo-install`, a program of another
+# package, for a development build's id, as a dev session's build asks it.
+[scripts.setup.install-siblings]
+command = ["bash", "tools/build-sibling-binaries.sh", "install:tilo-install"]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-daemon)"
+setup = "install-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-daemon)"
+setup = "install-siblings"
+
 # The session's workspace-service test starts the server through the Lounge image's
 # entrypoint, a program of another package: the feature `agents` is what it builds
 # with.
