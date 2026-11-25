@@ -1336,6 +1336,54 @@ opt-level = 3
 [profile.test.package.tilo-search]
 opt-level = 3
 
+# A device compiles every tilolang app's module with cranelift before the app first starts, so
+# each test that starts an app waits for that compile: unoptimised, handing the tasks app to its
+# process took 7 to 37 seconds on a loaded worker, past the 30 seconds a start may take.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.test.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-assembler-x64]
+opt-level = 3
+[profile.test.package.cranelift-assembler-x64]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.test.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.test.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.test.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.cranelift-bitset]
+opt-level = 3
+[profile.test.package.cranelift-bitset]
+opt-level = 3
+[profile.dev.package.cranelift-control]
+opt-level = 3
+[profile.test.package.cranelift-control]
+opt-level = 3
+[profile.dev.package.cranelift-native]
+opt-level = 3
+[profile.test.package.cranelift-native]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.test.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.test.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3
+[profile.test.package.wasmparser]
+opt-level = 3
+
 # Release binaries keep their symbol table (`strip = "debuginfo"`), so a field
 # crash log (the session's crash log) names each frame's function; fully stripped,
 # the same backtrace was only `<unknown>` frames. The line tables compiled
