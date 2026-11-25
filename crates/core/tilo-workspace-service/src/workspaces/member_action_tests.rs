@@ -455,7 +455,7 @@ async fn a_base_keeps_every_action_the_history_before_it_took() {
 /// log of the workspace's changes, and the page after `cursor`.
 fn feed_after(
     documents: &crate::device_documents::ServiceDocuments,
-    log: &mut tilo_resource_store::history::feed::ChangeLog,
+    log: &mut collab_types::history::feed::ChangeLog,
     workspace: &str,
     cursor: Option<&str>,
 ) -> tilo_actions::remote::ChangePage {
@@ -485,7 +485,7 @@ async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_w
     let by = collab_types::Stamp::by(&actor(owner.user_public_key));
     let workspace = made_workspace(&workspaces, "Watched").await;
     let documents = crate::device_documents::ServiceDocuments::of(workspaces.clone());
-    let mut log = tilo_resource_store::history::feed::ChangeLog::new();
+    let mut log = collab_types::history::feed::ChangeLog::new();
     let cursor = feed_after(&documents, &mut log, &workspace, None).cursor;
     let started = i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX) * 1000;
     let (banned, removed, stranger) = ([31u8; 32], [32u8; 32], guest_device().1);
