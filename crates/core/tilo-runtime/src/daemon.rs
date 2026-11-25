@@ -739,6 +739,10 @@ impl Drop for ShellSession {
 
 /// Serve `device` over `profile` with `native` as its endpoint until `stop` is told: its person
 /// found or awaited, their services started, and the device held.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one daemon's life read top to bottom: each part, its end, and the endpoint handed on"
+)]
 fn serve_device(
     profile: &Path,
     dev: bool,
@@ -768,6 +772,9 @@ fn serve_device(
     // What a founding call waits on for the first tickets it asked for.
     let founding = device.founding();
     let device_key = device.device_key();
+    // The endpoint the part that ends hands to the part that starts: this device is reached at
+    // one port for as long as the daemon runs, whichever server its person's parts enter through.
+    let mut handed: Option<iroh::Endpoint> = None;
     let _lock = device.device_lock();
     loop {
         // A stop heard while this computer waited for its person ends the daemon without
@@ -792,6 +799,7 @@ fn serve_device(
             dev,
             (device_key, entered.take()),
             &founding,
+            handed.take(),
         ) {
             Ok(session) => Arc::new(session),
             // The identity went away before its services could start: keep answering the
@@ -834,8 +842,31 @@ fn serve_device(
         }
         let closed = session.connections().end();
         tracing::info!(closed, "the person's part closed the connections it served");
-        // Its workspace service stops answering and saves what it took in, and its endpoint
-        // closes, before the next part opens the same stores and enters as the same device.
+        let held = held.map_err(|error| io::Error::other(format!("{error:#}")))?;
+        // The endpoint outlives the part that served on it: the part that starts next takes it
+        // as it is, so the port this device is reached at is never bound a second time, and no
+        // cleanup behind the part that ended can keep it.
+        let restarting = matches!(held, crate::device::Ended::LoggedIn(_));
+        if restarting {
+            handed = Some(session.serving().endpoint());
+        } else {
+            // Ending for good: its endpoint goes first, and is awaited here, so the address it
+            // bound is free before what the part still has to let go of runs.
+            let endpoint = Arc::clone(session.serving());
+            crate::device::serve::ending_step(
+                Some(stop),
+                "the person's part's endpoint",
+                CLOSING_ENDPOINT,
+                move || {
+                    crate::device::workspaces::block_on_owned(async move {
+                        endpoint.close_endpoint().await;
+                    });
+                },
+            );
+        }
+        // Its workspace service stops answering and saves what it took in, before the next part
+        // opens the same stores and enters as the same device. The step is bounded from inside,
+        // so it always ends and lets go of the service it ran.
         let workspaces = Arc::clone(session.serving());
         let left = Arc::downgrade(&session);
         crate::device::serve::ending_step(
@@ -844,15 +875,30 @@ fn serve_device(
             CLOSING_WORKSPACES,
             move || {
                 crate::device::workspaces::block_on_owned(async move {
-                    workspaces.shutdown().await;
+                    let busy = closing_busy();
+                    let closing = async move {
+                        if let Some(busy) = busy {
+                            tokio::time::sleep(busy).await;
+                        }
+                        workspaces.shutdown_service().await;
+                    };
+                    if tokio::time::timeout(CLOSING_WORKSPACES, closing)
+                        .await
+                        .is_err()
+                    {
+                        tracing::error!(
+                            waited_ms = CLOSING_WORKSPACES.as_millis(),
+                            "the person's part's workspace service did not close in time; it is \
+                             left behind"
+                        );
+                    }
                 });
-                // What the part kept of its folders lets go here, on this step's own thread: a
-                // mount that will not unmount blocks this step alone, never the daemon that
-                // has to hear its stop.
-                drop(session);
             },
         );
-        match held.map_err(|error| io::Error::other(format!("{error:#}")))? {
+        // What the part kept lets go here, on this thread. A stop is heard on a thread of its
+        // own, so a step that will not return cannot keep the daemon running.
+        drop(session);
+        match held {
             crate::device::Ended::Stopped => return Ok(()),
             crate::device::Ended::LoggedIn(device) => entered = Some(*device),
         }
@@ -889,6 +935,23 @@ fn hold_between_parts(stop: &crate::device::serve::Stop) {
 /// A release build holds nothing between its person's parts.
 #[cfg(not(debug_assertions))]
 fn hold_between_parts(_: &crate::device::serve::Stop) {}
+
+/// In a build that is not a release, a test keeps the closing work of the person's part busy
+/// past any bound the ending waits on, as a folder that will not unmount does: the part that
+/// starts next must still take the port the part that ended bound.
+#[cfg(debug_assertions)]
+fn closing_busy() -> Option<Duration> {
+    let ms = std::env::var_os("TILO_TEST_BUSY_CLEANUP_MS")
+        .and_then(|ms| ms.to_str().and_then(|ms| ms.parse::<u64>().ok()))?;
+    tracing::info!(ms, "a test keeps the person's part cleanup busy");
+    Some(Duration::from_millis(ms))
+}
+
+/// A release build closes with nothing kept busy.
+#[cfg(not(debug_assertions))]
+fn closing_busy() -> Option<Duration> {
+    None
+}
 
 /// Serve the part that started, from this daemon's own native endpoint: what its apps run and kept
 /// from the move, the apps themselves, the person's shells, their services and their keys, and the
@@ -1116,8 +1179,12 @@ fn the_persons(
     }
 }
 
+/// How long the endpoint of a person's part that ended may take to close before the next part
+/// starts without waiting for it: the port it bound is the one the next part binds.
+const CLOSING_ENDPOINT: Duration = Duration::from_secs(5);
+
 /// How long the workspace service of a person's part that ended may take to save what it took
-/// in and close its endpoint before the next part starts without waiting for it.
+/// in and close before the next part starts without waiting for it.
 const CLOSING_WORKSPACES: Duration = Duration::from_secs(10);
 
 /// What finds the app a process the daemon started runs, from the launch records `session`
@@ -1444,6 +1511,10 @@ impl Native {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one connection, read top to bottom, from who it comes from to who is answered"
+    )]
     fn take(
         self: &Arc<Self>,
         stream: Stream,

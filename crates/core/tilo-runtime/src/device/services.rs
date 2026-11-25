@@ -1744,6 +1744,7 @@ impl Daemon {
         serving: Serving,
         (locked, entered): (Option<[u8; 32]>, Option<Device>),
         founding: Option<&Arc<super::unclaimed::Founding>>,
+        reused: Option<iroh::Endpoint>,
     ) -> io::Result<Self> {
         // The calls the device took before this person's services ran: they answer them too, so
         // a founding call followed after they start reads its state where it was kept.
@@ -1763,14 +1764,13 @@ impl Daemon {
         let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
         // The identity signs with the device's key, which only the process that took it reads: a
         // daemon whose start locked nothing takes it before reading the identity.
-        let lock = match locked {
-            Some(_) => None,
-            None => {
-                stage("locking the device");
-                let lock = super::serve::lock_device(&place)?;
-                let key = super::unclaimed::take(&tilo_api::calls::device_keys())?;
-                Some((key, lock))
-            }
+        let lock = if locked.is_some() {
+            None
+        } else {
+            stage("locking the device");
+            let lock = super::serve::lock_device(&place)?;
+            let key = super::unclaimed::take(&tilo_api::calls::device_keys())?;
+            Some((key, lock))
         };
         let identity = Identity::here(root)?;
         tilo_files::native::private::directory(identity.place.dir())?;
@@ -1826,12 +1826,24 @@ impl Daemon {
         // keeps the workspaces placed on it and takes none.
         let member = joined && keeping.is_none();
         let port = configured_port()?.or_else(|| member.then_some(take_work::PORT));
-        let (endpoint, relay) = match keeping.as_mut() {
-            Some(keeping) => {
+        // The endpoint the part that ended bound is handed to the part that starts next, so
+        // its socket is the port this device is reached at and is never bound a second time,
+        // whatever the part that ended still has to let go of.
+        let (endpoint, relay) = match (reused, keeping.as_mut()) {
+            // A server binds its own endpoint with the packet relay it runs, so it takes no
+            // handover: what the part that ended bound is let go of first, so the address it
+            // bound can be bound again with the relay.
+            (Some(reused), Some(keeping)) => {
+                drop(reused);
                 let (endpoint, relay) = keeping.bind(&identity.key, port)?;
                 (endpoint, Some(relay))
             }
-            None => (listen_endpoint(&identity.key, port)?, None),
+            (None, Some(keeping)) => {
+                let (endpoint, relay) = keeping.bind(&identity.key, port)?;
+                (endpoint, Some(relay))
+            }
+            (Some(endpoint), None) => (endpoint, None),
+            (None, None) => (listen_endpoint(&identity.key, port)?, None),
         };
         let itself = keeping
             .as_ref()
@@ -3514,6 +3526,7 @@ impl Daemon {
         dev: bool,
         (device, entered): ([u8; 32], Option<Device>),
         founding: &Arc<super::unclaimed::Founding>,
+        reused: Option<iroh::Endpoint>,
     ) -> io::Result<Self> {
         let serving = if dev { Serving::Dev } else { Serving::Profile };
         Self::start(
@@ -3522,6 +3535,7 @@ impl Daemon {
             serving,
             (Some(device), entered),
             Some(founding),
+            reused,
         )
     }
 }
@@ -3530,11 +3544,11 @@ impl RuntimeServices for Daemon {
     type ActionProvider = RuntimeActionProvider;
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Profile, (None, None), None)
+        Self::start(root, stage, Serving::Profile, (None, None), None, None)
     }
 
     fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Dev, (None, None), None)
+        Self::start(root, stage, Serving::Dev, (None, None), None, None)
     }
 
     /// The person's other devices, as this device asks them.

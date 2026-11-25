@@ -539,10 +539,24 @@ impl ServiceWorkspaces {
     }
 
     /// Close the service and its endpoint, as the process ending would: what the service holds
-    /// is kept, and the next service opened under this device's directory takes it up. The
-    /// person's part that ends closes its own so, before the next part opens the same stores.
+    /// is kept, and the next service opened under this device's directory takes it up.
+    #[cfg(test)]
     pub(crate) async fn shutdown(&self) {
+        self.shutdown_service().await;
+        self.close_endpoint().await;
+    }
+
+    /// Close the service alone, as the person's part that ends does: what it holds is kept, and
+    /// the next part opens the same stores. The endpoint it ran on is handed to that part
+    /// rather than closed with it, so the port this device is reached at is never bound again.
+    pub(crate) async fn shutdown_service(&self) {
         self.service.shutdown().await;
+    }
+
+    /// Close the device's endpoint, awaited: the socket it bound is the one the part that starts
+    /// next binds, so it goes before what the part still has to let go of behind it — a folder
+    /// whose mount will not unmount, a service still saving — rather than with it.
+    pub(crate) async fn close_endpoint(&self) {
         self.endpoint.close().await;
     }
 

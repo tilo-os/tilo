@@ -737,63 +737,11 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
         .unwrap_or_default();
 
     // The part that serves now, by what it holds: none of it may outlive the restart.
-    let (first, first_workspaces) = {
-        let services = running.services(Duration::from_secs(120)).unwrap();
-        (
-            Arc::downgrade(&services),
-            Arc::downgrade(services.serving()),
-        )
-    };
+    let first = Arc::downgrade(&running.services(Duration::from_secs(120)).unwrap());
 
     // The person's server: a device their root certifies, keeping workspaces on this machine.
-    let dir = tilo_identity::store::account_identity_dir_from_env().unwrap();
-    let root = tilo_identity::store::load_from_path(
-        tilo_identity::store::resolve_active_identity(&dir).expect("the founded person's root"),
-    )
-    .unwrap();
-    let server_key = SigningKey::from_bytes(&[0x6e; 32]);
-    let mut server_cert = tilo_user_identity::DeviceCert {
-        user_public_key: root.group_public_key(),
-        device_public_key: server_key.verifying_key().to_bytes(),
-        device_label: "home-server".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut server_cert, &root).unwrap();
-    let serving = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
-    let state = tempfile::tempdir().unwrap();
-    let server = serving
-        .block_on(tilo_server::daemon::Server::start_with_relay_mode(
-            tilo_server::ServerConfig {
-                state_root: state.path().join("server"),
-                ..Default::default()
-            },
-            tilo_server::daemon::ServerIdentity {
-                user_public_key: root.group_public_key(),
-                device_signing_key: server_key,
-                device_cert: server_cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
-            },
-            iroh::RelayMode::Disabled,
-        ))
-        .unwrap();
-    let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
-        server_cert: server_cert.clone(),
-        address: Some(tilo_server_protocol::web::PageHostAddress {
-            endpoint_addr: server.node_addr(),
-            relay_url: None,
-            web: None,
-        }),
-        origin: None,
-    })
-    .unwrap();
+    let home = person_server();
+    let line = home.line.clone();
 
     // An agent's `tilo mcp` connected before the move, and stays connected.
     let (connected, init) = agent_initialized(&socket);
@@ -843,18 +791,13 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
         "the connection of the part that ended is still served: {read:?} {rest}"
     );
     drop(connected);
-    // The part that ended let go of its services, and the workspace service they ran closed
-    // its endpoint: nothing of it answers or reaches out as this device any more.
+    // The part that ended let go of its services: nothing of it answers or reaches out as this
+    // device any more. The endpoint they ran on outlives it, taken by the part that started.
     let started = std::time::Instant::now();
-    let closed = || {
-        first_workspaces
-            .upgrade()
-            .is_none_or(|workspaces| workspaces.endpoint().is_closed())
-    };
-    while first.strong_count() > 0 || !closed() {
+    while first.strong_count() > 0 {
         assert!(
             started.elapsed() < Duration::from_secs(30),
-            "the part that ended is still held ({} times) or its endpoint still open",
+            "the part that ended is still held ({} times)",
             first.strong_count(),
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -879,7 +822,7 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
         status = wait_for_the_person_serving(&socket);
     }
     let who = ask(&socket, &json!({"native": "account#who"}));
-    let named = tilo_user_identity::canonical::canonical_bytes(&server_cert)
+    let named = tilo_user_identity::canonical::canonical_bytes(&home.cert)
         .map(hex::encode)
         .unwrap();
     assert_eq!(
@@ -917,6 +860,194 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
     );
     drop(agent);
     running.stop().unwrap();
+    let PersonServer { server, serving, .. } = home;
+    serving.block_on(server.shutdown());
+    drop(environment);
+}
+
+/// The person's server: a device their root certifies, keeping workspaces on this machine, and
+/// the line another device reaches it at.
+struct PersonServer {
+    line: String,
+    cert: tilo_user_identity::DeviceCert,
+    server: tilo_server::daemon::Server,
+    serving: tokio::runtime::Runtime,
+    /// Where the server keeps what it is given, for as long as the test runs.
+    _state: tempfile::TempDir,
+}
+
+/// A server of the person this computer founded, running in this process.
+fn person_server() -> PersonServer {
+    let dir = tilo_identity::store::account_identity_dir_from_env().unwrap();
+    let root = tilo_identity::store::load_from_path(
+        tilo_identity::store::resolve_active_identity(&dir).expect("the founded person's root"),
+    )
+    .unwrap();
+    let server_key = SigningKey::from_bytes(&[0x6e; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.group_public_key(),
+        device_public_key: server_key.verifying_key().to_bytes(),
+        device_label: "home-server".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let serving = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let server = serving
+        .block_on(tilo_server::daemon::Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
+                state_root: state.path().join("server"),
+                ..Default::default()
+            },
+            tilo_server::daemon::ServerIdentity {
+                user_public_key: root.group_public_key(),
+                device_signing_key: server_key,
+                device_cert: cert.clone(),
+                revocations: tilo_user_identity::RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        ))
+        .unwrap();
+    let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
+        server_cert: cert.clone(),
+        address: Some(tilo_server_protocol::web::PageHostAddress {
+            endpoint_addr: server.node_addr(),
+            relay_url: None,
+            web: None,
+        }),
+        origin: None,
+    })
+    .unwrap();
+    PersonServer {
+        line,
+        cert,
+        server,
+        serving,
+        _state: state,
+    }
+}
+
+const KEEPS_THE_PORT_TEST: &str =
+    "device::founding_tests::a_part_that_starts_again_takes_the_port_the_part_that_ended_bound";
+
+/// How long this test keeps the closing work of the part that ended busy: past every bound the
+/// ending waits on and past the restart, as a folder that will not unmount does.
+const BUSY_CLEANUP: Duration = Duration::from_secs(120);
+
+/// How long the person's part may take to start again through their server: the bound the test
+/// already had before the port was named.
+const START_AGAIN_WITHIN: Duration = Duration::from_secs(90);
+
+/// The person's part ends and starts again through their server in the same process, while the
+/// work closing behind it is still busy. The endpoint outlives the part that served on it: the
+/// part that starts takes the port the part that ended served on, rather than binding it again
+/// after that cleanup let go of it.
+#[test]
+fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
+    let Some(profile) = isolated_root(KEEPS_THE_PORT_TEST) else {
+        return;
+    };
+    let port = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut environment = isolated_environment();
+    environment
+        .set(crate::device::services::PORT_ENV, port.to_string())
+        .set(
+            "TILO_TEST_BUSY_CLEANUP_MS",
+            BUSY_CLEANUP.as_millis().to_string(),
+        );
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    let made = ask(
+        &socket,
+        &do_request("devices#found", &json!({"name": "Ada"})),
+    );
+    assert_ne!(
+        made["result"]["isError"], true,
+        "no person was made: {made}"
+    );
+    running
+        .wait_for_person(Duration::from_secs(120))
+        .expect("the person's services run");
+    // The part that serves is the one reached at the port this computer names.
+    let (first, first_endpoint) = {
+        let services = running.services(Duration::from_secs(120)).unwrap();
+        let endpoint = services.serving().endpoint();
+        let sockets = endpoint.bound_sockets();
+        assert!(
+            sockets.iter().any(|at| at.port() == port),
+            "the part that serves bound {sockets:?}, not the port {port} this computer names"
+        );
+        (Arc::downgrade(&services), endpoint)
+    };
+
+    // The person logs this computer in at their server: their own workspace names it from now
+    // on, and the part starts again through it.
+    let home = person_server();
+    let logged_in = device_call(
+        &socket,
+        tilo_device_identity::login::LOG_IN,
+        json!({ "server": home.line }),
+    );
+    assert!(
+        matches!(
+            logged_in,
+            tilo_actions::remote::ReceiptStatus::Accepted
+                | tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "the person's computer logs in at their server: {logged_in:?}"
+    );
+
+    // The part that starts takes the endpoint the part that ended served on, while what that
+    // part is still closing is busy: the port is never bound again.
+    let started = std::time::Instant::now();
+    let again = loop {
+        if let Ok(services) = running.services(Duration::from_secs(1))
+            && !std::ptr::eq(Arc::as_ptr(&services), first.as_ptr())
+        {
+            break services;
+        }
+        assert!(
+            started.elapsed() < START_AGAIN_WITHIN,
+            "the person's part did not start again while the part that ended was still closing"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let sockets = again.serving().endpoint().bound_sockets();
+    assert!(
+        sockets.iter().any(|at| at.port() == port),
+        "the part that started bound {sockets:?}, not the port {port} the part that ended bound"
+    );
+    // The endpoint outlived the part that served on it, and the part that started took it
+    // rather than binding the port again: the work closing behind the part that ended held
+    // nothing of what the part that starts is reached at.
+    assert!(
+        !first_endpoint.is_closed(),
+        "the endpoint the part that ended served on was closed rather than handed on"
+    );
+    assert!(
+        first_endpoint
+            .bound_sockets()
+            .iter()
+            .any(|at| at.port() == port),
+        "the part that served was reached at another port than the one this computer names"
+    );
+    wait_for_the_person_serving(&socket);
+    running.stop().unwrap();
+    let PersonServer { server, serving, .. } = home;
     serving.block_on(server.shutdown());
     drop(environment);
 }
