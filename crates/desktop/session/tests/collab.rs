@@ -930,7 +930,7 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
         !host.invoked.borrow().is_empty()
     });
     let invoked = host.invoked.borrow();
-    let [(target, _)] = invoked.as_slice() else {
+    let [(target, arguments)] = invoked.as_slice() else {
         panic!("one invocation, not {invoked:?}");
     };
     assert!(
@@ -939,13 +939,22 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     );
     assert_eq!(
         target.address.resource.as_str(),
-        format!("chat.conversation:{}", person(0xaa)),
-        "the conversation with them"
+        tilo_app_id::chat::CONVERSATIONS,
+        "Chat's one record of the conversations"
     );
     assert_eq!(
         target.address.action.as_str(),
-        "open-direct-conversation",
+        tilo_app_id::chat::MESSAGE_PERSON,
         "Chat opens the conversation with them"
+    );
+    // The record is everyone's; the person is the one the message names, by their root key.
+    assert_eq!(
+        arguments
+            .get("who")
+            .and_then(|who| who.get("person"))
+            .and_then(serde_json::Value::as_str),
+        Some(person(0xaa).as_str()),
+        "the conversation with them"
     );
 
     // The card closed behind the choice, and the roster with it: the person was taken to the
@@ -1054,8 +1063,11 @@ fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, captur
         "the bar names the person as they gave themselves"
     );
     press_named(&mut session, &named);
+    // The card's name field holds the name they gave: a person this identity has not named is
+    // asked for one, and its words are the field's name.
     until(&mut session, "your card opens", |session| {
         session.shell_control("Your name").is_some()
+            || session.shell_control("Add your name").is_some()
     });
     let labels = session.accessible_labels();
     for said in [

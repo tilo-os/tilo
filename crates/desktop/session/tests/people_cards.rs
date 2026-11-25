@@ -112,17 +112,28 @@ fn people(session: &Session) -> serde_json::Value {
 }
 
 /// Open who is here, where every person and agent has a row, so a press on their name opens their
-/// card wherever their face does or does not stand on the bar.
+/// card wherever their face does or does not stand on the bar. Show toggles, so it is asked for
+/// only while the roster is not up: the roster is read by its own list, never by the bar's invite
+/// button, which stands whether or not who is here does.
 fn open_who_is_here(session: &mut Session) {
     wait_for(session, "the bar", |session| {
         session.shell_control("Top bar")
     });
+    if who_is_here_up(session) {
+        return;
+    }
     session
         .invoke("session:people", "show", &serde_json::Map::new())
         .expect("who is here opens");
     wait_for(session, "who is here", |session| {
-        session.shell_control("Invite someone")
+        who_is_here_up(session).then_some(())
     });
+}
+
+/// Whether who is here stands open: its list of the people here, or the words it says when that
+/// list is empty.
+fn who_is_here_up(session: &mut Session) -> bool {
+    session.shell_says("People here now") || session.shell_says("Nobody else is here")
 }
 
 /// The node `label` names, as the reader an assistive client is reads it, and the place of the
