@@ -199,6 +199,41 @@ export function member({ tokenItem, origin = API }, guild, op) {
   };
 }
 
+/// Makes one of the bridge's roles in `guild`, or brings it back in line when `op.id` names it.
+/// Its answer is the role, whose id joins it to the workspace's role.
+export function applyRole({ tokenItem, origin = API }, guild, op) {
+  return {
+    url: `${at(origin)}/guilds/${guild}/roles${op.id ? `/${op.id}` : ""}`,
+    key: tokenItem,
+    method: op.id ? "PATCH" : "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: op.name, permissions: op.permissions, color: op.color }),
+    reason: "the workspace's roles, kept in the server",
+  };
+}
+
+/// Sets a channel's permission overwrite for one of the bridge's roles.
+export function setOverwrite({ tokenItem, origin = API }, op) {
+  return {
+    url: `${at(origin)}/channels/${op.channel}/permissions/${op.target}`,
+    key: tokenItem,
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ allow: op.allow, deny: op.deny, type: op.target_kind === "member" ? 1 : 0 }),
+    reason: "what a workspace role may not do in a bridged channel",
+  };
+}
+
+/// Gives a member of `guild` one role, or takes it back: one request each.
+export function memberRole({ tokenItem, origin = API }, guild, user, role, given) {
+  return {
+    url: `${at(origin)}/guilds/${guild}/members/${user}/roles/${role}`,
+    key: tokenItem,
+    method: given ? "PUT" : "DELETE",
+    reason: "a linked member's role in the workspace",
+  };
+}
+
 /// A bot token's shape: three non-empty dot-separated parts of base64url characters.
 export function looksLikeToken(token) {
   const parts = String(token ?? "").split(".");

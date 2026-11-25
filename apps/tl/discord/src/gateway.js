@@ -155,6 +155,12 @@ export function discordLayout(guild) {
         parent: channel.parentId ?? channel.parent_id ?? channel.parent ?? "",
         position: channel.position ?? 0,
         topic: channel.topic ?? "",
+        overwrites: list(channel.permission_overwrites ?? channel.overwrites).map((overwrite) => ({
+          id: String(overwrite.id ?? ""),
+          kind: Number(overwrite.type ?? overwrite.kind ?? 0),
+          allow: String(overwrite.allow ?? "0"),
+          deny: String(overwrite.deny ?? "0"),
+        })),
       })),
       roles: list(guild?.roles).map((role) => ({
         id: role.id,

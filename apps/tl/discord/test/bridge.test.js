@@ -99,6 +99,7 @@ function fakeWorkspace({
     for (const wake of wakers) wake();
     wakers.clear();
   };
+  const state = { people: [] };
   const ws = {
     async read(path) {
       if (path === "so.tilo.discord.preview/accounts") return { accounts: held() };
@@ -118,6 +119,11 @@ function fakeWorkspace({
         if (closed) return;
         await new Promise((wake) => wakers.add(wake));
       }
+    },
+    members: {
+      async list() {
+        return state.people;
+      },
     },
     files: {
       async upload() {
@@ -149,6 +155,9 @@ function fakeWorkspace({
   };
   return {
     tilo: { workspace: () => ws },
+    set people(list) {
+      state.people = list;
+    },
     done,
     requests,
     hooks,
@@ -884,4 +893,32 @@ test("a Discord author's avatar is kept here once and the message shows the work
   await carryFromDiscord({ calls, account: account({ avatars: { e1: hash } }), event: said("802"), fetch });
   expect(fetched).toEqual([]);
   expect(done.map(([action, args]) => [action, args.avatar])).toEqual([["relay", `tilo-blob://${hash}`]]);
+});
+
+test("a linked person given a new role here holds its bridge role in the server", async () => {
+  const roles = ["viewer", "commenter", "editor", "moderator", "owner"].map((tilo, n) => ({
+    kind: "role",
+    tilo,
+    discord: String(701 + n),
+  }));
+  const workspace = fakeWorkspace({ accounts: [account({ map_roles: true, map: [...account().map, ...roles] })] });
+  workspace.people = [{ person: "ada", role: "moderator" }];
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+  workspace.say({
+    kind: "change",
+    verb: "set-role",
+    actor: { by: { member: { person: "owner" } } },
+    resources: [{ path: "workspace/members", app: "tilo.workspace", item: "workspace/members/ada" }],
+  });
+  await until(() => workspace.requests.length >= 5, "the member's roles");
+  expect(workspace.requests.map((request) => [request.method, request.url.replace(/^.*\/guilds/, "")])).toEqual([
+    ["PUT", "/123/members/3001/roles/704"],
+    ["DELETE", "/123/members/3001/roles/701"],
+    ["DELETE", "/123/members/3001/roles/702"],
+    ["DELETE", "/123/members/3001/roles/703"],
+    ["DELETE", "/123/members/3001/roles/705"],
+  ]);
+  workspace.finish();
+  await running;
 });

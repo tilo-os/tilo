@@ -759,21 +759,43 @@ function linksPerson(link, person) {
 /// action of the bridge (`kick`, `ban`, `unban`) with the op it takes. A bridge of one channel
 /// leaves the server's members alone.
 export function memberToDiscord(state, event) {
-  if (event?.kind !== "change" || state?.only_channel) return [];
-  const op = MEMBER_OPS[event.verb ?? ""];
+  if (state?.only_channel) return [];
+  const op = MEMBER_OPS[event?.verb ?? ""];
   if (!op) return [];
-  const ops = [];
+  return linkedByChange(state, event).map((link) => ({
+    action: op,
+    op: { op, user: link.discord_user, reason: event.sentence ?? "" },
+  }));
+}
+
+/// The verbs that give a person here a place, whose linked accounts' roles there follow it.
+const PLACING = new Set(["set-role", "role", "add-member", "admit"]);
+
+/// The links whose person a change of the workspace's people gave a role: their Discord roles
+/// follow it.
+export function placedByChange(state, event) {
+  return PLACING.has(event?.verb ?? "") ? linkedByChange(state, event) : [];
+}
+
+/// The person here a link names: their id, as the workspace's people list them.
+export function personOfLink(link) {
+  return actorOf(link?.person)?.member?.person ?? null;
+}
+
+/// The links of the people a change of the workspace's people names.
+function linkedByChange(state, event) {
+  if (event?.kind !== "change") return [];
+  const links = [];
   for (const resource of event.resources ?? []) {
     const people =
       resource?.app === WORKSPACE || String(resource?.path ?? "").startsWith("workspace/members");
     const person = people ? memberOf(resource) : null;
     if (!person) continue;
-    for (const link of state.links ?? []) {
-      if (!linksPerson(link, person)) continue;
-      ops.push({ action: op, op: { op, user: link.discord_user, reason: event.sentence ?? "" } });
+    for (const link of state?.links ?? []) {
+      if (linksPerson(link, person)) links.push(link);
     }
   }
-  return ops;
+  return links;
 }
 
 /// The calls that remove what was mirrored here of the Discord account `user`: each message it

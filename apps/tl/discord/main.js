@@ -5,6 +5,7 @@
 
 import { startCalls } from "./src/call.js";
 import { keepAvatar, linkPhoto } from "./src/avatars.js";
+import { keepsRoles, rolesPlan, overwritesOf, memberRoles } from "./src/roles.js";
 import { connect as connectVoice } from "./src/voice.js";
 import {
   fromDiscord,
@@ -25,6 +26,9 @@ import {
   sidebarOf,
   byDiscord,
   memberToDiscord,
+  placedByChange,
+  personOfLink,
+  linkOfUser,
   blockedToChat,
   BLOB_SCHEME,
   blocksPersona,
@@ -48,6 +52,9 @@ import {
   react,
   startThread,
   member,
+  applyRole,
+  setOverwrite,
+  memberRole,
   whyRefused,
 } from "./src/rest.js";
 
@@ -119,6 +126,10 @@ export function callsOf(ws) {
     },
     content(bytes) {
       return ws.files?.upload ? ws.files.upload(bytes) : null;
+    },
+    /// The workspace's people, each with their role.
+    async members() {
+      return ws.members?.list ? ws.members.list() : [];
     },
     /// This app's call lane (the SDK's `callLane`): the daemon's side of a call carried from an
     /// outside service. `null` for a workspace client that carries none, which is a bridge that
@@ -242,6 +253,8 @@ export async function openGateway({
   const account = current.account;
   const token = await released(calls, account.token_item, { wait });
   const stop = { stopped: false };
+  // The overwrites asked of Discord on this connection: each is asked once.
+  const asked = new Set();
   // The call lane this app's connection was granted: a client that carries none leaves the
   // bridge reading and writing, never in a call.
   const lane = calls.lane();
@@ -270,7 +283,7 @@ export async function openGateway({
       make: makeClient,
       token,
       url: account.gateway_url || undefined,
-      onEvent: (event) => carryFromDiscord({ calls, account: current.account, event, fetch, log }),
+      onEvent: (event) => carryFromDiscord({ calls, account: current.account, event, fetch, asked, log }),
       onVoice: (event) => carried?.hear(event),
       log,
     }),
@@ -453,6 +466,7 @@ export async function carryFromDiscord({
   account,
   event,
   fetch = globalThis.fetch,
+  asked = new Set(),
   log = () => {},
 }) {
   for (const call of fromDiscord(account, event)) {
@@ -484,7 +498,17 @@ export async function carryFromDiscord({
   }
   if (event.source === "LAYOUT_CHANGED") {
     const adopted = await adoptServer({ calls, account, layout: event.payload, log });
+    await keepRoles({ calls, account: adopted, layout: event.payload, asked, log });
     await readBack({ calls, account: adopted, fetch, log });
+  }
+  // A linked member whose Discord roles were changed by hand holds the one their role here
+  // gives them again.
+  if (event.source === "MEMBER_CHANGED" && !event.payload.banned && !event.payload.left) {
+    const link = linkOfUser(account, event.payload.user_id);
+    if (link && keepsRoles(account)) {
+      const roles = Array.isArray(event.payload.roles) ? event.payload.roles.map(String) : [];
+      await followRole({ calls, account, link, current: roles, log });
+    }
   }
 }
 
@@ -635,6 +659,13 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
     // carried from the change it names.
     const account = current.account;
     if (blocksPersona(event)) await purgeBlocked({ calls, account, log });
+    for (const link of keepsRoles(account) ? placedByChange(account, event) : []) {
+      try {
+        await followRole({ calls, account, link, current: null, log });
+      } catch (error) {
+        log(`a member's role did not reach Discord: ${error?.message ?? error}`);
+      }
+    }
     for (const { action, op } of memberToDiscord(account, event)) {
       try {
         if (!(await carries(calls, action, op, log))) continue;
@@ -653,6 +684,61 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
       } catch (error) {
         log(`a workspace change did not reach Discord: ${error?.message ?? error}`);
       }
+    }
+  }
+}
+
+/// The bridge's roles kept in line with the workspace's, against the layout Discord showed: each
+/// made or corrected and joined to its role here, then each bridged channel's overwrite for the
+/// roles that may do less than everyone.
+export async function keepRoles({ calls, account, layout, asked = new Set(), log = () => {} }) {
+  if (!keepsRoles(account)) return;
+  const rest = { tokenItem: account.token_item, origin: account.api_origin };
+  const plan = rolesPlan(account, layout, asked);
+  const made = [];
+  for (const op of plan.apply) {
+    try {
+      if (!(await carries(calls, "apply_role", op, log))) continue;
+      const id = messageIdOf(await calls.webCall(applyRole(rest, account.guild_id, op)));
+      if (!id) throw new Error(`Discord made no role for ${op.name}`);
+      if (op.id) continue;
+      await calls.do({ app: SELF, action: "map", args: { kind: "role", tilo: op.tilo, discord: id, origin: "tilo" } });
+      made.push({ kind: "role", tilo: op.tilo, discord: id, origin: "tilo" });
+    } catch (error) {
+      log(`a workspace role did not reach Discord: ${error?.message ?? error}`);
+    }
+  }
+  // A role made now has no overwrite anywhere yet: each bridged channel gets it.
+  const overwrites =
+    made.length > 0
+      ? overwritesOf({ ...account, map: [...mappings(account), ...made] }, layout, asked)
+      : plan.overwrites;
+  for (const op of overwrites) {
+    try {
+      if (!(await carries(calls, "set_overwrite", op, log))) continue;
+      asked.add(JSON.stringify(op));
+      await calls.webCall(setOverwrite(rest, op));
+    } catch (error) {
+      log(`a channel's permission did not reach Discord: ${error?.message ?? error}`);
+    }
+  }
+}
+
+/// A linked account given the bridge's role for its person's role here, and the bridge's others
+/// taken off. `current` is the account's roles in Discord when an event said them.
+async function followRole({ calls, account, link, current, log }) {
+  const person = personOfLink(link);
+  const members = await calls.members();
+  const role = members.find((member) => member?.person === person)?.role ?? null;
+  const op = memberRoles(account, link.discord_user, role, current);
+  if (!op || !(await carries(calls, "set_member_roles", op, log))) return;
+  const rest = { tokenItem: account.token_item, origin: account.api_origin };
+  for (const [roles, given] of [
+    [op.add, true],
+    [op.remove, false],
+  ]) {
+    for (const id of roles) {
+      await calls.webCall(memberRole(rest, account.guild_id, op.user, id, given));
     }
   }
 }
