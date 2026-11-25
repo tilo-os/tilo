@@ -1503,7 +1503,13 @@ impl Registry {
             catalogue
                 .components
                 .iter()
-                .filter(|owner| owner.parts.iter().any(|part| part.accepts.takes(name)))
+                .filter(|owner| {
+                    owner.parts.iter().any(|part| {
+                        // A part that takes views takes every component of a view; only the parts
+                        // that read a component's props are places it may stand.
+                        part.accepts.reads_components() && part.accepts.takes(name)
+                    })
+                })
                 .map(|owner| format!("`ui.{}`", owner.name)),
         );
         let inside = match places.split_last() {
