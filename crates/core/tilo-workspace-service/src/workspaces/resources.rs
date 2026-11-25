@@ -1744,7 +1744,6 @@ fn read_from(
 
 /// The workspace's members' resource as its governance has them: its owner and its members,
 /// none who are blocked (they hold nothing), each as the actor a view reads them as.
-#[cfg(any(feature = "apps", feature = "agents"))]
 fn workspace_members(peer: &tilo_peer_state::StatePeer) -> Result<serde_json::Value, String> {
     let policy = peer.governance().governed_policy()?;
     let people: std::collections::BTreeSet<&String> =
