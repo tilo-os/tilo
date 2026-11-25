@@ -3362,6 +3362,64 @@ pub(super) fn connected_manager_for(app: &str, workspace: Uuid) -> Collaboration
     CollaborationManager::from_sdk_fd_for_test(fd, app, workspace)
 }
 
+/// What one store command costs an app's own process: the command the app sends on its
+/// workspace connection, carried by its broker transport to the store and answered back on the
+/// connection the app's frame waits on. An action names many resources, so it pays this per ask.
+#[cfg(unix)]
+#[test]
+fn an_apps_store_command_is_a_local_trip() {
+    // The connection every store command of the process goes on is one per process: the test
+    // has the process to itself.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "an_apps_store_command_is_a_local_trip",
+        || {
+            const APP: &str = "so.tilo.cost";
+            const ASKS: u32 = 100;
+            let workspace = Uuid::new_v4();
+            let broker = FakeBroker::default();
+            let (fd, _captures, thread) = stand_up_fake_broker(broker);
+            let manager = CollaborationManager::from_sdk_fd_for_test(fd, APP, workspace);
+            let command = serde_json::to_vec(&collab_types::store::wire::Command::RecordChanges {
+                record: None,
+                after: Vec::new(),
+                from: 0,
+            })
+            .unwrap();
+            let ask = || {
+                crate::resource_command(APP, workspace, command.clone())
+                    .expect("the app's connection carries its store commands")
+                    .recv()
+                    .expect("the connection stays open while the command is answered")
+            };
+            // The first command joins the route; the trip is measured over the ones after it,
+            // which is what an action's loop makes.
+            let joining = std::time::Instant::now();
+            ask().expect("the store answers the first command");
+            eprintln!(
+                "the first store command from an app process, joining its route: {:?}",
+                joining.elapsed()
+            );
+            let started = std::time::Instant::now();
+            for ask_number in 0..ASKS {
+                ask().unwrap_or_else(|refusal| {
+                    panic!("ask {ask_number} was not answered: {refusal}")
+                });
+            }
+            let trip = started.elapsed() / ASKS;
+            eprintln!("one store command from the app process: {trip:?}");
+            assert!(
+                trip < crate::time::Duration::from_millis(2),
+                "one store command from the app process is {trip:?}: the store is on this device, \
+                 so a trip through the connection is a wake and a frame, not a wait for something \
+                 to happen"
+            );
+            drop(manager);
+            thread.join().unwrap();
+        },
+    );
+}
+
 /// Wait for `done`, polling: the worker and the fake broker run on their
 /// own threads.
 pub fn eventually(what: &str, mut done: impl FnMut() -> bool) {
