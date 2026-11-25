@@ -16,9 +16,7 @@ use std::sync::{Arc, Mutex};
 use tilo_actions::remote::Pending;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::server_account::{self as wire, ServerAccount, ServerKind};
-use tilo_actions::remote::{
-    ActionProvider, Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome,
-};
+use tilo_actions::remote::{Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind,
 };

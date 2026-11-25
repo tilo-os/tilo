@@ -95,8 +95,6 @@ pub enum WhyEnded {
     SenderStopped,
     /// The sender started the stream over at another size or in another codec.
     Restarted,
-    /// This device let the window go.
-    LetGo,
 }
 
 /// A surface another device announced it streams, and what this desktop knows of it beyond the
@@ -107,8 +105,6 @@ pub struct PeerStreamStart {
     pub surface: SurfaceId,
     /// The device sharing the window.
     pub peer: PeerId,
-    /// This device, as the sender knows whoever sends input back.
-    pub local_peer: PeerId,
     /// The picture size the sender announced.
     pub width: u32,
     /// The picture size the sender announced.
@@ -147,7 +143,6 @@ impl PeerStreamStart {
     pub fn announced(
         control: &Control,
         peer: PeerId,
-        local_peer: PeerId,
         sharer: impl Into<String>,
         title: impl Into<String>,
         writable: bool,
@@ -166,7 +161,6 @@ impl PeerStreamStart {
         Some(Self {
             surface: *tab,
             peer,
-            local_peer,
             width: *width,
             height: *height,
             codec: ui::webview::paint::stream::wire::CODEC.to_owned(),
@@ -218,6 +212,7 @@ pub struct PeerRead {
     pub display: DisplayCapabilities,
 }
 
+#[cfg(test)]
 impl PeerRead {
     /// Whether the tile has a picture to show.
     #[must_use]
@@ -269,7 +264,6 @@ pub struct PeerSurface {
     tab: TabId,
     peer: PeerId,
     surface: SurfaceId,
-    local_peer: PeerId,
     sharer: Arc<str>,
     app_id: Arc<str>,
     title: Arc<str>,
@@ -320,7 +314,6 @@ impl PeerSurface {
             tab,
             peer: start.peer,
             surface: start.surface,
-            local_peer: start.local_peer,
             sharer: Arc::from(start.sharer.as_str()),
             app_id: Arc::from(start.app_id.as_str()),
             title: Arc::from(start.title.as_str()),

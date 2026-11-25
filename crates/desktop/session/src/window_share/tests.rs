@@ -2865,7 +2865,7 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
                     let object = VideoObject::decode(&object.body).expect("a picture");
                     heard.push(wall_us().saturating_sub(object.timestamp_us));
                     if object.keyframe && tiles.read(TAB).is_none() {
-                        let start = super::picture_start(&tree, 7, peer, (TAB, TAB), &object)
+                        let start = super::picture_start(&tree, peer, (TAB, TAB), &object)
                             .expect("a codec this build decodes");
                         tiles
                             .start(&tree, &start)

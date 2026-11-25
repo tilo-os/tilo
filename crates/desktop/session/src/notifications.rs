@@ -300,17 +300,20 @@ impl NoticeSignals {
     }
 
     /// The unread notifications in the centre, as the bar's bell counts.
+    #[cfg(test)]
     pub(crate) fn unread(&self) -> u32 {
         self.unread.get()
     }
 
     /// Whether fresh banners are held right now, for the silenced bell.
+    #[cfg(test)]
     pub(crate) fn quiet(&self) -> bool {
         self.quiet.get()
     }
 
     /// How many notifications each app (by verified id) is showing as unread, where it shows any
     /// and this person keeps its badges on. The count on `app_id` 's badge.
+    #[cfg(test)]
     pub(crate) fn badge(&self, app_id: &str) -> u32 {
         self.badges.borrow().get(app_id).copied().unwrap_or(0)
     }

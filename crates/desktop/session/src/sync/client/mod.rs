@@ -116,8 +116,6 @@ pub(crate) enum HostCmd {
     Network(Cmd),
     /// Take part in a workspace through this device's own ownership session with its host.
     TakePart(native_ingress::Connect),
-    /// Send one piece of a record's content to the device of the workspace that asked for it.
-    Content(tilo_network_actor::RecordContentDelivery),
     /// Take one of the person's workspaces in as their further device, at the host the list names.
     Enter(Box<Entering>),
     /// Send this device's fabric to the person's other devices, or to the one at `target`.
@@ -161,11 +159,6 @@ impl HostOutbox {
     /// Say one command of this desktop's own to the peer network.
     pub(crate) fn say(&self, command: HostCmd) -> bool {
         self.commands.send(command).is_ok()
-    }
-
-    /// Send one piece of a record's content to the device of the workspace that asked for it.
-    pub(crate) fn content(&self, delivery: tilo_network_actor::RecordContentDelivery) {
-        let _ = self.say(HostCmd::Content(delivery));
     }
 
     /// Send this device's fabric to the person's other devices, or to the one at `target`.

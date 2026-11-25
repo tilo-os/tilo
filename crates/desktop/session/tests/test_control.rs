@@ -17,9 +17,9 @@
     reason = "a rectangle the test measured in the output it drew is within that output"
 )]
 
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

@@ -25,7 +25,6 @@ use tilo_session::{Options, Session};
 use tilo_session_core::desktop::verbs::{
     CHROME_RESOURCE, DISPLAY_KIND, SHELL_RESOURCE, WINDOW_KIND,
 };
-use tilo_sheets::SheetState as _;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 
 const WIDTH: i32 = 1000;

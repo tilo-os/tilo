@@ -28,7 +28,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ed25519_dalek::SigningKey;
 use runtime_collab::{CollabClient, ExportedAction, ExportedInput};
 use tilo_actions::remote::browser::READY;
 use tilo_actions::remote::{CatalogueQuery, RemoteActionFrame, RemoteActionMessage};
@@ -38,7 +37,6 @@ use tilo_server_protocol::hosted::Material;
 use tilo_session::apps::Apps;
 use tilo_session::hosted_browser::HostedBrowser;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
-use tilo_user_identity::DeviceCert;
 
 use crate::common::people::{Person, Site};
 use collab_types::WorkspaceId;
@@ -83,12 +81,7 @@ fn material(
     };
     (
         serde_json::to_string(&material).expect("the material is the server's"),
-        Handed {
-            root,
-            key,
-            cert: device,
-            opens,
-        },
+        Handed { root, opens },
     )
 }
 
@@ -98,8 +91,6 @@ fn material(
 struct Handed {
     #[expect(dead_code, reason = "the directory lives as long as the test")]
     root: tempfile::TempDir,
-    key: SigningKey,
-    cert: DeviceCert,
     opens: String,
 }
 

@@ -1539,32 +1539,8 @@ impl SessionServices {
         })
     }
 
-    /// The newest reading of the resource `resource` the app `app` publishes, asked on the loop's
-    /// pass, where the services are: what a task's program reads within the program it runs, and
-    /// what the shell's parts are handed. `None` for a resource no service publishes.
-    ///
-    /// # Errors
-    ///
-    /// Why the session did not answer: it is frozen ([`unanswered`]).
-    pub(crate) fn reading(
-        &self,
-        app: &str,
-        resource: &str,
-    ) -> Result<Option<Published>, ActionCallError> {
-        let (done, answered) = tilo_actions::remote::pending();
-        self.ask(ApiAsk::Reading {
-            app: app.to_owned(),
-            resource: resource.to_owned(),
-            done,
-        });
-        answered
-            .wait_timeout(WAIT)
-            .map(Option::flatten)
-            .map_err(|_| unanswered())
-    }
-
-    /// [`Self::reading`], awaited: a read asked of the loop's pass from a task parks for it rather
-    /// than holding the thread the task runs on for its wait.
+    /// A read asked of the loop's pass from a task parks for it rather than
+    /// holding the thread the task runs on for its wait.
     ///
     /// # Errors
     ///

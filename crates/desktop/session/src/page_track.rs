@@ -38,7 +38,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use tilo_desktop_model::TabId;
-use tilo_live::capture::Session as CaptureSession;
 use tilo_live::page::PageObject;
 
 /// How many payloads one page may hold for a live session that has not taken them

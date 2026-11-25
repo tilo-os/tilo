@@ -389,7 +389,7 @@ fn tablet(
         EraserAction as StoredEraser, StylusButtonAction as StoredStylus,
     };
     use tilo_compositor::backend::drm::tablet::{
-        EraserAction as Eraser, KeyChord as Pressed, StylusButtonAction as Stylus,
+        EraserAction as Eraser, StylusButtonAction as Stylus,
     };
 
     // A shortcut the person's table does not list is on the chord the desktop binds it by.

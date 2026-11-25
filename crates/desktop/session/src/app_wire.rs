@@ -518,8 +518,6 @@ pub struct Hosted {
     /// The calls this session's apps join: the service a view's call steps
     /// reach.
     pub native_media: Option<tilo_native_media::NativeMediaService>,
-    /// What notes the workspaces' records changing, for the roles that follow them.
-    pub records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     pub layout: std::sync::Arc<LayoutAuthority>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
@@ -675,10 +673,6 @@ pub fn serve_hosted(
 /// moved, and the broker reads the copy.
 pub struct LayoutAuthority {
     tree: Mutex<tilo_desktop_model::Layout>,
-    /// Counts the session's publications, so a reader that only cares whether
-    /// the session changed since it last looked asks one number, and one that
-    /// waits for a change hears it ([`Self::until`]).
-    generation: tokio::sync::watch::Sender<u64>,
     revocations: crate::engine::Revocations,
     /// The person at this device, and the ids they went by before it had an identity: a workspace
     /// whose governance names them by one of those is theirs, and what the broker decides in it is
@@ -712,7 +706,6 @@ impl LayoutAuthority {
         claim_earlier_owners(&mut tree, &names);
         Self {
             tree: Mutex::new(tree),
-            generation: tokio::sync::watch::Sender::new(0),
             revocations,
             names,
             people: Mutex::new(std::collections::HashMap::new()),
@@ -796,8 +789,6 @@ impl LayoutAuthority {
 
     /// Tell the broker the session it decides against moved.
     fn announce(&self) {
-        self.generation
-            .send_modify(|generation| *generation = generation.wrapping_add(1));
         tilo_identity::policy_change::announce();
     }
 
@@ -808,28 +799,6 @@ impl LayoutAuthority {
         self.write_people(&mut tree);
         *self.tree.lock_recover() = tree;
         self.announce();
-    }
-
-    /// Wait until the session, as the loop publishes it, satisfies `held`: a
-    /// change written where the loop takes it from, such as a workspace's
-    /// governance, is in force for the broker from then on.
-    pub async fn until(&self, held: impl Fn(&tilo_desktop_model::Layout) -> bool) {
-        let mut published = self.generation.subscribe();
-        while !self.holds(&held) {
-            if published.changed().await.is_err() {
-                return;
-            }
-        }
-    }
-
-    fn holds(&self, held: &impl Fn(&tilo_desktop_model::Layout) -> bool) -> bool {
-        held(&self.tree.lock_recover())
-    }
-
-    /// How many times the session was published; equal values mean the session
-    /// did not change between the two reads.
-    pub fn generation(&self) -> u64 {
-        *self.generation.borrow()
     }
 }
 
@@ -1150,7 +1119,6 @@ fn broker_services(
     let Hosted {
         live_activities,
         native_media,
-        records,
         layout,
         activity,
         agents,
@@ -1685,7 +1653,6 @@ mod tests {
     fn hosted_with(lists: Lists) -> Hosted {
         Hosted {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
-            records: None,
             layout: std::sync::Arc::new(LayoutAuthority::new(
                 tilo_desktop_model::Layout::default(),
                 crate::engine::revocations_of(None),

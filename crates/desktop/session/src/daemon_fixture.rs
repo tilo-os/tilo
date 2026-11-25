@@ -209,7 +209,6 @@ impl TestDaemon {
     pub(crate) fn device_workspaces(&self) -> crate::device_workspaces::DeviceWorkspaces {
         crate::device_workspaces::DeviceWorkspaces::new(
             self.view(),
-            None,
             self.reads(),
             self.writes(),
             self.changes.clone(),

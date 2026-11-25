@@ -21,7 +21,6 @@ use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::workspace_settings::{self as domain, emoji_pane};
-use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings as sheet;
 use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small};
 
@@ -216,7 +215,7 @@ impl Emoji {
     ) -> Option<FollowedResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
-        let author = ui::permissions::MemberId::person(person.clone());
+        let author = ui::permissions::MemberId::person(person);
         let held = self.open.borrow();
         let current = held.as_ref().filter(|open| {
             open.workspace == workspace_id

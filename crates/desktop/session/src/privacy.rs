@@ -293,7 +293,7 @@ impl Service for Privacy {
 fn reading_of(sources: &dyn Sources) -> Reading {
     let status = sources.status();
     let captures = sources.captures();
-    let mut uses = |cap: Capability| -> Vec<InUse> {
+    let uses = |cap: Capability| -> Vec<InUse> {
         let mut found: Vec<InUse> = Vec::new();
         let mut add = |app: &str| {
             if app.is_empty() || found.iter().any(|use_| use_.app == app) {

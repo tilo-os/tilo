@@ -235,27 +235,6 @@ fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
     )
 }
 
-/// A sheet that answers its actions while it is down too: its answers stay published, so a press
-/// that arrives while it is not shown still reaches the state it speaks through.
-fn mount_sheet_always<S: tilo_sheets::SheetState + 'static>(
-    compositor: &mut Compositor,
-    surfaces: &mut Surfaces,
-    definition: &'static ui::application::ApplicationDefinition,
-    state: S,
-    who: (&str, &str),
-    options: &Options,
-) -> Option<S> {
-    mount_sheet_by(
-        compositor,
-        surfaces,
-        definition,
-        state,
-        who,
-        options,
-        Sheet::always_serving,
-    )
-}
-
 fn mount_sheet_by<S: tilo_sheets::SheetState + 'static>(
     compositor: &mut Compositor,
     surfaces: &mut Surfaces,

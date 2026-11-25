@@ -21,8 +21,6 @@ use crate::workspace_view::WorkspaceView;
 pub(crate) struct DeviceWorkspaces {
     /// How the person's workspaces stand on the device's daemon, which holds them.
     view: Arc<WorkspaceView>,
-    /// Where this computer's own workspace service keeps what it keeps of its workspaces.
-    service_root: Option<std::path::PathBuf>,
     /// The documents of the workspaces this device's service holds.
     reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     /// What this device's service writes into a workspace's documents: where a write of the
@@ -206,31 +204,18 @@ type DocumentKey = (String, String, String);
 
 impl DeviceWorkspaces {
     /// The workspaces `view` says the daemon holds, read through `reads` and written through
-    /// `writes`; a write the workspace took is noted on `changes`. `service_root` is where this computer's own workspace service keeps its
-    /// workspaces, where it runs one.
+    /// `writes`; a write the workspace took is noted on `changes`.
     pub(crate) fn new(
         view: Arc<WorkspaceView>,
-        service_root: Option<std::path::PathBuf>,
         reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
         changes: crate::platform::records::Changes,
     ) -> Self {
         Self {
             view,
-            service_root,
             reads,
             writes,
             changes,
         }
-    }
-
-    /// Where this computer's own workspace service keeps its workspaces, where it runs one.
-    pub(crate) fn service_root(&self) -> Option<std::path::PathBuf> {
-        self.service_root.clone()
-    }
-
-    /// The documents of the workspaces the device's service holds.
-    pub(crate) fn reads(&self) -> &Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> {
-        &self.reads
     }
 }
