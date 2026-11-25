@@ -1664,9 +1664,8 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
-        let error = match apps.start(&dev.id, WORKSPACE) {
-            Ok(_) => panic!("a start that ran no app is refused"),
-            Err(error) => error,
+        let Err(error) = apps.start(&dev.id, WORKSPACE) else {
+            panic!("a start that ran no app is refused");
         };
         assert!(error.contains("ended as it started"), "{error}");
         assert!(error.contains("the sandbox refused this app"), "{error}");

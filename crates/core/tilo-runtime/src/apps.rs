@@ -888,7 +888,11 @@ impl Apps {
             return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
         // A start that ends as it starts has run no app: answer what it said, never "started".
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(100))
+            .ok_or_else(|| {
+                format!("refusing to keep {app_id} running: its end cannot be waited for")
+            })?;
         loop {
             match launch.ended() {
                 Ok(Some(status)) => {

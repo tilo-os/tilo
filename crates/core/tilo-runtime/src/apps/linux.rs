@@ -83,8 +83,10 @@ pub(super) fn launch(
                     let mut said = captured
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if said.len() < 8192 {
-                        said.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    if said.len() < 8192
+                        && let Some(read_bytes) = chunk.get(..read)
+                    {
+                        said.push_str(&String::from_utf8_lossy(read_bytes));
                     }
                 }
             })

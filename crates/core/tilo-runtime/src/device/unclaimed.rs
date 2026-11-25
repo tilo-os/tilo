@@ -25,8 +25,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, SET_UP_UNLOCK, FOUND, LOG_IN, PROVIDER, Place,
-    RESOURCE, RESTORE,
+    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
+    RESTORE, SET_UP_UNLOCK,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -130,7 +130,8 @@ impl Founding {
             let heard = self.announced.notified();
             tokio::pin!(heard);
             heard.as_mut().enable();
-            if let Some(unlocking) = self.enrolling.lock_recover().clone() {
+            let set_up = self.enrolling.lock_recover().clone();
+            if let Some(unlocking) = set_up {
                 return unlocking;
             }
             heard.await;
