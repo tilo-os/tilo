@@ -98,7 +98,6 @@ fn paint_over(
             panel: None,
             screens,
             followed_id: None,
-            following_pairs: &[],
             waved: &[],
             waved_until: None,
         },

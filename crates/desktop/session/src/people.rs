@@ -713,13 +713,6 @@ impl Panel {
                     }
                 }
             }
-            // Their recent changes, where this workspace's history has them.
-            PeopleHit::OpenChanges(index) | PeopleHit::OpenChange(index, _) => {
-                let Some(author) = shown.rows.get(index).map(|row| row.id.clone()) else {
-                    return;
-                };
-                self.open_activity(&author);
-            }
             // Inviting from here is the bar's own invite: the roster offers its footer only while
             // the person may hand out a link into this workspace.
             PeopleHit::Invite => {
