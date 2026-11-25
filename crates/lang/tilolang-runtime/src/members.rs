@@ -167,8 +167,10 @@ impl Core {
     /// already, and names them. A runtime deciding by a real workspace's access adds no one: its
     /// members are the workspace's, and a scenario run there only names people.
     fn named_member(&self, id: MemberId) -> HResult<Actor> {
-        let who = Actor::Member(id.clone());
-        if self.members_decided.get() || self.member_list().iter().any(|member| member.id == id) {
+        let known =
+            self.members_decided.get() || self.member_list().iter().any(|member| member.id == id);
+        let who = Actor::Member(id);
+        if known {
             return Ok(who);
         }
         let adder = self.members.borrow().adder.clone();
