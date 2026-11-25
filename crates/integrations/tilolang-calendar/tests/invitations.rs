@@ -338,3 +338,251 @@ fn an_invitation_taken_in_here_is_the_record_its_servers_copy_comes_over() {
     assert_eq!(server.held("work").len(), 1, "one entry on the server");
     nobody_was_mailed(&server, "an invitation taken in here");
 }
+
+/// Somebody an entry names by another address than a mail address (RFC 5545, 3.3.3): a group
+/// its server knows by a `urn:uuid`, which no mail goes to.
+const FAY: &str = "ATTENDEE;CUTYPE=GROUP;CN=\"Fay: Ops\":urn:uuid:fay-4";
+
+/// A guest named by another address than a mail address comes in with the entry and goes out
+/// with it as its server holds them: her change to an entry she organises keeps the group's line,
+/// and her calendar server goes on writing to the group by the same rules as to anybody it
+/// already wrote to, and to nobody new.
+#[test]
+fn a_guest_named_by_another_address_than_a_mail_address_comes_in_and_goes_out_as_held() {
+    let server = Server::start(ADA, PASSWORD);
+    server.add_calendar("work", "Work");
+    let standup = inviting(
+        "standup-7@example.org",
+        "Standup",
+        "20261119T090000",
+        ADA,
+        &["bo@example.test"],
+    )
+    .replace("END:VEVENT", &format!("{FAY}\r\nEND:VEVENT"));
+    server.put("work", "standup.ics", &standup);
+    let mut rig = Rig::new(&server, ADA, PASSWORD);
+    rig.settle();
+    let _ = server.requests();
+
+    // In: the entry names her group beside the guest she mails.
+    let event = rig.events().remove(0);
+    let named: Vec<String> = rig
+        .attendees(&event)
+        .iter()
+        .map(|guest| {
+            format!(
+                "{} {}",
+                rig.text("Attendee", guest, "name"),
+                rig.text("Attendee", guest, "email")
+            )
+        })
+        .collect();
+    assert!(
+        named.iter().any(|guest| guest.contains("bo@example.test")),
+        "{named:?}"
+    );
+
+    // Out: her change goes up with the group's line as its server holds it.
+    rig.run(
+        "Event",
+        "rename_event",
+        Some(&event),
+        &[("title", serde_json::json!("Standup, longer"))],
+    );
+    rig.settle();
+    let held = server.held("work");
+    assert_eq!(held.len(), 1, "one entry, changed");
+    let text = held[0].1.replace("\r\n ", "");
+    assert!(
+        text.contains("SUMMARY:Standup\\, longer"),
+        "her change went up: {text}"
+    );
+    assert!(
+        !text.contains("VALARM"),
+        "an entry with no reminder goes up with none: {text}"
+    );
+    let group: Vec<String> = naming_lines(&text)
+        .into_iter()
+        .filter(|line| line.to_lowercase().contains("urn:uuid:fay-4"))
+        .collect();
+    assert_eq!(group.len(), 1, "the group's line is kept, once: {text}");
+    assert!(group[0].contains("CUTYPE=GROUP"), "{text}");
+    // The server goes on writing to those it already wrote to, the group among them by the same
+    // rules as anybody, and starts writing to nobody.
+    assert_eq!(
+        server.mailed(),
+        ["REQUEST to bo@example.test", "REQUEST to urn:uuid:fay-4"],
+        "her change is told to the people it already named"
+    );
+
+    // Taken out, the group is told as anybody it invited is.
+    rig.run(
+        "Calendars",
+        "remove_event",
+        None,
+        &[("e", serde_json::json!(event.id_string()))],
+    );
+    rig.settle();
+    assert!(server.held("work").is_empty(), "its removal took it out");
+    assert_eq!(
+        server.mailed(),
+        [
+            "REQUEST to bo@example.test",
+            "REQUEST to urn:uuid:fay-4",
+            "CANCEL to bo@example.test",
+            "CANCEL to urn:uuid:fay-4"
+        ],
+        "her removal calls it off for everybody it invited, the group among them"
+    );
+}
+
+/// What another client of hers left on her Work calendar: a meeting Bo invited her to, one she
+/// invites Cy to, and an entry of her own.
+fn left_by_another_client(server: &Server) {
+    server.add_calendar("work", "Work");
+    server.put(
+        "work",
+        "planning.ics",
+        &inviting(
+            "planning-1@example.org",
+            "Planning",
+            "20261117T100000",
+            "bo@example.test",
+            &[ADA],
+        ),
+    );
+    server.put(
+        "work",
+        "offsite.ics",
+        &inviting(
+            "offsite-1@example.org",
+            "Offsite",
+            "20261118T100000",
+            ADA,
+            &["cy@elsewhere.test"],
+        ),
+    );
+    server.put(
+        "work",
+        "dentist.ics",
+        &meeting("dentist-1@example.org", "Dentist", "20261119T090000", ""),
+    );
+}
+
+/// A calendar account connected for reading only: its entries come in as any account's do, and
+/// nothing is ever written to its calendar server. A change of hers to an entry of it is put
+/// back as its server holds it, and an invitation taken into it or out of it and her answer to
+/// one are refused in words that say the account is connected for reading only, before its
+/// server is asked anything. Its server is asked to read and nothing else, holds what it held and
+/// writes to nobody.
+#[test]
+fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
+    use tilolang_calendar::origin::READ_ONLY;
+
+    let server = Server::start(ADA, PASSWORD);
+    left_by_another_client(&server);
+    let before = server.held("work");
+    let mut rig = Rig::new(&server, ADA, PASSWORD);
+    rig.accounts.lock().unwrap()[0].read_only = true;
+    rig.settle();
+
+    // It is read as any account is.
+    assert_eq!(rig.events().len(), 3, "{:?}", shown(&rig));
+    let account = rig.items("accounts").remove(0);
+    assert!(rig.flag("Account", &account, "read_only"));
+    let _ = server.requests();
+    let calendar = rig.calendars().remove(0);
+    assert!(
+        !rig.flag("Calendar", &calendar, "writable"),
+        "its calendar is one that is not written"
+    );
+    let titled = |rig: &Rig, title: &str| {
+        rig.events()
+            .into_iter()
+            .find(|event| rig.text("Event", event, "title") == title)
+            .unwrap_or_else(|| panic!("the entry {title}"))
+    };
+
+    // Her own entry renamed, and what she invites others to moved: each is put back.
+    let dentist = titled(&rig, "Dentist");
+    rig.run(
+        "Event",
+        "rename_event",
+        Some(&dentist),
+        &[("title", serde_json::json!("Dentist, moved"))],
+    );
+    rig.settle();
+    assert_eq!(rig.text("Event", &dentist, "title"), "Dentist");
+    let offsite = titled(&rig, "Offsite");
+    rig.run(
+        "Event",
+        "reschedule",
+        Some(&offsite),
+        &[
+            ("start", serde_json::json!("2026-11-18T14:00:00")),
+            ("end", serde_json::json!("2026-11-18T14:30:00")),
+        ],
+    );
+    rig.settle();
+    assert_eq!(
+        rig.text("Event", &offsite, "start"),
+        "2026-11-18T10:00:00",
+        "what she invites others to stays as its server holds it"
+    );
+
+    // An invitation taken in, and her answer to one, are refused in the same words.
+    let lunch = carried(
+        "REQUEST",
+        &inviting(
+            "lunch-1@example.org",
+            "Lunch",
+            "20261120T120000",
+            "bo@example.test",
+            &[ADA],
+        ),
+    );
+    let why = take_in(&mut rig, &lunch).expect_err("an invitation is not put in");
+    assert_eq!(why, READ_ONLY);
+    let called_off = carried(
+        "CANCEL",
+        &inviting(
+            "planning-1@example.org",
+            "Planning",
+            "20261117T100000",
+            "bo@example.test",
+            &[ADA],
+        ),
+    );
+    let why = take_in(&mut rig, &called_off).expect_err("an invitation is not taken out");
+    assert_eq!(why, READ_ONLY);
+    assert_eq!(rig.events().len(), 3, "{:?}", shown(&rig));
+    let answered = rig.origin.deliver(
+        "caldav.answer",
+        &serde_json::json!(["caldav-account", "planning-1@example.org", ADA, "accepted"]),
+    );
+    assert!(
+        matches!(&answered, Delivery::Rejected(why) if why == READ_ONLY),
+        "{answered:?}"
+    );
+    rig.settle();
+
+    // Her calendar server was asked to read and nothing else, holds what it held and wrote to
+    // nobody.
+    let methods: Vec<String> = server
+        .requests()
+        .into_iter()
+        .map(|request| request.method)
+        .collect();
+    assert!(
+        methods
+            .iter()
+            .all(|method| matches!(method.as_str(), "PROPFIND" | "REPORT" | "GET")),
+        "her calendar server was asked for more than a read: {methods:?}"
+    );
+    assert_eq!(
+        server.held("work"),
+        before,
+        "her calendar holds what it held"
+    );
+    nobody_was_mailed(&server, "a calendar account connected for reading only");
+}

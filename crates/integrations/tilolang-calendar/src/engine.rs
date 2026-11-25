@@ -1696,6 +1696,11 @@ fn reminder_min(entry: &Entry) -> Option<i64> {
         return None;
     }
     let remind = entry.remind.parse::<jiff::Timestamp>().ok()?.as_second();
+    // The Calendar says "no reminder" with the first instant of 1970, which no entry is reminded
+    // at: an alarm decades before its start would ring at once on every other client.
+    if remind == 0 {
+        return None;
+    }
     let start = instant_start(&entry.timezone, wall_of_text(&entry.start)?)?;
     let minutes = start.checked_sub(remind)?.checked_div(60)?;
     (minutes > 0).then_some(minutes)

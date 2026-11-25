@@ -2037,11 +2037,17 @@ fn read_entry(
             });
         }
     }
-    let organizer = attendees
-        .iter()
-        .find(|guest| guest.role == "chair")
-        .map(|guest| guest.email.clone())
-        .unwrap_or_default();
+    // Who organises it is what the entry says, which its server's ORGANIZER line was taken in
+    // as: an entry written without it would have a server that schedules by itself take it for
+    // one called off. A guest who chairs it stands in where the entry names nobody.
+    let organizer = match try_read_text(host, at, ty, "organizer")? {
+        named if !named.trim().is_empty() => named,
+        _ => attendees
+            .iter()
+            .find(|guest| guest.role == "chair")
+            .map(|guest| guest.email.clone())
+            .unwrap_or_default(),
+    };
     Ok(Entry {
         uid: try_read_text(host, at, ty, "key")?,
         href: try_read_text(host, at, ty, "href")?,
