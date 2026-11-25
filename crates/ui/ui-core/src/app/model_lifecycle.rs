@@ -127,11 +127,16 @@ impl super::App {
         {
             self.actions.hosted.calls += 1;
         }
+        #[cfg(feature = "model")]
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("pump.inputs");
+        #[cfg(feature = "model")]
         let (inbound, directory) = self.pump_collab_presence_inner(true);
+        // Without the model no peer or broker sends the window anything.
+        #[cfg(not(feature = "model"))]
+        let inbound = false;
         // Retire expired/cancelled jobs before their later model continuation.
         // A completion produced below is polled on the following host pass.
         let invocations = self.poll_model_invocations();
@@ -199,26 +204,30 @@ impl super::App {
         // What this pass's drain invalidated is published here, after the sync its work went
         // through: building it before the sync published a tree this pass then changed, and the
         // pass built it again.
-        let drained = std::mem::take(&mut self.actions.action_surface_owed);
-        if always_refresh || !self.publication_current() {
-            report.published = true;
-            if always_refresh {
-                // Built again whatever the stamp says.
-                self.actions.published_stamp = None;
+        #[cfg(feature = "model")]
+        {
+            let drained = std::mem::take(&mut self.actions.action_surface_owed);
+            if always_refresh || !self.publication_current() {
+                report.published = true;
+                if always_refresh {
+                    // Built again whatever the stamp says.
+                    self.actions.published_stamp = None;
+                }
+                self.publish_action_surface();
+            } else if drained {
+                // A drain can invalidate what the surface offers without moving the stamp that
+                // counts the tree (`App::pump_collab_presence_inner`), so it is published
+                // whatever the stamp says, as that drain asks.
+                report.published = true;
+                self.publish_action_surface_after_refresh();
             }
-            self.publish_action_surface();
-        } else if drained {
-            // A drain can invalidate what the surface offers without moving the stamp that counts
-            // the tree (`App::pump_collab_presence_inner`), so it is published whatever the stamp
-            // says, as that drain asks.
-            report.published = true;
-            self.publish_action_surface_after_refresh();
+            self.broadcast_doc_delta();
+            // What search finds can move with the model (a refreshed vault, a
+            // timer): the session's index follows it here too, not only on input.
+            self.publish_search_index();
+            self.finish_model_directory_refresh(directory);
         }
-        self.broadcast_doc_delta();
-        // What search finds can move with the model (a refreshed vault, a
-        // timer): the session's index follows it here too, not only on input.
-        self.publish_search_index();
-        self.finish_model_directory_refresh(directory);
+        #[cfg(feature = "model")]
         if let Some(started) = started {
             crate::diag!(
                 "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations}",
@@ -253,6 +262,16 @@ impl super::App {
     /// Returns true when policy meaning changed since the previous hosted pump
     /// or cannot be sampled (fail closed: refresh on every such pass).
     fn refresh_hosted_authority(&mut self) -> bool {
+        #[cfg(feature = "model")]
+        let changed = self.refresh_workspace_authority();
+        // A standalone window's authority is the person's own, and never moves.
+        #[cfg(not(feature = "model"))]
+        let changed = false;
+        changed
+    }
+
+    #[cfg(feature = "model")]
+    fn refresh_workspace_authority(&mut self) -> bool {
         let owner =
             if let Some(binding) = crate::bound_dispatch::callback_binding(&*self.root_widget) {
                 let Ok(observation) = binding.permissions.borrow().directory_observation() else {
@@ -273,6 +292,7 @@ impl super::App {
         changed
     }
 
+    #[cfg(feature = "model")]
     /// `None` whenever publication cannot be proven current: disconnected,
     /// nothing published yet, an evicted directory snapshot or stamp, or an
     /// exhausted generation that no longer distinguishes later mutations.
@@ -302,6 +322,7 @@ impl super::App {
         })
     }
 
+    #[cfg(feature = "model")]
     /// Whether a publication now would recompute what the last one
     /// published, as far as the widget tree it reads stands.
     pub(super) fn publication_current(&self) -> bool {
@@ -326,9 +347,12 @@ impl super::App {
         // noted before it: that stays noted for its own host (an app hosted
         // in a tile updates in the middle of its host's update).
         let outer = crate::widget::take_layout_moved();
-        let updated = presence.with_permissions(self.permission_ctx.clone(), || {
-            crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
-        });
+        let update =
+            || crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root));
+        #[cfg(feature = "model")]
+        let updated = presence.with_permissions(self.permission_ctx.clone(), update);
+        #[cfg(not(feature = "model"))]
+        let updated = update();
         // An animation moved what its widget lays out: the window is laid
         // out again. Any other animation frame is only drawn.
         self.layout.layout_dirty |= crate::widget::take_layout_moved();
@@ -392,6 +416,7 @@ impl super::App {
         self.forget_replaced_widgets();
         // An entry opening now seals what components queued before it, before anything below
         // would run or discard it.
+        #[cfg(feature = "model")]
         if self
             .history
             .as_ref()
@@ -403,14 +428,16 @@ impl super::App {
         // window runs it once its input stops: an entry that seals queued work (History taking
         // the input) has taken it before this, input framework chrome took runs nothing at all,
         // and a window still opening runs none of it either.
-        let queued =
-            crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
-        let held = self.input.opening || self.input.passive_input;
-        let submitted = if !held && (settled || queued) {
-            self.dispatch_control_invocations() != 0
-        } else {
-            false
+        #[cfg(feature = "model")]
+        let submitted = {
+            let queued =
+                crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
+            let held = self.input.opening || self.input.passive_input;
+            !held && (settled || queued) && self.dispatch_control_invocations() != 0
         };
+        // Controls bound to actions run where the model runs them.
+        #[cfg(not(feature = "model"))]
+        let submitted = false;
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);
         }
@@ -430,7 +457,10 @@ impl super::App {
         // arrived), whether or not it moved anything the layout places: the tree is read again.
         self.mark_semantic_tree_stale();
         self.forget_replaced_widgets();
-        self.answer_held_invocations();
+        #[cfg(feature = "model")]
+        {
+            self.answer_held_invocations();
+        }
         true
     }
 
@@ -446,7 +476,11 @@ impl super::App {
     }
 
     pub(super) fn poll_model_invocations(&mut self) -> bool {
+        // Without the model nothing directs an invocation at the window.
+        #[cfg(feature = "model")]
         let changed = self.poll_directed_invocations();
+        #[cfg(not(feature = "model"))]
+        let changed = false;
         if changed {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -508,10 +542,19 @@ impl super::App {
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("idle.discovery");
-        let history_changed = self.refresh_local_undo_discovery();
-        #[cfg(test)]
-        drop(probe);
-        let changed = self.service_local_control_history() || history_changed;
+        #[cfg(feature = "model")]
+        let changed = {
+            let history_changed = self.refresh_local_undo_discovery();
+            #[cfg(test)]
+            drop(probe);
+            self.service_local_control_history() || history_changed
+        };
+        #[cfg(not(feature = "model"))]
+        let changed = {
+            #[cfg(test)]
+            drop(probe);
+            false
+        };
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still checks terminal success.
         #[cfg(feature = "native")]

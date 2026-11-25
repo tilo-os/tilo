@@ -1,4 +1,5 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
+#[cfg(feature = "model")]
 use crate::state::StateHistory as _;
 
 impl App {
@@ -485,6 +486,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// The decode lives on [`crate::presence::PresenceCtx`] so the
     /// compositor reads presence the same way an app does; what stays here
     /// is what only a document holder can do (follow a peer's viewport,
@@ -540,6 +542,7 @@ impl App {
         );
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
         if let Some(idx) = entry.focused_node_idx {
             if let Some(&id) = self.focusable_order.get(idx) {
@@ -561,6 +564,7 @@ impl App {
         self.invalidate_widget_resource_cache();
     }
 
+    #[cfg(feature = "model")]
     /// Unique admitted node visits keep child reports and requests off shell history.
     fn service_history(&mut self) -> bool {
         if self.framework_input.get()
@@ -720,6 +724,7 @@ impl App {
         changed
     }
 
+    #[cfg(feature = "model")]
     /// The mapped nodes the history sweep visits, found again when the map
     /// was built and admitted anew (or emptied) since they were last found.
     /// Taken out of the layout; the sweep puts them back.
@@ -766,6 +771,7 @@ impl App {
         sweep
     }
 
+    #[cfg(feature = "model")]
     /// The transaction boundary a status read made when history exists:
     /// read whether it does once, until a request changes it.
     fn keep_history_boundary(&mut self, embedded: bool, history_exists: &mut Option<bool>) {
@@ -808,16 +814,14 @@ impl App {
     }
 
     fn commit_action_with(&mut self, commit: CommitKind) {
-        if self.framework_input.get()
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.captures_input())
-        {
+        if self.framework_input.get() || !self.app_live_input() {
             return;
         }
         let invalidate = commit == CommitKind::Action;
+        #[cfg(feature = "model")]
         let history_changed = commit == CommitKind::Action && self.service_history();
+        #[cfg(not(feature = "model"))]
+        let history_changed = false;
         if history_changed {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -825,20 +829,26 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
+        #[cfg(feature = "model")]
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
             Some(self.local_author.clone()),
             None,
         );
-        self.focus_history.stable_focus_idx = self
-            .focused_node
-            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| crate::undo::get_state(widget))
-                .ok()
-                .flatten()
-        });
+        #[cfg(not(feature = "model"))]
+        let changed = self.state.doc.commit().is_some();
+        #[cfg(feature = "model")]
+        {
+            self.focus_history.stable_focus_idx = self
+                .focused_node
+                .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+            self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
+                self.inspect_node(id, |widget| crate::undo::get_state(widget))
+                    .ok()
+                    .flatten()
+            });
+        }
         if changed || history_changed || invalidate {
             self.invalidate_widget_resource_cache();
         }
@@ -848,6 +858,7 @@ impl App {
         // keystroke scales with document size. `UndoLog::apply_inverse`
         // writes the inverse as new changes, so a delta carries undo/redo
         // like any other edit.
+        #[cfg(feature = "model")]
         if changed {
             self.broadcast_doc_delta();
         }
@@ -1178,7 +1189,7 @@ impl App {
             );
         }
         // The box with no menu around it is read over the app, as it is drawn.
-        if self.window_box.is_drawn() && self.history.is_none() {
+        if self.window_box.is_drawn() && !self.presents_history() {
             let roots: [&dyn Widget; 2] = [self.root_widget.as_ref(), &self.window_box];
             return crate::accesskit_bridge::build_presentation_with_resources_bound(
                 &roots,
@@ -1188,6 +1199,7 @@ impl App {
                 &[],
             );
         }
+        #[cfg(feature = "model")]
         if let Some(history) = &self.history {
             let resources = if history.live_interactive() {
                 self.collect_declared_resources()
@@ -1260,6 +1272,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     /// The local actor's API onto one action: host services first, then an
     /// action that asks for confirmation through the palette, then the app's
     /// own. Assistive technology and host chrome both enter here.
@@ -1319,10 +1332,14 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<Option<(f64, f64)>, String> {
+        #[cfg(feature = "model")]
         let capture = self.begin_local_input_capture();
         let result = self.dispatch_local_a11y_action(target, action);
-        drop(capture);
-        self.drain_local_input_capture();
+        #[cfg(feature = "model")]
+        {
+            drop(capture);
+            self.drain_local_input_capture();
+        }
         result
     }
 
@@ -1377,7 +1394,7 @@ impl App {
         }
 
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
-        let resolved = if self.history.is_some() {
+        let resolved = if self.presents_history() {
             self.history_presentation_roots()
                 .into_iter()
                 .find_map(|root| exported.resolve(root, target))
@@ -1399,6 +1416,7 @@ impl App {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target),
         };
+        #[cfg(feature = "model")]
         if let Some(target) = semantic_target
             .as_deref()
             .filter(|t| t.starts_with("ordinary-confirmation:"))
@@ -1467,6 +1485,7 @@ impl App {
             // control intent there; drain it before publishing the next
             // AccessKit update so an AT-SPI DoAction never reports success
             // while leaving the visible state unchanged.
+            #[cfg(feature = "model")]
             if framework {
                 // The press queued in the control the presentation shows; it
                 // is answered while that control still is the one History
@@ -1482,6 +1501,7 @@ impl App {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout.layout_dirty = true;
+            #[cfg(feature = "model")]
             if framework {
                 self.refresh_framework_history(
                     self.layout.last_layout_logical.map_or(900.0, |size| size.0),
@@ -1598,6 +1618,7 @@ impl App {
         ];
         let mut handled_any = false;
         for event in events {
+            #[cfg(feature = "model")]
             if self.history_controls_event(&event, 1.0) {
                 handled_any |= self.dispatch_framework_history_event(&event, 1.0);
                 continue;
@@ -1616,7 +1637,10 @@ impl App {
             handled_any |= handled;
         }
         if handled_any {
-            self.dispatch_control_invocations();
+            #[cfg(feature = "model")]
+            {
+                self.dispatch_control_invocations();
+            }
             self.needs_sync = true;
             self.layout.layout_dirty = true;
         }
@@ -1683,10 +1707,7 @@ impl App {
     fn semantic_tree_untracked(&self) -> bool {
         self.window_box.is_drawn()
             || self.close_admission.dialog.is_some()
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.review_is_open())
+            || self.history_review_open()
             || self
                 .actions
                 .action_palette
@@ -1794,6 +1815,7 @@ impl App {
         &self.accessibility.semantic_tree
     }
 
+    #[cfg(feature = "model")]
     fn invoke_bound_semantic_action(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -1857,6 +1879,7 @@ impl App {
         let Some(action) = self.accessibility.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
         };
+        #[cfg(feature = "model")]
         if let Some(target) = self.accessibility.semantic_tree.bound_target(id, name) {
             return self.invoke_bound_semantic_action(&target, arg);
         }
@@ -1869,6 +1892,7 @@ impl App {
                     self.dispatch_encoded_semantic(encoded)
                 }
             }
+            #[cfg(feature = "model")]
             SemanticActionKind::AppDeferred { address } => {
                 if arg.is_some() {
                     return Err("Deferred action accepts no argument".into());
@@ -1885,6 +1909,11 @@ impl App {
                     }
                     Err(error) => Err(error.to_string()),
                 }
+            }
+            // A deferred action runs where the workspace admits it; a standalone window has none.
+            #[cfg(not(feature = "model"))]
+            SemanticActionKind::AppDeferred { .. } => {
+                Err("This action runs in a workspace, and this window has none".into())
             }
             SemanticActionKind::AppPrompted { .. } => {
                 let arg = arg.unwrap_or("");
@@ -1953,6 +1982,7 @@ impl App {
             return Ok(false);
         };
         if let Some(semantic_target) = semantic_target {
+            #[cfg(feature = "model")]
             if semantic_target.starts_with("ordinary-confirmation:") {
                 self.bindings.clear();
                 self.layout.node_map.clear();
@@ -1998,7 +2028,10 @@ impl App {
                 // An action-bound control queues what the verb asked for;
                 // run it now, as the accessible route does, so the node the
                 // caller acted on reports the change it made.
-                self.dispatch_control_invocations();
+                #[cfg(feature = "model")]
+                {
+                    self.dispatch_control_invocations();
+                }
                 self.invalidate_widget_resource_cache();
                 self.needs_sync = true;
                 self.layout.layout_dirty = true;
@@ -2052,6 +2085,7 @@ impl App {
         &mut self,
         encoded: tilo_actions::EncodedAction,
     ) -> Result<bool, String> {
+        #[cfg(feature = "model")]
         let before = self.state.doc.get_heads();
         let action = self
             .actions
@@ -2066,7 +2100,10 @@ impl App {
         )
         .map_err(|e| e.to_string())?;
         if dispatched.mutated_local() {
-            self.state.record_committed_action(before, None, None);
+            #[cfg(feature = "model")]
+            {
+                self.state.record_committed_action(before, None, None);
+            }
             self.needs_sync = true;
             self.layout.layout_dirty = true;
             self.invalidate_widget_resource_cache();

@@ -48,6 +48,30 @@ impl App {
         visible
     }
 
+    /// Whether input reaches the live app: no History presented over it takes it.
+    pub(super) fn app_live_input(&self) -> bool {
+        #[cfg(feature = "model")]
+        let live = self
+            .history
+            .as_ref()
+            .is_none_or(|history| !history.captures_input());
+        #[cfg(not(feature = "model"))]
+        let live = true;
+        live
+    }
+
+    /// Whether the window's History has a review open over the app.
+    pub(super) fn history_review_open(&self) -> bool {
+        #[cfg(feature = "model")]
+        let open = self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.review_is_open());
+        #[cfg(not(feature = "model"))]
+        let open = false;
+        open
+    }
+
     /// The window's History, as the widget it presents.
     pub(super) fn history_widget(&self) -> Option<&dyn Widget> {
         #[cfg(feature = "model")]
