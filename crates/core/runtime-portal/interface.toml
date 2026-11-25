@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one range for all of them: the image serves
 # every version from `oldest` to `version`.
 name = "runtime"
-version = 49
+version = 50
 version_const = "crates/core/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 oldest_const = "crates/core/runtime-portal/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
@@ -40,6 +40,7 @@ sources = [
     "crates/core/collab-types/src/member.rs",
     "crates/core/action-policy/src/member.rs",
     "crates/core/actions/src/remote/caller.rs",
+    "crates/core/actions/src/remote/asked.rs",
     "crates/core/action-policy/src/turn.rs",
     "crates/core/action-policy/src/roles.rs",
     "crates/core/action-policy/src/person.rs",
@@ -754,6 +755,9 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "PresenceKey::Widget.path" = "#0 Vec<PathSegment>"
 "PresenceKey::Workspace" = "#2 struct"
 "PresenceKey::Workspace.id" = "#0 String"
+"PressPoint" = "struct"
+"PressPoint.x" = "#0 i32"
+"PressPoint.y" = "#1 i32"
 "ProfilePhoto" = "struct try_from=PhotoInput"
 "ProfilePhoto.height" = "#1 u16"
 "ProfilePhoto.rgba" = "#2 Vec<u8>"
@@ -967,6 +971,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ShellCall::Leave" = "#17 struct"
 "ShellCall::Leave.workspace" = "#0 String"
 "ShellCall::Press" = "#5 struct"
+"ShellCall::Press.at" = "#2 Option<PressPoint>"
 "ShellCall::Press.serial" = "#1 u32"
 "ShellCall::Press.window" = "#0 u64"
 "ShellCall::Processes" = "#14 unit"
