@@ -1976,17 +1976,14 @@ impl Daemon {
         }
         // This device is one of the person's, listed with their others: what every host admits
         // it by, and where a revocation of it is marked. The device whose ticket made this one
-        // listed it before it answered the certificate, so what is left here is a record that
-        // does not have it yet: it is written where this device holds their own workspace and
-        // may write. A confined device was listed by the root that certified it, in the same
+        // listed it before it answered the certificate; a device no ticket made, as the one the
+        // person was founded on, writes itself, whether it holds their workspace or keeps a member
+        // copy of it. A confined device was listed by the root that certified it, in the same
         // step.
         if !confined {
             let (copies, own) = (workspaces.copies().clone(), identity.cert.clone());
             if let Err(error) = block_on_owned(async move {
                 use tilo_workspace_service::workspaces::person_workspace;
-                if !person_workspace::holds_person_workspace(&copies).await {
-                    return Ok(());
-                }
                 let person = own.user_public_key;
                 let listed = person_workspace::devices::of(&copies, &person)
                     .await
