@@ -310,6 +310,56 @@ fn high_contrast_on(service: &mut SettingsService) {
         .expect("set");
 }
 
+/// The shell's hint asks the section's verb where its surface names it (`settings/control-hints`),
+/// and the change it makes is the person's: a hint the person was shown counts as shown.
+#[test]
+fn the_shells_hint_verbs_are_published_where_its_surface_names_them() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = crate::in_memory::scoped();
+    let mut service = own_person("ada");
+    let at = crate::address("settings.control-hints").expect("the hints section is published");
+    // A setting the person changed first: the service publishes its sections again after every
+    // change it runs, and the hints must still be among them.
+    let _ = service
+        .invoke(
+            &section("appearance"),
+            "set-dark-mode",
+            &arguments(json!({ "on": false })),
+        )
+        .expect("the appearance changes");
+    let resources = service.resources();
+    let published = resources
+        .iter()
+        .find(|resource| resource.id.as_str() == at)
+        .unwrap_or_else(|| {
+            let ids: Vec<&str> = resources.iter().map(|r| r.id.as_str()).collect();
+            panic!("{at} is among the settings the service publishes: {ids:?}")
+        });
+    for verb in ["learn-control-hint", "note-control-hint-shown"] {
+        assert!(
+            published.actions.iter().any(|spec| spec.id == verb),
+            "{at} publishes `{verb}`"
+        );
+        assert!(
+            service
+                .resolve(&tilo_actions::ActionAddress::new(at.as_str(), verb))
+                .is_some(),
+            "the service resolves `{at}#{verb}`"
+        );
+    }
+    let _ = service
+        .invoke(
+            &at,
+            "note-control-hint-shown",
+            &arguments(json!({ "hint": "open-from-search" })),
+        )
+        .expect("the hint counts as shown");
+    assert_eq!(
+        service.read(&at).expect("published")["learned"]["shown"]["open-from-search"],
+        json!(1)
+    );
+}
+
 #[test]
 fn a_change_is_a_step_the_person_takes_back_through_the_section() {
     let _home = tilo_test_env::TestHome::new().unwrap();
