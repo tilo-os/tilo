@@ -167,7 +167,7 @@ impl SessionSettings {
                 finished.store(false, Ordering::Release);
             });
         if let Err(error) = spawned {
-            reading.store(false, Ordering::Release);
+            self.reading.store(false, Ordering::Release);
             tracing::warn!(%error, "the settings are read on the loop");
             self.settings.sync();
             self.settings.refresh();
