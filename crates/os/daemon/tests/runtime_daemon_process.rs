@@ -208,24 +208,32 @@ impl DaemonProfile {
         self.start()
     }
 
-    /// What the daemon refuses a connection with while its person's services are still starting.
-    const NOT_SERVED_YET: &'static str = "has no person signed in yet";
+    /// What a call in the workspace is told while the daemon is not serving it yet: its person's
+    /// services start after it answers its device's actions, and its own client asks whether the
+    /// profile's daemon answers within three hundred milliseconds.
+    const NOT_SERVING_YET: [&'static str; 2] = [
+        "has no person signed in yet",
+        "no Tilo daemon serves the profile",
+    ];
 
     /// Found the person's workspace here, as the first call of theirs in it does: this device's
     /// own client of the daemon asking in the workspace their key names. A key's run and a
     /// desktop's first call found it the same way.
     ///
     /// The daemon answers its device's actions from boot and takes connections as its person
-    /// once their services start, which a machine busy with the rest of the suite can outlast
-    /// the bound the daemon gives its own wait: a call refused because their part was still
-    /// starting is asked again, bounded only by the suite's hang bound.
+    /// once their services start. A machine busy with the rest of the suite can outlast both the
+    /// bound the daemon gives its own wait and the client's own look for the daemon, so a call
+    /// that failed for either is asked again, bounded only by the suite's hang bound.
     fn found(&self) -> Result<()> {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let Some(refused) = self.first_call()? else {
                 return Ok(());
             };
-            if !refused.contains(Self::NOT_SERVED_YET) {
+            if !Self::NOT_SERVING_YET
+                .iter()
+                .any(|said| refused.contains(said))
+            {
                 bail!("the person's first call failed: {refused}\n{}", self.log());
             }
             if Instant::now() >= deadline {
@@ -234,7 +242,7 @@ impl DaemonProfile {
                     self.log()
                 );
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
 
@@ -331,7 +339,22 @@ impl Drop for DaemonProfile {
         {
             eprintln!("daemon.log:\n{log}");
         }
-        if let Ok(socket) = native_socket(self.path())
+        // The daemon this profile started is told to stop by the pid this test kept of it:
+        // asking its socket for that pid waits a second on a machine busy with the rest of the
+        // suite, and a daemon left untold waits the whole hang bound before it is killed.
+        let own = self.daemon.as_mut().and_then(|daemon| {
+            let ended = daemon.try_wait();
+            matches!(ended, Ok(None))
+                .then(|| i32::try_from(daemon.id()).ok())
+                .flatten()
+        });
+        if let Some(pid) = own {
+            // SAFETY: `kill(2)` with SIGTERM on the daemon this test started, the signal a stop
+            // sends.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        } else if let Ok(socket) = native_socket(self.path())
             && let Ok(stream) = UnixStream::connect(socket)
         {
             let mut stream = stream;
