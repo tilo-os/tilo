@@ -396,6 +396,23 @@ pub fn agent_session_label(registered: &str, initialize: &Value, number: u64) ->
     format!("{name} #{number}")
 }
 
+/// Who a key's `cert` makes its requests as on this server: a server key is the person at their
+/// key, as its certificate names both, carrying the key beside them
+/// ([`tilo_actions::remote::Caller::own_key`]), so a listing of what the key did names the key
+/// while what it may do stays the person's; any other grant is the person here, and where its
+/// calls land they are the agent its certificate names.
+pub(crate) fn key_caller(cert: &tilo_user_identity::DeviceCert) -> tilo_actions::remote::Caller {
+    if cert.capabilities.server_key {
+        tilo_actions::remote::Caller::own_key(
+            cert.user_public_key,
+            cert.device_public_key,
+            &cert.device_label,
+        )
+    } else {
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+    }
+}
+
 impl Session {
     /// Who the session's requests are by: the key's person at the key, as its certificate names
     /// them, which the host reads as that person or as their agent. Never a label.
@@ -413,10 +430,7 @@ impl Session {
     ) -> Self {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let person = hex::encode(cert.user_public_key);
-        let caller = tilo_actions::remote::Caller::authenticated(
-            cert.user_public_key,
-            cert.device_public_key,
-        );
+        let caller = key_caller(cert);
         let account = Account::new(server, grant.clone(), reach.clone(), caller.clone());
         let grant = grant.id.clone();
         let agent = tilo_actions::policy::key_agent_id(&cert.device_public_key);

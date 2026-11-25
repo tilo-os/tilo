@@ -368,6 +368,16 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
 
 /// Who asked for the invocation: its name, its kind, and the member it is.
 pub(super) fn by(caller: &Caller) -> InvocationBy {
+    // A key's call is the key's: beside the person it acts as, the caller carries the key, and
+    // the listing names it as the member every key is (`agent`), never the person it is a key
+    // of.
+    if let Some(key) = caller.key() {
+        return InvocationBy {
+            name: key.label().to_owned(),
+            kind: "agent".to_owned(),
+            id: Some(key.id().to_owned()),
+        };
+    }
     let acting = caller.acting();
     let kind = if acting.is_agent() {
         "agent"

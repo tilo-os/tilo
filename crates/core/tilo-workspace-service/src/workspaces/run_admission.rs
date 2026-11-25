@@ -243,10 +243,10 @@ impl Workspaces {
 
     /// Admit a run of the key `key` certifies, in `workspace`, a workspace this service hosts,
     /// presenting `presentation` (the key's own proof for the workspace): the caller its calls
-    /// are is the key itself, never its person, so each call is decided by what the workspace
-    /// grants that key ([`Self::enter`] keeps a key's grant as it admits it). A key the person
-    /// made for their own programs is them at the key; an agent's grant is the agent alone, and
-    /// its calls are decided by what the workspace grants that agent.
+    /// are is the key, carried beside its person ([`Caller::own_key`]), so each listing names
+    /// the key, while every call is decided by the person's grants, narrowed by the key's
+    /// certificate ([`Self::enter`] keeps a key's grant as it admits it). An agent's grant is
+    /// the agent alone, and its calls are decided by what the workspace grants that agent.
     ///
     /// # Errors
     ///

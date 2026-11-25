@@ -50,7 +50,7 @@ pub mod environment_window;
 pub mod invocation_record;
 pub mod linux_apps;
 pub mod mcp_server;
-pub use caller::{Caller, Invited, KeptCaller, PlacedCaller, device_agent_id};
+pub use caller::{Caller, Invited, KeptCaller, KeyCall, PlacedCaller, device_agent_id};
 pub mod signed_invocation;
 pub use signed_invocation::{CallAllowed, SignedCall, SignedInvocation};
 mod catalogue;

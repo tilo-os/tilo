@@ -29,10 +29,16 @@ use tilo_lock::MutexRecover as _;
 
 use super::{ToTell, WeakWorkspaces, Workspaces};
 
-/// Who asks, as the system names `caller`: its agent by the name its key goes by, an app by
-/// its id, else the person's own device.
+/// Who asks, as the system names `caller`: its key where its call came in on one, its agent by
+/// the name its key goes by, an app by its id, else the person's own device.
 #[must_use]
 pub(crate) fn asked_by(caller: &Caller) -> AskedBy {
+    if let Some(key) = caller.key() {
+        return AskedBy::Agent(Named {
+            id: key.id().to_owned(),
+            name: key.label().to_owned(),
+        });
+    }
     let acting = caller.acting();
     if let Some(agent) = acting.agent_id() {
         return AskedBy::Agent(Named {

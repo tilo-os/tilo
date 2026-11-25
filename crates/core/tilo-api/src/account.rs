@@ -2223,7 +2223,7 @@ async fn revoke_in(connection: &Connection, workspace: &str, grant: &str) -> Res
 )]
 async fn forwarded_webhooks(connection: &Connection, op: Op, args: &Value) -> Outcome {
     let cert = connection.key.cert();
-    let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let caller = crate::session::key_caller(cert);
     let named = field(args, "workspace").map(str::to_owned);
     let workspaces = match named.clone() {
         Some(workspace) => vec![workspace],

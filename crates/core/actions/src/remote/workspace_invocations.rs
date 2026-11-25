@@ -203,9 +203,10 @@ pub struct InvocationBy {
     /// `agent` (every key, and an agent a person's device handed its session
     /// to), `person`, `bot` or `automation`.
     pub kind: String,
-    /// The member's own id inside that kind: an agent's, a bot's, a person's
-    /// (the lowercase hex of their root key), as History names their changes.
-    /// `None` for a run whose changes name no member (an automation's).
+    /// The member's own id inside that kind: an agent's, a bot's, a key's
+    /// (`grant-` and its device key, hex), a person's (the lowercase hex of
+    /// their root key), as History names their changes. `None` for a run whose
+    /// changes name no member (an automation's).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }

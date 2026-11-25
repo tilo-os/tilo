@@ -4002,9 +4002,9 @@ impl Daemon {
         Ok((provider, caller))
     }
 
-    /// A run of the key `key` in `workspace`: its calls are the key's own, admitted by the
-    /// certificate its person gave it and decided by what the workspace grants that key
-    /// ([`ServiceWorkspaces::admit_key`]), never by what its person may do.
+    /// A run of the key `key` in `workspace`: its calls are the key's, carried beside its person,
+    /// admitted by the certificate its person gave it and decided by what they may do there,
+    /// narrowed by the key's scope ([`ServiceWorkspaces::admit_key`]).
     fn provider_for_key(
         &self,
         workspace: &str,

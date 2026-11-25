@@ -84,6 +84,9 @@ pub struct Caller {
     // The name an agent goes by, from the key its person certified for it
     // (`Self::named`): presentation only, what History names it by.
     pub(super) agent_name: Option<String>,
+    // The key one of the person's own calls came in on (`Self::own_key`), beside the person it
+    // acts as: what listings name the call by. It grants nothing the person does not hold.
+    key: Option<KeyCall>,
     // What the person asked the agent to do, in a line (`Self::asked`): what
     // its session is labelled by, where it was asked.
     pub(super) asked: Option<String>,
@@ -111,6 +114,32 @@ pub struct Caller {
     // The person and records a placed device's certificate names (`Self::placed`): set only by
     // the transport that read them from the verified certificate.
     placed: Option<PlacedCaller>,
+}
+
+/// The key one of a person's calls came in on, beside the person it acts as
+/// ([`Caller::own_key`]): the member the key is known by everywhere a key is named
+/// ([`tilo_action_policy::key_agent_id`]) and the name the person gave it when they certified it.
+/// Display only: the call is the person's, decided by their grants and narrowed by the key's
+/// certificate, and it is never more.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KeyCall {
+    id: String,
+    label: String,
+}
+
+impl KeyCall {
+    /// The member the key is: `grant-` and its device key, hex, as the workspace and History
+    /// name what a key does.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The name the person gave the key, as the certificate they certified it with says.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
 }
 
 /// What a placed device's certificate says of the caller ([`Caller::placed`]): the person whose
@@ -171,6 +200,7 @@ impl Caller {
             approved_as: None,
             turn_person: None,
             agent_name: None,
+            key: None,
             asked: None,
             system: false,
             came: Came::OverALink,
@@ -190,6 +220,28 @@ impl Caller {
             Acting::person(hex::encode(user_public_key)),
             Some((user_public_key, device_public_key)),
         )
+    }
+
+    /// One of the person's own keys, the certificate the transport verified said it is one of
+    /// theirs (`device_label` is the name they gave it): a server key made for their programs,
+    /// whose calls are their own — their grants decide every call, narrowed by the key's
+    /// certificate, and it is never anything more. Beside the person it acts as, the caller
+    /// carries the key ([`KeyCall`]), so a listing says the key's call is the key's.
+    #[must_use]
+    pub fn own_key(user_public_key: [u8; 32], device_public_key: [u8; 32], label: &str) -> Self {
+        let mut caller = Self::authenticated(user_public_key, device_public_key);
+        caller.key = Some(KeyCall {
+            id: tilo_action_policy::key_agent_id(&device_public_key),
+            label: label.trim().to_owned(),
+        });
+        caller
+    }
+
+    /// The key this caller's call came in on ([`Self::own_key`]), where it did: whose name and
+    /// member it is, never a second person's.
+    #[must_use]
+    pub const fn key(&self) -> Option<&KeyCall> {
+        self.key.as_ref()
     }
 
     /// A visitor: a key no certificate in the workspace names, known by the key its
@@ -1029,6 +1081,10 @@ impl KeptCaller {
             approved_as: self.approved_as,
             turn_person: self.turn_person,
             agent_name: self.agent_name,
+            // The key a call came in on is not kept: a kept caller is admitted again for the
+            // call it waits with, by the person's authority, and the ask it waits in names the
+            // key it came on ([`super::asked::AskedFacts::by`]).
+            key: None,
             asked: self.asked,
             system: self.system,
             // A kept call is admitted again for what it was made for, never as a live
