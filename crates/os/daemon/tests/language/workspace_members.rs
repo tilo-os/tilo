@@ -147,9 +147,9 @@ fn a_key_the_person_approved_makes_no_owner_only_change() {
             "Hal administers the workspace"
         );
 
+        // The API names the workspace's governance as its listing does: `workspace/members/…`.
         let removing = format!(
-            "/v1/workspaces/{workspace}/resources/{}/actions/remove",
-            tilo_actions::remote::workspace_member(&workspace, &hal_hex)
+            "/v1/workspaces/{workspace}/resources/workspace/members/{hal_hex}/actions/remove"
         );
         let (status, by_key) = host.key("Ada's backend").post(&removing, &json!({})).await;
         assert_ne!(
@@ -244,7 +244,8 @@ fn an_administrators_page_may_not_unmake_an_administrator_nor_take_the_workspace
             .await
             .expect_err("an administrator does not take the workspace");
         assert!(
-            format!("{taking:?}").contains("only the workspace's owner may"),
+            format!("{taking:?}")
+                .contains("only the workspace's owner hands the workspace to someone else"),
             "{taking:?}"
         );
         let rows = people_now(&page, &workspace).await;
