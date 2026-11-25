@@ -6,7 +6,7 @@
 //! as an asked record ([`AskSender`]); and the dispatch then serves it as the person's
 //! agent member for that client. Each connection is one agent session
 //! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. The
-//! person's own programs reach the desktop as them through Tilo's API ([`crate::api_server`]),
+//! person's own programs reach the device's daemon as them through Tilo's API ([`crate::app_socket::serve_api`]),
 //! never here. "Always allow" is kept in this account's private state.
 //!
 //! A confined environment (a `ush` guest) has a server of its own, which its `ush` asks for here
@@ -1157,6 +1157,9 @@ pub(crate) struct SessionServices {
     /// The device's tilolang processes, which start a task's host as they start every app's
     /// process: unset until the session reaches them, and on a session that reaches none.
     processes: std::sync::OnceLock<runtime_portal::device_processes::Device>,
+    /// The keys of the agents the person admits here, which the device's daemon makes, certifies
+    /// and signs with ([`crate::agent_keys::AtDaemon`]): none on a session that reaches no daemon.
+    agent_keys: std::sync::OnceLock<Arc<dyn tilo_workspace_service::agents::agent_keys::AgentKeys>>,
     /// How the person's workspaces stand, to tell a workspace this device holds from one it is
     /// founding even between passes (a founding is under way while the loop waits for it).
     view: std::sync::OnceLock<Arc<crate::workspace_view::WorkspaceView>>,
@@ -1288,6 +1291,7 @@ impl SessionServices {
             founding: std::sync::Mutex::default(),
             held: std::sync::Mutex::default(),
             processes: std::sync::OnceLock::new(),
+            agent_keys: std::sync::OnceLock::new(),
             view: std::sync::OnceLock::new(),
             readings_woken: std::sync::Mutex::default(),
             readings_at: std::sync::Mutex::default(),
@@ -1322,6 +1326,25 @@ impl SessionServices {
     /// tilolang process of this computer.
     pub(crate) fn keep_processes(&self, processes: runtime_portal::device_processes::Device) {
         let _ = self.processes.set(processes);
+    }
+
+    /// Make, certify and sign with the keys of the agents the person admits through `keys` from
+    /// now on.
+    pub(crate) fn keep_agent_keys(
+        &self,
+        keys: Arc<dyn tilo_workspace_service::agents::agent_keys::AgentKeys>,
+    ) {
+        let _ = self.agent_keys.set(keys);
+    }
+
+    /// The keys of the agents the person admits here, or why there are none.
+    fn agent_keys(
+        &self,
+    ) -> Result<Arc<dyn tilo_workspace_service::agents::agent_keys::AgentKeys>, String> {
+        self.agent_keys
+            .get()
+            .cloned()
+            .ok_or_else(|| "this desktop reaches no daemon to make an agent's key".to_owned())
     }
 
     /// Where the programs of a task run as `person` here are done: each task's host, which the
@@ -2445,7 +2468,8 @@ fn serve_admitted(
             let name = sessions.name(&agent_session).unwrap_or(name);
             // An agent with no key of its own acts on nothing: the client is told why rather than
             // refused action by action.
-            let (signer, caller) = tilo_workspace_service::agents::agent_keys::this_device()
+            let (signer, caller) = session
+                .agent_keys()
                 .and_then(|keys| AgentSigner::grant(keys, &workspace, (&member, &name), &person))
                 .map_err(|why| {
                     tracing::warn!(%workspace, agent = %name, %why, "MCP server: the agent has no key of its own here");
@@ -2507,7 +2531,7 @@ fn serve_admitted(
 
 /// Where the programs of a task of the person's sitting here are done: over the session's own
 /// catalogue.
-pub(crate) fn person_tasks(
+fn person_tasks(
     session: &Arc<SessionServices>,
 ) -> Option<Arc<tilo_runtime::device::tasks::TaskHosts>> {
     session.task_hosts(Some(&session.person))

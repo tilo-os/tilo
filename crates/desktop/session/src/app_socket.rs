@@ -65,6 +65,80 @@ pub(crate) fn serve_identity(
     })
 }
 
+/// Take the connections the person's own programs (the `tilo` command, the SDKs, scripts) make
+/// at `path`, the API socket in the login's private directory, and hand each to the daemon over
+/// `shell`, which serves Tilo's API to them as the person. The kernel's account of the peer is
+/// the admission: only a program of this login, never one a sandbox confined though it is the
+/// same account, is handed over. The socket is taken for as long as the session runs.
+///
+/// # Errors
+/// The socket's directory is not this account's own, a live session answers at `path`, or the
+/// thread that takes connections could not start.
+pub(crate) fn serve_api(
+    path: &std::path::Path,
+    shell: runtime_collab::ShellClient,
+) -> std::io::Result<()> {
+    let listener = crate::mcp_server::bind_private(path)?;
+    listener.set_nonblocking(true)?;
+    std::thread::Builder::new()
+        .name("tilo-api-socket".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    tracing::error!(%error, "the API socket takes no connection");
+                    return;
+                }
+            };
+            let listener = {
+                let _inside = runtime.enter();
+                match tokio::net::UnixListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        tracing::error!(%error, "the API socket takes no connection");
+                        return;
+                    }
+                }
+            };
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&runtime, hand_api(listener, shell));
+        })?;
+    Ok(())
+}
+
+/// Take connections on `listener`, handing each of this login's own programs to the daemon's API.
+async fn hand_api(listener: tokio::net::UnixListener, shell: runtime_collab::ShellClient) {
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(error) => {
+                tracing::warn!(%error, "the API socket did not take a connection");
+                continue;
+            }
+        };
+        if !tilo_files::native::socket::tokio::peer_is_this_login(&stream) {
+            tracing::warn!("API: a connection from another account or a sandbox is refused");
+            continue;
+        }
+        let shell = shell.clone();
+        tokio::task::spawn_local(async move {
+            let connection = match stream.into_std() {
+                Ok(connection) => std::os::fd::OwnedFd::from(connection),
+                Err(error) => {
+                    tracing::error!(%error, "a program's API connection could not be handed over");
+                    return;
+                }
+            };
+            if let Err(error) = shell.hand_api(connection).await {
+                tracing::error!(%error, "the device's daemon did not take a program's API connection");
+            }
+        });
+    }
+}
+
 /// Bind `path` and take its connections with `accept` on a thread named `name`, until the socket
 /// drops.
 fn taking<F, Taken>(path: &std::path::Path, name: &str, accept: F) -> std::io::Result<AppSocket>

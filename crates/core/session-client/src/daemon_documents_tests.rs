@@ -202,6 +202,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
             published: None,
             workspaces,
             identity: None,
+            api: None,
             live: None,
             speaking: None,
         })),

@@ -91,13 +91,13 @@ mod activity_models;
 #[cfg(target_os = "linux")]
 mod activity_service;
 #[cfg(target_os = "linux")]
+mod agent_keys;
+#[cfg(target_os = "linux")]
 mod agent_sessions;
 #[cfg(target_os = "linux")]
 mod agents;
 #[cfg(target_os = "linux")]
 mod ambient_brightness;
-#[cfg(target_os = "linux")]
-mod api_server;
 #[cfg(target_os = "linux")]
 mod app_icons;
 #[cfg(target_os = "linux")]

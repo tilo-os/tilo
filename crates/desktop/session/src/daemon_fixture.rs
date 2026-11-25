@@ -196,6 +196,7 @@ impl TestDaemon {
                 published: None,
                 workspaces: workspaces.clone(),
                 identity: None,
+                api: None,
                 live: None,
                 speaking: None,
             })),

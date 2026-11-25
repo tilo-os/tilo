@@ -1554,6 +1554,16 @@ impl ShellClient {
             .await
     }
 
+    /// Hand the daemon `connection`, which one of the person's own programs made at this login's
+    /// API socket, to serve as Tilo's API for them ([`crate::wire::shell::HandedTo::Api`]).
+    ///
+    /// # Errors
+    /// The link carries no descriptors, or the daemon refused the connection.
+    pub async fn hand_api(&self, connection: std::os::fd::OwnedFd) -> Result<(), NotAvailable> {
+        self.hand(crate::wire::shell::HandedTo::Api, connection, None)
+            .await
+    }
+
     /// A connection the daemon carries as one link of this shell's live session
     /// (`tilo_live::link`): one end of a pair made here, the other handed over on this link.
     ///

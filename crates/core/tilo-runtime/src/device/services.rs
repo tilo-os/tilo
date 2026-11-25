@@ -164,6 +164,8 @@ pub struct Daemon {
     /// Tilo's API as this device, once a caller needed it: one, so an invocation of the
     /// account's begun on one connection is followed on the next.
     api: std::sync::OnceLock<Arc<tilo_api::direct::Direct>>,
+    /// What the person's shell reaches: the one dispatch, and this API for their programs.
+    shell_dispatch: Arc<super::shell::Dispatching>,
     /// What hands agents' connections on the native endpoint to the device's session.
     agents: super::serve::Agents,
     /// The connections this part of the daemon serves, closed when it ends.
@@ -195,6 +197,20 @@ impl Daemon {
     /// The person's id, hex of their root, as which this device acts.
     pub(crate) fn person_id(&self) -> String {
         hex::encode(self.cert.user_public_key)
+    }
+
+    /// Serve Tilo's API to the person's own programs on this computer (the `tilo` command, the
+    /// SDKs, scripts), as this device's API ([`Self::api`]): each connection one of them makes at
+    /// the API socket in their login's private directory is taken by their shell, which this
+    /// daemon started, and handed over on its link to be served here. The key it acts as never
+    /// leaves the daemon.
+    pub(crate) fn serve_programs_api(self: &Arc<Self>) {
+        match self.api() {
+            Ok(api) => self
+                .shell_dispatch
+                .serve_api(self.cert.user_public_key, api),
+            Err(error) => tracing::warn!(%error, "no API for this computer's programs"),
+        }
     }
 
     /// Hand each origin connector this device starts the connection to this device's one
@@ -2603,6 +2619,7 @@ impl Daemon {
             cert: identity.cert,
             account: Mutex::new(None),
             api: std::sync::OnceLock::new(),
+            shell_dispatch: Arc::clone(&shell_dispatch),
             agents: super::serve::Agents::default(),
             connections: Arc::default(),
             place,

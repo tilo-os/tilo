@@ -801,7 +801,7 @@ fn start(
         }
     );
     let mcp_server = options.mcp_server.clone();
-    let api_server = options.api_server.clone();
+    let api_socket = options.api_socket.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
     tilo_startup_metrics::mark("session-open-start");
@@ -847,7 +847,7 @@ fn start(
             agent: mcp_server.as_deref(),
             test_control: test_control.as_deref(),
             admin: admin_control.as_deref(),
-            api: api_server.as_deref(),
+            api: api_socket.as_deref(),
         },
     )
 }
@@ -1152,7 +1152,7 @@ fn device_options(
         mcp_server: tilo_session::mcp_server::path(),
         // The person's own programs reach this desktop through Tilo's API in the login's private
         // directory: a nested session's is its own.
-        api_server: tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))
+        api_socket: tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))
             .map(|directory| directory.join(tilo_paths::login::API_SOCKET_FILE)),
         // A session in another desktop's window dims none of the window's machine: the display it
         // draws in is that desktop's.

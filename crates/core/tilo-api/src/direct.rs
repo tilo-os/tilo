@@ -286,12 +286,14 @@ impl Direct {
                 continue;
             }
             let this = Arc::clone(&this);
-            tokio::spawn(async move { this.serve_one(stream).await });
+            tokio::spawn(async move { this.serve_admitted(stream).await });
         }
     }
 
-    /// Serve one admitted connection as this key.
-    async fn serve_one(&self, stream: tilo_files::native::socket::tokio::Stream) {
+    /// Serve one connection as this key, one whoever took it already admitted: a program of the
+    /// person's that the desktop took at their login's API socket and handed to the device's
+    /// daemon, as [`Self::serve`] admits its own.
+    pub async fn serve_admitted(&self, stream: tilo_files::native::socket::tokio::Stream) {
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
         };

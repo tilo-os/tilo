@@ -1025,7 +1025,7 @@ pub fn seeded_session(root: &Path) -> Session {
             asks: Some(person_asked()),
             app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
-            api_server: Some(root.join("api.sock")),
+            api_socket: Some(root.join("api.sock")),
             ..Options::default()
         },
     );
@@ -1223,7 +1223,7 @@ pub fn api_options(root: &Path) -> Options {
         asks: Some(person_asked()),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
-        api_server: Some(root.join("api.sock")),
+        api_socket: Some(root.join("api.sock")),
         ..Options::default()
     }
 }

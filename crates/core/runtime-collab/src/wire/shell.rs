@@ -4,7 +4,7 @@
 //! them, and the session is its client. The daemon admits a shell by its launch, as it admits an
 //! app: it makes a link for one shell, a connection it opened itself with a one-use secret, and
 //! hands it to the shell it starts ([`SHELL_FD_ENV`]). A process that holds no link, whatever
-//! account it runs as, is not the shell. A shell connection asks five things of the daemon:
+//! account it runs as, is not the shell. A shell connection asks six things of the daemon:
 //!
 //! - the documents of the workspaces the device holds, read for the device itself and written as
 //!   it: [`ShellCall`] carries what `tilo_peer_state::workspace_documents::DeviceDocuments` and
@@ -19,6 +19,9 @@
 //!   ([`ShellCall::Processes`]);
 //! - the links of the workspaces' live sessions, which the daemon carries into the relay it runs
 //!   or on to another device's: each a connection the shell hands over ([`HandedTo::Live`]);
+//! - the person's own programs' connections to Tilo's API, which the shell takes at the socket
+//!   they have always reached in the login's private directory and the daemon serves as the
+//!   person ([`HandedTo::Api`]);
 //! - how each workspace stands (its people, its policy, its hosts and what this device may do
 //!   there): resources the daemon publishes and the shell watches on the same connection
 //!   ([`super::Operation::Services`], [`super::Operation::Watch`]).
@@ -81,6 +84,12 @@ pub enum HandedTo {
     /// which the daemon carries into the relay it runs or on to another device's. It is the
     /// shell's own, so it carries no [`VouchedApp`].
     Live,
+    /// Tilo's API for the person's own programs on this computer (the `tilo` command, the SDKs,
+    /// scripts): a connection one of them made at the API socket in the login's private
+    /// directory, which only this account's own programs reach and the shell took after the
+    /// kernel said its peer is one of them. The daemon serves it as the person, so it carries
+    /// no [`VouchedApp`].
+    Api,
 }
 
 /// The app a [`Vouch`] admits its connection as.
@@ -254,6 +263,45 @@ pub enum ShellCall {
     /// Every change of `workspace`'s members its governance names, oldest first: what a feed of
     /// the workspace's changes lists as changes of its members.
     MemberChanges { workspace: String },
+    /// The key of an agent the person admitted at the shell: made, certified and kept by the
+    /// device, which signs as it, so no key of an agent's is ever the shell's.
+    AgentKey(AgentKeyCall),
+}
+
+/// What the shell asks of the key of an agent its person admitted ([`ShellCall::AgentKey`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentKeyCall {
+    /// The key `agent`, which the person's devices list as `name`, signs with in `workspace`,
+    /// certified by the root of `person`, the shell's own person: answered
+    /// [`AgentKeyAnswer::Granted`].
+    Grant {
+        workspace: String,
+        agent: String,
+        name: String,
+        person: [u8; 32],
+    },
+    /// `request` (a `tilo_actions::remote::InvokeRequest` as JSON) signed in `workspace` with
+    /// `key`, a key a [`Self::Grant`] gave: answered [`AgentKeyAnswer::Signed`].
+    Sign {
+        workspace: String,
+        key: [u8; 32],
+        request: Vec<u8>,
+    },
+    /// The revocation the root of `person` signed for `key`, as their devices say now: answered
+    /// [`AgentKeyAnswer::Revocation`].
+    Revocation { person: [u8; 32], key: [u8; 32] },
+}
+
+/// The answer to an [`AgentKeyCall`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentKeyAnswer {
+    /// The agent's public key.
+    Granted([u8; 32]),
+    /// The request, signed, as JSON.
+    Signed(Vec<u8>),
+    /// The revocation (a `tilo_user_identity::RevocationEntry` as JSON), or none while the key
+    /// acts.
+    Revocation(Option<Vec<u8>>),
 }
 
 /// What the person says of themselves in one workspace, as their shell knows it: what the
@@ -514,6 +562,8 @@ pub enum ShellReply {
     },
     /// A [`ShellCall::MemberChanges`], or why the device holds none.
     MemberChanges(Result<Vec<ShellMemberChange>, String>),
+    /// A [`ShellCall::AgentKey`], or why the device refused it.
+    AgentKey(Result<AgentKeyAnswer, String>),
 }
 
 /// One change of a workspace's members as its governance names it: the change's hash, the

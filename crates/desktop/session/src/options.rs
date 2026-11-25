@@ -177,9 +177,10 @@ pub struct Options {
     /// login asks on to work in a workspace as an agent, and the person admits it. `None` : this
     /// session serves no agents (a test).
     pub mcp_server: Option<std::path::PathBuf>,
-    /// Where the session serves Tilo's API to its person's own programs on this computer, as them
-    /// ([`crate::api_server`]): its login's `api.sock`. `None` : it serves none.
-    pub api_server: Option<std::path::PathBuf>,
+    /// Where the person's own programs on this computer reach Tilo's API, as them: its login's
+    /// `api.sock`. The device's daemon serves it; the session takes each connection there and
+    /// hands it over on its shell link ([`crate::app_socket::serve_api`]). `None`: no socket.
+    pub api_socket: Option<std::path::PathBuf>,
     /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
     /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
     /// certifies an agent's grant for it, listed with their devices. A program presenting the key
@@ -407,7 +408,7 @@ impl Default for Options {
             vpn: None,
             app_socket: AppSocket::default(),
             mcp_server: None,
-            api_server: None,
+            api_socket: None,
             agent_key: None,
             test_control: None,
             admin_control: None,

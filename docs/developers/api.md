@@ -17,13 +17,12 @@ Three things serve it:
   `tilo` command calls the same actions through its computer's daemon instead, as the account
   that runs it. The SDKs link the same Rust client the API server runs (`tilo-api`'s
   library), which serves these same routes in process: no second implementation.
-- **A Tilo desktop, to its own person's programs on that computer.** The desktop serves these
-  routes as HTTP on `$XDG_RUNTIME_DIR/tilo-session/api.sock`, in its login's private directory,
-  with the same library: every call acts as the person sitting there, by the desktop's own
-  device key, so it needs no `Authorization`, and a connection from another account is refused.
-  The desktop answers each workspace it holds itself; it makes, branches and deletes no
-  workspaces and mints no keys here. `tilolang repl --session` reaches a development session
-  this way.
+- **A Tilo desktop's computer, to its own person's programs there.** These routes are served as
+  HTTP on `$XDG_RUNTIME_DIR/tilo-session/api.sock`, in the login's private directory. The
+  computer's daemon serves them, with the same library, as the person by the device's key, which
+  never leaves the daemon: so a call needs no `Authorization`. The desktop only takes each
+  connection there, refuses one from another account or a sandbox, and hands the rest to the
+  daemon over its link. `tilolang repl --session` reaches a development session this way.
 
 MCP is the same calls for agents (`/mcp` on the API server, `tilo mcp` on a computer): its tools
 answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)). One tool

@@ -326,6 +326,7 @@ async fn device_carrying(live: Option<crate::apps::shell::LiveLinks>) -> Device 
                 published: None,
                 workspaces: host.workspaces().clone(),
                 identity: None,
+                api: None,
                 live,
                 speaking: None,
             })),

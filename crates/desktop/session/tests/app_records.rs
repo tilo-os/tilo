@@ -69,7 +69,7 @@ fn session(
             asks: Some(tilo_service::asks::channel()),
             app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
-            api_server: Some(root.join("api.sock")),
+            api_socket: Some(root.join("api.sock")),
             launches,
             ..Options::default()
         },
@@ -273,18 +273,25 @@ fn the_seeded_tasks_are_in_the_store_the_tasks_window_opens() {
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
 
-    let shown = in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
-        if !tasks_in(host)
-            .iter()
-            .any(|(_, title, _)| title == SEEDED_TASK)
-        {
-            return None;
-        }
-        let view = host.open_main(TASKS).ok()?;
-        let mut shown = Vec::new();
-        texts_of(view.tree(), &mut shown);
-        Some(shown)
-    });
+    let shown = in_window(
+        &mut session,
+        root.path(),
+        &launches,
+        &workspace,
+        TASKS_WINDOW,
+        |host| {
+            if !tasks_in(host)
+                .iter()
+                .any(|(_, title, _)| title == SEEDED_TASK)
+            {
+                return None;
+            }
+            let view = host.open_main(TASKS).ok()?;
+            let mut shown = Vec::new();
+            texts_of(view.tree(), &mut shown);
+            Some(shown)
+        },
+    );
     assert!(
         shown.iter().any(|text| text == SEEDED_PROJECT),
         "the Tasks window's view lists the seeded projects: {shown:?}"
@@ -374,7 +381,7 @@ fn a_fresh_sessions_seeded_tasks_move_into_the_workspace_it_founds_without_going
             asks: Some(tilo_service::asks::channel()),
             app_socket: AppSocket::At(root.path().join("app_wire.sock")),
             mcp_server: Some(root.path().join("agent.sock")),
-            api_server: Some(root.path().join("api.sock")),
+            api_socket: Some(root.path().join("api.sock")),
             ..Options::default()
         },
     );
@@ -412,12 +419,19 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
     // The session's Tasks is the workspace's once it holds it: the seeded task is there first.
-    in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
-        tasks_in(host)
-            .iter()
-            .any(|(_, title, _)| title == SEEDED_TASK)
-            .then_some(())
-    });
+    in_window(
+        &mut session,
+        root.path(),
+        &launches,
+        &workspace,
+        TASKS_WINDOW,
+        |host| {
+            tasks_in(host)
+                .iter()
+                .any(|(_, title, _)| title == SEEDED_TASK)
+                .then_some(())
+        },
+    );
     let tasks = tasks_root(&session);
 
     session
@@ -430,16 +444,23 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
         )
         .unwrap_or_else(|error| panic!("the app's action runs: {error}"));
 
-    let titles = in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
-        let titles: Vec<String> = tasks_in(host)
-            .into_iter()
-            .map(|(_, title, _)| title)
-            .collect();
-        titles
-            .iter()
-            .any(|title| title == "Water the ferns")
-            .then_some(titles)
-    });
+    let titles = in_window(
+        &mut session,
+        root.path(),
+        &launches,
+        &workspace,
+        TASKS_WINDOW,
+        |host| {
+            let titles: Vec<String> = tasks_in(host)
+                .into_iter()
+                .map(|(_, title, _)| title)
+                .collect();
+            titles
+                .iter()
+                .any(|title| title == "Water the ferns")
+                .then_some(titles)
+        },
+    );
     assert!(
         titles.iter().any(|title| title == SEEDED_TASK),
         "the seeded tasks are still beside it: {titles:?}"
@@ -465,32 +486,39 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
 
     // The person checks the task off in the window, as its check box does.
-    in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
-        let (task, _, _) = tasks_in(host)
-            .into_iter()
-            .find(|(_, title, _)| title == "Book a haircut")?;
-        let check = host
-            .package(TASKS)?
-            .meta
-            .actions
-            .iter()
-            .find(|action| action.name == "check")?
-            .id
-            .clone();
-        host.runtime()
-            .invoke_action(
-                &me(),
-                (
-                    check.as_str(),
-                    vec![Value::resource(&task), Value::Bool(true)],
-                ),
-            )
-            .unwrap_or_else(|error| panic!("the window checks the task off: {error}"));
-        if let Some(refused) = host.store().take_refusal() {
-            panic!("the workspace's store refused the window's write: {refused}");
-        }
-        Some(())
-    });
+    in_window(
+        &mut session,
+        root.path(),
+        &launches,
+        &workspace,
+        TASKS_WINDOW,
+        |host| {
+            let (task, _, _) = tasks_in(host)
+                .into_iter()
+                .find(|(_, title, _)| title == "Book a haircut")?;
+            let check = host
+                .package(TASKS)?
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.name == "check")?
+                .id
+                .clone();
+            host.runtime()
+                .invoke_action(
+                    &me(),
+                    (
+                        check.as_str(),
+                        vec![Value::resource(&task), Value::Bool(true)],
+                    ),
+                )
+                .unwrap_or_else(|error| panic!("the window checks the task off: {error}"));
+            if let Some(refused) = host.store().take_refusal() {
+                panic!("the workspace's store refused the window's write: {refused}");
+            }
+            Some(())
+        },
+    );
 
     let mut repl = Api::open(&mut session, root.path());
     let mut seen = String::new();
@@ -552,8 +580,13 @@ fn a_task_added_in_the_window_is_the_persons_and_marks_nothing_for_them() {
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
     let me = me();
 
-    let (versions, unseen) =
-        in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
+    let (versions, unseen) = in_window(
+        &mut session,
+        root.path(),
+        &launches,
+        &workspace,
+        TASKS_WINDOW,
+        |host| {
             let Some((milk, _, _)) = tasks_in(host)
                 .into_iter()
                 .find(|(_, title, _)| title == "Milk")
@@ -564,7 +597,8 @@ fn a_task_added_in_the_window_is_the_persons_and_marks_nothing_for_them() {
             let versions = host.runtime().versions(&milk).ok()?;
             let unseen = host.runtime().unseen(&me, &milk).ok()?;
             Some((versions, unseen))
-        });
+        },
+    );
     assert!(!versions.is_empty(), "the task has a history");
     for version in &versions {
         assert_eq!(
@@ -595,8 +629,13 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
     let me = me();
 
-    let (typed, steps, lead, (placeholder, arrow, beside, said)) =
-        in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
+    let (typed, steps, lead, (placeholder, arrow, beside, said)) = in_window(
+        &mut session,
+        root.path(),
+        &launches,
+        &workspace,
+        TASKS_WINDOW,
+        |host| {
             let package = host.package(TASKS)?;
             let task = package.meta.types.iter().find(|ty| ty.name == "Task")?;
             let title = task
@@ -729,7 +768,8 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
             let mut said = Vec::new();
             texts_of(opened, &mut said);
             Some((typed, steps, lead, (placeholder, arrow, beside, said)))
-        });
+        },
+    );
     let expected: Vec<(String, String)> = (1..=TYPED.len())
         .map(|end| (TYPED[..end - 1].to_owned(), TYPED[..end].to_owned()))
         .collect();

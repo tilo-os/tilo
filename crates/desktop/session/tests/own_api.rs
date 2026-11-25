@@ -78,7 +78,7 @@ fn session_serving(
         collab: false,
         services,
         app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
-        api_server: Some(api.to_owned()),
+        api_socket: Some(api.to_owned()),
         ..Options::default()
     });
     Desktop {
@@ -256,5 +256,34 @@ fn the_socket_is_all_its_directory_holds() {
         held,
         vec![tilo_paths::login::API_SOCKET_FILE.to_owned()],
         "the socket's directory holds the socket and nothing else, never a key: {held:?}"
+    );
+}
+
+/// A program of this login reaches the workspaces its person holds and no other: one sent to a
+/// workspace this computer does not hold is refused, and nothing runs.
+#[test]
+fn a_program_is_refused_a_workspace_its_person_does_not_hold() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let api = root.path().join("api.sock");
+    let desktop = session_with_api(root.path(), &api);
+    let mut session = desktop.session;
+    served(&mut session, &api);
+    let held = held_workspace(&mut session, &api);
+
+    let elsewhere = uuid::Uuid::new_v4().to_string();
+    assert_ne!(held, elsewhere);
+    let refused = api_request(
+        &api,
+        "POST",
+        &format!("/v1/workspaces/{elsewhere}/programs"),
+        Some(&json!({"program": "1 + 1"})),
+    );
+    // Refused by the API's answer, not by a connection that failed.
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|why| !why.contains("API socket")),
+        "a workspace the person does not hold is refused: {refused:?}"
     );
 }

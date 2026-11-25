@@ -971,6 +971,8 @@ fn serve_the_started(
     // The origin connectors this device starts reach the one dispatch on the connection
     // handed them, admitted as the app the launch record says they run.
     session.hand_actions_to_connectors();
+    // The person's own programs reach Tilo's API at their login's socket, through their shell.
+    session.serve_programs_api();
     // Migrations run on the device that holds the data they read.
     session.serve_migrations();
     // The secrets the apps the move carried over kept in this device's old keeper are the

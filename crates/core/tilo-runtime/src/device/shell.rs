@@ -75,6 +75,7 @@ pub(crate) fn services(
     );
     standing.follow();
     let copies = workspaces.copies().clone();
+    let api = Arc::clone(&dispatching);
     ShellServices {
         links: Arc::clone(links),
         socket,
@@ -99,17 +100,52 @@ pub(crate) fn services(
         standing,
         published: Some(published),
         identity: Some(identity),
+        api: Some(Arc::new(move |shell: &ShellCaller, stream| {
+            api.api(shell, stream)
+        })),
     }
 }
 
-/// The one dispatch the person's calls reach, once the daemon's broker serves it.
+/// The one dispatch the person's calls reach, once the daemon's broker serves it, and Tilo's API
+/// their own programs reach, once the daemon serves that.
 #[derive(Default)]
-pub(crate) struct Dispatching(OnceLock<PersonDispatch>);
+pub(crate) struct Dispatching {
+    person: OnceLock<PersonDispatch>,
+    /// The person the API acts as, and the API.
+    api: OnceLock<([u8; 32], Arc<tilo_api::direct::Direct>)>,
+}
 
 impl Dispatching {
     /// The person's calls reach `person` from now on.
     pub(crate) fn serve(&self, person: PersonDispatch) {
-        let _ = self.0.set(person);
+        let _ = self.person.set(person);
+    }
+
+    /// The connections the person's shell takes for their programs are served by `api`, acting
+    /// as `person`, from now on.
+    pub(crate) fn serve_api(&self, person: [u8; 32], api: Arc<tilo_api::direct::Direct>) {
+        let _ = self.api.set((person, api));
+    }
+
+    /// Serve `stream`, a connection a program of `shell`'s person made at their API socket, on
+    /// the daemon's runtime: only the shell of the person the API acts as hands one over.
+    fn api(&self, shell: &ShellCaller, stream: tilo_socket::Stream) -> Result<(), String> {
+        let (person, api) = self
+            .api
+            .get()
+            .ok_or("this device's API for its person's programs is not up yet")?;
+        if shell.person != *person {
+            return Err("this device serves its API to its own person's programs only".to_owned());
+        }
+        let api = Arc::clone(api);
+        let runtime = tilo_rt::app().handle();
+        let stream = {
+            let _inside = runtime.enter();
+            tilo_socket::tokio::from_std(stream)
+                .map_err(|error| format!("a program's API connection cannot be served: {error}"))?
+        };
+        runtime.spawn(async move { api.serve_admitted(stream).await });
+        Ok(())
     }
 }
 
@@ -161,7 +197,7 @@ impl ShellActions for Actions {
                 }),
             ));
         }
-        let Some(person) = self.dispatching.0.get().cloned() else {
+        let Some(person) = self.dispatching.person.get().cloned() else {
             return Box::pin(std::future::ready(Err(
                 "this device's dispatch is not up yet".to_owned(),
             )));
@@ -503,7 +539,8 @@ async fn listed(
             Ok(Value::String(workspace.to_string()))
         }
         JOIN => Ok(Value::String(
-            Box::pin(workspaces.copies().join_member(text("invite")?)).await?
+            Box::pin(workspaces.copies().join_member(text("invite")?))
+                .await?
                 .to_string(),
         )),
         BRANCH => {

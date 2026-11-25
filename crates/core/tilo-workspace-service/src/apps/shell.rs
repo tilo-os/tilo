@@ -141,6 +141,10 @@ pub struct ShellServices {
     /// The device's identity service, serving a connection the shell took for it from one of the
     /// person's apps: `None` where the device runs none.
     pub identity: Option<std::sync::Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>>,
+    /// Tilo's API for the person's own programs on this computer, serving a connection the shell
+    /// took at their API socket ([`runtime_collab::wire::shell::HandedTo::Api`]): `None` where
+    /// the device serves no API, and the connection is refused.
+    pub api: Option<ShellApi>,
     /// What carries a link of the shell's live session (`tilo_live::link`), handed over as a
     /// connection the shell made for it ([`runtime_collab::wire::shell::HandedTo::Live`]): the
     /// device's live session, which runs its relay. `None` where the device runs none, and a
@@ -184,6 +188,11 @@ pub trait ShellSpeaking: Send + Sync {
 /// What [`ShellSpeaking::join`] answers once the device holds the call's media keys: the call's
 /// channel and its rule's generation.
 pub type JoinAnswer = Pin<Box<dyn Future<Output = Result<Option<(String, u64)>, String>> + Send>>;
+
+/// Tilo's API as the device serves it to the programs of the shell's person: it serves the
+/// connection, or refuses it, saying why, for a shell whose person it does not act for.
+pub type ShellApi =
+    Arc<dyn Fn(&ShellCaller, tilo_socket::Stream) -> Result<(), String> + Send + Sync>;
 
 /// What carries one admitted link of a shell's live session until it ends.
 pub type LiveLinks = Arc<

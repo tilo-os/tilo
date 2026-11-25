@@ -230,6 +230,18 @@ fn vouch_for(
         }
         return carry_live(shell, connection);
     }
+    if to == runtime_collab::wire::shell::HandedTo::Api {
+        if app.is_some() {
+            return Err("a program's API connection is vouched for by no launch".to_owned());
+        }
+        let api = shell
+            .services
+            .api
+            .as_ref()
+            .ok_or("this device serves no API to its person's programs")?;
+        api(&shell.caller, handed_stream(connection))?;
+        return Ok(ShellReply::Vouched);
+    }
     if to == runtime_collab::wire::shell::HandedTo::Identity {
         if app.is_some() {
             return Err("an identity connection is vouched for by no launch".to_owned());
@@ -319,6 +331,7 @@ pub(super) fn answer(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
             ShellCall::MemberChanges { workspace } => {
                 member_changes_reply(&services, workspace).await?
             }
+            ShellCall::AgentKey(call) => agent_key_reply(shell.caller, call).await?,
             call @ ShellCall::Write { .. } => write(&services, call).await?,
             ShellCall::Served {
                 workspace,
@@ -429,6 +442,63 @@ async fn readable_reply(
             .await
             .map_err(|_| "the read stopped before it answered".to_owned())?,
     ))
+}
+
+/// What the shell asks of the key of an agent its person admitted, answered with the keys this
+/// device makes and its person's root certifies ([`crate::agents::agent_keys::this_device`]): a
+/// key of the shell's own person's agents alone, which never leaves the device.
+async fn agent_key_reply(
+    shell: crate::apps::shell::ShellCaller,
+    call: runtime_collab::wire::shell::AgentKeyCall,
+) -> Result<ShellReply, String> {
+    use runtime_collab::wire::shell::{AgentKeyAnswer, AgentKeyCall};
+    let workspace_of = |workspace: &str| {
+        tilo_desktop_model::WorkspaceId::parse(workspace)
+            .ok_or_else(|| format!("{workspace} names no workspace"))
+    };
+    let answered = tokio::task::spawn_blocking(move || {
+        let keys = crate::agents::agent_keys::this_device()?;
+        match call {
+            AgentKeyCall::Grant {
+                workspace,
+                agent,
+                name,
+                person,
+            } => {
+                if person != shell.person {
+                    return Err("the shell admits agents of its own person only".to_owned());
+                }
+                keys.grant(workspace_of(&workspace)?, &agent, &name, person)
+                    .map(AgentKeyAnswer::Granted)
+            }
+            AgentKeyCall::Sign {
+                workspace,
+                key,
+                request,
+            } => {
+                let (cert, _) = keys.made(&key).ok_or(
+                    "the agent's key was not made on this device, or its person revoked it",
+                )?;
+                if cert.user_public_key != shell.person {
+                    return Err("the key is no agent's of the shell's person".to_owned());
+                }
+                let mut request: tilo_actions::remote::InvokeRequest =
+                    serde_json::from_slice(&request).map_err(|error| error.to_string())?;
+                keys.sign(workspace_of(&workspace)?, &key, &mut request)?;
+                serde_json::to_vec(&request)
+                    .map(AgentKeyAnswer::Signed)
+                    .map_err(|error| error.to_string())
+            }
+            AgentKeyCall::Revocation { person, key } => keys
+                .revocation(&person, &key)?
+                .map(|entry| serde_json::to_vec(&entry).map_err(|error| error.to_string()))
+                .transpose()
+                .map(AgentKeyAnswer::Revocation),
+        }
+    })
+    .await
+    .map_err(|_| "the agent's key stopped before it answered".to_owned())?;
+    Ok(ShellReply::AgentKey(answered))
 }
 
 /// The member changes of `workspace`, as the device's documents read them.

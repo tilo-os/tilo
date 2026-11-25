@@ -140,7 +140,7 @@ fn session(
         asks: Some(tilo_service::asks::channel()),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
-        api_server: Some(root.join("api.sock")),
+        api_socket: Some(root.join("api.sock")),
         launches,
         ..Options::default()
     });

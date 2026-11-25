@@ -945,6 +945,16 @@ impl Session {
         if let Ok(processes) = &device_processes {
             session_services.keep_processes(processes.clone());
         }
+        // The keys of the agents the person admits here are the daemon's: it makes, certifies
+        // and signs with them.
+        if daemon_link.is_ok() {
+            session_services.keep_agent_keys(std::sync::Arc::new(crate::agent_keys::AtDaemon(
+                tilo_session_client::daemon_documents::DaemonShell::new(
+                    daemon_link.clone(),
+                    tilo_rt::app().handle().clone(),
+                ),
+            )));
+        }
         // Until the first pass says whether the person has workspaces of their own, an ask of the
         // workspace the shell started with waits: that workspace is founded the moment it is known
         // to be theirs, and taken off the shell otherwise. A session with no identity founds none.
@@ -1351,15 +1361,26 @@ impl Session {
         let liveness = options.test_control.as_deref().and_then(|control| {
             compositor.serve_liveness(control, crate::mcp_server::bind_private)
         });
-        // Tilo's API for the person's own programs on this computer, as them.
-        if let Some(path) = options.api_server.as_deref() {
-            crate::api_server::serve(
-                path,
-                app_wire
-                    .as_ref()
-                    .and_then(|app_wire| app_wire.dispatch.clone()),
-                std::sync::Arc::clone(&session_services),
-            );
+        // Tilo's API for the person's own programs on this computer, as them: the daemon serves
+        // it, and this session takes their connections at the socket they reach it at.
+        if let Some(path) = options.api_socket.as_deref() {
+            match &daemon_link {
+                Ok(shell) => match crate::app_socket::serve_api(path, shell.clone()) {
+                    Ok(()) => tracing::info!(
+                        path = %path.display(),
+                        "taking this computer's programs to the device's API"
+                    ),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "no API for this computer's programs"
+                    ),
+                },
+                Err(reason) => tracing::warn!(
+                    %reason,
+                    "no API for this computer's programs: the session reaches no daemon"
+                ),
+            }
         }
         let mcp_server = server.map(|server| {
             server.serve(
