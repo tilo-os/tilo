@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.backups@cf21eed351c07025";
+export const SURFACE = "so.tilo.backups@4aa113887ed5003b";
 
 /** Whether a stored snapshot is whole, being checked or known broken. One of "complete", "verifying", "failed". */
 export type Health = "complete" | "verifying" | "failed";

@@ -22,11 +22,12 @@ pub struct App {
     pub surface: String,
 }
 
-/// The name a caller invokes `verb` by, or `None` for the framework's own content verbs
-/// (`type`, `migrate`), which no caller invokes.
+/// The name a caller invokes `verb` by, or `None` for a verb the store writes itself
+/// ([`VerbSurface::is_store_verb`]): the content edit and the migration, which no caller
+/// invokes. The platform's `$` verbs stay, since a resource's fields are set by running
+/// `edit-text` or `edit-flag` and a client reads their schemas here.
 fn caller_action(verb: &tilo_actions::surface::VerbSurface) -> Option<&str> {
-    let action = verb.offered();
-    (!tilo_actions::surface::CONTENT_VERBS.contains(&action)).then_some(action)
+    (!verb.is_store_verb()).then(|| verb.offered())
 }
 
 /// The description of the API, with the actions of `apps`.
@@ -41,11 +42,59 @@ pub fn document(apps: &[App]) -> Result<Value, String> {
         drop(schema);
     }
     let mut schemas: Map<String, Value> = generator.take_definitions(true).into_iter().collect();
+    let actions = actions_of(apps, &mut schemas)?;
+    let mut paths = Map::new();
+    for operation in OPERATIONS.iter() {
+        let entry = paths
+            .entry(operation.path.to_owned())
+            .or_insert_with(|| json!({}));
+        if let Some(entry) = entry.as_object_mut() {
+            entry.insert(
+                operation.method.as_str().to_lowercase(),
+                operation_of(operation),
+            );
+        }
+    }
+    Ok(json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Tilo API",
+            "version": super::API_VERSION,
+            "description": "Every resource of a Tilo workspace, its fields and its actions, over HTTP: \
+                            docs/developers/api.md says how. Each app's actions take the arguments \
+                            and answer the result its surface declares: `x-tilo-actions` lists them, \
+                            each naming its arguments' schema.",
+        },
+        "servers": [{"url": "https://api.tilo.sh"}],
+        "tags": TAGS.iter().map(|(name, description)| json!({"name": name, "description": description})).collect::<Vec<_>>(),
+        "security": [{"key": []}],
+        "paths": paths,
+        "components": {
+            "schemas": schemas,
+            "securitySchemes": {"key": {"type": "http", "scheme": "bearer",
+                                        "description": "A key of the person's: `tilo_sk_…`"}},
+            "parameters": parameters(),
+        },
+        "x-tilo-actions": actions,
+    }))
+}
+
+/// The actions of `apps`, as `x-tilo-actions` lists them, each with the schemas its arguments
+/// and result answer in `schemas`.
+///
+/// # Errors
+/// An app's surface is not one.
+fn actions_of(apps: &[App], schemas: &mut Map<String, Value>) -> Result<Vec<Value>, String> {
     let mut actions = Vec::new();
     for app in apps {
         let surface = SurfaceFile::from_json(&app.surface)
             .map_err(|error| format!("{}'s surface: {error}", app.id))?;
         for resource in &surface.resources {
+            // A kind the platform publishes on every app's surface is the host's, not the
+            // app's: the API describes what an app's callers run, and these are the runtime's.
+            if tilo_actions::surface::platform_kind(&resource.kind) {
+                continue;
+            }
             for verb in &resource.verbs {
                 // The action as a caller names it: the name the API offers it by, which is a
                 // tilolang app's own (`new_note`) where a change of it claims the id the
@@ -105,40 +154,7 @@ pub fn document(apps: &[App]) -> Result<Value, String> {
             }
         }
     }
-    let mut paths = Map::new();
-    for operation in OPERATIONS.iter() {
-        let entry = paths
-            .entry(operation.path.to_owned())
-            .or_insert_with(|| json!({}));
-        if let Some(entry) = entry.as_object_mut() {
-            entry.insert(
-                operation.method.as_str().to_lowercase(),
-                operation_of(operation),
-            );
-        }
-    }
-    Ok(json!({
-        "openapi": "3.1.0",
-        "info": {
-            "title": "Tilo API",
-            "version": super::API_VERSION,
-            "description": "Every resource of a Tilo workspace, its fields and its actions, over HTTP: \
-                            docs/developers/api.md says how. Each app's actions take the arguments \
-                            and answer the result its surface declares: `x-tilo-actions` lists them, \
-                            each naming its arguments' schema.",
-        },
-        "servers": [{"url": "https://api.tilo.sh"}],
-        "tags": TAGS.iter().map(|(name, description)| json!({"name": name, "description": description})).collect::<Vec<_>>(),
-        "security": [{"key": []}],
-        "paths": paths,
-        "components": {
-            "schemas": schemas,
-            "securitySchemes": {"key": {"type": "http", "scheme": "bearer",
-                                        "description": "A key of the person's: `tilo_sk_…`"}},
-            "parameters": parameters(),
-        },
-        "x-tilo-actions": actions,
-    }))
+    Ok(actions)
 }
 
 /// The schema name of `action` on the resource kind `kind`: `notes.notebook.rename`.

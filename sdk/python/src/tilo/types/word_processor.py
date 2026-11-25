@@ -233,7 +233,7 @@ ReactArgs = TypedDict("ReactArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.word-processor@554a1c0b462fbcb3"
+    __surface__ = "so.tilo.word-processor@b96da4f206ac010b"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -294,7 +294,7 @@ class Notice(Resource):
 
 class Document(Resource):
     """Document — `tl.so.tilo.word-processor.Document`."""
-    __surface__ = "so.tilo.word-processor@554a1c0b462fbcb3"
+    __surface__ = "so.tilo.word-processor@b96da4f206ac010b"
     @property
     def _76ypz5mr(self) -> str:
         """title (`76ypz5mr` on the wire)."""
@@ -809,5 +809,5 @@ class Document(Resource):
 
 class WordProcessor(Resource):
     """Writer — `tl.so.tilo.word-processor`."""
-    __surface__ = "so.tilo.word-processor@554a1c0b462fbcb3"
+    __surface__ = "so.tilo.word-processor@b96da4f206ac010b"
 

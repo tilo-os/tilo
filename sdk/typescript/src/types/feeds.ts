@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.feeds@bc16a7f096d9e213";
+export const SURFACE = "so.tilo.feeds@0795db6a7c1f504d";
 
 /** The format a subscription is read in. One of "rss", "atom", "json", "gemini". */
 export type FeedFormat = "rss" | "atom" | "json" | "gemini";

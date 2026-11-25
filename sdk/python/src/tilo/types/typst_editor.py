@@ -155,7 +155,7 @@ CloseDocumentArgs = TypedDict("CloseDocumentArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -216,7 +216,7 @@ class Notice(Resource):
 
 class Problem(Resource):
     """Problem — `tl.so.tilo.typst-editor.Problem`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     yt5nyujj: Severity  # severity
     i3zcji5u: str  # message
     od6pdrjz: int  # line
@@ -235,7 +235,7 @@ class Problem(Resource):
 
 class Page(Resource):
     """Page — `tl.so.tilo.typst-editor.Page`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     cgrnobye: float  # width
     r4wxummm: float  # height
     @property
@@ -261,7 +261,7 @@ class Page(Resource):
 
 class Heading(Resource):
     """Heading — `tl.so.tilo.typst-editor.Heading`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     ougql7d2: str  # title
     ucauvawo: int  # line
     t2356zsr: int  # level
@@ -269,7 +269,7 @@ class Heading(Resource):
 
 class Document(Resource):
     """Document — `tl.so.tilo.typst-editor.Document`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     ojyy5fog: str  # name
     wigkyjqk: str  # source
     zlwvg46c: str  # typeset
@@ -500,7 +500,7 @@ class Document(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.typst-editor.Library`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     jdegntgs: list[Entry[Document]]  # documents
 
     def open_typ(self, *, file: Any) -> Document:
@@ -535,13 +535,13 @@ class Library(Resource):
 
 class CompileAsk(Resource):
     """CompileAsk — `tl.so.tilo.typst-editor.CompileAsk`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     d2jzgpyx: str  # source
 
 
 class PageAsk(Resource):
     """PageAsk — `tl.so.tilo.typst-editor.PageAsk`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     a66w2zy6: str  # source
     @property
     def _6jynr6xk(self) -> int:
@@ -556,20 +556,20 @@ class PageAsk(Resource):
 
 class TextAsk(Resource):
     """TextAsk — `tl.so.tilo.typst-editor.TextAsk`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     rydvb6fi: str  # source
     rqodn5jw: int  # page
 
 
 class OutlineAsk(Resource):
     """OutlineAsk — `tl.so.tilo.typst-editor.OutlineAsk`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     wevbiksf: str  # source
 
 
 class PageRow(Resource):
     """PageRow — `tl.so.tilo.typst-editor.PageRow`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     mtlxa3ps: float  # width
     ay4kqc7o: float  # height
     ehra7vlr: str  # look
@@ -577,7 +577,7 @@ class PageRow(Resource):
 
 class ProblemRow(Resource):
     """ProblemRow — `tl.so.tilo.typst-editor.ProblemRow`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     @property
     def _7vzeic6n(self) -> str:
         """kind (`7vzeic6n` on the wire)."""
@@ -603,7 +603,7 @@ class ProblemRow(Resource):
 
 class CompiledRow(Resource):
     """CompiledRow — `tl.so.tilo.typst-editor.CompiledRow`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     ffvtdeuv: bool  # ok
     t5b6wta3: int  # elapsed_ms
     siiy7bea: str | None  # pdf_url
@@ -621,7 +621,7 @@ class CompiledRow(Resource):
 
 class HeadingRow(Resource):
     """HeadingRow — `tl.so.tilo.typst-editor.HeadingRow`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     @property
     def _3olgjoh6(self) -> int:
         """line (`3olgjoh6` on the wire)."""
@@ -636,7 +636,7 @@ class HeadingRow(Resource):
 
 class CellRow(Resource):
     """CellRow — `tl.so.tilo.typst-editor.CellRow`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
     dsvn4b2o: str  # text
     erwowgdw: float  # x0
     txaxsk54: float  # x1
@@ -654,5 +654,5 @@ class CellRow(Resource):
 
 class TypstEditor(Resource):
     """Typst — `tl.so.tilo.typst-editor`."""
-    __surface__ = "so.tilo.typst-editor@4cf9b224fe02d3e5"
+    __surface__ = "so.tilo.typst-editor@2cd7d0d73af29dc5"
 

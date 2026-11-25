@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@191f0c5f024db437";
+export const SURFACE = "so.tilo.calendar@698effea1e53ec9b";
 
 /** The colours a calendar, an event or a project can take, each a place in the theme. One of "indigo", "emerald", "amber", "red", "blue", "violet", "slate". */
 export type Color = "indigo" | "emerald" | "amber" | "red" | "blue" | "violet" | "slate";

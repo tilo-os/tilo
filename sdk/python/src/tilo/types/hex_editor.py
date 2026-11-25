@@ -263,7 +263,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -324,7 +324,7 @@ class Notice(Resource):
 
 class Change(Resource):
     """Change — `tl.so.tilo.hex-editor.Change`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     b4ynsjfc: int  # at
     lkghkw33: int  # remove
     n55erru5: str  # insert
@@ -332,14 +332,14 @@ class Change(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.hex-editor.Row`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     rqqjo5b2: str  # hex
     i23efoqg: str  # changed
 
 
 class Finding(Resource):
     """Finding — `tl.so.tilo.hex-editor.Finding`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     j3rx5nr6: str  # label
     bqtm2sxd: str  # value
     whqswnrc: int  # width
@@ -347,7 +347,7 @@ class Finding(Resource):
 
 class Span(Resource):
     """Span — `tl.so.tilo.hex-editor.Span`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     vjv7m35i: int  # start
     @property
     def _6nu52vd6(self) -> int:
@@ -361,7 +361,7 @@ class Span(Resource):
 
 class Desk(Resource):
     """Desk — `tl.so.tilo.hex-editor.Desk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def _4pp4s3sf(self) -> int:
         """cursor (`4pp4s3sf` on the wire)."""
@@ -406,7 +406,7 @@ class Desk(Resource):
 
 class Document(Resource):
     """Document — `tl.so.tilo.hex-editor.Document`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     dbkdqzos: str  # name
     teahiasd: int  # opened
     blhbkxjc: str  # base
@@ -799,7 +799,7 @@ class Document(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.hex-editor.Library`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     fu57pivb: list[Entry[Document]]  # documents
 
     def open_path(self, *, path: str) -> Document:
@@ -855,13 +855,13 @@ class Library(Resource):
 
 class OpenAsk(Resource):
     """OpenAsk — `tl.so.tilo.hex-editor.OpenAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     rruucmz4: str  # path
 
 
 class OpenedAnswer(Resource):
     """OpenedAnswer — `tl.so.tilo.hex-editor.OpenedAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     cevle23p: str  # name
     idpg6pxk: str  # address
     cr3tncji: int  # length
@@ -869,7 +869,7 @@ class OpenedAnswer(Resource):
 
 class RowsAsk(Resource):
     """RowsAsk — `tl.so.tilo.hex-editor.RowsAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     ldq6mtad: str  # address
     @property
     def _2t4i36rg(self) -> list[str]:
@@ -895,7 +895,7 @@ class RowsAsk(Resource):
 
 class RowsAnswer(Resource):
     """RowsAnswer — `tl.so.tilo.hex-editor.RowsAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     yjjtzhyt: int  # length
     ao74hr7t: int  # edited
     lgghdfh2: bool  # read
@@ -914,7 +914,7 @@ class RowsAnswer(Resource):
 
 class FindAsk(Resource):
     """FindAsk — `tl.so.tilo.hex-editor.FindAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def _6grc7o75(self) -> str:
         """address (`6grc7o75` on the wire)."""
@@ -940,7 +940,7 @@ class FindAsk(Resource):
 
 class FoundAnswer(Resource):
     """FoundAnswer — `tl.so.tilo.hex-editor.FoundAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     t6d5sfoz: list[str]  # hits
     @property
     def _4fdr6kla(self) -> bool:
@@ -954,7 +954,7 @@ class FoundAnswer(Resource):
 
 class ApplyAsk(Resource):
     """ApplyAsk — `tl.so.tilo.hex-editor.ApplyAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     ba424tqt: str  # address
     qtf35usu: list[str]  # changes
     r5xf3t6m: str  # op
@@ -972,7 +972,7 @@ class ApplyAsk(Resource):
 
 class AppliedAnswer(Resource):
     """AppliedAnswer — `tl.so.tilo.hex-editor.AppliedAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def _2w7szbth(self) -> str:
         """change (`2w7szbth` on the wire)."""
@@ -986,7 +986,7 @@ class AppliedAnswer(Resource):
 
 class ReplaceAsk(Resource):
     """ReplaceAsk — `tl.so.tilo.hex-editor.ReplaceAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def _3riih5ln(self) -> str:
         """address (`3riih5ln` on the wire)."""
@@ -1003,7 +1003,7 @@ class ReplaceAsk(Resource):
 
 class ReplacedAnswer(Resource):
     """ReplacedAnswer — `tl.so.tilo.hex-editor.ReplacedAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     j3lt4zli: list[str]  # changes
     @property
     def _3kaouk56(self) -> int:
@@ -1025,7 +1025,7 @@ class ReplacedAnswer(Resource):
 
 class RangeAsk(Resource):
     """RangeAsk — `tl.so.tilo.hex-editor.RangeAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def _3surtarm(self) -> str:
         """address (`3surtarm` on the wire)."""
@@ -1049,13 +1049,13 @@ class RangeAsk(Resource):
 
 class RangeAnswer(Resource):
     """RangeAnswer — `tl.so.tilo.hex-editor.RangeAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     d7nxzpqz: str  # text
 
 
 class BytesAsk(Resource):
     """BytesAsk — `tl.so.tilo.hex-editor.BytesAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def _66cpqgom(self) -> str:
         """address (`66cpqgom` on the wire)."""
@@ -1076,13 +1076,13 @@ class BytesAsk(Resource):
 
 class BytesAnswer(Resource):
     """BytesAnswer — `tl.so.tilo.hex-editor.BytesAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     smxqtshm: str  # bytes
 
 
 class SaveAsk(Resource):
     """SaveAsk — `tl.so.tilo.hex-editor.SaveAsk`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     @property
     def _62acy6x2(self) -> str:
         """address (`62acy6x2` on the wire)."""
@@ -1104,12 +1104,12 @@ class SaveAsk(Resource):
 
 class SavedAnswer(Resource):
     """SavedAnswer — `tl.so.tilo.hex-editor.SavedAnswer`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
     fnprm7qy: str  # address
     bnwrfq64: int  # length
 
 
 class HexEditor(Resource):
     """Hex Editor — `tl.so.tilo.hex-editor`."""
-    __surface__ = "so.tilo.hex-editor@1202cc7a1a7a607f"
+    __surface__ = "so.tilo.hex-editor@8fb7a0a5ccb5edca"
 

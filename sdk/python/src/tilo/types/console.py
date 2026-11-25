@@ -83,7 +83,7 @@ OpenConnectArgs = TypedDict("OpenConnectArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.console@b4049dd394c133cc"
+    __surface__ = "so.tilo.console@c5730a1c98f095e9"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -144,7 +144,7 @@ class Notice(Resource):
 
 class SessionLink(Resource):
     """SessionLink — `tl.so.tilo.console.SessionLink`."""
-    __surface__ = "so.tilo.console@b4049dd394c133cc"
+    __surface__ = "so.tilo.console@c5730a1c98f095e9"
     acxv3wxd: str  # run
     @property
     def _2pulq7rs(self) -> str:
@@ -158,7 +158,7 @@ class SessionLink(Resource):
 
 class AgentCard(Resource):
     """AgentCard — `tl.so.tilo.console.AgentCard`."""
-    __surface__ = "so.tilo.console@b4049dd394c133cc"
+    __surface__ = "so.tilo.console@c5730a1c98f095e9"
     mpwn6fmy: str  # client
 
     def stop_agent(self) -> None:
@@ -204,7 +204,7 @@ class AgentCard(Resource):
 
 class Window(Resource):
     """Window — `tl.so.tilo.console.Window`."""
-    __surface__ = "so.tilo.console@b4049dd394c133cc"
+    __surface__ = "so.tilo.console@c5730a1c98f095e9"
     e6xn3nds: str  # place
     ujzhryea: list[Entry[SessionLink]]  # sessions
     hadfiy76: list[Entry[AgentCard]]  # cards
@@ -276,5 +276,5 @@ class Window(Resource):
 
 class Console(Resource):
     """Console — `tl.so.tilo.console`."""
-    __surface__ = "so.tilo.console@b4049dd394c133cc"
+    __surface__ = "so.tilo.console@c5730a1c98f095e9"
 

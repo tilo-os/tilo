@@ -91,7 +91,7 @@ RefusedArgs = TypedDict("RefusedArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.migrate@e881061eb12ce5e8"
+    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -152,7 +152,7 @@ class Notice(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.migrate.Item`."""
-    __surface__ = "so.tilo.migrate@e881061eb12ce5e8"
+    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
     z7gblqe6: str  # key
     fvmu6lru: str  # kind
     ove3mkdj: str  # title
@@ -179,7 +179,7 @@ class Item(Resource):
 
 class Count(Resource):
     """Count — `tl.so.tilo.migrate.Count`."""
-    __surface__ = "so.tilo.migrate@e881061eb12ce5e8"
+    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
     @property
     def _3cttshux(self) -> str:
         """kind (`3cttshux` on the wire)."""
@@ -193,7 +193,7 @@ class Count(Resource):
 
 class Run(Resource):
     """Run — `tl.so.tilo.migrate.Run`."""
-    __surface__ = "so.tilo.migrate@e881061eb12ce5e8"
+    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
     wphp5gxk: str  # id
     e73pil4f: str  # title
     ifezl4lz: list[str]  # keys
@@ -201,7 +201,7 @@ class Run(Resource):
 
 class Migration(Resource):
     """Migration — `tl.so.tilo.migrate.Migration`."""
-    __surface__ = "so.tilo.migrate@e881061eb12ce5e8"
+    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
     jy4y5q35: str  # source
     d66kqgv4: str  # title
     @property
@@ -386,7 +386,7 @@ class Migration(Resource):
 
 class Migrations(Resource):
     """Migrations — `tl.so.tilo.migrate.Migrations`."""
-    __surface__ = "so.tilo.migrate@e881061eb12ce5e8"
+    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
     l7nahbny: list[Entry[Migration]]  # migrations
 
     def reviewed(self,
@@ -406,5 +406,5 @@ class Migrations(Resource):
 
 class Migrate(Resource):
     """Migrations — `tl.so.tilo.migrate`."""
-    __surface__ = "so.tilo.migrate@e881061eb12ce5e8"
+    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
 

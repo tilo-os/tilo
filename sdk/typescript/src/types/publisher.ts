@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.publisher@c27aa27c33398317";
+export const SURFACE = "so.tilo.publisher@61f62c65e169cd7f";
 
 /** The arguments of `read_key`. */
 export interface ReadKeyArgs {

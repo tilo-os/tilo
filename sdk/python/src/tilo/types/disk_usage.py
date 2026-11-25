@@ -100,7 +100,7 @@ ScanEndedArgs = TypedDict("ScanEndedArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -161,7 +161,7 @@ class Notice(Resource):
 
 class Measure(Resource):
     """Measure — `tl.so.tilo.disk-usage.Measure`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     dgpcdvfo: str  # name
     hr7pdtyh: str  # path
     @property
@@ -177,7 +177,7 @@ class Measure(Resource):
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.disk-usage.Recent`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     mks7bf3q: str  # path
     w6urofdz: str  # label
     rrwtdebb: str  # seen
@@ -185,7 +185,7 @@ class Recent(Resource):
 
 class Analyzer(Resource):
     """Analyzer — `tl.so.tilo.disk-usage.Analyzer`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     myw6qh3s: str  # folder
     thlese6a: str  # label
     w37l5txv: list[Entry[Measure]]  # entries
@@ -314,13 +314,13 @@ class Analyzer(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.disk-usage.ScanAsk`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     fzzlfxy7: str  # path
 
 
 class ScanState(Resource):
     """ScanState — `tl.so.tilo.disk-usage.ScanState`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     qaev2xl3: str  # state
     dmlnkvla: str  # path
     k2iebb3k: int  # bytes
@@ -339,13 +339,13 @@ class ScanState(Resource):
 
 class EntriesAsk(Resource):
     """EntriesAsk — `tl.so.tilo.disk-usage.EntriesAsk`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     hxfyfs5q: str  # job
 
 
 class Scanned(Resource):
     """Scanned — `tl.so.tilo.disk-usage.Scanned`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     @property
     def _5asfkn6k(self) -> str:
         """name (`5asfkn6k` on the wire)."""
@@ -368,7 +368,7 @@ class Scanned(Resource):
 
 class DiskUsage(Resource):
     """Disk Usage Analyzer — `tl.so.tilo.disk-usage`."""
-    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    __surface__ = "so.tilo.disk-usage@06fe1d261c01e154"
     def open_disks(self) -> None:
         """Opens the Disks app, where the device's drives and their use are."""
         return self.action("open_disks")

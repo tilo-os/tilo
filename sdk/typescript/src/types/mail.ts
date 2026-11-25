@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@b1628d65c3c36b42";
+export const SURFACE = "so.tilo.mail@14087dc7d5e5e752";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -83,6 +83,10 @@ export interface SendFromArgs {
 /** The arguments of `send_as`. */
 export interface SendAsArgs {
   identity: string;
+}
+
+/** The arguments of `leave`. */
+export interface LeaveArgs {
 }
 
 /** The arguments of `trust_sender`. */
@@ -418,6 +422,7 @@ export interface Draft extends tilo.Resource {
   ualhak62: string;  // conversation
   yfyt2cfh: boolean;  // sent
   lgrwf5yf: string;  // send_at
+  wgp3brx4: string | null;  // leaves_at
   h2nvr2op: boolean;  // recalled
   em6rrmae: string;  // invitation
   "2tq2zegc": unknown[];  // attachments
@@ -460,11 +465,15 @@ export interface Draft extends tilo.Resource {
   send(): Promise<void>;
   /** Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was. Once it went it cannot be taken back. */
   undo_send(): Promise<void>;
+  /** Lets a message that waited in the outbox leave: its hold or the moment it was sent for came, so it can no longer be taken back, and every member reads it from now on. One taken back before its moment stays a draft. */
+  leave(): Promise<void>;
+  /** Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  leaveMany(items: LeaveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Draft` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DRAFT_ACTIONS = ["attach", "attachMany", "detach", "detachMany", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send_as", "send_asMany", "retry", "send", "undo_send"] as const;
+export const DRAFT_ACTIONS = ["attach", "attachMany", "detach", "detachMany", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send_as", "send_asMany", "retry", "send", "undo_send", "leave", "leaveMany"] as const;
 
 /** The `tl.so.tilo.mail.Draft` kind at `path`. */
 export function draft(ws: tilo.Workspace, path: string): Draft {

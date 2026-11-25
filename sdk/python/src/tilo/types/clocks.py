@@ -126,7 +126,7 @@ ResetStopwatchArgs = TypedDict("ResetStopwatchArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -187,14 +187,14 @@ class Notice(Resource):
 
 class WorldClock(Resource):
     """WorldClock — `tl.so.tilo.clocks.WorldClock`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
     kbeao6ct: str  # city
     g5vsvo2p: str  # zone
 
 
 class Alarm(Resource):
     """Alarm — `tl.so.tilo.clocks.Alarm`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
     e6jhyy6h: str  # label
     cb6boqqg: int  # hour
     bvmw7lxl: int  # minute
@@ -284,7 +284,7 @@ class Alarm(Resource):
 
 class Timer(Resource):
     """Timer — `tl.so.tilo.clocks.Timer`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
     nhqnhguz: str  # label
     @property
     def _5b7nw57j(self) -> int:
@@ -339,13 +339,13 @@ class Timer(Resource):
 
 class Lap(Resource):
     """Lap — `tl.so.tilo.clocks.Lap`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
     mq5diuqb: int  # at
 
 
 class Stopwatch(Resource):
     """Stopwatch — `tl.so.tilo.clocks.Stopwatch`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
     yhijhjuh: int  # elapsed
     fg2gmze6: str | None  # since
     ngcmcd7g: list[Entry[Lap]]  # laps
@@ -353,7 +353,7 @@ class Stopwatch(Resource):
 
 class Clocks(Resource):
     """Clocks — `tl.so.tilo.clocks.Clocks`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
     r2amisi7: list[Entry[WorldClock]]  # world_clocks
     gneumngu: list[Entry[Alarm]]  # alarms
     kahapraa: list[Entry[Timer]]  # timers
@@ -458,5 +458,5 @@ class Clocks(Resource):
 
 class TiloClocks(Resource):
     """Clocks — `tl.so.tilo.clocks`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@5a3f61c712d0e126"
 

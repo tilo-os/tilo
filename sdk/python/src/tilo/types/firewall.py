@@ -38,7 +38,7 @@ ImportDeviceArgs = TypedDict("ImportDeviceArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -99,7 +99,7 @@ class Notice(Resource):
 
 class Rule(Resource):
     """Rule — `tl.so.tilo.firewall.Rule`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     eeqhnuyu: str  # title
     @property
     def _3jndsc7i(self) -> str:
@@ -125,7 +125,7 @@ class Rule(Resource):
 
 class Zone(Resource):
     """Zone — `tl.so.tilo.firewall.Zone`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     kzbzenxe: str  # kind
     xthxweeb: str  # target
     @property
@@ -143,7 +143,7 @@ class Zone(Resource):
 
 class Firewall(Resource):
     """Firewall — `tl.so.tilo.firewall.Firewall`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     fzjbpclp: bool  # enabled
     lsn43itt: bool  # panic_mode
     qzperbb7: str  # default_zone
@@ -228,7 +228,7 @@ class Firewall(Resource):
 
 class ApplyConfig(Resource):
     """ApplyConfig — `tl.so.tilo.firewall.ApplyConfig`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     z4rwsmkt: bool  # enabled
     hfx4peji: bool  # panic_mode
     wpzvhcny: str  # default_zone
@@ -237,7 +237,7 @@ class ApplyConfig(Resource):
 
 class ApplyZone(Resource):
     """ApplyZone — `tl.so.tilo.firewall.ApplyZone`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     ki3bym3t: str  # kind
     npflzozj: str  # target
     yll5vuns: list[str]  # interfaces
@@ -248,7 +248,7 @@ class ApplyZone(Resource):
 
 class ApplyRule(Resource):
     """ApplyRule — `tl.so.tilo.firewall.ApplyRule`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     iddy2jy5: str  # service
     rukhcwu4: str  # port
     @property
@@ -266,7 +266,7 @@ class ApplyRule(Resource):
 
 class ServiceDef(Resource):
     """ServiceDef — `tl.so.tilo.firewall.ServiceDef`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     splkq5cx: str  # key
     um6wchuo: str  # name
     @property
@@ -283,7 +283,7 @@ class ServiceDef(Resource):
 
 class TiloFirewall(Resource):
     """Firewall — `tl.so.tilo.firewall`."""
-    __surface__ = "so.tilo.firewall@dea07c56fb981527"
+    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
     def load_blocked(self) -> None:
         """Reads what the kernel dropped in the last hour."""
         return self.action("load_blocked")

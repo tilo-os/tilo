@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.typst-editor@4cf9b224fe02d3e5";
+export const SURFACE = "so.tilo.typst-editor@2cd7d0d73af29dc5";
 
 /** How much a problem the typesetter found matters. One of "error", "warning". */
 export type Severity = "error" | "warning";

@@ -391,7 +391,7 @@ NameItArgs = TypedDict("NameItArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -452,7 +452,7 @@ class Notice(Resource):
 
 class Entry(Resource):
     """Entry — `tl.so.tilo.file-explorer.Entry`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     lm429k0c: str  # name
     sq7vzl81: str  # path
     @property
@@ -471,7 +471,7 @@ class Entry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.file-explorer.Listing`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     uzztpcqp: str  # path
     @property
     def _9ilrk28j(self) -> list[Entry]:
@@ -488,7 +488,7 @@ class Listing(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.file-explorer.Place`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     kcy1i0qo: str  # label
     z0dyhfw9: str  # path
     @property
@@ -503,13 +503,13 @@ class Place(Resource):
 
 class Favorite(Resource):
     """Favorite — `tl.so.tilo.file-explorer.Favorite`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     m5mpzvqt: str  # place
 
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.file-explorer.Recent`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     v8w5s5s2: str  # name
     ddeyygde: str  # path
     flcdg3ss: str  # opened
@@ -517,7 +517,7 @@ class Recent(Resource):
 
 class Preview(Resource):
     """Preview — `tl.so.tilo.file-explorer.Preview`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     @property
     def _3knlafaw(self) -> str:
         """path (`3knlafaw` on the wire)."""
@@ -539,7 +539,7 @@ class Preview(Resource):
 
 class Destination(Resource):
     """Destination — `tl.so.tilo.file-explorer.Destination`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     @property
     def _3wtmjgc5(self) -> str:
         """name (`3wtmjgc5` on the wire)."""
@@ -553,7 +553,7 @@ class Destination(Resource):
 
 class Transfer(Resource):
     """Transfer — `tl.so.tilo.file-explorer.Transfer`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     holiaqgm: str  # job
     dtg3bicb: str  # label
     b4sboihw: int  # done
@@ -576,7 +576,7 @@ class Transfer(Resource):
 
 class FileFacts(Resource):
     """FileFacts — `tl.so.tilo.file-explorer.FileFacts`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     foqi2yof: int  # width
     sg7ksmy3: int  # height
     opvq63ti: int  # duration
@@ -587,7 +587,7 @@ class FileFacts(Resource):
 
 class TransferAsk(Resource):
     """TransferAsk — `tl.so.tilo.file-explorer.TransferAsk`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     wsdpc7wm: list[str]  # paths
     @property
     def _3s3dhes2(self) -> str:
@@ -609,7 +609,7 @@ class TransferAsk(Resource):
 
 class TransferState(Resource):
     """TransferState — `tl.so.tilo.file-explorer.TransferState`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     xy4h2hjf: int  # done
     xqn7tfzw: int  # total
     mfmf4wlj: str  # current
@@ -617,7 +617,7 @@ class TransferState(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.file-explorer.Session`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     zxu7qmx7: str  # here
     roylouv1: SortBy  # sort
     hm8xkfti: bool  # ascending
@@ -722,7 +722,7 @@ class Session(Resource):
 
 class Files(Resource):
     """Files — `tl.so.tilo.file-explorer.Files`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     @property
     def _7dfrn16h(self) -> list[Entry[Session]]:
         """sessions (`7dfrn16h` on the wire)."""
@@ -1297,12 +1297,12 @@ class Files(Resource):
 
 class Crumb(Resource):
     """Crumb — `tl.so.tilo.file-explorer.Crumb`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
     lbeg1rhd: str  # label
     sv3ucdrd: str  # path
 
 
 class FileExplorer(Resource):
     """Files — `tl.so.tilo.file-explorer`."""
-    __surface__ = "so.tilo.file-explorer@32a9b53c26850c65"
+    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
 

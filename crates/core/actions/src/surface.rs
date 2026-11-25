@@ -36,6 +36,18 @@ pub const TYPE_VERB: &str = "type";
 /// ([`crate::stamp::Stamp::MIGRATE_VERB`]), which no surface declares.
 pub const CONTENT_VERBS: [&str; 1] = [TYPE_VERB];
 
+/// The resource kinds the platform publishes on every app's surface rather than the app itself:
+/// the tilolang host, the person's place in an app, and the record an outside effect waits in.
+/// A program reaches them through the host, never as the app's own records, so they are neither
+/// types of the generated SDK nor resources of the API's description.
+pub const PLATFORM_KINDS: [&str; 3] = ["tl.host", "tilolang.personal", "tilolang.effect"];
+
+/// Whether `kind` is one the platform publishes rather than the app ([`PLATFORM_KINDS`]).
+#[must_use]
+pub fn platform_kind(kind: &str) -> bool {
+    PLATFORM_KINDS.contains(&kind)
+}
+
 /// The key under which a record of a reading that is a resource of its own (a Wi-Fi network in
 /// the network's reading) carries its address. Its type declares it as a field of that name,
 /// typed [`FieldType::Resource`] of the record's kind, and the kind's own surface lists the
@@ -184,6 +196,27 @@ impl VerbSurface {
         } else {
             &self.name
         }
+    }
+
+    /// Whether the store writes this verb itself rather than an app declaring it as an action a
+    /// caller invokes: the framework's content edit on every kind ([`CONTENT_VERBS`]) and the
+    /// store's migration ([`Stamp::MIGRATE_VERB`]).
+    #[must_use]
+    pub fn is_store_verb(&self) -> bool {
+        let action = self.offered();
+        CONTENT_VERBS.contains(&action) || action == crate::stamp::Stamp::MIGRATE_VERB
+    }
+
+    /// Whether this is the platform's or the framework's own verb rather than an action a
+    /// caller invokes: the store's verbs ([`Self::is_store_verb`]), the names the platform
+    /// writes with `$` (`$create`, `$send`, `$settle`), and the bound-control edits a host
+    /// declares without the prefix (`edit-text`, `edit-flag`).
+    #[must_use]
+    pub fn is_platform(&self) -> bool {
+        let action = self.offered();
+        self.is_store_verb()
+            || action.starts_with('$')
+            || matches!(action, "edit-text" | "edit-flag")
     }
 }
 

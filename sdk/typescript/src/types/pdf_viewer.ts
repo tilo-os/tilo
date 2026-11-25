@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@85261215fd825975";
+export const SURFACE = "so.tilo.pdf-viewer@91861c61f7071d6f";
 
 /** What a mark does on a page. One of "markup", "ink", "note", "text". */
 export type MarkKind = "markup" | "ink" | "note" | "text";

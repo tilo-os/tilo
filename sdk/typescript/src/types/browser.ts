@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@b138a3bc0cbeae2b";
+export const SURFACE = "so.tilo.browser@8af0f4b7b72eec2b";
 
 /** Where a row the address bar offers comes from. One of "bookmark", "visited", "imported", "search". */
 export type SuggestionKind = "bookmark" | "visited" | "imported" | "search";

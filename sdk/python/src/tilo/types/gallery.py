@@ -117,7 +117,7 @@ SeekToArgs = TypedDict("SeekToArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -178,7 +178,7 @@ class Notice(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.lang.gallery.Item`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     n5clkmib: str  # title
     znpp3agb: str  # notes
     xttl6aec: str  # stage
@@ -246,7 +246,7 @@ class Item(Resource):
 
 class Gallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery.Gallery`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     bmdkc22s: str  # name
     cbwtcaei: str  # basics_note
     kwuh65ek: str  # controls_title
@@ -414,7 +414,7 @@ class Gallery(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.lang.gallery.Row`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     od2pk6d3: str  # title
     jqhagvfx: str  # state
     pu34cefb: int  # size
@@ -422,7 +422,7 @@ class Row(Resource):
 
 class Node(Resource):
     """Node — `tl.so.tilo.lang.gallery.Node`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     sartpsxo: str  # title
     iqq34vjp: Node | None  # parent
     jd5rkocy: bool  # folder
@@ -438,7 +438,7 @@ class Node(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.lang.gallery.Message`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     lcfap66g: str  # title
     ssylkjtu: str  # from
     vyexrz4i: str  # body
@@ -448,21 +448,21 @@ class Message(Resource):
 
 class Card(Resource):
     """Card — `tl.so.tilo.lang.gallery.Card`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     y5gdkqew: str  # title
     ii4dp5pl: int  # count
 
 
 class Change(Resource):
     """Change — `tl.so.tilo.lang.gallery.Change`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     dmejdwow: str  # title
     kbnmru3y: str  # summary
 
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.lang.gallery.Photo`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     @property
     def _6zq4etzb(self) -> str:
         """title (`6zq4etzb` on the wire)."""
@@ -485,7 +485,7 @@ class Photo(Resource):
 
 class Pinned(Resource):
     """Pinned — `tl.so.tilo.lang.gallery.Pinned`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     ciwf3kva: str  # title
     @property
     def _5tfi5mod(self) -> Kind:
@@ -499,7 +499,7 @@ class Pinned(Resource):
 
 class LangGallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery`."""
-    __surface__ = "so.tilo.lang.gallery@089b6ee0f2c4841b"
+    __surface__ = "so.tilo.lang.gallery@d12132cc800dbbe1"
     def note_item(self,
         *,
         last: str,

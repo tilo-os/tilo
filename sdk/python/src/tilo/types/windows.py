@@ -31,7 +31,7 @@ OpenWith = Literal["wine", "proton", "vm"]
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.windows@6a21200d58dbaf86"
+    __surface__ = "so.tilo.windows@03167a1d76fc0991"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -92,7 +92,7 @@ class Notice(Resource):
 
 class Windows(Resource):
     """Windows — `tl.so.tilo.windows.Windows`."""
-    __surface__ = "so.tilo.windows@6a21200d58dbaf86"
+    __surface__ = "so.tilo.windows@03167a1d76fc0991"
     @property
     def _3bu5zzlt(self) -> dict[str, OpenWith]:
         """routes (`3bu5zzlt` on the wire)."""
@@ -133,7 +133,7 @@ class Windows(Resource):
 
 class TiloWindows(Resource):
     """Windows Apps — `tl.so.tilo.windows`."""
-    __surface__ = "so.tilo.windows@6a21200d58dbaf86"
+    __surface__ = "so.tilo.windows@03167a1d76fc0991"
     def imported_iso(self, *, file: Any) -> None:
         """Set up the appliance from the Windows ISO the person chose."""
         return self.action("imported_iso", file=file)

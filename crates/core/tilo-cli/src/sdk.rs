@@ -284,18 +284,13 @@ enum Ty {
 
 type Names = BTreeMap<String, String>;
 
-/// The kinds the language's host keeps, rather than an app: every tilolang app's surface declares
-/// them (`tl.host`, `tilolang.personal`), and a program reaches them through the host, not through
-/// the app's own records.
-const PLATFORM_KINDS: [&str; 2] = ["tl.host", "tilolang.personal"];
-
 fn types_of(app: &App) -> Result<Types> {
     let file =
         SurfaceFile::from_json(&app.surface).map_err(|error| anyhow!("{}: {error}", app.id))?;
     let surfaces: Vec<&Surface> = file
         .resources
         .iter()
-        .filter(|surface| !PLATFORM_KINDS.contains(&surface.kind.as_str()))
+        .filter(|surface| !tilo_actions::surface::platform_kind(&surface.kind))
         .collect();
     let kinds = class_names(&surfaces);
     let mut types = Types {
@@ -332,7 +327,7 @@ fn types_of(app: &App) -> Result<Types> {
         let actions = surface
             .verbs
             .iter()
-            .filter(|verb| !platform_verb(verb))
+            .filter(|verb| !verb.is_platform())
             .map(|verb| action_of(verb, &resolver))
             .collect();
         types.classes.push(Class {
@@ -541,26 +536,6 @@ fn camel(name: &str) -> String {
             })
         })
         .collect()
-}
-
-fn platform_verb(verb: &VerbSurface) -> bool {
-    // The tilolang host spells its own verbs without the `$` a native app's derive gives them
-    // (`edit-text` against `$edit-text`): both spellings, never a word an app may give an action
-    // of its own (`create` is a Tasks verb).
-    // The framework's own content verbs on a native app's kind (`type`, `migrate`) are not
-    // actions a caller invokes, so they are no methods of the generated SDK either.
-    tilo_actions::surface::CONTENT_VERBS.contains(&verb.offered())
-        || matches!(
-            verb.offered(),
-            "$create"
-                | "$edit-text"
-                | "$edit-flag"
-                | "$commit"
-                | "$origin"
-                | "$scenario"
-                | "edit-text"
-                | "edit-flag"
-        )
 }
 
 fn action_of(verb: &VerbSurface, resolver: &Resolver<'_>) -> Action {
@@ -1905,6 +1880,88 @@ mod tests {
         assert_eq!(names[&long.id], "lang_notes");
         let names = module_names(std::slice::from_ref(&long));
         assert_eq!(names[&long.id], "notes");
+    }
+
+    /// The kinds and verbs the platform publishes on every app's surface are no part of the app's
+    /// types: an effect the app queues (`tilolang.effect`, whose `$send` is the device's) is no
+    /// class of its module, and the stores' `$` verbs are no methods of any class, in either
+    /// language or in the API's description. The app's own kind and action stay.
+    #[test]
+    fn platform_kinds_and_dollar_verbs_are_no_types() {
+        let toml = r#"
+schema = 1
+
+[[resources]]
+kind = "tilolang.effect"
+label = "A queued effect"
+version = 1
+
+[[resources.verbs]]
+id = "$send"
+label = "Hand the effect over"
+kind = "undoable"
+
+[[resources]]
+kind = "tl.so.tilo.timer.Board"
+label = "Board"
+version = 1
+
+[[resources.verbs]]
+id = "$create"
+label = "Create"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+label = "Migrate"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "extend"
+name = "extend"
+label = "Extend"
+kind = "undoable"
+"#;
+        let surface = tilo_surface_compile::compile(toml).expect("timer surface parses");
+        let timer = App {
+            id: "so.tilo.timer".to_owned(),
+            title: "Timer".to_owned(),
+            surface,
+        };
+
+        let py_files = python_files(std::slice::from_ref(&timer)).expect("python generates");
+        let python = &py_files
+            .iter()
+            .find(|(name, _)| name == Path::new("timer.py"))
+            .expect("timer.py is written")
+            .1;
+        assert!(python.contains("class Board"), "{python}");
+        assert!(python.contains("def extend("), "{python}");
+        for platform in ["class Effect", "tilolang.effect", "$send", "$create", "migrate"] {
+            assert!(!python.contains(platform), "{platform} leaked:\n{python}");
+        }
+
+        let ts_files = typescript_files(std::slice::from_ref(&timer)).expect("ts generates");
+        let ts = &ts_files
+            .iter()
+            .find(|(name, _)| name == Path::new("timer.ts"))
+            .expect("timer.ts is written")
+            .1;
+        assert!(ts.contains("export interface Board"), "{ts}");
+        for platform in ["interface Effect", "tilolang.effect", "$send", "$create", "migrate"] {
+            assert!(!ts.contains(platform), "{platform} leaked:\n{ts}");
+        }
+
+        let openapi = openapi_files(std::slice::from_ref(&timer)).expect("openapi generates");
+        let doc: serde_json::Value =
+            serde_json::from_str(&openapi[0].1).expect("openapi JSON parses");
+        let text = doc.to_string();
+        for platform in ["tilolang.effect", "$send", "migrate"] {
+            assert!(!text.contains(platform), "{platform} leaked:\n{text}");
+        }
+        assert!(text.contains("tl.so.tilo.timer.Board.extend"), "{text}");
+        // The API still describes a field edit a caller runs, at the app's own kind.
+        assert!(text.contains("tl.so.tilo.timer.Board.$create"), "{text}");
     }
 
     /// `FieldType::Duration` travels as whole seconds (an integer), so Python renders `int`

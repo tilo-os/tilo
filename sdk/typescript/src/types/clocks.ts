@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.clocks@860b782a67ee26a5";
+export const SURFACE = "so.tilo.clocks@5a3f61c712d0e126";
 
 /** A day of the week an alarm repeats on, Monday first. One of "mon", "tue", "wed", "thu", "fri", "sat", "sun". */
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.windows@6a21200d58dbaf86";
+export const SURFACE = "so.tilo.windows@03167a1d76fc0991";
 
 /** How a program opens: with Wine or Proton in a private capsule, or in the Windows appliance. One of "wine", "proton", "vm". */
 export type OpenWith = "wine" | "proton" | "vm";

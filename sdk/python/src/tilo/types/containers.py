@@ -73,7 +73,7 @@ DismissPullArgs = TypedDict("DismissPullArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    __surface__ = "so.tilo.containers@fbb106c5f32aeb77"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -134,7 +134,7 @@ class Notice(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.containers.Draft`."""
-    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    __surface__ = "so.tilo.containers@fbb106c5f32aeb77"
     mnoqvwjm: str  # name
     kc5y7sq2: str  # image
     gkz666im: str  # ports
@@ -159,7 +159,7 @@ class Draft(Resource):
 
 class Pull(Resource):
     """Pull — `tl.so.tilo.containers.Pull`."""
-    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    __surface__ = "so.tilo.containers@fbb106c5f32aeb77"
     shb65p47: str  # image
     gubc3b62: str  # job
     hhqtcu4c: list[str]  # lines
@@ -189,7 +189,7 @@ class Pull(Resource):
 
 class Containers(Resource):
     """Containers — `tl.so.tilo.containers.Containers`."""
-    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    __surface__ = "so.tilo.containers@fbb106c5f32aeb77"
     svwiioos: Draft  # draft
     ilelnqwj: list[Entry[Pull]]  # pulls
 
@@ -280,19 +280,19 @@ class Containers(Resource):
 
 class PullAsk(Resource):
     """PullAsk — `tl.so.tilo.containers.PullAsk`."""
-    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    __surface__ = "so.tilo.containers@fbb106c5f32aeb77"
     tukmkidh: str  # image
 
 
 class PullDetail(Resource):
     """PullDetail — `tl.so.tilo.containers.PullDetail`."""
-    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    __surface__ = "so.tilo.containers@fbb106c5f32aeb77"
     bldlgtsf: list[str]  # lines
 
 
 class TiloContainers(Resource):
     """Containers — `tl.so.tilo.containers`."""
-    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    __surface__ = "so.tilo.containers@fbb106c5f32aeb77"
     def open_shell(self, *, container: str) -> None:
         """Opens a shell in a running container: podman's, in the Tilo terminal."""
         return self.action("open_shell", container=container)

@@ -50,7 +50,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.calculator@65de6bcb6da6ba2e"
+    __surface__ = "so.tilo.calculator@46af702a2d72a962"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -111,7 +111,7 @@ class Notice(Resource):
 
 class Calculation(Resource):
     """Calculation — `tl.so.tilo.calculator.Calculation`."""
-    __surface__ = "so.tilo.calculator@65de6bcb6da6ba2e"
+    __surface__ = "so.tilo.calculator@46af702a2d72a962"
     @property
     def _22vu26uc(self) -> str:
         """expr (`22vu26uc` on the wire)."""
@@ -137,7 +137,7 @@ class Calculation(Resource):
 
 class Curve(Resource):
     """Curve — `tl.so.tilo.calculator.Curve`."""
-    __surface__ = "so.tilo.calculator@65de6bcb6da6ba2e"
+    __surface__ = "so.tilo.calculator@46af702a2d72a962"
     pxeb7d43: str  # expr
     @property
     def _5jdf7feh(self) -> bool:
@@ -163,7 +163,7 @@ class Curve(Resource):
 
 class Surface(Resource):
     """Surface — `tl.so.tilo.calculator.Surface`."""
-    __surface__ = "so.tilo.calculator@65de6bcb6da6ba2e"
+    __surface__ = "so.tilo.calculator@46af702a2d72a962"
     ia2fz4sd: str  # expr
     iuelnno5: bool  # visible
 
@@ -182,7 +182,7 @@ class Surface(Resource):
 
 class Calculator(Resource):
     """Calculator — `tl.so.tilo.calculator.Calculator`."""
-    __surface__ = "so.tilo.calculator@65de6bcb6da6ba2e"
+    __surface__ = "so.tilo.calculator@46af702a2d72a962"
     tb3paq5e: list[Entry[Calculation]]  # calculations
     @property
     def _7h4yz4ro(self) -> list[Entry[Curve]]:
@@ -247,7 +247,7 @@ class Calculator(Resource):
 
 class TiloCalculator(Resource):
     """Calculator — `tl.so.tilo.calculator`."""
-    __surface__ = "so.tilo.calculator@65de6bcb6da6ba2e"
+    __surface__ = "so.tilo.calculator@46af702a2d72a962"
     def copy_text(self, *, text: str) -> None:
         """Puts `text` on the person's clipboard, as the system's copy does."""
         return self.action("copy_text", text=text)

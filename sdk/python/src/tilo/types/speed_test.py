@@ -66,7 +66,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.speed-test@e3ac8ad9a20b307f"
+    __surface__ = "so.tilo.speed-test@2eaffc895d4318f0"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -127,7 +127,7 @@ class Notice(Resource):
 
 class SpeedTest(Resource):
     """SpeedTest — `tl.so.tilo.speed-test.SpeedTest`."""
-    __surface__ = "so.tilo.speed-test@e3ac8ad9a20b307f"
+    __surface__ = "so.tilo.speed-test@2eaffc895d4318f0"
     hpwi5yye: list[Entry[Measurement]]  # results
     phw7nc7e: list[Entry[Run]]  # runs
     ckq5elpb: str | None  # next_poll
@@ -195,7 +195,7 @@ class SpeedTest(Resource):
 
 class Measurement(Resource):
     """Measurement — `tl.so.tilo.speed-test.Measurement`."""
-    __surface__ = "so.tilo.speed-test@e3ac8ad9a20b307f"
+    __surface__ = "so.tilo.speed-test@2eaffc895d4318f0"
     @property
     def _5f54c4ou(self) -> float:
         """ping (`5f54c4ou` on the wire)."""
@@ -213,7 +213,7 @@ class Measurement(Resource):
 
 class Run(Resource):
     """Run — `tl.so.tilo.speed-test.Run`."""
-    __surface__ = "so.tilo.speed-test@e3ac8ad9a20b307f"
+    __surface__ = "so.tilo.speed-test@2eaffc895d4318f0"
     fbbyyume: str  # phase
     vufvfoij: float  # live
     stw2oyj6: int  # bytes
@@ -245,5 +245,5 @@ class Run(Resource):
 
 class TiloSpeedTest(Resource):
     """Speed Test — `tl.so.tilo.speed-test`."""
-    __surface__ = "so.tilo.speed-test@e3ac8ad9a20b307f"
+    __surface__ = "so.tilo.speed-test@2eaffc895d4318f0"
 

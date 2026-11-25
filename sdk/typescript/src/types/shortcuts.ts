@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shortcuts@dd32ad37ca4641ea";
+export const SURFACE = "so.tilo.shortcuts@fd27b2075bdd1e14";
 
 /** How a value is held: typed, one of the shortcut's inputs, a variable, an earlier step's output, text with placeholders, or an object or list of values. One of "none", "literal", "input", "variable", "step", "template", "object", "list". */
 export type Bind = "none" | "literal" | "input" | "variable" | "step" | "template" | "object" | "list";

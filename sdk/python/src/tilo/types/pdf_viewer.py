@@ -340,7 +340,7 @@ DrawSignatureArgs = TypedDict("DrawSignatureArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -401,7 +401,7 @@ class Notice(Resource):
 
 class Document(Resource):
     """Document — `tl.so.tilo.pdf-viewer.Document`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     peajfzyh: str  # source
     mxgrycmo: str  # source_name
     ebwmtj4p: str  # trouble
@@ -998,7 +998,7 @@ class Document(Resource):
 
 class Page(Resource):
     """Page — `tl.so.tilo.pdf-viewer.Page`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     oedigi3h: int  # source_page
     vphbhfba: str  # imported
     @property
@@ -1020,7 +1020,7 @@ class Page(Resource):
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.pdf-viewer.Picture`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     e5fx4rry: Page  # page
     lps7jwgj: int  # width
     ht6kgmaq: str  # url
@@ -1028,7 +1028,7 @@ class Picture(Resource):
 
 class Outline(Resource):
     """Outline — `tl.so.tilo.pdf-viewer.Outline`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     qfml2pla: str  # title
     @property
     def _34ukafjp(self) -> int:
@@ -1043,7 +1043,7 @@ class Outline(Resource):
 
 class Link(Resource):
     """Link — `tl.so.tilo.pdf-viewer.Link`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     xivruibf: Page  # page
     sepq4iwp: list[float]  # rect
     yfuvjgjt: str  # kind
@@ -1052,7 +1052,7 @@ class Link(Resource):
 
 class Field(Resource):
     """Field — `tl.so.tilo.pdf-viewer.Field`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _5ghgpzwq(self) -> str:
         """name (`5ghgpzwq` on the wire)."""
@@ -1081,7 +1081,7 @@ class Field(Resource):
 
 class Mark(Resource):
     """Mark — `tl.so.tilo.pdf-viewer.Mark`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _4x7a7juf(self) -> Page:
         """page (`4x7a7juf` on the wire)."""
@@ -1126,7 +1126,7 @@ class Mark(Resource):
 
 class Stroke(Resource):
     """Stroke — `tl.so.tilo.pdf-viewer.Stroke`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _4dzcakfh(self) -> list[float]:
         """points (`4dzcakfh` on the wire)."""
@@ -1139,7 +1139,7 @@ class Stroke(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.pdf-viewer.Comment`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     e5qxkctu: Mark | None  # mark
     btdnd5pa: Page  # page
     ogqe2kdm: str  # words
@@ -1186,7 +1186,7 @@ class Comment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.pdf-viewer.Reply`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _47zrerme(self) -> str:
         """words (`47zrerme` on the wire)."""
@@ -1236,7 +1236,7 @@ class Reply(Resource):
 
 class Signature(Resource):
     """Signature — `tl.so.tilo.pdf-viewer.Signature`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     xudq4utx: Page  # page
     uyofemys: float  # x
     mai2dzre: float  # y
@@ -1256,7 +1256,7 @@ class Signature(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.pdf-viewer.Library`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     bqmqo56y: list[Entry[Document]]  # documents
     u2q7brpp: str  # signer
     bny56wzk: list[Entry[Stroke]]  # strokes
@@ -1300,14 +1300,14 @@ class Library(Resource):
 
 class Runs(Resource):
     """Runs — `tl.so.tilo.pdf-viewer.Runs`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     fmkeszhi: list[float]  # rects
     awfhznwx: list[str]  # texts
 
 
 class PageRow(Resource):
     """PageRow — `tl.so.tilo.pdf-viewer.PageRow`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _2xoqlfit(self) -> int:
         """page (`2xoqlfit` on the wire)."""
@@ -1322,7 +1322,7 @@ class PageRow(Resource):
 
 class GlyphRow(Resource):
     """GlyphRow — `tl.so.tilo.pdf-viewer.GlyphRow`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     e35nwhcd: str  # text
     owthh7c4: int  # line
     at7kirp3: float  # x
@@ -1348,14 +1348,14 @@ class GlyphRow(Resource):
 
 class ImportRow(Resource):
     """ImportRow — `tl.so.tilo.pdf-viewer.ImportRow`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     b35hfv2r: str  # kind
     m2v5uip7: list[PageRow]  # pages
 
 
 class OutlineRow(Resource):
     """OutlineRow — `tl.so.tilo.pdf-viewer.OutlineRow`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     rl5gr6nc: str  # title
     mtayx6nb: int  # page
     ewudh3r2: int  # level
@@ -1363,7 +1363,7 @@ class OutlineRow(Resource):
 
 class MarkRow(Resource):
     """MarkRow — `tl.so.tilo.pdf-viewer.MarkRow`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     s3btzxsu: int  # page
     @property
     def _5x3rjw33(self) -> int:
@@ -1406,7 +1406,7 @@ class MarkRow(Resource):
 
 class MarkupRow(Resource):
     """MarkupRow — `tl.so.tilo.pdf-viewer.MarkupRow`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _6cyewmj4(self) -> list[MarkRow]:
         """marks (`6cyewmj4` on the wire)."""
@@ -1420,7 +1420,7 @@ class MarkupRow(Resource):
 
 class FieldRow(Resource):
     """FieldRow — `tl.so.tilo.pdf-viewer.FieldRow`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     havty2vp: str  # name
     d4cnpeq3: str  # kind
     br4tfro7: str  # value
@@ -1442,7 +1442,7 @@ class FieldRow(Resource):
 
 class PageOut(Resource):
     """PageOut — `tl.so.tilo.pdf-viewer.PageOut`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     d56ntmtj: int  # source
     @property
     def _5y2litv2(self) -> int:
@@ -1458,7 +1458,7 @@ class PageOut(Resource):
 
 class MarkOut(Resource):
     """MarkOut — `tl.so.tilo.pdf-viewer.MarkOut`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     qlypcvpd: int  # page
     jfdwouoh: str  # kind
     @property
@@ -1488,7 +1488,7 @@ class MarkOut(Resource):
 
 class ReplyOut(Resource):
     """ReplyOut — `tl.so.tilo.pdf-viewer.ReplyOut`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _7ckypqja(self) -> int:
         """page (`7ckypqja` on the wire)."""
@@ -1507,7 +1507,7 @@ class ReplyOut(Resource):
 
 class ValueOut(Resource):
     """ValueOut — `tl.so.tilo.pdf-viewer.ValueOut`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     @property
     def _4uvljgge(self) -> str:
         """name (`4uvljgge` on the wire)."""
@@ -1524,7 +1524,7 @@ class ValueOut(Resource):
 
 class AdoptedOut(Resource):
     """AdoptedOut — `tl.so.tilo.pdf-viewer.AdoptedOut`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     yzggzvtt: int  # page
     jxgttint: int  # index
     k3tlktwg: str  # name
@@ -1534,7 +1534,7 @@ class AdoptedOut(Resource):
 
 class SaveRequest(Resource):
     """SaveRequest — `tl.so.tilo.pdf-viewer.SaveRequest`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     l5cfhg2u: list[PageOut]  # pages
     egrqnnmk: list[MarkOut]  # marks
     fy7mbgs7: list[ReplyOut]  # replies
@@ -1544,12 +1544,12 @@ class SaveRequest(Resource):
 
 class MarkColour(Resource):
     """MarkColour — `tl.so.tilo.pdf-viewer.MarkColour`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
     yr5hwqqr: str  # name
     fmr3zdmh: str  # value
 
 
 class PdfViewer(Resource):
     """PDF Viewer — `tl.so.tilo.pdf-viewer`."""
-    __surface__ = "so.tilo.pdf-viewer@85261215fd825975"
+    __surface__ = "so.tilo.pdf-viewer@91861c61f7071d6f"
 

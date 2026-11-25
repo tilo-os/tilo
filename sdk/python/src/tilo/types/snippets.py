@@ -93,7 +93,7 @@ RemoveTagArgs = TypedDict("RemoveTagArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    __surface__ = "so.tilo.snippets@db1ed6569c905e2d"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -154,7 +154,7 @@ class Notice(Resource):
 
 class Snippet(Resource):
     """Snippet — `tl.so.tilo.snippets.Snippet`."""
-    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    __surface__ = "so.tilo.snippets@db1ed6569c905e2d"
     f7zljrnp: str  # title
     @property
     def _5k3zya5m(self) -> str:
@@ -227,14 +227,14 @@ class Snippet(Resource):
 
 class FillValue(Resource):
     """FillValue — `tl.so.tilo.snippets.FillValue`."""
-    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    __surface__ = "so.tilo.snippets@db1ed6569c905e2d"
     u5ym5ttn: str  # name
     h5vss6x5: str  # value
 
 
 class Fill(Resource):
     """Fill — `tl.so.tilo.snippets.Fill`."""
-    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    __surface__ = "so.tilo.snippets@db1ed6569c905e2d"
     qxvejddr: Snippet | None  # snippet
     e6uc6jtt: list[Entry[FillValue]]  # values
 
@@ -261,7 +261,7 @@ class Fill(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.snippets.Library`."""
-    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    __surface__ = "so.tilo.snippets@db1ed6569c905e2d"
     g5k73yqh: list[Entry[Snippet]]  # snippets
     avqtjv3w: list[Entry[Fill]]  # fills
 
@@ -344,7 +344,7 @@ class Library(Resource):
 
 class Snippets(Resource):
     """Snippets — `tl.so.tilo.snippets`."""
-    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    __surface__ = "so.tilo.snippets@db1ed6569c905e2d"
     def copy_text(self, *, text: str) -> bool:
         """Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the clipboard after a while, when it looks like it carries a credential, so an API key does not stay there for whatever is pasted next. False when the device refused the copy."""
         return self.action("copy_text", text=text)

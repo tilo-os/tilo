@@ -243,7 +243,7 @@ SetBodyModeArgs = TypedDict("SetBodyModeArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -304,7 +304,7 @@ class Notice(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.api-tester.Row`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     gmr3auev: str  # key
     @property
     def _5i27urp3(self) -> str:
@@ -319,7 +319,7 @@ class Row(Resource):
 
 class Credentials(Resource):
     """Credentials — `tl.so.tilo.api-tester.Credentials`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     wu5jqin3: AuthScheme  # scheme
     eimiw54w: str  # username
     bq35bust: str  # header
@@ -328,7 +328,7 @@ class Credentials(Resource):
 
 class Request(Resource):
     """Request — `tl.so.tilo.api-tester.Request`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     zerzgb7o: str  # name
     plszv7l4: HttpMethod  # method
     @property
@@ -423,7 +423,7 @@ class Request(Resource):
 
 class Answer(Resource):
     """Answer — `tl.so.tilo.api-tester.Answer`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     cmtsv52e: int  # status
     s2rpes4w: str  # status_text
     bmbte2qq: int  # duration_ms
@@ -453,14 +453,14 @@ class Answer(Resource):
 
 class AnswerHeader(Resource):
     """AnswerHeader — `tl.so.tilo.api-tester.AnswerHeader`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     q5ydbtzd: str  # name
     vyjpofsi: str  # value
 
 
 class Environment(Resource):
     """Environment — `tl.so.tilo.api-tester.Environment`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     @property
     def _2kunn2pf(self) -> str:
         """name (`2kunn2pf` on the wire)."""
@@ -506,7 +506,7 @@ class Environment(Resource):
 
 class Variable(Resource):
     """Variable — `tl.so.tilo.api-tester.Variable`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     i3e2wno7: str  # key
     qqgvzyfe: str  # value
     @property
@@ -535,7 +535,7 @@ class Variable(Resource):
 
 class Sent(Resource):
     """Sent — `tl.so.tilo.api-tester.Sent`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     ikluhyoi: str  # route
     fwwi364f: HttpMethod  # method
     w7aoohfv: str  # url
@@ -561,7 +561,7 @@ class Sent(Resource):
 
 class SavedCollection(Resource):
     """SavedCollection — `tl.so.tilo.api-tester.SavedCollection`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     @property
     def _6bygepf4(self) -> str:
         """name (`6bygepf4` on the wire)."""
@@ -597,7 +597,7 @@ class SavedCollection(Resource):
 
 class Workspace(Resource):
     """Workspace — `tl.so.tilo.api-tester.Workspace`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     bqk5mejh: list[Entry[SavedCollection]]  # collections
     @property
     def _7idvazp5(self) -> list[Entry[Environment]]:
@@ -860,7 +860,7 @@ class Workspace(Resource):
 
 class SendAsk(Resource):
     """SendAsk — `tl.so.tilo.api-tester.SendAsk`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     natoiy5b: str  # method
     xg26wm2t: str  # url
     @property
@@ -912,13 +912,13 @@ class SendAsk(Resource):
 
 class KeepAsk(Resource):
     """KeepAsk — `tl.so.tilo.api-tester.KeepAsk`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     qxcspakn: str  # value
 
 
 class ForgetAsk(Resource):
     """ForgetAsk — `tl.so.tilo.api-tester.ForgetAsk`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     @property
     def _42ltyzyi(self) -> str:
         """reference (`42ltyzyi` on the wire)."""
@@ -931,13 +931,13 @@ class ForgetAsk(Resource):
 
 class KeptCredential(Resource):
     """KeptCredential — `tl.so.tilo.api-tester.KeptCredential`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     haaxlsd4: str  # reference
 
 
 class SendState(Resource):
     """SendState — `tl.so.tilo.api-tester.SendState`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     tgafs5zj: str  # state
     vvonqua3: str  # answer
     or6k3lr7: str  # error
@@ -945,7 +945,7 @@ class SendState(Resource):
 
 class Answered(Resource):
     """Answered — `tl.so.tilo.api-tester.Answered`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     s4gqhsru: int  # status
     kqbtxrg4: str  # status_text
     @property
@@ -974,7 +974,7 @@ class Answered(Resource):
 
 class Replay(Resource):
     """Replay — `tl.so.tilo.api-tester.Replay`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     @property
     def _7fy3fg22(self) -> str:
         """name (`7fy3fg22` on the wire)."""
@@ -1005,7 +1005,7 @@ class Replay(Resource):
 
 class ApiTester(Resource):
     """API Tester — `tl.so.tilo.api-tester`."""
-    __surface__ = "so.tilo.api-tester@2a6b16eefcd9e267"
+    __surface__ = "so.tilo.api-tester@0db61a9be34de868"
     def forget_value(self, *, reference: str) -> None:
         """Takes a stored value off this device."""
         return self.action("forget_value", reference=reference)

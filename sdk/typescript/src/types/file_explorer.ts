@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@32a9b53c26850c65";
+export const SURFACE = "so.tilo.file-explorer@82c2fee48cb5790e";
 
 /** How a folder's entries read. One of "name", "size", "modified", "format". */
 export type SortBy = "name" | "size" | "modified" | "format";

@@ -57,7 +57,7 @@ ClearNoticeArgs = TypedDict("ClearNoticeArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -118,7 +118,7 @@ class Notice(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.totp.Account`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     wn7r7rgq: str  # issuer
     k6loujfj: str  # label
     sj2mtsnu: str  # item
@@ -211,7 +211,7 @@ class Account(Resource):
 
 class Vault(Resource):
     """Vault — `tl.so.tilo.totp.Vault`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     @property
     def _4rdnjfde(self) -> list[Entry[Account]]:
         """accounts (`4rdnjfde` on the wire)."""
@@ -344,13 +344,13 @@ class Vault(Resource):
 
 class ParseAsk(Resource):
     """ParseAsk — `tl.so.tilo.totp.ParseAsk`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     qhgdgyyn: str  # uri
 
 
 class ParsedAnswer(Resource):
     """ParsedAnswer — `tl.so.tilo.totp.ParsedAnswer`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     x5elnfmo: str  # issuer
     ac2s7eqm: str  # label
     nsnnmxnd: str  # secret
@@ -368,13 +368,13 @@ class ParsedAnswer(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.totp.ScanAsk`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     j757xqu7: str  # address
 
 
 class ScanAnswer(Resource):
     """ScanAnswer — `tl.so.tilo.totp.ScanAnswer`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     @property
     def _4jvzelry(self) -> str:
         """uri (`4jvzelry` on the wire)."""
@@ -387,17 +387,17 @@ class ScanAnswer(Resource):
 
 class CheckAsk(Resource):
     """CheckAsk — `tl.so.tilo.totp.CheckAsk`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     shi3ofgj: str  # secret
 
 
 class CheckAnswer(Resource):
     """CheckAnswer — `tl.so.tilo.totp.CheckAnswer`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
     pon234hn: bool  # ok
 
 
 class Totp(Resource):
     """Authenticator — `tl.so.tilo.totp`."""
-    __surface__ = "so.tilo.totp@d0c0542954555c55"
+    __surface__ = "so.tilo.totp@3e62ea2429cdfe14"
 

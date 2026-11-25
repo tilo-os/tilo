@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.ebook@0cedf6b7fcebc8f1";
+export const SURFACE = "so.tilo.ebook@2313337eeafc8bc9";
 
 /** The arguments of `remove_book`. */
 export interface RemoveBookArgs {

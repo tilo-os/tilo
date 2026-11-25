@@ -345,7 +345,7 @@ AsksArgs = TypedDict("AsksArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -406,7 +406,7 @@ class Notice(Resource):
 
 class Hunk(Resource):
     """Hunk — `tl.so.tilo.git-client.Hunk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     a7uhrt52: int  # index
     @property
     def _5ccadzg6(self) -> str:
@@ -422,7 +422,7 @@ class Hunk(Resource):
 
 class Change(Resource):
     """Change — `tl.so.tilo.git-client.Change`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     ulyz6e5m: str  # path
     pyq3ne6a: str | None  # old_path
     gyf3ucvv: ChangeArea  # area
@@ -462,7 +462,7 @@ class Change(Resource):
 
 class RefLabel(Resource):
     """RefLabel — `tl.so.tilo.git-client.RefLabel`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     zl57j56i: str  # name
     @property
     def _7lddqvmy(self) -> RefKind:
@@ -476,7 +476,7 @@ class RefLabel(Resource):
 
 class Commit(Resource):
     """Commit — `tl.so.tilo.git-client.Commit`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     ge4jaage: str  # id
     ktcweris: str  # summary
     qkodo2um: str  # body
@@ -506,7 +506,7 @@ class Commit(Resource):
 
 class Branch(Resource):
     """Branch — `tl.so.tilo.git-client.Branch`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     mmht373l: str  # name
     @property
     def _2xd7n6ck(self) -> bool:
@@ -525,7 +525,7 @@ class Branch(Resource):
 
 class Tag(Resource):
     """Tag — `tl.so.tilo.git-client.Tag`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     eimgqjmn: str  # name
     rvt4lxwy: str  # target
     qpus5rj2: str | None  # message
@@ -533,7 +533,7 @@ class Tag(Resource):
 
 class Stash(Resource):
     """Stash — `tl.so.tilo.git-client.Stash`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     plxxvefl: int  # index
     npo2d33u: str  # message
     kr54kttq: str  # branch
@@ -541,14 +541,14 @@ class Stash(Resource):
 
 class Remote(Resource):
     """Remote — `tl.so.tilo.git-client.Remote`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     fi4gej3v: str  # name
     ug544zky: str  # url
 
 
 class Worktree(Resource):
     """Worktree — `tl.so.tilo.git-client.Worktree`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     syhlyvff: str  # name
     s43oholm: str  # path
     zumfqfnq: str  # head
@@ -557,7 +557,7 @@ class Worktree(Resource):
 
 class CommitFile(Resource):
     """CommitFile — `tl.so.tilo.git-client.CommitFile`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     elliscls: str  # path
     tlnyi6uz: str | None  # old_path
     @property
@@ -593,7 +593,7 @@ class CommitFile(Resource):
 
 class BrowseEntry(Resource):
     """BrowseEntry — `tl.so.tilo.git-client.BrowseEntry`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     mazzivt3: str  # name
     @property
     def _67eqnwql(self) -> str:
@@ -608,7 +608,7 @@ class BrowseEntry(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.git-client.Session`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     vrfkfgub: str  # path
     qtrusa64: list[Entry[Change]]  # changes
     qakm3prq: DiffLayout  # layout
@@ -653,7 +653,7 @@ class Session(Resource):
 
 class Repository(Resource):
     """Repository — `tl.so.tilo.git-client.Repository`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     n4wepl5s: str  # path
     @property
     def _6ju4ea2u(self) -> str:
@@ -1128,7 +1128,7 @@ class Repository(Resource):
 
 class ApprovedCheck(Resource):
     """ApprovedCheck — `tl.so.tilo.git-client.ApprovedCheck`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     rmw3ex57: str  # check_id
     nsdsyb5s: str  # job
     ui5llo7z: CheckState  # state
@@ -1145,7 +1145,7 @@ class ApprovedCheck(Resource):
 
 class Loaded(Resource):
     """Loaded — `tl.so.tilo.git-client.Loaded`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     u66layc7: str  # answer
     dbwyzz4f: str  # name
     bhabfybv: str  # head
@@ -1164,7 +1164,7 @@ class Loaded(Resource):
 
 class WireChange(Resource):
     """WireChange — `tl.so.tilo.git-client.WireChange`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     @property
     def _37sxq5bs(self) -> str:
         """path (`37sxq5bs` on the wire)."""
@@ -1211,7 +1211,7 @@ class WireChange(Resource):
 
 class WireCommit(Resource):
     """WireCommit — `tl.so.tilo.git-client.WireCommit`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     ktz2fyrf: str  # sha
     ugphvrb2: str  # summary
     hg67fbg2: str  # body
@@ -1234,14 +1234,14 @@ class WireCommit(Resource):
 
 class WireRef(Resource):
     """WireRef — `tl.so.tilo.git-client.WireRef`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     cgcdv4xh: str  # name
     wlrzlclq: RefKind  # kind
 
 
 class WireBranch(Resource):
     """WireBranch — `tl.so.tilo.git-client.WireBranch`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     iwhrqigk: str  # name
     lnt6kiuo: bool  # is_head
     i4erkio3: bool  # is_remote
@@ -1253,7 +1253,7 @@ class WireBranch(Resource):
 
 class WireTag(Resource):
     """WireTag — `tl.so.tilo.git-client.WireTag`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     nsgs47is: str  # name
     yn67zzls: str  # target
     uju3pds5: str | None  # message
@@ -1261,7 +1261,7 @@ class WireTag(Resource):
 
 class WireStash(Resource):
     """WireStash — `tl.so.tilo.git-client.WireStash`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     zyrzfh5t: int  # index
     bd32e2q6: str  # message
     f3lmbvrn: str  # branch
@@ -1269,14 +1269,14 @@ class WireStash(Resource):
 
 class WireRemote(Resource):
     """WireRemote — `tl.so.tilo.git-client.WireRemote`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     d577aqii: str  # name
     ihlupgbv: str  # url
 
 
 class WireWorktree(Resource):
     """WireWorktree — `tl.so.tilo.git-client.WireWorktree`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     htbitpma: str  # name
     f3a3kvnf: str  # path
     cqc2kufj: str  # head
@@ -1285,7 +1285,7 @@ class WireWorktree(Resource):
 
 class WireFile(Resource):
     """WireFile — `tl.so.tilo.git-client.WireFile`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     @property
     def _44l2jnvk(self) -> str:
         """path (`44l2jnvk` on the wire)."""
@@ -1307,21 +1307,21 @@ class WireFile(Resource):
 
 class PathAsk(Resource):
     """PathAsk — `tl.so.tilo.git-client.PathAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     aqyg5aef: str  # path
     dioumhuy: bool  # whitespace
 
 
 class FileAsk(Resource):
     """FileAsk — `tl.so.tilo.git-client.FileAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     qahiprkz: str  # path
     vywcliib: str  # file
 
 
 class HunkAsk(Resource):
     """HunkAsk — `tl.so.tilo.git-client.HunkAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     nh7yqayy: str  # path
     vfjaobn2: str  # file
     tprahdo6: int  # hunk
@@ -1337,14 +1337,14 @@ class HunkAsk(Resource):
 
 class CommitAsk(Resource):
     """CommitAsk — `tl.so.tilo.git-client.CommitAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     ofstus7y: str  # path
     bxihpw7v: str  # message
 
 
 class BranchAsk(Resource):
     """BranchAsk — `tl.so.tilo.git-client.BranchAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     fi4zi42q: str  # path
     c4fbjyom: str  # name
     l7meu2gh: bool  # checkout
@@ -1352,7 +1352,7 @@ class BranchAsk(Resource):
 
 class CheckoutAsk(Resource):
     """CheckoutAsk — `tl.so.tilo.git-client.CheckoutAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     klf3gt64: str  # path
     rpchrkvk: str  # name
     cuml3cz6: bool  # stash
@@ -1360,7 +1360,7 @@ class CheckoutAsk(Resource):
 
 class CommitFilesAsk(Resource):
     """CommitFilesAsk — `tl.so.tilo.git-client.CommitFilesAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     @property
     def _3w5wb2ew(self) -> str:
         """path (`3w5wb2ew` on the wire)."""
@@ -1374,7 +1374,7 @@ class CommitFilesAsk(Resource):
 
 class WorktreeAsk(Resource):
     """WorktreeAsk — `tl.so.tilo.git-client.WorktreeAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     ukwgoqln: str  # path
     py6thmfz: str  # destination
     rwocyieo: str  # branch
@@ -1383,21 +1383,21 @@ class WorktreeAsk(Resource):
 
 class StashSaveAsk(Resource):
     """StashSaveAsk — `tl.so.tilo.git-client.StashSaveAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     yeg5b74s: str  # path
     igkwc6uc: str  # message
 
 
 class StashApplyAsk(Resource):
     """StashApplyAsk — `tl.so.tilo.git-client.StashApplyAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     y3nby6jr: str  # path
     eoe3gfz5: int  # index
 
 
 class ResolveAsk(Resource):
     """ResolveAsk — `tl.so.tilo.git-client.ResolveAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     yltk3frx: str  # path
     o2dbxhal: str  # file
     qvivrkzl: bool  # ours
@@ -1405,7 +1405,7 @@ class ResolveAsk(Resource):
 
 class CheckStatus(Resource):
     """CheckStatus — `tl.so.tilo.git-client.CheckStatus`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     uygk57xo: str  # state
     @property
     def _55lyz5up(self) -> str:
@@ -1435,12 +1435,12 @@ class CheckStatus(Resource):
 
 class RemoteAsk(Resource):
     """RemoteAsk — `tl.so.tilo.git-client.RemoteAsk`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
     gifph57t: str  # path
     tz3p3qeb: str  # remote
 
 
 class GitClient(Resource):
     """Git — `tl.so.tilo.git-client`."""
-    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    __surface__ = "so.tilo.git-client@b696750e887da5a6"
 

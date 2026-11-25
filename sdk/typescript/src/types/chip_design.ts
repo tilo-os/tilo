@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chip-design@d0b1babe0f1037bc";
+export const SURFACE = "so.tilo.chip-design@dee902aae2b72415";
 
 /** The structural operator kinds a design is built from. One of "input", "gate_input", "norm_weight_input", "rms_norm", "apply_norm_weight", "silu", "multiply", "projection_input", "matrix_weight_input", "linear_projection", "add". */
 export type OperatorKind = "input" | "gate_input" | "norm_weight_input" | "rms_norm" | "apply_norm_weight" | "silu" | "multiply" | "projection_input" | "matrix_weight_input" | "linear_projection" | "add";

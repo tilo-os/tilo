@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.canvas@3e14d8d6498284f3";
+export const SURFACE = "so.tilo.canvas@6497e44e2468cda1";
 
 /** The arguments of `rename_layer`. */
 export interface RenameLayerArgs {

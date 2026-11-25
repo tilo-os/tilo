@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.camera@93d0212f06fd7210";
+export const SURFACE = "so.tilo.camera@a2e078b8f7fe2273";
 
 /** A capture is a still picture or a clip. One of "photo", "video". */
 export type CaptureKind = "photo" | "video";

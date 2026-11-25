@@ -196,7 +196,7 @@ ImportOpmlArgs = TypedDict("ImportOpmlArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -257,7 +257,7 @@ class Notice(Resource):
 
 class Folder(Resource):
     """Folder — `tl.so.tilo.feeds.Folder`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     ygksbjy5: str  # name
 
     def rename_folder(self, *, name: str) -> None:
@@ -275,7 +275,7 @@ class Folder(Resource):
 
 class Feed(Resource):
     """Feed — `tl.so.tilo.feeds.Feed`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     ruq4ynjw: str  # name
     jdxu5vhb: str  # url
     kitws4yh: str  # site
@@ -320,7 +320,7 @@ class Feed(Resource):
 
 class Article(Resource):
     """Article — `tl.so.tilo.feeds.Article`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     chbpw5pg: Feed  # feed
     swmvsojn: str  # title
     gvntfpn6: str  # author
@@ -429,7 +429,7 @@ class Article(Resource):
 
 class Reader(Resource):
     """Reader — `tl.so.tilo.feeds.Reader`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     tqbu72hj: str  # place
     lx6zg57h: float  # scale
     um6nclsf: str  # face
@@ -498,7 +498,7 @@ class Reader(Resource):
 
 class Refresh(Resource):
     """Refresh — `tl.so.tilo.feeds.Refresh`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     crwgoxd6: str  # job
     dzn4ssl3: str  # state
     @property
@@ -517,7 +517,7 @@ class Refresh(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.feeds.Library`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     urf3jsnz: list[Entry[Folder]]  # folders
     ba25drsv: list[Entry[Feed]]  # feeds
     mymgo65x: list[Entry[Article]]  # articles
@@ -629,20 +629,20 @@ class Library(Resource):
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.feeds.Ask`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     ajc3gacu: list[AskFeed]  # feeds
 
 
 class AskFeed(Resource):
     """AskFeed — `tl.so.tilo.feeds.AskFeed`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     wvgxfoj6: str  # url
     rzd7dr5x: str  # pin
 
 
 class Job(Resource):
     """Job — `tl.so.tilo.feeds.Job`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     vxpbania: str  # state
     qen3hx3f: int  # done
     fm7ik3wg: int  # total
@@ -651,7 +651,7 @@ class Job(Resource):
 
 class Taken(Resource):
     """Taken — `tl.so.tilo.feeds.Taken`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     karmfgtt: bool  # ok
     mkw76ot4: str  # title
     vxvxtmdp: str  # pin
@@ -670,7 +670,7 @@ class Taken(Resource):
 
 class Pulled(Resource):
     """Pulled — `tl.so.tilo.feeds.Pulled`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     qablmehl: str  # title
     @property
     def _5sdtzscn(self) -> str:
@@ -688,7 +688,7 @@ class Pulled(Resource):
 
 class TakeAsk(Resource):
     """TakeAsk — `tl.so.tilo.feeds.TakeAsk`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     @property
     def _5mcvbcwk(self) -> str:
         """job (`5mcvbcwk` on the wire)."""
@@ -702,7 +702,7 @@ class TakeAsk(Resource):
 
 class Outline(Resource):
     """Outline — `tl.so.tilo.feeds.Outline`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     esmrzlts: str  # title
     fhfn2dm2: str  # url
     akah2ujo: str  # site
@@ -711,25 +711,25 @@ class Outline(Resource):
 
 class Outlines(Resource):
     """Outlines — `tl.so.tilo.feeds.Outlines`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     z646rsds: list[str]  # outlines
 
 
 class OpmlAsk(Resource):
     """OpmlAsk — `tl.so.tilo.feeds.OpmlAsk`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     vg5idgn5: str  # text
 
 
 class OpmlWrite(Resource):
     """OpmlWrite — `tl.so.tilo.feeds.OpmlWrite`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     pd5lnepq: list[OpmlFeed]  # feeds
 
 
 class OpmlFeed(Resource):
     """OpmlFeed — `tl.so.tilo.feeds.OpmlFeed`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     @property
     def _5w7b7tgv(self) -> str:
         """title (`5w7b7tgv` on the wire)."""
@@ -760,11 +760,11 @@ class OpmlFeed(Resource):
 
 class OpmlText(Resource):
     """OpmlText — `tl.so.tilo.feeds.OpmlText`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
     q2mosawv: str  # text
 
 
 class Feeds(Resource):
     """Feeds — `tl.so.tilo.feeds`."""
-    __surface__ = "so.tilo.feeds@bc16a7f096d9e213"
+    __surface__ = "so.tilo.feeds@0795db6a7c1f504d"
 

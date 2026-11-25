@@ -79,7 +79,7 @@ RestartClipArgs = TypedDict("RestartClipArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.video@4fec5a8bce96ca97"
+    __surface__ = "so.tilo.video@28f43ffb04ea7f57"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -140,7 +140,7 @@ class Notice(Resource):
 
 class Clip(Resource):
     """Clip — `tl.so.tilo.video.Clip`."""
-    __surface__ = "so.tilo.video@4fec5a8bce96ca97"
+    __surface__ = "so.tilo.video@28f43ffb04ea7f57"
     sit6wbwo: str  # title
     vnxskfep: str  # source
 
@@ -159,20 +159,20 @@ class Clip(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.video.Playlist`."""
-    __surface__ = "so.tilo.video@4fec5a8bce96ca97"
+    __surface__ = "so.tilo.video@28f43ffb04ea7f57"
     hktiqra6: str  # name
 
 
 class PlaylistEntry(Resource):
     """PlaylistEntry — `tl.so.tilo.video.PlaylistEntry`."""
-    __surface__ = "so.tilo.video@4fec5a8bce96ca97"
+    __surface__ = "so.tilo.video@28f43ffb04ea7f57"
     pmcgj5bo: Playlist  # playlist
     gofxf7oh: Clip  # clip
 
 
 class Bookmark(Resource):
     """Bookmark — `tl.so.tilo.video.Bookmark`."""
-    __surface__ = "so.tilo.video@4fec5a8bce96ca97"
+    __surface__ = "so.tilo.video@28f43ffb04ea7f57"
     h4e7iq7t: Clip  # clip
     cwamirwi: float  # at
     n323noym: str  # text
@@ -180,7 +180,7 @@ class Bookmark(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.video.Library`."""
-    __surface__ = "so.tilo.video@4fec5a8bce96ca97"
+    __surface__ = "so.tilo.video@28f43ffb04ea7f57"
     cfgqumjg: list[Entry[Clip]]  # clips
     @property
     def _7sp4sk7x(self) -> list[Entry[Playlist]]:
@@ -296,5 +296,5 @@ class Library(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.video`."""
-    __surface__ = "so.tilo.video@4fec5a8bce96ca97"
+    __surface__ = "so.tilo.video@28f43ffb04ea7f57"
 

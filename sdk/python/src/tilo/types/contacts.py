@@ -193,7 +193,7 @@ UnshareArgs = TypedDict("UnshareArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -254,14 +254,14 @@ class Notice(Resource):
 
 class Labeled(Resource):
     """Labeled — `tl.so.tilo.contacts.Labeled`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     fzyd2a52: str  # label
     b4cilqkx: str  # value
 
 
 class Address(Resource):
     """Address — `tl.so.tilo.contacts.Address`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     @property
     def _5iipld72(self) -> str:
         """label (`5iipld72` on the wire)."""
@@ -279,7 +279,7 @@ class Address(Resource):
 
 class Contact(Resource):
     """Contact — `tl.so.tilo.contacts.Contact`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     zut4kvim: str  # name
     rfhxkccf: str  # org
     @property
@@ -458,13 +458,13 @@ class Contact(Resource):
 
 class Group(Resource):
     """Group — `tl.so.tilo.contacts.Group`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     jn6l7z6v: str  # name
 
 
 class ImportCard(Resource):
     """ImportCard — `tl.so.tilo.contacts.ImportCard`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     op5ercnd: str  # card
     a4s7qvbf: str  # name
     kcnlll33: str  # uid
@@ -473,7 +473,7 @@ class ImportCard(Resource):
 
 class ImportReport(Resource):
     """ImportReport — `tl.so.tilo.contacts.ImportReport`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     ydus2juj: int  # imported
     bqy264j6: int  # unchanged
     jm2un2fr: int  # awaiting
@@ -483,7 +483,7 @@ class ImportReport(Resource):
 
 class Book(Resource):
     """Book — `tl.so.tilo.contacts.Book`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     qfj7l6eu: list[Entry[Contact]]  # contacts
     uyyz5pg2: list[Entry[Group]]  # groups
     zc4aqhgg: list[Entry[ImportCard]]  # review
@@ -661,7 +661,7 @@ class Book(Resource):
 
 class Contacts(Resource):
     """Contacts — `tl.so.tilo.contacts`."""
-    __surface__ = "so.tilo.contacts@c32a407883c8217b"
+    __surface__ = "so.tilo.contacts@1589a5308a9978d8"
     def confirm(self,
         *,
         d: Any,

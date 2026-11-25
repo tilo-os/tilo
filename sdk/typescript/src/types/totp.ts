@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.totp@d0c0542954555c55";
+export const SURFACE = "so.tilo.totp@3e62ea2429cdfe14";
 
 /** The arguments of `recolor_account`. */
 export interface RecolorAccountArgs {

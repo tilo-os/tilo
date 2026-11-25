@@ -115,7 +115,7 @@ QueueMovedArgs = TypedDict("QueueMovedArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -176,7 +176,7 @@ class Notice(Resource):
 
 class Track(Resource):
     """Track — `tl.so.tilo.music.Track`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     wapyyydf: str  # key
     zpnajesf: str  # title
     pzaz5i7w: str  # artist
@@ -254,7 +254,7 @@ class Track(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.music.Album`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     xlmick3d: str  # key
     ui7q6nc2: str  # title
     c36cztfw: str  # artist
@@ -304,7 +304,7 @@ class Album(Resource):
 
 class Artist(Resource):
     """Artist — `tl.so.tilo.music.Artist`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     a3jwtsne: str  # key
     aht5vji7: str  # name
     p7suhaoo: int  # subscribers
@@ -334,7 +334,7 @@ class Artist(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.music.Playlist`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     zliedtfz: str  # key
     rtkxqj2p: str  # title
     htibtwee: str  # subtitle
@@ -361,7 +361,7 @@ class Playlist(Resource):
 
 class SpotifyDevice(Resource):
     """SpotifyDevice — `tl.so.tilo.music.SpotifyDevice`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     @property
     def _4ruem7bk(self) -> str:
         """key (`4ruem7bk` on the wire)."""
@@ -378,7 +378,7 @@ class SpotifyDevice(Resource):
 
 class SpotifyQueueItem(Resource):
     """SpotifyQueueItem — `tl.so.tilo.music.SpotifyQueueItem`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     r4rop6xj: str  # key
     teom6gyk: str  # title
     b4nh57k6: str  # artist
@@ -389,7 +389,7 @@ class SpotifyQueueItem(Resource):
 
 class Section(Resource):
     """Section — `tl.so.tilo.music.Section`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     jsrmddga: str  # key
     @property
     def _2kqqdved(self) -> str:
@@ -404,7 +404,7 @@ class Section(Resource):
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.music.Suggestion`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     qh34h2ch: str  # key
     xh6birha: str  # section
     a5bkjkyq: str  # kind
@@ -430,7 +430,7 @@ class Suggestion(Resource):
 
 class Mixtape(Resource):
     """Mixtape — `tl.so.tilo.music.Mixtape`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     @property
     def _5d2oxk4b(self) -> str:
         """name (`5d2oxk4b` on the wire)."""
@@ -495,7 +495,7 @@ class Mixtape(Resource):
 
 class Taste(Resource):
     """Taste — `tl.so.tilo.music.Taste`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     nhxvxvrt: bool  # followed_artists
     fygjzxca: bool  # liked_songs
     splmmoir: bool  # saved_albums
@@ -507,7 +507,7 @@ class Taste(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.music.Library`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     hkr3ia6d: str  # name
     cp5uymkx: list[Entry[Track]]  # tracks
     phkx3ocv: list[Entry[Album]]  # albums
@@ -733,7 +733,7 @@ class Library(Resource):
 
 class Music(Resource):
     """Music — `tl.so.tilo.music`."""
-    __surface__ = "so.tilo.music@c33b0cfbfc80e1c4"
+    __surface__ = "so.tilo.music@f1278d3daaa41d86"
     def queue_moved(self,
         *,
         p: Any,

@@ -314,7 +314,7 @@ RemovePersonResourceArgs = TypedDict("RemovePersonResourceArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -375,7 +375,7 @@ class Notice(Resource):
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.photos.Photo`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     rv4vs7su: str  # name
     r55t3rg3: str  # picture
     vwrtdas3: str  # thumb
@@ -574,7 +574,7 @@ class Photo(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.photos.Album`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     unujaudz: str  # name
     k7fl2y27: list[str]  # photos
 
@@ -609,14 +609,14 @@ class Album(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.photos.Person`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     segahwtp: str  # name
     vbzsnqg5: list[str]  # photos
 
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.photos.Suggestion`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     qracadw6: str  # name
     ehc6rrhm: list[str]  # photos
     @property
@@ -631,7 +631,7 @@ class Suggestion(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.photos.Library`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     moeuycny: list[Entry[Photo]]  # photos
     tqa4lyow: list[Entry[Album]]  # albums
     xr5mtp2m: list[Entry[Person]]  # people
@@ -1055,7 +1055,7 @@ class Library(Resource):
 
 class AlbumDraft(Resource):
     """AlbumDraft — `tl.so.tilo.photos.AlbumDraft`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     @property
     def _53utp7nd(self) -> str:
         """album (`53utp7nd` on the wire)."""
@@ -1070,7 +1070,7 @@ class AlbumDraft(Resource):
 
 class Unread(Resource):
     """Unread — `tl.so.tilo.photos.Unread`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     @property
     def _6iu5enh3(self) -> str:
         """name (`6iu5enh3` on the wire)."""
@@ -1094,7 +1094,7 @@ class Unread(Resource):
 
 class ChosenPicture(Resource):
     """ChosenPicture — `tl.so.tilo.photos.ChosenPicture`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     wjvddrc5: str  # name
     @property
     def _6agrr5bt(self) -> str:
@@ -1109,13 +1109,13 @@ class ChosenPicture(Resource):
 
 class ImportAsk(Resource):
     """ImportAsk — `tl.so.tilo.photos.ImportAsk`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     pgrmuslm: list[ChosenPicture]  # files
 
 
 class ReadPicture(Resource):
     """ReadPicture — `tl.so.tilo.photos.ReadPicture`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     z7dxm5rp: str  # name
     bedul3kq: str  # picture
     v72wrl73: str  # thumb
@@ -1127,7 +1127,7 @@ class ReadPicture(Resource):
 
 class ImportRecord(Resource):
     """ImportRecord — `tl.so.tilo.photos.ImportRecord`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     k33gw4xu: str  # job
     hbuvlsle: str  # state
     l5ism53v: int  # found
@@ -1138,7 +1138,7 @@ class ImportRecord(Resource):
 
 class FaceScan(Resource):
     """FaceScan — `tl.so.tilo.photos.FaceScan`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
     dejwr76b: bool  # on
     dcarwzkc: str  # state
     quetfngb: list[str]  # scanned
@@ -1146,5 +1146,5 @@ class FaceScan(Resource):
 
 class Photos(Resource):
     """Photos — `tl.so.tilo.photos`."""
-    __surface__ = "so.tilo.photos@11d418bee67c429f"
+    __surface__ = "so.tilo.photos@0d971e43f3ec05f8"
 

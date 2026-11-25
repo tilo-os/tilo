@@ -27,7 +27,7 @@ __all__ = [
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.activity@1bb2fe01f20e1e2c"
+    __surface__ = "so.tilo.activity@fed12e8300b79982"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -88,11 +88,11 @@ class Notice(Resource):
 
 class Window(Resource):
     """Window — `tl.so.tilo.activity.Window`."""
-    __surface__ = "so.tilo.activity@1bb2fe01f20e1e2c"
+    __surface__ = "so.tilo.activity@fed12e8300b79982"
     ukfxyqw3: str  # place
 
 
 class Activity(Resource):
     """Activity — `tl.so.tilo.activity`."""
-    __surface__ = "so.tilo.activity@1bb2fe01f20e1e2c"
+    __surface__ = "so.tilo.activity@fed12e8300b79982"
 

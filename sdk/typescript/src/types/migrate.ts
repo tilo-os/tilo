@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.migrate@e881061eb12ce5e8";
+export const SURFACE = "so.tilo.migrate@90fe4c800b0f019f";
 
 /** Where a migration's run stands: reviewed, with what the source holds waiting to be chosen; running, while the device that holds the data brings in what was chosen; stopped by a person, keeping what it brought until then; failed, its failure saying why; or complete. The device that holds the data moves it on as its run goes. One of "reviewed", "running", "stopped", "failed", "complete". */
 export type RunState = "reviewed" | "running" | "stopped" | "failed" | "complete";

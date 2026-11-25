@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shell@d77c3128da78787f";
+export const SURFACE = "so.tilo.shell@d3158ae44944f67c";
 
 /** One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it. One of "menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer". */
 export type BarPartKind = "menu" | "workspace" | "app_menu" | "strip" | "tasks" | "clock" | "people" | "status" | "power" | "agent" | "spacer";
@@ -871,6 +871,11 @@ export interface LayoutStrip extends tilo.Resource {
   m75kjoue: number;  // canvas_width
   s3lpes2e: number;  // canvas_height
   s6rivl3a: boolean;  // canvas_hugs
+  jlviav7f: boolean;  // floating
+  mgsaujmo: number;  // float_x
+  "2jtaykbx": number;  // float_y
+  "3oajnqvp": number;  // float_width
+  "76b3pbs6": number;  // float_height
   kxssatr3: boolean;  // leaving
   "54wspwy2": number[];  // control
   pznsxbgq: string;  // shell

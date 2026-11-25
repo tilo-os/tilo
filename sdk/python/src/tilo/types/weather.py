@@ -107,7 +107,7 @@ AcceptFoundArgs = TypedDict("AcceptFoundArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -168,7 +168,7 @@ class Notice(Resource):
 
 class Hour(Resource):
     """Hour — `tl.so.tilo.weather.Hour`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     hqg5l743: str  # at
     nz766xgs: float  # temperature
     bszivu27: float  # chance
@@ -179,7 +179,7 @@ class Hour(Resource):
 
 class Day(Resource):
     """Day — `tl.so.tilo.weather.Day`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     jpx34w56: str  # date
     @property
     def _7yqjq2lc(self) -> int:
@@ -209,7 +209,7 @@ class Day(Resource):
 
 class Reading(Resource):
     """Reading — `tl.so.tilo.weather.Reading`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     wz5kgppi: str  # at
     nfn3o6kh: float  # temperature
     npx3rbww: float  # apparent
@@ -233,7 +233,7 @@ class Reading(Resource):
 
 class Air(Resource):
     """Air — `tl.so.tilo.weather.Air`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     qhxusqd7: str  # at
     b43at2ai: float | None  # european
     rwv4mbrr: float | None  # us
@@ -252,7 +252,7 @@ class Air(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.weather.Place`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     bacjedt3: str  # name
     aohkzfz3: str  # region
     j6rsr6zo: str  # country
@@ -271,7 +271,7 @@ class Place(Resource):
 
 class PlaceReading(Resource):
     """PlaceReading — `tl.so.tilo.weather.PlaceReading`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     uzxnvv67: str  # name
     hfv2phzu: str  # place
     kgqshwck: bool  # read
@@ -309,7 +309,7 @@ class PlaceReading(Resource):
 
 class Refresh(Resource):
     """Refresh — `tl.so.tilo.weather.Refresh`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     @property
     def _6a665z7q(self) -> str:
         """state (`6a665z7q` on the wire)."""
@@ -334,7 +334,7 @@ class Refresh(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.weather.Found`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     mgz6jurw: str  # name
     @property
     def _6jas4neh(self) -> float:
@@ -360,7 +360,7 @@ class Found(Resource):
 
 class Searching(Resource):
     """Searching — `tl.so.tilo.weather.Searching`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     fmhvvp6l: str  # wanted
     o4whnz6t: str  # asked
     jwbxovvp: str  # pending
@@ -377,7 +377,7 @@ class Searching(Resource):
 
 class Locations(Resource):
     """Locations — `tl.so.tilo.weather.Locations`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     b2qn6gqw: list[Entry[Place]]  # places
     vqfze2cq: Place | None  # default
     ms5dkio6: list[Entry[Searching]]  # searches
@@ -540,7 +540,7 @@ class Locations(Resource):
 
 class Readings(Resource):
     """Readings — `tl.so.tilo.weather.Readings`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
     @property
     def _6fze2ppw(self) -> list[Entry[PlaceReading]]:
         """of (`6fze2ppw` on the wire)."""
@@ -566,5 +566,5 @@ class Readings(Resource):
 
 class Weather(Resource):
     """Weather — `tl.so.tilo.weather`."""
-    __surface__ = "so.tilo.weather@2eec6dbb293b7936"
+    __surface__ = "so.tilo.weather@bcadefef8e611e18"
 

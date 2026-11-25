@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.contacts@c32a407883c8217b";
+export const SURFACE = "so.tilo.contacts@1589a5308a9978d8";
 
 /** The versions of the card format another address book reads. One of "v4", "v3". */
 export type VCardVersion = "v4" | "v3";

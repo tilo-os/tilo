@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.word-processor@554a1c0b462fbcb3";
+export const SURFACE = "so.tilo.word-processor@b96da4f206ac010b";
 
 /** The arguments of `edit-block`. */
 export interface EditBlockArgs {

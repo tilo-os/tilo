@@ -307,7 +307,7 @@ SetStyleArgs = TypedDict("SetStyleArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -368,7 +368,7 @@ class Notice(Resource):
 
 class Deck(Resource):
     """Deck — `tl.so.tilo.slides.Deck`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     pwdtrcuk: str  # title
     ep3yewja: Palette  # palette
     @property
@@ -620,7 +620,7 @@ class Deck(Resource):
 
 class Slide(Resource):
     """Slide — `tl.so.tilo.slides.Slide`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     w3sjwjk2: Layout  # layout
     x3bud3c2: Background  # background
     qowtxual: str  # notes
@@ -865,7 +865,7 @@ class Slide(Resource):
 
 class Element(Resource):
     """Element — `tl.so.tilo.slides.Element`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     @property
     def _74of62le(self) -> ElementKind:
         """kind (`74of62le` on the wire)."""
@@ -995,7 +995,7 @@ class Element(Resource):
 
 class DeckFile(Resource):
     """DeckFile — `tl.so.tilo.slides.DeckFile`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     mnmdemqn: str  # title
     iayxmtjm: str  # palette
     qzspviev: str  # look
@@ -1004,7 +1004,7 @@ class DeckFile(Resource):
 
 class SlideFile(Resource):
     """SlideFile — `tl.so.tilo.slides.SlideFile`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     dqtkr5ot: str  # id
     sqsminna: str  # layout
     tmaage4k: str  # background
@@ -1014,7 +1014,7 @@ class SlideFile(Resource):
 
 class ElementFile(Resource):
     """ElementFile — `tl.so.tilo.slides.ElementFile`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     kpm4jhpo: str  # id
     n34lg7tm: str  # kind
     hevssfo2: float  # x
@@ -1042,7 +1042,7 @@ class ElementFile(Resource):
 
 class Outline(Resource):
     """Outline — `tl.so.tilo.slides.Outline`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     fmwlgt6m: str | None  # title
     @property
     def _3iepzseq(self) -> str | None:
@@ -1058,7 +1058,7 @@ class Outline(Resource):
 
 class Colours(Resource):
     """Colours — `tl.so.tilo.slides.Colours`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     i6vzkphp: str  # accent
     qp7qmrqr: str  # accent_soft
     e2yv6zxc: str  # accent_deep
@@ -1097,7 +1097,7 @@ class Colours(Resource):
 
 class Slides(Resource):
     """Slides — `tl.so.tilo.slides`."""
-    __surface__ = "so.tilo.slides@c9275cdbd7e71740"
+    __surface__ = "so.tilo.slides@fb42e93116efd895"
     def read_presentation(self, *, file: Any) -> Any:
         """Reads the deck a presentation file holds."""
         return self.action("read_presentation", file=file)

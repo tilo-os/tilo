@@ -64,7 +64,7 @@ ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.logs@8f6a67d584534406"
+    __surface__ = "so.tilo.logs@6329465a3795cbde"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -125,7 +125,7 @@ class Notice(Resource):
 
 class Logs(Resource):
     """Logs — `tl.so.tilo.logs.Logs`."""
-    __surface__ = "so.tilo.logs@8f6a67d584534406"
+    __surface__ = "so.tilo.logs@6329465a3795cbde"
     @property
     def _6e5izmwp(self) -> str:
         """severity (`6e5izmwp` on the wire)."""
@@ -208,7 +208,7 @@ class Logs(Resource):
 
 class ExportEntry(Resource):
     """ExportEntry — `tl.so.tilo.logs.ExportEntry`."""
-    __surface__ = "so.tilo.logs@8f6a67d584534406"
+    __surface__ = "so.tilo.logs@6329465a3795cbde"
     @property
     def _37kvzek7(self) -> int:
         """realtime_us (`37kvzek7` on the wire)."""
@@ -244,14 +244,14 @@ class ExportEntry(Resource):
 
 class ExportField(Resource):
     """ExportField — `tl.so.tilo.logs.ExportField`."""
-    __surface__ = "so.tilo.logs@8f6a67d584534406"
+    __surface__ = "so.tilo.logs@6329465a3795cbde"
     mj25pae6: str  # name
     pnqueidz: str  # value
 
 
 class TiloLogs(Resource):
     """Logs — `tl.so.tilo.logs`."""
-    __surface__ = "so.tilo.logs@8f6a67d584534406"
+    __surface__ = "so.tilo.logs@6329465a3795cbde"
     def copy_entry(self, *, entry: Any) -> None:
         """Copies one record, with its time, unit, program and message."""
         return self.action("copy_entry", entry=entry)

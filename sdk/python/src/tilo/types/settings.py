@@ -75,7 +75,7 @@ ReviewContrastNowArgs = TypedDict("ReviewContrastNowArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.settings@7966432df163e3c6"
+    __surface__ = "so.tilo.settings@9dc5cbaaa421b1ff"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -136,7 +136,7 @@ class Notice(Resource):
 
 class Settings(Resource):
     """Settings — `tl.so.tilo.settings.Settings`."""
-    __surface__ = "so.tilo.settings@7966432df163e3c6"
+    __surface__ = "so.tilo.settings@9dc5cbaaa421b1ff"
     vfi4twig: str  # pane
 
     def import_theme(self, *, file: Any) -> None:
@@ -162,7 +162,7 @@ class Settings(Resource):
 
 class Screen(Resource):
     """Screen — `tl.so.tilo.settings.Screen`."""
-    __surface__ = "so.tilo.settings@7966432df163e3c6"
+    __surface__ = "so.tilo.settings@9dc5cbaaa421b1ff"
     jv7udxtv: str  # device
     yffzojmk: str  # device_label
     ygrxnhgi: str  # output
@@ -180,13 +180,13 @@ class Screen(Resource):
 
 class ProblemReport(Resource):
     """ProblemReport — `tl.so.tilo.settings.ProblemReport`."""
-    __surface__ = "so.tilo.settings@7966432df163e3c6"
+    __surface__ = "so.tilo.settings@9dc5cbaaa421b1ff"
     kb2c7b7e: str  # body
 
 
 class TiloSettings(Resource):
     """Settings — `tl.so.tilo.settings`."""
-    __surface__ = "so.tilo.settings@7966432df163e3c6"
+    __surface__ = "so.tilo.settings@9dc5cbaaa421b1ff"
     def move_screen(self,
         *,
         screens: list[Screen],

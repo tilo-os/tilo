@@ -206,7 +206,7 @@ FoldFolderArgs = TypedDict("FoldFolderArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -267,7 +267,7 @@ class Notice(Resource):
 
 class Entry(Resource):
     """Entry — `tl.so.tilo.backups.Entry`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     cvlieest: str  # name
     dssaufce: str  # path
     c2m5wzf4: int  # depth
@@ -277,13 +277,13 @@ class Entry(Resource):
 
 class Folded(Resource):
     """Folded — `tl.so.tilo.backups.Folded`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     yp5mxjwc: str  # path
 
 
 class Snapshot(Resource):
     """Snapshot — `tl.so.tilo.backups.Snapshot`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     dallfwqf: str  # label
     ngqbekfc: int  # at
     hydekdnu: Taken  # taken
@@ -313,7 +313,7 @@ class Snapshot(Resource):
 
 class Policy(Resource):
     """Policy — `tl.so.tilo.backups.Policy`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     cyugw7lh: int  # hourly
     avot6p6r: int  # daily
     ywba2jzd: int  # weekly
@@ -329,14 +329,14 @@ class Policy(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.backups.Place`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     dho3qqg3: str  # name
     f3pl3mol: str  # path
 
 
 class Backups(Resource):
     """Backups — `tl.so.tilo.backups.Backups`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     p2imk5l5: Policy  # policy
     srrmxp5i: str  # source
     @property
@@ -645,14 +645,14 @@ class Backups(Resource):
 
 class CatalogAsk(Resource):
     """CatalogAsk — `tl.so.tilo.backups.CatalogAsk`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     gbluxeo3: str  # source
     ixnr6cnx: str  # destination
 
 
 class BackupAsk(Resource):
     """BackupAsk — `tl.so.tilo.backups.BackupAsk`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     w7elqfbk: str  # source
     ebybhxkw: str  # destination
     qqrrtmrs: int  # policy_hourly
@@ -670,7 +670,7 @@ class BackupAsk(Resource):
 
 class SnapshotAsk(Resource):
     """SnapshotAsk — `tl.so.tilo.backups.SnapshotAsk`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     @property
     def _2stygd3d(self) -> str:
         """destination (`2stygd3d` on the wire)."""
@@ -684,7 +684,7 @@ class SnapshotAsk(Resource):
 
 class RestoreAsk(Resource):
     """RestoreAsk — `tl.so.tilo.backups.RestoreAsk`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     z2pcuhft: str  # destination
     qz4acm4a: str  # snapshot
     @property
@@ -700,19 +700,19 @@ class RestoreAsk(Resource):
 
 class WorkDetail(Resource):
     """WorkDetail — `tl.so.tilo.backups.WorkDetail`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     m7xwwoxh: str  # progress
     lwahnmcm: str  # answer
 
 
 class Checked(Resource):
     """Checked — `tl.so.tilo.backups.Checked`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
     lg6ud7lc: int  # files
     deudvrko: int  # bytes
 
 
 class TiloBackups(Resource):
     """Backups — `tl.so.tilo.backups`."""
-    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    __surface__ = "so.tilo.backups@4aa113887ed5003b"
 

@@ -28,7 +28,7 @@ __all__ = [
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
+    __surface__ = "so.tilo.monitor@582e77422602fbca"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -89,7 +89,7 @@ class Notice(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.monitor.Row`."""
-    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
+    __surface__ = "so.tilo.monitor@582e77422602fbca"
     uoc4p4dx: Any  # process
     qwzsalow: int  # depth
     @property
@@ -114,7 +114,7 @@ class Row(Resource):
 
 class Monitor(Resource):
     """Monitor — `tl.so.tilo.monitor.Monitor`."""
-    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
+    __surface__ = "so.tilo.monitor@582e77422602fbca"
     def apply_cadence(self,
         *,
         ms: int,
@@ -130,7 +130,7 @@ class Monitor(Resource):
 
 class TiloMonitor(Resource):
     """System Monitor — `tl.so.tilo.monitor`."""
-    __surface__ = "so.tilo.monitor@d2bd2a6aeb3f81a7"
+    __surface__ = "so.tilo.monitor@582e77422602fbca"
     def end_app(self, *, application: str) -> None:
         """Asks every process of an app to close."""
         return self.action("end_app", application=application)

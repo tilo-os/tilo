@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.console@b4049dd394c133cc";
+export const SURFACE = "so.tilo.console@c5730a1c98f095e9";
 
 /** The arguments of `stop_agent`. */
 export interface StopAgentArgs {

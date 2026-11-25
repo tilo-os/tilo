@@ -348,7 +348,7 @@ EditReplyArgs = TypedDict("EditReplyArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -409,7 +409,7 @@ class Notice(Resource):
 
 class Workbook(Resource):
     """Workbook — `tl.so.tilo.sheets.Workbook`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     meovofcz: str  # title
     pkbcb37f: list[Entry[Sheet]]  # sheets
     xwh3fsa2: list[Entry[Comment]]  # comments
@@ -881,7 +881,7 @@ class Workbook(Resource):
 
 class Sheet(Resource):
     """Sheet — `tl.so.tilo.sheets.Sheet`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     l36xpi4o: str  # name
     hotvvuda: str  # source
     @property
@@ -978,7 +978,7 @@ class Sheet(Resource):
 
 class Chart(Resource):
     """Chart — `tl.so.tilo.sheets.Chart`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     iipmzvk6: str  # title
     todwcigp: ChartKind  # kind
     urs2nvtf: str  # range
@@ -1010,7 +1010,7 @@ class Chart(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.sheets.Comment`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     fhfswroi: str  # sheet
     lfxsmldw: str  # range
     @property
@@ -1110,7 +1110,7 @@ class Comment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.sheets.Reply`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     rehztzuy: str  # text
 
     def edit_block(self,
@@ -1166,7 +1166,7 @@ class Reply(Resource):
 
 class SheetInput(Resource):
     """SheetInput — `tl.so.tilo.sheets.SheetInput`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     d4n4c4j6: str  # name
     iitrsrcd: bool  # hidden
     owwnyfq7: dict[str, str]  # cells
@@ -1176,14 +1176,14 @@ class SheetInput(Resource):
 
 class BookInput(Resource):
     """BookInput — `tl.so.tilo.sheets.BookInput`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     z2cfbg2g: list[SheetInput]  # sheets
     ktfpf6rx: str  # currency
 
 
 class RecordsRequest(Resource):
     """RecordsRequest — `tl.so.tilo.sheets.RecordsRequest`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     quawedop: list[dict[str, str]]  # records
     uslgkxn3: int | None  # row
     vstmdg7x: list[str] | None  # columns
@@ -1192,7 +1192,7 @@ class RecordsRequest(Resource):
 
 class UpsertRequest(Resource):
     """UpsertRequest — `tl.so.tilo.sheets.UpsertRequest`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     styf7w4a: list[dict[str, str]]  # records
     s3tgj4q3: dict[str, str]  # matching
     wlypu6mi: dict[str, str]  # value
@@ -1200,14 +1200,14 @@ class UpsertRequest(Resource):
 
 class RecordWrites(Resource):
     """RecordWrites — `tl.so.tilo.sheets.RecordWrites`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     tloxk2t5: dict[str, str]  # cells
     chuotih4: dict[str, str]  # formats
 
 
 class Extent(Resource):
     """Extent — `tl.so.tilo.sheets.Extent`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     @property
     def _5pdxnqaj(self) -> int:
         """columns (`5pdxnqaj` on the wire)."""
@@ -1221,7 +1221,7 @@ class Extent(Resource):
 
 class Sheets(Resource):
     """Sheets — `tl.so.tilo.sheets`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@9ce812b9553b7157"
     def copy_cells(self, *, text: str) -> None:
         """Copies the cells a person chose to their clipboard as a table: a line per row and a tab between columns, which a sheet, a word processor or a mail app reads."""
         return self.action("copy_cells", text=text)

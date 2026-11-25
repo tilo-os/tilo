@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.playback@4640c21ab213a5f2";
+export const SURFACE = "so.tilo.playback@5c5a552fa70424c3";
 
 /** Whether the player stands still, plays, or has nothing at all. One of "stopped", "playing", "paused". */
 export type PlaybackState = "stopped" | "playing" | "paused";

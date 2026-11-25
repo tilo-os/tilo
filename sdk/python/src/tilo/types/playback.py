@@ -212,7 +212,7 @@ SetOutputVolumeArgs = TypedDict("SetOutputVolumeArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
+    __surface__ = "so.tilo.playback@5c5a552fa70424c3"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -273,7 +273,7 @@ class Notice(Resource):
 
 class Output(Resource):
     """Output — `tl.so.tilo.playback.Output`."""
-    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
+    __surface__ = "so.tilo.playback@5c5a552fa70424c3"
     mtgbfbe3: str  # kind
     q2afggjg: str  # device
     duy3y22z: str  # name
@@ -283,7 +283,7 @@ class Output(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.playback.Item`."""
-    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
+    __surface__ = "so.tilo.playback@5c5a552fa70424c3"
     jsytyrgy: str  # ref
     hbrdxjws: str  # title
     @property
@@ -301,7 +301,7 @@ class Item(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.playback.Progress`."""
-    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
+    __surface__ = "so.tilo.playback@5c5a552fa70424c3"
     ijcc2upy: str  # ref
     owteykf6: float  # position
     q64zycak: str  # updated
@@ -309,7 +309,7 @@ class Progress(Resource):
 
 class Playback(Resource):
     """Playback — `tl.so.tilo.playback.Playback`."""
-    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
+    __surface__ = "so.tilo.playback@5c5a552fa70424c3"
     hnwowp42: str  # track
     sx7vtcfl: str  # title
     eejl5scp: str  # artist
@@ -653,5 +653,5 @@ class Playback(Resource):
 
 class TiloPlayback(Resource):
     """Playback — `tl.so.tilo.playback`."""
-    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
+    __surface__ = "so.tilo.playback@5c5a552fa70424c3"
 

@@ -5630,24 +5630,6 @@
           "null"
         ]
       },
-      "tilolang.personal.view-state.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Keep a view's state"
-      },
-      "tilolang.personal.seen.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Keep what is seen"
-      },
-      "tilolang.personal.seen-runs.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Keep reviewed runs"
-      },
       "tl.tilo.host.Notice.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -53359,6 +53341,12 @@
         "required": [],
         "description": "Takes back a message that was sent and has not gone yet: it never leaves, and the message is\na draft again, as it was. Once it went it cannot be taken back."
       },
+      "tl.so.tilo.mail.Draft.leave.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Lets a message that waited in the outbox leave: its hold or the moment it was sent for came,\nso it can no longer be taken back, and every member reads it from now on. One taken back\nbefore its moment stays a draft."
+      },
       "tl.so.tilo.mail.Mail.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -72721,6 +72709,7 @@
               "maximized",
               "placed",
               "canvas_hugs",
+              "floating",
               "leaving"
             ],
             "type": "string"
@@ -98330,24 +98319,6 @@
     },
     {
       "app": "so.tilo.activity",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.activity",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.activity",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.activity",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -98381,24 +98352,6 @@
       "resource": "tl.so.tilo.activity.Window",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.activity.Window.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.api-tester",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.api-tester",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.api-tester",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.api-tester",
@@ -99104,24 +99057,6 @@
     },
     {
       "app": "so.tilo.backups",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.backups",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.backups",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.backups",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -99590,24 +99525,6 @@
     },
     {
       "app": "so.tilo.lang.board",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.board",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.board",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.board",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -99731,24 +99648,6 @@
       "resource": "tl.so.tilo.lang.board.Board",
       "action": "new_column",
       "arguments": "#/components/schemas/tl.so.tilo.lang.board.Board.new_column.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -101288,24 +101187,6 @@
     },
     {
       "app": "so.tilo.calculator",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.calculator",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.calculator",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.calculator",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -101465,24 +101346,6 @@
       "resource": "tl.so.tilo.calculator",
       "action": "copy_text",
       "arguments": "#/components/schemas/tl.so.tilo.calculator.copy_text.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.calendar",
@@ -102251,24 +102114,6 @@
       "resource": "tl.so.tilo.calendar.Moment",
       "action": "$origin",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.camera",
@@ -103085,24 +102930,6 @@
       "resource": "tl.so.tilo.camera",
       "action": "open_camera_privacy",
       "arguments": "#/components/schemas/tl.so.tilo.camera.open_camera_privacy.Arguments"
-    },
-    {
-      "app": "so.tilo.canvas",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.canvas",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.canvas",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.canvas",
@@ -104180,24 +104007,6 @@
     },
     {
       "app": "so.tilo.chat",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -105236,24 +105045,6 @@
     },
     {
       "app": "so.tilo.chip-design",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.chip-design",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.chip-design",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.chip-design",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -106088,24 +105879,6 @@
     },
     {
       "app": "so.tilo.clocks",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.clocks",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.clocks",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.clocks",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -106385,24 +106158,6 @@
       "resource": "tl.so.tilo.clocks.Clocks",
       "action": "reset_stopwatch",
       "arguments": "#/components/schemas/tl.so.tilo.clocks.Clocks.reset_stopwatch.Arguments"
-    },
-    {
-      "app": "so.tilo.code-editor",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.code-editor",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.code-editor",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.code-editor",
@@ -107420,24 +107175,6 @@
     },
     {
       "app": "so.tilo.console",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.console",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.console",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.console",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -107591,24 +107328,6 @@
       "resource": "tl.so.tilo.console.Window",
       "action": "open_connect",
       "arguments": "#/components/schemas/tl.so.tilo.console.Window.open_connect.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.contacts",
@@ -108038,24 +107757,6 @@
     },
     {
       "app": "so.tilo.containers",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.containers",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.containers",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.containers",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -108278,24 +107979,6 @@
     },
     {
       "app": "so.tilo.lang.counter",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.counter",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.counter",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.counter",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -108347,24 +108030,6 @@
       "resource": "tl.so.tilo.lang.counter.Counter",
       "action": "decrement",
       "arguments": "#/components/schemas/tl.so.tilo.lang.counter.Counter.decrement.Arguments"
-    },
-    {
-      "app": "so.tilo.db-client",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.db-client",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.db-client",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.db-client",
@@ -108998,24 +108663,6 @@
     },
     {
       "app": "so.tilo.diffmerge",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.diffmerge",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.diffmerge",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.diffmerge",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -109571,24 +109218,6 @@
       "resource": "tl.so.tilo.diffmerge.SampleMerge",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.diffmerge.SampleMerge.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110750,24 +110379,6 @@
     },
     {
       "app": "so.tilo.lang.discussion",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.discussion",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.discussion",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.discussion",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -110903,24 +110514,6 @@
       "resource": "tl.so.tilo.lang.discussion.Comments",
       "action": "delete",
       "arguments": "#/components/schemas/tl.so.tilo.lang.discussion.Comments.delete.Arguments"
-    },
-    {
-      "app": "so.tilo.disk-usage",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.disk-usage",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.disk-usage",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.disk-usage",
@@ -111194,24 +110787,6 @@
     },
     {
       "app": "so.tilo.disks",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.disks",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.disks",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.disks",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -111275,24 +110850,6 @@
       "resource": "tl.so.tilo.disks",
       "action": "format_device",
       "arguments": "#/components/schemas/tl.so.tilo.disks.format_device.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.ebook",
@@ -111797,24 +111354,6 @@
       "resource": "tl.so.tilo.ebook",
       "action": "copy_passage",
       "arguments": "#/components/schemas/tl.so.tilo.ebook.copy_passage.Arguments"
-    },
-    {
-      "app": "so.tilo.feeds",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.feeds",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.feeds",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.feeds",
@@ -112439,24 +111978,6 @@
       "resource": "tl.so.tilo.feeds.OpmlText",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.feeds.OpmlText.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
@@ -113114,24 +112635,6 @@
     },
     {
       "app": "so.tilo.firewall",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -113345,24 +112848,6 @@
       "resource": "tl.so.tilo.firewall",
       "action": "load_blocked",
       "arguments": "#/components/schemas/tl.so.tilo.firewall.load_blocked.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.gallery",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.gallery",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.gallery",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.lang.gallery",
@@ -113807,24 +113292,6 @@
       "resource": "tl.so.tilo.lang.gallery",
       "action": "note_hint",
       "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.note_hint.Arguments"
-    },
-    {
-      "app": "so.tilo.git-client",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.git-client",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.git-client",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.git-client",
@@ -114998,24 +114465,6 @@
     },
     {
       "app": "so.tilo.hex-editor",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.hex-editor",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.hex-editor",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.hex-editor",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -115748,24 +115197,6 @@
     },
     {
       "app": "so.tilo.logs",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.logs",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.logs",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.logs",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -115907,24 +115338,6 @@
       "resource": "tl.so.tilo.logs",
       "action": "copy_message",
       "arguments": "#/components/schemas/tl.so.tilo.logs.copy_message.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -116474,6 +115887,12 @@
     },
     {
       "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
+      "action": "leave",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.leave.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Mail",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.$create.Arguments"
@@ -116585,24 +116004,6 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "save_to_drafts",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.save_to_drafts.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -117200,24 +116601,6 @@
     },
     {
       "app": "so.tilo.migrate",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.migrate",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.migrate",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.migrate",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -117446,24 +116829,6 @@
     },
     {
       "app": "so.tilo.monitor",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.monitor",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.monitor",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.monitor",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -117527,24 +116892,6 @@
       "resource": "tl.so.tilo.monitor",
       "action": "end_app",
       "arguments": "#/components/schemas/tl.so.tilo.monitor.end_app.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.music",
@@ -118214,24 +117561,6 @@
     },
     {
       "app": "so.tilo.notes",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -118577,24 +117906,6 @@
       "resource": "tl.so.tilo.notes.Found",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Found.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -119273,24 +118584,6 @@
       "resource": "tl.so.tilo.passwords.UrlAnswer",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.UrlAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.pdf-viewer",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.pdf-viewer",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.pdf-viewer",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.pdf-viewer",
@@ -120152,24 +119445,6 @@
     },
     {
       "app": "so.tilo.photos",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -120842,24 +120117,6 @@
     },
     {
       "app": "so.tilo.playback",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.playback",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.playback",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.playback",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -121127,24 +120384,6 @@
       "resource": "tl.so.tilo.playback.Playback",
       "action": "set_output_volume",
       "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_output_volume.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
@@ -121622,24 +120861,6 @@
     },
     {
       "app": "so.tilo.publisher",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.publisher",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.publisher",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.publisher",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -121898,24 +121119,6 @@
     },
     {
       "app": "so.tilo.scratchpad",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.scratchpad",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.scratchpad",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.scratchpad",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -121973,24 +121176,6 @@
       "resource": "tl.so.tilo.scratchpad.Note",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.scratchpad.Note.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.settings",
@@ -122153,24 +121338,6 @@
       "resource": "tl.so.tilo.settings",
       "action": "export_theme",
       "arguments": "#/components/schemas/tl.so.tilo.settings.export_theme.Arguments"
-    },
-    {
-      "app": "so.tilo.sheets",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.sheets",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.sheets",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.sheets",
@@ -122741,24 +121908,6 @@
       "resource": "tl.so.tilo.sheets",
       "action": "read_file",
       "arguments": "#/components/schemas/tl.so.tilo.sheets.read_file.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -123707,24 +122856,6 @@
       "resource": "tl.so.tilo.shell",
       "action": "place_widget",
       "arguments": "#/components/schemas/tl.so.tilo.shell.place_widget.Arguments"
-    },
-    {
-      "app": "so.tilo.shortcuts",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.shortcuts",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.shortcuts",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.shortcuts",
@@ -124706,24 +123837,6 @@
     },
     {
       "app": "so.tilo.slides",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -125198,24 +124311,6 @@
     },
     {
       "app": "so.tilo.snippets",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.snippets",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.snippets",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.snippets",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -125426,24 +124521,6 @@
     },
     {
       "app": "so.tilo.speed-test",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.speed-test",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.speed-test",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.speed-test",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -125579,24 +124656,6 @@
       "resource": "tl.so.tilo.speed-test.Run",
       "action": "download_stage",
       "arguments": "#/components/schemas/tl.so.tilo.speed-test.Run.download_stage.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -126500,24 +125559,6 @@
     },
     {
       "app": "so.tilo.tasks",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -127178,24 +126219,6 @@
     },
     {
       "app": "so.tilo.lang.today",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.today",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.today",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.today",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -127241,24 +126264,6 @@
       "resource": "tl.so.tilo.lang.today",
       "action": "morning_cleanup",
       "arguments": "#/components/schemas/tl.so.tilo.lang.today.morning_cleanup.Arguments"
-    },
-    {
-      "app": "so.tilo.totp",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.totp",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.totp",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.totp",
@@ -127523,24 +126528,6 @@
       "resource": "tl.so.tilo.totp.CheckAnswer",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.totp.CheckAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -128414,24 +127401,6 @@
     },
     {
       "app": "so.tilo.typst-editor",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.typst-editor",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.typst-editor",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.typst-editor",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -128876,24 +127845,6 @@
     },
     {
       "app": "so.tilo.video",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.video",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.video",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.video",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -129071,24 +128022,6 @@
       "resource": "tl.so.tilo.video.Library",
       "action": "restart_clip",
       "arguments": "#/components/schemas/tl.so.tilo.video.Library.restart_clip.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.video-editor",
@@ -130526,24 +129459,6 @@
     },
     {
       "app": "so.tilo.lang.views",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.views",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.views",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.views",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -130673,24 +129588,6 @@
       "resource": "tl.so.tilo.lang.views.Views",
       "action": "add",
       "arguments": "#/components/schemas/tl.so.tilo.lang.views.Views.add.Arguments"
-    },
-    {
-      "app": "so.tilo.weather",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.weather",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.weather",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.weather",
@@ -131090,24 +129987,6 @@
     },
     {
       "app": "so.tilo.windows",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.windows",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.windows",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.windows",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
       "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
@@ -131225,24 +130104,6 @@
       "resource": "tl.so.tilo.windows",
       "action": "revoke_network",
       "arguments": "#/components/schemas/tl.so.tilo.windows.revoke_network.Arguments"
-    },
-    {
-      "app": "so.tilo.word-processor",
-      "resource": "tilolang.personal",
-      "action": "view-state",
-      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
-    },
-    {
-      "app": "so.tilo.word-processor",
-      "resource": "tilolang.personal",
-      "action": "seen",
-      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
-    },
-    {
-      "app": "so.tilo.word-processor",
-      "resource": "tilolang.personal",
-      "action": "seen-runs",
-      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.word-processor",

@@ -76,7 +76,7 @@ ClearImportArgs = TypedDict("ClearImportArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -137,7 +137,7 @@ class Notice(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.passwords.Item`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     vvthph26: str  # entry
     ildzcyo2: str  # title
     ujkdowq4: Kind  # kind
@@ -314,7 +314,7 @@ class Item(Resource):
 
 class ImportRow(Resource):
     """ImportRow — `tl.so.tilo.passwords.ImportRow`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     l7jn4eol: str  # title
     s6pvezan: str  # username
     @property
@@ -337,7 +337,7 @@ class ImportRow(Resource):
 
 class Vault(Resource):
     """Vault — `tl.so.tilo.passwords.Vault`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     vflzrccj: list[Entry[Item]]  # items
     @property
     def _6n7bahst(self) -> list[str]:
@@ -452,20 +452,20 @@ class Vault(Resource):
 
 class LoginList(Resource):
     """LoginList — `tl.so.tilo.passwords.LoginList`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     nkbtq6y2: list[LoginEntry]  # logins
 
 
 class LoginEntry(Resource):
     """LoginEntry — `tl.so.tilo.passwords.LoginEntry`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     mtdotryg: str  # item
     yiseqxtu: str  # name
 
 
 class Shown(Resource):
     """Shown — `tl.so.tilo.passwords.Shown`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     @property
     def _4ggtifo6(self) -> str:
         """secret (`4ggtifo6` on the wire)."""
@@ -481,7 +481,7 @@ class Shown(Resource):
 
 class ShownField(Resource):
     """ShownField — `tl.so.tilo.passwords.ShownField`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     @property
     def _47ctn52x(self) -> str:
         """label (`47ctn52x` on the wire)."""
@@ -502,7 +502,7 @@ class ShownField(Resource):
 
 class Access(Resource):
     """Access — `tl.so.tilo.passwords.Access`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     upwe4jla: list[Use]  # uses
     n52kczfg: list[Leave]  # leaves
     ll3dunru: str  # trouble
@@ -510,7 +510,7 @@ class Access(Resource):
 
 class Use(Resource):
     """Use — `tl.so.tilo.passwords.Use`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     dhbq7ocx: int  # at
     ldvya4gh: str  # by
     xsu4yq6o: str  # what
@@ -519,7 +519,7 @@ class Use(Resource):
 
 class Leave(Resource):
     """Leave — `tl.so.tilo.passwords.Leave`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     @property
     def _2emebh4y(self) -> str:
         """agent (`2emebh4y` on the wire)."""
@@ -543,13 +543,13 @@ class Leave(Resource):
 
 class TypedAsk(Resource):
     """TypedAsk — `tl.so.tilo.passwords.TypedAsk`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     upwiyhzz: int  # place
 
 
 class TokenAnswer(Resource):
     """TokenAnswer — `tl.so.tilo.passwords.TokenAnswer`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     @property
     def _5t7dz6wt(self) -> str:
         """token (`5t7dz6wt` on the wire)."""
@@ -562,20 +562,20 @@ class TokenAnswer(Resource):
 
 class AskedFile(Resource):
     """AskedFile — `tl.so.tilo.passwords.AskedFile`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     roquvgtj: str  # url
 
 
 class ImportAsk(Resource):
     """ImportAsk — `tl.so.tilo.passwords.ImportAsk`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     trzw7c4z: str  # url
     xbct2xaa: list[int]  # skip
 
 
 class CsvRow(Resource):
     """CsvRow — `tl.so.tilo.passwords.CsvRow`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     ufq2o5qa: str  # title
     pjl3fx3t: str  # username
     @property
@@ -590,13 +590,13 @@ class CsvRow(Resource):
 
 class RowsAnswer(Resource):
     """RowsAnswer — `tl.so.tilo.passwords.RowsAnswer`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     janzxbln: list[CsvRow]  # rows
 
 
 class HeldItem(Resource):
     """HeldItem — `tl.so.tilo.passwords.HeldItem`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     @property
     def _54afy6gc(self) -> str:
         """id (`54afy6gc` on the wire)."""
@@ -624,33 +624,33 @@ class HeldItem(Resource):
 
 class HeldField(Resource):
     """HeldField — `tl.so.tilo.passwords.HeldField`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     b7ymmw3n: str  # label
     wgkjnofz: str  # value
 
 
 class HeldItems(Resource):
     """HeldItems — `tl.so.tilo.passwords.HeldItems`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     awioulwr: list[HeldItem]  # items
 
 
 class DeviceItems(Resource):
     """DeviceItems — `tl.so.tilo.passwords.DeviceItems`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     ghk43anz: list[HeldItem]  # items
     lzu63qlu: str  # error
 
 
 class DeviceRemove(Resource):
     """DeviceRemove — `tl.so.tilo.passwords.DeviceRemove`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     tzeqieyr: list[str]  # ids
 
 
 class ToFile(Resource):
     """ToFile — `tl.so.tilo.passwords.ToFile`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     @property
     def _7eqpvzfc(self) -> list[HeldItem]:
         """items (`7eqpvzfc` on the wire)."""
@@ -664,11 +664,11 @@ class ToFile(Resource):
 
 class UrlAnswer(Resource):
     """UrlAnswer — `tl.so.tilo.passwords.UrlAnswer`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
     vlz4ie4r: str  # url
 
 
 class Passwords(Resource):
     """Passwords — `tl.so.tilo.passwords`."""
-    __surface__ = "so.tilo.passwords@30c76bd7d3a3aa8a"
+    __surface__ = "so.tilo.passwords@79942904b51c5871"
 

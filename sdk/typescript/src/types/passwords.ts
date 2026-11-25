@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.passwords@30c76bd7d3a3aa8a";
+export const SURFACE = "so.tilo.passwords@79942904b51c5871";
 
 /** What kind of secret an item is: what it is for, which sets the fields it has and the words that name them. One of "login", "api_key", "note", "wifi", "secret". */
 export type Kind = "login" | "api_key" | "note" | "wifi" | "secret";

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.logs@8f6a67d584534406";
+export const SURFACE = "so.tilo.logs@6329465a3795cbde";
 
 /** The arguments of `set_severity`. */
 export interface SetSeverityArgs {

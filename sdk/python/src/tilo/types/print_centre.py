@@ -174,7 +174,7 @@ SetScannerArgs = TypedDict("SetScannerArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -235,7 +235,7 @@ class Notice(Resource):
 
 class Defaults(Resource):
     """Defaults — `tl.so.tilo.print-centre.Defaults`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     coq3zrug: bool  # two_sided
     @property
     def _26zbe323(self) -> int:
@@ -252,7 +252,7 @@ class Defaults(Resource):
 
 class ScannedPage(Resource):
     """ScannedPage — `tl.so.tilo.print-centre.ScannedPage`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     zphe26i4: Any  # file
     @property
     def _67hjm6gx(self) -> str:
@@ -295,7 +295,7 @@ class ScannedPage(Resource):
 
 class ScanSession(Resource):
     """ScanSession — `tl.so.tilo.print-centre.ScanSession`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     @property
     def _3kybq73d(self) -> str:
         """scanner (`3kybq73d` on the wire)."""
@@ -323,7 +323,7 @@ class ScanSession(Resource):
 
 class PrintDocument(Resource):
     """PrintDocument — `tl.so.tilo.print-centre.PrintDocument`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     lurulxdl: Any | None  # file
     nfdtbdvt: Any | None  # preview
     hkdu56wa: str  # name
@@ -390,7 +390,7 @@ class PrintDocument(Resource):
 
 class Choice(Resource):
     """Choice — `tl.so.tilo.print-centre.Choice`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     ybptuzdv: str  # key
     n2rjd6ws: str  # label
     q5qiqhve: bool  # default
@@ -398,7 +398,7 @@ class Choice(Resource):
 
 class PrinterOptions(Resource):
     """PrinterOptions — `tl.so.tilo.print-centre.PrinterOptions`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     nov3upcs: list[Choice]  # page_sizes
     pvufqhii: list[Choice]  # colour_modes
     boxhaco3: list[Choice]  # duplex_modes
@@ -407,7 +407,7 @@ class PrinterOptions(Resource):
 
 class PrintCentre(Resource):
     """PrintCentre — `tl.so.tilo.print-centre.PrintCentre`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     kqm47afv: Defaults  # defaults
     lz7ue3si: list[Entry[PrintDocument]]  # documents
     iysceybl: list[Entry[ScanSession]]  # scans
@@ -597,19 +597,19 @@ class PrintCentre(Resource):
 
 class OptionsAsk(Resource):
     """OptionsAsk — `tl.so.tilo.print-centre.OptionsAsk`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     aun3edzr: str  # queue
 
 
 class ScanDetail(Resource):
     """ScanDetail — `tl.so.tilo.print-centre.ScanDetail`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     jlmf7wws: str  # url
 
 
 class OcrAsk(Resource):
     """OcrAsk — `tl.so.tilo.print-centre.OcrAsk`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     vuwh5pv6: str  # url
     @property
     def _56cimtrv(self) -> str:
@@ -623,33 +623,33 @@ class OcrAsk(Resource):
 
 class OcrAnswer(Resource):
     """OcrAnswer — `tl.so.tilo.print-centre.OcrAnswer`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     qegnvsxr: str  # text
 
 
 class PdfPage(Resource):
     """PdfPage — `tl.so.tilo.print-centre.PdfPage`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     qxzi756t: str  # url
     mytppaxs: str  # text
 
 
 class PagesAsk(Resource):
     """PagesAsk — `tl.so.tilo.print-centre.PagesAsk`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     omod5rbh: list[PdfPage]  # pages
     u566k7ni: str  # name
 
 
 class UrlAnswer(Resource):
     """UrlAnswer — `tl.so.tilo.print-centre.UrlAnswer`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     y2ejci4l: str  # url
 
 
 class PrintAsk(Resource):
     """PrintAsk — `tl.so.tilo.print-centre.PrintAsk`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     fk3jkxxv: str  # queue
     tddc4c3j: str  # url
     dkvqbxny: str  # name
@@ -678,7 +678,7 @@ class PrintAsk(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.print-centre.ScanAsk`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     vilpbf2g: str  # scanner
     onyv6rml: int  # resolution
     dvoh6l75: str  # colour
@@ -702,7 +702,7 @@ class ScanAsk(Resource):
 
 class TiloPrintCentre(Resource):
     """Print Centre — `tl.so.tilo.print-centre`."""
-    __surface__ = "so.tilo.print-centre@11060d95a776ebc8"
+    __surface__ = "so.tilo.print-centre@e9a8937d08949cf7"
     def preview_of_file(self, *, file: Any) -> Any | None:
         """The first page's picture, for the print form: a PDF's first page, or the picture itself."""
         return self.action("preview_of_file", file=file)

@@ -47,7 +47,7 @@ DeleteBlockArgs = TypedDict("DeleteBlockArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.scratchpad@d6475854f5a1a24f"
+    __surface__ = "so.tilo.scratchpad@bf998c1ef532ae89"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -108,7 +108,7 @@ class Notice(Resource):
 
 class Note(Resource):
     """Note — `tl.so.tilo.scratchpad.Note`."""
-    __surface__ = "so.tilo.scratchpad@d6475854f5a1a24f"
+    __surface__ = "so.tilo.scratchpad@bf998c1ef532ae89"
     @property
     def _5pw3hsgd(self) -> str:
         """body (`5pw3hsgd` on the wire)."""
@@ -157,5 +157,5 @@ class Note(Resource):
 
 class Scratchpad(Resource):
     """Scratchpad — `tl.so.tilo.scratchpad`."""
-    __surface__ = "so.tilo.scratchpad@d6475854f5a1a24f"
+    __surface__ = "so.tilo.scratchpad@bf998c1ef532ae89"
 

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video@4fec5a8bce96ca97";
+export const SURFACE = "so.tilo.video@28f43ffb04ea7f57";
 
 /** The arguments of `toggle_playing`. */
 export interface TogglePlayingArgs {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.git-client@5d95e00cdcb58504";
+export const SURFACE = "so.tilo.git-client@b696750e887da5a6";
 
 /** Where a change stands: in the next commit, still in the working tree, or not tracked yet. One of "staged", "unstaged", "untracked". */
 export type ChangeArea = "staged" | "unstaged" | "untracked";

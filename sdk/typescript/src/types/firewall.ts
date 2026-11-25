@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.firewall@dea07c56fb981527";
+export const SURFACE = "so.tilo.firewall@b304c3b3e2f55b7a";
 
 /** The arguments of `import_device`. */
 export interface ImportDeviceArgs {

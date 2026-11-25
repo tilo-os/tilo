@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.monitor@d2bd2a6aeb3f81a7";
+export const SURFACE = "so.tilo.monitor@582e77422602fbca";
 
 /** Notice — `tl.tilo.host.Notice`. */
 export interface Notice extends tilo.Resource {

@@ -57,7 +57,7 @@ MakeDefaultArgs = TypedDict("MakeDefaultArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.lang.views@ff660d063ce2a5a6"
+    __surface__ = "so.tilo.lang.views@6049df08d107956e"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -118,7 +118,7 @@ class Notice(Resource):
 
 class WrittenView(Resource):
     """WrittenView — `tl.so.tilo.lang.views.WrittenView`."""
-    __surface__ = "so.tilo.lang.views@ff660d063ce2a5a6"
+    __surface__ = "so.tilo.lang.views@6049df08d107956e"
     @property
     def _2fxqftu3(self) -> str:
         """title (`2fxqftu3` on the wire)."""
@@ -170,7 +170,7 @@ class WrittenView(Resource):
 
 class Default(Resource):
     """Default — `tl.so.tilo.lang.views.Default`."""
-    __surface__ = "so.tilo.lang.views@ff660d063ce2a5a6"
+    __surface__ = "so.tilo.lang.views@6049df08d107956e"
     @property
     def _2atmuo4h(self) -> str:
         """shows (`2atmuo4h` on the wire)."""
@@ -192,7 +192,7 @@ class Default(Resource):
 
 class Views(Resource):
     """Views — `tl.so.tilo.lang.views.Views`."""
-    __surface__ = "so.tilo.lang.views@ff660d063ce2a5a6"
+    __surface__ = "so.tilo.lang.views@6049df08d107956e"
     bweal36x: list[Entry[WrittenView]]  # items
     @property
     def _2tnozirr(self) -> list[Entry[Default]]:
@@ -268,5 +268,5 @@ class Views(Resource):
 
 class LangViews(Resource):
     """Views — `tl.so.tilo.lang.views`."""
-    __surface__ = "so.tilo.lang.views@ff660d063ce2a5a6"
+    __surface__ = "so.tilo.lang.views@6049df08d107956e"
 
