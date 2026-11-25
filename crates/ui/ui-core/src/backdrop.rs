@@ -246,10 +246,14 @@ fn pointer_in(transform: Affine, origin: vello::kurbo::Point) -> [f32; 3] {
 /// The luminance range what shows through a translucent surface is
 /// compressed into, so ink chosen against the surface's ground stays
 /// legible over anything below it: the material's band
-/// ([`material_band`]) as relative luminances. The backdrop pass maps what
-/// it sampled into it ([`Self::tone`] is the same arithmetic): luminance
-/// is compressed evenly in contrast (a contrast ratio below becomes a
-/// smaller, fixed power of itself), and each colour keeps its hue: dimmed,
+/// ([`material_band`]) as relative luminances, around the ground's own. The
+/// backdrop pass maps what it sampled into it ([`Self::tone`] is the same
+/// arithmetic): the ground's luminance shows as it is, and on each side of it
+/// luminance is compressed evenly in contrast (a contrast ratio to the ground
+/// becomes a smaller, fixed power of itself) so black and white land on the
+/// band's ends. What lies near the ground, a page under a menu, so shows
+/// nearly as it is and the surface's tint lifts it; only what stands far off
+/// it is pulled in. Each colour keeps its hue: dimmed,
 /// its channels scale with its luminance; lifted, it keeps how far its
 /// channels stand off its grey, so a near-grey stays near-grey. A bright
 /// photo shows dimmed but in its colours and shapes, a dark page lifted
@@ -260,6 +264,8 @@ pub struct Legible {
     pub dark: f64,
     /// Relative luminance white maps to.
     pub light: f64,
+    /// Relative luminance that shows as it is: the surface's ground, between `dark` and `light`.
+    pub ground: f64,
 }
 
 impl Default for Legible {
@@ -273,6 +279,7 @@ impl Legible {
     pub const ANY: Self = Self {
         dark: 0.0,
         light: 1.0,
+        ground: 0.0,
     };
 
     /// The range a surface of `ground` under `theme` has what shows through it in.
@@ -283,9 +290,11 @@ impl Legible {
             crate::color::relative_luminance(dark),
             crate::color::relative_luminance(light),
         );
+        let (dark, light) = (dark.min(light), dark.max(light));
         Self {
-            dark: dark.min(light),
-            light: dark.max(light),
+            dark,
+            light,
+            ground: crate::color::relative_luminance(ground).clamp(dark, light),
         }
     }
 
@@ -296,8 +305,9 @@ impl Legible {
     }
 
     /// `rgb` (sRGB-encoded, 0–1) as it shows through: its relative
-    /// luminance `y` mapped so `(y + 0.05) / 0.05` becomes that ratio to
-    /// the power the band allows over the whole 21:1 range; its linear
+    /// luminance `y` mapped so its contrast ratio to the ground becomes that
+    /// ratio to the power the band allows on `y`'s side of the ground
+    /// ([`Self::aim`]); its linear
     /// channels' offsets from `y` carried to the new luminance, scaled down
     /// with it where it falls and kept where it rises; and pulled toward
     /// grey only where a channel would leave the gamut. The backdrop pass's
@@ -315,8 +325,7 @@ impl Legible {
             }
         });
         let y = 0.0722f64.mul_add(linear[2], 0.2126f64.mul_add(linear[0], 0.7152 * linear[1]));
-        let power = ((self.light + 0.05) / (self.dark + 0.05)).ln() / 21f64.ln();
-        let target = (self.dark + 0.05) * ((y + 0.05) / 0.05).powf(power) - 0.05;
+        let target = self.aim(y);
         let keep = if y <= 1e-5 {
             1.0
         } else {
@@ -336,6 +345,24 @@ impl Legible {
                 1.055f64.mul_add(c.powf(1.0 / 2.4), -0.055)
             }
         })
+    }
+
+    /// The luminance `y` shows at: the ground's own stays, and the contrast to the ground on
+    /// `y`'s side is raised to the power that brings black to `dark` and white to `light`.
+    #[must_use]
+    pub fn aim(&self, y: f64) -> f64 {
+        let ground = self.ground + 0.05;
+        let (end, far) = if y < self.ground {
+            (self.dark + 0.05, 0.05)
+        } else {
+            (self.light + 0.05, 1.05)
+        };
+        let reach = (far / ground).ln();
+        if reach.abs() < 1e-9 {
+            return self.ground;
+        }
+        let power = (end / ground).ln() / reach;
+        (ground * ((y + 0.05) / ground).powf(power) - 0.05).clamp(self.dark, self.light)
     }
 }
 
@@ -1294,10 +1321,14 @@ struct Pass {
     band: f32,
     strength: f32,
     dispersion: f32,
-    // The luminance range the last pass compresses what it shows into
-    // (`Legible`); `0`, `1` none.
+    // The luminance range the last pass compresses what it shows into,
+    // and the ground's luminance it keeps (`Legible`); `0`, `1` none.
     dark: f32,
     light: f32,
+    ground: f32,
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -1381,7 +1412,8 @@ fn encoded(c: vec3<f32>) -> vec3<f32> {
 }
 
 // What shows through, compressed into the legible range: luminance mapped
-// evenly in contrast, each channel's offset from it scaled down where it
+// evenly in contrast on each side of the ground's, which stays, each
+// channel's offset from it scaled down where it
 // falls and kept where it rises, pulled toward grey only where a channel
 // would leave the gamut. The same arithmetic as `Legible::tone`.
 fn tone(c: vec4<f32>) -> vec4<f32> {
@@ -1390,8 +1422,21 @@ fn tone(c: vec4<f32>) -> vec4<f32> {
     }
     let lin = linear(clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
     let y = dot(lin, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let power = log((pass_.light + 0.05) / (pass_.dark + 0.05)) / log(21.0);
-    let aim = (pass_.dark + 0.05) * pow((y + 0.05) / 0.05, power) - 0.05;
+    let ground = pass_.ground + 0.05;
+    var end = pass_.light + 0.05;
+    var far = 1.05;
+    if (y < pass_.ground) {
+        end = pass_.dark + 0.05;
+        far = 0.05;
+    }
+    let reach = log(far / ground);
+    var aim = pass_.ground;
+    if (abs(reach) >= 1e-9) {
+        aim = ground * pow((y + 0.05) / ground, log(end / ground) / reach) - 0.05;
+    }
+    // Rounding may carry the band's end a hair past it; past 1 the gamut step
+    // below would divide by nothing and turn white black.
+    aim = clamp(aim, pass_.dark, pass_.light);
     var keep = 1.0;
     if (y > 1e-5) {
         keep = min(aim / y, 1.0);
@@ -1423,7 +1468,7 @@ fn fs_blur(in: VertexOut) -> @location(0) vec4<f32> {
 }
 ";
 
-const PASS_BYTES: u64 = 64;
+const PASS_BYTES: u64 = 80;
 
 /// What [`BackdropBlur::prepare`] did, for frame profiling.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1525,7 +1570,7 @@ impl Taken {
                 region.legible.dark,
                 region.legible.light,
                 f64::from(u8::from(region.sampling == Sampling::Blocky)),
-                0.0,
+                region.legible.ground,
                 0.0,
                 0.0,
             ]
@@ -2239,6 +2284,10 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
             lens.dispersion.max(0.0),
             legible.dark,
             legible.light,
+            legible.ground,
+            0.0,
+            0.0,
+            0.0,
         ] {
             bytes.extend_from_slice(&(value as f32).to_le_bytes());
         }

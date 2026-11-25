@@ -51,7 +51,7 @@ pub use limits::Limits;
 /// The version both peers name in their hello. A peer that speaks a newer
 /// version must still accept this one's sections; a section it does not
 /// know is skipped only when its sender marked it optional.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// A font an app registered, by the number it chose.
 #[derive(

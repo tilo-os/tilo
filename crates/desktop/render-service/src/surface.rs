@@ -599,8 +599,12 @@ fn backdrop_frame(
                     }
                 },
                 legible: {
-                    let [dark, light] = backdrop.legible.map(f64::from);
-                    ui::backdrop::Legible { dark, light }
+                    let [dark, light, ground] = backdrop.legible.map(f64::from);
+                    ui::backdrop::Legible {
+                        dark,
+                        light,
+                        ground,
+                    }
                 },
                 below: Scene::from(backdrop.below),
                 ground: Color::new(backdrop.ground),

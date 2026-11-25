@@ -139,9 +139,9 @@ pub struct Backdrop {
     /// blue are set apart by.
     pub refraction: [f32; 4],
     /// The relative luminances, darkest and lightest, what shows through
-    /// is compressed into so text over the surface stays legible; `0`, `1`
-    /// compresses nothing.
-    pub legible: [f32; 2],
+    /// is compressed into so text over the surface stays legible, and the
+    /// surface ground's, which shows as it is; `0`, `1` compresses nothing.
+    pub legible: [f32; 3],
     /// What the backdrop shows where nothing below covers it.
     pub ground: [f32; 4],
     /// The theme's material stage the service runs over the blurred backdrop: its WGSL, which the
@@ -651,7 +651,7 @@ fn read_backdrop(
     let blur_px = r.f32()?;
     let cell_px = r.f32()?;
     let refraction = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
-    let legible = [r.f32()?, r.f32()?];
+    let legible = [r.f32()?, r.f32()?, r.f32()?];
     let sampling = r.u8()?;
     let ground = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
     let stage_len = r.u32()? as usize;
@@ -686,6 +686,7 @@ fn read_backdrop(
             .iter()
             .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
         && legible[0] <= legible[1]
+        && (legible[0]..=legible[1]).contains(&legible[2])
         && ground.iter().all(|value| value.is_finite());
     if !valid {
         return Err(WireError::Invalid("backdrop"));

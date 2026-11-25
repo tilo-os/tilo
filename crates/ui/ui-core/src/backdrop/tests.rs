@@ -315,9 +315,10 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
         dark_end.to_rgba8().to_u8_array(),
         light_end.to_rgba8().to_u8_array(),
     );
+    let shown = Legible::of(&theme, crate::chrome::panel_ground(&theme)).tone([0.5; 3]);
     let mut channel_index = 0;
     let expected = ground.map(|channel| {
-        let held = 127.5_f64
+        let held = (shown.get(channel_index).copied().unwrap_or(1.0) * 255.0)
             .min(f64::from(light_end[channel_index]))
             .max(f64::from(dark_end[channel_index]));
         channel_index += 1;
@@ -769,6 +770,16 @@ tilo_test_env::scenario! {
         let close = |a: f64, b: f64| (a - b).abs() < 2e-3;
         assert!(close(luminance(legible.tone([1.0; 3])), legible.light));
         assert!(close(luminance(legible.tone([0.0; 3])), legible.dark));
+        assert!(close(legible.aim(legible.ground), legible.ground));
+        let dark = Theme::dark();
+        let menu = Legible::of(&dark, crate::chrome::panel_ground(&dark));
+        let page = dark.tokens.colors.surfaces.content;
+        let [r, g, b, _] = page.components;
+        let shown = luminance(menu.tone([r, g, b].map(f64::from)));
+        assert!(
+            close(shown, crate::color::relative_luminance(page)),
+            "a dark window under a dark menu shows at {shown}, not as itself"
+        );
         let greys: Vec<f64> = (0..=10)
             .map(|step| luminance(legible.tone([f64::from(step) / 10.0; 3])))
             .collect();
@@ -1182,4 +1193,76 @@ fn light_liquid_glass_is_clear_and_bright() {
     let seen = render_over(&theme, colour_stripes(256, 192));
     let [r, g, b, _] = pixel(&seen, width, 88, 96);
     assert!(r > g + 12 && r > b + 12, "red shows as {r} {g} {b}");
+}
+
+/// A menu over a window of the dark theme stands off the window by its own tint: the window
+/// lies near the panel's ground, so the pass shows it as it is, and the panel comes out the
+/// mix of its ground and the window, never darker than the ground over a page just below it.
+#[test]
+fn a_dark_panel_over_its_window_shows_its_tint_over_the_window() {
+    let theme = Theme::dark();
+    let (width, height) = (256, 192);
+    let page = theme.tokens.colors.surfaces.content;
+    let mut scene = Scene::new();
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        page,
+        None,
+        &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+    );
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    floating(&mut scene, Affine::IDENTITY, &theme);
+    let mut renderer = OffscreenRenderer::new(width, height);
+    renderer.set_backdrop(Some(std::sync::Arc::new(BackdropFrame::from_single_scene(
+        recording.finish(),
+    ))));
+    let seen = pixel(&renderer.render(&scene, Color::BLACK), width, 128, 96);
+    let tint = f64::from(theme.tokens.colors.surfaces.material_opacity);
+    let ground = crate::chrome::panel_ground(&theme).to_rgba8().to_u8_array();
+    let page = page.to_rgba8().to_u8_array();
+    let mut channel = 0;
+    let expected = ground.map(|g| {
+        let mixed = f64::from(g).mul_add(tint, f64::from(page[channel]) * (1.0 - tint));
+        channel += 1;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a mix of two bytes is a byte"
+        )]
+        let mixed = mixed.round() as u8;
+        mixed
+    });
+    assert!(
+        close(
+            [seen[0], seen[1], seen[2], 255],
+            [expected[0], expected[1], expected[2], 255],
+            2
+        ),
+        "the panel over the window is {seen:?}, its tint over the window {expected:?}"
+    );
+}
+
+/// White below a translucent surface whose ground sits just under white shows white: the band's
+/// light end is reached exactly, and the pass never carries it past white into a flipped colour.
+#[test]
+fn white_below_a_near_white_window_shows_white_through_the_pass() {
+    let theme = crate::theme_document::finish_theme("liquid-glass-light");
+    let mut scene = Scene::new();
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::WHITE,
+        None,
+        &Rect::new(0.0, 0.0, 256.0, 192.0),
+    );
+    let seen = render_over(&theme, scene);
+    for (x, y) in [(32, 96), (10, 20)] {
+        let [r, g, b, _] = pixel(&seen, 256, x, y);
+        assert!(
+            r.min(g).min(b) >= 240,
+            "the window over white at ({x}, {y}) is {r} {g} {b}"
+        );
+    }
 }

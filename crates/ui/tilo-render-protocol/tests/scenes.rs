@@ -340,7 +340,7 @@ fn a_frame_record_carries_layers_damage_copies_and_backdrops() {
                 sampling: 0,
                 cell_px: 0.0,
                 refraction: [10.0, 25.0, 12.0, 0.1],
-                legible: [0.012, 0.03],
+                legible: [0.012, 0.03, 0.02],
                 ground: [0.9, 0.9, 0.9, 1.0],
                 stage: Some(BackdropStage {
                     wgsl: "fn fs_surface(s: Surface) -> vec4<f32> { return s.fill; }".to_owned(),
@@ -378,7 +378,7 @@ fn a_frame_record_carries_layers_damage_copies_and_backdrops() {
     // surface's ground.
     assert_eq!(
         frame.backdrops[0].legible.map(f32::to_bits),
-        [0.012_f32, 0.03].map(f32::to_bits)
+        [0.012_f32, 0.03, 0.02].map(f32::to_bits)
     );
     // And the theme's material stage: a service that dropped it would draw the plain blur where
     // the theme asked for its glass.
