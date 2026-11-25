@@ -1044,7 +1044,11 @@ workspace vault, despite their names.
   Which servers keep a workspace is recorded in that workspace, the own one
   included: a server keeping the person's own workspace reads that there. Only
   the person's own devices, their own servers included, hold its keys; a server
-  of anyone else stores its sealed frames and writes nothing. The device that writes a record
+  of anyone else stores its sealed frames and writes nothing. Starting a server's
+  keeping for the owner is a membership change in the workspace's operation log that
+  only the owner signs, unless the server's person already administers; it makes that
+  person an administrator for as long as the keeping lasts, and any administrator may
+  end it. The device that writes a record
   pushes the blobs it references to the workspace's hosts with the record, sealed
   like it, and the hosts keep them: no host walks a record for references, and no
   blob address is listed outside the sealed frame. The push never holds up the
