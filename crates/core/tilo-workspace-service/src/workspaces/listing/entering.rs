@@ -329,9 +329,16 @@ impl Workspaces {
     /// carries it and writes nothing of its own. Settled, so the device is
     /// admitted here from now on.
     ///
+    /// The row reaches the workspace's other holders and members as the
+    /// device's own change, carried before anything this host writes after
+    /// it: this host's later changes build on it, and a holder that lacked it
+    /// would ask for this host's whole state, in which every device's row
+    /// arrives at once, and each device's row reads as written by the others.
+    ///
     /// # Errors
     ///
-    /// The row does not let the device in, or the workspace could not keep it.
+    /// The row does not let the device in, or the workspace could not keep or
+    /// carry it.
     pub(crate) async fn take_own_row(
         &self,
         governed: &mut crate::workspaces::GovernedWorkspace,
@@ -348,6 +355,10 @@ impl Workspaces {
         )? {
             return Err("the device's own row does not let it in".to_owned());
         }
+        let row = neighbour_wire::NeighbourMsg::SyncResp {
+            changes: admission.to_vec(),
+            workspace: candidate.workspace_id().to_owned(),
+        };
         let state = governed.collaboration().clone();
         governed.keep(
             candidate,
@@ -355,6 +366,15 @@ impl Workspaces {
             crate::workspaces::system_time(now),
             |_, _| Ok(state),
         )?;
+        let body = postcard::to_stdvec(&row).map_err(|error| error.to_string())?;
+        self.inner
+            .records
+            .carry(
+                governed.workspace_id(),
+                cert.device_public_key,
+                &crate::workspace_documents::HostCommit { body },
+            )
+            .map_err(|error| format!("the device's own row was not carried: {error}"))?;
         self.settle(governed).await
     }
 

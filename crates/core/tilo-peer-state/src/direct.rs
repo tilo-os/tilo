@@ -3873,6 +3873,14 @@ impl DirectSync {
         {
             heard.fresh = true;
         }
+        // The store keeps no change of the workspace's own document to say it
+        // was here before: one that changed nothing here, and waits for
+        // nothing, was carried on when it first came. Carried on again, two
+        // devices that each host the workspace on their links send it back
+        // and forth for as long as both are up.
+        if matches!(heard.message, NeighbourMsg::SyncResp { .. }) && !lacks_history {
+            heard.fresh &= heard.landed;
+        }
         let kept = match &heard.report {
             Ok(report) if !report.lacks_history => Some(Kept::Durable),
             Ok(_) => None,
