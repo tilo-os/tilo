@@ -53,14 +53,14 @@ fn placed_by(
     lifetime: Duration,
 ) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[41; 32]);
-    let issued = ns_since_epoch(now) - 1_000_000_000;
+    let issued = ns_since_epoch(now).saturating_sub(1_000_000_000);
     let mut cert = prepare_placed_device_cert(
         host,
         key.verifying_key().to_bytes(),
         records_of(workspace, records),
         "Placed",
         issued,
-        issued + u64::try_from(lifetime.as_nanos()).unwrap(),
+        issued.saturating_add(u64::try_from(lifetime.as_nanos()).unwrap()),
     );
     sign_device_cert(&mut cert, host_key).unwrap();
     (key, cert)
@@ -166,7 +166,7 @@ fn revoke(peer: &mut StatePeer, laptop: &DeviceCert, key: [u8; 32], now: SystemT
     let mut revoked = tilo_user_identity::RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: key,
-        revoked_at_ns: ns_since_epoch(now) - 500_000_000,
+        revoked_at_ns: ns_since_epoch(now).saturating_sub(500_000_000),
         reason: tilo_user_identity::RevocationReason::Compromised,
         signature: [0; 64],
     };
@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
             .expect("the replica knows the device as placed")
             .expect("it is admitted");
         assert_eq!(placed_device.person, laptop.user_public_key, "history names its person");
-        assert_eq!(placed_device.records, cert.capabilities.records.clone().unwrap());
+        assert_eq!(placed_device.records, cert.capabilities.records.unwrap());
         for (at, record) in PLACED.iter().enumerate() {
             let name = format!("by the placed device {at}");
             let change = write(&mut author, &key, &laptop.user_public_key, record, now, &name);

@@ -108,7 +108,7 @@ impl StatePeer {
                     .iter()
                     .any(|grant| grant.id == id)
             })
-            .then(|| Change::Revoke(id));
+            .then_some(Change::Revoke(id));
         self.put_app_version(app, None, revoked, key, now)
     }
 

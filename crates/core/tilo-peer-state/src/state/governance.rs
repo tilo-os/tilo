@@ -1896,11 +1896,10 @@ fn joined(redemption: &crate::join::VerifiedRedemption) -> super::ActionStamp {
         tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(root)))
     };
     let join = redemption.join();
-    let inviter = join
-        .inviter()
-        .map_or(join.grant().issuer.user_public_key, |inviter| {
-            inviter.user_public_key
-        });
+    let inviter = join.inviter().map_or_else(
+        || join.grant().issuer.user_public_key,
+        |inviter| inviter.user_public_key,
+    );
     let mut stamp = super::ActionStamp::of_invocation(
         tilo_action_policy::roles::governance::JOIN,
         person(redemption.certificate().user_public_key),

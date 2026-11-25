@@ -5651,8 +5651,6 @@ fn formula_descriptor(kind: &BlockKind) -> Option<ui::math::FormulaDescriptor> {
 
 // A table is one paragraph of its Markdown source; the grid, the preview and an app's actions
 // read and edit it through the one set of helpers the document model keeps.
-#[cfg(test)]
-use tilo_doc::table_source::encode_cell as encode_table_cell;
 use tilo_doc::table_source::{
     data_rows as markdown_table_data_rows, decode_cell as decode_table_cell,
 };

@@ -389,6 +389,22 @@ impl LinkScope {
     }
 }
 
+/// What frames a link carries besides the ones its own device authored.
+#[derive(Clone, Copy, Debug)]
+enum Carries {
+    /// Its own device's frames alone, as the scope says
+    /// ([`LinkScope::own_frames_only`]).
+    OwnFrames,
+    /// Its own device's frames, and another device's while that device keeps
+    /// the workspace: a link this side accepted. Read for each frame, so a
+    /// device named to keep the workspace after its link came up passes on
+    /// what the others wrote from then, and one no longer named stops.
+    OthersWhileKept,
+    /// Any device's: the side that dialled, which dialled the device it meant
+    /// to reach.
+    AnyDevice,
+}
+
 /// What a link may send and be sent, beyond the workspace's admission: a
 /// scope for what it is sent, and the checks on what it may send.
 #[derive(Clone, Debug)]
@@ -396,14 +412,8 @@ struct LinkAdmit {
     /// The scope of what the link is sent ([`LinkScope::reads`]).
     #[cfg(not(target_arch = "wasm32"))]
     scope: LinkScope,
-    /// Whether the link carries only frames its own device authored, as the
-    /// scope says.
-    own_frames_only: bool,
-    /// Whether the link carries another device's frame only while its device
-    /// keeps the workspace: a link this side accepted. Read for each frame, so
-    /// a device named to keep the workspace after its link came up passes on
-    /// what the others wrote from then, and one no longer named stops.
-    keeping_only: bool,
+    /// Whose frames the link carries ([`Carries`]).
+    carries: Carries,
     /// Whether the link may carry only the frames a device takes the
     /// workspace's records with, and nothing a member device alone may send:
     /// a link from a device that said it takes records only as it opens them.
@@ -445,8 +455,11 @@ impl LinkAdmit {
             }
         };
         Self {
-            own_frames_only: scope.own_frames_only,
-            keeping_only: true,
+            carries: if scope.own_frames_only {
+                Carries::OwnFrames
+            } else {
+                Carries::OthersWhileKept
+            },
             records_only,
             key_access: scope.key_access,
             scope,
@@ -459,18 +472,16 @@ impl LinkAdmit {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             scope: LinkScope::admitting(),
-            own_frames_only: false,
-            keeping_only: false,
+            carries: Carries::AnyDevice,
             records_only: false,
             key_access: true,
         }
     }
 
     /// Whether a frame from the link's device may be admitted: its own
-    /// authorship ([`Self::own_frames_only`]), the frames a device that does
-    /// not keep the workspace may send at all ([`Self::records_only`]), and a
-    /// channel's commit only from a device admitted for its keys
-    /// ([`Self::key_access`]).
+    /// authorship ([`Self::carries`]), the frames a device that does not keep
+    /// the workspace may send at all ([`Self::records_only`]), and a channel's
+    /// commit only from a device admitted for its keys ([`Self::key_access`]).
     fn permits(
         &self,
         remote: [u8; 32],
@@ -496,8 +507,14 @@ impl LinkAdmit {
         if !self.key_access && matches!(authored.message, NeighbourMsg::MlsGovernance { .. }) {
             return false;
         }
-        by_remote(&authored.message, authored.from, remote)
-            || !(self.own_frames_only || (self.keeping_only && !keeps_workspace()))
+        if by_remote(&authored.message, authored.from, remote) {
+            return true;
+        }
+        match self.carries {
+            Carries::OwnFrames => false,
+            Carries::OthersWhileKept => keeps_workspace(),
+            Carries::AnyDevice => true,
+        }
     }
 }
 
@@ -4956,7 +4973,7 @@ mod tests {
         // A link from a device that keeps no copy of the workspace carries its
         // own frames alone.
         let admit = LinkAdmit {
-            own_frames_only: true,
+            carries: Carries::OwnFrames,
             ..LinkAdmit::dialling()
         };
 
@@ -5021,7 +5038,7 @@ mod tests {
         let sync = link(&roster, RevocationList::new(), Vec::new());
         let mut reader = sync.reader();
         let admit = LinkAdmit {
-            own_frames_only: true,
+            carries: Carries::OwnFrames,
             ..LinkAdmit::dialling()
         };
 

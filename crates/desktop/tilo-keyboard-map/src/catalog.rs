@@ -177,9 +177,10 @@ fn parse<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<Layout>, Str
     let mut seen = HashSet::new();
     layouts.retain(|layout| seen.insert(layout.id.clone()));
     layouts.sort_by_key(|layout| layout.label.to_lowercase());
-    let mut counts = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
     for layout in &layouts {
-        *counts.entry(layout.label.clone()).or_insert(0usize) += 1;
+        let count = counts.entry(layout.label.clone()).or_default();
+        *count = count.saturating_add(1);
     }
     for layout in &mut layouts {
         if counts.get(&layout.label).copied().unwrap_or(0) > 1 {

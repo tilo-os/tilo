@@ -92,82 +92,51 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let person = |person: &str| -> Result<[u8; 32], String> {
-            hex::decode(person)
-                .ok()
-                .and_then(|bytes| bytes.try_into().ok())
-                .ok_or_else(|| "a member is named by their user root key".to_owned())
-        };
-        let by = hex::encode(caller.user_public_key);
-        let workspace = self.core.workspace.clone();
         match change {
-            Change::AddMember { person: who, role } | Change::SetRole { person: who, role } => {
-                if *role == Role::Owner {
-                    return Err("the owner's role is not given through membership".into());
-                }
-                let who = person(who)?;
-                // The change names the action it is: joining at a role, or
-                // moving a member's role.
-                let verb = match change {
-                    Change::AddMember { .. } => roles::governance::ADD_MEMBER,
-                    _ => roles::governance::SET_ROLE,
-                };
-                self.as_action(verb, caller.user_public_key, |peer| {
-                    peer.governance_mut().set_member_role(who, *role, key, now)
-                })
+            Change::AddMember { person, role } => self.apply_role_change(
+                caller,
+                roles::governance::ADD_MEMBER,
+                person,
+                *role,
+                key,
+                now,
+            ),
+            Change::SetRole { person, role } => {
+                self.apply_role_change(caller, roles::governance::SET_ROLE, person, *role, key, now)
             }
-            Change::RemoveMember { person: who } => {
-                let who = person(who)?;
+            Change::RemoveMember { person } => {
+                let who = member_root(person)?;
                 self.as_action(
                     roles::governance::REMOVE_MEMBER,
                     caller.user_public_key,
                     |peer| peer.governance_mut().remove_member(who, key, now),
                 )
             }
-            Change::TransferOwnership { person: who } => {
-                let who = person(who)?;
+            Change::TransferOwnership { person } => {
+                let who = member_root(person)?;
                 self.as_action(
                     roles::governance::TRANSFER_OWNERSHIP,
                     caller.user_public_key,
                     |peer| peer.governance_mut().transfer_ownership(who, key, now),
                 )
             }
-            Change::Ban { person: who } => {
-                let who = person(who)?;
+            Change::Ban { person } => {
+                let who = member_root(person)?;
+                let by = hex::encode(caller.user_public_key);
                 self.as_action(roles::governance::BAN, caller.user_public_key, |peer| {
                     peer.governance_mut().ban_member(who, &by, key, now)
                 })
             }
-            Change::Unban { person: who } => {
-                let who = person(who)?;
+            Change::Unban { person } => {
+                let who = member_root(person)?;
                 self.as_action(roles::governance::UNBAN, caller.user_public_key, |peer| {
                     peer.governance_mut().unban_member(who, key, now)
                 })
             }
-            Change::Restrict {
-                person: who,
-                until_ms,
-            } => {
-                person(who)?;
-                self.governance_mut().put_governed_grants(
-                    &[roles::restriction_grant(
-                        &workspace,
-                        who,
-                        *until_ms,
-                        Grantee::person(by),
-                    )],
-                    key,
-                    now,
-                )
+            Change::Restrict { person, until_ms } => {
+                self.apply_restriction(caller, person, *until_ms, key, now)
             }
-            Change::Unrestrict { person: who } => {
-                person(who)?;
-                self.governance_mut().remove_governed_grants(
-                    &[roles::restriction_grant_id(who)],
-                    key,
-                    now,
-                )
-            }
+            Change::Unrestrict { person: who } => self.apply_unrestriction(who, key, now),
             Change::Grant(grant) => self.apply_governance_grant_command(
                 caller,
                 &WorkspaceMembershipCommand::Grant {
@@ -190,13 +159,73 @@ impl StatePeer {
             Change::DefineRole { .. } | Change::RemoveRole { .. } => self
                 .governance_mut()
                 .change_member_list(change.clone(), key, now),
-            Change::SetMemberCustomRole { .. } => {
-                self.as_action(roles::governance::SET_ROLE, caller.user_public_key, |peer| {
+            Change::SetMemberCustomRole { .. } => self.as_action(
+                roles::governance::SET_ROLE,
+                caller.user_public_key,
+                |peer| {
                     peer.governance_mut()
                         .change_member_list(change.clone(), key, now)
-                })
-            }
+                },
+            ),
         }
+    }
+
+    /// Give `person` `role`, as the workspace's policy decides: the change is
+    /// `verb`, joining at a role or moving a member's.
+    fn apply_role_change(
+        &mut self,
+        caller: &DeviceCert,
+        verb: &'static str,
+        person: &str,
+        role: Role,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if role == Role::Owner {
+            return Err("the owner's role is not given through membership".into());
+        }
+        let who = member_root(person)?;
+        self.as_action(verb, caller.user_public_key, |peer| {
+            peer.governance_mut().set_member_role(who, role, key, now)
+        })
+    }
+
+    /// Restrict `person` until `until_ms`, as the caller.
+    fn apply_restriction(
+        &mut self,
+        caller: &DeviceCert,
+        person: &str,
+        until_ms: u64,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        member_root(person)?;
+        let workspace = self.core.workspace.clone();
+        self.governance_mut().put_governed_grants(
+            &[roles::restriction_grant(
+                &workspace,
+                person,
+                until_ms,
+                Grantee::person(hex::encode(caller.user_public_key)),
+            )],
+            key,
+            now,
+        )
+    }
+
+    /// Lift the restriction on `person`, as the caller.
+    fn apply_unrestriction(
+        &mut self,
+        person: &str,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        member_root(person)?;
+        self.governance_mut().remove_governed_grants(
+            &[roles::restriction_grant_id(person)],
+            key,
+            now,
+        )
     }
 
     /// Share `node` with the workspace as `access` gives, under `share`, as the
@@ -427,4 +456,13 @@ impl PeerWorkspaceMut<'_> {
         }
         self.peer.apply_own_row(caller, command, key, now)
     }
+}
+
+/// The person `person` names, by their user root key: the form a member change
+/// names one in.
+fn member_root(person: &str) -> Result<[u8; 32], String> {
+    hex::decode(person)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| "a member is named by their user root key".to_owned())
 }

@@ -1604,12 +1604,9 @@ fn a_workspace_founded_again_under_its_id_replaces_nothing_its_host_holds() {
     );
 }
 
-/// An administrator keeping the workspace's history makes someone else an administrator, then
-/// the workspace's next base: a device keeping it adopts that base, whose governance the
-/// operation it adds says it changes, as it would take the operation in a batch. Handing the
-/// workspace to someone, which only its owner does, changes nothing in a base as in a batch.
-#[test]
-fn a_newer_base_an_administrator_made_carries_the_administrators_it_made() {
+/// The workspace its owner founded and made `admin_root` an administrator of, and the device
+/// that keeps its history: `admin_device()`.
+fn administrator_keeps() -> (AutoCommit, (ed25519_dalek::SigningKey, DeviceCert), String) {
     let (_, host) = owner_device();
     let mut held = founded_by(&host, 1);
     sign(
@@ -1630,6 +1627,16 @@ fn a_newer_base_an_administrator_made_carries_the_administrators_it_made() {
     held.commit();
     let admin = admin_device();
     let admin_key = hex::encode(admin.1.device_public_key);
+    (held, admin, admin_key)
+}
+
+/// An administrator keeping the workspace's history makes someone else an administrator, then
+/// the workspace's next base: a device keeping it adopts that base, whose governance the
+/// operation it adds says it changes, as it would take the operation in a batch. Handing the
+/// workspace to someone, which only its owner does, changes nothing in a base as in a batch.
+#[test]
+fn a_newer_base_an_administrator_made_carries_the_administrators_it_made() {
+    let (held, admin, admin_key) = administrator_keeps();
     let rebased_after = |edit: &dyn Fn(&mut AutoCommit)| {
         let mut made = held.clone();
         edit(&mut made);

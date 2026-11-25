@@ -332,10 +332,10 @@ mod tests {
     }
 
     /// The child's side: take the key, say so, keep it until standard input ends.
-    fn take_in_child(root: std::ffi::OsString) {
+    fn take_in_child(root: &Path) {
         let store = std::env::var_os(CHILD_STORE).is_some();
         let _memory = store.then(|| tilo_secrets::scope_thread(tilo_secrets::memory_backend()));
-        let paths = device_key_under(Path::new(&root), store);
+        let paths = device_key_under(root, store);
         let lock = take_device_key(&paths).expect("the first process takes the key");
         assert_eq!(
             super::super::load_device_key(&paths).unwrap().to_bytes(),
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn a_second_process_taking_the_key_is_refused_naming_the_first() {
         if let Some(root) = std::env::var_os(CHILD) {
-            take_in_child(root);
+            take_in_child(Path::new(&root));
             return;
         }
         second_process_is_refused(FILE_TEST, false);
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn a_second_process_taking_a_key_the_platform_store_keeps_is_refused_naming_the_first() {
         if let Some(root) = std::env::var_os(CHILD) {
-            take_in_child(root);
+            take_in_child(Path::new(&root));
             return;
         }
         second_process_is_refused(STORE_TEST, true);
