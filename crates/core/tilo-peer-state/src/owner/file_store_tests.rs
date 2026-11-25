@@ -257,6 +257,48 @@ fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
     assert!(open_file(&path).is_err());
 }
 
+#[test]
+fn an_earlier_workspace_file_is_brought_up_and_kept_beside_it() {
+    let directory = directory();
+    let path = resource_path(&directory);
+    let (key, device) = device();
+    let owner = open_file(&path).unwrap();
+    let founded = testing::founded(&owner, &device, &key).unwrap();
+    drop(owner);
+
+    // The snapshot as the version before this build's wrote it: its layout is
+    // this build's, under the older number.
+    let today = crate::owner::stored::WORKSPACE_VERSION;
+    let files = part_files(&path);
+    let (name, bytes) = files.iter().next().unwrap();
+    let bytes = String::from_utf8(bytes.clone()).unwrap();
+    let earlier = bytes.replacen(
+        &format!("\"version\":{today}"),
+        &format!("\"version\":{}", today.saturating_sub(1)),
+        1,
+    );
+    assert_ne!(earlier, bytes, "the snapshot names its version");
+    let snapshot = parts_of(&path).join(name);
+    std::fs::write(&snapshot, &earlier).unwrap();
+
+    let record = read_file(&path).unwrap();
+    assert!(
+        record.holds(founded),
+        "the workspace of the earlier file reads"
+    );
+    assert_eq!(
+        String::from_utf8(std::fs::read(&snapshot).unwrap()).unwrap(),
+        bytes,
+        "the file is written again as this build's layout"
+    );
+    let kept_beside = parts_of(&path).join(format!("{name}.v{}", today.saturating_sub(1)));
+    assert_eq!(
+        std::fs::read(kept_beside).unwrap(),
+        earlier.as_bytes(),
+        "the file as the earlier version wrote it is kept beside it"
+    );
+}
+
 /// A change of one workspace after its file was written appends to that
 /// file's journal, replacing no file, and reads back after a restart.
 #[test]

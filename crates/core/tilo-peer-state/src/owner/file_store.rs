@@ -176,6 +176,12 @@ impl JournalParts for FileParts<'_> {
         store.replace(&file_of(self.parts, name), bytes, next)
     }
 
+    fn bring_up_part(&self, name: &str, bytes: Vec<u8>, stored: u32) -> Result<Vec<u8>, String> {
+        super::stored::format::FORMAT
+            .bring_up(&file_of(self.parts, name), bytes, stored)
+            .map_err(|error| error.to_string())
+    }
+
     fn append_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
         let (store, next) = self.writing()?;
         provision(self.parts)?;

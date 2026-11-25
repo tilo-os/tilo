@@ -55,6 +55,13 @@ pub trait JournalParts: collab_types::signer::MaybeSendSync {
     fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String>;
     /// Append `bytes` to the part `name`, which need not exist yet.
     fn append_part(&self, name: &str, bytes: &[u8]) -> Result<(), String>;
+    /// The bytes of the part `name`, which are of the workspace entry's version
+    /// `stored`, brought up to this build's: a store of files keeps what the part
+    /// held beside it before it writes the brought-up bytes back. A store that
+    /// keeps no layout older than its build reads returns them as they are.
+    fn bring_up_part(&self, _name: &str, bytes: Vec<u8>, _stored: u32) -> Result<Vec<u8>, String> {
+        Ok(bytes)
+    }
     /// Let the part `name` go. A store that cannot forget a name empties it:
     /// an empty part names nothing.
     fn remove_part(&self, name: &str) -> Result<(), String> {
@@ -133,13 +140,14 @@ impl Journaled {
                 format!("the record names {workspace}'s snapshot and it is missing")
             })?;
             written.insert(name.clone());
-            let mut size = snapshot.len();
             // The layout the snapshot names: one this build writes reads as it
             // is, and an earlier one is brought up, the next publication writing
             // a snapshot of this build's version. A journal is a delta of the
             // snapshot beside it, as that version's bytes: one beside an
             // earlier snapshot is refused.
-            let (snapshot_version, snapshot) = brought_up(&name, snapshot)?;
+            let snapshot_version = stored_version(&name, &snapshot)?;
+            let snapshot = parts.bring_up_part(&name, snapshot, snapshot_version)?;
+            let mut size = snapshot.len();
             let mut stored: StoredWorkspace = serde_json::from_slice(&snapshot)
                 .map_err(|error| format!("{workspace}'s snapshot does not read: {error}"))?;
             stored.version = WORKSPACE_VERSION;
@@ -468,29 +476,23 @@ impl Journaled {
     }
 }
 
-/// The version a snapshot's bytes name, and the bytes as this build's layout.
+/// The version a snapshot's bytes name.
 #[cfg(not(target_arch = "wasm32"))]
-fn brought_up(name: &str, bytes: Vec<u8>) -> Result<(u32, Vec<u8>), String> {
-    use super::stored::format;
-    let version = format::stored_version(&bytes)?;
-    let bytes = format::FORMAT
-        .migrate(bytes, version)
-        .map_err(|error| format!("{name}: {error}"))?;
-    Ok((version, bytes))
+fn stored_version(name: &str, bytes: &[u8]) -> Result<u32, String> {
+    super::stored::format::stored_version(bytes).map_err(|error| format!("{name}: {error}"))
 }
 
-/// The version a snapshot's bytes name, and the bytes, which a page reads as
-/// they are: its store kept no layout older than its build reads.
+/// The version a snapshot's bytes name, which a page reads as they are: its
+/// store kept no layout older than its build reads.
 #[cfg(target_arch = "wasm32")]
-fn brought_up(name: &str, bytes: Vec<u8>) -> Result<(u32, Vec<u8>), String> {
+fn stored_version(name: &str, bytes: &[u8]) -> Result<u32, String> {
     #[derive(Deserialize)]
     struct Versioned {
         version: u32,
     }
-    let version = serde_json::from_slice::<Versioned>(&bytes)
-        .map_err(|error| format!("{name}: {error}"))?
-        .version;
-    Ok((version, bytes))
+    serde_json::from_slice::<Versioned>(bytes)
+        .map(|entry| entry.version)
+        .map_err(|error| format!("{name}: {error}"))
 }
 
 /// A recovery projection is a re-signed copy of frames this build re-sends
