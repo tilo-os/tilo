@@ -4,30 +4,28 @@
 
 use super::{Error, TrustFlags, installer};
 
-pub(super) fn trust_list() -> Result<(), Error> {
+pub(super) fn trust_list() {
     let (attestors, _) = super::workspace::trust();
     if attestors.is_empty() {
         println!("(no trusted attestors)");
-        return Ok(());
+        return;
     }
     println!("{:<24}  {:<12}  pubkey", "id", "scope");
     for a in &attestors {
         println!("{:<24}  {:<12}  {}", a.id, a.scope, a.pubkey_hex);
     }
-    Ok(())
 }
 
-pub(super) fn revoked_list() -> Result<(), Error> {
+pub(super) fn revoked_list() {
     let (_, revoked) = super::workspace::trust();
     if revoked.is_empty() {
         println!("(no revoked keys)");
-        return Ok(());
+        return;
     }
     println!("{:<66}  reason", "pubkey");
     for k in &revoked {
         println!("{:<66}  {}", k.pubkey_hex, k.reason);
     }
-    Ok(())
 }
 
 /// Read and verify a `.tapp` as `install` would, store nothing, and print one JSON object saying who

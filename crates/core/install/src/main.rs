@@ -1138,7 +1138,10 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
         Cmd::Inspect { pkg_id } => read(inspect(&pkg_id)),
         Cmd::Trust { cmd } => match cmd {
             TrustCmd::Add { id, pubkey, scope } => make(Change::AddAttestor { id, pubkey, scope }),
-            TrustCmd::List => read(trust_cmd::trust_list()),
+            TrustCmd::List => {
+                trust_cmd::trust_list();
+                Ok(())
+            }
             TrustCmd::Remove { id } => make(Change::RemoveAttestor { id }),
         },
         Cmd::Revoke { pubkey_hex, reason } => make(Change::Revoke {
@@ -1146,7 +1149,10 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             reason,
         }),
         Cmd::Revoked { cmd } => match cmd {
-            RevokedCmd::List => read(trust_cmd::revoked_list()),
+            RevokedCmd::List => {
+                trust_cmd::revoked_list();
+                Ok(())
+            }
         },
         Cmd::Check { tapp, trust } => read(trust_cmd::check_verdict(&tapp, &trust)),
         Cmd::Path => read(print_path()),
