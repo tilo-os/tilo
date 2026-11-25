@@ -1219,7 +1219,9 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   resource, and the one Export… lists the formats published for what is open and saves
   through the system's file chooser; no app keeps an export menu of its own. A
   channel's moderators grant and revoke access to that channel through the system's
-  grant actions, scoped to it. A project
+  grant actions, scoped to it. A theme is applied by one device action that
+  takes an installed theme package by id and loads its painters compiled at install;
+  the person's appearance setting names it, and nothing else applies a theme. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
