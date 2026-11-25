@@ -93,10 +93,6 @@ fn opened(frames: &[Vec<u8>], asker: &[u8; 32]) -> Option<Vec<u8>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: the host asks, the poster answers, and another member opens both"
-)]
 async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leaves() {
     let scratch = tempfile::tempdir().unwrap();
     let (root, host_cert) = governor();

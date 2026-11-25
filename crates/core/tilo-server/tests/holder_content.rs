@@ -87,6 +87,61 @@ async fn content_blobs(holder: &Server, workspace: &str) -> Option<u32> {
     })
 }
 
+/// Write `workspace`'s album record naming the picture at `hash`, `size` bytes
+/// long, as a device's write of it.
+async fn name_picture(server: &Server, workspace: &str, hash: &str, size: usize) {
+    crate::common::write_record(
+        server.workspaces().unwrap(),
+        workspace,
+        (PHOTOS, "album"),
+        |doc| {
+            doc.put(ROOT, "photo", format!("blake3:{hash}:{size}"))
+                .map_err(|error| error.to_string())
+        },
+    )
+    .await
+    .unwrap();
+}
+
+/// Wait until `holder` says it lacks content in `workspace`'s copy status.
+async fn until_it_says_it_lacks_content(holder: &Server, workspace: &str) {
+    tilo_test_env::within("the added holder says it lacks the picture", async {
+        loop {
+            if content_blobs(holder, workspace)
+                .await
+                .is_some_and(|blobs| blobs >= 1)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}
+
+/// Wait until `holder` keeps `picture` at `hash` and says it lacks no content.
+async fn until_it_keeps_picture(holder: &Server, workspace: &str, hash: &str, picture: &[u8]) {
+    tilo_test_env::within(
+        "the added holder fetches it and says it lacks none",
+        async {
+            loop {
+                let kept = holder
+                    .content()
+                    .get(workspace)
+                    .ok()
+                    .and_then(|store| store.read(hash));
+                if kept.as_deref() == Some(picture)
+                    && content_blobs(holder, workspace).await.is_none()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        },
+    )
+    .await;
+}
+
 /// A workspace on server A whose record names a megabyte of content A's store
 /// keeps. Server B is added and takes a copy, and fetches the content from A
 /// although no member of the workspace holds it, before A counts it handed
@@ -133,17 +188,7 @@ async fn a_holder_added_to_a_workspace_fetches_the_content_its_records_name() {
         .unwrap()
         .put(&picture)
         .unwrap();
-    crate::common::write_record(
-        a.workspaces().unwrap(),
-        &workspace.workspace,
-        (PHOTOS, "album"),
-        |doc| {
-            doc.put(ROOT, "photo", format!("blake3:{hash}:{}", picture.len()))
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await
-    .unwrap();
+    name_picture(&a, &workspace.workspace, &hash, picture.len()).await;
 
     // B is added: A hands it the workspace as one of its holders.
     a.workspaces()
@@ -220,17 +265,7 @@ async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
         .unwrap()
         .put(&picture)
         .unwrap();
-    crate::common::write_record(
-        a.workspaces().unwrap(),
-        &workspace.workspace,
-        (PHOTOS, "album"),
-        |doc| {
-            doc.put(ROOT, "photo", format!("blake3:{hash}:{}", picture.len()))
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await
-    .unwrap();
+    name_picture(&a, &workspace.workspace, &hash, picture.len()).await;
     a.workspaces()
         .unwrap()
         .attach_server(
@@ -316,17 +351,7 @@ async fn a_holder_says_how_much_content_it_lacks_until_it_keeps_it() {
         .take(1024 * 1024 + 7)
         .collect();
     let hash = blake3::hash(&picture).to_hex().to_string();
-    crate::common::write_record(
-        a.workspaces().unwrap(),
-        &workspace.workspace,
-        (PHOTOS, "album"),
-        |doc| {
-            doc.put(ROOT, "photo", format!("blake3:{hash}:{}", picture.len()))
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await
-    .unwrap();
+    name_picture(&a, &workspace.workspace, &hash, picture.len()).await;
     a.workspaces()
         .unwrap()
         .attach_server(
@@ -340,18 +365,7 @@ async fn a_holder_says_how_much_content_it_lacks_until_it_keeps_it() {
 
     // The added holder says it lacks the picture: one blob its records name
     // and its store does not hold.
-    tilo_test_env::within("the added holder says it lacks the picture", async {
-        loop {
-            if content_blobs(&b, &workspace.workspace)
-                .await
-                .is_some_and(|blobs| blobs >= 1)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    until_it_says_it_lacks_content(&b, &workspace.workspace).await;
 
     // The first server comes to keep it, and says so to whoever asked.
     a.content()
@@ -364,25 +378,7 @@ async fn a_holder_says_how_much_content_it_lacks_until_it_keeps_it() {
         .content_kept(&workspace.workspace, &hash);
 
     // The added holder takes it into its store, and says it lacks none.
-    tilo_test_env::within(
-        "the added holder fetches it and says it lacks none",
-        async {
-            loop {
-                let kept = b
-                    .content()
-                    .get(&workspace.workspace)
-                    .ok()
-                    .and_then(|store| store.read(&hash));
-                if kept.as_deref() == Some(picture.as_slice())
-                    && content_blobs(&b, &workspace.workspace).await.is_none()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        },
-    )
-    .await;
+    until_it_keeps_picture(&b, &workspace.workspace, &hash, &picture).await;
 
     a.shutdown().await;
     assert_eq!(

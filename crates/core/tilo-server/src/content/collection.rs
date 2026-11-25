@@ -525,8 +525,7 @@ mod tests {
         .await;
         assert!(
             matches!(edited, Ok(Ok(()))),
-            "an edit lands while a pass runs: {:?}",
-            edited.map(|edit| edit.map_err(|error| error.to_string()))
+            "an edit lands while a pass runs: {edited:?}"
         );
         assert!(!pass.is_finished(), "the pass was still running");
 
