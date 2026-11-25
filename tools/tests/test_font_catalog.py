@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -515,24 +516,42 @@ class CatalogBuildTest(unittest.TestCase):
                 self.assertNotIn("cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT=", result.stdout)
 
     def test_missing_fonts_name_the_inputs_a_build_reads_them_from(self):
-        """A build given no pins and no network says where they come from and how to prepare them."""
+        """A build given no pins and no network says where they come from and how to prepare them:
+        a build that compiles no page still compiles, naming them on its warning, and a `web`
+        build, which embeds the page's cuts, fails naming the same inputs."""
         out = self.profile() / "build/font-catalog-test/out"
         with tempfile.TemporaryDirectory() as empty:
             environment = dict(os.environ, PYTHON=sys.executable, OUT_DIR=str(out),
                                HOME=empty, TILO_FONT_IMAGE_SEED=str(Path(empty) / "no-seed"),
                                TILO_FONT_ASSET_CACHE=str(Path(empty) / "no-cache"),
                                TILO_FONT_ASSETS_OFFLINE="1")
-            for unset in ("TILO_TEST_CACHE_DIR", "XDG_CACHE_HOME", "TILO_FONT_CATALOG_ROOT"):
+            for unset in ("TILO_TEST_CACHE_DIR", "XDG_CACHE_HOME", "TILO_FONT_CATALOG_ROOT",
+                          "CARGO_FEATURE_WEB"):
                 environment.pop(unset, None)
-            result = subprocess.run([str(self.build)], env=environment,
-                                    capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("font artifact unavailable offline", result.stderr)
-        self.assertIn("TILO_FONT_IMAGE_SEED", result.stderr)
-        self.assertIn("TILO_FONT_ASSET_CACHE", result.stderr)
+            plain = subprocess.run([str(self.build)], env=environment,
+                                   capture_output=True, text=True)
+            web = subprocess.run([str(self.build)], env=dict(environment, CARGO_FEATURE_WEB="1"),
+                                 capture_output=True, text=True)
+        # Text is set in the installed faces, the crate names no catalog, and the script says what
+        # a build that wants the pinned ones needs and asks to be run again where a seed appears.
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        said = "\n".join([plain.stdout, plain.stderr])
+        self.assertIn("cargo::warning=the pinned font catalog was not prepared", said)
+        self.assertIn("font artifact unavailable offline", said)
+        self.assertIn("TILO_FONT_IMAGE_SEED", said)
+        self.assertIn("TILO_FONT_ASSET_CACHE", said)
         # The tool that prepares them, so a fresh checkout can be brought up from the message.
-        self.assertIn("font-catalog.py", result.stderr)
-        self.assertNotIn("could not fetch", result.stderr)
+        self.assertIn("font-catalog.py", said)
+        self.assertNotIn("could not fetch", said)
+        self.assertIn("cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT=", plain.stdout)
+        self.assertIn("ui-core/assets/fonts", plain.stdout)
+        self.assertIn("cargo::rerun-if-env-changed=TILO_FONT_IMAGE_SEED", plain.stdout)
+        # The page embeds its cuts at compile time: there the data is needed, and the failure
+        # names the same inputs.
+        self.assertNotEqual(web.returncode, 0)
+        for named in ("font artifact unavailable offline", "TILO_FONT_IMAGE_SEED",
+                      "TILO_FONT_ASSET_CACHE", "font-catalog.py"):
+            self.assertIn(named, web.stderr)
 
     def test_installed_python_prepares_the_real_verified_catalog_offline(self):
         source = ROOT / "crates/ui/ui-core/assets/fonts"
@@ -566,6 +585,17 @@ class CatalogBuildTest(unittest.TestCase):
         # Nothing of the catalog is written where cargo fills the build script's output
         # directory: only the build's own manifest and notices.
         self.assertEqual(sorted(entry.name for entry in out.iterdir()), ["manifest.rs", "notices.rs"])
+        # The page's cuts are named from the same verified web catalog, and every file the
+        # script writes an `include_bytes!` for is there: a path that is not (a trailing
+        # newline once made one) fails the page's build and no other test.
+        web = subprocess.run([str(self.build)], env=dict(environment, CARGO_FEATURE_WEB="1"),
+                             capture_output=True, text=True)
+        self.assertEqual(web.returncode, 0, web.stderr)
+        cuts = (out / "web.rs").read_text()
+        named = re.findall(r'include_bytes!\("([^"]+)"\)', cuts)
+        self.assertTrue(named, cuts)
+        for path in named:
+            self.assertTrue(Path(path).is_file(), path)
 
 
 if __name__ == "__main__":

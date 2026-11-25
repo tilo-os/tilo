@@ -1,6 +1,24 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Why a catalog was not prepared: the interpreter could not be launched (a toolchain the build
+/// needs, which no data fixes), or the tool ran and failed (a pin no cache holds, and no network).
+#[derive(Debug)]
+enum Unprepared {
+    Launched(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for Unprepared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Launched(why) | Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for Unprepared {}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_manifest()?;
     write_notices()?;
@@ -40,14 +58,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // text is set in the installed faces, as in a published catalog-only crate, and a
             // test that needs the pinned faces says so where it reads them. The page embeds its
             // cuts, so a `web` build keeps the failure: it cannot compile without them.
-            Err(why) if std::env::var_os("CARGO_FEATURE_WEB").is_none() => {
-                println!("cargo::warning=the pinned font catalog was not prepared: {why:#}");
+            Err(Unprepared::Failed(why)) if std::env::var_os("CARGO_FEATURE_WEB").is_none() => {
+                println!("cargo::warning=the pinned font catalog was not prepared: {why}");
                 // A seed that appears later runs this script again, which publishes the catalog.
                 println!("cargo::rerun-if-env-changed=TILO_FONT_IMAGE_SEED");
                 println!("cargo::rerun-if-env-changed=TILO_FONT_ASSET_CACHE");
                 source.clone()
             }
-            Err(why) => return Err(why),
+            Err(why) => return Err(why.into()),
         };
         if std::env::var_os("CARGO_FEATURE_WEB").is_some() {
             write_web_cuts(&prepared(&tool, &source, "web", &catalogs)?)?;
@@ -91,7 +109,7 @@ fn prepared(
     source: &std::path::Path,
     scope: &str,
     catalogs: &std::path::Path,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<PathBuf, Unprepared> {
     let python = std::env::var_os("PYTHON").unwrap_or_else(|| python_with_tomllib().into());
     let mut command = Command::new(&python);
     command
@@ -107,16 +125,16 @@ fn prepared(
         .arg("--catalogs")
         .arg(catalogs);
     let output = command.output().map_err(|error| {
-        format!(
+        Unprepared::Launched(format!(
             "could not launch `{}` to prepare fonts with {}: {error}; \
              source builds require Python 3.11+ (Fedora: dnf install python3, \
              macOS: brew install python); set PYTHON to its executable if it is not on PATH",
             python.to_string_lossy(),
             tool.display()
-        )
+        ))
     })?;
     if !output.status.success() {
-        return Err(format!(
+        return Err(Unprepared::Failed(format!(
             "font preparation failed: {}\n\
              the pinned fonts come from TILO_FONT_IMAGE_SEED (the font-seed check's output) or \
              TILO_FONT_ASSET_CACHE; a machine with neither fetches them from the store, which a \
@@ -126,15 +144,16 @@ fn prepared(
             python.to_string_lossy(),
             tool.display(),
             source.display(),
-        )
-        .into());
+        )));
     }
     // The tool named the catalog it verified; the directory is the one this script asked it
     // to publish in, so the path stays inside this build's own view of the target directory.
-    let published = PathBuf::from(std::str::from_utf8(&output.stdout)?.trim());
+    let printed = std::str::from_utf8(&output.stdout)
+        .map_err(|why| Unprepared::Failed(format!("the tool's answer is no path: {why}")))?;
+    let published = PathBuf::from(printed.trim());
     let name = published
         .file_name()
-        .ok_or("the tool names the catalog it prepared")?;
+        .ok_or_else(|| Unprepared::Failed("the tool names the catalog it prepared".into()))?;
     Ok(catalogs.join(name))
 }
 
