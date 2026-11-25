@@ -130,6 +130,7 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
     let kept = include_bytes!("../../../desktop/settings-sections/published.json");
     collab_types::surface::SurfaceFile::compiled(kept)
         .expect("the sections' compiled surface parses");
+    let kept = std::str::from_utf8(kept).expect("the compiled surface is UTF-8");
     let surface =
         tilo_api::v1::surface_version(tilo_actions::remote::settings_resources::SURFACE_APP, kept);
     let appearance = tilo_app::framework::section_address("appearance", None);
