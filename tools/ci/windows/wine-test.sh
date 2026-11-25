@@ -14,6 +14,11 @@
 # Everything else must pass.
 set -euo pipefail
 
+# Wine describes a file's access from its Unix mode bits: group and other bits become entries for
+# groups and Everyone, and a directory made under one inherits them, whatever protected list the
+# program sets. A Windows profile is private to its account, so everything Wine makes here is too.
+umask 077
+
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 mode="${1:?units, install or runtime}"
 # On disk, not in TMPDIR: Wine reports a tmpfs drive as a virtual disk, which

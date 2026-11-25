@@ -11,6 +11,11 @@
 # build.sh (tools/policy/check_test_support_shipping.py).
 set -euo pipefail
 
+# Wine describes a file's access from its Unix mode bits: group and other bits become entries for
+# groups and Everyone, and a directory made under one inherits them, whatever protected list the
+# program sets. A Windows profile is private to its account, so everything Wine makes here is too.
+umask 077
+
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 mode="${1:?build or run}"
 
@@ -41,7 +46,10 @@ case "$mode" in
     ;;
   run)
     walk="${2:?the directory the walk build made}" out="${3:?output directory}"
-    export WINEPREFIX="${TMPDIR:-/tmp}/tilo-walk-wine"
+    # On disk, as wine-test.sh keeps its prefix: Wine reports a tmpfs drive as a virtual disk.
+    root=/target/wine
+    mkdir -p "$root" 2>/dev/null || root="${TMPDIR:-/tmp}"
+    export WINEPREFIX="$root/tilo-walk-wine"
     rm -rf -- "$WINEPREFIX"
     bash "$here/wine-prefix.sh"
     mkdir -p "$out"
