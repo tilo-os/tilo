@@ -780,11 +780,15 @@ impl HostPlatform {
     /// Register the engines that keep what they make in this app's content store: each holds
     /// the store this instance was handed, so a job it runs keeps its file there as it ends.
     fn register_content_engines(&self) {
-        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(all(
+            feature = "app-launch",
+            any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+        ))]
         {
             crate::video_engine::register(self.store());
             crate::print_centre_engine::register(self.store());
         }
+        #[cfg(feature = "app-launch")]
         crate::photos_engine::register(self.store(), self.previews());
     }
 }
