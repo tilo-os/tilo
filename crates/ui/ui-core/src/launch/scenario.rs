@@ -5,6 +5,7 @@
 //! from the machine, so no picture of it shows the journal, the home folder or the source tree of
 //! whoever took it.
 
+#[cfg(feature = "model")]
 use super::{LaunchArgs, LaunchError, LaunchSpec};
 
 /// What of the machine it runs on an app shows.
@@ -39,6 +40,7 @@ impl HostSource {
     }
 }
 
+#[cfg(feature = "model")]
 impl LaunchSpec {
     /// The app shows `sources` of the machine it runs on: a headless drive that captures it must name a
     /// scenario, and is then built from that scenario's fixtures.
@@ -50,6 +52,7 @@ impl LaunchSpec {
 }
 
 /// Refuse an undeclared scenario, and a capture of a host-reading app that names none.
+#[cfg(feature = "model")]
 pub(super) fn check(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
@@ -71,6 +74,7 @@ pub(super) fn check(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchEr
 
 /// The refusal of a drive capturing a host-reading app with no scenario, naming the app, what it would
 /// show and the scenarios to choose from.
+#[cfg(feature = "model")]
 fn live_capture(spec: &LaunchSpec) -> String {
     let shows: Vec<&str> = spec
         .host_sources
@@ -91,6 +95,7 @@ fn live_capture(spec: &LaunchSpec) -> String {
 }
 
 /// The refusal of an undeclared `--scenario`, listing the declared ones.
+#[cfg(feature = "model")]
 fn unknown_scenario(name: &str, declared: &[&str]) -> String {
     if declared.is_empty() {
         format!("unknown screenshot scenario {name:?}; this app declares no scenarios")
@@ -102,6 +107,7 @@ fn unknown_scenario(name: &str, declared: &[&str]) -> String {
     }
 }
 
+#[cfg(feature = "model")]
 fn quoted(names: &[&str]) -> String {
     names
         .iter()
@@ -110,7 +116,7 @@ fn quoted(names: &[&str]) -> String {
         .join(", ")
 }
 
-#[cfg(all(test, feature = "native"))]
+#[cfg(all(test, feature = "native", feature = "model"))]
 mod tests {
     use super::super::prepared_launch_tests::prepare;
     use super::super::{DefinitionDispatch, dispatch_definition, parse_args_extended};

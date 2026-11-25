@@ -12,6 +12,7 @@ use vello::kurbo::{Affine, Point};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenRenderer;
+#[cfg(feature = "model")]
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -29,6 +30,7 @@ pub struct ShotFrame {
     /// Presence passed to the draw passes; empty unless a shot stages peers.
     pub presence: PresenceCtx,
     /// Permission context scoped around the root `draw`.
+    #[cfg(feature = "model")]
     pub permission: PermissionContext,
     viewport: (u32, u32),
     taffy: TaffyTree<()>,
@@ -52,6 +54,7 @@ impl ShotFrame {
             theme,
             text,
             presence: PresenceCtx::empty(),
+            #[cfg(feature = "model")]
             permission: PermissionContext::permissive(),
             viewport,
             taffy: TaffyTree::new(),
@@ -157,6 +160,7 @@ impl ShotFrame {
         let recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
         let previous = self.presence.push_viewport(self.window());
+        #[cfg(feature = "model")]
         self.presence.with_permissions(self.permission.clone(), || {
             widget.draw_child(
                 &mut scene,
@@ -166,6 +170,14 @@ impl ShotFrame {
                 &self.presence.draw_env(),
             )
         });
+        #[cfg(not(feature = "model"))]
+        widget.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence.draw_env(),
+        );
         self.presence.pop_viewport(previous);
         self.backdrop = recording.finish();
         scene

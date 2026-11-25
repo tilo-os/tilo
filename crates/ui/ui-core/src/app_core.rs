@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 
+#[cfg(feature = "model")]
 use crate::history_mode::embedded::{PendingCommand, PendingCommandOutcome};
+#[cfg(feature = "model")]
 use crate::history_mode::pending_controls::{
     ContinuationCommand, PendingControlStatus, PreparedContinuation,
 };
@@ -25,6 +27,7 @@ pub(crate) struct AppTree<'a> {
     pub(crate) state: &'a crate::State,
     pub(crate) root: &'a dyn Widget,
     /// The app's registered framework History, when it has one.
+    #[cfg(feature = "model")]
     pub(crate) history: Option<&'a crate::history_mode::host::HistoryHost>,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
@@ -36,14 +39,6 @@ pub(crate) struct AppTree<'a> {
 }
 
 impl AppTree<'_> {
-    /// The component binding `node` is read through, which a walk over many nodes of one surface
-    /// holds so that it enters the scope once rather than once per node.
-    pub(crate) fn binding_for(
-        &self,
-        node: NodeId,
-    ) -> Option<crate::bound_dispatch::CallbackBinding> {
-        self.bindings.binding_for(node)
-    }
     #[cfg(feature = "model")]
     /// The window a palette is asked for from, when the root lays several out (the shell's strip of
     /// app tiles): the tile under the pointer that pressed, else the one holding keyboard focus.
@@ -92,6 +87,7 @@ impl AppTree<'_> {
     }
 
     /// Whether `node` is History's: its chrome, or an embedded History surface's.
+    #[cfg(feature = "model")]
     pub(crate) fn history_owns(&self, node: NodeId) -> bool {
         crate::history_mode::embedded::owns_node(self.root, node, self.taffy)
             || self
@@ -108,8 +104,15 @@ impl AppTree<'_> {
     }
 
     /// What embedded History surfaces allow of the focus order.
-    pub(crate) fn focus_restrictions(&self) -> crate::history_mode::embedded::FocusRestrictions {
-        crate::history_mode::embedded::FocusRestrictions::collect(self.root, self.taffy)
+    #[cfg(feature = "model")]
+    pub(crate) fn focus_restrictions(&self) -> crate::focus_navigation::FocusRestrictions {
+        crate::focus_navigation::FocusRestrictions::collect(self.root, self.taffy)
+    }
+
+    /// Without the model no History surface is embedded: focus is restricted nowhere.
+    #[cfg(not(feature = "model"))]
+    pub(crate) fn focus_restrictions(&self) -> crate::focus_navigation::FocusRestrictions {
+        crate::focus_navigation::FocusRestrictions::default()
     }
 
     /// The keyboard focus order of the app laid out at `app_node`, and whether a focus trap holds it:
@@ -119,16 +122,19 @@ impl AppTree<'_> {
     pub(crate) fn focus_order_under(
         &self,
         app_node: NodeId,
-        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+        restrictions: &crate::focus_navigation::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
         // Focus travels the laid out tree: a widget can lay its children out
         // under nodes of its own (a shell's columns), and a component or
         // History lays out nodes no widget lists as a child, so a walk of the
         // widgets beside the layout pairs controls with the wrong nodes.
+        #[cfg(feature = "model")]
         let root = self
             .history
             .and_then(|history| history.review_layout_node())
             .unwrap_or(app_node);
+        #[cfg(not(feature = "model"))]
+        let root = app_node;
         self.layout_map_focus_order(root, restrictions)
     }
 
@@ -137,7 +143,7 @@ impl AppTree<'_> {
     pub(crate) fn layout_map_focus_order(
         &self,
         root: NodeId,
-        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+        restrictions: &crate::focus_navigation::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
         // One sweep asks every mapped node, entering each component's scope
         // once rather than once a node.
@@ -149,7 +155,7 @@ impl AppTree<'_> {
             root,
             self.taffy,
             restrictions,
-            self.history,
+            self.focus_surface(),
             |node| {
                 // SAFETY: the host owns this stable tree; no target reference
                 // escapes.
@@ -161,6 +167,23 @@ impl AppTree<'_> {
                 .ok()
             },
         )
+    }
+
+    /// The surface laid over the app that focus order reads: its registered History.
+    #[cfg(feature = "model")]
+    fn focus_surface(&self) -> Option<&dyn crate::focus_navigation::FocusSurface> {
+        self.history
+            .map(|history| history as &dyn crate::focus_navigation::FocusSurface)
+    }
+
+    /// Without the model nothing is laid over the app.
+    #[cfg(not(feature = "model"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the model build reads the app's History here"
+    )]
+    const fn focus_surface(&self) -> Option<&dyn crate::focus_navigation::FocusSurface> {
+        None
     }
 
     /// The control of `order` that takes focus when content resets it: the one the content marks as its
@@ -177,6 +200,7 @@ impl AppTree<'_> {
     }
 
     /// Whether the app's registered History is still valid over its root.
+    #[cfg(feature = "model")]
     pub(crate) fn validate_history_registration(
         &self,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
@@ -371,6 +395,7 @@ pub(crate) struct HostLayout<'a> {
 /// What moving keyboard focus between the app and History touches.
 pub(crate) struct HostFocus<'a> {
     pub(crate) root: &'a mut dyn Widget,
+    #[cfg(feature = "model")]
     pub(crate) history: Option<&'a mut crate::history_mode::host::HistoryChrome>,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
@@ -386,6 +411,7 @@ pub(crate) struct HostRemount<'a> {
     pub(crate) taffy: &'a mut TaffyTree<()>,
     pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
     pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
+    #[cfg(feature = "model")]
     pub(crate) close_reports: &'a mut Vec<crate::application::ComponentCloseReport>,
     /// How the person reaches the window: what the remount mounts hears it.
     pub(crate) interaction: crate::interaction::InteractionEnvironment,
@@ -516,14 +542,11 @@ impl crate::app::App {
     pub(crate) fn remount_once(&mut self) -> bool {
         // History lays out its own chrome around the app; while it is live,
         // the app's widgets change only what is theirs.
-        if !self.begin_remount()
-            || self.tree().history.is_some_and(|history| {
-                !history.live_interactive() || history.returning_live() || history.review_is_open()
-            })
-        {
+        if !self.begin_remount() || self.history_holds_layout() {
             return false;
         }
         let parts = self.remount_parts();
+        #[cfg(feature = "model")]
         parts
             .close_reports
             .extend(crate::component_lifecycle::take_component_close_reports(
@@ -577,7 +600,26 @@ impl crate::app::App {
         !self.composition_dirty()
     }
 
+    /// Whether History, live over the app, keeps the app's widgets to changing only what is theirs.
+    #[cfg(feature = "model")]
+    fn history_holds_layout(&self) -> bool {
+        self.tree().history.is_some_and(|history| {
+            !history.live_interactive() || history.returning_live() || history.review_is_open()
+        })
+    }
+
+    /// Without the model no History lays out chrome around the app.
+    #[cfg(not(feature = "model"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the model build reads the app's History here"
+    )]
+    const fn history_holds_layout(&self) -> bool {
+        false
+    }
+
     /// Before focus moves to `target`: an embedded History surface lets go of it.
+    #[cfg(feature = "model")]
     pub(crate) fn suspend_history_focus(&mut self, target: Option<NodeId>) {
         let parts = self.focus_parts();
         // SAFETY: the host exclusively owns this admitted tree and its maps.
@@ -694,6 +736,7 @@ impl crate::app::App {
 
     /// Keep why an edit the running effect `on_behalf_of` submitted was refused: the effect then fails
     /// rather than claim what it did not do.
+    #[cfg(feature = "model")]
     pub(crate) fn note_continuation(
         &mut self,
         on_behalf_of: Option<tilo_actions::InvocationId>,
@@ -863,6 +906,7 @@ impl crate::app::App {
     /// Run a control History held back while it was open, refused when its meaning or confirmation
     /// policy changed since. One whose action waits for the person's yes goes through the device's
     /// dispatch, as their press does ([`Self::ask_through_device`]).
+    #[cfg(feature = "model")]
     pub(crate) fn dispatch_prepared_history_control(
         &mut self,
         prepared: PreparedContinuation,
@@ -901,6 +945,7 @@ impl crate::app::App {
 
     /// Run a control the registered History kept back and record how it ended there: done or
     /// refused.
+    #[cfg(feature = "model")]
     pub(crate) fn settle_history_control(
         &mut self,
         prepared: PreparedContinuation,
@@ -923,6 +968,7 @@ impl crate::app::App {
 
     /// Carry out what the registered History and the History surfaces embedded in the app asked of
     /// their kept-back controls: continue or cancel each, while History still has input.
+    #[cfg(feature = "model")]
     pub(crate) fn service_pending_history_commands(&mut self) -> bool {
         let answered = self.service_history_own_controls();
         let commands = self
@@ -957,6 +1003,7 @@ impl crate::app::App {
 
     /// Serve what History surfaces embedded in the app asked of their kept-back controls: continue
     /// or cancel each.
+    #[cfg(feature = "model")]
     pub(crate) fn service_embedded_history_commands(&mut self, embedded: Vec<PendingCommand>) {
         use crate::history_mode::embedded as surfaces;
         for pending in embedded {

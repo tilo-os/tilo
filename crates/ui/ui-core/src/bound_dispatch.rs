@@ -5251,17 +5251,16 @@ pub(crate) fn merge_remote_owned_document(
     Ok(merged)
 }
 
-#[cfg(feature = "model")]
 /// Deliver a semantic (accessibility) action to one admitted node, refused
 /// while History has its live content inert.
 /// # Safety
 /// Same stable, exclusive tree contract as `invoke_bound_node`.
 pub(crate) unsafe fn invoke_bound_semantic_node<R>(
     bindings: &BoundNodeMap,
-    nodes: &HashMap<NodeId, *mut dyn Widget>,
-    node: NodeId,
+    nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    node: taffy::NodeId,
     outer: &mut crate::state::State,
-    callback: impl FnOnce(&mut dyn Widget, &mut AutoCommit, &ObjId) -> R,
+    callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
 ) -> Result<R, String> {
     let admitted = bindings
         .admitted(nodes, node)

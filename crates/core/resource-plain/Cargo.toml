@@ -7,7 +7,7 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "Resource vocabulary that needs no store or CRDT: text splices, search scopes, item kinds, emoji names, catalogue keys, history entry ids, profiling scopes."
+description = "Resource vocabulary that needs no store or CRDT: text splices, search scopes, item kinds, emoji names, catalogue keys, history entry ids, profiling scopes, search index entries."
 
 [lib]
 name = "tilo_resource_plain"
@@ -16,6 +16,7 @@ path = "src/lib.rs"
 # A leaf: the toolkit reads these without Tilo's model, and `tilo-resource` publishes them.
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 # The history entry id spells itself as the activity wire does.
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

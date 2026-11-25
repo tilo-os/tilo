@@ -280,7 +280,7 @@ pub(crate) fn layout_map_order(
     root: NodeId,
     taffy: &TaffyTree<()>,
     restrictions: &FocusRestrictions,
-    history: Option<&impl FocusSurface>,
+    history: Option<&dyn FocusSurface>,
     inspect: impl Fn(NodeId) -> Option<(bool, bool, bool)>,
 ) -> (Vec<NodeId>, bool) {
     use tilo_sort::CompactSort as _;

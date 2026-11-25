@@ -19511,6 +19511,7 @@ name = "tilo-resource-plain"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "tilo-actions",
  "tilo-clock",
  "tilo-test-env",

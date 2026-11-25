@@ -2,38 +2,52 @@
 //! from what changed in its resource tree.
 
 use std::cell::OnceCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(feature = "model")]
+use std::collections::HashSet;
+#[cfg(feature = "model")]
 use std::rc::{Rc, Weak};
 
 use tilo_actions::{ActionInput, ActionSpec, ResourceSpec};
 
+#[cfg(feature = "model")]
+use super::TreeDelta;
 use super::{
     AccessState, PromptedMap, Role, SemanticAction, SemanticActionKind, SemanticId, SemanticNode,
-    TreeDelta,
 };
+#[cfg(feature = "model")]
 use crate::bound_dispatch::{
     BoundActionAddress, BoundActionTarget, BoundResourceSnapshot, CallbackBinding,
 };
+#[cfg(feature = "model")]
 use crate::published::{Change, SharedChildren, SharedResource};
 
+#[cfg(feature = "model")]
 pub(super) type BoundActions = HashMap<(SemanticId, String), BoundActionTarget>;
 
+#[cfg(feature = "model")]
 enum Source {
     Shared(Rc<[SharedResource]>),
     Plain(Weak<Vec<ResourceSpec>>),
 }
 
 /// The semantic nodes of one bound component's published resources, and the tree they were built from.
+///
+/// Only the model's bound components publish resources; without it a window has none.
 pub(super) struct ComponentNodes {
+    #[cfg(feature = "model")]
     source: Source,
+    #[cfg(feature = "model")]
     binding: CallbackBinding,
     /// `ri:<instance>:<lifetime>:`, what every node id here starts with.
+    #[cfg(feature = "model")]
     prefix: String,
     roots: Vec<SemanticId>,
     pub(super) nodes: HashMap<SemanticId, SemanticNode>,
     /// Reading order (each node after its children), derived on first use after a change.
     order: OnceCell<Vec<SemanticId>>,
     pub(super) prompted: PromptedMap,
+    #[cfg(feature = "model")]
     pub(super) bound_actions: BoundActions,
     pub(super) duplicate_ids: Vec<SemanticId>,
     /// The nodes built when these were built, or last updated.
@@ -41,6 +55,7 @@ pub(super) struct ComponentNodes {
     built: usize,
 }
 
+#[cfg(feature = "model")]
 impl ComponentNodes {
     /// The nodes of `component`'s resources, built afresh.
     pub(super) fn build(component: &BoundResourceSnapshot) -> Self {
@@ -96,7 +111,9 @@ impl ComponentNodes {
                 _ => false,
             }
     }
+}
 
+impl ComponentNodes {
     pub(super) fn roots(&self) -> &[SemanticId] {
         &self.roots
     }
@@ -129,7 +146,10 @@ impl ComponentNodes {
             order
         })
     }
+}
 
+#[cfg(feature = "model")]
+impl ComponentNodes {
     /// Move these nodes to `component`'s shared forest, visiting only what differs from the forest they
     /// mirror, and answer what changed.
     pub(super) fn update(&mut self, component: &BoundResourceSnapshot) -> Option<TreeDelta> {
@@ -288,7 +308,7 @@ impl ComponentNodes {
         #[cfg(debug_assertions)]
         if kept {
             let mut prompted = HashMap::new();
-            let actions = resource_actions(id, head, None, &mut prompted, None);
+            let actions = resource_actions(id, head, &mut prompted);
             let fresh =
                 resource_semantic_node(id.clone(), head, actions, node.children.clone(), false);
             debug_assert!(
@@ -348,13 +368,8 @@ impl ComponentNodes {
         {
             self.built = self.built.saturating_add(1);
         }
-        let actions = resource_actions(
-            &id,
-            head,
-            Some(&self.binding),
-            &mut self.prompted,
-            Some(&mut self.bound_actions),
-        );
+        let actions = resource_actions(&id, head, &mut self.prompted);
+        bind_actions(&id, head, &self.binding, &mut self.bound_actions);
         resource_semantic_node(id, head, actions, children, false)
     }
 
@@ -392,13 +407,8 @@ impl ComponentNodes {
         {
             self.built = self.built.saturating_add(1);
         }
-        let actions = resource_actions(
-            &id,
-            resource.head(),
-            Some(&self.binding),
-            &mut self.prompted,
-            Some(&mut self.bound_actions),
-        );
+        let actions = resource_actions(&id, resource.head(), &mut self.prompted);
+        bind_actions(&id, resource.head(), &self.binding, &mut self.bound_actions);
         let children = resource
             .children()
             .iter()
@@ -414,13 +424,8 @@ impl ComponentNodes {
         {
             self.built = self.built.saturating_add(1);
         }
-        let actions = resource_actions(
-            &id,
-            resource,
-            Some(&self.binding),
-            &mut self.prompted,
-            Some(&mut self.bound_actions),
-        );
+        let actions = resource_actions(&id, resource, &mut self.prompted);
+        bind_actions(&id, resource, &self.binding, &mut self.bound_actions);
         let children = resource
             .children
             .iter()
@@ -431,6 +436,7 @@ impl ComponentNodes {
     }
 }
 
+#[cfg(feature = "model")]
 fn visit_subtree(node: &SharedResource, visit: &mut dyn FnMut(&SharedResource)) {
     for child in node.children() {
         visit_subtree(child, visit);
@@ -438,11 +444,13 @@ fn visit_subtree(node: &SharedResource, visit: &mut dyn FnMut(&SharedResource)) 
     visit(node);
 }
 
+#[cfg(feature = "model")]
 fn id_prefix(binding: &CallbackBinding) -> String {
     format!("ri:{}:{}:", binding.instance_id, binding.lifetime_id)
 }
 
 /// The node id of resource `id` published by `binding`'s component.
+#[cfg(feature = "model")]
 pub(super) fn bound_resource_id(binding: &CallbackBinding, id: &str) -> SemanticId {
     SemanticId(format!("{}{id}", id_prefix(binding)))
 }
@@ -455,33 +463,40 @@ pub(crate) fn component_resource(id: &SemanticId) -> Option<&str> {
     parts.next()
 }
 
-/// The affordances of `resource`'s own actions on node `id`, recording each prompted builder and, for a
-/// component's resource, each bound target.
+/// The affordances of `resource`'s own actions on node `id`, recording each prompted builder.
 pub(super) fn resource_actions(
     id: &SemanticId,
     resource: &ResourceSpec,
-    binding: Option<&CallbackBinding>,
     prompted: &mut PromptedMap,
-    mut bound_actions: Option<&mut BoundActions>,
 ) -> Vec<SemanticAction> {
-    let mut actions = Vec::with_capacity(resource.actions.len());
+    resource
+        .actions
+        .iter()
+        .map(|spec| resource_action(id, resource.id.as_str(), spec, prompted))
+        .collect()
+}
+
+/// Record where each of `resource`'s actions on node `id` goes: `binding`'s component.
+#[cfg(feature = "model")]
+fn bind_actions(
+    id: &SemanticId,
+    resource: &ResourceSpec,
+    binding: &CallbackBinding,
+    bound_actions: &mut BoundActions,
+) {
     for spec in &resource.actions {
-        actions.push(resource_action(id, resource.id.as_str(), spec, prompted));
-        if let (Some(binding), Some(bound_actions)) = (binding, bound_actions.as_deref_mut()) {
-            bound_actions.insert(
-                (id.clone(), spec.id.clone()),
-                BoundActionTarget {
-                    input: crate::bound_dispatch::Input::Discrete,
-                    binding: binding.clone(),
-                    address: BoundActionAddress {
-                        instance_id: binding.instance_id,
-                        address: tilo_actions::ActionAddress::new(resource.id.as_str(), &spec.id),
-                    },
+        bound_actions.insert(
+            (id.clone(), spec.id.clone()),
+            BoundActionTarget {
+                input: crate::bound_dispatch::Input::Discrete,
+                binding: binding.clone(),
+                address: BoundActionAddress {
+                    instance_id: binding.instance_id,
+                    address: tilo_actions::ActionAddress::new(resource.id.as_str(), &spec.id),
                 },
-            );
-        }
+            },
+        );
     }
-    actions
 }
 
 /// The node of `resource` with `actions` and `children`.

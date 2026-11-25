@@ -10,6 +10,7 @@ mod item;
 mod label;
 pub mod profiling;
 mod scope;
+pub mod search_index;
 mod text;
 
 pub use emoji::{MAX_CUSTOM_NAME, custom_emoji_name, valid_custom_emoji_name};

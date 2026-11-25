@@ -147,6 +147,7 @@ pub(crate) mod application_test_support;
 pub mod app;
 /// The app surface an app's changes are decided against, kept with the collab client that names it on
 /// every signed op.
+#[cfg(feature = "model")]
 pub use collab_types::app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
@@ -161,7 +162,9 @@ pub mod chrome;
 pub mod clock;
 #[cfg(feature = "model")]
 pub mod collaboration;
+#[cfg(feature = "model")]
 pub use runtime_collab::native_media;
+#[cfg(feature = "model")]
 pub use runtime_collab::shown_actions;
 pub mod collection_transition;
 pub use tilo_ui_paint::{color, color_compat};
@@ -213,6 +216,7 @@ pub mod hosted_window;
 /// What a frame shows an inspector, a screen reader and an automated check: the widget and
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
 pub mod inspection;
+#[cfg(feature = "model")]
 pub mod owner_wake;
 /// The app's own vello pipelines, kept across launches in its cache directory.
 #[cfg(feature = "native")]

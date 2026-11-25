@@ -279,16 +279,14 @@ impl crate::app::App {
     pub(crate) fn keyboard_entry(&self, order: &[NodeId]) -> Option<NodeId> {
         // Every control of a long list is asked its entry rank: the scope of the component they
         // belong to is held for the walk, not opened and closed for each of them.
-        let mut held = crate::bound_dispatch::HeldScope::default();
+        let tree = self.tree();
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(tree.bindings, tree.node_map);
         order
             .iter()
             .copied()
             .filter_map(|node| {
-                if let Some(binding) = self.tree().binding_for(node) {
-                    let _ = held.enter(Some(&binding));
-                }
-                let rank = self
-                    .inspect_node(node, crate::widget::keyboard_entry_rank)
+                // SAFETY: the host owns this stable tree; no target reference escapes.
+                let rank = unsafe { sweep.inspect(node, crate::widget::keyboard_entry_rank) }
                     .ok()
                     .flatten()?;
                 Some((rank, node))

@@ -60,6 +60,7 @@ pub(crate) enum Leaving {
 
 /// One record a barrier confirms once the workspace answers it: the heads its route
 /// had sent when the barrier was asked for.
+#[cfg(feature = "model")]
 pub(crate) struct Confirming {
     pub store: crate::resource::ResourceStore,
     pub id: crate::resource::DocumentId,
@@ -71,6 +72,7 @@ pub(crate) struct Confirming {
 /// and a barrier on the window's connection answers once everything sent before it
 /// was taken or refused: the save indicator says Saved only for what an answered barrier covers,
 /// and a closing window goes only once one asked after its last change was answered.
+#[cfg(feature = "model")]
 #[derive(Default)]
 pub(crate) struct Barrier {
     /// The barrier on its way, and what it confirms once answered.
@@ -89,6 +91,7 @@ pub(crate) struct Barrier {
 }
 
 /// Heads by route.
+#[cfg(feature = "model")]
 pub(crate) type RouteHeads =
     std::collections::HashMap<crate::collaboration::RouteSpec, Vec<automerge::ChangeHash>>;
 
@@ -141,6 +144,7 @@ pub(crate) struct Admission {
     pub save_waiting: bool,
     pub save_result: Option<Result<(), String>>,
     pub leaving: Leaving,
+    #[cfg(feature = "model")]
     pub barrier: Barrier,
     /// This close checkpointed the window's components and asked for a barrier behind what they
     /// committed: the close goes once it is answered.
@@ -170,6 +174,7 @@ impl Default for Admission {
             save_waiting: false,
             save_result: None,
             leaving: Leaving::Staying,
+            #[cfg(feature = "model")]
             barrier: Barrier::default(),
             checkpointed: false,
             not_kept: false,
@@ -302,6 +307,7 @@ fn resource_for(session: uuid::Uuid, choices: &[Choice]) -> ResourceSpec {
     resource
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn retry_reports(
     reports: &mut [crate::application::ComponentCloseReport],
 ) -> Vec<String> {

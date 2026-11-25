@@ -6,7 +6,9 @@
 use tilo_actions::remote::{ActionCallError, ApplicationLaunch, InvokeRequest};
 use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};
 
+#[cfg(feature = "model")]
 use crate::arriving::Arrival;
+#[cfg(feature = "model")]
 use crate::remote_actions::{InvocationCall, RemoteActions};
 use crate::widget::ResourceOperationStart;
 
@@ -116,6 +118,7 @@ pub fn api_error(error: &ActionCallError) -> ApiError {
     }
 }
 
+#[cfg(feature = "model")]
 fn finished(
     call: &Arrival<InvocationUpdate, ActionCallError>,
 ) -> Option<Result<ActionOutput, ApiError>> {
@@ -134,12 +137,14 @@ fn finished(
 
 /// A [`SessionApi`] served by a [`RemoteActions`] client: the session of a host that
 /// serves its windows in process, such as a page.
+#[cfg(feature = "model")]
 pub struct ClientApi {
     client: RemoteActions,
     workspace: Option<String>,
     running: Vec<(InvocationId, InvocationCall)>,
 }
 
+#[cfg(feature = "model")]
 impl ClientApi {
     /// Requests go to `client`, addressed to `workspace` unless an action's route names
     /// its own.
@@ -173,6 +178,7 @@ impl ClientApi {
     }
 }
 
+#[cfg(feature = "model")]
 impl SessionApi for ClientApi {
     fn workspace(&self) -> Option<String> {
         self.workspace.clone()

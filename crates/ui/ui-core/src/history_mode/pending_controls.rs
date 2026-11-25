@@ -44,11 +44,7 @@ pub struct ContinuationToken {
     nonce: Uuid,
 }
 
-#[derive(Clone)]
-pub(crate) enum PendingControlOrigin {
-    Outer { root_lifetime: Uuid },
-    Component(BoundActionTarget),
-}
+pub(crate) use crate::control_domain::PendingControlOrigin;
 
 impl PendingControlOrigin {
     fn lifetime_id(&self) -> Uuid {

@@ -16,17 +16,17 @@ mod app_log;
 mod capture_clock;
 #[cfg(feature = "native")]
 use app_log::init_app_log;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 mod capture;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 use capture::{capture_directory, capture_font_check, first_frame};
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 mod window_join;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 pub(crate) use window_join::{
     Arriving, WindowBuild, dispatch_window, dispatch_window_arrived, window_gives_place,
 };
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 use window_join::{Unbuilt, construct_native, dispatch_live, live_native, native_connection};
 mod scenario;
 pub use scenario::HostSource;
@@ -58,6 +58,7 @@ macro_rules! android_main {
 pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// Explicit runner authority/presentation preparation; application metadata is never authority.
+#[cfg(feature = "model")]
 pub type ComponentHostPreparer =
     fn(
         &crate::application::ApplicationDefinition,
@@ -67,7 +68,9 @@ pub type ComponentHostPreparer =
 /// Drive a mounted capture through its normal actions/input before rendering.
 pub type ComponentCaptureScenario = fn(&mut Driver, &LaunchArgs) -> Result<(), LaunchError>;
 
+#[cfg(feature = "model")]
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
+#[cfg(feature = "model")]
 type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
 /// Parsed common launch arguments.
@@ -169,6 +172,7 @@ impl LaunchArgs {
 
 /// How the standard lifecycle launches one application definition: its component host, capture
 /// scenarios, commands and accepted arguments.
+#[cfg(feature = "model")]
 #[derive(Clone)]
 pub struct LaunchSpec {
     definition: &'static crate::application::ApplicationDefinition,
@@ -189,6 +193,7 @@ pub struct LaunchSpec {
     host_sources: &'static [HostSource],
 }
 
+#[cfg(feature = "model")]
 impl LaunchSpec {
     /// Select automatic runtime attachment for native launches. Disabling bootstrap does not revoke
     /// inherited service handles; privacy-sensitive apps must also construct a local-only application.
@@ -353,21 +358,25 @@ impl LaunchSpec {
 }
 
 pub enum LaunchError {
+    #[cfg(feature = "model")]
     Record(crate::resource::ResourceOpenError),
     Restore(crate::view::ThawError),
     DuplicateApplication(String),
     UnknownApplication(String),
+    #[cfg(feature = "model")]
     CapabilityDenied(crate::permissions::PermissionScope),
     BindingMismatch,
     MissingComponentHost,
     /// Setup failed after the record became Ready: `recovery` holds its store (and any close reports)
     /// so the caller can reopen or flush it.
+    #[cfg(feature = "model")]
     ComponentSetup {
         source: Box<LaunchError>,
         record: Box<crate::resource::DocumentCheckout>,
         recovery: LaunchRecovery,
     },
     /// A capture failed or closed dirty: `recovery` holds the close reports.
+    #[cfg(feature = "model")]
     ComponentCapture {
         source: Box<LaunchError>,
         recovery: LaunchRecovery,
@@ -400,22 +409,33 @@ impl fmt::Display for LaunchError {
             // The person's records live in the workspace alone: a window opens on none in their
             // place, which would lose what they type into it.
             // What the connection said comes last, for whoever reads why it did not answer.
+            #[cfg(feature = "model")]
             Self::Record(crate::resource::ResourceOpenError::Unreachable(cause))
             | Self::Restore(crate::view::ThawError::Unreachable(cause)) => write!(
                 f,
                 "Your workspace didn't answer, so this window can't open what it shows. Nothing \
                  was lost: open it again once Tilo is running ({cause})",
             ),
+            #[cfg(not(feature = "model"))]
+            Self::Restore(crate::view::ThawError::Unreachable(cause)) => write!(
+                f,
+                "Your workspace didn't answer, so this window can't open what it shows. Nothing \
+                 was lost: open it again once Tilo is running ({cause})",
+            ),
+            #[cfg(feature = "model")]
             Self::Record(error) => write!(f, "record open failed: {error}"),
             Self::Restore(error) => write!(f, "view restore failed: {error}"),
             Self::DuplicateApplication(id) => write!(f, "application {id:?} is already registered"),
             Self::UnknownApplication(id) => write!(f, "application {id:?} is not available"),
+            #[cfg(feature = "model")]
             Self::CapabilityDenied(scope) => write!(f, "required capability denied: {scope:?}"),
             Self::MissingComponentHost => {
                 f.write_str("application definition requires an explicit component host")
             }
             Self::BindingMismatch => f.write_str("application binding does not match"),
+            #[cfg(feature = "model")]
             Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
+            #[cfg(feature = "model")]
             Self::ComponentCapture { source, .. } => write!(f, "{source}"),
             Self::MissingValue(flag) => write!(f, "{flag} requires a value"),
             Self::Duplicate(flag) => write!(f, "{flag} was supplied more than once"),
@@ -458,11 +478,14 @@ impl fmt::Display for LaunchError {
 impl fmt::Debug for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "model")]
             Self::Record(error) => f.debug_tuple("Record").field(error).finish(),
             Self::Restore(error) => f.debug_tuple("Restore").field(error).finish(),
+            #[cfg(feature = "model")]
             Self::CapabilityDenied(scope) => {
                 f.debug_tuple("CapabilityDenied").field(scope).finish()
             }
+            #[cfg(feature = "model")]
             Self::ComponentSetup {
                 source,
                 record,
@@ -473,6 +496,7 @@ impl fmt::Debug for LaunchError {
                 .field("record", record)
                 .field("close_report_count", &recovery.report_count())
                 .finish_non_exhaustive(),
+            #[cfg(feature = "model")]
             Self::ComponentCapture { source, recovery } => f
                 .debug_struct("ComponentCapture")
                 .field("source", source)
@@ -511,8 +535,10 @@ impl fmt::Debug for LaunchError {
 impl std::error::Error for LaunchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "model")]
             Self::Record(error) => Some(error),
             Self::Restore(error) => Some(error),
+            #[cfg(feature = "model")]
             Self::ComponentSetup { source, .. } | Self::ComponentCapture { source, .. } => {
                 Some(source.as_ref())
             }
@@ -522,19 +548,28 @@ impl std::error::Error for LaunchError {
 }
 
 impl LaunchError {
-    #[cfg(feature = "native")]
+    /// A record, grant or component failure: one only Tilo's model raises.
+    #[cfg(all(feature = "native", feature = "model"))]
+    const fn is_model_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Record(_)
+                | Self::ComponentSetup { .. }
+                | Self::ComponentCapture { .. }
+                | Self::CapabilityDenied(_)
+        )
+    }
+
+    #[cfg(all(feature = "native", feature = "model"))]
     fn exit_code(&self) -> i32 {
         if matches!(
             self,
             Self::Operation(_)
-                | Self::Record(_)
                 | Self::Restore(_)
-                | Self::ComponentSetup { .. }
-                | Self::ComponentCapture { .. }
-                | Self::CapabilityDenied(_)
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
-        ) {
+        ) || self.is_model_failure()
+        {
             1
         } else {
             2
@@ -555,12 +590,14 @@ const _: () = {
 /// torn down on the way (retry their view or record durability). A recovery dropped on another thread
 /// is leaked rather than dropped there — its stores are never touched off their thread — so move the
 /// error back to the launching thread (or consume the recovery there) when it must be released.
+#[cfg(feature = "model")]
 pub struct LaunchRecovery {
     owner: std::thread::ThreadId,
     report_count: usize,
     parts: std::mem::ManuallyDrop<Box<RecoveryParts>>,
 }
 
+#[cfg(feature = "model")]
 struct RecoveryParts {
     records: Option<crate::resource::ResourceStore>,
     reports: Vec<crate::application::ComponentCloseReport>,
@@ -574,10 +611,13 @@ struct RecoveryParts {
     clippy::non_send_fields_in_send_ty,
     reason = "the single-threaded owners are reachable and droppable only on `owner`"
 )]
+#[cfg(feature = "model")]
 unsafe impl Send for LaunchRecovery {}
 // SAFETY: as above; `&LaunchRecovery` exposes the owners only on `owner`.
+#[cfg(feature = "model")]
 unsafe impl Sync for LaunchRecovery {}
 
+#[cfg(feature = "model")]
 impl LaunchRecovery {
     /// Recovery owners for the current thread.
     #[must_use]
@@ -665,6 +705,7 @@ impl LaunchRecovery {
     }
 }
 
+#[cfg(feature = "model")]
 impl Drop for LaunchRecovery {
     fn drop(&mut self) {
         if self.here() {
@@ -679,6 +720,7 @@ impl Drop for LaunchRecovery {
     }
 }
 
+#[cfg(feature = "model")]
 impl fmt::Debug for LaunchRecovery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LaunchRecovery")
@@ -697,7 +739,7 @@ impl fmt::Debug for LaunchRecovery {
               is the documented contract, not an incidental exit deep in \
               library code"
 )]
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 pub fn run_or_exit(spec: &LaunchSpec) {
     if let Err(error) = run(spec) {
         eprintln!("error: {error}");
@@ -706,7 +748,7 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 }
 
 /// Run the standard app lifecycle using `std::env::args`.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
@@ -718,12 +760,12 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     run_with_args(spec, &args)
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
     run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn run_with_args_with_attachment(
     spec: &LaunchSpec,
     raw_args: &[String],
@@ -766,7 +808,7 @@ fn run_with_args_with_attachment(
 /// `--shots-dir`: each declared scenario (or the plain capture, for an app that declares none) captured
 /// on its own, exactly as `--shots --scenario` captures it, into `NN-name.png` so a gallery keeps
 /// declaration order.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn capture_every_scenario(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -793,7 +835,7 @@ fn capture_every_scenario(
 
 /// Whether these arguments run the app in a live native window, rather than headless, as captures or as
 /// an audit.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn opens_native_window(args: &LaunchArgs) -> bool {
     args.headless.is_none()
         && args.shots.is_none()
@@ -809,7 +851,7 @@ fn opens_native_window(args: &LaunchArgs) -> bool {
               reports success by returning Ok — there is no caller to \
               hand a status back to"
 )]
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn run_parsed(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -928,7 +970,7 @@ fn run_parsed(
 /// Start building the process's font database in the background (`text_render::prepare_font_database`):
 /// only the database, so it neither shapes text nor touches the GPU the renderer preparation is
 /// opening.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn prepare_font_database_beside() {
     let _ = crate::background::Background::current().spawn("font-database-prepare", || {
         tilo_startup_metrics::span(
@@ -938,7 +980,7 @@ fn prepare_font_database_beside() {
     });
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn close_component_capture(driver: &mut Driver) -> Result<(), LaunchError> {
     driver.close_components();
     if driver.component_close_reports().iter().any(|report| {
@@ -956,7 +998,7 @@ fn close_component_capture(driver: &mut Driver) -> Result<(), LaunchError> {
     Ok(())
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn finish_component_audit(driver: &mut Driver, app_id: &str) -> Result<(), LaunchError> {
     driver.prepare_component_output();
     let audit = driver.native_app_audit();
@@ -975,7 +1017,7 @@ fn finish_component_audit(driver: &mut Driver, app_id: &str) -> Result<(), Launc
     Ok(())
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 pub(crate) enum DefinitionDispatch {
     Native(Box<App>),
     Headless(i32),
@@ -983,7 +1025,7 @@ pub(crate) enum DefinitionDispatch {
     Audit(Box<Driver>),
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn dispatch_definition(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1006,7 +1048,7 @@ fn dispatch_definition_with_native(
     dispatch_definition_with_manager(spec, args, native, || native_launch_manager(spec, args))
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn dispatch_definition_with_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1021,7 +1063,7 @@ fn dispatch_definition_with_manager(
     dispatch_definition_with(spec, args, native, scope, manager).map_err(Unbuilt::into_error)
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn dispatch_definition_with(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1147,7 +1189,7 @@ fn dispatch_definition_with(
 
 /// `--history` and `--search`: open History or this window's search before the capture settles, so the
 /// shot shows it as a person sees it.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn show_history_for_capture(driver: &mut Driver, args: &LaunchArgs) -> Result<(), LaunchError> {
     if args.history {
         driver
@@ -1164,7 +1206,7 @@ fn show_history_for_capture(driver: &mut Driver, args: &LaunchArgs) -> Result<()
     Ok(())
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn selected_local_construction()
 -> Result<crate::collaboration::native_initial::NativeConstruction, LaunchError> {
     crate::collaboration::native_initial::NativeConstruction::enter(
@@ -1175,14 +1217,14 @@ fn selected_local_construction()
 
 /// The actions socket the session handed this process, when it is a surface app's: `None` when the
 /// number in [`crate::surface_services::ACTIONS_FD_ENV`] names no socket.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
     let number = std::env::var(crate::surface_services::ACTIONS_FD_ENV).ok()?;
     let number: i32 = number.trim().parse().ok()?;
     crate::surface_peer::SurfacePeer::from_descriptor(number)
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1204,7 +1246,7 @@ fn native_launch_manager(
     .map_err(LaunchError::from)
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 impl From<crate::collaboration::NativeLaunchError> for LaunchError {
     fn from(error: crate::collaboration::NativeLaunchError) -> Self {
         match error {
@@ -1213,6 +1255,7 @@ impl From<crate::collaboration::NativeLaunchError> for LaunchError {
     }
 }
 
+#[cfg(feature = "model")]
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
     if args.headless.is_some() && !spec.headless_enabled {
         return Err(LaunchError::HeadlessUnsupported);
@@ -1672,7 +1715,7 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 /// The store a launch fixture's process writes through: a test that launches twice on one
 /// `--fixture-root` meets the same records and saved views, and a test that makes the workspace
 /// refuse a view's write makes the close that fails to save one.
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 pub(crate) mod fixture_workspace {
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -1825,7 +1868,7 @@ pub(crate) mod fixture_workspace {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod tests {
     #[cfg(all(unix, feature = "broker-transport"))]
     include!("launch/native_construction_owner_tests.rs");
@@ -2601,7 +2644,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod prepared_launch_tests {
     use super::*;
     use crate::application::{

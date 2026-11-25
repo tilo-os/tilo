@@ -38,6 +38,13 @@ mod pointed;
 #[path = "a11y_tree/walk.rs"]
 pub(crate) mod walk;
 use component_nodes::ComponentNodes;
+
+/// What a refresh builds a component's nodes from: a bound component's published resources. Only the
+/// model has bound components; without it there is none to pass.
+#[cfg(feature = "model")]
+type ComponentSnapshot = crate::bound_dispatch::BoundResourceSnapshot;
+#[cfg(not(feature = "model"))]
+type ComponentSnapshot = std::convert::Infallible;
 pub(crate) use component_nodes::component_resource;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
@@ -385,7 +392,6 @@ pub struct SemanticTree {
     /// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted) actions, keyed by `(node id,
     /// action name)`.
     prompted: PromptedMap,
-    bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     duplicate_ids: Vec<SemanticId>,
     /// Each bound component's resource nodes, in reading order after `order`.
     components: Vec<ComponentNodes>,
@@ -435,7 +441,6 @@ impl SemanticTree {
             order: ReadingOrder::from_ids(vec![root.clone()]),
             root,
             prompted: HashMap::new(),
-            bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
             components: Vec::new(),
             retained: RetainedMap::default(),
@@ -509,6 +514,7 @@ impl SemanticTree {
         self.refresh_impl::<true>(root, node_map, Some(admitted), focused, &[], &[], true)
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn refresh_components(
         &mut self,
         root: &dyn Widget,
@@ -516,7 +522,7 @@ impl SemanticTree {
         admitted: &AdmittedNodeNames,
         focused: Option<TaffyNodeId>,
         resources: &[ResourceSpec],
-        components: &[crate::bound_dispatch::BoundResourceSnapshot],
+        components: &[ComponentSnapshot],
     ) -> TreeDelta {
         self.refresh_impl::<true>(
             root,
@@ -528,33 +534,26 @@ impl SemanticTree {
             false,
         )
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "model"))]
     pub(crate) fn bound_actions_for_test(
         &self,
     ) -> Vec<(SemanticId, crate::bound_dispatch::BoundActionTarget)> {
-        self.bound_actions
+        self.components
             .iter()
-            .chain(
-                self.components
-                    .iter()
-                    .flat_map(|component| &component.bound_actions),
-            )
+            .flat_map(|component| &component.bound_actions)
             .map(|((id, _), target)| (id.clone(), target.clone()))
             .collect()
     }
+    #[cfg(feature = "model")]
     pub(crate) fn bound_target(
         &self,
         id: &SemanticId,
         action: &str,
     ) -> Option<crate::bound_dispatch::BoundActionTarget> {
         let key = (id.clone(), action.to_owned());
-        self.bound_actions
-            .get(&key)
-            .or_else(|| {
-                self.components
-                    .iter()
-                    .find_map(|component| component.bound_actions.get(&key))
-            })
+        self.components
+            .iter()
+            .find_map(|component| component.bound_actions.get(&key))
             .cloned()
     }
     fn refresh_impl<const BOUND: bool>(
@@ -564,7 +563,7 @@ impl SemanticTree {
         admitted: Option<&AdmittedNodeNames>,
         focused: Option<TaffyNodeId>,
         resources: &[ResourceSpec],
-        components: &[crate::bound_dispatch::BoundResourceSnapshot],
+        components: &[ComponentSnapshot],
         actions_only: bool,
     ) -> TreeDelta {
         let ptr_to_taffy = WidgetNodeMap::new::<BOUND>(root, node_map, admitted);
@@ -609,15 +608,21 @@ impl SemanticTree {
             );
         }
 
+        #[cfg_attr(not(feature = "model"), allow(unused_mut))]
         let mut previous = std::mem::take(&mut self.components)
             .into_iter()
             .map(Some)
             .collect::<Vec<_>>();
+        #[cfg_attr(not(feature = "model"), allow(unused_mut))]
         let mut next_components = Vec::with_capacity(components.len());
+        #[cfg_attr(not(feature = "model"), allow(unused_mut))]
         let mut reused = Vec::with_capacity(components.len());
+        #[cfg_attr(not(feature = "model"), allow(unused_mut))]
         let mut updates = TreeDelta::default();
         #[cfg(any(test, feature = "test-support"))]
+        #[cfg_attr(not(feature = "model"), allow(unused_mut))]
         let mut component_built = 0_usize;
+        #[cfg(feature = "model")]
         for component in components {
             let kept = previous
                 .iter_mut()
@@ -738,7 +743,6 @@ impl SemanticTree {
         self.order = builder.order;
         self.root = root_id;
         self.prompted = builder.prompted;
-        self.bound_actions = builder.bound_actions;
         self.duplicate_ids = duplicate_ids;
         self.components = next_components;
         delta
@@ -1195,7 +1199,6 @@ struct Build<'a, const BOUND: bool> {
     nodes: NodeMap,
     order: ReadingOrder,
     prompted: PromptedMap,
-    bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     ptr_to_taffy: &'a WidgetNodeMap<'a>,
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
@@ -1310,7 +1313,6 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             nodes: NodeMap::default(),
             order: ReadingOrder::default(),
             prompted: HashMap::new(),
-            bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
             actions_only,
             ambiguous_projection: false,
@@ -1416,7 +1418,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
     }
     fn visit_resource(&mut self, res: &ResourceSpec) -> SemanticId {
         let id = SemanticId::resource(res.id.as_str());
-        let actions = component_nodes::resource_actions(&id, res, None, &mut self.prompted, None);
+        let actions = component_nodes::resource_actions(&id, res, &mut self.prompted);
         let mut children: Vec<SemanticId> = Vec::new();
         for child in &res.children {
             children.push(self.visit_resource(child));

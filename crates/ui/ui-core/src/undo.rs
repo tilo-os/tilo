@@ -28,6 +28,7 @@ pub fn shortcut(
 /// boundary. `root` and the `node_map` pointers must point at widgets that are alive for
 /// the call — the invariant every `node_map` sweep in [`App`](crate::app::App) already relies
 /// on.
+#[cfg(feature = "model")]
 pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
@@ -58,6 +59,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     true
 }
 
+#[cfg(feature = "model")]
 pub(crate) unsafe fn record_dispatched_action_bound(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
@@ -347,6 +349,7 @@ pub fn set_state(widget: &mut (impl crate::widget::Widget + ?Sized), state: &str
     }
 }
 
+#[cfg(feature = "model")]
 fn earliest_bracket(
     state: &mut crate::state::State,
     mut brackets: Vec<Vec<automerge::ChangeHash>>,
@@ -718,6 +721,7 @@ mod tests {
 /// What `entry`'s step did, as its action record says it: the step an undo or redo moved
 /// is named by itself, not by the change that moved it
 /// ([`UndoEntry::step`](crate::state::UndoEntry::step)).
+#[cfg(feature = "model")]
 pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
     entry
         .step
@@ -726,6 +730,7 @@ pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
 }
 
 /// What `state`'s history can do for `author` right now, ready to hand to a widget.
+#[cfg(feature = "model")]
 pub fn state_status(
     state: &crate::state::State,
     author: Option<&crate::permissions::MemberId>,
@@ -735,6 +740,7 @@ pub fn state_status(
 
 /// The undo status of `history` for `author`, read without finalizing a displayed owner's
 /// live edit.
+#[cfg(feature = "model")]
 pub(crate) fn status_snapshot(
     doc: &automerge::AutoCommit,
     history: &collab_types::history::UndoLog,

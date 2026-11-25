@@ -417,6 +417,7 @@ impl Reads {
 }
 
 /// Everything a component's last pass read, as it stood once the pass ended.
+#[cfg(feature = "model")]
 pub(crate) struct Observation {
     pub(crate) revision: u64,
     /// Its record's committed heads and what is pending on top of them.
@@ -428,12 +429,14 @@ pub(crate) struct Observation {
 /// What a component's pass reads of its host besides its record: what its permissions mean now and its
 /// record's save status (what its root was last told, in an observation; what the store says, now), as a
 /// frame's quiet check reads them, and the locale.
+#[cfg(feature = "model")]
 #[derive(PartialEq)]
 pub(crate) struct PassInputs {
     pub(crate) owner: crate::bound_dispatch::OwnerInputs,
     pub(crate) locale: u64,
 }
 
+#[cfg(feature = "model")]
 impl Observation {
     /// Why a pass reading `now` would read something else than the pass this observation was taken after,
     /// or `None` when it would read the same.
@@ -455,6 +458,7 @@ impl Observation {
 }
 
 /// What a component's observation is compared with: the same readings, now.
+#[cfg(feature = "model")]
 pub(crate) struct Now {
     pub(crate) revision: Option<u64>,
     pub(crate) document: Option<(Vec<automerge::ChangeHash>, usize)>,

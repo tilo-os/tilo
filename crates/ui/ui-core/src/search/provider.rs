@@ -883,6 +883,7 @@ pub trait SearchProvider {
     /// Toolkit provenance for a component-owned proxy. Applications cannot construct a
     /// CallbackBinding; its payload remains owned by AppComponent.
     #[doc(hidden)]
+    #[cfg(feature = "model")]
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
         None
     }

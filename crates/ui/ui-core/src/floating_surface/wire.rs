@@ -78,7 +78,8 @@ impl FloatingSurfaceProtocolRole {
 }
 
 /// The kind of capture the session's studio opens choosing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureStudioProtocolMode {
     Screenshot,
@@ -436,6 +437,7 @@ pub enum FloatingSurfaceHostMessage {
         to: Vec<Recipient>,
         #[serde(default)]
         pointing: bool,
+        #[cfg(feature = "model")]
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         carried: Vec<tilo_reference::Attached>,
     },

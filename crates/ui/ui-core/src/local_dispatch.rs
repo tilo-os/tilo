@@ -66,19 +66,26 @@ impl LocalDispatch {
         encoded: EncodedAction,
         context: Option<ActionContext>,
     ) -> Result<(), tilo_actions::ActionError> {
+        #[cfg(feature = "model")]
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
+        #[cfg(feature = "model")]
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
+        #[cfg(not(feature = "model"))]
+        let before = doc.get_heads();
         let mut transport = tilo_actions::LocalTransport::new();
         let actor = doc.get_actor().to_bytes().to_vec();
         let change_kind = action.change_kind();
+        #[cfg(feature = "model")]
         let observation = if matches!(change_kind, tilo_actions::ChangeKind::External) {
             None
         } else {
             crate::local_document_action::reserve(&encoded, context.as_ref(), doc, &before)?
         };
+        #[cfg(feature = "model")]
         let captured_context = observation.as_ref().and_then(|_| context.clone());
         // Without an authenticated publication, only an execution that changes
         // the document makes this input's history unsigned.
+        #[cfg(feature = "model")]
         let unsigned = if observation.is_none()
             && !matches!(change_kind, tilo_actions::ChangeKind::External)
         {
@@ -108,18 +115,23 @@ impl LocalDispatch {
         // executor rolls back only its open transaction, so a committed edit
         // survives the refusal; inspect the document before surfacing that
         // error, or the surviving edit would leave history falsely signed.
+        #[cfg(feature = "model")]
         if let Some((edits, heads)) = unsigned
             && doc.get_heads() != heads
         {
             crate::local_document_action::note_unsigned_edit(&edits);
         }
         let dispatched = result?;
+        #[cfg(feature = "model")]
         if let Some(observation) = observation
             && matches!(dispatched, tilo_actions::Dispatched::AppliedLocal(_))
         {
             observation.finish(doc, &before, encoded.clone(), captured_context)?;
         }
+        #[cfg(not(feature = "model"))]
+        let _: tilo_actions::Dispatched = dispatched;
         let step = change_kind.is_step();
+        #[cfg(feature = "model")]
         if let Some(before) = observed_before {
             let after = doc.get_heads();
             crate::bound_dispatch::report_typed_action(doc, before, after, step);

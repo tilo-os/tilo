@@ -158,7 +158,7 @@ pub mod row;
 pub mod schema;
 pub mod schema_check;
 pub mod search_default;
-pub mod search_index;
+pub use tilo_resource_plain::search_index;
 pub mod shape;
 pub mod share;
 pub mod sort;

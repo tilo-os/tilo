@@ -1,6 +1,5 @@
 //! Emission-time ownership for registered local controls. Registration is deliberately separate from
 //! authority.
-use crate::history_mode::pending_controls::PendingControlOrigin;
 use std::{
     cell::RefCell,
     collections::{BTreeSet, VecDeque},
@@ -69,9 +68,20 @@ struct DomainState {
     order: Vec<DomainEntry>,
     coverage: ControlCoverage,
 }
+/// Who registered a control a domain holds: the window's own root, or one of its components.
+#[derive(Clone)]
+pub(crate) enum PendingControlOrigin {
+    Outer {
+        root_lifetime: uuid::Uuid,
+    },
+    #[cfg(feature = "model")]
+    Component(crate::bound_dispatch::BoundActionTarget),
+}
+
 #[derive(Clone)]
 pub(crate) enum ControlOwner {
     Outer(uuid::Uuid),
+    #[cfg(feature = "model")]
     Component(crate::bound_dispatch::CallbackBinding),
 }
 impl ControlOwner {
@@ -80,6 +90,7 @@ impl ControlOwner {
             Self::Outer(root_lifetime) => PendingControlOrigin::Outer {
                 root_lifetime: *root_lifetime,
             },
+            #[cfg(feature = "model")]
             Self::Component(binding) => {
                 PendingControlOrigin::Component(crate::bound_dispatch::BoundActionTarget {
                     input: crate::bound_dispatch::Input::Discrete,
@@ -381,10 +392,14 @@ impl ControlDomain {
                         for (_, invocation, physical_text) in
                             producer.borrow_mut().pending.drain(..)
                         {
+                            #[cfg_attr(not(feature = "model"), allow(unused_mut))]
                             let mut origin = owner.origin(&invocation);
+                            #[cfg(feature = "model")]
                             if let PendingControlOrigin::Component(target) = &mut origin {
                                 target.input = physical_text;
                             }
+                            #[cfg(not(feature = "model"))]
+                            let _ = physical_text;
                             output.push(OwnedControl {
                                 origin,
                                 invocation,
@@ -654,6 +669,7 @@ impl RawControlSlot {
 #[derive(Default)]
 pub(crate) struct RegisteredControls {
     pub(crate) outer: VecDeque<ControlInvocation>,
+    #[cfg(feature = "model")]
     pub(crate) components: Vec<(crate::bound_dispatch::BoundActionTarget, ControlInvocation)>,
 }
 impl ControlDomain {
@@ -662,6 +678,7 @@ impl ControlDomain {
         for control in self.drain_live() {
             match control.origin {
                 PendingControlOrigin::Outer { .. } => result.outer.push_back(control.invocation),
+                #[cfg(feature = "model")]
                 PendingControlOrigin::Component(target) => {
                     result.components.push((target, control.invocation))
                 }

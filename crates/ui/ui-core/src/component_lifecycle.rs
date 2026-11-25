@@ -40,6 +40,7 @@ pub trait ComponentLifecycle: Widget {
 
     /// Only the host may call this after every checkpoint succeeded, without dispatching another
     /// document mutation in between.
+    #[cfg(feature = "model")]
     fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         self.children_mut()
             .into_iter()
@@ -49,6 +50,7 @@ pub trait ComponentLifecycle: Widget {
 
     /// Capture and close nested components before removing their live trees,
     /// transferring all recovery reports to the caller.
+    #[cfg(feature = "model")]
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         self.children_mut()
             .into_iter()
@@ -58,6 +60,7 @@ pub trait ComponentLifecycle: Widget {
 
     /// Drain inert close-report ownership once; never invoke ordinary app
     /// callbacks through a closed component.
+    #[cfg(feature = "model")]
     fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         self.children_mut()
             .into_iter()
@@ -79,6 +82,7 @@ pub trait ComponentLifecycle: Widget {
     /// The component this root component asked to show in its place
     /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)), for
     /// the host that mounted it.
+    #[cfg(feature = "model")]
     fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
@@ -98,6 +102,7 @@ pub fn take_save_status_presentation(widget: &mut dyn Widget) -> bool {
 }
 
 /// The component `widget`'s own component asked to show in its place.
+#[cfg(feature = "model")]
 pub fn take_replacement(
     widget: &mut dyn Widget,
 ) -> Option<crate::application::ComponentReplacement> {
@@ -141,6 +146,7 @@ pub(crate) fn close_settling(widget: &mut dyn Widget) -> crate::close_admission:
     settling
 }
 
+#[cfg(feature = "model")]
 pub fn finish_admitted_close(
     widget: &mut dyn Widget,
 ) -> Vec<crate::application::ComponentCloseReport> {
@@ -154,6 +160,7 @@ pub fn finish_admitted_close(
         .collect()
 }
 
+#[cfg(feature = "model")]
 pub fn close_components(widget: &mut dyn Widget) -> Vec<crate::application::ComponentCloseReport> {
     if let Some(lifecycle) = capability_mut::<dyn ComponentLifecycle>(&mut *widget) {
         return lifecycle.close_components();
@@ -165,6 +172,7 @@ pub fn close_components(widget: &mut dyn Widget) -> Vec<crate::application::Comp
         .collect()
 }
 
+#[cfg(feature = "model")]
 pub fn take_component_close_reports(
     widget: &mut dyn Widget,
 ) -> Vec<crate::application::ComponentCloseReport> {

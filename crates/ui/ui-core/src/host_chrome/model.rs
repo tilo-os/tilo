@@ -82,6 +82,7 @@ pub(crate) struct RecentChange {
 }
 
 impl RecentChange {
+    #[cfg(feature = "model")]
     pub(crate) fn from_entry(entry: &crate::widget::HistoryEntry) -> Self {
         Self {
             entry: entry.id,
@@ -91,6 +92,7 @@ impl RecentChange {
         }
     }
 
+    #[cfg(feature = "model")]
     fn title(&self, now: SystemTime) -> String {
         let mut args = FluentArgs::new();
         args.set("author", self.author.clone());
@@ -101,6 +103,13 @@ impl RecentChange {
 }
 
 /// The commands a host chrome presents, in display order.
+#[cfg_attr(
+    not(feature = "model"),
+    allow(
+        unused_variables,
+        reason = "recent changes are History's, which the model keeps"
+    )
+)]
 pub(crate) fn host_commands(
     resources: &[ResourceSpec],
     recent: &[RecentChange],
@@ -160,6 +169,7 @@ pub(crate) fn host_commands(
             toggle.map(|command| command.with_shortcut(HostShortcut::History, conventions)),
         );
     }
+    #[cfg(feature = "model")]
     if let Some(history) = history
         && let Some(spec) = action(history, "open_at")
     {
