@@ -204,9 +204,6 @@ pub struct OnDevice {
     pub joined: bool,
     /// What answers the apps' actions addressed to this device, when it serves apps.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
-    /// Where this host's Browser sessions start, when the device hands it any: its
-    /// workspaces' devices that run Linux, on a host that pays for their machines.
-    pub browser_sessions: Option<crate::browser_sessions::Sessions>,
 }
 
 /// The server state the page's pre-session routes answer with.
@@ -544,7 +541,6 @@ impl Server {
             endpoint: endpoint.clone(),
             joined,
             app_serving,
-            browser_sessions: None,
         })
         .await?;
         let mut router = Router::builder(endpoint);
@@ -612,7 +608,6 @@ impl Server {
             endpoint,
             joined,
             app_serving,
-            browser_sessions,
         } = parts;
         endpoints_agree(&identity, &endpoint)?;
         if cfg.work.takes_nothing() {
@@ -769,50 +764,10 @@ impl Server {
         };
         // A host that sells Linux machines places its workspaces' Browser in them: the
         // questions a window asks reach the person through the same store every other call on
-        // this device waits in, and their answer goes back to the window that asked.
-        #[cfg(not(all(feature = "web", feature = "agents")))]
-        let _ = browser_sessions;
-        #[cfg(all(feature = "web", feature = "agents"))]
-        let browsers = match crate::hosted_browser::HostedBrowsers::serving(browser_sessions) {
-            Ok(None) => None,
-            Ok(Some(browsers)) => {
-                let browsers = Arc::new(browsers);
-                // A workspace's VM joins with a ticket this host serves for it, and this host
-                // certifies its daemon's key with its own for the VM's records alone.
-                let server = crate::hosted_browser::server_address().map_err(|error| {
-                    ServerError::Identity(format!("this host's Browser: {error}"))
-                })?;
-                browsers.serve_from(crate::hosted_browser::Authority {
-                    user_public_key: identity.user_public_key,
-                    host: identity.device_cert.clone(),
-                    host_key: identity.device_signing_key.clone(),
-                    server,
-                    workspaces: Some(hosted.clone()),
-                    environments: handler.environments.clone(),
-                    runtime: tokio::runtime::Handle::current(),
-                    hand: hosted.hand(),
-                    actions: hosted.action_service(),
-                });
-                browsers.ask_from(
-                    hosted.action_service(),
-                    endpoint.clone(),
-                    hosted.clone(),
-                    tokio::runtime::Handle::current(),
-                );
-                if let Some(store) = hosted.asked_store() {
-                    browsers.keep_asked_in(&store);
-                }
-                // The host's one dispatch answers the workspace's open of Browser and the page
-                // actions of the window it places, as it answers every other action.
-                browsers.provide_in(&hosted.providers());
-                Some(browsers)
-            }
-            Err(error) => {
-                return Err(ServerError::Identity(format!(
-                    "this host's Browser: {error}"
-                )));
-            }
-        };
+        // this device waits in, and their answer goes back to the window that asked. The
+        // device's Browser exists before this server's workspaces' service opens, which answers
+        // their devices' app frames with it; its embedder wires it here
+        // ([`Self::serve_browsers`]).
         Ok((
             Self {
                 endpoint,
@@ -830,7 +785,7 @@ impl Server {
                 web,
                 workspaces: Some(hosted),
                 #[cfg(all(feature = "web", feature = "agents"))]
-                browsers,
+                browsers: None,
                 content,
                 #[cfg(feature = "web")]
                 content_links: Arc::default(),
@@ -840,6 +795,57 @@ impl Server {
             },
             protocols,
         ))
+    }
+
+    /// Wire the Browser `browsers` this host places to the workspaces it serves, on `runtime`:
+    /// what answers a workspace's open of Browser and the page actions of the window it places,
+    /// the ticket a session's VM joins with, and where a window's questions wait for the person.
+    /// The Browser is made before the workspaces' service opens, which answers their devices'
+    /// app frames with it ([`crate::hosted_browser::app_serving`]); this is where it starts
+    /// answering.
+    ///
+    /// # Errors
+    ///
+    /// The address its sessions reach this host at is not named.
+    #[cfg(all(feature = "web", feature = "agents"))]
+    pub fn serve_browsers(
+        &mut self,
+        browsers: Arc<crate::hosted_browser::HostedBrowsers>,
+        runtime: tokio::runtime::Handle,
+    ) -> Result<(), ServerError> {
+        let Some(governed) = self.workspaces.as_ref() else {
+            return Ok(());
+        };
+        let identity = &self.sessions.identity;
+        // A workspace's VM joins with a ticket this host serves for it, and this host certifies
+        // its daemon's key with its own for the VM's records alone.
+        let server = crate::hosted_browser::server_address()
+            .map_err(|error| ServerError::Identity(format!("this host's Browser: {error}")))?;
+        browsers.serve_from(crate::hosted_browser::Authority {
+            user_public_key: identity.user_public_key,
+            host: identity.cert.clone(),
+            host_key: identity.signing_key.clone(),
+            server,
+            workspaces: Some(governed.downgrade()),
+            environments: self.sessions.handler.environments.clone(),
+            runtime: runtime.clone(),
+            hand: governed.hand(),
+            actions: governed.action_service(),
+        });
+        browsers.ask_from(
+            governed.action_service(),
+            self.endpoint.clone(),
+            governed.clone(),
+            runtime,
+        );
+        if let Some(store) = governed.asked_store() {
+            browsers.keep_asked_in(&store);
+        }
+        // The host's one dispatch answers the workspace's open of Browser and the page actions
+        // of the window it places, as it answers every other action.
+        browsers.provide_in(&governed.providers());
+        self.browsers = Some(browsers);
+        Ok(())
     }
 
     /// The relay this server's live session runs on: what a part of the host

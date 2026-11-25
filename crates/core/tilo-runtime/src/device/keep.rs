@@ -297,11 +297,19 @@ impl Keeping {
             endpoint,
             relay,
             app_serving,
-            browser_sessions,
+            #[cfg(feature = "agents")]
+            browsers,
         } = on;
         let state_root = dir.to_path_buf();
         state_root.clone_into(&mut cfg.state_root);
-        let (server, protocols) = runtime
+        #[cfg_attr(
+            not(feature = "agents"),
+            allow(
+                unused_mut,
+                reason = "a build that serves Browser wires it into the server"
+            )
+        )]
+        let (mut server, protocols) = runtime
             .block_on(Server::on_device(OnDevice {
                 cfg: cfg.clone(),
                 identity,
@@ -310,9 +318,16 @@ impl Keeping {
                 endpoint,
                 joined,
                 app_serving,
-                browser_sessions,
             }))
             .map_err(|error| io::Error::other(format!("what this server keeps: {error}")))?;
+        // The Browser this device places answers its workspaces' devices from here: it was
+        // made before their service opened, which answers their app frames with it.
+        #[cfg(feature = "agents")]
+        if let Some(browsers) = browsers {
+            server
+                .serve_browsers(browsers, runtime.handle().clone())
+                .map_err(|error| io::Error::other(format!("this host's Browser: {error}")))?;
+        }
         // A server serves its own web UI where its configuration places one, unless its
         // person turned it off: that choice is its entry's, which the follow applies.
         let web = match cfg.web_listen {
@@ -480,11 +495,14 @@ pub(crate) struct On<'a> {
     /// The packet relay the device's endpoint is reached through.
     pub(crate) relay: PacketRelay,
     /// What answers the apps' actions and serves their pages as a browser opens them: this
-    /// device's keys' sessions ([`crate::key_sessions`]).
+    /// device's keys' sessions, and the Browser it places for its workspaces' machines
+    /// (`crate::device::services`, `tilo_server::hosted_browser::app_serving`).
     pub(crate) app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
-    /// Where the server's Browser sessions start: the device's environments, when it pays for
-    /// its workspaces' machines.
-    pub(crate) browser_sessions: Option<tilo_server::browser_sessions::Sessions>,
+    /// The Browser the device places for its workspaces' pages, when it pays for their machines:
+    /// made before its workspace service opened, which answers their devices' app frames with
+    /// it, and wired by the host it keeps.
+    #[cfg(feature = "agents")]
+    pub(crate) browsers: Option<Arc<tilo_server::hosted_browser::HostedBrowsers>>,
 }
 
 impl Kept {

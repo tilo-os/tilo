@@ -1967,11 +1967,40 @@ impl Daemon {
             })
             .transpose()?;
         let addr_watch = endpoint.watch_addr();
+        // The workspaces' Linux work: the Terminal environments of the runtime beside this
+        // device, and on a server that pays for their machines, the work on their devices that
+        // run Linux, whose Browser its host serves.
+        #[cfg(target_os = "linux")]
+        let environments = Arc::new(super::environments::Environments::here());
+        // The Browser this host places for its workspaces' machines. It is made before the
+        // service opens, since what the service answers its devices' app frames is fixed then:
+        // an environment asks its host for what it holds no keys for through it, and this
+        // device's keys' sessions answer beside it.
+        #[cfg(feature = "agents")]
+        let browsers = if keeping.is_some() {
+            #[cfg(target_os = "linux")]
+            let sessions = environments.sessions();
+            #[cfg(not(target_os = "linux"))]
+            let sessions = None;
+            tilo_server::hosted_browser::HostedBrowsers::serving(sessions)
+                .map(|browsers| browsers.map(Arc::new))
+                .map_err(|error| io::Error::other(format!("this host's Browser: {error}")))?
+        } else {
+            None
+        };
+        let key_sessions_serving = key_sessions.as_ref().map(|sessions| {
+            Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
+        });
+        #[cfg(feature = "agents")]
+        let app_serving =
+            tilo_server::hosted_browser::app_serving(browsers.clone(), key_sessions_serving);
+        #[cfg(not(feature = "agents"))]
+        let app_serving = key_sessions_serving;
         let workspaces = open_workspaces(
             &identity,
             endpoint,
             Arc::clone(&brokers),
-            key_sessions.as_ref(),
+            app_serving.clone(),
             keeping.as_ref().zip(itself.clone()),
         )?;
         // The person's record of their devices says where this one answers, so their other
@@ -2069,15 +2098,6 @@ impl Daemon {
                 }
             }
         }
-        // The workspaces' Linux work: the Terminal environments of the runtime beside this
-        // device, and on a server that pays for their machines, the work on their devices that
-        // run Linux, whose Browser its host serves.
-        #[cfg(target_os = "linux")]
-        let environments = Arc::new(super::environments::Environments::here());
-        #[cfg(target_os = "linux")]
-        let browser_sessions = environments.sessions();
-        #[cfg(not(target_os = "linux"))]
-        let browser_sessions = None;
         // What a server keeps beyond its copies, on the workspace service it runs.
         let serves_pages = keeping.is_some();
         let kept = match (keeping, relay, itself) {
@@ -2091,11 +2111,9 @@ impl Daemon {
                     keys: workspaces.keys(),
                     endpoint: workspaces.endpoint(),
                     relay,
-                    app_serving: key_sessions.as_ref().map(|sessions| {
-                        Arc::clone(sessions)
-                            as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
-                    }),
-                    browser_sessions,
+                    app_serving,
+                    #[cfg(feature = "agents")]
+                    browsers,
                 })?)
             }
             _ => None,
@@ -3034,11 +3052,12 @@ fn person_name() -> Option<String> {
 
 /// Open the device's workspace service in its directory: it hosts the workspace founded here
 /// on a computer with no login, and holds the member copies of the login's workspaces otherwise.
+/// `apps` is what answers its devices' app frames (`tilo_server::hosted_browser::app_serving`).
 fn open_workspaces(
     identity: &Identity,
     endpoint: iroh::Endpoint,
     brokers: Arc<Mutex<BrokerChannels>>,
-    key_sessions: Option<&Arc<crate::key_sessions::KeySessions>>,
+    apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
     keeping: Option<(&super::keep::Keeping, tilo_server::daemon::ServerIdentity)>,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
     let device = tilo_identity::identity_store::DeviceIdentity::held(
@@ -3048,9 +3067,6 @@ fn open_workspaces(
             identity.place.keys().clone(),
         )),
     );
-    let apps = key_sessions.map(|sessions| {
-        Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
-    });
     let (dir, key) = (identity.place.dir().join(OWN), identity.key.clone());
     let (keeping, itself) = keeping.unzip();
     let configure = keeping.map(|keeping| {

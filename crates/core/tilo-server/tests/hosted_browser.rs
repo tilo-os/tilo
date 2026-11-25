@@ -751,15 +751,16 @@ fn unplaced(
             )
             .with_reconnect(reconnect),
         );
-        // The host starts as a hosting server does: its Browser is the app action server its
-        // workspaces answer their devices' app frames with.
+        // The host starts as a hosting server does: its Browser, composed with what else it
+        // serves, is the app action server its workspaces answer their devices' app frames with.
         let server = Box::new(
             Box::pin(spawn_server_serving_apps(
                 &user,
                 host,
                 &[],
                 &[],
-                Arc::clone(&browsers) as Arc<dyn tilo_server::AppActionServer>,
+                tilo_server::hosted_browser::app_serving(Some(Arc::clone(&browsers)), None)
+                    .expect("a host with a Browser serves it"),
             ))
             .await,
         );
@@ -802,7 +803,10 @@ fn unplaced(
             host: placing.cert.clone(),
             host_key: placing.sk.clone(),
             server: server.server.node_addr(),
-            workspaces: server.server.workspaces().cloned(),
+            workspaces: server
+                .server
+                .workspaces()
+                .map(tilo_workspace_service::workspaces::Workspaces::downgrade),
             environments: server.server.environments(),
             runtime: tokio::runtime::Handle::current(),
             hand: server.server.hand(),

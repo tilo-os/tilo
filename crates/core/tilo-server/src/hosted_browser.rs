@@ -268,7 +268,10 @@ pub struct Authority {
     pub host_key: SigningKey,
     /// Where the VM's daemon reaches this host: the address its ticket names.
     pub server: EndpointAddr,
-    pub workspaces: Option<crate::workspaces::Workspaces>,
+    /// The workspaces it serves, held without keeping them alive: this host answers a service
+    /// the workspaces themselves hold, so holding them here would keep a stopped server and the
+    /// address it bound.
+    pub workspaces: Option<crate::workspaces::WeakWorkspaces>,
     /// The workspaces' VM devices this host placed, each confined to its workspace's one record
     /// ([`crate::environment`]): what every protocol of the workspace asks before it lets one
     /// in, or hands it a change.
@@ -1181,7 +1184,12 @@ impl HostedBrowsers {
 
     /// The workspaces this server serves, once it serves them.
     fn workspaces(&self) -> Option<crate::workspaces::Workspaces> {
-        self.authority.lock_recover().as_ref()?.workspaces.clone()
+        self.authority
+            .lock_recover()
+            .as_ref()?
+            .workspaces
+            .as_ref()?
+            .upgrade()
     }
 
     /// [`Self::workspace_name`], asked again a few times with a growing
@@ -1673,7 +1681,8 @@ impl HostedBrowsers {
 
 /// The Browser a host serves is what answers the app frames its workspaces' devices ask it: where
 /// a page action of a window it placed goes, and how what the window answered is read. A host's
-/// embedder supplies it as the service's app action server, beside its own apps.
+/// embedder supplies it as the service's app action server beside its own apps
+/// ([`app_serving`]), before the service opens.
 impl crate::app_serving::AppActionServer for HostedBrowsers {
     /// What the workspaces publish: a listing this host answers is the one its [`ActionProvider`]
     /// query answers, the workspace's own providers and the window it placed. Every other call
@@ -1735,6 +1744,168 @@ impl crate::app_serving::AppActionServer for HostedBrowsers {
 
     fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
         HostedBrowsers::answers_for_host(self, workspace_id, from, to)
+    }
+}
+
+/// The app action server a host that places Browser answers its workspaces' devices with: its
+/// Browser, which routes the frames of the windows it placed and answers its environments' own
+/// asks, beside `apps`, what else the host serves (a device's own keys' sessions). A host that
+/// places no Browser answers with `apps` alone. A host composes the two here, before its
+/// service opens, since what a service answers its devices' app frames is fixed then.
+#[must_use]
+pub fn app_serving(
+    browsers: Option<Arc<HostedBrowsers>>,
+    apps: Option<Arc<dyn crate::app_serving::AppActionServer>>,
+) -> Option<Arc<dyn crate::app_serving::AppActionServer>> {
+    match browsers {
+        Some(browsers) => Some(Arc::new(Beside { browsers, apps })),
+        None => apps,
+    }
+}
+
+/// A host's Browser beside what else it serves: the Browser answers first what is its own — a
+/// window it placed, its environment's ask, a listing its window publishes — and everything else
+/// reaches the host's other app action server.
+struct Beside {
+    browsers: Arc<HostedBrowsers>,
+    apps: Option<Arc<dyn crate::app_serving::AppActionServer>>,
+}
+
+impl Beside {
+    /// What else this host serves, when it serves any.
+    fn rest(&self) -> Option<&dyn crate::app_serving::AppActionServer> {
+        self.apps.as_deref()
+    }
+}
+
+impl crate::app_serving::AppActionServer for Beside {
+    fn serve(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        crate::app_serving::AppActionServer::serve(
+            &*self.browsers,
+            workspace_id,
+            caller,
+            message.clone(),
+        )
+        .or_else(|| self.rest()?.serve(workspace_id, caller, message))
+    }
+
+    fn serve_certified(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        crate::app_serving::AppActionServer::serve_certified(
+            &*self.browsers,
+            workspace_id,
+            caller,
+            certificate,
+            message.clone(),
+        )
+        .or_else(|| {
+            self.rest()?
+                .serve_certified(workspace_id, caller, certificate, message)
+        })
+    }
+
+    fn serve_host(
+        &self,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        self.rest()?.serve_host(caller, certificate, message)
+    }
+
+    /// Whether the host answers at all: the Browser answers the listings of what it serves, so
+    /// it does wherever it is up.
+    fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
+        crate::app_serving::AppActionServer::answers(&*self.browsers, caller, message)
+            || self
+                .rest()
+                .is_some_and(|apps| apps.answers(caller, message))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn content(&self) -> Option<Arc<tilo_content::WorkspaceStores>> {
+        crate::app_serving::AppActionServer::content(&*self.browsers)
+            .or_else(|| self.rest()?.content())
+    }
+
+    fn session_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
+        if let Some(apps) = self.rest() {
+            apps.session_arrived(workspace_id, caller);
+        }
+    }
+
+    fn forget_workspace(&self, workspace_id: WorkspaceId) {
+        crate::app_serving::AppActionServer::forget_workspace(&*self.browsers, workspace_id);
+        if let Some(apps) = self.rest() {
+            apps.forget_workspace(workspace_id);
+        }
+    }
+
+    fn shutdown(&self) {
+        crate::app_serving::AppActionServer::shutdown(&*self.browsers);
+        if let Some(apps) = self.rest() {
+            apps.shutdown();
+        }
+    }
+
+    fn route(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        HostedBrowsers::route(&self.browsers, workspace_id, caller, message)
+            .or_else(|| self.rest()?.route(workspace_id, caller, message))
+    }
+
+    fn route_certified(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        HostedBrowsers::route_certified(&self.browsers, workspace_id, caller, certificate, message)
+            .or_else(|| {
+                self.rest()?
+                    .route_certified(workspace_id, caller, certificate, message)
+            })
+    }
+
+    fn relayed(
+        &self,
+        workspace_id: WorkspaceId,
+        from: [u8; 32],
+        message: &RemoteActionMessage,
+    ) -> Option<RemoteActionMessage> {
+        HostedBrowsers::relayed(&self.browsers, workspace_id, from, message)
+            .or_else(|| self.rest()?.relayed(workspace_id, from, message))
+    }
+
+    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
+        HostedBrowsers::answers_for_host(&self.browsers, workspace_id, from, to)
+            || self
+                .rest()
+                .is_some_and(|apps| apps.answers_for_host(workspace_id, from, to))
+    }
+
+    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
+        crate::app_serving::AppActionServer::tracks(&*self.browsers, workspace_id)
+            || self.rest().is_some_and(|apps| apps.tracks(workspace_id))
+    }
+
+    fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
+        crate::app_serving::AppActionServer::pages(&*self.browsers).or_else(|| self.rest()?.pages())
     }
 }
 

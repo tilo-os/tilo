@@ -177,8 +177,8 @@ impl Approver for PlacedDevice {
         let placer = self.placer.clone();
         let environments = self.environments.clone();
         let (refused, stopped) = (self.refused.clone(), self.stop.clone());
-        let records = vm_placed_records(self.workspace_id)
-            .map_err(|error| Declined(error.to_string()));
+        let records =
+            vm_placed_records(self.workspace_id).map_err(|error| Declined(error.to_string()));
         Box::pin(async move {
             if *stopped.borrow() {
                 return Err(Declined(STOPPED.to_owned()));
@@ -270,7 +270,10 @@ impl HostedBrowsers {
             person: authority.user_public_key,
             host: authority.host.clone(),
             host_key: authority.host_key.clone(),
-            workspaces: authority.workspaces.clone(),
+            workspaces: authority
+                .workspaces
+                .as_ref()
+                .and_then(crate::workspaces::WeakWorkspaces::upgrade),
         };
         let records = vm_placed_records(workspace_id).map_err(|error| error.to_string())?;
         // Refused before the VM starts: a host that may not place it starts nothing.

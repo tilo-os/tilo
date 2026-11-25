@@ -102,7 +102,10 @@ impl HostedBrowsers {
             }
             (
                 authority.environments.certificate(&device)?,
-                authority.workspaces.clone(),
+                authority
+                    .workspaces
+                    .as_ref()
+                    .and_then(crate::workspaces::WeakWorkspaces::upgrade),
             )
         };
         drop(guard);

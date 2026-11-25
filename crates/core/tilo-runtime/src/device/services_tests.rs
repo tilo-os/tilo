@@ -2581,6 +2581,206 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspaces_entry_once() {
     run(false, &root.join("restart.stdout"));
 }
 
+/// What a hosting server's daemon answers its workspaces' devices with, besides its own
+/// governance: its Browser, which answers an environment's own ask, and its keys' sessions.
+#[cfg(feature = "agents")]
+const ENVIRONMENT_ASK_TEST: &str =
+    "device::services::tests::a_hosting_daemon_answers_its_environments_media_key_ask";
+
+/// A device `root` certifies as one of its person's, with `capabilities` and the key `byte`
+/// seeds.
+#[cfg(feature = "agents")]
+fn certified_device(
+    root: &ed25519_dalek::SigningKey,
+    byte: u8,
+    capabilities: tilo_user_identity::DeviceCapabilities,
+) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[byte; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "environment".into(),
+        capabilities,
+        issued_at_ns: now,
+        expires_at_ns: Some(now.saturating_add(60 * 60 * 1_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root)
+        .expect("the device's certificate is signed");
+    (key, cert)
+}
+
+/// The daemon a server's configuration starts answers its workspaces' environments: one placed
+/// in a workspace hears the media keys of its own streams, sealed to it, and a device it placed
+/// for nothing is refused.
+#[test]
+#[cfg(feature = "agents")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one deployment's start, its environment's ask and another device's refusal read in order"
+)]
+fn a_hosting_daemon_answers_its_environments_media_key_ask() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use tilo_actions::remote::environment_device;
+    use tilo_actions::remote::{Caller, InvokeRequest, ReceiptStatus, RemoteActionMessage};
+    use tilo_user_identity::DeviceCapabilities;
+
+    if let Some(root) = std::env::var_os(PROCESS_ROOT) {
+        // The deployment's own process: its root, its configuration and what its Browser
+        // sessions are billed to, as a container's start hands them.
+        let root = PathBuf::from(root);
+        let root_file = PathBuf::from(std::env::var_os(OWNER_ROOT_FILE).unwrap());
+        let daemon = Daemon::start_reporting(&root, &mut |_| {}).expect("the deployment starts");
+        let owner = daemon.cert.user_public_key;
+        let workspace = WorkspaceId::parse(KEPT_WORKSPACE).expect("the kept workspace's id");
+        let seed: [u8; 32] = hex::decode(std::fs::read_to_string(&root_file).unwrap().trim())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        // The workspace's VM device, made as its host makes one: placed for the workspace's
+        // records alone, certified by the host's own device, and confined here as the host
+        // confines it when it certifies it.
+        let vm = {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[0x5a; 32]);
+            let issued = tilo_clock::unix_now_ns().max(daemon.cert.issued_at_ns);
+            let expires = issued
+                .saturating_add(tilo_user_identity::MAX_PLACED_DEVICE_LIFETIME_NS)
+                .min(daemon.cert.expires_at_ns.unwrap_or(u64::MAX));
+            let mut cert = tilo_user_identity::prepare_placed_device_cert(
+                &daemon.cert,
+                key.verifying_key().to_bytes(),
+                tilo_workspace_service::environment::vm_placed_records(workspace)
+                    .expect("the workspace's records are well formed"),
+                "environment",
+                issued,
+                expires,
+            );
+            tilo_user_identity::sign_device_cert(&mut cert, daemon.key())
+                .expect("the host certified the workspace's VM");
+            cert
+        };
+        let service = daemon.workspaces.service();
+        assert!(
+            service
+                .sessions()
+                .handler
+                .environments
+                .confine(&vm)
+                .unwrap()
+                .is_some(),
+            "the host placed the workspace's VM"
+        );
+        let actions = service.actions();
+        let runtime = tilo_rt::daemon("environment-ask-test").build().unwrap();
+        // Asked from this device's runtime, as the host asks its app action server: what the
+        // Browser spawns runs while the answer is waited on.
+        let ask = |certificate: &tilo_user_identity::DeviceCert| {
+            runtime.block_on(tilo_test_env::within(
+                "the environment's media keys",
+                async {
+                    let message = RemoteActionMessage::Invoke(InvokeRequest::plain(
+                        environment_device::target(environment_device::MEDIA_KEYS),
+                        serde_json::Map::new(),
+                    ));
+                    let caller = Caller::authenticated(owner, certificate.device_public_key);
+                    let Some(routing) =
+                        actions.route_certified(workspace, &caller, certificate, &message)
+                    else {
+                        panic!("the daemon does not route its environment's ask");
+                    };
+                    let tilo_workspace_service::app_serving::Routing::Answer(answered) = routing
+                    else {
+                        panic!("the daemon answers the ask through another device");
+                    };
+                    match answered.await {
+                        Some(RemoteActionMessage::Receipt(receipt)) => receipt.status,
+                        other => panic!("the daemon answered {other:?}"),
+                    }
+                },
+            ))
+        };
+        let answered = ask(&vm);
+        let ReceiptStatus::Completed { output } = answered else {
+            panic!("the environment's ask is not answered: {answered:?}");
+        };
+        let keys: environment_device::MediaKeys =
+            serde_json::from_value(output.value.expect("the host lent the environment keys"))
+                .expect("the lent keys are the media keys");
+        assert!(
+            !keys.sealed.is_empty(),
+            "the host sealed the workspace's media keys to the environment's device"
+        );
+        // A device of the person's the host placed for nothing is answered by no one: its
+        // ask is refused, as a host that serves no Browser refuses every one of them.
+        let (_, stranger) = certified_device(&root_key, 0x5b, DeviceCapabilities::member());
+        let refused = ask(&stranger);
+        assert!(
+            matches!(
+                refused,
+                ReceiptStatus::Rejected {
+                    error: tilo_actions::remote::ActionCallError::NotPermitted
+                }
+            ),
+            "another device's ask is answered: {refused:?}"
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let deployment = root.join("deployment");
+    std::fs::create_dir_all(&deployment).unwrap();
+    let root_file = deployment.join("owner-root");
+    std::fs::write(&root_file, hex::encode([3u8; 32])).unwrap();
+    std::fs::set_permissions(&root_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let config = deployment.join("server.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "web_entry = \"https://127.0.0.1:1/\"\nweb_listen = \"127.0.0.1:0\"\n\
+             identity_root = \"{}\"\nstate_root = \"{}\"\n\n\
+             [[kept]]\nid = \"{KEPT_WORKSPACE}\"\nname = \"Lounge\"\n",
+            deployment.join("server-identity").display(),
+            deployment.join("server-state").display(),
+        ),
+    )
+    .unwrap();
+    // What its environments' Browser sessions are billed to, and where they are counted: a
+    // host that pays for its workspaces' machines serves them.
+    let served = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+        .verifying_key()
+        .to_bytes();
+    let mut command = isolated_command(ENVIRONMENT_ASK_TEST, &root);
+    command
+        .env(OWNER_ROOT_FILE, &root_file)
+        .env(crate::device::keep::CONFIG_ENV, &config)
+        .env(ush::hosted_vm::ACCOUNT_ENV, "acct_test")
+        // Where the page actions the Browser it serves runs are counted, as a host that
+        // serves them names it.
+        .env(
+            "TILO_SERVER_BROWSER_ACTIONS",
+            deployment.join("browser-actions.jsonl"),
+        )
+        .env(ush::hosted_vm::PLANS_ENV, deployment.join("plans.toml"))
+        .env(
+            tilo_server::hosted_browser::SERVER_ENV,
+            format!("{}@127.0.0.1:1", hex::encode(served)),
+        );
+    let log = root.join("child.stdout");
+    let status = command
+        .stdout(std::fs::File::create(&log).unwrap())
+        .status_locked()
+        .unwrap();
+    let stdout = std::fs::read_to_string(&log).unwrap();
+    assert!(status.success(), "{stdout}");
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "the isolated child ran no test: {stdout}"
+    );
+}
+
 const OWN_INSTALL_TEST: &str =
     "device::services::tests::a_development_build_installs_on_the_persons_own_connection";
 
