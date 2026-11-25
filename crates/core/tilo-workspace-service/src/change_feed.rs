@@ -148,7 +148,9 @@ impl DocumentsFeed {
             },
             self.words.as_ref(),
         );
-        log.page(after, caller.acting().member_id())
+        let page = log.page(after, caller.acting().member_id());
+        drop(logs);
+        page
     }
 }
 

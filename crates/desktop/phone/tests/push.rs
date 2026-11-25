@@ -159,7 +159,8 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
         &server.person,
         server.entry(),
         server.workspaces(),
-    );
+    )
+    .expect("the laptop's ticket and endpoint are made");
     let person = server.person.verifying_key().to_bytes();
     let push = PushService::start(&server.runtime);
 

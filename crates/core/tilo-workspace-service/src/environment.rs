@@ -73,8 +73,12 @@ pub const ENVIRONMENT_RECORD: &str = "environment";
 
 /// The records a workspace's VM device is placed for in `workspace`, as its certificate names
 /// them: its Browser record ([`VM_RECORD`]) and its environment record ([`ENVIRONMENT_RECORD`]).
-#[must_use]
-pub fn vm_placed_records(workspace: WorkspaceId) -> tilo_user_identity::PlacedRecords {
+///
+/// # Errors
+/// The workspace is the nil one, or either record's channel is all zeroes.
+pub fn vm_placed_records(
+    workspace: WorkspaceId,
+) -> Result<tilo_user_identity::PlacedRecords, tilo_user_identity::DeviceCertError> {
     tilo_user_identity::PlacedRecords::new(
         workspace.as_uuid().into_bytes(),
         [
@@ -82,7 +86,6 @@ pub fn vm_placed_records(workspace: WorkspaceId) -> tilo_user_identity::PlacedRe
             document_channel(VM_APP, ENVIRONMENT_RECORD),
         ],
     )
-    .expect("a workspace's two VM records are well formed")
 }
 
 /// The field of [`ENVIRONMENT_RECORD`] that keeps the VM session's settings, each by its name.

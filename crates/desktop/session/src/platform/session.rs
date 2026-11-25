@@ -3232,7 +3232,7 @@ mod records_place_tests {
     fn a_placed_devices_session_keeps_its_records_in_the_environment_record() {
         let workspace = tilo_server_protocol::WorkspaceId::new();
         let placed = cert(DeviceCapabilities::placed(
-            tilo_workspace_service::environment::vm_placed_records(workspace),
+            tilo_workspace_service::environment::vm_placed_records(workspace).unwrap(),
         ));
         assert_eq!(
             records_place(&placed),

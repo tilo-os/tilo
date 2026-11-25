@@ -7,7 +7,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use tilo_device_identity::login::{
-    Approval, Approved, Approver, Asked, Entry, Reached, TICKET_LIFETIME_NS, Ticket,
+    Approval, Approved, Approver, Asked, Declined, Entry, Reached, TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_peer_state::new_device::{Keeping, ServedTicket};
@@ -28,15 +28,18 @@ impl Issuing {
     /// The laptop of the person whose root is `person`, printing a ticket into `entry`, served
     /// on `runtime`, and listing a device its ticket made in the record of the person's devices,
     /// which `workspaces`, the server keeping their own workspace, holds.
+    ///
+    /// # Errors
+    /// The laptop's certificate does not sign, or its endpoint does not bind.
     pub fn start(
         runtime: &tokio::runtime::Handle,
         person: &SigningKey,
         entry: Entry,
         workspaces: Workspaces,
-    ) -> Self {
+    ) -> Result<Self, Declined> {
         let laptop = key(8);
-        let cert = certified(person, &laptop, "the person's laptop", true);
-        let endpoint = runtime.block_on(endpoint(&laptop));
+        let cert = certified(person, &laptop, "the person's laptop", true)?;
+        let endpoint = runtime.block_on(endpoint(&laptop))?;
         let ticket = Ticket::new(reached_of(&endpoint.addr()));
         let router = {
             let _entered = runtime.enter();
@@ -54,12 +57,12 @@ impl Issuing {
                 Arc::new(KeptInRecord(workspaces)),
             )
         };
-        Self {
+        Ok(Self {
             ticket,
             endpoint,
             router,
             runtime: runtime.clone(),
-        }
+        })
     }
 
     /// The ticket, as the laptop shows it to the person.
@@ -89,8 +92,9 @@ struct RootSigns {
 impl Approver for RootSigns {
     fn approve(&self, asked: Asked) -> Approval {
         let mut cert = asked.cert.clone();
-        sign_device_cert(&mut cert, &self.root).unwrap();
-        Box::pin(std::future::ready(Ok(Approved {
+        let signed =
+            sign_device_cert(&mut cert, &self.root).map_err(|error| Declined(error.to_string()));
+        Box::pin(std::future::ready(signed.map(|()| Approved {
             cert,
             approver: self.cert.clone(),
             signature: self.device.sign(&asked.digest).to_bytes(),
@@ -120,7 +124,12 @@ fn key(seed: u8) -> SigningKey {
 }
 
 /// `key`'s certificate, signed by `root`: a device of the person whose root it is.
-fn certified(root: &SigningKey, key: &SigningKey, label: &str, primary: bool) -> DeviceCert {
+fn certified(
+    root: &SigningKey,
+    key: &SigningKey,
+    label: &str,
+    primary: bool,
+) -> Result<DeviceCert, Declined> {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
@@ -135,8 +144,8 @@ fn certified(root: &SigningKey, key: &SigningKey, label: &str, primary: bool) ->
         signature: [0; 64],
         issuer: None,
     };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
+    sign_device_cert(&mut cert, root).map_err(|error| Declined(error.to_string()))?;
+    Ok(cert)
 }
 
 /// Where `addr` is reached, as a ticket carries it.
@@ -149,15 +158,16 @@ fn reached_of(addr: &iroh::EndpointAddr) -> Reached {
 }
 
 /// An endpoint of `key`'s on this machine's loopback, reached directly.
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
+async fn endpoint(key: &SigningKey) -> Result<Endpoint, Declined> {
+    let builder = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
         .secret_key(SecretKey::from_bytes(&key.to_bytes()))
         .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
+        .map_err(|error| Declined(error.to_string()))?;
+    builder
         .bind()
         .await
-        .unwrap()
+        .map_err(|error| Declined(error.to_string()))
 }
 
 /// The laptop's endpoint serving `ticket` as the device that printed it does: a device that logs

@@ -1000,6 +1000,15 @@ pub(crate) struct HolderClaim {
     pub(crate) origin: Option<String>,
 }
 
+/// The resources this device publishes of its own, by the app they are read at, each with the
+/// readers that may see it.
+type OwnReadings = std::sync::RwLock<
+    std::collections::BTreeMap<
+        &'static str,
+        (OwnReaders, Arc<dyn tilo_actions::remote::ResourceReads>),
+    >,
+>;
+
 struct WorkspacesInner {
     host: WorkspaceServices,
     #[cfg(any(feature = "apps", feature = "agents"))]
@@ -1142,12 +1151,7 @@ struct WorkspacesInner {
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
     /// The resources this device publishes of its own, by the app they are read at
     /// ([`Workspaces::publish_own`]).
-    own_readings: std::sync::RwLock<
-        std::collections::BTreeMap<
-            &'static str,
-            (OwnReaders, Arc<dyn tilo_actions::remote::ResourceReads>),
-        >,
-    >,
+    own_readings: OwnReadings,
     /// Where the name each person gave themselves is kept ([`Workspaces::person_names`]).
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
     /// What starts and stops this device's own web UI
@@ -2788,11 +2792,12 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        let workspace = self
+        let mut workspace = self
             .workspace(workspace)
             .await
-            .map_err(|error| error.to_string())?;
-        let mut workspace = workspace.lock().await;
+            .map_err(|error| error.to_string())?
+            .lock_owned()
+            .await;
         let host = &self.inner.host;
         let now = tilo_clock::wall();
         // What the workspace's link admitted is in the replica before it comes
@@ -2844,7 +2849,9 @@ impl Workspaces {
         }
         let removed = removed.into_inner();
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
-        self.settle(&mut workspace).await
+        let settled = self.settle(&mut workspace).await;
+        drop(workspace);
+        settled
     }
 
     /// Refound `record` of `app` from what the governor itself can still read,
@@ -2976,14 +2983,13 @@ impl Workspaces {
         // stands in for, and keeps that it did: the writes stay in every store until every such
         // device has.
         #[cfg(feature = "device-keys")]
-        if followed.changed {
-            if let Err(error) = self
+        if followed.changed
+            && let Err(error) = self
                 .check_leading_checkpoint(workspace, (app.as_str(), record.as_str()))
                 .await
-            {
-                tracing::warn!(workspace = %workspace.workspace(), %app, %record, %error,
-                    "this host's check of a record's checkpoint was not kept");
-            }
+        {
+            tracing::warn!(workspace = %workspace.workspace(), %app, %record, %error,
+                "this host's check of a record's checkpoint was not kept");
         }
         // The record's keys are not here yet: the retained store keeps the compaction like any
         // sealed frame it cannot read, and a replay takes it once they are. Asking to be let

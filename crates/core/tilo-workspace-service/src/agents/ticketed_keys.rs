@@ -308,7 +308,7 @@ impl DeviceAgentKeys {
     }
 
     /// Whether `agent` of `workspace` signs with a key made from its person's root here.
-    pub(crate) fn from_root(&self, workspace: WorkspaceId, agent: &Agent) -> bool {
+    pub(crate) fn signs_from_root(&self, workspace: WorkspaceId, agent: &Agent) -> bool {
         self.roots
             .as_ref()
             .is_some_and(|roots| roots.grant_for(workspace, agent).is_ok())

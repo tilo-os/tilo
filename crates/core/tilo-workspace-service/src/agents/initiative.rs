@@ -961,13 +961,13 @@ fn call_error(failure: &ActionFailure) -> ActionCallError {
 }
 
 /// `error` as the failure a host step answers.
-fn failure(error: &ActionCallError) -> Box<ActionFailure> {
-    Box::new(ActionFailure {
+fn failure(error: &ActionCallError) -> ActionFailure {
+    ActionFailure {
         code: "initiative".into(),
         message: error.to_string(),
         details: None,
         retryable: matches!(error, ActionCallError::Unavailable { .. }),
-    })
+    }
 }
 
 /// What a request's arguments name, or `what` they should have named. The
@@ -1263,7 +1263,7 @@ impl tilo_actions::remote::Admits for Initiative {
                     value: Some(value),
                     resources: Vec::new(),
                 })
-                .map_err(|error| failure(&error));
+                .map_err(|error| Box::new(failure(&error)));
             done.complete(answered);
         });
         Ok(answer)

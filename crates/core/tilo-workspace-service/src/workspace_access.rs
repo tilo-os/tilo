@@ -217,8 +217,9 @@ impl DenyReason {
     pub fn refusal(self) -> tilo_server_protocol::refusal::Refusal {
         use tilo_server_protocol::refusal::Refusal;
         match self {
-            Self::OutOfEnvironmentScope => Refusal::NotAllowed(self.reason().into()),
-            Self::Blocked => Refusal::NotAllowed(self.reason().into()),
+            Self::OutOfEnvironmentScope | Self::Blocked => {
+                Refusal::NotAllowed(self.reason().into())
+            }
             Self::NotTrusted => Refusal::NotAdmitted,
             _ => Refusal::NotAMember(self.reason().into()),
         }

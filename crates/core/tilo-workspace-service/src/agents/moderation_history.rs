@@ -163,7 +163,7 @@ impl TurnHistory {
         let (workspaces, workspace) = (self.workspaces.clone(), self.workspace.clone());
         tokio::task::spawn_blocking(move || workspaces.record_changes(&workspace, &route, &reader))
             .await
-            .map_err(|error| unavailable(error.to_string()))?
+            .map_err(|error| unavailable(&error.to_string()))?
             .ok_or_else(|| unavailable("this app's record does not read here"))
     }
 
@@ -286,7 +286,7 @@ impl TurnHistory {
         let record = self
             .workspaces
             .tl_record(&self.workspace, &app, &reader)
-            .map_err(unavailable)?;
+            .map_err(|error| unavailable(&error))?;
         let policy = self.workspaces.policy_now(&self.workspace).map(Arc::new);
         // The undo keeps the call the agent signed for it, under its own key: every reader
         // admits the undo as the step that call declares, and history shows the call took it.
@@ -302,8 +302,8 @@ impl TurnHistory {
             )
         })
         .await
-        .map_err(unavailable)?
-        .map_err(unavailable)?;
+        .map_err(|error| unavailable(&error.to_string()))?
+        .map_err(|error| unavailable(&error))?;
         Ok(json!({"undone": undone}))
     }
 
@@ -385,8 +385,8 @@ fn text(arguments: &Map<String, Value>, name: &str) -> Option<String> {
 }
 
 /// Why a host read could not be answered.
-fn unavailable(error: impl ToString) -> ActionCallError {
+fn unavailable(error: &str) -> ActionCallError {
     ActionCallError::Unavailable {
-        reason: error.to_string(),
+        reason: error.to_owned(),
     }
 }

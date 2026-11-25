@@ -195,7 +195,7 @@ async fn fixture() -> Put {
 impl Put {
     /// Put `arguments` as the dispatch does, on a thread of its own: the tree's sync then has
     /// this device's runtime to itself, as it does when a daemon serves a call.
-    fn put(&self, arguments: Value) -> Result<Value, String> {
+    fn put(&self, arguments: &Value) -> Result<Value, String> {
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
@@ -231,7 +231,7 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
     let put = fixture().await;
     let visa = b"%PDF-1.7\nApplication for Schengen Visa\n";
     let content = put_content(&put.shelf, put.workspace, visa);
-    let answer = put.put(json!({"content": content, "name": "visa.pdf"})).unwrap();
+    let answer = put.put(&json!({"content": content, "name": "visa.pdf"})).unwrap();
     assert_eq!(answer["path"], "visa.pdf", "{answer}");
     assert_eq!(answer["content"], content.as_str(), "{answer}");
     assert_eq!(answer["size"], visa.len() as u64, "{answer}");
@@ -250,7 +250,7 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
     let permit = b"%PDF-1.7\nApplication for Residence Permit\n";
     let permit_content = put_content(&put.shelf, put.workspace, permit);
     let answer = put
-        .put(json!({"content": permit_content, "name": "permit.pdf", "dir": "forms/2026"}))
+        .put(&json!({"content": permit_content, "name": "permit.pdf", "dir": "forms/2026"}))
         .unwrap();
     assert_eq!(answer["path"], "forms/2026/permit.pdf", "{answer}");
     let tree = tree_of(&put.workspaces, &put.name).await;
@@ -264,7 +264,7 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
     // The same name put again takes the new content rather than making a second node.
     let cover = b"%PDF-1.7\nCover letter\n";
     let cover_content = put_content(&put.shelf, put.workspace, cover);
-    let answer = put.put(json!({"content": cover_content, "name": "visa.pdf"})).unwrap();
+    let answer = put.put(&json!({"content": cover_content, "name": "visa.pdf"})).unwrap();
     assert_eq!(answer["replaced"], true, "{answer}");
     assert_ne!(answer["content"], content.as_str(), "{answer}");
     let tree = tree_of(&put.workspaces, &put.name).await;
@@ -295,7 +295,7 @@ async fn a_folder_of_files_goes_in_inline_or_by_its_content_reference() {
         names.push(name.clone());
         listed.push(json!({"content": content, "name": name, "dir": "repo/src"}));
     }
-    let answer = put.put(json!({"files": listed})).unwrap();
+    let answer = put.put(&json!({"files": listed})).unwrap();
     assert_eq!(answer["count"], 3, "{answer}");
     let keys = put.keys().await;
     let tree = tree_of(&put.workspaces, &put.name).await;
@@ -322,7 +322,7 @@ async fn a_folder_of_files_goes_in_inline_or_by_its_content_reference() {
         }));
     }
     let list = put_content(&put.shelf, put.workspace, &serde_json::to_vec(&second).unwrap());
-    let answer = put.put(json!({"files": list})).unwrap();
+    let answer = put.put(&json!({"files": list})).unwrap();
     assert_eq!(answer["count"], 2, "{answer}");
     let tree = tree_of(&put.workspaces, &put.name).await;
     for name in ["f3.txt", "f4.txt"] {
@@ -340,7 +340,7 @@ async fn content_the_workspace_lacks_and_names_the_tree_refuses_put_nothing() {
     let put = fixture().await;
     let missing = format!("tilo.content:{}", "0".repeat(64));
     let refused = |answer: Result<Value, String>| answer.expect_err("the open is refused");
-    let said = refused(put.put(json!({"content": missing, "name": "gone.bin"})));
+    let said = refused(put.put(&json!({"content": missing, "name": "gone.bin"})));
     assert!(said.contains("holds no"), "{said}");
     assert!(
         tree_is_empty(&put.workspaces, &put.name).await,
@@ -355,7 +355,7 @@ async fn content_the_workspace_lacks_and_names_the_tree_refuses_put_nothing() {
         (json!({"content": "not-content", "name": "a.txt"}), "names no content"),
         (json!({"files": []}), "1 to"),
     ] {
-        let said = refused(put.put(arguments.clone()));
+        let said = refused(put.put(&arguments));
         assert!(said.contains(why), "{arguments}: {said}");
     }
     assert!(

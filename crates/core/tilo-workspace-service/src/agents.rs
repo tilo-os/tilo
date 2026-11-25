@@ -1065,7 +1065,7 @@ impl ServerAgents {
             .iter()
             .filter(|agent| agent.is_active() && agent.sub.is_none() && agent.mcp_client.is_none())
         {
-            if !keys.from_root(id, agent) {
+            if !keys.signs_from_root(id, agent) {
                 keys.ticketed()
                     .ask_unless_approved(tickets, id, agent)
                     .await;

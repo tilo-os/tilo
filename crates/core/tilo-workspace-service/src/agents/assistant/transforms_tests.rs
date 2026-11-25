@@ -152,26 +152,7 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     );
     let person = Caller::local_person(owner_hex).in_workspace(workspace);
 
-    let request = InvokeRequest {
-        on_behalf_of: None,
-        invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: PROVIDER.into(),
-            address: ActionAddress::new(RESOURCE, "summarise"),
-        },
-        argument: InvokeArgument::Json(
-            json!({"input": "A page that says what a transform is."})
-                .as_object()
-                .unwrap()
-                .clone(),
-        ),
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
+    let request = summarise_request().unwrap();
     let receipt: Result<_, ActionCallError> = state
         .action_invoke(&person, None, None, &request)
         .wait_timeout(tilo_test_env::hang_bound())
@@ -205,6 +186,30 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
         1,
         "the run stopped on its first answer: no repair attempt was asked"
     );
+}
+
+/// The summarise request this test sends: a transform of one page.
+fn summarise_request() -> Result<InvokeRequest, String> {
+    Ok(InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.into(),
+            address: ActionAddress::new(RESOURCE, "summarise"),
+        },
+        argument: InvokeArgument::Json(
+            json!({"input": "A page that says what a transform is."})
+                .as_object()
+                .ok_or("the summarise argument is an object")?
+                .clone(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    })
 }
 
 /// The invocation's state once it is terminal, waiting on the broker's own change signal.

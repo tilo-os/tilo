@@ -94,7 +94,7 @@ fn last_edit(invoked: &[InvokeRequest]) -> String {
         .iter()
         .filter(|request| request.target.address.action == "edit")
         .filter_map(|request| argument(request, "body").as_str().map(str::to_owned))
-        .last()
+        .next_back()
         .unwrap_or_else(|| panic!("the reply is written into by an edit: {invoked:?}"))
 }
 

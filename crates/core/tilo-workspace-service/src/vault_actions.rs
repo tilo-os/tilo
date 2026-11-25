@@ -421,7 +421,7 @@ impl PublishedResources for VaultPublished {
                     Ok(reading) => Some(reading.into_bytes()),
                     Err(_) => None,
                 };
-                revision += 1;
+                revision = revision.saturating_add(1);
                 let event = runtime_collab::wire::Event::Reading {
                     resource: named.clone(),
                     revision,

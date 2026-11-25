@@ -32,7 +32,8 @@ fn a_phone_signs_in_with_a_ticket_and_sees_its_workspace_and_its_apps() {
         &server.person,
         server.entry(),
         server.workspaces(),
-    );
+    )
+    .expect("the laptop's ticket and endpoint are made");
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes, its host keeping the package; the phone lists it once it joins.
     server.install(&server::notes_tapp(scratch.path()));

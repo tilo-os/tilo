@@ -324,13 +324,12 @@ impl OpenedFiles {
         let mut kept: BTreeMap<String, (u64, String)> = BTreeMap::new();
         let mut files = Vec::with_capacity(puttings.len());
         for putting in puttings {
-            let (size, manifest) = match kept.get(&putting.hash) {
-                Some(named) => named.clone(),
-                None => {
-                    let named = self.named_content(workspace, sealing, &putting)?;
-                    kept.insert(putting.hash.clone(), named.clone());
-                    named
-                }
+            let (size, manifest) = if let Some(named) = kept.get(&putting.hash) {
+                named.clone()
+            } else {
+                let named = self.named_content(workspace, sealing, &putting)?;
+                kept.insert(putting.hash.clone(), named.clone());
+                named
             };
             files.push((putting, manifest, size));
         }

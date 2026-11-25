@@ -222,7 +222,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
 
     // The VM's device is placed for the workspace's Browser record and its environment record,
     // and is listed nowhere.
-    let (vm_key, vm_cert) = placed_vm(&root, vm_placed_records(workspace_id), "The VM");
+    let (vm_key, vm_cert) = placed_vm(&root, vm_placed_records(workspace_id).unwrap(), "The VM");
     let login = vm_login(&workspace, &vm_cert, &laptop_login);
     let (vm, hosts) = vm_daemon(
         &state.path().join("vm"),
@@ -501,7 +501,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
     let later = placed_cert_until(
         &root,
         vm_cert.device_public_key,
-        vm_placed_records(workspace_id),
+        vm_placed_records(workspace_id).unwrap(),
         "The VM",
         HOUR * 3 / 2,
     );
@@ -525,7 +525,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
             .map(|receipt| matches!(receipt.status, ReceiptStatus::Completed { .. }))
         }
     };
-    let (other_key, _) = placed_vm(&root, vm_placed_records(workspace_id), "Another");
+    let (other_key, _) = placed_vm(&root, vm_placed_records(workspace_id).unwrap(), "Another");
     let browser_only = tilo_user_identity::PlacedRecords::new(
         workspace_id.as_uuid().into_bytes(),
         [document_channel(VM_APP, VM_RECORD)],
@@ -536,7 +536,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
             placed_cert_until(
                 &root,
                 other_key.verifying_key().to_bytes(),
-                vm_placed_records(workspace_id),
+                vm_placed_records(workspace_id).unwrap(),
                 "Another",
                 HOUR * 7 / 4,
             ),
@@ -556,7 +556,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
             placed_cert_until(
                 &root,
                 vm_cert.device_public_key,
-                vm_placed_records(workspace_id),
+                vm_placed_records(workspace_id).unwrap(),
                 "The VM",
                 HOUR / 2,
             ),

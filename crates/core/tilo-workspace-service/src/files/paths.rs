@@ -155,7 +155,7 @@ impl<'a> Paths<'a> {
                 return Err(format!("{path:?} is a folder"));
             }
             let hash = tree.hash_for(ino).map(|hash| hex::encode(hash.as_bytes()));
-            Ok(serde_json::to_value(hash).map_err(|error| error.to_string())?)
+            serde_json::to_value(hash).map_err(|error| error.to_string())
         })?;
         let hash: Option<String> = serde_json::from_value(held).map_err(|e| e.to_string())?;
         let Some(hash) = hash else {

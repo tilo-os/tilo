@@ -770,11 +770,10 @@ mod tests {
                 .revoked
                 .lock_recover()
                 .iter()
-                .filter(|entry| {
+                .find(|entry| {
                     entry.user_public_key == *person && entry.revoked_device_public_key == *key
                 })
-                .cloned()
-                .next())
+                .cloned())
         }
     }
 

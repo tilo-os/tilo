@@ -879,7 +879,9 @@ async fn opening_browser_places_an_environment_whose_session_holds_the_window() 
     );
     assert_eq!(
         material.device.capabilities,
-        DeviceCapabilities::placed(vm_placed_records(WS)),
+        DeviceCapabilities::placed(
+            vm_placed_records(WS).expect("the workspace's two VM records are well formed")
+        ),
         "the device is certified for its VM's records and nothing else, no member device"
     );
     assert_eq!(
@@ -3255,7 +3257,7 @@ impl Fixture {
         let mut grant = tilo_user_identity::prepare_placing_grant(
             self.user.user_pk,
             self.placing.device_pubkey(),
-            vm_placed_records(workspace),
+            vm_placed_records(workspace).expect("the workspace's two VM records are well formed"),
             "Hosting",
             tilo_clock::unix_now_ns(),
             None,
@@ -3295,7 +3297,9 @@ async fn a_host_that_is_the_persons_device_places_the_vm_at_once_and_lists_it_am
     let person = fixture.user.user_pk;
     assert_eq!(
         material.device.capabilities,
-        DeviceCapabilities::placed(vm_placed_records(WS)),
+        DeviceCapabilities::placed(
+            vm_placed_records(WS).expect("the workspace's two VM records are well formed")
+        ),
         "its certificate reaches the VM's records of the workspace it was placed for alone"
     );
     let scope = tilo_server::environment::EnvironmentScope::of_workspace_device(WS);
@@ -3348,7 +3352,9 @@ async fn a_granted_host_places_and_renews_until_the_grant_is_revoked() {
     );
     assert_eq!(
         material.device.capabilities,
-        DeviceCapabilities::placed(vm_placed_records(WS))
+        DeviceCapabilities::placed(
+            vm_placed_records(WS).expect("the workspace's two VM records are well formed")
+        )
     );
     assert_eq!(material.device.device_public_key, window.device);
     let renewed = fixture

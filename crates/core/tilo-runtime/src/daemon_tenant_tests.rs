@@ -138,7 +138,7 @@ fn confined(workspace: tilo_desktop_model::WorkspaceId) {
     let cert = crate::device::confined::placed_cert(
         &person,
         held.device_public_key,
-        tilo_workspace_service::environment::vm_placed_records(workspace),
+        tilo_workspace_service::environment::vm_placed_records(workspace).unwrap(),
         "The VM",
     );
     tilo_device_identity::persist::write_device_cert(&keys.device_cert, &cert).unwrap();

@@ -41,7 +41,8 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
         &server.person,
         server.entry(),
         server.workspaces(),
-    );
+    )
+    .expect("the laptop's ticket and endpoint are made");
     let mut phone =
         tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
     phone

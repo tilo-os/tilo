@@ -89,19 +89,18 @@ impl WorkspaceRuntime {
         self.revoked_keys.extend(revoked);
         self.revoked_keys
             .retain(|device| members.member_devices.binary_search(device).is_err());
-        let removed: Vec<[u8; 32]> = self
+        let device_removed = self
             .members
             .member_devices
             .iter()
             .copied()
-            .filter(|device| members.member_devices.binary_search(device).is_err())
-            .collect();
+            .any(|device| members.member_devices.binary_search(&device).is_err());
         let roots_left = leaves_out(&self.members.member_user_roots, &members.member_user_roots);
         self.members = Arc::new(members);
         if let Some(device_access) = device_access {
             self.device_access = Some(Arc::new(device_access));
         }
-        if !removed.is_empty() || roots_left {
+        if device_removed || roots_left {
             crate::authority_epoch::bump();
         }
     }

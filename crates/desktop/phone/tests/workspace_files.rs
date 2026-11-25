@@ -51,7 +51,8 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
         &server.person,
         server.entry(),
         server.workspaces(),
-    );
+    )
+    .expect("the laptop's ticket and endpoint are made");
     let kept = kept_workspace(&server);
     let mut phone = Device::start(&support::profile()).expect("the phone's daemon");
     phone

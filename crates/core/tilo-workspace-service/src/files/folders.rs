@@ -71,7 +71,8 @@ impl Folders {
 
     fn moved(&self) {
         self.0.revision.fetch_add(1, Ordering::Relaxed);
-        for wake in std::mem::take(&mut *self.0.waiting.lock_recover()) {
+        let waiting = std::mem::take(&mut *self.0.waiting.lock_recover());
+        for wake in waiting {
             wake.wake();
         }
     }
@@ -115,6 +116,7 @@ impl ResourceReads for Folders {
             let mut waiting = self.0.waiting.lock_recover();
             waiting.retain(ResourceWake::waiting);
             waiting.push(wake.clone());
+            drop(waiting);
             Ok(())
         })
     }

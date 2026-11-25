@@ -301,6 +301,32 @@ impl ServiceSessions {
         crate::resource_actions::register(&workspaces);
         // The workspaces held here admit through their governance on this device's dispatch,
         // founded here or not.
+        sessions.serve_governance(governance, &workspaces, own_server.clone(), host_revocations);
+        // One store of the calls that wait for a person's yes serves this device: every
+        // dispatch here keeps its asked call in it, each workspace's invocations read them, and
+        // `tilo.invocations#resolve` answers them, whichever embedder opened the service.
+        Box::pin(workspaces.open_asked_store(tokio::runtime::Handle::current()))
+            .await
+            .map_err(ServiceError::Workspaces)?;
+        Ok((
+            sessions,
+            Some(Governed {
+                workspaces,
+                actions: own_server.unwrap_or_else(no_actions),
+            }),
+        ))
+    }
+
+    /// Put the workspaces this service holds on its dispatch, whether it founders them or not:
+    /// a founder attaches its governance and its host's own operations, and every other service
+    /// serves its workspaces' actions through one of its own.
+    fn serve_governance(
+        &self,
+        governance: Option<crate::workspaces::ServiceWorkspaceActions>,
+        workspaces: &crate::workspaces::Workspaces,
+        own_server: Option<Arc<dyn AppActionServer>>,
+        host_revocations: Arc<std::sync::RwLock<RevocationList>>,
+    ) {
         if governance.is_none() {
             crate::workspaces::ServiceWorkspaceActions::new().serve(workspaces.clone());
         }
@@ -308,10 +334,10 @@ impl ServiceSessions {
             governance.attach(workspaces.clone());
             // Sessions ask its workspaces what a device may do; the lock is set
             // before the endpoint routes any session to the service.
-            let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
+            let _ = self.handler.admin.set(Arc::new(workspaces.clone()));
             // The host's own operations answer on its action service for the requests that name
             // no workspace: a page's whole administration, asked by a device of its person.
-            if let Some(server) = own_server.clone() {
+            if let Some(server) = own_server {
                 workspaces.action_service().admit_host_operations(Arc::new(
                     crate::app_serving::HostOperations::new(
                         server,
@@ -338,19 +364,6 @@ impl ServiceSessions {
                 tokio::spawn(async move { carrying.carry_vaults_over().await });
             }
         }
-        // One store of the calls that wait for a person's yes serves this device: every
-        // dispatch here keeps its asked call in it, each workspace's invocations read them, and
-        // `tilo.invocations#resolve` answers them, whichever embedder opened the service.
-        Box::pin(workspaces.open_asked_store(tokio::runtime::Handle::current()))
-            .await
-            .map_err(ServiceError::Workspaces)?;
-        Ok((
-            sessions,
-            Some(Governed {
-                workspaces,
-                actions: own_server.unwrap_or_else(no_actions),
-            }),
-        ))
     }
 
     /// What the workspaces a service governs take from it: its workspaces' registry,
@@ -423,11 +436,17 @@ impl ServiceSessions {
 
     /// Whether `device` holds a link to `workspace_id` here now: one the
     /// workspace's host admitted and has not refused.
-    pub async fn is_subscribed(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
-        self.handler
-            .admin
-            .get()
-            .is_some_and(|workspaces| workspaces.linked(workspace_id, device))
+    pub fn is_subscribed(
+        &self,
+        workspace_id: WorkspaceId,
+        device: &[u8; 32],
+    ) -> impl std::future::Future<Output = bool> + Send {
+        std::future::ready(
+            self.handler
+                .admin
+                .get()
+                .is_some_and(|workspaces| workspaces.linked(workspace_id, device)),
+        )
     }
 
     /// Stop what answered for the service's members' devices: the app action

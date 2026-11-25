@@ -177,11 +177,13 @@ impl Approver for PlacedDevice {
         let placer = self.placer.clone();
         let environments = self.environments.clone();
         let (refused, stopped) = (self.refused.clone(), self.stop.clone());
-        let records = vm_placed_records(self.workspace_id);
+        let records = vm_placed_records(self.workspace_id)
+            .map_err(|error| Declined(error.to_string()));
         Box::pin(async move {
             if *stopped.borrow() {
                 return Err(Declined(STOPPED.to_owned()));
             }
+            let records = records?;
             let certified = async {
                 let issuer = placer.issuer(&records, tilo_clock::unix_now_ns()).await?;
                 let cert = placer.certify(
@@ -270,7 +272,7 @@ impl HostedBrowsers {
             host_key: authority.host_key.clone(),
             workspaces: authority.workspaces.clone(),
         };
-        let records = vm_placed_records(workspace_id);
+        let records = vm_placed_records(workspace_id).map_err(|error| error.to_string())?;
         // Refused before the VM starts: a host that may not place it starts nothing.
         let may_place = {
             let placer = placer.clone();
@@ -407,7 +409,7 @@ impl HostedBrowsers {
             .as_ref()
             .map(|authority| (authority.runtime.clone(), authority.environments.clone()))
             .ok_or("Browser is still starting. Try again in a minute.")?;
-        let records = vm_placed_records(workspace_id);
+        let records = vm_placed_records(workspace_id).map_err(|error| error.to_string())?;
         let now = tilo_clock::unix_now_ns();
         let issuer = {
             let (placer, records) = (placer.clone(), records.clone());

@@ -128,7 +128,8 @@ impl TurnUses {
         let filled = browsers
             .fill_for_turn(self.workspace_id, fill, releasing)
             .await;
-        match asks.lock_recover().take() {
+        let asked = asks.lock_recover().take();
+        match asked {
             Some(facts) => Err(ActionCallError::asks(facts)),
             None => filled,
         }

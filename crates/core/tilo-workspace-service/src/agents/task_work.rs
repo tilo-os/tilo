@@ -153,9 +153,10 @@ impl Work {
         });
         match unwrapped(held) {
             Some(Value::String(id)) if !id.is_empty() => Self::at(workspaces, workspace, &id).await,
-            Some(Value::Object(record)) => match record.get("ref").and_then(Value::as_str) {
-                Some(id) => Self::at(workspaces, workspace, id).await,
-                None => {
+            Some(Value::Object(record)) => {
+                if let Some(id) = record.get("ref").and_then(Value::as_str) {
+                    Self::at(workspaces, workspace, id).await
+                } else {
                     let names = workspaces
                         .tilolang()
                         .map_or_else(BTreeMap::new, |tilolang| {
@@ -166,7 +167,7 @@ impl Work {
                         None => Self::held(&record, &names),
                     }
                 }
-            },
+            }
             _ => Self::default(),
         }
     }

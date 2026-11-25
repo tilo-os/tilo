@@ -61,18 +61,17 @@ pub async fn open(
     groups: DeviceKeyGroups,
     configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
 ) -> Result<WorkspaceService, ServiceError> {
-    let identity = match device.itself {
-        Some(itself) => itself,
-        None => {
-            let key = device.signer.device_signing_key().ok_or_else(|| {
-                ServiceError::Identity(
-                    "this device's workspace service signs as its device, whose key it does not \
-                     hold in the clear"
-                        .into(),
-                )
-            })?;
-            ServiceIdentity::as_device(device.cert, key)
-        }
+    let identity = if let Some(itself) = device.itself {
+        itself
+    } else {
+        let key = device.signer.device_signing_key().ok_or_else(|| {
+            ServiceError::Identity(
+                "this device's workspace service signs as its device, whose key it does not \
+                 hold in the clear"
+                    .into(),
+            )
+        })?;
+        ServiceIdentity::as_device(device.cert, key)
     };
     // A person's own device takes nobody else's work, unless `configure` says otherwise, and
     // its member copies act as it.

@@ -487,6 +487,35 @@ pub fn event_shortcut(kept: &Kept) -> Result<Shortcut, String> {
     };
     // Written into the person's own conversation with their assistant, as Chat's `write_to`
     // writes to anyone: the message is the assistant's trigger, which starts its turn there.
+    let steps = event_steps(definition, kept, &text);
+    let shortcut = Shortcut {
+        id: definition.id.clone(),
+        name: definition.name.clone(),
+        inputs,
+        steps,
+        step_timeout_secs: None,
+        output: None,
+        grant: Vec::new(),
+        triggers: vec![trigger],
+        saved_by: None,
+        saved_proof: None,
+        paused: false,
+    };
+    // Exactly what its steps and its trigger need, and nothing an event's author could widen:
+    // the description has no place for a grant.
+    Ok(Shortcut {
+        grant: tilo_automation::grant::derived_rules(
+            &shortcut,
+            &tilo_automation::ActionCatalog::new(Vec::new()),
+        ),
+        ..shortcut
+    })
+}
+
+/// The steps the event `kept` runs, `text` being the instruction its person's assistant is told:
+/// the count when it runs every so often, the question when it asks one, the look when it looks,
+/// each wrapping the one before it.
+fn event_steps(definition: &Definition, kept: &Kept, text: &str) -> Vec<Step> {
     let mut steps = vec![Step::new(
         "tell",
         StepKind::Invoke {
@@ -503,7 +532,7 @@ pub fn event_shortcut(kept: &Kept) -> Result<Shortcut, String> {
                         kept.person.as_str()
                     ))),
                 ),
-                ("body".to_owned(), Binding::Template(text)),
+                ("body".to_owned(), Binding::Template(text.to_owned())),
             ]),
             appearance: None,
         },
@@ -561,28 +590,7 @@ pub fn event_shortcut(kept: &Kept) -> Result<Shortcut, String> {
             when("found", Binding::step("look", "/found"), steps),
         ];
     }
-    let shortcut = Shortcut {
-        id: definition.id.clone(),
-        name: definition.name.clone(),
-        inputs,
-        steps,
-        step_timeout_secs: None,
-        output: None,
-        grant: Vec::new(),
-        triggers: vec![trigger],
-        saved_by: None,
-        saved_proof: None,
-        paused: false,
-    };
-    // Exactly what its steps and its trigger need, and nothing an event's author could widen:
-    // the description has no place for a grant.
-    Ok(Shortcut {
-        grant: tilo_automation::grant::derived_rules(
-            &shortcut,
-            &tilo_automation::ActionCatalog::new(Vec::new()),
-        ),
-        ..shortcut
-    })
+    steps
 }
 
 /// The event `shortcut` is, where it is one.
@@ -692,7 +700,9 @@ pub fn view(kept: &Kept, shortcut: &Shortcut, runs: &Runs, now_ms: i64) -> Event
         next_at_ms,
         only_if: definition.only_if.clone(),
         every: definition.every,
-        count: definition.every.map_or(0, |every| runs.counted % every),
+        count: definition
+            .every
+            .map_or(0, |every| runs.counted.checked_rem(every).unwrap_or(0)),
         instruction: definition.instruction.clone(),
         told_as: definition.told_as,
         note: serde_json::to_value(&kept.note).unwrap_or(Value::Null),
@@ -838,7 +848,7 @@ impl WorkspaceEvents {
             .await
             .into_iter()
             .find(|(kept, _)| kept.definition.id == id)
-            .ok_or_else(|| refused("the workspace keeps no such event"))
+            .ok_or_else(|| Box::new(refused("the workspace keeps no such event")))
     }
 
     /// `event` as a member reads it now.
@@ -869,9 +879,9 @@ impl WorkspaceEvents {
                     "an event to set up names itself, what starts it and what to do then",
                 )?;
                 if self.saved(workspace).await.len() >= MAX_EVENTS {
-                    return Err(refused(format!(
+                    return Err(Box::new(refused(format!(
                         "a workspace keeps at most {MAX_EVENTS} events"
-                    )));
+                    ))));
                 }
                 let definition = Definition {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -950,7 +960,9 @@ impl WorkspaceEvents {
                     .map_err(unavailable)?;
                 said(&self.listed(workspace).await)
             }
-            _ => Err(refused(format!("the events offer no action `{action}`"))),
+            _ => Err(Box::new(refused(format!(
+                "the events offer no action `{action}`"
+            )))),
         }
     }
 
@@ -996,22 +1008,22 @@ impl WorkspaceEvents {
 /// Why an action was not answered.
 pub type Failure = Box<ActionFailure>;
 
-fn refused(why: impl Into<String>) -> Failure {
-    Box::new(ActionFailure {
+fn refused(why: impl Into<String>) -> ActionFailure {
+    ActionFailure {
         code: "refused".into(),
         message: why.into(),
         details: None,
         retryable: false,
-    })
+    }
 }
 
-fn unavailable(why: impl Into<String>) -> Failure {
-    Box::new(ActionFailure {
+fn unavailable(why: impl Into<String>) -> ActionFailure {
+    ActionFailure {
         code: "unavailable".into(),
         message: why.into(),
         details: None,
         retryable: true,
-    })
+    }
 }
 
 /// What `argument` names, or `what` it should have named. The reason never quotes it.
@@ -1027,7 +1039,7 @@ fn argument_of<T: serde::de::DeserializeOwned>(argument: Value, what: &str) -> R
 }
 
 fn said<T: Serialize>(answer: &T) -> Result<Value, Failure> {
-    serde_json::to_value(answer).map_err(|error| refused(error.to_string()))
+    serde_json::to_value(answer).map_err(|error| Box::new(refused(error.to_string())))
 }
 
 /// A request's argument as an object: empty where it names none.

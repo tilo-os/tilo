@@ -745,38 +745,13 @@ impl Answers {
         let engine = workspaces
             .agent_keys()
             .ok_or("this device runs no agents of its workspaces")?;
-        let argument = request.argument.to_slot();
-        let arguments = argument
-            .as_deref()
-            .and_then(|text| text.strip_prefix(ARGUMENTS_JSON_PREFIX))
-            .and_then(|json| serde_json::from_str::<Map<String, Value>>(json).ok())
-            .ok_or("an answer takes the change that triggered it")?;
-        let place: Where = arguments
-            .get(CAUSE)
-            .cloned()
-            .ok_or("an answer takes the change that started the turn")
-            .and_then(|cause| {
-                serde_json::from_value(cause)
-                    .map_err(|_| "the change that started the turn does not read as one")
-            })?;
-        let event: DocumentEvent = arguments
-            .get(EVENT_INPUT)
-            .cloned()
-            .ok_or("an answer takes the change that triggered it")
-            .and_then(|event| {
-                serde_json::from_value(event).map_err(|_| "the change does not read as one")
-            })?;
-        let actor = tilo_broker_core::BrokerActor::for_caller(caller);
-        let saver = actor
-            .direct_person()
-            .or_else(|| actor.acting_for())
-            .ok_or("an answer is started for a person")?
-            .to_owned();
-        let workspace = caller
-            .workspace()
-            .ok_or("the answer was asked in no workspace of this device")?
-            .to_owned();
-        let invocation = request.invocation;
+        let Answer {
+            place,
+            event,
+            saver,
+            workspace,
+            invocation,
+        } = answer_of(caller, request)?;
         let stop = Arc::new(AtomicBool::new(false));
         self.going
             .lock_recover()
@@ -844,6 +819,62 @@ impl Answers {
         }
         Ok(outcome)
     }
+}
+
+/// What the change `request` carries, as the answer that starts it names it.
+struct Answer {
+    /// The change that started the turn.
+    place: Where,
+    /// The change itself.
+    event: DocumentEvent,
+    /// Who the answer is saved by, as their root.
+    saver: String,
+    /// The workspace the answer runs in.
+    workspace: String,
+    /// The invocation it runs under.
+    invocation: InvocationId,
+}
+
+/// Read `request`'s argument as the [`Answer`] it names, started for `caller`.
+fn answer_of(caller: &Caller, request: &InvokeRequest) -> Result<Answer, String> {
+    let argument = request.argument.to_slot();
+    let arguments = argument
+        .as_deref()
+        .and_then(|text| text.strip_prefix(ARGUMENTS_JSON_PREFIX))
+        .and_then(|json| serde_json::from_str::<Map<String, Value>>(json).ok())
+        .ok_or("an answer takes the change that triggered it")?;
+    let place: Where = arguments
+        .get(CAUSE)
+        .cloned()
+        .ok_or("an answer takes the change that started the turn")
+        .and_then(|cause| {
+            serde_json::from_value(cause)
+                .map_err(|_| "the change that started the turn does not read as one")
+        })?;
+    let event: DocumentEvent = arguments
+        .get(EVENT_INPUT)
+        .cloned()
+        .ok_or("an answer takes the change that triggered it")
+        .and_then(|event| {
+            serde_json::from_value(event).map_err(|_| "the change does not read as one")
+        })?;
+    let actor = tilo_broker_core::BrokerActor::for_caller(caller);
+    let saver = actor
+        .direct_person()
+        .or_else(|| actor.acting_for())
+        .ok_or("an answer is started for a person")?
+        .to_owned();
+    let workspace = caller
+        .workspace()
+        .ok_or("the answer was asked in no workspace of this device")?
+        .to_owned();
+    Ok(Answer {
+        place,
+        event,
+        saver,
+        workspace,
+        invocation: request.invocation,
+    })
 }
 
 /// What decides whether a caller may read a resource (app, kind, resource): the device's app

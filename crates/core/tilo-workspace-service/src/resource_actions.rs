@@ -169,6 +169,21 @@ fn failed(code: &str, message: String) -> ReceiptStatus {
     }
 }
 
+/// The named arguments a resource's action takes, or the refusal that it took something else.
+fn named_arguments(
+    argument: &InvokeArgument,
+) -> Result<Map<String, serde_json::Value>, Box<ReceiptStatus>> {
+    match argument {
+        InvokeArgument::Json(arguments) => Ok(arguments.clone()),
+        InvokeArgument::None => Ok(Map::new()),
+        InvokeArgument::Text(_) => Err(Box::new(ReceiptStatus::Rejected {
+            error: ActionCallError::InvalidRequest {
+                reason: "a resource's action takes named arguments".to_owned(),
+            },
+        })),
+    }
+}
+
 impl ResourceActions {
     async fn applied(
         &self,
@@ -190,23 +205,7 @@ impl ResourceActions {
         // Any app's record moves to another workspace of the caller's: the store judges each
         // side of it as the caller's write there.
         if request.target.address.action == tilo_resource_store::MOVE_VERB {
-            let argument = |name: &str| match &request.argument {
-                InvokeArgument::Json(arguments) => arguments
-                    .get(name)
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned),
-                _ => None,
-            };
-            let (Some(to), Some(target)) = (argument("to"), argument("target")) else {
-                return Err(invalid(
-                    "a move names the workspace it goes `to` and its `target` id there",
-                ));
-            };
-            self.workspaces
-                .move_record((&workspace, &to), (app, id, &target), caller)
-                .await
-                .map_err(|error| failed("refused", error))?;
-            return Ok(ActionOutput::default());
+            return self.moved(&workspace, app, id, caller, request).await;
         }
         let declared = self
             .declared
@@ -215,13 +214,7 @@ impl ResourceActions {
             .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
         let workspace_id =
             WorkspaceId::parse(&workspace).ok_or_else(|| invalid("that is not a workspace"))?;
-        let arguments = match &request.argument {
-            InvokeArgument::Json(arguments) => arguments.clone(),
-            InvokeArgument::None => Map::new(),
-            InvokeArgument::Text(_) => {
-                return Err(invalid("a resource's action takes named arguments"));
-            }
-        };
+        let arguments = named_arguments(&request.argument).map_err(|status| *status)?;
         // Whoever the workspace does not admit is refused before anything of it is read.
         let policy = self
             .workspaces
@@ -254,14 +247,16 @@ impl ResourceActions {
         let mut registry = tilo_actions::ActionRegistry::new();
         declared.kind.register(&mut registry);
         // The action on the record as it stands, once the workspace's grants on its node allow it.
-        let change = |doc: &mut automerge::AutoCommit| -> Result<(), ReceiptStatus> {
+        let change = |doc: &mut automerge::AutoCommit| -> Result<(), Box<ReceiptStatus>> {
             let tree = declared
                 .kind
                 .publish(declared.kind.kind(), doc)
-                .map_err(|error| failed("unreadable", error.to_string()))?;
+                .map_err(|error| failed("unreadable", error.to_string()))
+                .map_err(Box::new)?;
             let address = &request.target.address;
             let (resource, action) = api::locate(std::slice::from_ref(&tree), address)
-                .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
+                .ok_or_else(|| rejected(ActionCallError::UnknownAction))
+                .map_err(Box::new)?;
             match permissions.invocation_answer(
                 declared.kind.declaring_app(),
                 resource,
@@ -270,10 +265,10 @@ impl ResourceActions {
                 None,
             ) {
                 collaboration::permissions::Answer::Deny => {
-                    return Err(rejected(ActionCallError::NotPermitted));
+                    return Err(Box::new(rejected(ActionCallError::NotPermitted)));
                 }
                 collaboration::permissions::Answer::Ask if request.confirmation.is_none() => {
-                    return Err(rejected(ActionCallError::confirmation_required()));
+                    return Err(Box::new(rejected(ActionCallError::confirmation_required())));
                 }
                 _ => {}
             }
@@ -288,6 +283,7 @@ impl ResourceActions {
             )
             .map(drop)
             .map_err(|error| tilo_agent_session::record_actions::api_status(&error))
+            .map_err(Box::new)
         };
         let genesis = declared
             .found(&workspace)
@@ -295,34 +291,92 @@ impl ResourceActions {
         // The person's own workspace is written as its every record is: on the copy this device
         // keeps of it, or carried to the device of theirs that keeps it.
         if workspace == person_workspace::workspace_id(&self.workspaces) {
-            let device = self.workspaces.device_cert().device_public_key;
-            let mut refused = None;
-            let written = person_workspace::edit_on(
-                &self.workspaces,
-                &workspace,
-                (app, id),
-                Box::new(genesis),
-                |doc| {
-                    // This device's own actor: the genesis is one actor's change already, and two
-                    // devices continuing it under that actor would make one sequence of two
-                    // different changes.
-                    doc.set_actor(automerge::ActorId::from(device.to_vec()));
-                    change(doc).map_err(|status| {
-                        refused = Some(status);
-                        "the record's action was refused".to_owned()
-                    })
-                },
-            )
-            .await;
-            return match (written, refused) {
-                (Ok(()), _) => Ok(ActionOutput::default()),
-                (Err(_), Some(status)) => Err(status),
-                (Err(error), None) => Err(failed("not_written", error)),
-            };
+            return self
+                .write_person_workspace(&workspace, (app, id), genesis, change)
+                .await;
         }
+        self.write_record(&workspace, (app, id), genesis, change)
+            .await
+    }
+
+    /// `caller`'s move of the record (`app`, `id`) to the workspace `request` names, judged by
+    /// the store as the caller's write on each side of it.
+    async fn moved(
+        &self,
+        workspace: &str,
+        app: &str,
+        id: &str,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<ActionOutput, ReceiptStatus> {
+        let argument = |name: &str| match &request.argument {
+            InvokeArgument::Json(arguments) => arguments
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            _ => None,
+        };
+        let (Some(to), Some(target)) = (argument("to"), argument("target")) else {
+            return Err(ReceiptStatus::Rejected {
+                error: ActionCallError::InvalidRequest {
+                    reason: "a move names the workspace it goes `to` and its `target` id there"
+                        .to_owned(),
+                },
+            });
+        };
+        self.workspaces
+            .move_record((workspace, &to), (app, id, &target), caller)
+            .await
+            .map_err(|error| failed("refused", error))?;
+        Ok(ActionOutput::default())
+    }
+
+    /// Write the record (`app`, `id`) into the caller's own workspace: on the copy this device
+    /// keeps of it, or carried to the device of theirs that keeps it.
+    async fn write_person_workspace(
+        &self,
+        workspace: &str,
+        (app, id): (&str, &str),
+        genesis: automerge::AutoCommit,
+        change: impl Fn(&mut automerge::AutoCommit) -> Result<(), Box<ReceiptStatus>> + Send + Sync,
+    ) -> Result<ActionOutput, ReceiptStatus> {
+        let device = self.workspaces.device_cert().device_public_key;
+        let mut refused = None;
+        let written = person_workspace::edit_on(
+            &self.workspaces,
+            workspace,
+            (app, id),
+            Box::new(genesis),
+            |doc| {
+                // This device's own actor: the genesis is one actor's change already, and two
+                // devices continuing it under that actor would make one sequence of two
+                // different changes.
+                doc.set_actor(automerge::ActorId::from(device.to_vec()));
+                change(doc).map_err(|status| {
+                    refused = Some(*status);
+                    "the record's action was refused".to_owned()
+                })
+            },
+        )
+        .await;
+        match (written, refused) {
+            (Ok(()), _) => Ok(ActionOutput::default()),
+            (Err(_), Some(status)) => Err(status),
+            (Err(error), None) => Err(failed("not_written", error)),
+        }
+    }
+
+    /// Write the record (`app`, `id`) on the copy this device keeps of it.
+    async fn write_record(
+        &self,
+        workspace: &str,
+        (app, id): (&str, &str),
+        genesis: automerge::AutoCommit,
+        change: impl Fn(&mut automerge::AutoCommit) -> Result<(), Box<ReceiptStatus>> + Send + Sync,
+    ) -> Result<ActionOutput, ReceiptStatus> {
         let kept = self
             .workspaces
-            .resource_document(&workspace, app, id)
+            .resource_document(workspace, app, id)
             .await
             .map_err(|error| failed("not_read", error.to_string()))?;
         let (mut doc, founding) = match kept {
@@ -334,7 +388,7 @@ impl ResourceActions {
             None => (genesis, true),
         };
         let heads = doc.get_heads();
-        change(&mut doc)?;
+        change(&mut doc).map_err(|status| *status)?;
         let changes = if founding {
             doc.save()
         } else {
@@ -343,7 +397,7 @@ impl ResourceActions {
         if !changes.is_empty() {
             self.writes
                 .write(
-                    &workspace,
+                    workspace,
                     &changes,
                     DocumentWriting {
                         app,

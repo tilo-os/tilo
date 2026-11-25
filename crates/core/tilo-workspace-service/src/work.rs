@@ -869,26 +869,34 @@ async fn eligibility(
                     }
                     Ok(())
                 }
-                None => {
-                    let (app, resource, action) =
-                        once_parts(address).ok_or(Ineligible::CannotOpen)?;
-                    if !workspaces
-                        .opens_record(device, workspace, app, resource)
-                        .await
-                    {
-                        return Err(Ineligible::CannotOpen);
-                    }
-                    if !workspaces
-                        .permits_action(device, workspace, (app, resource, action))
-                        .await
-                    {
-                        return Err(Ineligible::NotPermitted);
-                    }
-                    Ok(())
-                }
+                None => once_unattributed_eligible(workspaces, workspace, device, address).await,
             }
         }
     }
+}
+
+/// Whether this device may run a `turn` in `workspace` once for the address `address`, which no
+/// person's or agent's identity stands behind, or why not.
+async fn once_unattributed_eligible(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: [u8; 32],
+    address: &str,
+) -> Result<(), Ineligible> {
+    let (app, resource, action) = once_parts(address).ok_or(Ineligible::CannotOpen)?;
+    if !workspaces
+        .opens_record(device, workspace, app, resource)
+        .await
+    {
+        return Err(Ineligible::CannotOpen);
+    }
+    if !workspaces
+        .permits_action(device, workspace, (app, resource, action))
+        .await
+    {
+        return Err(Ineligible::NotPermitted);
+    }
+    Ok(())
 }
 
 /// The Linux machines a device runs its workspaces' shells, terminals and

@@ -164,6 +164,7 @@ impl LiveRows {
                 *held = here;
                 moved = true;
             }
+            drop(held);
         }
         {
             let mut shown = self.0.rows.lock_recover();
@@ -171,6 +172,7 @@ impl LiveRows {
                 *shown = rows;
                 moved = true;
             }
+            drop(shown);
         }
         if moved {
             self.moved();
