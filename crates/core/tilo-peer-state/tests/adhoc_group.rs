@@ -37,10 +37,10 @@ use tilo_peer_state::owner::session::{
 use tilo_peer_state::owner::{NativeWorkspaceOwner, open_file};
 use tilo_peer_state::{CLOCK_SKEW_NS, CopyRole, unranked};
 use tilo_server::Reaching;
-use tilo_server::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
+use tilo_server::service::{ServiceConfig, WorkspaceService};
 use tilo_server::workspaces::IssueInvitationRequest;
-use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::own_device::{self, KeyService, Opened};
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0";
@@ -69,6 +69,8 @@ struct Desktop {
     owner: NativeWorkspaceOwner,
     endpoint: Endpoint,
     service: Arc<WorkspaceService>,
+    /// The device's key service, kept open beside its workspace service.
+    _keys: KeyService,
     router: Router,
     link: Option<DirectSync>,
     syncing: Option<tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>>,
@@ -82,19 +84,29 @@ impl Desktop {
     /// bound to its own key, and its owner kept in `directory`.
     async fn start(directory: &Path, name: &str, key: SigningKey, cert: DeviceCert) -> Self {
         let endpoint = localhost_endpoint(&key).await;
-        let mut config = ServiceConfig::new(
-            directory.join(name).join("workspace-service"),
-            WorkSetting::none(),
-        );
-        // The group's endpoints reach each other on this machine alone: no
-        // other machine names where they are reached.
-        config.reaching = Reaching::OnItsOwn;
-        // The service writes as the desktop, whose key its endpoint is bound with: one device,
-        // one key, as every device's service opens.
-        let identity = ServiceIdentity::as_device(&cert, key.clone());
-        let service = WorkspaceService::open(config, identity, endpoint.clone(), None)
-            .await
-            .expect("this desktop's workspace service opens");
+        // The service and the key service beside it open as every device's do, and write as the
+        // desktop, whose key its endpoint is bound with: one device, one key. Its key service
+        // holds the keys the workspaces it founds and takes part in seal their records with.
+        let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
+        let Opened { service, keys } = own_device::open_in(
+            &directory.join(name),
+            own_device::Device {
+                cert: &cert,
+                signer: &signer,
+                itself: None,
+            },
+            own_device::vault_key(&key),
+            endpoint.clone(),
+            Arc::new(tilo_workspace_service::apps::workspace_keys::NoSealChecks),
+            |config| ServiceConfig {
+                // The group's endpoints reach each other on this machine alone: no other
+                // machine names where they are reached.
+                reaching: Reaching::OnItsOwn,
+                ..config
+            },
+        )
+        .await
+        .expect("this desktop's workspace service opens");
         let mut router = Router::builder(endpoint.clone());
         for (alpn, handler) in service.protocols() {
             router = router.accept(alpn, handler);
@@ -105,6 +117,7 @@ impl Desktop {
             key,
             endpoint,
             service: Arc::new(service),
+            _keys: keys,
             router: router.spawn(),
             link: None,
             syncing: None,

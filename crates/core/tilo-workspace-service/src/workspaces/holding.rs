@@ -355,7 +355,27 @@ impl Workspaces {
             .governance()
             .holder_role(&self.inner.host.cert.device_public_key)
             != Some(CopyRole::Store);
+        // A device of someone the workspace has writes in it once it is handed it: it signs its
+        // own row on the member list, as every device enters, so the copy it keeps takes its
+        // changes even when the device that handed it over is gone. A server of a person the
+        // workspace does not have keeps and carries it, and signs nothing.
+        let person = self.inner.host.cert.user_public_key;
+        let theirs = governed
+            .peer()
+            .governance()
+            .governed_members(tilo_clock::wall())
+            .is_ok_and(|list| {
+                list.members
+                    .iter()
+                    .any(|member| member.root() == Some(person) && !member.removed)
+            });
         drop(governed);
+        if theirs {
+            let host = &self.inner.host;
+            self.enter(&workspace, (&host.cert, &host.key))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         let kept = self
             .kept_for_person_at_hand_over(&workspace, holds_keys)
             .await;

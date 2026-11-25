@@ -19071,6 +19071,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-wire-frame",
  "tilo-workspace-join",
+ "tilo-workspace-service",
  "tokio",
  "tracing",
  "uuid",
