@@ -46,6 +46,7 @@ impl Checker<'_> {
         let mut names = BTreeSet::new();
         names_in_ui(body, &mut names);
         names.remove(var);
+        let targets = self.set_only(&mut names, |reads| reads_in_ui(body, reads));
         if let Some(direct) = self
             .direct_row(var, elem, body)
             .filter(|_| self.st.macros.is_empty())
@@ -111,6 +112,7 @@ impl Checker<'_> {
                 owner: &owner,
                 params: &params,
                 states: &states,
+                targets: &targets,
             },
             |this| {
                 this.inherit(inherited);
@@ -179,6 +181,7 @@ impl Checker<'_> {
         let mut names = BTreeSet::new();
         names_in_ui(block, &mut names);
         names.remove(var);
+        let targets = self.set_only(&mut names, |reads| reads_in_ui(block, reads));
         if names.iter().any(|name| self.st.macros.contains_key(name)) {
             return Some(list);
         }
@@ -196,6 +199,7 @@ impl Checker<'_> {
                 owner: &owner,
                 params: &params,
                 states: &states,
+                targets: &targets,
             },
             |this| {
                 let Some((item, _)) = this.lookup(var) else {
@@ -236,6 +240,27 @@ impl Checker<'_> {
             .collect();
         self.loop_node(&id, list, var, &[], around, list_node);
         None
+    }
+
+    /// Takes out of `names` the view states a row body only changes with `set(state, value)` and never
+    /// reads (`reads` collects what it reads), and answers them: the row names them, but is not passed
+    /// them, so a row renders again when what it shows changes, not each time another row is chosen.
+    fn set_only(
+        &self,
+        names: &mut BTreeSet<String>,
+        reads: impl FnOnce(&mut BTreeSet<String>),
+    ) -> Vec<(String, StateRef)> {
+        let mut read = BTreeSet::new();
+        reads(&mut read);
+        let targets: Vec<(String, StateRef)> = names
+            .iter()
+            .filter(|name| !read.contains(*name))
+            .filter_map(|name| Some((name.clone(), self.state_named(name)?)))
+            .collect();
+        for (name, _) in &targets {
+            names.remove(name);
+        }
+        targets
     }
 
     /// The values a row body uses from around its loop, by name; `None` when one of them cannot be
@@ -410,6 +435,7 @@ impl Checker<'_> {
             owner,
             params,
             states,
+            targets,
         } = row;
         let outer = std::mem::take(&mut self.st);
         self.begin(Ctx::View, params, Ty::View, id);
@@ -430,6 +456,16 @@ impl Checker<'_> {
                     },
                 );
             }
+        }
+        for (name, state) in targets {
+            let local = self.declare(name, state.ty.clone());
+            self.st.states.insert(
+                name.clone(),
+                StateRef {
+                    local,
+                    ..state.clone()
+                },
+            );
         }
         body(self);
         // Its line is the declaration it is written in: a loop body has none of its own.
@@ -636,6 +672,8 @@ struct RowView<'a> {
     owner: &'a str,
     params: &'a [ParamInfo],
     states: &'a [(String, StateRef)],
+    /// The view's states the row only changes: named in the row, never passed to it.
+    targets: &'a [(String, StateRef)],
 }
 
 struct DirectRow {
@@ -667,60 +705,78 @@ fn passable(ty: &Ty) -> bool {
     !matches!(ty, Ty::View | Ty::Unit | Ty::Error)
 }
 
-/// Every name the UI statements use. A name a statement binds is collected too when it is used: such a
-/// name is passed in needlessly when the loop's scope also has it, never missed.
+/// Every name the UI statements use.
 fn names_in_ui(stmts: &[UiStmt], out: &mut BTreeSet<String>) {
+    ui_names(stmts, out, true);
+}
+
+/// Every name the UI statements read: the names they use but for the view state a `set(state, value)`
+/// only names to change. A row passed such a state by value would render again each time it changes,
+/// though nothing it shows reads it.
+fn reads_in_ui(stmts: &[UiStmt], out: &mut BTreeSet<String>) {
+    ui_names(stmts, out, false);
+}
+
+/// Every name the expression uses.
+pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
+    expr_names(e, out, true);
+}
+
+/// The names of [`names_in_ui`], with the state each `set` changes when `targets`. A name a statement
+/// binds is collected too when it is used: such a
+/// name is passed in needlessly when the loop's scope also has it, never missed.
+fn ui_names(stmts: &[UiStmt], out: &mut BTreeSet<String>, targets: bool) {
     for s in stmts {
         match &s.kind {
             UiKind::Call(c) => {
-                names_in(&c.call, out);
+                expr_names(&c.call, out, targets);
                 if let Some(block) = &c.block {
-                    names_in_ui(block, out);
+                    ui_names(block, out, targets);
                 }
             }
             UiKind::For { iter, body, .. } => {
-                names_in(iter, out);
-                names_in_ui(body, out);
+                expr_names(iter, out, targets);
+                ui_names(body, out, targets);
             }
             UiKind::If { cond, then, els } => {
-                names_in(cond, out);
-                names_in_ui(then, out);
+                expr_names(cond, out, targets);
+                ui_names(then, out, targets);
                 if let Some(els) = els {
-                    names_in_ui(els, out);
+                    ui_names(els, out, targets);
                 }
             }
             UiKind::Match { scrutinee, arms } => {
-                names_in(scrutinee, out);
+                expr_names(scrutinee, out, targets);
                 for arm in arms {
-                    names_in_ui(&arm.body, out);
+                    ui_names(&arm.body, out, targets);
                 }
             }
-            UiKind::Let { value, .. } => names_in(value, out),
+            UiKind::Let { value, .. } => expr_names(value, out, targets),
             UiKind::IfLet { binds, then, els } => {
                 for b in binds {
-                    names_in(&b.value, out);
+                    expr_names(&b.value, out, targets);
                 }
-                names_in_ui(then, out);
+                ui_names(then, out, targets);
                 if let Some(els) = els {
-                    names_in_ui(els, out);
+                    ui_names(els, out, targets);
                 }
             }
             UiKind::Fact { label, value, .. } => {
-                names_in(label, out);
-                names_in(value, out);
+                expr_names(label, out, targets);
+                expr_names(value, out, targets);
             }
-            UiKind::Part { body, .. } => names_in_ui(body, out),
-            UiKind::On { action, .. } => names_in(action, out),
+            UiKind::Part { body, .. } => ui_names(body, out, targets),
+            UiKind::On { action, .. } => expr_names(action, out, targets),
             UiKind::State(d) => {
                 if let Some(default) = &d.default {
-                    names_in(default, out);
+                    expr_names(default, out, targets);
                 }
             }
         }
     }
 }
 
-pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
+fn expr_names(e: &ast::Expr, out: &mut BTreeSet<String>, targets: bool) {
     match &e.kind {
         ExprKind::Int(_)
         | ExprKind::Float(_)
@@ -732,22 +788,22 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
         | ExprKind::Root(_) => {}
         ExprKind::IfLet { binds, then, els } => {
             for b in binds {
-                names_in(&b.value, out);
+                expr_names(&b.value, out, targets);
             }
-            names_in_block(then, out);
+            block_names(then, out, targets);
             if let Some(els) = els {
-                names_in(els, out);
+                expr_names(els, out, targets);
             }
         }
         ExprKind::OptChain { base, args, .. } => {
-            names_in(base, out);
+            expr_names(base, out, targets);
             for arg in args.iter().flatten() {
-                names_in(&arg.value, out);
+                expr_names(&arg.value, out, targets);
             }
         }
         ExprKind::Range { lo, hi } => {
             for end in [lo, hi].into_iter().flatten() {
-                names_in(end, out);
+                expr_names(end, out, targets);
             }
         }
         ExprKind::Ident(name) => {
@@ -756,68 +812,73 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
         ExprKind::Str(parts) => {
             for part in parts {
                 if let StrPart::Interp(e) = part {
-                    names_in(e, out);
+                    expr_names(e, out, targets);
                 }
             }
         }
         ExprKind::Tuple(items) | ExprKind::List(items) => {
             for item in items {
-                names_in(item, out);
+                expr_names(item, out, targets);
             }
         }
         ExprKind::If { cond, then, els } => {
-            names_in(cond, out);
-            names_in_block(then, out);
+            expr_names(cond, out, targets);
+            block_names(then, out, targets);
             if let Some(els) = els {
-                names_in(els, out);
+                expr_names(els, out, targets);
             }
         }
-        ExprKind::Block(b) => names_in_block(b, out),
+        ExprKind::Block(b) => block_names(b, out, targets),
         ExprKind::Match { scrutinee, arms } => {
-            names_in(scrutinee, out);
+            expr_names(scrutinee, out, targets);
             for arm in arms {
-                names_in(&arm.body, out);
+                expr_names(&arm.body, out, targets);
             }
         }
         ExprKind::Variant { args, .. } => {
             for arg in args.iter().flatten() {
-                names_in(&arg.value, out);
+                expr_names(&arg.value, out, targets);
             }
         }
-        ExprKind::Lambda { body, .. } => names_in(body, out),
-        ExprKind::Unary { operand, .. } => names_in(operand, out),
+        ExprKind::Lambda { body, .. } => expr_names(body, out, targets),
+        ExprKind::Unary { operand, .. } => expr_names(operand, out, targets),
         ExprKind::Binary { lhs, rhs, .. } => {
-            names_in(lhs, out);
-            names_in(rhs, out);
+            expr_names(lhs, out, targets);
+            expr_names(rhs, out, targets);
         }
-        ExprKind::Field { base, .. } => names_in(base, out),
+        ExprKind::Field { base, .. } => expr_names(base, out, targets),
         ExprKind::Call { callee, args, .. } => {
-            names_in(callee, out);
-            for arg in args {
-                names_in(&arg.value, out);
+            expr_names(callee, out, targets);
+            let set = matches!(&callee.kind, ExprKind::Ident(f) if f == "set");
+            for (pos, arg) in args.iter().enumerate() {
+                let target = set && pos == 0 && arg.name.is_none();
+                if target && !targets && matches!(arg.value.kind, ExprKind::Ident(_)) {
+                    continue;
+                }
+                expr_names(&arg.value, out, targets);
             }
         }
-        ExprKind::Try(inner) | ExprKind::Suggest(inner) => names_in(inner, out),
+        ExprKind::Try(inner) | ExprKind::Suggest(inner) => expr_names(inner, out, targets),
     }
 }
 
-fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
+fn block_names(b: &ast::Block, out: &mut BTreeSet<String>, targets: bool) {
     for s in &b.stmts {
         match &s.kind {
-            StmtKind::Let { value, .. } | StmtKind::Expr(value) => names_in(value, out),
+            StmtKind::Let { value, .. } | StmtKind::Expr(value) => expr_names(value, out, targets),
             StmtKind::Assign { place, value, .. } => {
                 if let Some(first) = place.segs.first() {
                     out.insert(first.name.clone());
                 }
-                names_in(value, out);
+                expr_names(value, out, targets);
             }
             StmtKind::For { iter, body, .. } => {
-                names_in(iter, out);
-                names_in_block(body, out);
+                expr_names(iter, out, targets);
+                block_names(body, out, targets);
             }
             StmtKind::Return(value) => {
                 if let Some(value) = value {
-                    names_in(value, out);
+                    expr_names(value, out, targets);
                 }
             }
         }

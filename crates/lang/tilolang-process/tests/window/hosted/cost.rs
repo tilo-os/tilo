@@ -1465,6 +1465,77 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     }
 }
 
+/// Choosing a sidebar place renders what the place shows, once. The sidebar's places only
+/// change which of them reads chosen, which the list they stand in draws: a place's row renders
+/// again when its own count changes, not each time the person chooses another, so choosing a
+/// place that holds nothing runs the window's view and nothing for the places beside it. And the
+/// rows of a place chosen render once each, however often it is chosen.
+#[test]
+fn switching_places_renders_the_rows_the_place_shows() {
+    let _motion = ui::motion::testing::settled();
+    let bus = seeded_tasks(100);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    /// The boundaries choosing `place` runs.
+    fn choose(session: &mut Session, place: &str) -> u64 {
+        let (x, y) = place_at(session, place);
+        let before = renders(session);
+        session.window.click_at(x, y);
+        session.settle();
+        assert!(chosen(session, place), "the sidebar shows {place} chosen");
+        renders(session) - before
+    }
+    let mut session = opened_at_rest_in(&bus, &route);
+    // The seed dates its tasks today: none is upcoming.
+    let empty = choose(&mut session, "Upcoming");
+    assert!(
+        session.titles().is_empty(),
+        "Upcoming holds no task of the seeded workspace"
+    );
+    assert!(
+        empty <= 2,
+        "choosing Upcoming, which shows no task, runs {empty} boundaries: the window's view and \
+         its list, not the sidebar's places"
+    );
+    // From the place that shows nothing, every boundary of Today's rows is new: each renders
+    // once, so choosing it runs no more boundaries than the window then holds rendered.
+    let first = choose(&mut session, "Today");
+    let held = held(&session);
+    assert!(
+        !session.titles().is_empty() && first <= held,
+        "choosing Today runs {first} boundaries, where the window holds {held} rendered: each row \
+         the place shows renders once"
+    );
+    choose(&mut session, "Upcoming");
+    let again = choose(&mut session, "Today");
+    assert!(
+        again <= first,
+        "choosing Today again runs {again} boundaries, where choosing it first ran {first}"
+    );
+}
+
+/// The boundaries the window's views hold rendered now: every boundary in their trees but the
+/// rows of lists that wait to be shown.
+fn held(session: &Session) -> u64 {
+    session
+        .host
+        .instances()
+        .flat_map(|instance| {
+            let instance = instance.instance();
+            [
+                tilo_render_protocol::patch::Level::Root,
+                tilo_render_protocol::patch::Level::Detail,
+            ]
+            .into_iter()
+            .filter_map(|level| instance.view(level))
+            .collect::<Vec<_>>()
+        })
+        .map(|view| {
+            let stats = view.borrow().stats();
+            stats.boundaries.saturating_sub(stats.unrendered) as u64
+        })
+        .fold(0, u64::saturating_add)
+}
+
 /// A step of the person's reaches the window once: checking a task off runs the window's root
 /// once, on the change the document brought back with what its derivation added, and sends the
 /// tree once. The row then reads its title and its box checked off, in a workspace of a hundred
