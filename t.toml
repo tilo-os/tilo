@@ -143,6 +143,11 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # started programs). The one test that is about optimised builds, the app-open budget, is the
 # `app-open-budget` family's, which builds them. The launcher keeps `dev-overrides`, which a debug
 # build honours anyway, so that family's optimised launcher and this one are one declaration.
+# The tilolang runtime host is built with the `test` profile, the one these tests are compiled
+# with: the tests install it in a runtime bundle, which carries no program over 256 MiB
+# (`runtime-bundle`), and unoptimised with `app-launch` it is 265 MiB of machine code. The `test`
+# profile optimises the toolkit crates it is mostly made of (Cargo.toml), which brings it to
+# 241 MiB, and those are the units the tests' own build already compiled.
 # Each device the session's tests start runs the device daemon, built with `test-support` so it
 # starts the session build the test names as its person's shell, which is not installed beside it.
 # The Lounge tests start the server daemon, which `tilo-runtime` has only with `agents`, for both
@@ -151,7 +156,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-daemon = ["launcher:tilo-launcher=dev-overrides"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "poker:poker", "tilolang-process:tilolang-process=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
+starts = { tilo-daemon = ["launcher:tilo-launcher=dev-overrides"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "poker:poker", "tilolang-process:tilolang-process@test=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
