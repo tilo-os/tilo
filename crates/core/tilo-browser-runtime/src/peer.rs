@@ -327,11 +327,6 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
     postcard::from_bytes(&bytes).map_err(js_error)
 }
 
-/// The host `address` names (`hostInfo().address`, JSON).
-pub(crate) fn server_at(address: &str) -> Result<ServerAddress, JsError> {
-    Ok(dialled(serde_json::from_str(address).map_err(js_error)?))
-}
-
 /// The host at `address`, as the peer dials it.
 fn dialled(address: PageHostAddress) -> ServerAddress {
     ServerAddress::published(&address.into())
@@ -480,20 +475,23 @@ pub async fn ticket_action(
         .ask(signer, device, host, &action, argument, follow_for)
         .await
         .map_err(|refusal| js_error(refusal.to_string()))?;
-    let mut answer = match answer {
+    let device = hex::encode(device);
+    let answer = match answer {
         // A certificate the page keeps goes as text, so its signed times stay exact.
         Ok(value) if action == CERTIFY => {
             let answer: tilo_device_identity::login::CertifyAnswer =
                 serde_json::from_value(value).map_err(js_error)?;
-            serde_json::json!({ "value": {
-                "certified": serde_json::to_string(&answer.cert).map_err(js_error)?,
-                "hostCert": serde_json::to_string(&answer.enter.server_cert).map_err(js_error)?,
-            }})
+            serde_json::json!({
+                "value": {
+                    "certified": serde_json::to_string(&answer.cert).map_err(js_error)?,
+                    "hostCert": serde_json::to_string(&answer.enter.server_cert).map_err(js_error)?,
+                },
+                "device": device,
+            })
         }
-        Ok(value) => serde_json::json!({ "value": value }),
-        Err(refused) => serde_json::json!({ "refused": refused }),
+        Ok(value) => serde_json::json!({ "value": value, "device": device }),
+        Err(refused) => serde_json::json!({ "refused": refused, "device": device }),
     };
-    answer["device"] = hex::encode(device).into();
     Ok(answer.to_string())
 }
 
