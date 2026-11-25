@@ -1122,6 +1122,22 @@ async fn every_ask_of_a_page_goes_over_the_one_link_it_keeps() {
     ada.stop().await;
 }
 
+/// Bo signed his own row on the member list; the host passes it on to Ada's `laptop`, already
+/// linked, which lists his device as it takes the change in.
+async fn lists_bo(laptop: &Link, bo: &DeviceCert) {
+    let bo = hex::encode(bo.device_public_key);
+    wait_for(
+        "Ada's laptop to list Bo's device from the row he signed, passed on by the host",
+        || async {
+            laptop
+                .workspace_devices(WORKSPACE)
+                .contains_key(&bo)
+                .then_some(())
+        },
+    )
+    .await;
+}
+
 /// Ask Ada's host, over `link`, to moderate the call in `channel` as `arguments` say (`operation`
 /// and its own arguments), and answer what the call allows then.
 pub(crate) fn moderate(
@@ -1291,6 +1307,7 @@ async fn the_workspace_moderates_its_calls() {
         .send(Cmd::Join(crate::support::workspace()))
         .unwrap();
     in_workspace(&browser, crate::support::workspace()).await;
+    lists_bo(&laptop, &bo_browser.cert).await;
 
     let mut desk = Caller::new(
         laptop,
@@ -1667,6 +1684,7 @@ async fn a_calls_keys_move_on_within_one_key_exchange() {
         .send(Cmd::Join(crate::support::workspace()))
         .unwrap();
     in_workspace(&browser, crate::support::workspace()).await;
+    lists_bo(&laptop, &bo_browser.cert).await;
 
     let mut desk = Caller::new(
         laptop,
