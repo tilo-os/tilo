@@ -69,6 +69,7 @@ pub fn place_view(
     layout: &AutoCommit,
     opener: &Opener<'_>,
     view: &View<'_>,
+    time: i64,
 ) -> Result<Option<Vec<u8>>, NotPlaced> {
     let mut doc = layout.clone();
     let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
@@ -91,7 +92,7 @@ pub fn place_view(
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
     shared_resource::write(&mut doc, &desktop)
         .map_err(|error| NotPlaced::Unwritten(error.to_string()))?;
-    doc.commit();
+    shared_resource::commit_change(&mut doc, author, time, None);
     Ok(Some(doc.save_after(&before)))
 }
 
@@ -186,6 +187,7 @@ pub fn close_window(
     layout: &AutoCommit,
     person: &str,
     tab: u64,
+    time: i64,
 ) -> Result<Option<Vec<u8>>, NotPlaced> {
     let mut doc = layout.clone();
     let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
@@ -220,7 +222,7 @@ pub fn close_window(
     doc.set_actor(automerge::ActorId::from(person.as_bytes()));
     shared_resource::write(&mut doc, &desktop)
         .map_err(|error| NotPlaced::Unwritten(error.to_string()))?;
-    doc.commit();
+    shared_resource::commit_change(&mut doc, person, time, None);
     Ok(Some(doc.save_after(&before)))
 }
 
@@ -237,6 +239,7 @@ pub fn move_window(
     tab: u64,
     x: i32,
     y: i32,
+    time: i64,
 ) -> Result<Option<Vec<u8>>, NotPlaced> {
     let mut doc = layout.clone();
     let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
@@ -249,7 +252,7 @@ pub fn move_window(
     if !held.layout.set_position(group, x, y) {
         return Ok(None);
     }
-    write_as(&mut doc, &desktop, person).map(Some)
+    write_as(&mut doc, &desktop, person, time).map(Some)
 }
 
 /// The change that gives the window `tab` the canvas size `width` × `height`, as dragging its
@@ -265,6 +268,7 @@ pub fn size_window(
     tab: u64,
     width: u32,
     height: u32,
+    time: i64,
 ) -> Result<Option<Vec<u8>>, NotPlaced> {
     let mut doc = layout.clone();
     let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
@@ -277,7 +281,7 @@ pub fn size_window(
     if !held.layout.set_size(group, width, height) {
         return Ok(None);
     }
-    write_as(&mut doc, &desktop, person).map(Some)
+    write_as(&mut doc, &desktop, person, time).map(Some)
 }
 
 /// The change that brings the window `tab` in front of its strip and the workspace it stands in
@@ -291,6 +295,7 @@ pub fn activate_window(
     layout: &AutoCommit,
     person: &str,
     tab: u64,
+    time: i64,
 ) -> Result<Option<Vec<u8>>, NotPlaced> {
     let mut doc = layout.clone();
     let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
@@ -324,7 +329,7 @@ pub fn activate_window(
     {
         window.activate_tab(tab);
     }
-    write_as(&mut doc, &desktop, person).map(Some)
+    write_as(&mut doc, &desktop, person, time).map(Some)
 }
 
 /// The group holding the window `tab`, with the workspace it stands in, on `tree`.
@@ -362,12 +367,13 @@ fn write_as(
     doc: &mut AutoCommit,
     desktop: &SharedDesktop,
     person: &str,
+    time: i64,
 ) -> Result<Vec<u8>, NotPlaced> {
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(person.as_bytes()));
     shared_resource::write(doc, desktop)
         .map_err(|error| NotPlaced::Unwritten(error.to_string()))?;
-    doc.commit();
+    shared_resource::commit_change(doc, person, time, None);
     Ok(doc.save_after(&before))
 }
 
@@ -387,6 +393,9 @@ fn salt_of(author: &str) -> u16 {
 mod tests {
 
     use super::*;
+
+    /// When the tests' changes are made.
+    const AT: i64 = 1_763_000_000;
     use crate::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
     use tilo_automerge::ApplyIncoming as _;
 
@@ -483,7 +492,7 @@ mod tests {
             document: "files-record",
             beside: Some(("so.tilo.notes", "notes-record")),
         };
-        let change = place_view(&merged(&changes), &opener(), &view)
+        let change = place_view(&merged(&changes), &opener(), &view, AT)
             .expect("the view is placed")
             .expect("a tab is added");
         changes.push(change);
@@ -510,7 +519,7 @@ mod tests {
             "the person's strip is untouched"
         );
         assert!(
-            place_view(&merged(&changes), &opener(), &view) == Ok(None),
+            place_view(&merged(&changes), &opener(), &view, AT) == Ok(None),
             "a record already on the layout stays where it is"
         );
     }
@@ -520,7 +529,7 @@ mod tests {
     #[test]
     fn a_closed_window_leaves_the_layout_with_its_record_note() {
         let mut changes = vec![layout()];
-        let change = close_window(&merged(&changes), PERSON, 21)
+        let change = close_window(&merged(&changes), PERSON, 21, AT)
             .expect("the layout writes")
             .expect("the window was there");
         changes.push(change);
@@ -534,7 +543,7 @@ mod tests {
             "its record note went with it"
         );
         assert!(desktop.tree.tab(31).is_some(), "the other window stays");
-        assert_eq!(close_window(&merged(&changes), PERSON, 21), Ok(None));
+        assert_eq!(close_window(&merged(&changes), PERSON, 21, AT), Ok(None));
     }
 
     /// Notes keeps its notes in its primary record, which a person's own Notes window shows and
@@ -569,7 +578,7 @@ mod tests {
             beside: None,
         };
         assert!(
-            place_view(&doc, &opener(), &notes) == Ok(None),
+            place_view(&doc, &opener(), &notes, AT) == Ok(None),
             "the person's Notes window shows the note"
         );
         let chat = View {
@@ -578,7 +587,7 @@ mod tests {
             document: "",
             beside: Some(("so.tilo.notes", "")),
         };
-        let change = place_view(&doc, &opener(), &chat)
+        let change = place_view(&doc, &opener(), &chat, AT)
             .expect("the view is placed")
             .expect("another app's primary record opens its own window");
         let desktop = read(&[doc.save(), change]);
@@ -616,13 +625,13 @@ mod tests {
             document: "",
             beside: None,
         };
-        assert_eq!(place_view(&doc, &opener(), &notes), Ok(None));
+        assert_eq!(place_view(&doc, &opener(), &notes, AT), Ok(None));
         let page = View {
             document: "a-page-record",
             ..notes
         };
         assert!(
-            matches!(place_view(&doc, &opener(), &page), Ok(Some(_))),
+            matches!(place_view(&doc, &opener(), &page, AT), Ok(Some(_))),
             "a record of its own still gets its window"
         );
     }
@@ -638,7 +647,7 @@ mod tests {
             beside: None,
         };
         assert_eq!(
-            place_view(&AutoCommit::new(), &opener(), &view),
+            place_view(&AutoCommit::new(), &opener(), &view, AT),
             Err(NotPlaced::NoLayout)
         );
     }

@@ -121,7 +121,7 @@ pub fn asked(doc: &AutoCommit) -> Vec<(String, AskedView)> {
 /// # Errors
 ///
 /// Why a view could not be placed on the layout `doc` holds, other than its holding none yet.
-pub fn place_asked(doc: &mut AutoCommit, person: &str) -> Result<bool, NotPlaced> {
+pub fn place_asked(doc: &mut AutoCommit, person: &str, time: i64) -> Result<bool, NotPlaced> {
     let mut changed = false;
     for (id, view) in asked(doc) {
         if view.person != person {
@@ -139,6 +139,7 @@ pub fn place_asked(doc: &mut AutoCommit, person: &str) -> Result<bool, NotPlaced
                 document: &view.document,
                 beside: None,
             },
+            time,
         );
         match placed {
             Ok(Some(change)) => {
@@ -159,6 +160,9 @@ pub fn place_asked(doc: &mut AutoCommit, person: &str) -> Result<bool, NotPlaced
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// When the tests' changes are made.
+    const AT: i64 = 1_763_000_000;
     use crate::ownership::SharedDesktop;
     use crate::{Layout, Strip, StripId, Workspace, WorkspaceId, shared_resource};
 
@@ -204,7 +208,7 @@ mod tests {
         let mut page = layout();
         page.merge_incoming(&mut asking).unwrap();
         assert_eq!(asked(&page).len(), 1);
-        assert!(place_asked(&mut page, "ada").unwrap());
+        assert!(place_asked(&mut page, "ada", AT).unwrap());
         page.commit();
         let desktop = shared_resource::read(&page, None).unwrap();
         let [(tab, shown)] = desktop.records.as_slice() else {
@@ -220,7 +224,7 @@ mod tests {
         );
         assert!(asked(&page).is_empty(), "the ask is taken out once placed");
         assert!(
-            !place_asked(&mut page, "ada").unwrap(),
+            !place_asked(&mut page, "ada", AT).unwrap(),
             "nothing left to place"
         );
     }
@@ -231,11 +235,11 @@ mod tests {
     fn an_ask_waits_for_its_persons_layout() {
         let mut page = layout();
         ask(&mut page, "notes", &notes("ada")).unwrap();
-        assert!(!place_asked(&mut page, "bo").unwrap());
+        assert!(!place_asked(&mut page, "bo", AT).unwrap());
         assert_eq!(asked(&page).len(), 1, "Bo's page leaves Ada's ask");
         let mut bare = AutoCommit::new();
         ask(&mut bare, "notes", &notes("ada")).unwrap();
-        assert!(!place_asked(&mut bare, "ada").unwrap());
+        assert!(!place_asked(&mut bare, "ada", AT).unwrap());
         assert_eq!(asked(&bare).len(), 1, "kept until a layout is there");
     }
 }

@@ -13,7 +13,7 @@
 //! The styles the device's packages offer are one resource its daemon publishes in the person's
 //! own workspace: the computer's shell and the page's menu follow it, a package installed while
 //! they do is offered to both, and the person's own workspace decides who else reads it. The
-//! style a person picks is the shell's own record there, changed by the shell's `show-style`
+//! style a person picks is the shell's own record there, changed by the shell's `show_style`
 //! whoever calls it: the documents the computer's shell merges, and the page, show the pick.
 
 #![cfg(target_os = "linux")]
@@ -407,6 +407,7 @@ impl Computer {
                 document: "",
                 beside: None,
             },
+            1_763_000_000,
         )
         .unwrap()
         .expect("the window is added");
@@ -577,10 +578,10 @@ fn the_layouts_actions_place_read_and_close_a_window() {
             }
         };
 
-        call("workspace:layout#place", json!({ "app": TASKS })).await;
+        call("layout#place", json!({ "app": TASKS })).await;
         computer.shows(&[TASKS]).await;
 
-        let read = call("workspace:layout#read", json!({})).await;
+        let read = call("layout#read", json!({})).await;
         assert!(read.contains(TASKS), "the layout reads the window: {read}");
         let window = computer
             .layout()
@@ -589,7 +590,7 @@ fn the_layouts_actions_place_read_and_close_a_window() {
             .and_then(|layout| layout.tree.tabs().next().map(|tab| tab.id.to_string()))
             .expect("the window is on the layout");
 
-        call("workspace:layout#close", json!({ "window": window })).await;
+        call("layout#close", json!({ "window": window })).await;
         computer.shows(&[]).await;
     });
 }
@@ -634,7 +635,7 @@ fn the_layouts_actions_move_and_size_a_window() {
 
         // A drag let it go at a point on the canvas.
         call(
-            "workspace:layout#position",
+            "layout#position",
             json!({ "window": window.to_string(), "x": 120, "y": 84 }),
         )
         .await;
@@ -654,7 +655,7 @@ fn the_layouts_actions_move_and_size_a_window() {
 
         // A drag of its edge gave it a size.
         call(
-            "workspace:layout#size",
+            "layout#size",
             json!({ "window": window.to_string(), "width": 800, "height": 600 }),
         )
         .await;
@@ -693,7 +694,7 @@ fn the_desktop_page_draws_the_canvas_a_person_picked() {
                 "tilo_do",
                 &json!({
                     "workspace": workspace,
-                    "path": "shell#show-style",
+                    "path": "shell#show_style",
                     "args": {"style": "so.tilo.shell:frames"},
                 }),
             )
@@ -788,7 +789,7 @@ fn a_style_installed_while_readers_follow_reaches_each_of_them() {
     });
 }
 
-/// The person's agent picks the canvas through the shell's own `show-style`, and the person picks
+/// The person's agent picks the canvas through the shell's own `show_style`, and the person picks
 /// the strips back with a press on their desktop page: each is the one action on the shell's
 /// record in their own workspace. The document it changes is named as the store names it, the
 /// name the computer's shell merges it under, so the computer shows each pick, and so does the page.
@@ -802,7 +803,7 @@ fn an_agents_pick_and_a_press_change_the_shells_record_the_computer_merges() {
         let _ = computer.writes(&own, SHELL).await;
 
         let agent = host.agent();
-        let (picked, failed) = act(&agent, "shell#show-style", json!({ "style": FRAMES })).await;
+        let (picked, failed) = act(&agent, "shell#show_style", json!({ "style": FRAMES })).await;
         assert!(!failed, "the agent picks the canvas: {picked}");
         let document = computer.picked(&own, FRAMES).await;
         assert!(

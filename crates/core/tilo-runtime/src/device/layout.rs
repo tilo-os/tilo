@@ -72,7 +72,7 @@ pub enum LayoutAction {
     },
     /// Stand a window at a point on its workspace's canvas, as a drag that let it go there
     /// leaves it: one arranging step for the whole gesture.
-    #[effect(kind = "outside")]
+    #[effect(kind = "undoable")]
     #[effect(icon = "app-window", keywords = "move window, drag")]
     Position {
         #[param("The window, by its key on the layout")]
@@ -83,7 +83,7 @@ pub enum LayoutAction {
         y: i64,
     },
     /// Give a window a size on its workspace's canvas, as dragging its edge does.
-    #[effect(kind = "outside")]
+    #[effect(kind = "undoable")]
     #[effect(icon = "app-window", keywords = "resize window")]
     Size {
         #[param("The window, by its key on the layout")]
@@ -95,7 +95,7 @@ pub enum LayoutAction {
     },
     /// Bring a window in front of its strip, and its workspace forward, as a press on its bar
     /// does.
-    #[effect(kind = "outside")]
+    #[effect(kind = "undoable")]
     #[effect(icon = "app-window", keywords = "focus window")]
     Activate {
         #[param("The window, by its key on the layout")]
@@ -246,7 +246,7 @@ impl DeviceLayouts {
             beside: None,
         };
         let opener = tilo_desktop_model::place::Opener { person, opened_by };
-        let change = tilo_desktop_model::place::place_view(&layout, &opener, &view)
+        let change = tilo_desktop_model::place::place_view(&layout, &opener, &view, now())
             .map_err(|why| format!("{title}'s window is not on the person's layout: {why}"))?;
         match change {
             Some(change) => self.write(workspace, &change, false),
@@ -263,7 +263,7 @@ impl DeviceLayouts {
         let LayoutHere::Here(layout) = self.layout(workspace) else {
             return Ok(());
         };
-        match tilo_desktop_model::place::close_window(&layout, person, tab)
+        match tilo_desktop_model::place::close_window(&layout, person, tab, now())
             .map_err(|why| why.to_string())?
         {
             Some(change) => self.write(workspace, &change, false),
@@ -290,7 +290,7 @@ impl DeviceLayouts {
         };
         let x = i32::try_from(x).unwrap_or(if x < 0 { i32::MIN } else { i32::MAX });
         let y = i32::try_from(y).unwrap_or(if y < 0 { i32::MIN } else { i32::MAX });
-        match tilo_desktop_model::place::move_window(&layout, person, tab, x, y)
+        match tilo_desktop_model::place::move_window(&layout, person, tab, x, y, now())
             .map_err(|why| why.to_string())?
         {
             Some(change) => self.write(workspace, &change, false),
@@ -322,6 +322,7 @@ impl DeviceLayouts {
             tab,
             side(width),
             side(height),
+            now(),
         )
         .map_err(|why| why.to_string())?
         {
@@ -340,7 +341,7 @@ impl DeviceLayouts {
         let LayoutHere::Here(layout) = self.layout(workspace) else {
             return Ok(());
         };
-        match tilo_desktop_model::place::activate_window(&layout, person, tab)
+        match tilo_desktop_model::place::activate_window(&layout, person, tab, now())
             .map_err(|why| why.to_string())?
         {
             Some(change) => self.write(workspace, &change, false),
@@ -447,6 +448,11 @@ impl DeviceLayouts {
             .map(|kept| json!({ "key": kept.id().to_string(), "name": kept.name }))
             .collect()
     }
+}
+
+/// The time a change of the layout is made: seconds since the epoch, as its history entry says.
+fn now() -> i64 {
+    i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX)
 }
 
 /// The layout a workspace's first window is placed on: the workspace by its own id and one strip,
