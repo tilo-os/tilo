@@ -587,11 +587,16 @@ impl Workspaces {
     }
 
     /// One link's intake of what members answer this host's asks with in
-    /// `workspace` ([`Self::content_for_host`]): one thread takes the answers
-    /// in, in the order the link carried them, and the link's reader waits
-    /// while that thread is two answers behind. A fast link is held back by
-    /// the link's own flow control, and never by a crowd of threads each
-    /// waiting on the keeper with one piece.
+    /// `workspace` ([`Self::content_for_host`]): the answers are taken in one
+    /// run at a time, in the order the link carried them, each run on a
+    /// blocking thread with every answer that came while the run before it was
+    /// taken in, and the link's reader waits while the intake is two answers
+    /// behind. A fast link is held back by the link's own flow control, and
+    /// never by a crowd of threads each waiting on the keeper with one piece.
+    ///
+    /// No thread is held while no answer waits: a blocking thread kept for the
+    /// link's life is work the runtime never sees end, and a runtime whose
+    /// clock is paused would never move it on.
     pub(super) fn content_intake(
         &self,
         workspace: &str,
@@ -600,13 +605,29 @@ impl Workspaces {
             tokio::sync::mpsc::channel(2 * neighbour_wire::content::PIECES_PER_ANSWER);
         let workspaces = self.downgrade();
         let workspace = workspace.to_owned();
-        tokio::task::spawn_blocking(move || {
-            while let Some((from, message)) = receiver.blocking_recv() {
+        tokio::spawn(async move {
+            while let Some(first) = receiver.recv().await {
+                let mut run = vec![first];
+                while let Ok(next) = receiver.try_recv() {
+                    run.push(next);
+                }
                 // The host is gone: so is what it asked for.
                 let Some(workspaces) = workspaces.upgrade() else {
                     return;
                 };
-                workspaces.content_message_for_host(&workspace, from, message);
+                let workspace = workspace.clone();
+                let taken = tokio::task::spawn_blocking(move || {
+                    for (from, message) in run {
+                        workspaces.content_message_for_host(&workspace, from, message);
+                    }
+                })
+                .await;
+                match taken.map_err(tokio::task::JoinError::try_into_panic) {
+                    Ok(()) => {}
+                    Err(Ok(panic)) => std::panic::resume_unwind(panic),
+                    // The runtime is shutting down, and the link with it.
+                    Err(Err(_)) => return,
+                }
             }
         });
         sender
