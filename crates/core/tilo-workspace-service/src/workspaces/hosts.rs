@@ -832,7 +832,10 @@ impl Workspaces {
     }
 
     /// The address of `caller`, a device `workspace` names among those
-    /// keeping it, or the device that handed it to this one.
+    /// keeping it, or the device that handed it to this one. Read without
+    /// the workspace's lock ([`super::readings`]): a write holds it while it
+    /// waits for the keys a copy just handed over does not have yet, and the
+    /// device that handed it over asks this before that wait is over.
     ///
     /// # Errors
     ///
@@ -843,15 +846,17 @@ impl Workspaces {
         caller: &DeviceCert,
         workspace: &str,
     ) -> Result<WorkspaceDeviceHintV1, String> {
-        let state = self
-            .workspace(workspace)
+        let workspace_id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| "a workspace is named by its id".to_owned())?;
+        let keeping = self
+            .governing(workspace_id, |governance| {
+                governance.peer.governance().keeping_devices()
+            })
             .await
-            .map_err(|error| error.to_string())?;
-        let handed = state.lock().await.handed_by.clone();
-        let named = self
-            .hosts(workspace)
-            .await
-            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
+        let handed =
+            super::holding::handed_by(&self.inner.dir.join(format!("{workspace_id}.workspace")));
+        let named = keeping
             .into_iter()
             .find(|hint| host_device(hint) == caller.device_public_key)
             .map(|hint| WorkspaceDeviceHintV1::from_transport_hint(&hint))

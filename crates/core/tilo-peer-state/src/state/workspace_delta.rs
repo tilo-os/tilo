@@ -27,6 +27,23 @@ impl StatePeer {
             .collect()
     }
 
+    /// The changes the committed workspace document starts from, those that build on none:
+    /// which history of the workspace it is, the same in every copy of that history.
+    pub(crate) fn workspace_roots(&self) -> Vec<automerge::ChangeHash> {
+        let Some(workspace) = self.core.workspace_doc.as_deref() else {
+            return Vec::new();
+        };
+        let mut roots: Vec<_> = workspace
+            .clone()
+            .get_changes(&[])
+            .into_iter()
+            .filter(|change| change.deps().is_empty())
+            .map(|change| change.hash())
+            .collect();
+        roots.sort_unstable();
+        roots
+    }
+
     /// Whether the workspace document holds the change `hash`.
     #[must_use]
     pub fn workspace_holds_change(&self, hash: &automerge::ChangeHash) -> bool {

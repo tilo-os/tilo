@@ -27,9 +27,93 @@ use collab_types::signer::DeviceSigner;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
+/// The admissions each device signed in this program, by workspace, the history of it they were
+/// signed on ([`StatePeer::workspace_roots`]) and device, as the changes it answered: what the
+/// device's next admission into that history builds on.
+///
+/// A device can be signed in twice at once: a server its person adds is handed their workspace
+/// and signs its row there, while its own session redeems an invitation into the same workspace.
+/// Each signs on the governance it was sent, and where neither holds the other's change both
+/// are the device's first change: two changes under one number of one writer, which every copy
+/// that meets both refuses.
+static SIGNED: std::sync::LazyLock<parking_lot::Mutex<SignedAdmissions>> =
+    std::sync::LazyLock::new(Default::default);
+
+type SignedBy = (String, Vec<automerge::ChangeHash>, [u8; 32]);
+type SignedAdmissions = std::collections::HashMap<SignedBy, Vec<Vec<u8>>>;
+
+/// Why a device signs nothing on governance that lacks an admission it signed already, and its
+/// copy cannot take that admission in.
+const SIGNED_ELSEWHERE: &str = "this device signed itself into the workspace already, on \
+     governance the copy it signs on now does not build on: it signs once that copy holds it";
+
+/// Who signed in `peer`, `own`'s copy of `workspace`: the key [`SIGNED`] keeps it under.
+fn signed_by(peer: &StatePeer, workspace: &str, own: &DeviceCert) -> SignedBy {
+    (
+        workspace.to_owned(),
+        peer.workspace_roots(),
+        own.device_public_key,
+    )
+}
+
+/// Take into `peer`, `own`'s copy of `workspace`, every admission `own` signed in its history
+/// before and the copy lacks, so a change it signs now comes after them. A copy that holds the
+/// device's own row already holds what it signed: those are let go.
+///
+/// # Errors
+/// The copy does not take those admissions in ([`SIGNED_ELSEWHERE`]).
+fn after_own(
+    peer: &mut StatePeer,
+    workspace: &str,
+    own: &DeviceCert,
+    now: SystemTime,
+) -> Result<(), String> {
+    let signer = signed_by(peer, workspace, own);
+    let earlier = SIGNED.lock().get(&signer).cloned().unwrap_or_default();
+    if earlier.is_empty() {
+        return Ok(());
+    }
+    if peer.governance().lists_device(own) {
+        SIGNED.lock().remove(&signer);
+        return Ok(());
+    }
+    let hashes = earlier
+        .iter()
+        .map(|bytes| automerge::Change::try_from(bytes.as_slice()).map(|change| change.hash()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if hashes.iter().all(|hash| peer.workspace_holds_change(hash)) {
+        return Ok(());
+    }
+    peer.admit_own(own, earlier, now)
+        .map_err(|error| format!("{SIGNED_ELSEWHERE}: {error}"))?;
+    if hashes.iter().all(|hash| peer.workspace_holds_change(hash)) {
+        Ok(())
+    } else {
+        Err(SIGNED_ELSEWHERE.into())
+    }
+}
+
+/// Keep `changes`, what `own` signed into `workspace` and answered, for its next admission there
+/// in that history to build on ([`after_own`]).
+fn signed(signer: SignedBy, changes: &[Vec<u8>]) {
+    if changes.is_empty() {
+        return;
+    }
+    let mut kept = SIGNED.lock();
+    let earlier = kept.entry(signer).or_default();
+    for change in changes {
+        if !earlier.contains(change) {
+            earlier.push(change.clone());
+        }
+    }
+}
+
 /// Write `write` on `own`'s copy of the workspace as `governance` makes it,
 /// signed by `key`, and answer the workspace changes it made: none when the
-/// workspace holds what it would write already.
+/// workspace holds what it would write already. What the device signed into the
+/// workspace before and `governance` lacks comes first, and is answered with it:
+/// a device never signs two changes under one number.
 fn written(
     workspace: &str,
     governance: &[Vec<u8>],
@@ -37,7 +121,7 @@ fn written(
     key: &dyn DeviceSigner,
     write: impl FnOnce(&mut StatePeer, &dyn DeviceSigner) -> Result<bool, String>,
     now: SystemTime,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Signed, String> {
     if key.device_public_key() != own.device_public_key {
         return Err("a device signs only its own admission".into());
     }
@@ -45,30 +129,42 @@ fn written(
     let heads = peer
         .workspace_heads()
         .ok_or("the workspace's governance is missing")?;
-    if !write(&mut peer, key)? {
-        return Ok(Vec::new());
-    }
-    Ok(peer.workspace_changes_since(&heads))
+    let signer = signed_by(&peer, workspace, own);
+    after_own(&mut peer, workspace, own, now)?;
+    // Where the device's earlier admission lists it already, nothing new is written, and that
+    // admission is what is answered: the copy it is answered to takes the device's own row in.
+    write(&mut peer, key)?;
+    Ok(Signed {
+        changes: peer.workspace_changes_since(&heads),
+        signer,
+    })
 }
 
-/// The changes admitting `redemption`'s device to `workspace`, signed by that
-/// device's `key` ([`crate::PeerGovernanceMut::admit_named_member`]): its
-/// redemption of the invitation, its device row, and `name`, the name it
-/// chose, when one is given. A key its person made for an agent or a program
-/// records its own grant beside them, under that name
-/// ([`crate::PeerGovernanceMut::author_own_grant`]).
-///
-/// # Errors
-/// The governance does not read, `key` is not the redeeming device's, or the
-/// workspace refuses the redemption as every receiver would.
-pub fn own_admission(
+/// The changes a turn of [`written`] answered, and whose they are. A turn whose signer signs
+/// outside it runs until every signature is given ([`signed_turn`]): only the run it ends with
+/// is kept ([`Self::kept`]).
+struct Signed {
+    changes: Vec<Vec<u8>>,
+    signer: SignedBy,
+}
+
+impl Signed {
+    /// The changes, kept for the device's next admission to build on ([`after_own`]).
+    fn kept(self) -> Vec<Vec<u8>> {
+        signed(self.signer, &self.changes);
+        self.changes
+    }
+}
+
+/// One run of [`own_admission`] under `key`, as [`signed_turn`] makes it.
+fn own_admission_turn(
     workspace: &str,
     governance: &[Vec<u8>],
     redemption: &VerifiedRedemption,
     name: Option<&str>,
     key: &dyn DeviceSigner,
     now: SystemTime,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Signed, String> {
     let own = redemption.certificate();
     // A key's grant is listed by the name it joined as, the name its person
     // approved it under.
@@ -97,6 +193,27 @@ pub fn own_admission(
     )
 }
 
+/// The changes admitting `redemption`'s device to `workspace`, signed by that
+/// device's `key` ([`crate::PeerGovernanceMut::admit_named_member`]): its
+/// redemption of the invitation, its device row, and `name`, the name it
+/// chose, when one is given. A key its person made for an agent or a program
+/// records its own grant beside them, under that name
+/// ([`crate::PeerGovernanceMut::author_own_grant`]).
+///
+/// # Errors
+/// The governance does not read, `key` is not the redeeming device's, or the
+/// workspace refuses the redemption as every receiver would.
+pub fn own_admission(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    redemption: &VerifiedRedemption,
+    name: Option<&str>,
+    key: &dyn DeviceSigner,
+    now: SystemTime,
+) -> Result<Vec<Vec<u8>>, String> {
+    own_admission_turn(workspace, governance, redemption, name, key, now).map(Signed::kept)
+}
+
 /// [`own_admission`] signed by `signer`, which may sign outside the turn.
 ///
 /// # Errors
@@ -110,9 +227,34 @@ pub async fn sign_own_admission(
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
     signed_turn(signer, |signatures| {
-        own_admission(workspace, governance, redemption, name, signatures, now)
+        own_admission_turn(workspace, governance, redemption, name, signatures, now)
     })
     .await
+    .map(Signed::kept)
+}
+
+/// One run of [`further_device_row`] under `key`, as [`signed_turn`] makes it.
+fn further_device_row_turn(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    own: &DeviceCert,
+    key: &dyn DeviceSigner,
+    now: SystemTime,
+) -> Result<Signed, String> {
+    written(
+        workspace,
+        governance,
+        own,
+        key,
+        |peer, key| {
+            let listed = peer.governance_mut().admit_member_device(own, key, now)?;
+            let granted = peer
+                .governance_mut()
+                .author_own_grant(own, None, key, now)?;
+            Ok(listed || granted)
+        },
+        now,
+    )
 }
 
 /// The changes admitting `own`, a further device of a person the workspace
@@ -130,31 +272,11 @@ pub fn further_device_row(
     key: &dyn DeviceSigner,
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
-    written(
-        workspace,
-        governance,
-        own,
-        key,
-        |peer, key| {
-            let listed = peer.governance_mut().admit_member_device(own, key, now)?;
-            let granted = peer
-                .governance_mut()
-                .author_own_grant(own, None, key, now)?;
-            Ok(listed || granted)
-        },
-        now,
-    )
+    further_device_row_turn(workspace, governance, own, key, now).map(Signed::kept)
 }
 
-/// The changes admitting `own` through `workspace`'s entry: its own row and
-/// its entry admission, signed by its own key, the entry the governance
-/// carries being the grant. No invitation is behind them and no host signed
-/// them.
-///
-/// # Errors
-/// The governance does not read, `key` is not `own`'s, the entry takes nobody
-/// who asks, or the workspace refuses it as every receiver would.
-pub fn entry_admission(
+/// One run of [`entry_admission`] under `key`, as [`signed_turn`] makes it.
+fn entry_admission_turn(
     workspace: &str,
     governance: &[Vec<u8>],
     own: &DeviceCert,
@@ -162,7 +284,7 @@ pub fn entry_admission(
     name: Option<&str>,
     key: &dyn DeviceSigner,
     now: SystemTime,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Signed, String> {
     written(
         workspace,
         governance,
@@ -186,6 +308,26 @@ pub fn entry_admission(
     )
 }
 
+/// The changes admitting `own` through `workspace`'s entry: its own row and
+/// its entry admission, signed by its own key, the entry the governance
+/// carries being the grant. No invitation is behind them and no host signed
+/// them.
+///
+/// # Errors
+/// The governance does not read, `key` is not `own`'s, the entry takes nobody
+/// who asks, or the workspace refuses it as every receiver would.
+pub fn entry_admission(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    own: &DeviceCert,
+    request_id: [u8; 32],
+    name: Option<&str>,
+    key: &dyn DeviceSigner,
+    now: SystemTime,
+) -> Result<Vec<Vec<u8>>, String> {
+    entry_admission_turn(workspace, governance, own, request_id, name, key, now).map(Signed::kept)
+}
+
 /// [`entry_admission`] signed by `signer`, which may sign outside the turn.
 ///
 /// # Errors
@@ -200,11 +342,12 @@ pub async fn sign_entry_admission(
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
     signed_turn(signer, |signatures| {
-        entry_admission(
+        entry_admission_turn(
             workspace, governance, own, request_id, name, signatures, now,
         )
     })
     .await
+    .map(Signed::kept)
 }
 
 /// Whether `own`'s person is one the `governance` messages make a member of
@@ -235,9 +378,10 @@ pub async fn sign_further_device_row(
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
     signed_turn(signer, |signatures| {
-        further_device_row(workspace, governance, own, signatures, now)
+        further_device_row_turn(workspace, governance, own, signatures, now)
     })
     .await
+    .map(Signed::kept)
 }
 
 /// What `own`'s device signs to come into `workspace` when its host answers

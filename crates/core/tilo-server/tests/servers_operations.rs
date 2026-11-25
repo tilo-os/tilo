@@ -365,3 +365,146 @@ async fn a_server_refused_without_a_revocation_stays_in_service() {
     );
     drop(following);
 }
+
+/// What `hosted`'s copy of `workspace` holds of the changes `writer` signed: each change's hash
+/// by the number its writer gave it. Every copy of the workspace must agree on it.
+fn signed_by(
+    hosted: &Hosted,
+    workspace: WorkspaceId,
+    writer: &automerge::ActorId,
+) -> std::collections::BTreeMap<u64, automerge::ChangeHash> {
+    let copy = hosted.host.workspaces().copy_now(workspace).unwrap();
+    let mut numbered = std::collections::BTreeMap::new();
+    for bytes in copy.peer.workspace_changes_since(&[]) {
+        let change = automerge::Change::try_from(bytes.as_slice()).unwrap();
+        if change.actor_id() == writer {
+            let earlier = numbered.insert(change.seq(), change.hash());
+            assert!(
+                earlier.is_none_or(|earlier| earlier == change.hash()),
+                "the copy holds two changes under one number of one writer"
+            );
+        }
+    }
+    numbered
+}
+
+/// Wait until `hosted`'s copy of `workspace` holds `device`'s own row.
+async fn lists(hosted: &Hosted, workspace: WorkspaceId, device: &TestDevice, what: &str) {
+    tilo_test_env::within(what, async {
+        while !hosted
+            .host
+            .workspaces()
+            .copy_now(workspace)
+            .is_some_and(|copy| copy.peer.governance().lists_device(&device.cert))
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+/// A server a person adds signs itself into their workspace twice at once: its session signs
+/// its row on the governance the person's device answered it, and the hand-over has it sign its
+/// row on the copy it was handed, which lacks the first. The person then hands it the workspace
+/// again. The server signs one change under each number all the same, every copy agrees on
+/// them, and a write on either device reaches the other after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_signed_in_twice_and_handed_its_workspace_twice_keeps_one_change_per_number() {
+    use tilo_peer_state::join_log::GovernanceMessages as _;
+
+    let alice = TestUser::fresh("Alice");
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::member());
+    let tablet = alice.enrol("tablet", DeviceCapabilities::member());
+    let server = Box::new(serve_on(&alice, &nas, WorkSetting::own_person()).await);
+    let desktop = Box::new(serve_on(&alice, &laptop, WorkSetting::own_person()).await);
+    let admin = person_workspace_id(&alice.user_pk);
+    let workspace = WorkspaceId::parse(&admin).unwrap();
+    servers::found(desktop.host.workspaces()).await.unwrap();
+
+    // The server's session signs its row on what the laptop answered it, before the laptop
+    // hands it the workspace: the copy the hand-over brings does not hold that row.
+    let answered = desktop
+        .host
+        .workspaces()
+        .copy_now(workspace)
+        .unwrap()
+        .peer
+        .governance_messages()
+        .unwrap();
+    let session = tilo_peer_state::own_admission::sign_further_device_row(
+        &admin,
+        &answered,
+        &nas.cert,
+        &nas.sk,
+        tilo_clock::wall(),
+    )
+    .await
+    .unwrap();
+    let first = automerge::Change::try_from(session[0].as_slice()).unwrap();
+    let writer = first.actor_id().clone();
+
+    join_person_workspace(&desktop, &nas, &server).await;
+    lists(
+        &server,
+        workspace,
+        &nas,
+        "the server's copy to hold its own row",
+    )
+    .await;
+    lists(
+        &desktop,
+        workspace,
+        &nas,
+        "the laptop to hold the server's row",
+    )
+    .await;
+    let numbered = signed_by(&server, workspace, &writer);
+    assert_eq!(
+        numbered.get(&first.seq()),
+        Some(&first.hash()),
+        "the hand-over signed another change under the number the session's row took"
+    );
+
+    // Handed over again, the server takes nothing in a second time and signs nothing again.
+    desktop
+        .host
+        .workspaces()
+        .hand_over_named(&admin, nas.device_pubkey(), server.host.node_addr(), &admin)
+        .await
+        .unwrap();
+    assert_eq!(signed_by(&server, workspace, &writer), numbered);
+
+    // Writes go both ways after: the laptop signs a device in, and the server another.
+    desktop
+        .host
+        .workspaces()
+        .enter(&admin, (&phone.cert, &phone.sk))
+        .await
+        .unwrap();
+    lists(
+        &server,
+        workspace,
+        &phone,
+        "the server to take in the laptop's write",
+    )
+    .await;
+    server
+        .host
+        .workspaces()
+        .enter(&admin, (&tablet.cert, &tablet.sk))
+        .await
+        .unwrap();
+    lists(
+        &desktop,
+        workspace,
+        &tablet,
+        "the laptop to take in the server's write",
+    )
+    .await;
+    assert_eq!(
+        signed_by(&server, workspace, &writer),
+        signed_by(&desktop, workspace, &writer)
+    );
+}
