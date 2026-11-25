@@ -437,6 +437,11 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
             return Err("this computer's daemon certified no person for this account".to_owned());
         }
     }
+    // The device's own person acts as the device itself: the daemon made this account no key of
+    // its own, and there is nothing to certify.
+    if who.certify_person.is_none() {
+        return Ok(true);
+    }
     // The account a person's own daemon runs as holds the root it just made, and certifies its
     // key itself; another account's session holds the public record, and the daemon signs with
     // the root it keeps for that account.
