@@ -5941,14 +5941,29 @@ impl ActionProvider for RuntimeActionProvider {
             && tilo_actions::api::resolve(&registered.published, &request.target.address)
                 .is_some_and(|action| action.contract.is_own_device())
         {
-            self.invocations.record(
+            // The person's own rules still decide it: the workspace's verdict, made with their
+            // own connection answering what it asks of them, and never an approval this call
+            // wrote. Where it asks the person first, the call falls through to the admission,
+            // which keeps it as its asked record for their prompt to answer.
+            match self.broker.state().admits_own_device_action(
                 caller,
-                caller,
+                &self.workspace,
+                &registered,
                 &request,
-                Some(&self.workspace),
-                (Arc::clone(&registered.answers), caller.clone()),
-            );
-            return registered.answers.invoke(caller, request);
+            ) {
+                Ok(()) => {
+                    self.invocations.record(
+                        caller,
+                        caller,
+                        &request,
+                        Some(&self.workspace),
+                        (Arc::clone(&registered.answers), caller.clone()),
+                    );
+                    return registered.answers.invoke(caller, request);
+                }
+                Err(ActionCallError::ConfirmationRequired(_)) => {}
+                Err(refused) => return Pending::ready(Err(refused)),
+            }
         }
         let origin_writes = |caller: &Caller, origin: &Origin| {
             self.broker

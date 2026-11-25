@@ -199,6 +199,39 @@ pub(super) fn is_local_host_caller(
 
 /// The descriptor of the action `request` calls, as `registered` offers it to `caller`: as its
 /// argument makes it, where the provider says, else as its catalogue describes it.
+impl AppBrokerState {
+    /// What the workspace decides of `request`, an action the registered provider `registered`
+    /// answers, made by `caller` on their own device's connection: the same verdict the
+    /// workspace's admission makes of it, with their own connection answering what the workspace
+    /// asks of them, and nothing of it run or approved. `Ok` where it runs unasked, the ask
+    /// refusal where the person is asked first, and the refusal where the workspace denies it.
+    ///
+    /// # Errors
+    /// What the admission would refuse it with: [`ActionCallError::ConfirmationRequired`] where
+    /// the workspace's rules ask the person first, and [`ActionCallError::NotPermitted`] where
+    /// they deny it.
+    pub fn admits_own_device_action(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        registered: &Registered,
+        request: &InvokeRequest,
+    ) -> Result<(), ActionCallError> {
+        let argument = request.argument.to_slot();
+        let descriptor = descriptor_of(registered, caller, request, argument.as_deref())
+            .ok_or(ActionCallError::UnknownAction)?;
+        let (workspace, policy, now) = self.current_framework_authority(caller, None, workspace)?;
+        // The call's own confirmation is never read here: an ask is answered only by the
+        // person's approve of the asked record the admission keeps, which this call is not.
+        self.admit_answer(
+            (&workspace, &policy, now),
+            deciding_app(registered, None),
+            &descriptor,
+            (argument.as_deref(), None),
+        )
+    }
+}
+
 fn descriptor_of(
     registered: &Registered,
     caller: &Caller,
@@ -2331,5 +2364,189 @@ mod settings_documents_tests {
             offered(vec![studio(&person), theirs(&person)]),
             "the person's own workspace offers their device's settings"
         );
+    }
+}
+
+#[cfg(test)]
+mod own_device_verdict_tests {
+    use super::super::AppBrokerState;
+    use crate::apps::test_support::{
+        Answer, Grantee, KindSet, Role, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use crate::workspaces::providers::{Providers, Reach, Registered};
+    use std::sync::Arc;
+    use tilo_actions::remote::{
+        ActionCallError, Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
+        RemoteActionTarget, admitted::top_level,
+    };
+
+    /// The provider the device's package cache answers as.
+    const PROVIDER: &str = "so.tilo.packages";
+    /// A member of the workspace, on a connection that is their own.
+    const MEMBER: &str = "member-person";
+
+    /// The resource `install-dev` is published on for a device.
+    fn resource() -> String {
+        format!("devices/{}/packages", hex::encode([7u8; 32]))
+    }
+
+    fn descriptor() -> tilo_actions::ActionDescriptor {
+        let mut contract = tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Outside,
+            ..tilo_actions::ActionContract::default()
+        };
+        contract
+            .tags
+            .push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
+        tilo_actions::ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(resource(), "install-dev"),
+            resource_kind: "devices.packages".into(),
+            resource_label: "Packages".into(),
+            action_label: "install-dev".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::Effect,
+            contract,
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }
+    }
+
+    /// A device action that nothing runs in these tests: only its verdict is asked.
+    struct Cache;
+
+    impl Admits for Cache {
+        const PROVIDER: &'static str = PROVIDER;
+        const APP: &'static str = PROVIDER;
+
+        fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+            top_level(vec![descriptor()])
+        }
+
+        fn described(
+            &self,
+            address: &tilo_actions::ActionAddress,
+            _argument: Option<&str>,
+        ) -> Option<tilo_actions::ActionDescriptor> {
+            (address == &descriptor().address).then(descriptor)
+        }
+
+        fn start(
+            &self,
+            _caller: &Caller,
+            _request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
+            Err("nothing runs in this test".into())
+        }
+    }
+
+    fn registered() -> Registered {
+        Registered {
+            provider: Arc::from(PROVIDER),
+            app: Arc::from(PROVIDER),
+            reach: Reach::ThisDevice,
+            answers: Arc::new(Cache),
+            published: Vec::new(),
+            placed_for: None,
+        }
+    }
+
+    /// A workspace `owner` owns, `MEMBER` belongs to, where `rule` answers for the member at the
+    /// device action.
+    fn workspace(rule: Option<Answer>) -> (Arc<AppBrokerState>, WorkspaceId, String, String) {
+        let owner = hex::encode([61u8; 32]);
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(61), "Packages");
+        workspace.policy.set_owner(owner.clone());
+        workspace.policy.add_member(MEMBER, Role::Editor);
+        let workspace_id = workspace.id().to_string();
+        let node = tilo_actions::action_node(
+            &workspace.policy.node(),
+            PROVIDER,
+            "devices.packages",
+            &resource(),
+            None,
+            "install-dev",
+        );
+        if let Some(rule) = rule {
+            use crate::apps::test_support::Grants as _;
+            workspace.answer(Grantee::person(MEMBER), &node, KindSet::ALL, rule);
+        }
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let providers = Providers::default();
+        let cache: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> = Arc::new(Cache);
+        providers.provide(PROVIDER, PROVIDER, Reach::ThisDevice, cache);
+        let (state, _bridge_rx) = AppBrokerState::test_state(
+            Some(tree.shared().authority()),
+            crate::apps::services::ProcessServices {
+                providers: Some(providers),
+                ..Default::default()
+            },
+        );
+        (state, WorkspaceId::from_u128(61), workspace_id, owner)
+    }
+
+    fn request() -> InvokeRequest {
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(resource(), "install-dev"),
+            },
+            argument: InvokeArgument::Json(serde_json::Map::new()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    /// The person on their own device's connection asks the device to install a development
+    /// build: the workspace's rules decide it as they decide it at admission, and a rule set for
+    /// the person is consulted.
+    #[test]
+    fn an_own_device_action_is_asked_or_denied_by_the_workspace_rules() {
+        use tilo_actions::remote::ActionProvider as _;
+
+        // No rule for the workspace's owner: it runs.
+        let (state, id, workspace, owner) = workspace(None);
+        let caller = Caller::own_person(owner.clone()).in_workspace(&workspace);
+        assert!(
+            state
+                .admits_own_device_action(&caller, &workspace, &registered(), &request())
+                .is_ok(),
+            "with no rule set, an own-device action of the person's runs"
+        );
+
+        // The member, on a connection of their own: their rule decides.
+        for (rule, expected) in [
+            (Answer::Ask, "confirmation_required"),
+            (Answer::Deny, "not_permitted"),
+        ] {
+            let (state, same, workspace, _) = workspace(Some(rule));
+            assert_eq!(same, id, "the same workspace");
+            let caller = Caller::own_person(MEMBER).in_workspace(&workspace);
+            let refused = state
+                .admits_own_device_action(&caller, &workspace, &registered(), &request())
+                .expect_err("a rule the person set decides their action");
+            let answered = if matches!(&refused, ActionCallError::ConfirmationRequired(_)) {
+                "confirmation_required"
+            } else if matches!(&refused, ActionCallError::NotPermitted) {
+                "not_permitted"
+            } else {
+                panic!("{rule:?} answered {refused:?}, expected {expected}")
+            };
+            assert_eq!(answered, expected, "{rule:?} answered {refused:?}");
+        }
     }
 }

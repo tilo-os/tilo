@@ -2420,6 +2420,146 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() 
     );
 }
 
+const OWN_INSTALL_TEST: &str =
+    "device::services::tests::a_development_build_installs_on_the_persons_own_connection";
+
+/// The person on their own daemon connection asks this device to install a development build,
+/// with no rule set for it: the workspace decides it may run unasked, and the cache reads the
+/// build's manifest and program from the device's own content store.
+#[test]
+fn a_development_build_installs_on_the_persons_own_connection() {
+    use tilo_actions::remote::{ActionProvider as _, ContentPut as _};
+
+    let Some(root) = isolated_root(OWN_INSTALL_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let (tree, caller) = daemon.connection_tree_in(None).unwrap();
+    assert!(
+        caller.is_own_connection(),
+        "a plain connection is the person's own: {caller:?}"
+    );
+    let cert = daemon.workspaces.device_cert();
+    let target = RemoteActionTarget {
+        provider: crate::device::packages::PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(
+            format!("devices/{}/packages", hex::encode(cert.device_public_key)),
+            "install-dev",
+        ),
+    };
+    // The build's manifest and program, put for the action itself: the store the cache reads.
+    let store = tree
+        .content_puts_for(Some(&target))
+        .expect("this device keeps what its own actions read");
+    let mut put = |bytes: &[u8]| -> String {
+        let mut put = store
+            .begin(&caller, u64::try_from(bytes.len()).unwrap())
+            .expect("the device opens the upload");
+        put.append(0, bytes).expect("the device keeps the bytes");
+        put.finish().expect("the device stores the bytes")
+    };
+    let isa = match std::env::consts::ARCH {
+        "x86_64" => "x86_64 = \"v3\"",
+        other if other.starts_with("aarch64") => "aarch64 = \"aarch64\"",
+        other => panic!("no package for the architecture {other}"),
+    };
+    let manifest = format!(
+        r#"[package]
+id = "dev.tilo.own"
+name = "Own"
+version = "0.1.0"
+kind = "app"
+
+[package.isa]
+{isa}
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+collab = "optional@51"
+
+[entrypoint]
+bin = "app"
+type = "gui"
+"#
+    );
+    let manifest = put(manifest.as_bytes());
+    let program = put(b"a development build's own program");
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target,
+        argument: InvokeArgument::Json(
+            json!({
+                "manifest": {"source": manifest},
+                "payload": [{"path": "app", "file": {"source": program}}],
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let invocation = request.invocation;
+    let receipt = tree
+        .invoke(&caller, request)
+        .wait_timeout(Duration::from_secs(60))
+        .ok()
+        .flatten()
+        .expect("the device answers the call")
+        .expect("the device admits a development build from its person's own connection");
+    assert!(
+        matches!(
+            receipt.status,
+            tilo_actions::remote::ReceiptStatus::Accepted
+                | tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "the cache took the call: {receipt:?}"
+    );
+    // A cache answers as it goes: the build is installed once its call settles.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let state = loop {
+        if let Some(state) = tree.observe(&caller, &invocation)
+            && state.update.is_terminal()
+        {
+            break state;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the development build did not settle"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    match &state.update {
+        tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+            let report = output.value.clone().unwrap_or_default();
+            assert!(
+                report
+                    .get("installed")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| id.starts_with("dev.tilo.own")),
+                "the device names the id it installed: {report}"
+            );
+        }
+        other => panic!("the device did not install the build: {other:?}"),
+    }
+}
+
 const SECRET_RECORD_TEST: &str =
     "device::services::tests::a_secret_answer_is_kept_out_of_every_invocation_record";
 
