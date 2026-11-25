@@ -122,8 +122,21 @@ impl VirtualRows {
         self.mounted = kept;
     }
 
+    /// The row the keyboard is on, when its widget is let go of or built again: the list holds
+    /// it by its key from then on, so a menu opened on it, its ring and the next arrow key stay
+    /// with that row however its widget is built anew (a page opening beside the list narrows
+    /// every row). The keyboard can reach a row by the window's own focus moves, which the list
+    /// does not see until the row's widget goes.
+    fn keep_keyboard_row(&mut self, row: &MountedRow<ListKey>) {
+        if crate::widget::context_menu_area::focus_within(row.widget.as_ref()) {
+            self.focused_group = None;
+            self.focused_key = Some(row.key.clone());
+        }
+    }
+
     fn let_go_of_rows(&mut self, dropped: Vec<MountedRow<ListKey>>) {
         for row in dropped {
+            self.keep_keyboard_row(&row);
             let place = row.index;
             if let Some(laid_out) = row.laid_out() {
                 self.letting_go.push((place, laid_out));
@@ -358,6 +371,9 @@ impl VirtualRows {
                 }
                 previous => {
                     replaced = true;
+                    if let Some(previous) = &previous {
+                        self.keep_keyboard_row(previous);
+                    }
                     let mut widget = match &mounted_state {
                         MountedRowState::Ready => (self.row_builder)(
                             &*self.model,
@@ -407,6 +423,7 @@ impl VirtualRows {
         }
         let mut letting_go = std::mem::take(&mut self.letting_go);
         for (_, row) in old {
+            self.keep_keyboard_row(&row);
             let place = row.index;
             if let Some(laid_out) = row.laid_out() {
                 letting_go.push((place, laid_out));
