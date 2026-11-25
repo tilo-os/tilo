@@ -190,7 +190,7 @@ pub enum BundleError {
     #[error("included directory holds something other than files and directories: {path}")]
     IncludeSpecialFile { path: PathBuf },
     #[error(
-        "included binary must be a bounded regular native executable with a fixed basename: {path}"
+        "included binary must be a bounded regular native executable or Windows library with a fixed basename: {path}"
     )]
     IncludeInvalidBinary { path: PathBuf },
     #[error("included binary is {bytes} bytes, over the {limit} a bundle takes: {path}")]
@@ -1797,7 +1797,7 @@ fn copy_binaries(
                 limit: MAX_INCLUDED_BINARY_BYTES,
             });
         }
-        if !binary_is_executable(&metadata) {
+        if !binary_is_executable(&metadata, name) {
             return Err(invalid());
         }
         if let Some(prior) = names.insert(name, source) {
@@ -1815,7 +1815,12 @@ fn copy_binaries(
     Ok(())
 }
 
-fn binary_is_executable(metadata: &fs::Metadata) -> bool {
+fn binary_is_executable(metadata: &fs::Metadata, name: &str) -> bool {
+    // A Windows program's libraries sit beside it in `bin/` and are loaded, not run, and Windows
+    // carries no mode to mark one with.
+    if name.to_ascii_lowercase().ends_with(".dll") {
+        return true;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2108,6 +2113,15 @@ mod tests {
                 include(&[redirected]),
                 Err(BundleError::IncludeInvalidBinary { .. })
             ));
+            // A Windows program's library is loaded from beside it, and carries no mode to say so.
+            let library = source.path().join("FLAC-8.dll");
+            fs::write(&library, b"a Windows library").unwrap();
+            fs::set_permissions(&library, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(
+                include(std::slice::from_ref(&library)).is_ok(),
+                "a Windows library is carried in bin/ beside its program"
+            );
+            fs::remove_file(out.path().join("bin/FLAC-8.dll")).unwrap();
             let second = other.path().join("tilo-launcher");
             fs::write(&second, b"different compiler output").unwrap();
             fs::set_permissions(&second, fs::Permissions::from_mode(0o755)).unwrap();
