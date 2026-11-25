@@ -368,16 +368,18 @@ files = [
 # tapp a device installs, exactly as the image's own packing does, so a person or
 # an agent writes an app on the device it runs on. Only an image whose app set
 # names a tilolang package builds it (os/image/compile.sh), and the entry is
-# optional for the same reason.
+# optional for the same reason. `tilolang-std` compiles the standard library the
+# tilolang runtime bundle carries, which the image's packing bakes into it.
 [[component]]
 name = "tilolang"
 kind = "userspace"
 scope = "session"
-packages = ["tilolang-cli"]
-bins = ["tilolang"]
+packages = ["tilolang-cli", "tilolang"]
+bins = ["tilolang", "tilolang-std"]
 layer = "desktop-binaries"
 files = [
   { from = "tilolang", to = "/usr/bin/tilolang", mode = "0755", optional = true },
+  { from = "tilolang-std", to = "/usr/bin/tilolang-std", mode = "0755", optional = true },
 ]
 
 [[component]]
