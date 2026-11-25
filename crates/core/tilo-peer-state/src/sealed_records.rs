@@ -70,7 +70,7 @@ pub fn write_sealed(
 /// Write `record` of `app` on `peer` as `key`'s device, sealed under `keys`:
 /// the whole record `edit` makes of nothing when `peer` holds none of it, the
 /// change `edit` makes of it otherwise. What `edit` leaves uncommitted is
-/// committed as a native edit.
+/// committed as the edit of the person `key`'s certificate is for.
 ///
 /// # Errors
 /// The write's refusal.
@@ -90,12 +90,20 @@ pub fn sealed_write(
         ));
     let heads = document.get_heads();
     edit(&mut document);
-    // An edit `edit` left uncommitted is a native one, named as such: every
-    // change names who made it.
-    document.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-    );
+    // An edit `edit` left uncommitted is the edit of the person the writing device belongs to:
+    // every change names who made it. A key the workspace certifies for no one writes one that
+    // names nobody, which the workspace refuses.
+    let person = peer
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
+        .map(|cert| {
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(hex::encode(
+                cert.user_public_key,
+            )))
+        })
+        .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message());
+    document.commit_with(automerge::transaction::CommitOptions::default().with_message(person));
     if starts {
         return sealed_checkpoint(peer, keys, key, (app, record), document.save());
     }
