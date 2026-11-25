@@ -14,7 +14,7 @@ path = "src/lib.rs"
 # The fixtures the service's tests and its embedders' tests build on: a
 # certified test service and the devices around it, plus the store's test
 # hooks and the identity store's, which the evidence those fixtures certify needs.
-test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-account-probe/test-support", "dep:rustls", "dep:tilo-identity", "tilo-identity/test-support"]
+test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "dep:tilo-surface-compile", "tilo-account-probe/test-support", "dep:rustls", "dep:tilo-identity", "tilo-identity/test-support"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]). Their turns write tilolang records through the store an app's window
@@ -39,8 +39,8 @@ fixture-servers = ["tilo-web-search?/fixture-servers"]
 apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
-# The surface fixtures a test builds declare: what the service stores is the compiled form.
-tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
+# The surface fixtures a test builds declare (test support): what the service stores is the compiled form.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile", optional = true }
 # What a Bluetooth address is, for the record of the person's accessories.
 tilo-bluetooth-address = { path = "../bluetooth-address" }
 # The device's one store, which apps write and read their resources in.
@@ -226,6 +226,7 @@ rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
 # Compiles the surface this crate publishes for the test that holds its file to it.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # The committed package a provider's actions are described by, which its test reads.
 toml.workspace = true
 # The document app whose record the broker's fixture seeds and drives.
