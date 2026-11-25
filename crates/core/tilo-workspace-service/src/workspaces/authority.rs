@@ -44,7 +44,6 @@ use super::{
     CollaborationError, HostedWorkspace, MemberPlace, SetMemberRoleRequest, Workspaces, system_time,
 };
 use crate::service_authority::ServiceOperation;
-use tilo_lock::RwLockRecover as _;
 
 /// What a workspace administration request asks of its authority.
 #[derive(Clone, Copy, Debug)]
@@ -211,21 +210,6 @@ impl Workspaces {
         now: u64,
     ) -> Result<String, CollaborationError> {
         let host = self.inner.host.cert.user_public_key;
-        // An agent is a device of its person too, but it administers nothing:
-        // it joins workspaces only through its delegation. The registry is the
-        // server's in every build, so is this refusal: an agent registered with
-        // a server built without its supervisor is still no person.
-        if self
-            .inner
-            .host
-            .agents
-            .read_recover()
-            .contains_key(&device.device_public_key)
-        {
-            return Err(CollaborationError::new(
-                "workspace administration requires a person's device, not an agent's",
-            ));
-        }
         // A device this host placed for a Browser environment carries a certificate of the
         // host's person, and is still no device of theirs: it serves its one record, and
         // enters, lets in and administers nothing.
