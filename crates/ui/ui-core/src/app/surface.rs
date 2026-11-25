@@ -1269,7 +1269,7 @@ impl App {
         let commands_before = scene.encoding().draw_tags.len();
         #[cfg(test)]
         let pump_probe = crate::profiling::frame_probe::span("frame.pump");
-        self.pump_hosted_model();
+        let pump = self.pump_hosted_model_report();
         #[cfg(test)]
         drop(pump_probe);
         if let Some(profiler) = self.profiler.as_mut() {
@@ -1347,8 +1347,25 @@ impl App {
             self.layout.last_pass.rebuilt = true;
             self.layout.last_pass.remounted = false;
         }
+        // A frame whose model pass took up nothing that arrived, synchronized nothing, published
+        // nothing and changed no structure: what a window at rest draws, and what a caller-asked
+        // frame at rest stays.
+        let quiet = !pump.updated
+            && !pump.synced
+            && !pump.published
+            && !pump.presentation_changed
+            && !structure_rebuilt
+            && !self.root_widget.needs_idle_sync()
+            && !self.root_widget.needs_redraw()
+            && !self.root_widget.needs_animation_frame()
+            && !self.wake_pending()
+            && self.actions.bound_invocations.is_empty()
+            && !crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
         let frames = &mut self.layout.frames;
         frames.laid_out = frames.laid_out.saturating_add(1);
+        if quiet {
+            frames.quiet = frames.quiet.saturating_add(1);
+        }
         if self.layout.last_pass.rebuilt {
             frames.rebuilt = frames.rebuilt.saturating_add(1);
             let built = u64::try_from(self.layout.node_map.len()).unwrap_or(u64::MAX);

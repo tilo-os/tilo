@@ -74,7 +74,13 @@ impl super::App {
     /// A worker has no redraw loop. Advance one bounded model pass using the
     /// same phases as the window runner, without adding caller attribution.
     pub fn pump_hosted_model(&mut self) {
-        self.pump_hosted_model_as(host_perf_baseline());
+        self.pump_hosted_model_report();
+    }
+
+    /// [`Self::pump_hosted_model`], answering what the pass took up, synchronized and published:
+    /// a frame counts itself quiet only when the pass brought nothing.
+    pub(super) fn pump_hosted_model_report(&mut self) -> HostedPumpReport {
+        self.pump_hosted_model_as(host_perf_baseline())
     }
 
     /// One wake of an app the session runs with no window
@@ -330,8 +336,16 @@ impl super::App {
     /// Whether a publication now would recompute what the last one
     /// published, as far as the widget tree it reads stands.
     pub(super) fn publication_current(&self) -> bool {
-        self.actions.published_stamp.is_some()
-            && self.publication_stamp() == self.actions.published_stamp
+        let Some(stamp) = self.publication_stamp() else {
+            // A window with no workspace behind it has no route to publish on: its surface goes
+            // out when it connects ([`Self::pump_collab_presence_inner`]). Until then only an
+            // invocation of its own held for that route asks a publication, which refuses it.
+            // Counting it stale ran a publication that carried nothing every frame, and no frame
+            // of such a window was quiet.
+            return !self.collaboration.manager.is_connected()
+                && self.actions.held_own_invocations.is_empty();
+        };
+        Some(stamp) == self.actions.published_stamp
     }
 
     /// A native model pass acknowledges only wakes preceding this drain.
