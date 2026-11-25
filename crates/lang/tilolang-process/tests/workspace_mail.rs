@@ -361,7 +361,7 @@ fn nobody_outside_the_workspace_reads_its_mail() {
         id: 1,
         invocation: tilo_actions::InvocationId::new(),
         resource: archive.resource.clone(),
-        action: archive.action.clone(),
+        action: archive.action,
         argument: None,
         actor: tilo_actions::MemberId::person(CY).into(),
         context: None,
