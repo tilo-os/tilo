@@ -600,6 +600,8 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
 
 const WRITER_TEST: &str = "device::services::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart";
 const WRITER_HELPER: &str = "TILO_DAEMON_WRITER_HELPER";
+/// The person the writer's helper edits the note as: the person this device serves.
+const WRITER_PERSON: &str = "TILO_DAEMON_WRITER_PERSON";
 const WRITER_APP: &str = "dev.tilo.writer";
 const WRITER_KIND: &str = "dev.tilo.writer.note";
 const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
@@ -713,10 +715,14 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
         wait_until_joined(&mut manager);
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
-        // An edit of the note's content, as the app's window makes it: its surface's `type` verb.
+        // An edit of the note's content, as the app's window makes it: its surface's `type` verb,
+        // made by the person at the window.
+        let person = std::env::var(WRITER_PERSON).unwrap();
+        let invoker = tilo_actions::ActionInvoker::member(tilo_actions::MemberId::person(person));
+        let edit = tilo_actions::ActionContext::default().with_invoker(invoker);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                .with_message(edit.change_message().unwrap()),
         );
         assert!(
             manager.send(ui::collaboration::CollabRequest::document_snapshot(
@@ -736,6 +742,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     command
         .args(["--exact", WRITER_TEST, "--nocapture"])
         .env(WRITER_HELPER, "1")
+        .env(WRITER_PERSON, session.person_id())
         .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
@@ -748,6 +755,12 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
             Ok(Some(stored)) => break Some(stored),
             Ok(None) => stopped = format!("{WRITER_APP} keeps {WRITER_RECORD} without the write"),
             Err(reason) => stopped = reason,
+        }
+        // A writer that stopped writes nothing more: what it said, a refusal among it, is why.
+        if let Ok(Some(status)) = child.try_wait() {
+            let said = std::fs::read_to_string(root.join("writer.log")).unwrap_or_default();
+            stopped = format!("the writer stopped ({status}) before its write was kept: {said}");
+            break None;
         }
         if Instant::now() >= deadline {
             break None;
