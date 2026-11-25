@@ -42,11 +42,16 @@ pub fn installed(name: &str) -> &'static ApplicationDefinition {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         // An app package, or a package only the tests use.
         let shipped = root.join("../../../apps/tl").join(name);
-        let dir = if shipped.is_dir() {
-            shipped
-        } else {
-            root.join("tests/window").join(name)
-        };
+        let fixture = root.join("tests/window").join(name);
+        // Neither: say both places, rather than the fixture's path a reader would not connect to
+        // the app the test names (a job whose tree lacks apps/tl gets this and nothing else).
+        assert!(
+            shipped.is_dir() || fixture.is_dir(),
+            "{name} is neither an app at {} nor a test package at {}",
+            shipped.display(),
+            fixture.display()
+        );
+        let dir = if shipped.is_dir() { shipped } else { fixture };
         let platform =
             tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
         let provided = tilolang::source::apps_of(&platform);
