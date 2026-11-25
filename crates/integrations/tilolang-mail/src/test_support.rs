@@ -100,6 +100,7 @@ impl Wakes {
                 SETTLE_BOUND.as_secs()
             );
         }
+        drop(generation);
     }
 }
 
@@ -209,10 +210,7 @@ impl Rig {
             .host
             .settle_outbox()
             .unwrap_or_else(|error| panic!("the outbox settles: {error}"));
-        polled.wrote
-            || polled.settle
-            || settled.written > 0
-            || settled.owes_settle
+        polled.wrote || polled.settle || settled.written > 0 || settled.owes_settle
     }
 
     /// Polls until nothing is left to do: a sync answered, a write taken. A poll with something
