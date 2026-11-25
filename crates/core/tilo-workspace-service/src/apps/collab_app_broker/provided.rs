@@ -2471,8 +2471,9 @@ mod own_device_verdict_tests {
         workspace.policy.set_owner(owner.clone());
         workspace.policy.add_member(MEMBER, Role::Editor);
         let workspace_id = workspace.id().to_string();
+        // A path below the workspace, as the fixture's grants take it.
         let node = tilo_actions::action_node(
-            &workspace.policy.node(),
+            &crate::apps::test_support::TreePath::root(),
             PROVIDER,
             "devices.packages",
             &resource(),
