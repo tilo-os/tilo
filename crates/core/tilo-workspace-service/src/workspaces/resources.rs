@@ -2117,6 +2117,11 @@ impl Workspaces {
     ) -> Result<collab_types::store::wire::Reply, String> {
         use collab_types::store::wire::Reply;
         let app = app.to_owned();
+        // A batch the store refuses a step of keeps none of its steps: check every write against
+        // the store as the writes before it leave it, before a frame of the batch is retained.
+        self.store_of(&mut governed)
+            .check_batch(&writes, device.device())
+            .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         // The store takes these writes as they are kept, unless the action has others to come.
         let whole = action.is_none();
         let action = action.or_else(|| action_of(&governed, &device, &app, &writes));

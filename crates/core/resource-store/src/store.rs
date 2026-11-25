@@ -287,7 +287,8 @@ impl Store {
     }
 
     /// Send a command against a private copy of the store. The command can follow the placement,
-    /// index and undo history of its earlier steps without publishing any of them.
+    /// index and undo history of its earlier steps without publishing any of them, and its writes
+    /// are judged by the types, reader rules and read decision the live store holds.
     pub(crate) fn stage<T>(
         &mut self,
         scope: &crate::wire::DraftScope,
@@ -308,11 +309,44 @@ impl Store {
             filled,
             index,
             source: self.source.take(),
+            // What a write is judged by: the types every app declared, the reader rules, and
+            // the workspace's read decision.
+            schema: self.schema.clone(),
+            rules: self.rules.clone(),
+            reader: self.reader.clone(),
             ..Self::default()
         };
         let result = command(&mut staged);
         self.source = staged.source.take();
         result
+    }
+
+    /// Check each of `writes`, in order, as the store would hold it once the writes before it
+    /// are taken in, and take it into a private copy of the store so the next one is judged
+    /// against it. A batch is kept whole or not at all, so none of it may be retained before
+    /// the last of it passes; this store is left as it was.
+    ///
+    /// # Errors
+    /// The first write it refuses.
+    pub fn check_batch(&mut self, writes: &[Written], author: [u8; 32]) -> Result<(), Refusal> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+        // A check reads any row of the index, as the write the store takes in is judged: stage
+        // the whole of it.
+        let scope = crate::wire::DraftScope {
+            undo: true,
+            ..crate::wire::DraftScope::default()
+        };
+        self.stage(&scope, |staged| {
+            for write in writes {
+                staged.check_write(write, author)?;
+                staged
+                    .apply(&write.doc, &write.readers, write.change.clone())
+                    .map_err(|_| Refusal::Unplaced)?;
+            }
+            Ok(())
+        })
     }
 
     /// Check a staged write against the live document and the same schema a received write uses.

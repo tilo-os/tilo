@@ -1174,7 +1174,35 @@ async fn a_cancelled_write_keeps_nothing(
     assert_eq!(title_through_service(workspaces, context, id).await, None);
 }
 
+/// The frames this device keeps of `app`'s store documents in `workspace`: its writes of the
+/// app's records, and never the workspace's own commits.
+async fn whole_writes(
+    records: &tilo_workspace_service::workspace_documents::WorkspaceDocuments,
+    workspace: collab_types::WorkspaceId,
+) -> usize {
+    records
+        .retained(workspace)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|frame| {
+            matches!(
+                NeighbourMsg::decode(&frame.body),
+                Ok(NeighbourMsg::AppDocument {
+                    app_id,
+                    document_id,
+                    ..
+                }) if app_id == APP && collab_types::is_store_document(&document_id)
+            )
+        })
+        .count()
+}
+
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the refusals before a batch, the batch refused whole, and the batches kept whole"
+)]
 async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(TestGroupKeys::default());
@@ -1230,6 +1258,9 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     )
     .await;
 
+    // A batch the store refuses a step of keeps none of its steps: the writes drafted before
+    // the refused one are neither retained nor applied.
+    let frames = whole_writes(&records, created.workspace_id).await;
     let batch = Command::Batch(vec![
         put_signed_issue("i-1", "First"),
         put_signed_issue("i-1", "Second"),
@@ -1248,9 +1279,107 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         "the refusal names the step that failed, the remove of the missing issue: {refused}"
     );
     assert_eq!(
+        whole_writes(&records, created.workspace_id).await,
+        frames,
+        "a refused batch retains no frame: {refused}"
+    );
+    assert_eq!(
         title_through_service(&workspaces, &context, "i-1").await,
         None,
         "a refused action keeps none of its steps: {refused}"
+    );
+
+    // Neither does a restart bring one back.
+    drop(workspaces);
+    server.shutdown().await;
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key),
+    }));
+    let records = workspaces.workspace_documents();
+    assert_eq!(
+        whole_writes(&records, created.workspace_id).await,
+        frames,
+        "a refused batch keeps no frame across a restart"
+    );
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        None,
+        "a refused action's steps do not come back after a restart"
+    );
+
+    // A batch whose every step the store admits is kept whole.
+    workspaces
+        .resource_command(
+            &context,
+            Command::Batch(vec![
+                put_signed_issue("i-1", "First"),
+                put_signed_issue("i-1", "Second"),
+            ]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("Second".into())),
+        "an admitted batch keeps every step"
+    );
+
+    // A batch whose later step builds on the change its first makes is judged against the
+    // record as it will stand with both, not as it stood before either.
+    workspaces
+        .resource_command(
+            &context,
+            Command::Batch(vec![
+                put_signed_issue("i-1", "Third"),
+                put_signed_issue("i-1", "Fourth"),
+            ]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("Fourth".into())),
+        "a batch's later step is judged against the record its first made"
+    );
+
+    // A step the store judges only once the batch is kept — a field its kind does not declare —
+    // refuses the batch, and the steps before it are neither retained nor applied.
+    let frames = whole_writes(&records, created.workspace_id).await;
+    let mut undeclared = signed_issue("Fifth");
+    undeclared
+        .fields
+        .insert("undeclared".into(), Cell::One(Value::Text("x".into())));
+    let refused = workspaces
+        .resource_command(
+            &context,
+            Command::Batch(vec![
+                put_signed_issue("i-1", "Fifth"),
+                Command::Put {
+                    kind: KIND.into(),
+                    id: "i-1".into(),
+                    resource: undeclared,
+                    stamp: create(),
+                },
+            ]),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("declares no field `undeclared`"),
+        "the refusal names the field its kind does not declare: {refused}"
+    );
+    assert_eq!(
+        whole_writes(&records, created.workspace_id).await,
+        frames,
+        "a batch refused of a step retains no frame: {refused}"
+    );
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("Fourth".into())),
+        "a refused batch leaves the record as it was: {refused}"
     );
     drop(workspaces);
     server.shutdown().await;
