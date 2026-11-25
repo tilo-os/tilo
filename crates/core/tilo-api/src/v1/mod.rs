@@ -454,8 +454,10 @@ impl<'a> Caller<'a> {
                     "cursor",
                     self.query("cursor"),
                 );
-                let read =
-                    record_resource(self.params.get("path"), self.call("tilo_read", args).await?);
+                let read = answers::record_resource(
+                    self.params.get("path"),
+                    self.call("tilo_read", args).await?,
+                );
                 let version = read
                     .get("app")
                     .and_then(Value::as_str)
@@ -828,21 +830,6 @@ fn with(mut object: Value, name: &str, value: Option<impl serde::Serialize>) -> 
 }
 
 /// `value` as `T` answers it, or the refusal that it was not.
-/// `read` as a resource: a record read (`record:<app>:<record>`, as the record API answers it,
-/// `{revision, records}`) is the resource at its path whose fields are the record's value; any
-/// other read is the resource it is already.
-fn record_resource(path: &str, read: Value) -> Value {
-    let Some(records) = read.get("records").and_then(Value::as_array) else {
-        return read;
-    };
-    let fields = records
-        .iter()
-        .find_map(|record| record.get("value"))
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    json!({"path": path, "fields": fields})
-}
-
 fn shaped<T: serde::de::DeserializeOwned + serde::Serialize>(
     value: Value,
 ) -> Result<Value, ApiError> {

@@ -878,7 +878,10 @@ impl Calls {
     ) -> Result<Value> {
         let mut arguments = json!({"path": path});
         put(&mut arguments, "cursor", cursor);
-        shaped::<answers::Resource>(self.typed(workspace, "tilo_read", arguments, None).await?)
+        read_answer(
+            path,
+            self.typed(workspace, "tilo_read", arguments, None).await?,
+        )
     }
 
     /// What the app's window shows for `path` in `workspace`, as `tilo_view` reads it, with a
@@ -1619,6 +1622,12 @@ fn action_answer(mut answer: Value) -> Result<Value> {
         fields.insert("invocation".into(), invocation);
     }
     shaped::<answers::ActionAnswer>(answer)
+}
+
+/// What `tilo_read` answered for `path`, as the resource [`Session::read`] answers: a record's
+/// reading is the resource at its path, as the API's read answers it too.
+pub(crate) fn read_answer(path: &str, read: Value) -> Result<Value> {
+    shaped::<answers::Resource>(answers::record_resource(path, read))
 }
 
 /// `value` as `T` answers it, or why it does not.

@@ -1609,6 +1609,71 @@ fn a_persons_keys_kept_without_being_issued_here_are_bounded() {
     ));
 }
 
+/// `tilo invocations` reads the workspace's invocations as their record: what the daemon's record
+/// read answers for it is the resource the command pages, its invocations its fields' items.
+#[tokio::test]
+async fn the_workspaces_invocations_read_as_the_resource_the_cli_pages() {
+    use tilo_actions::remote::workspace_invocations::{Invocation, InvocationStatus, PROVIDER};
+    use tilo_actions::remote::{
+        Caller, ReadAnswer, ReadsAnswer, ResourceAddress, ResourceCopy, ResourceReadRequest,
+        ResourceReads, ResourceWake, answered,
+    };
+    /// The workspace's invocations, as the device's reader answers their record.
+    struct Invocations(Value);
+    impl ResourceReads for Invocations {
+        fn read<'a>(
+            &'a self,
+            _: &'a Caller,
+            address: &'a ResourceAddress,
+        ) -> ReadsAnswer<'a, ResourceCopy> {
+            assert_eq!(
+                (address.app.as_str(), address.record.as_str()),
+                (PROVIDER, "")
+            );
+            Box::pin(std::future::ready(Ok(ResourceCopy::reading(
+                self.0.clone(),
+                None,
+            ))))
+        }
+        fn watch<'a>(
+            &'a self,
+            _: &'a Caller,
+            _: &'a ResourceAddress,
+            _: &'a ResourceWake,
+        ) -> ReadsAnswer<'a, ()> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+    }
+    let waiting = Invocation {
+        id: Some("0f3c".into()),
+        status: InvocationStatus::Waiting,
+        action: Some("notes#rename".into()),
+        ..Invocation::default()
+    };
+    let reads = Arc::new(Invocations(
+        json!({"items": [waiting], "total": 1, "waiting": 1}),
+    ));
+    // Read as the agent tools' `tilo_read` of `record:tilo.invocations:` reads it.
+    let read = ResourceReadRequest {
+        workspace: "atlas".into(),
+        app: PROVIDER.into(),
+        record: String::new(),
+        joined: false,
+        after: None,
+        wait_ms: None,
+        answer: ReadAnswer::Reading,
+    };
+    let answer = answered(reads, &Caller::local_person("jane"), read)
+        .await
+        .unwrap();
+    let path = format!("record:{PROVIDER}:");
+    let resource = crate::calls::read_answer(&path, answer).unwrap();
+    assert_eq!(resource["path"], path.as_str());
+    assert_eq!(resource["fields"]["items"][0]["id"], "0f3c");
+    assert_eq!(resource["fields"]["items"][0]["status"], "waiting");
+    assert_eq!(resource["fields"]["total"], 1);
+}
+
 /// What a difference between the page's clock and the server's does to an
 /// approval.
 mod sign_in_clock;
