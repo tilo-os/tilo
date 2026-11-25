@@ -19,7 +19,6 @@ static BOUND: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::Domain {
             create: super::host_tests::preview,
         },
-        content_schema: None,
     }],
 };
 
@@ -118,6 +117,18 @@ tilo_test_env::scenario! {
     }
 }
 
+/// The text a restore fixture's record holds at `body`.
+pub(crate) fn body(doc: &automerge::AutoCommit) -> String {
+    use automerge::ReadDoc as _;
+    doc.get(ROOT, "body")
+        .unwrap()
+        .unwrap()
+        .0
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 pub(crate) static RESTORABLE: HistoryDefinition = HistoryDefinition {
     app_id: "dev.tilo.restore-fixture",
     scopes: &[HistoryScopeDefinition {
@@ -126,7 +137,6 @@ pub(crate) static RESTORABLE: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::Domain {
             create: super::host_tests::preview,
         },
-        content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
     }],
 };
 
@@ -189,13 +199,13 @@ tilo_test_env::scenario! {
             .click_named("history-restore-review.primary")
             .unwrap();
         assert_eq!(
-            crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
             "old"
         );
         assert_eq!(driver.state_mut().doc.get_changes(&before).len(), 1);
         assert!(driver.state_mut().undo(None, None).is_some());
         assert_eq!(
-            crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
             "live"
         );
     }
@@ -269,10 +279,17 @@ tilo_test_env::scenario! {
             .click_named("history-restore-review.primary")
             .unwrap();
         assert_eq!(
-            crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
             "old"
         );
-        assert_eq!(driver.state_mut().doc.get_changes(&before).len(), 1);
+        // The restore writes one change for each step since the version, and they are one
+        // move: one undo takes all of it back.
+        assert_eq!(driver.state_mut().doc.get_changes(&before).len(), 2);
+        assert!(driver.state_mut().undo(None, None).is_some());
+        assert_eq!(
+            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
+            "remote change"
+        );
     }
 }
 

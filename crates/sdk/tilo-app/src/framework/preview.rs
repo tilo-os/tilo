@@ -5,17 +5,12 @@
 //! no separate renderer: the framework reads the resource from the frozen
 //! document, builds the view again with editing disabled, and lays it out in
 //! History mode's preview pane. Restoring a version is equally generic: the
-//! restore schema comes from the resource's stored [`Shape`].
+//! store's `restore` verb, checked against what the resource reads.
 
 use std::any::TypeId;
 
-use tilo_resource::{Reader, Resource, Shape};
+use tilo_resource::{Reader, Resource};
 use ui_core::automerge::AutoCommit;
-use ui_core::history_mode::restore::{
-    HistoryMapEntries, HistoryMapField, HistoryMapOverlay, HistoryMembership, HistoryRestoreNode,
-    HistoryRestoreSchema, HistoryRootPattern, HistoryRootSelector, PreservedOnCreate,
-    RestoreValueType,
-};
 use ui_core::history_mode::{
     FrozenRootPreview, HistoricalGap, HistoricalSupport, HistoryDefinition, HistoryPresentation,
     HistoryPreview, HistoryScopeDefinition, PartVersion, PreviewInput, PreviewView,
@@ -54,7 +49,6 @@ fn folder_observation(definition: &HistoryDefinition) -> HistoryDefinition {
                 key: scope.key,
                 title: scope.title,
                 presentation: HistoryPresentation::Folder,
-                content_schema: None,
             })
             .collect::<Box<[_]>>(),
     );
@@ -75,7 +69,6 @@ pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition
             super::app::hooks::<A>().id(),
             A::FOLDER_HISTORY,
             (<A::Resource as Resource>::LABEL, preview::<A>),
-            restore_schema::<A::Resource>(),
         )
     })
 }
@@ -88,7 +81,6 @@ fn history_definition_of(
     app_id: &'static str,
     folder: Option<super::app::FolderHistory>,
     (label, create): (&'static str, ui_core::history_mode::PreviewFactory),
-    content_schema: Option<&'static HistoryRestoreSchema>,
 ) -> HistoryDefinition {
     // A window that shows the workspace's folder: its History lists the folder's changes,
     // or the shown file's; History moves to it when the app opens a file's.
@@ -96,13 +88,11 @@ fn history_definition_of(
         key: FOLDER_SCOPE,
         title: folder.title,
         presentation: HistoryPresentation::Folder,
-        content_schema: None,
     });
     let resource = HistoryScopeDefinition {
         key: "resource",
         title: label,
         presentation: HistoryPresentation::Domain { create },
-        content_schema,
     };
     // A window whose record keeps only which folder is open lists the folder alone.
     let resource = folder
@@ -117,144 +107,14 @@ fn history_definition_of(
     HistoryDefinition { app_id, scopes }
 }
 
-/// The History restore schema of `R`, derived from its stored layout:
-/// restoring a version writes it back field by field and collection item by
-/// item, the way actions write it, so unchanged content keeps its identity and
-/// a member's concurrent edits to other items survive. Every field is
-/// optional (a record reads absent fields as their empty value) and whatever a
-/// field holds is accepted by type; the resource's own `read` is the validator,
-/// so a version is restorable exactly when the app can open it.
-fn restore_schema<R: Resource>() -> Option<&'static HistoryRestoreSchema> {
-    restore_schema_of(R::shape(), R::KIND, R::VERSION, readable::<R>)
-}
-
-/// [`restore_schema`] of the resource `kind` stored as `shape` at `version`,
-/// which `readable` validates. The schema reads the version the resource
-/// reads, so a restore is admitted exactly for the records the app opens. Not
-/// generic, so it is compiled once rather than for every resource type.
-#[inline(never)]
-fn restore_schema_of(
-    shape: Option<Shape>,
-    kind: &'static str,
-    version: u32,
-    readable: fn(&AutoCommit) -> Result<(), String>,
-) -> Option<&'static HistoryRestoreSchema> {
-    let Some(Shape::Record(fields)) = shape else {
-        return None;
-    };
-    if fields.is_empty() {
-        return None;
-    }
-    let selectors = fields
-        .iter()
-        .map(|field| HistoryRootSelector {
-            pattern: HistoryRootPattern::Exact(field.key),
-            required: false,
-            node: restore_node(field.shape),
-        })
-        .collect::<Vec<_>>();
-    Some(Box::leak(Box::new(HistoryRestoreSchema {
-        id: kind,
-        version,
-        roots: &[],
-        selectors: Box::leak(selectors.into_boxed_slice()),
-        preserved_roots: &[],
-        preserved: &[],
-        validate: readable,
-        validate_result: readable,
-    })))
-}
-
-fn restore_node(shape: Shape) -> HistoryRestoreNode {
-    let whole = HistoryRestoreNode::Whole {
-        expected_type: RestoreValueType::Any,
-    };
-    let overlay = |fields: Vec<HistoryMapField>, entries: Option<&'static HistoryMapEntries>| {
-        HistoryRestoreNode::MapOverlay(Box::leak(Box::new(HistoryMapOverlay {
-            fields: Box::leak(fields.into_boxed_slice()),
-            entries,
-        })))
-    };
-    match shape {
-        Shape::Record(fields) if !fields.is_empty() => overlay(
-            fields
-                .iter()
-                .map(|field| HistoryMapField {
-                    key: field.key,
-                    required: false,
-                    node: restore_node(field.shape),
-                })
-                .collect(),
-            None,
-        ),
-        Shape::Record(_) | Shape::Value | Shape::Map(_) => whole,
-        Shape::Keyed(item) => overlay(
-            Vec::new(),
-            Some(Box::leak(Box::new(HistoryMapEntries {
-                key_limit_bytes: 1024,
-                node: restore_node(*item),
-                membership: HistoryMembership::TargetAuthoritative,
-                on_create: PreservedOnCreate::Omit,
-            }))),
-        ),
-        Shape::Collection(item) => {
-            let entry = overlay(
-                vec![
-                    HistoryMapField {
-                        key: tilo_resource::shape::ENTRY_ORDER_KEY,
-                        required: false,
-                        node: whole,
-                    },
-                    HistoryMapField {
-                        key: tilo_resource::shape::ENTRY_VALUE_KEY,
-                        required: false,
-                        node: restore_node(*item),
-                    },
-                ],
-                None,
-            );
-            overlay(
-                Vec::new(),
-                Some(Box::leak(Box::new(HistoryMapEntries {
-                    key_limit_bytes: 1024,
-                    node: entry,
-                    membership: HistoryMembership::TargetAuthoritative,
-                    on_create: PreservedOnCreate::Omit,
-                }))),
-            )
-        }
-    }
-}
-
-/// A version is valid content exactly when the resource reads from it.
-fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
-    R::read(doc).map(drop).map_err(|error| error.to_string())
-}
-
 /// What History can do with `R`'s versions, from what the type declared:
-/// its restore schema (see [`restore_schema`]) and whether it has a read
-/// adapter.
+/// a read adapter, or a stored record its `read` reads field by field.
 #[must_use]
 pub(crate) fn historical_support<R: Resource>() -> HistoricalSupport {
     HistoricalSupport::of(
-        &HistoryScopeDefinition {
-            key: "resource",
-            title: R::LABEL,
-            presentation: HistoryPresentation::Domain {
-                create: unavailable_preview,
-            },
-            content_schema: restore_schema::<R>(),
-        },
-        R::READABLE,
+        R::READABLE
+            || matches!(R::shape(), Some(tilo_resource::Shape::Record(fields)) if !fields.is_empty()),
     )
-}
-
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "a HistoryPresentation factory's signature, never called"
-)]
-fn unavailable_preview(_: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
-    Err("this scope is a declaration, not a preview".into())
 }
 
 /// One version of `R` as the read API answers it: the type's own `read`
@@ -568,20 +428,26 @@ mod tests {
         }
     }
 
-    fn restore(replica: &mut Replica<Shelf, AppNamed>, target: &[ui_core::automerge::ChangeHash]) {
-        use ui_core::history_mode::restore::{
-            RestoreOutcome, apply_prepared_content_restore, prepare_content_restore,
+    /// Bring `replica` back to the version `target` through the store's `restore` verb, as
+    /// `Shelf`'s history decodes it.
+    fn restore(
+        replica: &mut Replica<Shelf, tilo_resource::AppNamed>,
+        target: &[ui_core::automerge::ChangeHash],
+    ) -> Result<(), tilo_actions::ActionError> {
+        use super::super::history::{HistoryEdit, ResourceHistoryEdit, version_name};
+        let edit = HistoryEdit::Restore {
+            version: version_name(target),
+            ids: None,
+            step: None,
         };
-        let schema = restore_schema::<Shelf>().expect("a record has a restore schema");
+        let encoded = tilo_actions::EncodedAction {
+            type_id: super::super::history::EDIT_TYPE.to_owned(),
+            payload: super::super::history::edit_payload(&edit).unwrap(),
+        };
         let mut doc = replica.doc().clone();
-        let current = doc.get_heads();
-        let plan = prepare_content_restore(&doc, schema, &current, target).unwrap();
-        assert_eq!(
-            apply_prepared_content_restore(&mut doc, &plan).unwrap(),
-            RestoreOutcome::Changed
-        );
-        doc.commit();
+        tilo_actions::apply_local(&mut doc, &ResourceHistoryEdit::<Shelf>::new(edit), encoded)?;
         *replica = Replica::from_doc(doc).in_app("so.tilo.model", "Model");
+        Ok(())
     }
 
     tilo_test_env::scenario! {
@@ -606,7 +472,7 @@ mod tests {
                 .unwrap();
             assert_ne!(shelf.state().unwrap(), past);
 
-            restore(&mut shelf, &past_heads);
+            restore(&mut shelf, &past_heads).unwrap();
             assert_eq!(shelf.state().unwrap(), past);
             // Item identity survives: the restored books are the same items.
             assert_eq!(
@@ -621,20 +487,36 @@ mod tests {
             );
         }
 
-        phase a_resource_without_a_record_shape_has_no_restore_schema;
+        phase a_version_comes_back_only_as_the_app_reads_it;
         {
-            struct Opaque;
-            impl Resource for Opaque {
-                const KIND: &'static str = "test.opaque";
-                const LABEL: &'static str = "Opaque";
-                type State = ();
-                type Action = <Shelf as Resource>::Action;
-                fn read(_: &tilo_resource::Doc) -> Result<(), tilo_resource::ModelError> {
-                    Ok(())
-                }
-            }
-            assert!(restore_schema::<Opaque>().is_none());
-            assert!(restore_schema::<Shelf>().is_some());
+            use ui_core::automerge::transaction::Transactable as _;
+            // A record stored at a version this app does not read is not restored.
+            let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
+            shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
+            let past = shelf.heads();
+            shelf.apply(Shelf::RENAME.with("Done")).unwrap();
+            let mut doc = shelf.doc().clone();
+            tilo_resource::evolution::write_version(&mut doc, Shelf::VERSION + 1).unwrap();
+            doc.commit();
+            let mut newer = Replica::<Shelf>::from_doc(doc).in_app("so.tilo.model", "Model");
+            let refused = restore(&mut newer, &past).unwrap_err().to_string();
+            assert!(refused.contains("stored at version"), "{refused}");
+
+            // A version that no longer opens as the app's type is not restored.
+            let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
+            shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
+            let mut doc = shelf.doc().clone();
+            doc.put_object(ui_core::automerge::ROOT, "title", ui_core::automerge::ObjType::List)
+                .unwrap();
+            doc.commit();
+            let unreadable = doc.get_heads();
+            doc.put(ui_core::automerge::ROOT, "title", "Fixed").unwrap();
+            doc.commit();
+            let mut shelf = Replica::<Shelf>::from_doc(doc).in_app("so.tilo.model", "Model");
+            let refused = restore(&mut shelf, &unreadable).unwrap_err().to_string();
+            assert!(refused.contains("no longer opens"), "{refused}");
+            assert_eq!(shelf.state().unwrap().title, "Fixed");
+            assert_eq!(historical_support::<Shelf>(), HistoricalSupport::Content);
         }
 
         phase a_past_version_renders_through_the_apps_own_view_read_only;

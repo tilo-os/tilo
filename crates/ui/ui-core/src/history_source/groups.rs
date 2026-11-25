@@ -38,7 +38,7 @@ use tilo_automerge::read::int_at;
 /// A version name is a label, not a paragraph; past this it stops fitting
 /// anywhere it is rendered and starts being a way to make another user's
 /// timeline unreadable.
-pub const MAX_LABEL_LEN: usize = 120;
+pub const MAX_LABEL_LEN: usize = collaboration::history::MAX_RUN_NAME;
 
 /// The `by` of a name a model wrote, in place of a person's actor hex. A
 /// generated name is the document's guess at what a run of changes was: it is
@@ -128,22 +128,15 @@ pub fn name_range_by(
     label: &str,
     by: &str,
 ) -> String {
-    let key = format!("{GROUPS_KEY}{}", HistoryEntryId::hex(start));
-    let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
-    let at = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
-    // Replacing the whole record rather than patching fields keeps a rename and
-    // a re-scope atomic: a peer never observes the new label against the old
-    // range.
-    let Ok(rec) = doc.put_object(automerge::ROOT, &key, ObjType::Map) else {
-        return key;
-    };
-    let _ = doc.put(&rec, "label", label);
-    if let Some(e) = end {
-        let _ = doc.put(&rec, "end", HistoryEntryId::hex(e));
-    }
-    let _ = doc.put(&rec, "by", by);
-    let _ = doc.put(&rec, "at", at);
-    key
+    let end = end.map(HistoryEntryId::hex);
+    collaboration::history::name_run(
+        doc,
+        (&HistoryEntryId::hex(start), end.as_deref()),
+        label,
+        by,
+        None,
+    )
+    .unwrap_or_else(|| format!("{GROUPS_KEY}{}", HistoryEntryId::hex(start)))
 }
 
 /// Write what a [`GroupNameRequest`] asks for: name its range, or, with an

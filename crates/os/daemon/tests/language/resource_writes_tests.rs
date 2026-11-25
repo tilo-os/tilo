@@ -1858,7 +1858,7 @@ async fn checkpoints(workspaces: &Workspaces, workspace: &str, document: &str) -
         .unwrap()
         .get_changes(&[])
         .into_iter()
-        .filter_map(Stamp::of)
+        .filter_map(|change| Stamp::of(&change))
         .filter(|stamp| stamp.verb == Stamp::CHECKPOINT_VERB)
         .filter_map(|stamp| stamp.args.first()?.as_str().map(str::to_owned))
         .collect()

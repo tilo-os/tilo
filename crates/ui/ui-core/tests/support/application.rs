@@ -538,6 +538,7 @@ fn build_probe(
     LOCAL.with_borrow_mut(|v| *v = Some(local.clone()));
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<ProbeAction>("probe.edit");
+    tilo_ui::history_source::DocumentHistoryEdit::register(&mut registry);
     let operations = Rc::new(RefCell::new(Vec::new()));
     if operational {
         OPERATIONS.with_borrow_mut(|all| all.push(operations.clone()));

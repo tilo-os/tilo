@@ -3054,7 +3054,6 @@ pub(crate) mod control_fixture_tests {
             presentation: HistoryPresentation::Domain {
                 create: crate::history_mode::test_preview,
             },
-            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
         }],
     };
     fn fixture_widget(

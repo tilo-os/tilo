@@ -4699,76 +4699,68 @@ impl CallbackBinding {
             Ok(result)
         })?
     }
-    /// Restore only through the already owned record frame. Unlike ordinary
-    /// mutation entry this never activates or flushes an unfinished action.
-    #[cfg(test)]
-    pub(crate) fn restore_prepared(
+    /// Run the history verb `run` names on this component's record, decoded by the component's own
+    /// registry, so a restore is checked against what the component reads. It runs only through the
+    /// record frame the component already owns: it never activates or flushes an unfinished action.
+    /// Whether the record changed.
+    pub(crate) fn run_history_edit(
         &self,
+        root: &mut dyn Widget,
         outer: &mut AutoCommit,
-        admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
-        prepared: &crate::history_mode::restore::PreparedContentRestore,
-    ) -> Result<
-        crate::state::owned_restore::OwnedActionReceipt,
-        crate::state::owned_restore::OwnedRestoreError,
-    > {
-        self.restore_write(
-            outer,
-            admitted,
-            crate::state::owned_restore::RestoreWrite::Content(prepared),
-        )
+        run: &crate::history_mode::owner::HistoryRun<'_>,
+    ) -> Result<bool, String> {
+        use crate::history_mode::owner::{HistoryRun, NOT_RESTORED};
+        let encoded = run.encoded();
+        let mut result = None;
+        let mut visit = |binding: &CallbackBinding,
+                         _: &mut dyn crate::widget::AppWidget,
+                         registry: &tilo_actions::ActionRegistry| {
+            result = Some(match registry.decode(&encoded) {
+                Ok(action) => binding.run_history_action(outer, action.as_ref(), run),
+                Err(_) => Err(HistoryRun::unsupported()),
+            });
+            None
+        };
+        visit_components(root, &mut ComponentRequest::new(Some(self), &mut visit))
+            .map_err(|_| NOT_RESTORED.to_owned())?;
+        result.unwrap_or_else(|| Err(NOT_RESTORED.to_owned()))
     }
-    pub(crate) fn restore_write(
+
+    fn run_history_action(
         &self,
         outer: &mut AutoCommit,
-        admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
-        write: crate::state::owned_restore::RestoreWrite<'_>,
-    ) -> Result<
-        crate::state::owned_restore::OwnedActionReceipt,
-        crate::state::owned_restore::OwnedRestoreError,
-    > {
-        use crate::state::owned_restore::{OwnedContentAction, OwnedRestoreError, same_frontier};
+        action: &dyn tilo_actions::Action,
+        run: &crate::history_mode::owner::HistoryRun<'_>,
+    ) -> Result<bool, String> {
+        use crate::history_mode::owner::{FINISH_EDIT, NOT_RESTORED};
         self.with_resource_frame(outer, false, |doc, _| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-                .ok_or(OwnedRestoreError::ActiveAction)?;
+                .ok_or(FINISH_EDIT)?;
             let mut owned = handle.borrow_mut();
-            let frame = owned.as_mut().ok_or(OwnedRestoreError::ActiveAction)?;
+            let frame = owned.as_mut().ok_or(FINISH_EDIT)?;
             if frame.mutation.is_some() || !frame.operations.is_empty() {
-                return Err(OwnedRestoreError::ActiveAction);
+                return Err(FINISH_EDIT.to_owned());
             }
-            if doc.pending_ops() != 0 {
-                return Err(OwnedRestoreError::PendingEdits);
-            }
-            if frame
-                .state
-                .part()
-                .pending
-                .as_ref()
-                .is_some_and(|pending| !same_frontier(&pending.before, &doc.base_heads()))
-            {
-                return Err(OwnedRestoreError::UnfinishedActionBoundary);
+            if frame.state.part().pending.as_ref().is_some_and(|pending| {
+                !::collaboration::history::same_frontier(&pending.before, &doc.base_heads())
+            }) {
+                return Err(FINISH_EDIT.to_owned());
             }
             let next_generation = frame
                 .state
                 .generation
                 .and_then(|generation| generation.checked_add(1))
-                .ok_or(OwnedRestoreError::GenerationExhausted)?;
+                .ok_or(NOT_RESTORED)?;
             frame.switch_writer(doc, frame.writer_of(self));
-            let receipt = OwnedContentAction::begin_clean(
-                doc,
-                &mut frame.history,
-                write.current_heads(),
-                admitted,
-                Some(self.instance_id),
-            )?
-            .apply(write)?;
-            if receipt.changed {
+            let changed = run.step(doc, &mut frame.history, action, Some(self.instance_id))?;
+            if changed {
                 frame.state.generation = Some(next_generation);
-                frame.reset_operation_baseline(self, receipt.after.clone());
+                frame.reset_operation_baseline(self, doc.get_heads());
             }
-            Ok(receipt)
+            Ok(changed)
         })
-        .map_err(OwnedRestoreError::Bound)?
+        .map_err(|_| NOT_RESTORED.to_owned())?
     }
     pub(crate) fn with_resource_frame<R>(
         &self,
@@ -4895,50 +4887,38 @@ struct BoundNode {
 }
 
 /// Record owners outside a component (person records, routed records) keep their real record ownership;
-/// they do not impersonate a canonical component.
-pub(crate) fn restore_resource_history(
+/// they do not impersonate a canonical component. The record is taken as it is stored: no app's
+/// types read it.
+pub(crate) fn run_record_history_edit(
     store: &ResourceStore,
     checkout: &DocumentCheckout,
-    admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
-    write: crate::state::owned_restore::RestoreWrite<'_>,
-) -> Result<
-    crate::state::owned_restore::OwnedActionReceipt,
-    crate::state::owned_restore::OwnedRestoreError,
-> {
-    use crate::state::owned_restore::{OwnedContentAction, OwnedRestoreError, same_frontier};
+    run: &crate::history_mode::owner::HistoryRun<'_>,
+) -> Result<bool, String> {
+    use crate::history_mode::owner::{FINISH_EDIT, NOT_RESTORED};
     store
         .open_existing_resource_checked(checkout)
-        .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?;
+        .map_err(|_| NOT_RESTORED.to_owned())?;
+    let action = crate::history_source::DocumentHistoryEdit::new(run.edit.clone());
     store
         .with_action_state(&checkout.id, |doc, history, state| {
-            if state
-                .part()
-                .pending
-                .as_ref()
-                .is_some_and(|pending| !same_frontier(&pending.before, &doc.base_heads()))
-            {
-                return Err(OwnedRestoreError::UnfinishedActionBoundary);
+            if state.part().pending.as_ref().is_some_and(|pending| {
+                !::collaboration::history::same_frontier(&pending.before, &doc.base_heads())
+            }) {
+                return Err(FINISH_EDIT.to_owned());
             }
             let next = state
                 .generation
                 .and_then(|value| value.checked_add(1))
-                .ok_or(OwnedRestoreError::GenerationExhausted)?;
-            let receipt = OwnedContentAction::begin_clean(
-                doc,
-                history,
-                write.current_heads(),
-                admitted,
-                None,
-            )?
-            .apply(write)?;
-            if receipt.changed {
+                .ok_or(NOT_RESTORED)?;
+            let changed = run.step(doc, history, &action, None)?;
+            if changed {
                 state.generation = Some(next);
                 state.part().pending = None;
                 state.part().statuses.clear();
             }
-            Ok(receipt)
+            Ok(changed)
         })
-        .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?
+        .map_err(|_| NOT_RESTORED.to_owned())?
 }
 /// A read-only invalidation stamp. It contains no document text and confers no
 /// write authority; an unavailable stamp must invalidate deferred insertion.
@@ -5002,10 +4982,6 @@ mod a11y_owner;
 #[path = "bound_dispatch/bound_action_address_tests.rs"]
 mod bound_action_address_tests;
 
-#[cfg(test)]
-#[path = "bound_dispatch/owned_restore_tests.rs"]
-mod owned_restore_tests;
-
 /// Whether a document cannot take a peer's changes yet: an unfinished edit, or a restore over a
 /// different frontier.
 pub(crate) fn defers_remote(store: &ResourceStore, checkout: &DocumentCheckout) -> bool {
@@ -5019,7 +4995,7 @@ pub(crate) fn defers_remote(store: &ResourceStore, checkout: &DocumentCheckout) 
 fn defers_remote_state(doc: &AutoCommit, state: &crate::resource::ResourceActions) -> bool {
     doc.pending_ops() != 0
         || state.pending().is_some_and(|pending| {
-            !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
+            !::collaboration::history::same_frontier(&pending.before, &doc.base_heads())
         })
 }
 

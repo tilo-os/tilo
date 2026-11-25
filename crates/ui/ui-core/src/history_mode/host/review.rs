@@ -95,7 +95,7 @@ impl HistoryHost {
     pub(crate) fn service_restore(
         &mut self,
         state: &mut State,
-        root: &dyn Widget,
+        root: &mut dyn Widget,
         authority: &PermissionContext,
         author: &MemberId,
     ) -> bool {
@@ -106,7 +106,7 @@ impl HistoryHost {
             self.review = None;
             return false;
         }
-        if self.validate_root(root).is_err() {
+        if self.validate_root(&*root).is_err() {
             self.invalidate_owner();
             return false;
         }
@@ -114,7 +114,7 @@ impl HistoryHost {
             return false;
         };
         if let Err(reason) =
-            crate::history_mode::capability::history_restore_readiness(root, scope.key)
+            crate::history_mode::capability::history_restore_readiness(&*root, scope.key)
         {
             self.show_review(None, reason);
             return false;
@@ -138,10 +138,10 @@ impl HistoryHost {
             return false;
         }
         if matches!(command, ReviewCommand::RevertChange) {
-            return self.revert_selected_change(state, (authority, author));
+            return self.revert_selected_change(state, root, (authority, author));
         }
         if matches!(command, ReviewCommand::Name) {
-            return self.name_selected_changes(state, (authority, author));
+            return self.name_selected_changes(state, root, (authority, author));
         }
         let Some(controller) = &self.controller else {
             return false;
@@ -170,14 +170,11 @@ impl HistoryHost {
             }
             return false;
         }
-        let Some(review) = self.review.as_ref().and_then(|panel| panel.token.as_ref()) else {
-            return false;
-        };
-        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
+        let Some(review) = self.review.as_ref().and_then(|panel| panel.token.clone()) else {
             return false;
         };
         if controller.selected_part().is_some() {
-            return match controller.restore_part(review, author) {
+            return match controller.restore_part(&review, author) {
                 Ok(()) => {
                     self.review = None;
                     true
@@ -188,42 +185,13 @@ impl HistoryHost {
                 }
             };
         }
-        let Some(now) = (self.clock)() else {
-            self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
-            return false;
-        };
-        let result = crate::state::owned_restore::restore_reviewed_history(
+        self.write_reviewed(
             state,
-            &crate::state::owned_restore::ReviewedRestore {
-                source: self.source(),
-                scope,
-                controller,
-                review,
-            },
+            root,
             (authority, author),
-            now,
-            crate::state::owned_restore::RestoreExtent::Whole,
-        );
-        match result {
-            Ok(receipt) => {
-                self.review = None;
-                if receipt.changed {
-                    self.restored_source = Some(self.source().clone());
-                    // Existing writers observe the new canonical heads. Never
-                    // finish another action or manufacture another undo span.
-                    if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source()
-                        && let Err(error) = owner.schedule_committed_history()
-                    {
-                        tracing::error!(%error, "a restored record could not be saved");
-                    }
-                }
-                receipt.changed
-            }
-            Err(message) => {
-                self.show_review(None, message);
-                false
-            }
-        }
+            &review,
+            ReviewedWrite::Whole,
+        )
     }
 
     /// Restore just this change: take back what the selected change did, on its own, against the live
@@ -231,14 +199,11 @@ impl HistoryHost {
     fn revert_selected_change(
         &mut self,
         state: &mut State,
+        root: &mut dyn Widget,
         actor: (&PermissionContext, &MemberId),
     ) -> bool {
         let selected = self.selected.clone();
-        self.write_selected(
-            state,
-            actor,
-            crate::state::owned_restore::RestoreExtent::Changes(&selected),
-        )
+        self.write_selected(state, root, actor, ReviewedWrite::Changes(&selected))
     }
 
     /// Name the selected run of changes, from its oldest to its newest, with what the name field holds;
@@ -246,6 +211,7 @@ impl HistoryHost {
     fn name_selected_changes(
         &mut self,
         state: &mut State,
+        root: &mut dyn Widget,
         actor: (&PermissionContext, &MemberId),
     ) -> bool {
         let Some((start, end)) = self.selected_run() else {
@@ -262,24 +228,17 @@ impl HistoryHost {
         if request.label.is_empty() && request.document_id.is_none() {
             return false;
         }
-        self.write_selected(
-            state,
-            actor,
-            crate::state::owned_restore::RestoreExtent::Name(&request),
-        )
+        self.write_selected(state, root, actor, ReviewedWrite::Name(&request))
     }
 
-    /// One forward write about the selected changes through the restore API: its authority, the live
-    /// frontier and the owner's writer.
+    /// One write about the selected changes, reviewed against the live frontier as it is now.
     fn write_selected(
         &mut self,
         state: &mut State,
-        (authority, author): (&PermissionContext, &MemberId),
-        extent: crate::state::owned_restore::RestoreExtent<'_>,
+        root: &mut dyn Widget,
+        actor: (&PermissionContext, &MemberId),
+        write: ReviewedWrite<'_>,
     ) -> bool {
-        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
-            return false;
-        };
         let Some(controller) = &self.controller else {
             return false;
         };
@@ -290,34 +249,36 @@ impl HistoryHost {
             );
             return false;
         };
+        self.write_reviewed(state, root, actor, &review, write)
+    }
+
+    /// Run the history verb `write` asks for on the reviewed record, and say why when it does not run.
+    fn write_reviewed(
+        &mut self,
+        state: &mut State,
+        root: &mut dyn Widget,
+        actor: (&PermissionContext, &MemberId),
+        review: &crate::history_mode::RestoreReview,
+        write: ReviewedWrite<'_>,
+    ) -> bool {
         let Some(now) = (self.clock)() else {
             self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
             return false;
         };
-        let result = crate::state::owned_restore::restore_reviewed_history(
-            state,
-            &crate::state::owned_restore::ReviewedRestore {
-                source: self.source(),
-                scope,
-                controller,
-                review: &review,
-            },
-            (authority, author),
-            now,
-            extent,
-        );
-        match result {
-            Ok(receipt) => {
+        match self.run_reviewed(state, root, actor, review, now, write) {
+            Ok(changed) => {
                 self.review = None;
-                if receipt.changed {
+                if changed {
                     self.restored_source = Some(self.source().clone());
+                    // Existing writers observe the new canonical heads. Never
+                    // finish another action or manufacture another undo span.
                     if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source()
                         && let Err(error) = owner.schedule_committed_history()
                     {
                         tracing::error!(%error, "a restored record could not be saved");
                     }
                 }
-                receipt.changed
+                changed
             }
             Err(message) => {
                 self.show_review(None, message);
@@ -325,4 +286,176 @@ impl HistoryHost {
             }
         }
     }
+
+    /// The store's history verb `write` names, run on the reviewed record by its owner: checked
+    /// against the review, the author's authority at `now` and the live frontier.
+    fn run_reviewed(
+        &self,
+        state: &mut State,
+        root: &mut dyn Widget,
+        (authority, author): (&PermissionContext, &MemberId),
+        review: &crate::history_mode::RestoreReview,
+        now: u64,
+        write: ReviewedWrite<'_>,
+    ) -> Result<bool, String> {
+        use crate::history_mode::owner::{FINISH_EDIT, HistoryRun, NOT_RESTORED, STALE_REVIEW};
+        use crate::history_source::verbs::HistoryEdit;
+        let (Some(scope), Some(controller)) = (
+            self.registration.definition.scopes.get(self.active_scope),
+            self.controller.as_ref(),
+        ) else {
+            return Err(NOT_RESTORED.to_owned());
+        };
+        let source = self.source();
+        let resource = match source {
+            HistorySourceRegistration::HostDocument { resource, .. }
+            | HistorySourceRegistration::OwnedDocument { resource, .. } => resource,
+            HistorySourceRegistration::Unversioned { .. }
+            | HistorySourceRegistration::FolderFiles { .. } => {
+                return Err("This resource has no restorable versions.".into());
+            }
+        };
+        if resource != review.resource() {
+            return Err("This review belongs to a different document.".into());
+        }
+        let mut document = source
+            .document(&state.doc)
+            .map_err(|_| "This document is no longer available.")?;
+        controller
+            .validate_restore(review, &document)
+            .map_err(|error| match error {
+                crate::history_mode::HistoryError::StaleLiveHeads => STALE_REVIEW.to_owned(),
+                crate::history_mode::HistoryError::UncommittedLiveChanges => FINISH_EDIT.to_owned(),
+                _ => "This review no longer matches the selected document version.".to_owned(),
+            })?;
+        let edit = match write {
+            ReviewedWrite::Whole => HistoryEdit::Restore {
+                version: crate::history_source::verbs::version_name(review.selected_heads()),
+                ids: None,
+                step: None,
+            },
+            ReviewedWrite::Changes(entries) => {
+                let changes =
+                    crate::history_source::revert::changes_of_entries(&mut document, entries);
+                if changes.is_empty() {
+                    return Err("This change is no longer in the document.".into());
+                }
+                HistoryEdit::Undo {
+                    steps: None,
+                    invocation: None,
+                    by: None,
+                    to: None,
+                    step: None,
+                    chosen: Some(changes.iter().map(|(hash, _)| hash.to_string()).collect()),
+                }
+            }
+            ReviewedWrite::Name(request) => HistoryEdit::Name {
+                from: crate::HistoryEntryId::hex(&request.start),
+                to: crate::HistoryEntryId::hex(&request.end),
+                name: request.label.clone(),
+                replaces: request.document_id.clone(),
+            },
+        };
+        let title = scope.title;
+        let app_id = &review.resource().app_id;
+        let owner = match source {
+            HistorySourceRegistration::OwnedDocument { owner, .. } => Some(owner),
+            _ => None,
+        };
+        let mut apply = |authority: &PermissionContext, author: &MemberId| {
+            let current = authority.clone().at_unix_time(now);
+            check_restore_authority(
+                &current,
+                author,
+                app_id,
+                owner.is_some().then_some(&review.resource().document_id),
+            )
+            .map_err(|refusal| match refusal {
+                RestoreRefusal::App => {
+                    "You no longer have permission to restore this document.".to_owned()
+                }
+                RestoreRefusal::File => "You do not have permission to write this file.".to_owned(),
+            })?;
+            let run = HistoryRun {
+                edit: edit.clone(),
+                context: tilo_actions::ActionContext::for_resource(
+                    review.resource().document_id.as_str(),
+                    "document",
+                    title,
+                )
+                .with_app(app_id, title)
+                .with_invoker(tilo_actions::ActionInvoker::admitted(
+                    &tilo_actions::Acting::member(author.clone()),
+                )),
+                current: review.reviewed_live_heads(),
+                author,
+            };
+            match owner {
+                Some(owner) => owner.run_history_edit(&mut *root, &mut state.doc, &run),
+                None => {
+                    let (doc, history, _) = state.parts_mut();
+                    let action = crate::history_source::DocumentHistoryEdit::new(run.edit.clone());
+                    run.step(doc, history, &action, None)
+                }
+            }
+        };
+        match owner {
+            Some(owner) => owner.with_restore_authority(authority, author, apply),
+            None => apply(authority, author),
+        }
+    }
+}
+
+/// What a reviewed write in History does: bring a selected version back whole, take back the chosen
+/// changes, or name a run of them.
+#[derive(Clone, Copy)]
+enum ReviewedWrite<'a> {
+    Whole,
+    Changes(&'a [crate::widget::HistoryEntryId]),
+    Name(&'a crate::GroupNameRequest),
+}
+
+enum RestoreRefusal {
+    App,
+    File,
+}
+
+/// Restoring writes: the author must be the actor `current` describes, and `current` must
+/// grant Write on the app and, for a file-backed record, on the file. `current` is
+/// already stamped at the caller's policy time.
+fn check_restore_authority(
+    current: &PermissionContext,
+    author: &MemberId,
+    app_id: &str,
+    record: Option<&crate::resource::DocumentId>,
+) -> Result<(), RestoreRefusal> {
+    use crate::permissions::{Access, ActionKind, MemberId};
+    // The installed solo-workspace person is the runner's existing local-author mapping.
+    // Other contexts must name the actual author.
+    let acting = current.acting();
+    let mapped = acting
+        .nodes()
+        .into_iter()
+        .filter_map(|node| node.by.member_id())
+        .any(|member| match member {
+            MemberId::Person(id) => member == author || id == crate::permissions::LOCAL_USER,
+            MemberId::Agent(_) | MemberId::Bot(_) => false,
+        });
+    if !mapped
+        || !current.check(&crate::permissions::PermissionScope::app(
+            app_id.to_owned(),
+            ActionKind::Undoable,
+        ))
+    {
+        return Err(RestoreRefusal::App);
+    }
+    if let Some(path) = record.and_then(crate::resource::DocumentId::file_path)
+        && !current.check(&crate::permissions::PermissionScope::path(
+            path.to_string_lossy().into_owned(),
+            Access::Write,
+        ))
+    {
+        return Err(RestoreRefusal::File);
+    }
+    Ok(())
 }

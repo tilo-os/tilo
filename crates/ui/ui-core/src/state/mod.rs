@@ -1,16 +1,64 @@
 pub use collaboration::state::{DocumentFrontier, State, WritingActors, changes_beyond};
 
+use automerge::transaction::Transactable as _;
 #[cfg(test)]
-use crate::permissions::MemberId;
-#[cfg(test)]
-use automerge::{AutoCommit, ChangeHash, ObjId};
-pub(crate) mod owned_restore;
+use automerge::{AutoCommit, ObjId};
 pub(crate) use collaboration::history::HistoryMoment;
+use collaboration::history::same_frontier;
 pub use collaboration::history::{UndoEntry, UndoLog};
 pub use collaboration::history::{write_patches, write_revert_patches, write_revert_patches_where};
-pub(crate) use owned_restore::StateHistory;
-#[cfg(test)]
-pub(crate) mod owned_restore_tests;
+
+/// What the toolkit does with an app's [`State`] beyond keeping it: merge committed history it was
+/// served, and report its undo status in words.
+pub(crate) trait StateHistory {
+    /// Whether the window's document cannot take a peer's document yet: an unfinished edit, or
+    /// undo history over a different frontier.
+    fn defers_remote(&self) -> bool;
+    /// Merge committed history when nothing local is open over it: `None` when the live
+    /// document has uncommitted or unrecorded edits, else whether the merge changed it.
+    fn merge_remote_committed(
+        &mut self,
+        incoming: crate::collaboration::Incoming<'_>,
+    ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError>;
+    /// What the history can do for `author` right now.
+    fn undo_status_snapshot(
+        &self,
+        author: Option<&crate::permissions::MemberId>,
+    ) -> crate::undo::UndoStatus;
+}
+
+impl StateHistory for State {
+    fn defers_remote(&self) -> bool {
+        self.doc.pending_ops() != 0
+            || !same_frontier(self.undo_log().last_heads(), &self.doc.base_heads())
+    }
+
+    fn merge_remote_committed(
+        &mut self,
+        incoming: crate::collaboration::Incoming<'_>,
+    ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
+        if self.defers_remote() {
+            return Ok(None);
+        }
+        let (doc, undo, outbound) = self.parts_mut();
+        let before = doc.get_heads();
+        let changed = crate::history_mode::routes::merge_committed(doc, incoming)?;
+        if changed {
+            undo.rebase(doc);
+            // The owner that served this history holds it: the next primary delta must
+            // not echo it back as this window's change.
+            outbound.observe_changes_after(doc, &before);
+        }
+        Ok(Some(changed))
+    }
+
+    fn undo_status_snapshot(
+        &self,
+        author: Option<&crate::permissions::MemberId>,
+    ) -> crate::undo::UndoStatus {
+        crate::undo::status_snapshot(&self.doc, self.undo_log(), author)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -517,7 +565,11 @@ mod tests {
             let decoded = change
                 .message()
                 .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-                .map(owned_restore_tests::unstamped);
+                .map(|mut context| {
+                    assert!(context.gesture.is_some(), "the change joined an undo step");
+                    context.gesture = None;
+                    context
+                });
             assert_eq!(
                 decoded,
                 Some(context.with_invoker(tilo_actions::ActionInvoker::person("ada")))

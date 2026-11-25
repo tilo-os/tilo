@@ -33,8 +33,6 @@ mod listing;
 #[cfg(feature = "model")]
 pub mod preview;
 #[cfg(feature = "model")]
-pub mod restore;
-#[cfg(feature = "model")]
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
 #[cfg(feature = "model")]
 use tilo_sort::CompactSort as _;
@@ -56,7 +54,7 @@ pub(crate) mod host;
 #[cfg(feature = "model")]
 pub mod pending_controls;
 #[cfg(feature = "model")]
-pub use coverage::{HistoricalGap, HistoricalSupport, TypeHistory};
+pub use coverage::{HistoricalGap, HistoricalSupport};
 #[cfg(feature = "model")]
 pub use preview::*;
 #[cfg(feature = "model")]

@@ -1,5 +1,6 @@
 //! Opaque ownership observations. These never enter historical presentation inputs.
 use super::{HistoryRegistrationError, HistoryResource};
+use crate::history_source::verbs::HistoryEdit;
 use crate::{
     bound_dispatch::CallbackBinding,
     resource::{DocumentCheckout, ResourceStore},
@@ -415,25 +416,21 @@ impl HistoryOwner {
         }
     }
 
-    pub(crate) fn restore_write(
+    /// Run the history verb `run` names on this owner's record, as one step of its history: a
+    /// component's record decoded by the component's own registry, a record of its own taken as it is
+    /// stored. Whether the record changed; why not, in words a person reads.
+    pub(crate) fn run_history_edit(
         &self,
+        root: &mut dyn crate::widget::Widget,
         outer: &mut AutoCommit,
-        admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
-        write: crate::state::owned_restore::RestoreWrite<'_>,
-    ) -> Result<
-        crate::state::owned_restore::OwnedActionReceipt,
-        crate::state::owned_restore::OwnedRestoreError,
-    > {
-        self.validate().map_err(|_| {
-            crate::state::owned_restore::OwnedRestoreError::Bound(
-                crate::bound_dispatch::BoundDispatchError::ClosedLifetime,
-            )
-        })?;
+        run: &HistoryRun<'_>,
+    ) -> Result<bool, String> {
+        self.validate().map_err(|_| NOT_RESTORED.to_owned())?;
         match &self.0 {
-            OwnerKind::Component(binding) => binding.restore_write(outer, admitted, write),
+            OwnerKind::Component(binding) => binding.run_history_edit(root, outer, run),
             OwnerKind::Record {
                 store, checkout, ..
-            } => crate::bound_dispatch::restore_resource_history(store, checkout, admitted, write),
+            } => crate::bound_dispatch::run_record_history_edit(store, checkout, run),
         }
     }
 
@@ -470,6 +467,84 @@ impl HistoryOwner {
     pub(crate) fn schedule_committed_history(&self) -> Result<(), String> {
         let (store, checkout) = self.store_checkout();
         store.schedule_committed_history(&checkout.id)
+    }
+}
+
+/// Why a history verb did not run: the record holds an edit not finished yet.
+pub(crate) const FINISH_EDIT: &str = "Finish the current edit before restoring.";
+/// Why a history verb did not run: the record changed since the review.
+pub(crate) const STALE_REVIEW: &str = "Live content changed. Refresh review before restoring.";
+/// Why a history verb did not run, when nothing more particular can be said.
+pub(crate) const NOT_RESTORED: &str = "The document could not be restored safely.";
+
+/// One of the store's history verbs ([`HistoryEdit`]) as History runs it on a record, reviewed
+/// against the record's frontier `current`, by `author` under `context`.
+pub(crate) struct HistoryRun<'a> {
+    pub(crate) edit: HistoryEdit,
+    pub(crate) context: tilo_actions::ActionContext,
+    pub(crate) current: &'a [automerge::ChangeHash],
+    pub(crate) author: &'a crate::permissions::MemberId,
+}
+
+impl HistoryRun<'_> {
+    /// The verb as its invocation carries it.
+    pub(crate) fn encoded(&self) -> tilo_actions::EncodedAction {
+        crate::history_source::DocumentHistoryEdit::new(self.edit.clone()).encoded()
+    }
+
+    /// Why a record whose app does not decode the history verbs keeps its versions.
+    pub(crate) fn unsupported() -> String {
+        crate::i18n::I18nManager::lookup_plain("history-restore-unsupported")
+    }
+
+    /// Run `action`, the verb as the record's own types decode it, on `doc` through the executor
+    /// as one step of `history`, written as `doc`'s actor. Whether it changed the document.
+    pub(crate) fn step(
+        &self,
+        doc: &mut AutoCommit,
+        history: &mut crate::state::UndoLog,
+        action: &dyn tilo_actions::Action,
+        instance: Option<collaboration::history::InstanceId>,
+    ) -> Result<bool, String> {
+        use collaboration::history::same_frontier;
+        if doc.pending_ops() != 0 {
+            return Err(FINISH_EDIT.to_owned());
+        }
+        if !same_frontier(&doc.base_heads(), self.current) {
+            return Err(STALE_REVIEW.to_owned());
+        }
+        if !same_frontier(history.last_heads(), self.current) {
+            return Err(FINISH_EDIT.to_owned());
+        }
+        if !history.can_bump() {
+            return Err(NOT_RESTORED.to_owned());
+        }
+        let before = doc.get_heads();
+        let writer = doc.get_actor().to_bytes().to_vec();
+        tilo_actions::apply_local_with_context(
+            doc,
+            action,
+            self.encoded(),
+            Some(&writer),
+            self.context.clone(),
+        )
+        .map_err(|error| match error {
+            tilo_actions::ActionError::Refused(reason) => reason,
+            error => {
+                tracing::debug!(%error, "a history verb could not run");
+                NOT_RESTORED.to_owned()
+            }
+        })?;
+        let after = doc.get_heads();
+        Ok(history.record_committed_span(
+            doc,
+            before,
+            after,
+            None,
+            None,
+            Some(self.author.clone()),
+            instance,
+        ))
     }
 }
 

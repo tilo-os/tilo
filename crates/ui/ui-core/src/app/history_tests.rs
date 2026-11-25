@@ -105,7 +105,6 @@ static HISTORY: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::Domain {
             create: crate::history_mode::test_preview,
         },
-        content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
     }],
 };
 /// An app whose registered framework History has two committed changes.
@@ -1210,7 +1209,6 @@ static OWNED_HISTORY: HistoryDefinition = HistoryDefinition {
             presentation: HistoryPresentation::Domain {
                 create: crate::history_mode::test_preview,
             },
-            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
         },
         HistoryScopeDefinition {
             key: "second",
@@ -1218,7 +1216,6 @@ static OWNED_HISTORY: HistoryDefinition = HistoryDefinition {
             presentation: HistoryPresentation::Domain {
                 create: crate::history_mode::test_preview,
             },
-            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
         },
     ],
 };
@@ -2983,7 +2980,6 @@ static BRIDGE_HISTORY: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::Domain {
             create: crate::history_mode::test_preview,
         },
-        content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
     }],
 };
 

@@ -18,7 +18,6 @@ static DEFINITION: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::Domain {
             create: crate::history_mode::host_tests::preview,
         },
-        content_schema: None,
     }],
 };
 static UNVERSIONED_DEFINITION: HistoryDefinition = HistoryDefinition {
@@ -29,7 +28,6 @@ static UNVERSIONED_DEFINITION: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::External {
             reason: "unversioned",
         },
-        content_schema: None,
     }],
 };
 

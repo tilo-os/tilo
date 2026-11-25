@@ -68,10 +68,11 @@ pub const MAX_RUN_NAME: usize = 120;
 /// The id history names a change by in a run's name: the first half of its hash, in hex.
 #[must_use]
 pub fn run_id(change: &automerge::ChangeHash) -> String {
-    change.0[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    use std::fmt::Write as _;
+    change.0[..16].iter().fold(String::new(), |mut id, byte| {
+        let _ = write!(id, "{byte:02x}");
+        id
+    })
 }
 
 /// Name the run of changes from `start` to `end` (open while `end` is `None`), each as
