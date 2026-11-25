@@ -46,7 +46,13 @@ impl ui::emoji_catalogue::UsesStore for PersonUses {
     fn load(&self) -> Vec<ui::emoji_catalogue::Used> {
         settings_store::source()
             .and_then(|source| settings_store::emoji::used(&source.load()))
-            .and_then(|used| serde_json::from_str(&used).ok())
+            .and_then(|used| {
+                serde_json::from_str(&used)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the emoji the person used do not read; counted afresh");
+                    })
+                    .ok()
+            })
             .unwrap_or_default()
     }
 
@@ -103,7 +109,7 @@ impl Emoji {
         };
         if let Some(sensitive) = compositor.insert_active_text(&pending.text) {
             if sensitive {
-                ui::emoji_catalogue::forget_recent(&pending.text);
+                ui::emoji_catalogue::forget_used(&pending.text);
             }
         } else if now < pending.deadline {
             *self.pending.borrow_mut() = Some(pending);
