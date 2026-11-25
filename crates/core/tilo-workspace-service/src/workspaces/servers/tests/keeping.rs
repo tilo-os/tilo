@@ -122,7 +122,7 @@ async fn a_server_keeps_each_listed_workspace_until_its_entry_says_not() {
     let entry = read(workspaces).await.unwrap();
     assert!(!entry.active(&device).unwrap().keeps(&made.workspace));
     assert_eq!(
-        keep_listed(workspaces).await.unwrap(),
+        Box::pin(keep_listed(workspaces)).await.unwrap(),
         super::super::keeping::Kept::default(),
         "a workspace kept off is not entered again"
     );
@@ -160,7 +160,7 @@ async fn a_device_that_is_no_server_of_the_person_keeps_nothing_by_the_list() {
         .await
         .unwrap();
     assert_eq!(
-        keep_listed(host.workspaces()).await.unwrap(),
+        Box::pin(keep_listed(host.workspaces())).await.unwrap(),
         super::super::keeping::Kept::default()
     );
 }

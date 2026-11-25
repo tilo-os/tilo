@@ -449,7 +449,7 @@ impl ActionProvider for ResourceActions {
         let (done, answer) = tilo_actions::remote::pending();
         let (actions, caller) = (self.clone(), caller.clone());
         runtime.spawn(async move {
-            let status = match actions.applied(&caller, &request).await {
+            let status = match Box::pin(actions.applied(&caller, &request)).await {
                 Ok(output) => ReceiptStatus::Completed { output },
                 Err(status) => status,
             };

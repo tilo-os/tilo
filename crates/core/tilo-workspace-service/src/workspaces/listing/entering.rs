@@ -24,10 +24,6 @@ const fn refused(reason: String) -> EnterRefusal {
 }
 
 impl Admit for Workspaces {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one entry, every refusal decided where the entry reads it"
-    )]
     fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered> {
         Box::pin(async move {
             let Entry {

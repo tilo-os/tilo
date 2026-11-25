@@ -215,9 +215,9 @@ pub(super) async fn listed(
 /// another of the person's devices hands its session to is answered as the person themselves are.
 pub(super) fn not_a_turn<T: std::fmt::Debug + PartialEq>(
     who: &str,
-    refused: Result<T, ActionCallError>,
+    refused: &Result<T, ActionCallError>,
 ) {
-    assert_eq!(refused, Err(UnknownAction), "{who}");
+    assert_eq!(refused, &Err(UnknownAction), "{who}");
 }
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
@@ -695,7 +695,7 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
             caller: &asks,
             policy: None,
         };
-        not_a_turn(who, dispatched(workspaces, &turn, &adding).await);
+        not_a_turn(who, &dispatched(workspaces, &turn, &adding).await);
         assert!(workspaces.uses_offered(&turn).await.is_empty(), "{who}");
     }
 

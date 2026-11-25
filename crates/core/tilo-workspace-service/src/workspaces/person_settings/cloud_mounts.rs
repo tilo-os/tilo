@@ -78,7 +78,7 @@ pub(super) async fn invoke(
         }
         person_accounts::REPORT_SYNC_VERB => {
             let report: SyncReport = argument(request, "how a mount's sync went")?;
-            report_sync(workspaces, workspace, acting, report)
+            Box::pin(report_sync(workspaces, workspace, acting, report))
                 .await
                 .map_err(ActionCallError::refused)?;
             Ok(Value::Null)

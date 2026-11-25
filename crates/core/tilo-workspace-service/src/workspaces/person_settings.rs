@@ -365,7 +365,7 @@ impl Workspaces {
                 root: &root,
                 by: "",
             };
-            return cloud_mounts::invoke(self, signing, &here, caller.acting(), request).await;
+            return Box::pin(cloud_mounts::invoke(self, signing, &here, caller.acting(), request)).await;
         }
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);

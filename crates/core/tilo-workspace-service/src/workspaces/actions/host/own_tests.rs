@@ -1508,7 +1508,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     // Each person's listing names the workspaces they are in with the part
     // they take: Ada's own is hers as its owner, and the workspace she was
     // invited into is Rosa's as an editor.
-    let ada_listing = listed_for(&host, &backend).await;
+    let ada_listing = Box::pin(listed_for(&host, &backend)).await;
     assert_eq!(
         ada_listing
             .iter()
@@ -1517,7 +1517,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
         [(workspace.workspace.as_str(), Some("owner"),)],
         "the workspace of her own"
     );
-    let rosa_listing = listed_for(&host, &page).await;
+    let rosa_listing = Box::pin(listed_for(&host, &page)).await;
     assert_eq!(
         rosa_listing
             .iter()
@@ -2245,7 +2245,7 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
 
     let backend_key = SigningKey::from_bytes(&rand::random());
     let backend = certified(&ada, &backend_key, DeviceCapabilities::server_key_grant());
-    let listed = listed_for(&host, &backend).await;
+    let listed = Box::pin(listed_for(&host, &backend)).await;
     let lounge = listed
         .iter()
         .find(|listed| listed.workspace == home)

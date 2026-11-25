@@ -639,7 +639,7 @@ impl Workspaces {
     /// The invitation is not for this device, that device refuses or cannot be
     /// reached, or the copy could not be kept.
     pub async fn join_member(&self, invitation: &str) -> Result<WorkspaceId, String> {
-        self.join_member_as(invitation, None).await
+        Box::pin(self.join_member_as(invitation, None)).await
     }
 
     /// [`Self::join_member`], and then name the person `name` among the workspace's people

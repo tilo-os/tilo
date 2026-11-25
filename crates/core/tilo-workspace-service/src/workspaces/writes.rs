@@ -123,7 +123,13 @@ impl Workspaces {
             let committing = crate::timing::start();
             crate::timing::said_if_long(
                 "the commit to the workspace",
-                self.commit_local_document(workspace, app, document, readers, envelope.clone()),
+                Box::pin(self.commit_local_document(
+                    workspace,
+                    app,
+                    document,
+                    readers,
+                    envelope.clone(),
+                )),
             )
             .await?;
             crate::timing::event("own_write.commit", committing, 0);

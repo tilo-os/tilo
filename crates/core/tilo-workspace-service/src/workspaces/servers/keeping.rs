@@ -187,7 +187,7 @@ impl Workspaces {
                     let Some(inner) = workspaces.upgrade() else {
                         return;
                     };
-                    match keep_listed(&Self { inner }).await {
+                    match Box::pin(keep_listed(&Self { inner })).await {
                         Ok(kept) if !kept.none() => {
                             tracing::info!(?kept, "this server keeps the person's list");
                         }

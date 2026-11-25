@@ -63,15 +63,15 @@ pub(crate) struct Answering {
 impl Answering {
     /// From now on in this test, the person approves every call that waits for them.
     pub(crate) fn approving() -> std::sync::Arc<Self> {
-        Self::answering(true)
+        Self::answering_as(true)
     }
 
     /// From now on in this test, the person declines every call that waits for them.
     pub(crate) fn declining() -> std::sync::Arc<Self> {
-        Self::answering(false)
+        Self::answering_as(false)
     }
 
-    fn answering(approves: bool) -> std::sync::Arc<Self> {
+    fn answering_as(approves: bool) -> std::sync::Arc<Self> {
         let answering = std::sync::Arc::new(Self {
             approves,
             asked: std::sync::Mutex::default(),
@@ -89,7 +89,7 @@ impl Answering {
 /// `first`, the answer to `request` by `caller` on the connection `certificate` certified (to
 /// the workspace `workspace_id`, or to the host), as the person it waits for answers it, where
 /// it waits for one ([`Answering`]): approved, what the call answers once the person's approve
-/// of its asked record carried it out; declined, or answered by nobody ([``None`]), it is
+/// of its asked record carried it out; declined, or answered by nobody (`None`), it is
 /// admitted no more and the caller hears what they were shown.
 ///
 /// A call this host governs runs as its job: `Accepted` while it runs, and `Completed` once it
@@ -104,30 +104,17 @@ pub(crate) async fn answered(
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     let answering = ANSWERING.with_borrow(Clone::clone);
     if let Err(ActionCallError::ConfirmationRequired(facts)) = &first {
-        let Some(answering) = &answering else {
-            return first;
-        };
-        answering.asked.lock().unwrap().push((**facts).clone());
-        if !answering.approves {
-            return first;
-        }
-        let workspace = workspace_id.map(|id| id.to_string()).unwrap_or_default();
-        let value = Box::pin(workspaces.invoke(
-            workspace_id,
+        let facts = (**facts).clone();
+        return approved_at_once(
+            workspaces,
+            (workspace_id, certificate),
             caller,
-            certificate,
-            &approved(request, &workspace),
-        ))
-        .await?;
-        return Ok(tilo_actions::remote::InvocationReceipt {
-            invocation: request.invocation,
-            status: ReceiptStatus::Completed {
-                output: tilo_actions::ActionOutput {
-                    value: Some(value),
-                    ..tilo_actions::ActionOutput::default()
-                },
-            },
-        });
+            request,
+            first,
+            answering.as_ref(),
+            &facts,
+        )
+        .await;
     }
     let first = first?;
     if !matches!(first.status, ReceiptStatus::Accepted) {
@@ -186,14 +173,25 @@ pub(crate) async fn answered(
             waiting.asked.facts.clone(),
         )));
     };
+    answered_as_its_person(workspaces, caller, request, &waiting, answering, &here).await
+}
+
+/// The call of `request` the asked record `waiting` keeps, answered as the person it asks: an
+/// approve admits the same call again, which ends when it ran; a decline ends it with nothing
+/// done, and the caller's call was refused for want of their yes.
+async fn answered_as_its_person(
+    workspaces: &Workspaces,
+    caller: &Caller,
+    request: &InvokeRequest,
+    waiting: &tilo_actions::remote::asked::Waiting,
+    answering: &Answering,
+    here: &(impl ActionProvider + Clone + Send + Sync + 'static),
+) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     answering
         .asked
         .lock()
         .unwrap()
         .push(waiting.asked.facts.clone());
-    // Their answer, as the person it asks: an approve admits the same call again, which ends
-    // when it ran; a decline ends it with nothing done, and the caller's call was refused for
-    // want of their yes.
     let person: [u8; 32] = hex::decode(&waiting.person)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
@@ -243,13 +241,51 @@ pub(crate) async fn answered(
             waiting.asked.facts.clone(),
         )));
     }
-    ended_as(&here, caller, request.invocation).await
+    ended_as(here, caller, request.invocation).await
+}
+
+/// `first`, a call refused for the person's yes, answered once `answering` approves it: the same
+/// call admitted again as its person, and what it answers once it ran. A decline, or nobody
+/// answering, leaves the refusal as it is.
+async fn approved_at_once(
+    workspaces: &Workspaces,
+    (workspace_id, certificate): (Option<WorkspaceId>, Option<&DeviceCert>),
+    caller: &Caller,
+    request: &InvokeRequest,
+    first: Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+    answering: Option<&std::sync::Arc<Answering>>,
+    facts: &tilo_actions::remote::asked::AskedFacts,
+) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+    let Some(answering) = answering else {
+        return first;
+    };
+    answering.asked.lock().unwrap().push(facts.clone());
+    if !answering.approves {
+        return first;
+    }
+    let workspace = workspace_id.map(|id| id.to_string()).unwrap_or_default();
+    let value = Box::pin(workspaces.invoke(
+        workspace_id,
+        caller,
+        certificate,
+        &approved(request, &workspace),
+    ))
+    .await?;
+    Ok(tilo_actions::remote::InvocationReceipt {
+        invocation: request.invocation,
+        status: ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput {
+                value: Some(value),
+                ..tilo_actions::ActionOutput::default()
+            },
+        },
+    })
 }
 
 /// What invocation `invocation` ended as, followed on `here` until it is terminal: the way a
 /// caller follows a call at any moment, including the one its person's approve admitted again.
 async fn ended_as(
-    here: &(impl ActionProvider + Clone + Send + 'static),
+    here: &(impl ActionProvider + Clone + Send + Sync + 'static),
     caller: &Caller,
     invocation: InvocationId,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
@@ -1143,10 +1179,6 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one invitation, its pending listing and the administrator's own grants are one story"
-)]
 async fn an_administrator_is_an_editor_the_invitation_also_governs() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

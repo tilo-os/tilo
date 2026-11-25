@@ -601,7 +601,7 @@ impl Workspaces {
             Some(Err(reason)) => return Err(reason),
             None => None,
         };
-        self.own_write(
+        Box::pin(self.own_write(
             workspace,
             (accounts::person::ACCOUNTS_OWNER, &accounts_document()),
             None,
@@ -609,7 +609,7 @@ impl Workspaces {
             founding,
             founding,
             keys.as_ref(),
-        )
+        ))
         .await
         .map_err(|refusal| refusal.to_string())?;
         Ok(answer)
