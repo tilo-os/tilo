@@ -16280,6 +16280,7 @@ dependencies = [
  "tilo-sort",
  "tilo-surface-compile",
  "tilo-test-env",
+ "tilo-wire-frame",
  "tracing",
  "uuid",
  "web-time",
@@ -17734,7 +17735,6 @@ dependencies = [
  "tempfile",
  "tilo-runtime-portal",
  "tilo-test-env",
- "tilo-user-identity",
  "tilo-wire-frame",
  "tokio",
  "workspace-hack",
@@ -21440,6 +21440,7 @@ dependencies = [
  "tilo-collab-types",
  "tilo-resource",
  "tilo-test-env",
+ "tilo-wire-frame",
  "workspace-hack",
  "zeroize",
 ]
@@ -21884,9 +21885,11 @@ dependencies = [
 name = "tilo-wire-frame"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "postcard",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
 ]
 

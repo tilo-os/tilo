@@ -40,6 +40,8 @@ use std::io::{self, Read, Write};
 
 #[cfg(feature = "tokio")]
 mod async_io;
+#[cfg(feature = "canonical")]
+pub mod canonical;
 #[cfg(feature = "serde_json")]
 mod json;
 mod line;

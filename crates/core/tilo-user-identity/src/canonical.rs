@@ -24,56 +24,8 @@
 //! sign (`cert::DEVCERT_PREIMAGE_TAG`, etc.) so a reader looking at
 //! a type sees its tag in the same file.
 
-use serde::Serialize;
-
 pub use collab_types::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
-
-/// Compute the 32-byte signing preimage hash for `view`, prefixed
-/// by `domain_tag`. The Ed25519 signature is then produced over
-/// (or verified against) this 32-byte digest.
-///
-/// The BLAKE3-256 output size is 32 bytes — a small, fixed-length
-/// hash that Ed25519's `sign()` and `verify()` accept as message
-/// bytes directly. Prefixing the raw postcard bytes with `domain_tag`
-/// gives us domain separation: a signature made under
-/// `tilo-devcert-v1\0` cannot be reinterpreted as a signature made
-/// under any other tag.
-///
-/// # Errors
-///
-/// Returns [`CanonicalError::Serialize`] if `view` cannot be
-/// postcard-encoded (effectively unreachable for the types this
-/// crate defines).
-pub fn signing_digest<T: Serialize>(
-    domain_tag: &[u8],
-    view: &T,
-) -> Result<[u8; 32], CanonicalError> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(domain_tag);
-    postcard::serialize_with_flavor(view, SigningHash(hasher))
-        .map_err(|e| CanonicalError::Serialize(e.to_string()))
-}
-
-/// Consume the canonical encoding without retaining a temporary preimage.
-struct SigningHash(blake3::Hasher);
-
-impl postcard::ser_flavors::Flavor for SigningHash {
-    type Output = [u8; 32];
-
-    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-        self.0.update(&[byte]);
-        Ok(())
-    }
-
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        self.0.update(bytes);
-        Ok(())
-    }
-
-    fn finalize(self) -> postcard::Result<Self::Output> {
-        Ok(*self.0.finalize().as_bytes())
-    }
-}
+pub use wire_frame::canonical::signing_digest;
 
 #[cfg(test)]
 mod streaming_tests;
@@ -81,7 +33,7 @@ mod streaming_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize, PartialEq, Debug)]
     struct Fixture {

@@ -105,16 +105,16 @@ const COLLABORATION_JOIN_TAG: &[u8] = b"tilo-collaboration-join-v2\0";
 ///
 /// # Errors
 ///
-/// [`tilo_user_identity::canonical::CanonicalError::Serialize`] when the join
+/// [`wire_frame::canonical::CanonicalError::Serialize`] when the join
 /// cannot be encoded (effectively unreachable for a workspace id).
 pub fn collaboration_join_digest(
     workspace_id: &str,
-) -> Result<[u8; 32], tilo_user_identity::canonical::CanonicalError> {
+) -> Result<[u8; 32], wire_frame::canonical::CanonicalError> {
     #[derive(serde::Serialize)]
     struct View<'a> {
         workspace: &'a str,
     }
-    tilo_user_identity::canonical::signing_digest(
+    wire_frame::canonical::signing_digest(
         COLLABORATION_JOIN_TAG,
         &View {
             workspace: workspace_id,

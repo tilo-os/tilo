@@ -18,6 +18,9 @@ path = "src/lib.rs"
 [features]
 tokio = ["dep:tokio"]
 postcard = ["dep:postcard", "dep:serde"]
+# The canonical postcard encoding everything signed goes through, and the
+# BLAKE3 digest a signature covers.
+canonical = ["postcard", "dep:blake3", "dep:thiserror"]
 # Counting the JSON text a message carries before it is sent.
 serde_json = ["dep:serde_json", "dep:serde"]
 
@@ -26,6 +29,8 @@ tokio = { workspace = true, optional = true, features = ["io-util"] }
 postcard = { workspace = true, optional = true, features = ["alloc"] }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde.workspace = true

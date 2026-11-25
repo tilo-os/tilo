@@ -599,7 +599,7 @@ mod tests {
             assert_eq!(digest.len(), 32);
             assert_ne!(
                 digest,
-                tilo_user_identity::canonical::signing_digest(
+                wire_frame::canonical::signing_digest(
                     b"tilo-collaboration-join-v2\0",
                     &"other"
                 )

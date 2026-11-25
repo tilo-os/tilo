@@ -34,6 +34,8 @@ path = "src/lib.rs"
 # may change without a version bump.
 
 [dependencies]
+# The signing digest every signed type here goes through (`canonical`).
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["canonical"] }
 
 # Ed25519 signing/verification. Same version + features used across
 # the collab crates (`collab-types`) so the

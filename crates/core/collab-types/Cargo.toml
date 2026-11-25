@@ -37,6 +37,8 @@ app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../../deskt
 # A capability names the app whose sandbox it is.
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
+# The canonical postcard encoding signatures cover (`canonical`).
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["canonical"] }
 # Where a presence is and the hue a person wears, which the toolkit reads without this crate.
 tilo-presence-types = { version = "0.1.0", path = "../presence-types" }
 getrandom.workspace = true
