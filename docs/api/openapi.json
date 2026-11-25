@@ -5014,6 +5014,596 @@
         ],
         "description": ""
       },
+      "environment.add-tool.Arguments": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "arch": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "packages",
+          "arch",
+          "image"
+        ],
+        "description": ""
+      },
+      "environment.remove-tool.Arguments": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "packages"
+        ],
+        "description": ""
+      },
+      "environment.grant-dir.Arguments": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "write": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "write"
+        ],
+        "description": ""
+      },
+      "environment.set-home.Arguments": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "description": ""
+      },
+      "environment.allow-host.Arguments": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
+        ],
+        "description": ""
+      },
+      "environment.revoke-grant.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": ""
+      },
+      "environment.set-runtime.Arguments": {
+        "type": "object",
+        "properties": {
+          "runtime": {
+            "additionalProperties": false,
+            "properties": {
+              "images": {
+                "type": "object"
+              },
+              "release": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "release",
+              "images"
+            ],
+            "type": "object"
+          },
+          "tools": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "images": {
+                  "type": "object"
+                },
+                "packages": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "packages",
+                "images"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "runtime",
+          "tools"
+        ],
+        "description": ""
+      },
+      "environment.make.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "runtime": {
+            "additionalProperties": false,
+            "properties": {
+              "images": {
+                "type": "object"
+              },
+              "release": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "release",
+              "images"
+            ],
+            "type": "object"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "runtime",
+          "workspace"
+        ],
+        "description": ""
+      },
+      "environment.rename.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": ""
+      },
+      "environment.copy.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "recursive": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "if_exists": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "sources",
+          "destination"
+        ],
+        "description": ""
+      },
+      "environment.copy.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.move.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "no_clobber": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "sources",
+          "destination"
+        ],
+        "description": ""
+      },
+      "environment.move.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.remove.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "recursive": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "force": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "paths"
+        ],
+        "description": ""
+      },
+      "environment.remove.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.make-dir.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "dirs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parents": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "dirs"
+        ],
+        "description": ""
+      },
+      "environment.make-dir.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.remove-dir.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "dirs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parents": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "dirs"
+        ],
+        "description": ""
+      },
+      "environment.remove-dir.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.link.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "symbolic": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "force": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "target",
+          "path"
+        ],
+        "description": ""
+      },
+      "environment.link.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.truncate.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "size": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "create": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "paths",
+          "size"
+        ],
+        "description": ""
+      },
+      "environment.truncate.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.touch.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "device",
+          "paths"
+        ],
+        "description": ""
+      },
+      "environment.touch.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.append.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "paths",
+          "text"
+        ],
+        "description": ""
+      },
+      "environment.append.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.write.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "no_clobber": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "base64": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device",
+          "paths"
+        ],
+        "description": ""
+      },
+      "environment.write.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.restore.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "kept": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device",
+          "kept"
+        ],
+        "description": ""
+      },
+      "environment.restore.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "environment.revert.Arguments": {
+        "type": "object",
+        "properties": {
+          "entry": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry"
+        ],
+        "description": ""
+      },
+      "environment.revert.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
       "tilolang.personal.view-state.Arguments": {
         "type": "object",
         "properties": {},
@@ -97188,6 +97778,132 @@
       "resource": "terminal.machine-secrets",
       "action": "remove-secret",
       "arguments": "#/components/schemas/terminal.machine-secrets.remove-secret.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "add-tool",
+      "arguments": "#/components/schemas/environment.add-tool.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "remove-tool",
+      "arguments": "#/components/schemas/environment.remove-tool.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "grant-dir",
+      "arguments": "#/components/schemas/environment.grant-dir.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "set-home",
+      "arguments": "#/components/schemas/environment.set-home.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "allow-host",
+      "arguments": "#/components/schemas/environment.allow-host.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "revoke-grant",
+      "arguments": "#/components/schemas/environment.revoke-grant.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "set-runtime",
+      "arguments": "#/components/schemas/environment.set-runtime.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "make",
+      "arguments": "#/components/schemas/environment.make.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "rename",
+      "arguments": "#/components/schemas/environment.rename.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "copy",
+      "arguments": "#/components/schemas/environment.copy.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "move",
+      "arguments": "#/components/schemas/environment.move.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "remove",
+      "arguments": "#/components/schemas/environment.remove.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "make-dir",
+      "arguments": "#/components/schemas/environment.make-dir.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "remove-dir",
+      "arguments": "#/components/schemas/environment.remove-dir.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "link",
+      "arguments": "#/components/schemas/environment.link.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "truncate",
+      "arguments": "#/components/schemas/environment.truncate.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "touch",
+      "arguments": "#/components/schemas/environment.touch.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "append",
+      "arguments": "#/components/schemas/environment.append.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "write",
+      "arguments": "#/components/schemas/environment.write.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "restore",
+      "arguments": "#/components/schemas/environment.restore.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "environment",
+      "action": "revert",
+      "arguments": "#/components/schemas/environment.revert.Arguments"
     },
     {
       "app": "so.tilo.activity",

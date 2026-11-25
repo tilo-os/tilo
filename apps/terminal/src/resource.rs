@@ -773,6 +773,7 @@ impl ResourceApp for TerminalShell {
         resources.workspace_record::<tilo_environment::machine_secrets::MachineSecrets>(
             tilo_environment::machine_secrets::DOCUMENT,
         );
+        resources.kept_records::<tilo_environment::Environment>();
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {

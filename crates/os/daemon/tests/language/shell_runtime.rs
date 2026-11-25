@@ -25,7 +25,9 @@ fn served_workspace(native: &Path) -> String {
 
 #[test]
 fn terminals_environments_round_trip_through_ush_at_the_daemon() {
-    host::in_own_process(|profile| {
+    // Terminal is installed, as it is on every computer: the workspace takes its records, an
+    // environment among them, as its surface declares them.
+    host::in_own_process_with_packages(&[("terminal", "terminal")], |profile| {
         let running = tilo_runtime::daemon::Running::start(profile).unwrap();
         let native = running.native_socket().to_owned();
         let actions = DeviceActions::at(&native);
@@ -42,8 +44,9 @@ fn terminals_environments_round_trip_through_ush_at_the_daemon() {
         let workspace = served_workspace(&native);
         assert!(!workspace.is_empty(), "the person's workspace is served");
 
-        // ush reads Terminal's environment records in the window's workspace through the daemon:
-        // a workspace that keeps none answers so, rather than refusing.
+        // ush keeps an environment as one of Terminal's records in the window's workspace, and
+        // reads it back whole, through the daemon: a fresh workspace keeps none, and takes its
+        // default environment as Terminal's.
         let home = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(ush::store::STORE_ENV, home.path());
@@ -52,7 +55,29 @@ fn terminals_environments_round_trip_through_ush_at_the_daemon() {
         let records = ush::records::Records::of(&ush::Store::discover());
         assert_eq!(records.workspace(), workspace);
         assert_eq!(records.keys().unwrap(), Vec::<String>::new());
-        assert!(records.load("dev").unwrap().is_none());
+        assert!(
+            records
+                .load(tilo_environment::DEFAULT_RECORD)
+                .unwrap()
+                .is_none()
+        );
+        let default = tilo_environment::Environment {
+            name: tilo_environment::DEFAULT_NAME.to_owned(),
+            ..Default::default()
+        };
+        let made = records
+            .create(tilo_environment::DEFAULT_RECORD, &default)
+            .unwrap();
+        assert_eq!(made.workspace, workspace, "the record names its workspace");
+        let read = records
+            .load(tilo_environment::DEFAULT_RECORD)
+            .unwrap()
+            .expect("the environment is kept");
+        assert_eq!(read, made);
+        assert_eq!(
+            records.keys().unwrap(),
+            vec![tilo_environment::DEFAULT_RECORD.to_owned()]
+        );
 
         // Nothing of the workspace but Terminal's records is read or written.
         let query = collab_types::store::wire::Command::Query(collab_types::store::Query::of(

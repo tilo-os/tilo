@@ -75,6 +75,23 @@
       "dark": true
     },
     {
+      "id": "environment-kept",
+      "said": "The workspace keeps the default environment the command ran in",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.terminal",
+            "operation": "inspect-session",
+            "is": {
+              "known_environments#len": 1,
+              "known_environments.0.record": "default"
+            },
+            "within": 10
+          }
+        }
+      ]
+    },
+    {
       "id": "run-kept",
       "said": "The session keeps the command as a run that ended well, with what it printed",
       "ops": [

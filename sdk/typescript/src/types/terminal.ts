@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@f586c72b50cc539e";
+export const SURFACE = "so.tilo.terminal@0a801497ea53019c";
 
 export interface Command {
   command: string;
@@ -102,6 +102,56 @@ export interface MachineSecret {
   item: string;
 }
 
+/** One of "Read", "Write". */
+export type Access = "Read" | "Write";
+
+export interface CapOverride {
+  grantee: string;
+  app: string | null;
+  scope: Scope;
+  effect: Effect;
+  access: Access;
+  id: string;
+  lifetime: string;
+  granted_by: string | null;
+}
+
+/** One of "camera", "microphone", "screen", "input", "system-audio", "printer", "host-shell", "system-info", "processes", "process-commands", "io-uring", "gpu", "clipboard", "desktop-control". */
+export type DeviceCap = "camera" | "microphone" | "screen" | "input" | "system-audio" | "printer" | "host-shell" | "system-info" | "processes" | "process-commands" | "io-uring" | "gpu" | "clipboard" | "desktop-control";
+
+/** One of "Grant", "Restrict", "WorkspaceFileAccess", "WorkspaceFileBoundary". */
+export type Effect = "Grant" | "Restrict" | "WorkspaceFileAccess" | "WorkspaceFileBoundary";
+
+export interface FileTask {
+  device: string;
+  action: unknown;
+}
+
+/** One of "Persistent", "Ephemeral". */
+export type HomePolicy = "Persistent" | "Ephemeral";
+
+export interface RuntimeRef {
+  release: string;
+  images: Record<string, string>;
+}
+
+/** One of FsPath, Device, NetHost, FsResource, NetCalls: an object whose case the app tags it with. */
+export type Scope = Record<string, unknown>;
+
+export interface ToolRef {
+  packages: string[];
+  images: Record<string, string>;
+}
+
+export interface WriteFiles {
+  device: string;
+  paths: string[];
+  no_clobber: boolean | null;
+  text: string;
+  base64: boolean | null;
+  content: string | null;
+}
+
 /** The arguments of `stop`. */
 export interface StopArgs {
 }
@@ -172,6 +222,57 @@ export interface AddSecretArgs {
 /** The arguments of `remove-secret`. */
 export interface RemoveSecretArgs {
   variable: string;
+}
+
+/** The arguments of `add-tool`. */
+export interface AddToolArgs {
+  packages: string[];
+  arch: string;
+  image: string;
+}
+
+/** The arguments of `remove-tool`. */
+export interface RemoveToolArgs {
+  packages: string[];
+}
+
+/** The arguments of `grant-dir`. */
+export interface GrantDirArgs {
+  path: string;
+  write: boolean;
+}
+
+/** The arguments of `set-home`. */
+export interface SetHomeArgs {
+  path: string;
+}
+
+/** The arguments of `allow-host`. */
+export interface AllowHostArgs {
+  host: string;
+}
+
+/** The arguments of `revoke-grant`. */
+export interface RevokeGrantArgs {
+  id: string;
+}
+
+/** The arguments of `set-runtime`. */
+export interface SetRuntimeArgs {
+  runtime: RuntimeRef;
+  tools: ToolRef[];
+}
+
+/** The arguments of `make`. */
+export interface MakeArgs {
+  name: string;
+  runtime: RuntimeRef;
+  workspace: string;
+}
+
+/** The arguments of `rename`. */
+export interface RenameArgs {
+  name: string;
 }
 
 /** Terminal — `terminal.session`. */
@@ -316,5 +417,138 @@ export const MACHINESECRETS_ACTIONS = ["addSecret", "addSecretMany", "removeSecr
 /** The `terminal.machine-secrets` kind at `path`. */
 export function machineSecrets(ws: tilo.Workspace, path: string): MachineSecrets {
   return resourceProxy(ws, path, SURFACE, MACHINESECRETS_ACTIONS) as unknown as MachineSecrets;
+}
+
+/** Environment — `environment`. */
+export interface Environment extends tilo.Resource {
+  name: string;
+  runtime: RuntimeRef;
+  tools: ToolRef[];
+  grants: CapOverride[];
+  home: HomePolicy;
+  home_dir: string;
+  // the app's `workspace` field is the SDK's own `workspace`.
+  addTool(args: {
+    packages: string[];
+    arch: string;
+    image: string;
+  }): Promise<void>;
+  /** Runs `add-tool` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  addToolMany(items: AddToolArgs[]): Promise<tilo.ActionAnswer[]>;
+  removeTool(args: {
+    packages: string[];
+  }): Promise<void>;
+  /** Runs `remove-tool` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  removeToolMany(items: RemoveToolArgs[]): Promise<tilo.ActionAnswer[]>;
+  grantDir(args: {
+    path: string;
+    write: boolean;
+  }): Promise<void>;
+  /** Runs `grant-dir` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  grantDirMany(items: GrantDirArgs[]): Promise<tilo.ActionAnswer[]>;
+  setHome(args: {
+    path: string;
+  }): Promise<void>;
+  /** Runs `set-home` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setHomeMany(items: SetHomeArgs[]): Promise<tilo.ActionAnswer[]>;
+  allowHost(args: {
+    host: string;
+  }): Promise<void>;
+  /** Runs `allow-host` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  allowHostMany(items: AllowHostArgs[]): Promise<tilo.ActionAnswer[]>;
+  revokeGrant(args: {
+    id: string;
+  }): Promise<void>;
+  /** Runs `revoke-grant` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  revokeGrantMany(items: RevokeGrantArgs[]): Promise<tilo.ActionAnswer[]>;
+  setRuntime(args: {
+    runtime: RuntimeRef;
+    tools: ToolRef[];
+  }): Promise<void>;
+  /** Runs `set-runtime` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setRuntimeMany(items: SetRuntimeArgs[]): Promise<tilo.ActionAnswer[]>;
+  make(args: {
+    name: string;
+    runtime: RuntimeRef;
+    workspace: string;
+  }): Promise<void>;
+  /** Runs `make` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  makeMany(items: MakeArgs[]): Promise<tilo.ActionAnswer[]>;
+  rename(args: {
+    name: string;
+  }): Promise<void>;
+  /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
+  copy(args: {
+    device: string;
+    sources: string[];
+    destination: string;
+    recursive?: boolean;
+    if_exists?: string;
+  }): Promise<unknown>;
+  move(args: {
+    device: string;
+    sources: string[];
+    destination: string;
+    no_clobber?: boolean;
+  }): Promise<unknown>;
+  // the app's `remove` action is the SDK's own: run it with `action("remove")`.
+  makeDir(args: {
+    device: string;
+    dirs: string[];
+    parents?: boolean;
+  }): Promise<unknown>;
+  removeDir(args: {
+    device: string;
+    dirs: string[];
+    parents?: boolean;
+  }): Promise<unknown>;
+  link(args: {
+    device: string;
+    target: string;
+    path: string;
+    symbolic?: boolean;
+    force?: boolean;
+  }): Promise<unknown>;
+  truncate(args: {
+    device: string;
+    paths: string[];
+    size: number;
+    create?: boolean;
+  }): Promise<unknown>;
+  touch(args: {
+    device: string;
+    paths: string[];
+  }): Promise<unknown>;
+  append(args: {
+    device: string;
+    paths: string[];
+    text: string;
+    content?: string;
+  }): Promise<unknown>;
+  write(args: {
+    device: string;
+    paths: string[];
+    no_clobber?: boolean;
+    text?: string;
+    base64?: boolean;
+    content?: string;
+  }): Promise<unknown>;
+  restore(args: {
+    device: string;
+    kept: string;
+  }): Promise<unknown>;
+  revert(args: {
+    entry: string;
+  }): Promise<unknown>;
+}
+
+/** The actions `Environment` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ENVIRONMENT_ACTIONS = ["addTool", "addToolMany", "removeTool", "removeToolMany", "grantDir", "grantDirMany", "setHome", "setHomeMany", "allowHost", "allowHostMany", "revokeGrant", "revokeGrantMany", "setRuntime", "setRuntimeMany", "make", "makeMany", "rename", "renameMany", "copy", "move", "makeDir", "removeDir", "link", "truncate", "touch", "append", "write", "restore", "revert"] as const;
+
+/** The `environment` kind at `path`. */
+export function environment(ws: tilo.Workspace, path: string): Environment {
+  return resourceProxy(ws, path, SURFACE, ENVIRONMENT_ACTIONS) as unknown as Environment;
 }
 

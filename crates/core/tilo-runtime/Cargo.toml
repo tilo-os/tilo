@@ -255,6 +255,8 @@ registry-types = { package = "tilo-registry-types", path = "../registry-types" }
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
+# The environment record ush makes in a test's workspace.
+tilo-environment = { path = "../../vm/environment" }
 # The Thunderbird profile a migration test's home holds.
 tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
 # Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.

@@ -327,3 +327,325 @@ fields = [
   { name = "item", type = "text" },
 ]
 
+[[resources]]
+kind = "environment"
+label = "Environment"
+version = 4
+fields = [
+  { path = "name", type = "text" },
+  { path = "runtime", type = { named = "RuntimeRef" }, stored = "record" },
+  { path = "runtime.release", type = "text" },
+  { path = "runtime.images", type = { map = "text" } },
+  { path = "tools", type = { list = { named = "ToolRef" } } },
+  { path = "grants", type = { list = { named = "CapOverride" } } },
+  { path = "home", type = { named = "HomePolicy" } },
+  { path = "home_dir", type = "text" },
+  { path = "workspace", type = "text" },
+  { path = "files", type = { outbox = { named = "FileTask" } }, unit = true },
+]
+
+[[resources.verbs]]
+id = "add-tool"
+kind = "undoable"
+params = [
+  { name = "packages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "arch", type = "text", required = true, schema = { type = "string" } },
+  { name = "image", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-tool"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "packages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "grant-dir"
+kind = "undoable"
+params = [
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
+  { name = "write", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-home"
+kind = "undoable"
+params = [
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "allow-host"
+kind = "undoable"
+params = [
+  { name = "host", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "revoke-grant"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-runtime"
+kind = "undoable"
+params = [
+  { name = "runtime", type = { named = "RuntimeRef" }, required = true, schema = { type = "object", additionalProperties = false, properties = { images = { type = "object" }, release = { type = "string" } }, required = ["release", "images"] } },
+  { name = "tools", type = { list = { named = "ToolRef" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { images = { type = "object" }, packages = { type = "array", items = { type = "string" } } }, required = ["packages", "images"] } } },
+]
+
+[[resources.verbs]]
+id = "make"
+kind = "undoable"
+params = [
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "runtime", type = { named = "RuntimeRef" }, required = true, schema = { type = "object", additionalProperties = false, properties = { images = { type = "object" }, release = { type = "string" } }, required = ["release", "images"] } },
+  { name = "workspace", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "rename"
+kind = "undoable"
+params = [
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "copy"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "sources", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "destination", type = "text", required = true, schema = { type = "string" } },
+  { name = "recursive", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "if_exists", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "move"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "sources", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "destination", type = "text", required = true, schema = { type = "string" } },
+  { name = "no_clobber", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "recursive", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "force", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "make-dir"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "dirs", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "parents", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-dir"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "dirs", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "parents", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "link"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "target", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
+  { name = "symbolic", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "force", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "truncate"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "size", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "create", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "touch"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "append"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
+  { name = "content", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "write"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "no_clobber", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "text", type = "text", required = false, schema = { type = "string" } },
+  { name = "base64", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "content", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "restore"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "kept", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "revert"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "entry", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+writes = ["record", "files"]
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+writes = ["record", "files"]
+
+[[resources.types]]
+name = "Access"
+cases = [
+  { name = "Read" },
+  { name = "Write" },
+]
+
+[[resources.types]]
+name = "CapOverride"
+fields = [
+  { name = "grantee", type = "text" },
+  { name = "app", type = { option = "text" } },
+  { name = "scope", type = { named = "Scope" } },
+  { name = "effect", type = { named = "Effect" } },
+  { name = "access", type = { named = "Access" } },
+  { name = "id", type = "text" },
+  { name = "lifetime", type = "text" },
+  { name = "granted_by", type = { option = "actor" } },
+]
+
+[[resources.types]]
+name = "DeviceCap"
+cases = [
+  { name = "camera" },
+  { name = "microphone" },
+  { name = "screen" },
+  { name = "input" },
+  { name = "system-audio" },
+  { name = "printer" },
+  { name = "host-shell" },
+  { name = "system-info" },
+  { name = "processes" },
+  { name = "process-commands" },
+  { name = "io-uring" },
+  { name = "gpu" },
+  { name = "clipboard" },
+  { name = "desktop-control" },
+]
+
+[[resources.types]]
+name = "Effect"
+cases = [
+  { name = "Grant" },
+  { name = "Restrict" },
+  { name = "WorkspaceFileAccess" },
+  { name = "WorkspaceFileBoundary" },
+]
+
+[[resources.types]]
+name = "FileTask"
+fields = [
+  { name = "device", type = "text" },
+  { name = "action", type = "any" },
+]
+
+[[resources.types]]
+name = "HomePolicy"
+cases = [
+  { name = "Persistent" },
+  { name = "Ephemeral" },
+]
+
+[[resources.types]]
+name = "RuntimeRef"
+fields = [
+  { name = "release", type = "text" },
+  { name = "images", type = { map = "text" } },
+]
+
+[[resources.types]]
+name = "Scope"
+cases = [
+  { name = "FsPath", fields = [{ name = "0", type = "text" }] },
+  { name = "Device", fields = [{ name = "0", type = { named = "DeviceCap" } }] },
+  { name = "NetHost", fields = [{ name = "0", type = "text" }] },
+  { name = "FsResource", fields = [{ name = "0", type = "text" }] },
+  { name = "NetCalls" },
+]
+
+[[resources.types]]
+name = "ToolRef"
+fields = [
+  { name = "packages", type = { list = "text" } },
+  { name = "images", type = { map = "text" } },
+]
+
+[[resources.types]]
+name = "WriteFiles"
+fields = [
+  { name = "device", type = "text" },
+  { name = "paths", type = { list = "text" } },
+  { name = "no_clobber", type = { option = "bool" } },
+  { name = "text", type = "text" },
+  { name = "base64", type = { option = "bool" } },
+  { name = "content", type = { option = "text" } },
+]
+

@@ -9,7 +9,8 @@
 //!
 //! - [`TERMINAL_RECORDS`]: the runtime keeps each environment as one of Terminal's documents in
 //!   its workspace. Only a record's changes, a record's write and the record list are carried out,
-//!   as the device's person, so the daemon keeps and syncs them as it does every app's.
+//!   as the device's person, so the daemon keeps and syncs them as it does every app's. Each
+//!   answer names that person (`person`), whom the runtime's changes name as their maker.
 //! - [`OPEN_TERMINAL`]: a workspace another device runs (a home server, a cloud host) runs its
 //!   Terminal sessions' shells there. The session record's `open-terminal` is asked of the host
 //!   through this device's dispatch, which asks the person first where the workspace's policy says
@@ -185,6 +186,9 @@ fn records(
         );
     }
     let workspace = workspace.to_owned();
+    // Whom the records are written as: the runtime's changes name the device's person, as the
+    // workspace takes only a change naming its caller.
+    let person = hex::encode(copies.device_person());
     let (done, answer) = tilo_actions::remote::pending();
     tilo_rt::app().handle().spawn(async move {
         // A first write can wait for this device's keys of the workspace.
@@ -198,7 +202,7 @@ fn records(
             .await
             .and_then(|reply| serde_json::to_value(reply).map_err(|error| error.to_string()))
         {
-            Ok(reply) => succeeded(invocation, json!({ "reply": reply })),
+            Ok(reply) => succeeded(invocation, json!({ "reply": reply, "person": person })),
             Err(reason) => failed_as(invocation, REFUSED, &reason),
         };
         done.complete(Ok(InvocationState::new(invocation, update).receipt()));

@@ -28,9 +28,20 @@ __all__ = [
     "Ran",
     "Remembered",
     "MachineSecret",
+    "Access",
+    "CapOverride",
+    "DeviceCap",
+    "Effect",
+    "FileTask",
+    "HomePolicy",
+    "RuntimeRef",
+    "Scope",
+    "ToolRef",
+    "WriteFiles",
     "Session",
     "History",
     "MachineSecrets",
+    "Environment",
     "StopArgs",
     "RecordCommandArgs",
     "RecordTargetArgs",
@@ -40,6 +51,15 @@ __all__ = [
     "ImportRunArgs",
     "AddSecretArgs",
     "RemoveSecretArgs",
+    "AddToolArgs",
+    "RemoveToolArgs",
+    "GrantDirArgs",
+    "SetHomeArgs",
+    "AllowHostArgs",
+    "RevokeGrantArgs",
+    "SetRuntimeArgs",
+    "MakeArgs",
+    "RenameArgs",
 ]
 
 class Command(TypedDict):
@@ -111,6 +131,47 @@ class Remembered(TypedDict):
 class MachineSecret(TypedDict):
     variable: str
     item: str
+
+Access = Literal["Read", "Write"]
+
+class CapOverride(TypedDict):
+    grantee: str
+    app: str | None
+    scope: Scope
+    effect: Effect
+    access: Access
+    id: str
+    lifetime: str
+    granted_by: str | None
+
+DeviceCap = Literal["camera", "microphone", "screen", "input", "system-audio", "printer", "host-shell", "system-info", "processes", "process-commands", "io-uring", "gpu", "clipboard", "desktop-control"]
+
+Effect = Literal["Grant", "Restrict", "WorkspaceFileAccess", "WorkspaceFileBoundary"]
+
+class FileTask(TypedDict):
+    device: str
+    action: Any
+
+HomePolicy = Literal["Persistent", "Ephemeral"]
+
+class RuntimeRef(TypedDict):
+    release: str
+    images: dict[str, str]
+
+Scope = dict[str, Any]
+"""One of FsPath, Device, NetHost, FsResource, NetCalls: an object whose case the app tags it with."""
+
+class ToolRef(TypedDict):
+    packages: list[str]
+    images: dict[str, str]
+
+class WriteFiles(TypedDict):
+    device: str
+    paths: list[str]
+    no_clobber: bool | None
+    text: str
+    base64: bool | None
+    content: str | None
 
 StopArgs = TypedDict("StopArgs", {
 })
@@ -184,9 +245,60 @@ RemoveSecretArgs = TypedDict("RemoveSecretArgs", {
 })
 """The arguments of `remove-secret`."""
 
+AddToolArgs = TypedDict("AddToolArgs", {
+    "packages": "list[str]",
+    "arch": "str",
+    "image": "str",
+})
+"""The arguments of `add-tool`."""
+
+RemoveToolArgs = TypedDict("RemoveToolArgs", {
+    "packages": "list[str]",
+})
+"""The arguments of `remove-tool`."""
+
+GrantDirArgs = TypedDict("GrantDirArgs", {
+    "path": "str",
+    "write": "bool",
+})
+"""The arguments of `grant-dir`."""
+
+SetHomeArgs = TypedDict("SetHomeArgs", {
+    "path": "str",
+})
+"""The arguments of `set-home`."""
+
+AllowHostArgs = TypedDict("AllowHostArgs", {
+    "host": "str",
+})
+"""The arguments of `allow-host`."""
+
+RevokeGrantArgs = TypedDict("RevokeGrantArgs", {
+    "id": "str",
+})
+"""The arguments of `revoke-grant`."""
+
+SetRuntimeArgs = TypedDict("SetRuntimeArgs", {
+    "runtime": "RuntimeRef",
+    "tools": "list[ToolRef]",
+})
+"""The arguments of `set-runtime`."""
+
+MakeArgs = TypedDict("MakeArgs", {
+    "name": "str",
+    "runtime": "RuntimeRef",
+    "workspace": "str",
+})
+"""The arguments of `make`."""
+
+RenameArgs = TypedDict("RenameArgs", {
+    "name": "str",
+})
+"""The arguments of `rename`."""
+
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@f586c72b50cc539e"
+    __surface__ = "so.tilo.terminal@0a801497ea53019c"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -378,7 +490,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@f586c72b50cc539e"
+    __surface__ = "so.tilo.terminal@0a801497ea53019c"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -449,7 +561,7 @@ class History(Resource):
 
 class MachineSecrets(Resource):
     """Machine secrets — `terminal.machine-secrets`."""
-    __surface__ = "so.tilo.terminal@f586c72b50cc539e"
+    __surface__ = "so.tilo.terminal@0a801497ea53019c"
     secrets: list[MachineSecret]
 
     def add_secret(self,
@@ -475,5 +587,270 @@ class MachineSecrets(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"add_secret", "add_secret_many", "remove_secret", "remove_secret_many"})
+
+
+class Environment(Resource):
+    """Environment — `environment`."""
+    __surface__ = "so.tilo.terminal@0a801497ea53019c"
+    name: str
+    runtime: RuntimeRef
+    tools: list[ToolRef]
+    grants: list[CapOverride]
+    home: HomePolicy
+    home_dir: str
+    # the app's `workspace` field is the SDK's own `workspace`: read it with
+    # `fields["workspace"]`.
+
+    def add_tool(self,
+        *,
+        packages: list[str],
+        arch: str,
+        image: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("add-tool", packages=packages, arch=arch, image=image)
+
+    def add_tool_many(self, items: list[AddToolArgs]) -> list[dict[str, Any]]:
+        """Runs `add-tool` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("add-tool", items)
+
+    def remove_tool(self, *, packages: list[str]) -> None:
+        """Runs the app's action."""
+        return self.action("remove-tool", packages=packages)
+
+    def remove_tool_many(self, items: list[RemoveToolArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-tool` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-tool", items)
+
+    def grant_dir(self,
+        *,
+        path: str,
+        write: bool,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("grant-dir", path=path, write=write)
+
+    def grant_dir_many(self, items: list[GrantDirArgs]) -> list[dict[str, Any]]:
+        """Runs `grant-dir` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("grant-dir", items)
+
+    def set_home(self, *, path: str) -> None:
+        """Runs the app's action."""
+        return self.action("set-home", path=path)
+
+    def set_home_many(self, items: list[SetHomeArgs]) -> list[dict[str, Any]]:
+        """Runs `set-home` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-home", items)
+
+    def allow_host(self, *, host: str) -> None:
+        """Runs the app's action."""
+        return self.action("allow-host", host=host)
+
+    def allow_host_many(self, items: list[AllowHostArgs]) -> list[dict[str, Any]]:
+        """Runs `allow-host` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("allow-host", items)
+
+    def revoke_grant(self, *, id: str) -> None:
+        """Runs the app's action."""
+        return self.action("revoke-grant", id=id)
+
+    def revoke_grant_many(self, items: list[RevokeGrantArgs]) -> list[dict[str, Any]]:
+        """Runs `revoke-grant` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("revoke-grant", items)
+
+    def set_runtime(self,
+        *,
+        runtime: RuntimeRef,
+        tools: list[ToolRef],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-runtime", runtime=runtime, tools=tools)
+
+    def set_runtime_many(self, items: list[SetRuntimeArgs]) -> list[dict[str, Any]]:
+        """Runs `set-runtime` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-runtime", items)
+
+    def make(self,
+        *,
+        name: str,
+        runtime: RuntimeRef,
+        workspace: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("make", name=name, runtime=runtime, workspace=workspace)
+
+    def make_many(self, items: list[MakeArgs]) -> list[dict[str, Any]]:
+        """Runs `make` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("make", items)
+
+    def rename(self, *, name: str) -> None:
+        """Runs the app's action."""
+        return self.action("rename", name=name)
+
+    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename", items)
+
+    def copy(self,
+        *,
+        device: str,
+        sources: list[str],
+        destination: str,
+        recursive: bool | None = None,
+        if_exists: str | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["sources"] = sources
+        args["destination"] = destination
+        if recursive is not None:
+            args["recursive"] = recursive
+        if if_exists is not None:
+            args["if_exists"] = if_exists
+        return self.action("copy", **args)
+
+    def move(self,
+        *,
+        device: str,
+        sources: list[str],
+        destination: str,
+        no_clobber: bool | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["sources"] = sources
+        args["destination"] = destination
+        if no_clobber is not None:
+            args["no_clobber"] = no_clobber
+        return self.action("move", **args)
+
+    # the app's `remove` action is the SDK's own: run it with `action("remove")`.
+    def make_dir(self,
+        *,
+        device: str,
+        dirs: list[str],
+        parents: bool | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["dirs"] = dirs
+        if parents is not None:
+            args["parents"] = parents
+        return self.action("make-dir", **args)
+
+    def remove_dir(self,
+        *,
+        device: str,
+        dirs: list[str],
+        parents: bool | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["dirs"] = dirs
+        if parents is not None:
+            args["parents"] = parents
+        return self.action("remove-dir", **args)
+
+    def link(self,
+        *,
+        device: str,
+        target: str,
+        path: str,
+        symbolic: bool | None = None,
+        force: bool | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["target"] = target
+        args["path"] = path
+        if symbolic is not None:
+            args["symbolic"] = symbolic
+        if force is not None:
+            args["force"] = force
+        return self.action("link", **args)
+
+    def truncate(self,
+        *,
+        device: str,
+        paths: list[str],
+        size: int,
+        create: bool | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["paths"] = paths
+        args["size"] = size
+        if create is not None:
+            args["create"] = create
+        return self.action("truncate", **args)
+
+    def touch(self,
+        *,
+        device: str,
+        paths: list[str],
+    ) -> Any:
+        """Runs the app's action."""
+        return self.action("touch", device=device, paths=paths)
+
+    def append(self,
+        *,
+        device: str,
+        paths: list[str],
+        text: str,
+        content: str | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["paths"] = paths
+        args["text"] = text
+        if content is not None:
+            args["content"] = content
+        return self.action("append", **args)
+
+    def write(self,
+        *,
+        device: str,
+        paths: list[str],
+        no_clobber: bool | None = None,
+        text: str | None = None,
+        base64: bool | None = None,
+        content: str | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["device"] = device
+        args["paths"] = paths
+        if no_clobber is not None:
+            args["no_clobber"] = no_clobber
+        if text is not None:
+            args["text"] = text
+        if base64 is not None:
+            args["base64"] = base64
+        if content is not None:
+            args["content"] = content
+        return self.action("write", **args)
+
+    def restore(self,
+        *,
+        device: str,
+        kept: str,
+    ) -> Any:
+        """Runs the app's action."""
+        return self.action("restore", device=device, kept=kept)
+
+    def revert(self, *, entry: str) -> Any:
+        """Runs the app's action."""
+        return self.action("revert", entry=entry)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_tool", "add_tool_many", "remove_tool", "remove_tool_many", "grant_dir", "grant_dir_many", "set_home", "set_home_many", "allow_host", "allow_host_many", "revoke_grant", "revoke_grant_many", "set_runtime", "set_runtime_many", "make", "make_many", "rename", "rename_many", "copy", "move", "make_dir", "remove_dir", "link", "truncate", "touch", "append", "write", "restore", "revert"})
 
 

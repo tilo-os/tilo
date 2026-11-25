@@ -105,12 +105,22 @@ where
 ///
 /// When the person cannot be founded, or `body` fails.
 pub fn in_own_process(body: impl FnOnce(&Path)) {
+    in_own_process_with_packages(&[], body);
+}
+
+/// [`in_own_process`], on a device that has the Rust apps `rust` installed
+/// ([`run_with_packages`]).
+///
+/// # Panics
+///
+/// As [`in_own_process`], and when a package does not install.
+pub fn in_own_process_with_packages(rust: &[(&str, &str)], body: impl FnOnce(&Path)) {
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
         .to_owned();
     if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
-        own_process(&test, &[], &[]);
+        own_process(&test, &[], rust);
         return;
     }
     say_what_went_wrong();

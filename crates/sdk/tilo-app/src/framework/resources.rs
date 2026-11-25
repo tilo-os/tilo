@@ -873,6 +873,18 @@ impl<'a> Resources<'a> {
         self
     }
 
+    /// Records of `P` another program of the device keeps for this app in the workspace under
+    /// ids of their own (Terminal's environments, which the shell runtime writes): part of the
+    /// app's surface, so the workspace takes them as the app's, and never opened with the
+    /// window.
+    pub fn kept_records<P: Resource>(&mut self) -> &mut Self {
+        super::controls::opened_resource::<P>();
+        if self.storage.is_none() {
+            self.chains.push(tilo_resource::ResourceKind::of::<P>());
+        }
+        self
+    }
+
     /// The settings section `T`, a resource model ([`ResourceEnv::settings`](super::ResourceEnv::settings)).
     pub fn settings<T>(&mut self) -> &mut Self
     where

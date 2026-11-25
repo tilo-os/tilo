@@ -268,6 +268,37 @@ impl Environment {
         Ok(())
     }
 
+    /// Create environment.
+    ///
+    /// An environment's first content, as the shell runtime of its workspace makes it: its name,
+    /// the runtime it runs on, and the workspace it is of. A record made already takes it no
+    /// more.
+    #[action]
+    pub fn make(
+        &mut self,
+        #[param("Name")] name: String,
+        #[param("Runtime release")] runtime: RuntimeRef,
+        #[param("Workspace")] workspace: String,
+    ) -> Result<(), String> {
+        if !self.workspace.is_empty() {
+            return Err("this environment was made already".into());
+        }
+        let (name, workspace) = (name.trim(), workspace.trim());
+        if name.is_empty() {
+            return Err("an environment needs a name".into());
+        }
+        if workspace.is_empty() {
+            return Err("an environment is made in a workspace".into());
+        }
+        if !runtime.images.is_empty() {
+            check_images(&runtime.images)?;
+        }
+        name.clone_into(&mut self.name);
+        self.runtime = runtime;
+        workspace.clone_into(&mut self.workspace);
+        Ok(())
+    }
+
     /// Rename.
     #[action]
     pub fn rename(&mut self, #[param("Name")] name: String) -> Result<(), String> {

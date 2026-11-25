@@ -29,8 +29,6 @@ use crate::workspace::Confinement;
 
 pub const PRIMARY_WORKSPACE: &str = crate::workspace::PRIMARY;
 
-pub const AUTHOR: &str = tilo_environment::RUNTIME_APP_ID;
-
 /// What every environment record's document id starts with: Terminal keeps documents of its own
 /// beside them.
 const DOCUMENT_PREFIX: &str = "environment:";
@@ -74,6 +72,9 @@ pub struct Records {
     documents: PathBuf,
     workspace: String,
     confinement: Option<Confinement>,
+    /// The person the daemon writes the records as, as its answers name them: whom each change
+    /// made here names as its maker.
+    person: std::sync::OnceLock<String>,
 }
 
 impl Records {
@@ -83,6 +84,7 @@ impl Records {
             documents: documents.into(),
             workspace: PRIMARY_WORKSPACE.to_owned(),
             confinement: None,
+            person: std::sync::OnceLock::new(),
         }
     }
 
@@ -95,6 +97,7 @@ impl Records {
             documents: store.records_root().to_path_buf(),
             workspace: store.workspace_id().as_str().to_owned(),
             confinement: store.confinement(),
+            person: std::sync::OnceLock::new(),
         }
     }
 
@@ -164,11 +167,25 @@ impl Records {
                     RecordError::Refused(refused.message)
                 }
             })?;
+        if let Some(person) = answer.get("person").and_then(serde_json::Value::as_str) {
+            let _ = self.person.set(person.to_owned());
+        }
         let reply = answer
             .get("reply")
             .cloned()
             .ok_or_else(|| RecordError::Store(format!("the daemon answered {answer}")))?;
         serde_json::from_value(reply).map_err(|e| RecordError::Store(e.to_string()))
+    }
+
+    /// The person the daemon writes the records as, asked of it once.
+    fn person(&self) -> Result<&str, RecordError> {
+        if self.person.get().is_none() {
+            self.command(&Command::Records)?;
+        }
+        self.person
+            .get()
+            .map(String::as_str)
+            .ok_or_else(|| RecordError::Store("the daemon named nobody it writes as".into()))
     }
 
     /// The record `key`'s changes past `after` as the workspace holds them, joined from every
@@ -329,12 +346,64 @@ impl Records {
             ..env.clone()
         };
         self.confined(&[], &env.grants)?;
-        let mut doc = Doc::new();
-        env.write_resource(&mut doc)
+        // Made through the record's own verbs, as Terminal's: the workspace takes each change by
+        // the verb it names, on the founding every holder derives of the record.
+        let mut replica = Replica::<Environment>::from_doc(self.founded(key)?)
+            .as_author(self.person()?)
+            .in_app(tilo_environment::OWNER_APP_ID, "Terminal");
+        replica.set_now_ms(tilo_clock::unix_now_ms_i64());
+        let mut made = vec![Environment::MAKE.with((
+            env.name.clone(),
+            env.runtime.clone(),
+            env.workspace.clone(),
+        ))];
+        for tool in &env.tools {
+            for (arch, image) in &tool.images {
+                made.push(Environment::ADD_TOOL.with((
+                    tool.packages.clone(),
+                    arch.clone(),
+                    image.clone(),
+                )));
+            }
+        }
+        if !env.home_dir.is_empty() {
+            made.push(Environment::SET_HOME.with(env.home_dir.clone()));
+        }
+        for grant in &env.grants {
+            made.push(granting(grant)?);
+        }
+        for invoke in made {
+            replica
+                .apply_confirmed(invoke)
+                .map_err(|e| RecordError::Refused(e.to_string()))?;
+        }
+        let made = replica
+            .state()
             .map_err(|e| RecordError::Model(e.to_string()))?;
-        doc.commit();
-        self.write(key, &mut doc, None)?;
-        Ok(env)
+        self.write(key, replica.doc_mut(), None)?;
+        Ok(made)
+    }
+
+    /// The record `key` as it is founded: the derived founding of its kind and id, which every
+    /// holder makes alike and the workspace admits only as that, then the record's initial
+    /// content as a native edit, as an app's record is founded.
+    fn founded(&self, key: &str) -> Result<Doc, RecordError> {
+        let model = |e: &dyn std::fmt::Display| RecordError::Model(e.to_string());
+        let record = self.document_id(key)?;
+        let containers = collab_types::document::founding::of_kind(&Environment::surface());
+        let mut doc = Doc::new();
+        if let Some(founding) =
+            collab_types::document::founding::structure(Environment::KIND, &record, &containers)
+        {
+            tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, vec![founding])
+                .map_err(|e| model(&e))?;
+        }
+        Environment::initialize(&mut doc).map_err(|e| model(&e))?;
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
+        Ok(doc)
     }
 
     /// Make the environment `key` of these records one of `into`'s: the record's whole
@@ -467,7 +536,7 @@ impl Records {
             .load_current(key)?
             .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
         let mut replica = Replica::<Environment>::from_doc(held.doc)
-            .as_author(AUTHOR)
+            .as_author(self.person()?)
             .in_app(tilo_environment::OWNER_APP_ID, "Terminal");
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
         let before = replica
@@ -486,6 +555,20 @@ impl Records {
             after.grants.retain(|grant| confinement.admits(grant));
         }
         Ok(after)
+    }
+}
+
+/// The verb that grants what `grant` does: a directory, or a host.
+fn granting(grant: &collab_types::caps::CapOverride) -> Result<Invoke<Environment>, RecordError> {
+    use collab_types::caps::{Access, Scope};
+    match &grant.scope {
+        Scope::FsPath(path) => {
+            Ok(Environment::GRANT_DIR.with((path.clone(), grant.access == Access::Write)))
+        }
+        Scope::NetHost(host) => Ok(Environment::ALLOW_HOST.with(host.clone())),
+        other => Err(RecordError::Refused(format!(
+            "an environment is made granting a directory or a host, not {other:?}"
+        ))),
     }
 }
 
@@ -730,7 +813,8 @@ pub mod testing {
             Err(format!("this daemon answers no {path}"))
         };
         let structured = match answer {
-            Ok(reply) => json!({"status": "ok", "result": {"reply": reply}}),
+            // The daemon names the person it writes as, as every answer of the device's does.
+            Ok(reply) => json!({"status": "ok", "result": {"reply": reply, "person": "ada"}}),
             Err(message) => {
                 json!({"status": "failed", "error": {"code": "shell-runtime", "message": message}})
             }

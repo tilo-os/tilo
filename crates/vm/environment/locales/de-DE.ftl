@@ -8,6 +8,7 @@ environment-set-home = Home-Ordner festlegen
 environment-allow-host = Host erlauben
 environment-revoke-grant = Freigabe zurückziehen
 environment-set-runtime = Laufzeit festlegen
+environment-make = Umgebung anlegen
 environment-rename = Umbenennen
 environment-copy = Dateien kopieren
 environment-move = Dateien verschieben

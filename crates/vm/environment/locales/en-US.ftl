@@ -8,6 +8,7 @@ environment-set-home = Set home folder
 environment-allow-host = Allow host
 environment-revoke-grant = Revoke grant
 environment-set-runtime = Set runtime
+environment-make = Create environment
 environment-rename = Rename
 environment-copy = Copy files
 environment-move = Move files
