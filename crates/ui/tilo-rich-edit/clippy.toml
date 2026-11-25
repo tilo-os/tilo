@@ -9,6 +9,10 @@ allow-indexing-slicing-in-tests = true
 # Clippy rejects a function with more parameters than this.
 too-many-arguments-threshold = 8
 
+# Names documentation may use bare: a service's own name, as its users write it. `..` keeps
+# clippy's list of crates and formats.
+doc-valid-idents = ["YouTube", ".."]
+
 # reqwest is built without a bundled crypto provider; these constructors panic
 # unless one is installed. `tilo_net::http` installs it and returns builders.
 # The environment is process-global, so tests use tilo-test-env instead of
