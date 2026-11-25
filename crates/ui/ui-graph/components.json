@@ -6106,6 +6106,15 @@
               }
             }
           }
+        },
+        {
+          "name": "at",
+          "doc": "The point it stands at, `[x, y]` from the top-left of where it is declared: where a press raised it (a question an action asks first). Its primary button stands under that point, so pressing again at the same spot takes it.",
+          "type": {
+            "option": {
+              "list": "float"
+            }
+          }
         }
       ],
       "parts": [
