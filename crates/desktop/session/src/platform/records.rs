@@ -211,7 +211,8 @@ impl Watch {
 
 /// A value read of the workspaces' records, kept current by the change stream: read when it is
 /// started, and again whenever what it follows moves — on a worker of its own where this host has
-/// threads, so a read never holds up a frame, and on the one thread the page has where it has one.
+/// threads, so a read never holds up a frame (the first one included: until it lands the value is
+/// empty), and on the one thread the page has where it has one.
 pub struct Reading<T> {
     #[cfg(target_os = "linux")]
     held: Arc<Mutex<(u64, Arc<T>)>>,
@@ -224,9 +225,11 @@ pub struct Reading<T> {
 }
 
 #[cfg(target_os = "linux")]
-impl<T: Send + Sync + 'static> Reading<T> {
-    /// Read `read` now, and again on a worker whenever `changes` says what `watch` follows moved,
-    /// telling `moved` so the frame that shows it is drawn.
+impl<T: Default + Send + Sync + 'static> Reading<T> {
+    /// Read `read` on a worker, at once and again whenever `changes` says what `watch` follows
+    /// moved, telling `moved` each time one lands so the frame that shows it is drawn. Until the
+    /// first read lands the value is `T::default()`: the caller's thread, the desktop's loop among
+    /// them, never waits on the stores it reads.
     pub fn start(
         name: &str,
         changes: Changes,
@@ -234,14 +237,20 @@ impl<T: Send + Sync + 'static> Reading<T> {
         read: impl Fn() -> T + Send + Sync + 'static,
         moved: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        let at = watch.moved(&changes);
-        let held = Arc::new(Mutex::new((at, Arc::new(read()))));
-        let landed = Arc::new(AtomicU64::new(1));
+        let held = Arc::new(Mutex::new((0, Arc::new(T::default()))));
+        let landed = Arc::new(AtomicU64::new(0));
         let reader = changes.reader();
         let (shared, counted) = (Arc::clone(&held), Arc::clone(&landed));
         let worker = std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
+                let land = |at: u64| {
+                    let fresh = Arc::new((read)());
+                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = (at, fresh);
+                    counted.fetch_add(1, Ordering::AcqRel);
+                    moved();
+                };
+                land(watch.moved(&changes));
                 // Ends when the stream does: the session is gone.
                 while let Ok(changed) = reader.recv() {
                     // A burst of changes is read once.
@@ -249,14 +258,9 @@ impl<T: Send + Sync + 'static> Reading<T> {
                     while let Ok(other) = reader.try_recv() {
                         mine |= watch.follows(&other.workspace);
                     }
-                    if !mine {
-                        continue;
+                    if mine {
+                        land(watch.moved(&changes));
                     }
-                    let at = watch.moved(&changes);
-                    let fresh = Arc::new((read)());
-                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = (at, fresh);
-                    counted.fetch_add(1, Ordering::AcqRel);
-                    moved();
                 }
             });
         if let Err(error) = worker {
