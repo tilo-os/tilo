@@ -159,6 +159,101 @@ fn a_package_offers_the_files_its_actions_open() {
     );
 }
 
+/// The Writer and the spreadsheet declare the files they open in their actions, and what they
+/// declare is what a device installs: each package built from its sources, then its shipped
+/// manifest read back through the decoder a launcher reads, so a document or a table opens in the
+/// app that says it opens it.
+#[test]
+fn the_writer_and_the_spreadsheet_offer_the_files_they_open() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let mut apps: Vec<package::BuiltApp> = Vec::new();
+    for name in ["word-processor", "sheets"] {
+        for package in with_used(&[name]) {
+            copy_package(&packages().join(&package), &source.join(&package));
+        }
+        let options = BuildOptions {
+            dir: source.join(name),
+            search: Vec::new(),
+            out: scratch.path().join("out").join(name),
+            tilo_runtime: "tilo-runtime/2026.07".into(),
+            tilolang_runtime: package::default_tilolang_runtime(),
+            version: "0.1.0".into(),
+            locked: false,
+        };
+        apps.extend(package::build(&options, &identity).unwrap());
+    }
+    let offers = |app: &str| {
+        let built = apps
+            .iter()
+            .find(|built| built.app == app)
+            .unwrap_or_else(|| panic!("{app} is built: {:?}", apps.iter().map(|a| &a.app)));
+        tilo_app_package::view::read_manifest(&built.manifest)
+            .unwrap_or_else(|error| panic!("{app}'s shipped manifest decodes: {error}"))
+    };
+
+    // Every format its `open_document` reads. `odt`, `docx`, `md` and `rtf` are the ones the
+    // native app claimed before it, kept as it claimed them.
+    let writer = offers("so.tilo.word-processor");
+    assert_eq!(
+        writer.opens_ext,
+        ["docx", "odt", "rtf", "epub", "html", "md", "markdown", "txt"],
+        "the Writer's extensions"
+    );
+    assert_eq!(
+        writer.opens_mime,
+        [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.oasis.opendocument.text",
+            "application/rtf",
+            "application/epub+zip",
+            "text/html",
+            "text/markdown",
+            "text/plain",
+        ],
+        "the Writer's media types"
+    );
+
+    let sheets = offers("so.tilo.sheets");
+    assert_eq!(
+        sheets.opens_ext,
+        ["csv", "tsv", "xlsx", "ods"],
+        "the spreadsheet's extensions"
+    );
+    assert_eq!(
+        sheets.opens_mime,
+        [
+            "text/csv",
+            "text/tab-separated-values",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/zip",
+        ],
+        "the spreadsheet's media types"
+    );
+
+    // Seen by a launcher: normalised, no leading dot and no capitals, and no URI scheme claimed
+    // by an app that opens none.
+    for app in [&writer, &sheets] {
+        assert!(
+            app.opens_ext
+                .iter()
+                .all(|ext| !ext.starts_with('.') && ext.chars().all(|c| !c.is_ascii_uppercase())),
+            "extensions are normalised: {:?}",
+            app.opens_ext
+        );
+        assert!(
+            app.opens_mime
+                .iter()
+                .all(|mime| mime == &mime.to_lowercase() && !mime.contains(';')),
+            "media types are normalised: {:?}",
+            app.opens_mime
+        );
+        assert_eq!(app.opens_schemes, Vec::<String>::new());
+    }
+}
+
 /// Today uses Notes: it declares that it reads their kinds, carries their module and their schema.
 fn today_reads_notes(
     today: &package::BuiltApp,

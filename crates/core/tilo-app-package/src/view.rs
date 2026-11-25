@@ -370,14 +370,6 @@ mod tests {
             .unwrap_or_else(|e| panic!("{id} decodes: {e}"))
     }
 
-    fn repo() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("workspace root above crates/core/tilo-app-package")
-            .to_path_buf()
-    }
-
     tilo_test_env::scenario! {
         fn a_manifest_view_decodes_the_signed_fields_readers_rely_on;
 
@@ -438,24 +430,41 @@ mod tests {
 
         phase opener_claims_are_read_and_normalised;
         {
-            // The shipped manifests are the source of truth for which app opens
-            // which file type, so the decode must survive a *real* one.
-            let m = read_manifest(&repo().join("apps/sheets/tilo-app.toml"))
-                .expect("the word processor's manifest decodes");
-            assert_eq!(m.package_id, "so.tilo.sheets");
-            for ext in ["odt", "docx", "md", "rtf"] {
+            // A shipped manifest is the source of truth for which app opens which
+            // file type, so the decode must survive the real ones. These are the
+            // packages kept here as they went out: every one of them is a manifest,
+            // and the app among them is a view a launcher reads.
+            //
+            // Neither opens a file, so both declare empty claims, decoded rather
+            // than refused. A manifest that does claim files is proved where it is
+            // written: the packaging tool's tests build the Writer and the
+            // spreadsheet from their declarations and read their `[providers]` back
+            // through this decoder. This crate sits below the language's compiler,
+            // so it cannot build one itself.
+            let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/shipped");
+            let (mut manifests, mut apps) = (0, 0);
+            for dir in std::fs::read_dir(&shipped).expect("the shipped packages are kept here") {
+                let path = dir.unwrap().path().join("manifest.toml");
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+                let manifest = Manifest::from_toml_str(&text)
+                    .unwrap_or_else(|e| panic!("{} is a manifest: {e}", path.display()));
+                manifests += 1;
+                if manifest.package.kind != crate::id::Kind::App {
+                    continue;
+                }
+                let m = read_manifest(&path)
+                    .unwrap_or_else(|e| panic!("{} decodes as a view: {e}", path.display()));
+                apps += 1;
                 assert!(
-                    m.opens_ext.iter().any(|e| e == ext),
-                    "the word processor declares .{ext}; parsed {:?}",
-                    m.opens_ext
+                    m.opens_ext.is_empty() && m.opens_mime.is_empty() && m.opens_schemes.is_empty(),
+                    "a shipped app that opens no files claims none: {m:?}"
                 );
             }
-            assert!(
-                m.opens_ext
-                    .iter()
-                    .all(|e| !e.starts_with('.') && e.chars().all(|c| !c.is_ascii_uppercase())),
-                "extensions are normalised on decode: {:?}",
-                m.opens_ext
+            assert_eq!(
+                (manifests, apps),
+                (2, 1),
+                "both shipped packages are read, and one of them is an app"
             );
 
             // A package that opens nothing says so as an empty list, not a
