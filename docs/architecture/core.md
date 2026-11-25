@@ -1214,7 +1214,12 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   workspace's governance document is its `workspace/members` resource: the one change
   feed lists each governance commit as a change of it, stamped with its verb, actor and
   time, members read only its member fields, and rebasing the document keeps every
-  stamped change. A project
+  stamped change. Exporting is the
+  system's: an app publishes each format it can write as an `export` action on its
+  resource, and the one Export… lists the formats published for what is open and saves
+  through the system's file chooser; no app keeps an export menu of its own. A
+  channel's moderators grant and revoke access to that channel through the system's
+  grant actions, scoped to it. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
