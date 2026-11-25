@@ -570,6 +570,7 @@ impl Env {
                     place: p.place,
                     label: p.label.clone(),
                     entry: p.entry,
+                    secret: p.secret,
                 })
                 .collect()
         };
@@ -786,6 +787,7 @@ impl Resolver<'_> {
                     place: false,
                     label: None,
                     entry: false,
+                    secret: false,
                 }],
                 result: Ty::Text,
                 class: Some(EffectClass::Read),
@@ -1866,6 +1868,21 @@ impl Resolver<'_> {
                 continue;
             }
             let ty = self.resolve_type(&p.ty, view);
+            if p.secret {
+                if !action {
+                    self.err("E057", p.name.span, format!("`{}` is a parameter of the {}; only an action's parameter is a secret, handed over once and kept nowhere", p.name.name, if view { "view" } else { "function" }));
+                } else if !matches!(ty, Ty::Text | Ty::RichText | Ty::Identifier) {
+                    self.err(
+                        "E057",
+                        p.name.span,
+                        format!(
+                            "`{}` is a secret, and a secret is text: give it `Text`, not `{}`",
+                            p.name.name,
+                            ty.display(&self.env.app)
+                        ),
+                    );
+                }
+            }
             out.push(ParamInfo {
                 name: p.name.name.clone(),
                 ty,
@@ -1873,10 +1890,11 @@ impl Resolver<'_> {
                 place: action && p.place.is_some(),
                 label: if action { p.label.clone() } else { None },
                 entry: false,
+                secret: action && p.secret,
             });
         }
         if action {
-            let mut texts = out.iter_mut().filter(|p| p.ty == Ty::Text);
+            let mut texts = out.iter_mut().filter(|p| p.ty == Ty::Text && !p.secret);
             if let (Some(one), None) = (texts.next(), texts.next()) {
                 one.entry = true;
             }

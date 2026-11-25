@@ -131,6 +131,9 @@ pub struct ParamInfo {
     /// Whether the text of an entry fills it: an action's one `Text` parameter is what the words left
     /// after the other parameters title the item with (`crate::entry`).
     pub entry: bool,
+    /// The value it takes is handed over once and kept nowhere (`token: Text (secret)`): what a
+    /// record of a call keeps of it is its name alone.
+    pub secret: bool,
 }
 
 /// How an action parameter's default is computed: when the action is invoked without the argument,

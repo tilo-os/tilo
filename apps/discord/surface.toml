@@ -422,7 +422,7 @@ kind = "read"
 id = "link-offer"
 kind = "read"
 params = [
-  { name = "token", type = "text", required = true, schema = { type = "string" } },
+  { name = "token", type = "secret", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

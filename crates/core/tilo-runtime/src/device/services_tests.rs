@@ -2730,7 +2730,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
         WORKSPACE_VAULT, workspace_governance_child,
     };
     use tilo_actions::{ActionAddress, InvocationId};
-    use tilo_workspace_service::workspaces::account_logins::AccountLogin;
+    use tilo_workspace_service::workspaces::account_logins::{AccountLogin, Place};
 
     let Some(root) = isolated_root(SECRET_RECORD_TEST) else {
         return;
@@ -2751,7 +2751,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
             .in_workspace(&workspace);
     let reference = tilo_rt::app()
         .block_on(async {
-            let place = accounts::vault_items::Place::parse("https://bank.example.test").unwrap();
+            let place = Place::parse("https://bank.example.test").unwrap();
             workspaces
                 .keep_account_password(
                     &workspace,
@@ -2844,4 +2844,198 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
         .expect("a member with Read reads the record");
     let text = format!("{read:?}");
     assert!(!text.contains("made-up-password"), "{text}");
+}
+
+const SECRET_ARGUMENT_TEST: &str =
+    "device::services::tests::a_secret_argument_is_kept_out_of_every_invocation_record";
+
+/// A parameter an action declares secret reaches the action in the call alone: the device's
+/// record of the call keeps its name, not the code, the key or the seed, and another connection
+/// reading the workspace's invocations reads none of them. The device reads the declarations it
+/// was handed at its start, which is what every record of a call is decided by.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one code, one key and one seed, from the calls to the record another member reads"
+)]
+fn a_secret_argument_is_kept_out_of_every_invocation_record() {
+    use serde_json::json;
+    use tilo_actions::remote::{InvokeRequest, model_providers, person_accounts};
+    use tilo_actions::{ActionAddress, InvocationId};
+
+    let Some(root) = isolated_root(SECRET_ARGUMENT_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace.clone();
+    let (tree, caller) = daemon.connection_tree_in(Some(&workspace)).unwrap();
+    assert!(
+        caller.is_own_connection(),
+        "a plain connection is the person's own"
+    );
+    let ask =
+        |provider: &str, resource: &str, action: &str, argument: serde_json::Value| InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: provider.to_owned(),
+                address: ActionAddress::new(resource, action),
+            },
+            argument: match argument {
+                serde_json::Value::Object(arguments) => InvokeArgument::Json(arguments),
+                _ => InvokeArgument::None,
+            },
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+
+    // What the device was handed at its start: the one decision every record of a call reads.
+    // The vault's own actions are served where the vault is, once the person's agents run.
+    let _ = tilo_rt::app().block_on(async {
+        tilo_workspace_service::vault_actions::register(daemon.workspaces());
+    });
+    let secrets = daemon.workspaces().secret_parameters();
+    assert_eq!(
+        secrets(&person_accounts::target(
+            person_accounts::SUBMIT_SIGN_IN_CODE
+        )),
+        Some(vec!["code".to_owned()]),
+        "a sign-in's code is declared secret, and its sign-in is not"
+    );
+    assert_eq!(
+        secrets(&model_providers::target(model_providers::SET_KEY)),
+        Some(vec!["key".to_owned()]),
+        "a model provider's key is declared secret, and its provider is not"
+    );
+    let vault_keep = RemoteActionTarget {
+        provider: "so.tilo.vault".to_owned(),
+        address: ActionAddress::new("vault.item", "keep"),
+    };
+    assert_eq!(
+        secrets(&vault_keep),
+        Some(vec!["secret".to_owned()]),
+        "the seed a code generator is kept with is declared secret"
+    );
+
+    // The one-time code a sign-in finishes with.
+    let code = "made-up-code-9182";
+    let request = ask(
+        person_accounts::PROVIDER,
+        person_accounts::RESOURCE,
+        person_accounts::SUBMIT_SIGN_IN_CODE,
+        json!({ "signIn": "made-up-sign-in", "code": code }),
+    );
+    let code_invocation = request.invocation;
+    let _answer = tree
+        .invoke(&caller, request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    if let Some(record) = daemon.invocations.get(&caller, &code_invocation) {
+        assert_eq!(
+            record.sealed,
+            vec!["code".to_owned()],
+            "only the code is declared secret"
+        );
+        let kept = serde_json::to_string(&(&record.request, &record.state)).unwrap();
+        assert!(!kept.contains(code), "{kept}");
+        assert!(
+            kept.contains("made-up-sign-in"),
+            "what the declaration does not call secret stays: {kept}"
+        );
+    }
+
+    // The key a model provider is signed in with.
+    let key = "made-up-key-3317";
+    let request = ask(
+        model_providers::PROVIDER,
+        model_providers::RESOURCE,
+        model_providers::SET_KEY,
+        json!({ "provider": "made-up-provider", "key": key }),
+    );
+    let key_invocation = request.invocation;
+    let _answer = tree
+        .invoke(&caller, request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    if let Some(record) = daemon.invocations.get(&caller, &key_invocation) {
+        assert_eq!(
+            record.sealed,
+            vec!["key".to_owned()],
+            "only the key is declared secret"
+        );
+        let kept = serde_json::to_string(&(&record.request, &record.state)).unwrap();
+        assert!(!kept.contains(key), "{kept}");
+        assert!(kept.contains("made-up-provider"), "{kept}");
+    }
+
+    // A provider that publishes the action with its parameters: the seed a code generator is
+    // kept with is as secret as the host's own declarations say.
+    let seed = "JBSWY3DPEHPK3PXP";
+    let request = ask(
+        "so.tilo.vault",
+        "vault.item",
+        "keep",
+        json!({ "issuer": "made-up-service", "secret": seed }),
+    );
+    let seed_invocation = request.invocation;
+    let _answer = tree
+        .invoke(&caller, request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    let record = daemon
+        .invocations
+        .get(&caller, &seed_invocation)
+        .expect("the call is recorded");
+    assert_eq!(
+        record.sealed,
+        vec!["secret".to_owned()],
+        "the seed is secret"
+    );
+    let kept = serde_json::to_string(&(&record.request, &record.state)).unwrap();
+    assert!(!kept.contains(seed), "{kept}");
+    assert!(kept.contains("made-up-service"), "{kept}");
+
+    // Another connection of the person, with Read on what the calls addressed, reads the
+    // workspace's invocations: no listing holds the code, the key or the seed.
+    let cert = daemon.cert.clone();
+    let member =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&workspace);
+    let broker = daemon.broker.fanout.app_broker().expect("the broker runs");
+    let mut invocations = vec![seed_invocation];
+    for invocation in [code_invocation, key_invocation] {
+        if daemon.invocations.get(&caller, &invocation).is_some() {
+            invocations.push(invocation);
+        }
+    }
+    for invocation in invocations {
+        let listed = broker
+            .invocation_listing(
+                &workspace,
+                &member,
+                &tilo_actions::remote::workspace_invocations::InvocationsQuery {
+                    invocation: Some(invocation.to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("a member with Read lists the invocations");
+        let text = serde_json::to_string(&listed).unwrap();
+        assert!(!text.contains(code), "{text}");
+        assert!(!text.contains(key), "{text}");
+        assert!(!text.contains(seed), "{text}");
+        let read = broker
+            .read_invocations(&member, &workspace, &invocation.to_string(), Vec::new())
+            .expect("a member with Read reads the record");
+        let text = format!("{read:?}");
+        assert!(!text.contains(code), "{text}");
+        assert!(!text.contains(key), "{text}");
+        assert!(!text.contains(seed), "{text}");
+    }
 }

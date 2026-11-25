@@ -434,6 +434,9 @@ pub struct Param {
     /// `saved: Bool (label: "On the Watch later list")`: what the parameter is called where a person
     /// gives it.
     pub label: Option<String>,
+    /// `token: Text (secret)`: the value is handed over once and kept nowhere, so no record of a
+    /// call keeps it.
+    pub secret: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

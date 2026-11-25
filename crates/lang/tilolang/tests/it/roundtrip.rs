@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
 
     phase a_parameter_marker_prints_as_it_is_written;
     {
-        let src = "app t.x \"X\"\n\ntype Item {\n    title: Text\n    saved: Bool\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n\naction keep(i: Item, saved: Bool (label: \"On the Watch later list\") = not i.saved) {\n    i.saved = saved\n}\n";
+        let src = "app t.x \"X\"\n\ntype Item {\n    title: Text\n    saved: Bool\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n\naction keep(i: Item, saved: Bool (label: \"On the Watch later list\") = not i.saved) {\n    i.saved = saved\n}\n\naction sign_in(i: Item, token: Text (secret)) {\n    i.title = token\n}\n";
         assert_eq!(print_of(src), src);
     }
 

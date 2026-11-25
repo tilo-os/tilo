@@ -1024,6 +1024,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         default: None,
         place: false,
         entry: false,
+        secret: false,
         label: None,
     }];
     params.extend(rest);
@@ -1071,6 +1072,7 @@ fn resolve_action() -> ActionMeta {
         default,
         place: false,
         entry: false,
+        secret: false,
         label: None,
     };
     record_action(

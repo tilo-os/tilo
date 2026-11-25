@@ -17,7 +17,7 @@ params = [
   { name = "item", type = "text", required = false },
   { name = "issuer", type = "text", required = true },
   { name = "label", type = "text", required = false },
-  { name = "secret", type = "text", required = true },
+  { name = "secret", type = "secret", required = true },
   { name = "algorithm", type = "text", required = false },
   { name = "digits", type = "int", required = false },
   { name = "period", type = "int", required = false },

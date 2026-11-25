@@ -318,7 +318,9 @@ fn answered(
 /// What an action's parameter type is called in the catalogue.
 fn param_type_name(ty: ParamType) -> &'static str {
     match ty {
-        ParamType::Text | ParamType::Secret | ParamType::DateTime => "text",
+        ParamType::Text | ParamType::DateTime => "text",
+        // What is typed into it is kept by no record: a form shows a field that hides it.
+        ParamType::Secret => "secret",
         ParamType::Integer => "int",
         ParamType::Number => "float",
         ParamType::Boolean => "bool",

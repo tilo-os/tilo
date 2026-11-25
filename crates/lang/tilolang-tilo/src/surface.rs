@@ -216,6 +216,8 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
         other => other.as_ref(),
     };
     let ty = match present {
+        // A parameter the declaration says is a secret is handed over once and kept nowhere.
+        _ if param.secret => ParamType::Secret,
         Some(Ty::Int | Ty::Duration) => ParamType::Integer,
         Some(Ty::Float) => ParamType::Number,
         Some(Ty::Bool) => ParamType::Boolean,
@@ -337,7 +339,14 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -
                     name: param.name.clone(),
                     required: published.required,
                     schema: published.schema.as_deref().cloned().unwrap_or(Json::Null),
-                    ty: field_type_of_type(meta, &param.ty, types),
+                    // A parameter declared secret says so in the surface, whatever it is held as:
+                    // a view shows a field that keeps what is typed out of every record, and a
+                    // host reading the surface keeps the call's argument none of.
+                    ty: if param.secret {
+                        FieldType::Secret
+                    } else {
+                        field_type_of_type(meta, &param.ty, types)
+                    },
                     within: None,
                 }
             })

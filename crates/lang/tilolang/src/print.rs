@@ -357,6 +357,9 @@ fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     if let Some(place) = &p.place {
         head = format!("{head} ({})", place.name);
     }
+    if p.secret {
+        head = format!("{head} (secret)");
+    }
     if let Some(label) = &p.label {
         let mut quoted = String::new();
         escape_into(label, &mut quoted);

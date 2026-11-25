@@ -18,6 +18,10 @@ pub enum FieldType {
     #[default]
     Any,
     Text,
+    /// Text handed over once and kept nowhere: a password, a token, a one-time code. A
+    /// parameter's type, never a stored field's: what a record keeps of a call whose parameter is
+    /// one is its name alone ([`crate::ParamType::Secret`]).
+    Secret,
     /// Formatted text that references resources (tilo-doc's rich text).
     RichText,
     Int,

@@ -205,6 +205,7 @@ impl Checker<'_> {
             place: false,
             label: None,
             entry: false,
+            secret: false,
         };
         // The handler runs in a frame of its own, as an argument computed from view state does: it reads
         // the view's state, and what it applies changes it.

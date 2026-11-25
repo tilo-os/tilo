@@ -161,6 +161,16 @@ const VERBS: [Verb; 21] = [
     },
 ];
 
+/// The parameters the `tilo.accounts` action `action` is published with, where this file declares
+/// it: what the device keeps none of where a parameter is a secret. One declaration, read by the
+/// surface a view compiles against and by the record of every call of it.
+pub(super) fn params_of(action: &str) -> Option<Vec<ActionParam>> {
+    VERBS
+        .iter()
+        .find(|verb| verb.id == action)
+        .map(|verb| (verb.params)())
+}
+
 pub(super) fn cloud_credential_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required("account", ParamType::Text, "The account's id."),
@@ -277,7 +287,7 @@ fn code_params() -> Vec<ActionParam> {
     let mut params = sign_in_params();
     params.push(ActionParam::required(
         "code",
-        ParamType::Text,
+        ParamType::Secret,
         "The code the provider sent or showed.",
     ));
     params
@@ -697,9 +707,8 @@ mod surface_tests {
             .into_iter()
             .map(|param| {
                 let ty = match (param.ty, param.name.as_ref()) {
-                    (ParamType::Text | ParamType::Secret | ParamType::DateTime, _) => {
-                        FieldType::Text
-                    }
+                    (ParamType::Text | ParamType::DateTime, _) => FieldType::Text,
+                    (ParamType::Secret, _) => FieldType::Secret,
                     (ParamType::Integer, _) => FieldType::Int,
                     (ParamType::Number, _) => FieldType::Float,
                     (ParamType::Boolean, _) => FieldType::Bool,

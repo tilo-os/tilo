@@ -26,6 +26,7 @@ __all__ = [
     "ProblemReport",
     "TiloSettings",
     "ImportThemeArgs",
+    "SetOwnPictureArgs",
     "OpenPaneArgs",
     "ShowSettingArgs",
     "ReviewContrastArgs",
@@ -37,6 +38,11 @@ ImportThemeArgs = TypedDict("ImportThemeArgs", {
     "file": "Any",
 })
 """The arguments of `import_theme`."""
+
+SetOwnPictureArgs = TypedDict("SetOwnPictureArgs", {
+    "file": "Any",
+})
+"""The arguments of `set_own_picture`."""
 
 OpenPaneArgs = TypedDict("OpenPaneArgs", {
     "page": "str",
@@ -69,7 +75,7 @@ ReviewContrastNowArgs = TypedDict("ReviewContrastNowArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.settings@275bc0f61efa587f"
+    __surface__ = "so.tilo.settings@7966432df163e3c6"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -130,7 +136,7 @@ class Notice(Resource):
 
 class Settings(Resource):
     """Settings — `tl.so.tilo.settings.Settings`."""
-    __surface__ = "so.tilo.settings@275bc0f61efa587f"
+    __surface__ = "so.tilo.settings@7966432df163e3c6"
     vfi4twig: str  # pane
 
     def import_theme(self, *, file: Any) -> None:
@@ -141,14 +147,22 @@ class Settings(Resource):
         """Runs `import_theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import_theme", items)
 
+    def set_own_picture(self, *, file: Any) -> None:
+        """Give this person the picture `file` holds. The session keeps it in their identity record, where every device and every app that shows them reads it."""
+        return self.action("set_own_picture", file=file)
+
+    def set_own_picture_many(self, items: list[SetOwnPictureArgs]) -> list[dict[str, Any]]:
+        """Runs `set_own_picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_own_picture", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"import_theme", "import_theme_many"})
+    __actions__ = frozenset({"import_theme", "import_theme_many", "set_own_picture", "set_own_picture_many"})
 
 
 class Screen(Resource):
     """Screen — `tl.so.tilo.settings.Screen`."""
-    __surface__ = "so.tilo.settings@275bc0f61efa587f"
+    __surface__ = "so.tilo.settings@7966432df163e3c6"
     jv7udxtv: str  # device
     yffzojmk: str  # device_label
     ygrxnhgi: str  # output
@@ -166,13 +180,13 @@ class Screen(Resource):
 
 class ProblemReport(Resource):
     """ProblemReport — `tl.so.tilo.settings.ProblemReport`."""
-    __surface__ = "so.tilo.settings@275bc0f61efa587f"
+    __surface__ = "so.tilo.settings@7966432df163e3c6"
     kb2c7b7e: str  # body
 
 
 class TiloSettings(Resource):
     """Settings — `tl.so.tilo.settings`."""
-    __surface__ = "so.tilo.settings@275bc0f61efa587f"
+    __surface__ = "so.tilo.settings@7966432df163e3c6"
     def move_screen(self,
         *,
         screens: list[Screen],

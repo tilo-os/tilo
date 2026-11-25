@@ -22,10 +22,15 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@275bc0f61efa587f";
+export const SURFACE = "so.tilo.settings@7966432df163e3c6";
 
 /** The arguments of `import_theme`. */
 export interface ImportThemeArgs {
+  file: unknown;
+}
+
+/** The arguments of `set_own_picture`. */
+export interface SetOwnPictureArgs {
   file: unknown;
 }
 
@@ -87,11 +92,17 @@ export interface Settings extends tilo.Resource {
   }): Promise<void>;
   /** Runs `import_theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   import_themeMany(items: ImportThemeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Give this person the picture `file` holds. The session keeps it in their identity record, where every device and every app that shows them reads it. */
+  set_own_picture(args: {
+    file: unknown;
+  }): Promise<void>;
+  /** Runs `set_own_picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_own_pictureMany(items: SetOwnPictureArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Settings` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SETTINGS_ACTIONS = ["import_theme", "import_themeMany"] as const;
+export const SETTINGS_ACTIONS = ["import_theme", "import_themeMany", "set_own_picture", "set_own_pictureMany"] as const;
 
 /** The `tl.so.tilo.settings.Settings` kind at `path`. */
 export function settings(ws: tilo.Workspace, path: string): Settings {

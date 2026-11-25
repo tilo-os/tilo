@@ -49,6 +49,7 @@ fn param(name: &str, ty: &str, doc: &str) -> ParamMeta {
         default: None,
         place: false,
         entry: false,
+        secret: false,
         label: Some(doc.to_string()),
     }
 }

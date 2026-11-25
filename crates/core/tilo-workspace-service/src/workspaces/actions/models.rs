@@ -647,9 +647,8 @@ mod surface_tests {
             .into_iter()
             .map(|param| {
                 let ty = match (param.ty, param.name.as_ref()) {
-                    (ParamType::Text | ParamType::Secret | ParamType::DateTime, _) => {
-                        FieldType::Text
-                    }
+                    (ParamType::Text | ParamType::DateTime, _) => FieldType::Text,
+                    (ParamType::Secret, _) => FieldType::Secret,
                     (ParamType::Integer, _) => FieldType::Int,
                     (ParamType::Number, _) => FieldType::Float,
                     (ParamType::Boolean, _) => FieldType::Bool,

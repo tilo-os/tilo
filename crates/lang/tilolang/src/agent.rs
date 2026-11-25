@@ -127,6 +127,7 @@ pub fn meta() -> &'static PackageMeta {
                         default: None,
                         place: false,
                         entry: false,
+                        secret: false,
                         label: None,
                     })
                     .collect(),

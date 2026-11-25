@@ -1803,6 +1803,7 @@ impl Checker<'_> {
             place: false,
             label: None,
             entry: false,
+            secret: false,
         }];
         let mut captures = Vec::new();
         let mut boxed = Vec::new();
@@ -1824,6 +1825,7 @@ impl Checker<'_> {
                 place: false,
                 label: None,
                 entry: false,
+                secret: false,
             });
             captures.push(arg);
         }

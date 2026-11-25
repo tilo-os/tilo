@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@9c45a587dd3165d3";
+export const SURFACE = "so.tilo.chat@19beb90736d93ea4";
 
 /** One emoji of the workspace. */
 export interface Emoji {
@@ -703,6 +703,8 @@ export interface TextChannel extends tilo.Resource {
     m: Message;
     reason?: string;
   }): Promise<ChatReport>;
+  /** A conversation as a Markdown file, which the system's one Export… lists and saves where the person says: every message in order, each under the name it shows with and the time it was written. */
+  export_markdown(): Promise<unknown>;
   /** Starts a thread from a message of a channel or a direct conversation, named after what the message says. */
   start_thread(args: {
     m: Message;
@@ -712,7 +714,7 @@ export interface TextChannel extends tilo.Resource {
 
 /** The actions `TextChannel` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
+export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "continue_answer", "delete", "deleteMany", "report", "export_markdown", "start_thread"] as const;
 
 /** The `tl.so.tilo.chat.TextChannel` kind at `path`. */
 export function textChannel(ws: tilo.Workspace, path: string): TextChannel {
@@ -953,11 +955,13 @@ export interface Thread extends tilo.Resource {
     m: Message;
     reason?: string;
   }): Promise<ChatReport>;
+  /** A conversation as a Markdown file, which the system's one Export… lists and saves where the person says: every message in order, each under the name it shows with and the time it was written. */
+  export_markdown(): Promise<unknown>;
 }
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "archive_thread", "archive_threadMany", "continue_answer", "delete", "deleteMany", "report"] as const;
+export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "archive_thread", "archive_threadMany", "continue_answer", "delete", "deleteMany", "report", "export_markdown"] as const;
 
 /** The `tl.so.tilo.chat.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {
@@ -1040,6 +1044,8 @@ export interface Direct extends tilo.Resource {
     m: Message;
     reason?: string;
   }): Promise<ChatReport>;
+  /** A conversation as a Markdown file, which the system's one Export… lists and saves where the person says: every message in order, each under the name it shows with and the time it was written. */
+  export_markdown(): Promise<unknown>;
   /** Starts a thread from a message of a channel or a direct conversation, named after what the message says. */
   start_thread(args: {
     m: Message;
@@ -1049,7 +1055,7 @@ export interface Direct extends tilo.Resource {
 
 /** The actions `Direct` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
+export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "continue_answer", "delete", "deleteMany", "report", "export_markdown", "start_thread"] as const;
 
 /** The `tl.so.tilo.chat.Direct` kind at `path`. */
 export function direct(ws: tilo.Workspace, path: string): Direct {

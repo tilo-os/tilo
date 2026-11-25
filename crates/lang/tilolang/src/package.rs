@@ -407,6 +407,7 @@ fn params_meta(params: &[ParamInfo], app: &str) -> Vec<ParamMeta> {
             place: p.place,
             entry: p.entry,
             label: p.label.clone(),
+            secret: p.secret,
         })
         .collect()
 }
@@ -504,6 +505,7 @@ fn template_views(
                         default: None,
                         place: false,
                         entry: false,
+                        secret: false,
                         label: p.label.clone(),
                     })
                     .collect(),
@@ -1164,6 +1166,7 @@ pub fn compile_program_reading(
                 place: false,
                 label: None,
                 entry: false,
+                secret: false,
             });
         }
     }

@@ -60,7 +60,7 @@ pub enum VaultAction {
         issuer: String,
         #[param("Who it signs in as")]
         label: Option<String>,
-        #[param("The seed the service gave")]
+        #[param(secret, "The seed the service gave")]
         secret: String,
         #[param("The hash the codes are made with")]
         algorithm: Option<String>,

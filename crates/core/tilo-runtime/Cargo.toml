@@ -239,8 +239,6 @@ tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "mic
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 
 [dev-dependencies]
-# The workspace's account list a cloud mount's sign-in is kept for.
-accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The action provider the workspace tests answer with.
 tilo-actions = { path = "../actions", features = ["test-support"] }

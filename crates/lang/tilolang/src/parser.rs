@@ -1845,13 +1845,15 @@ impl<'a> Parser<'a> {
             let ty = self.type_expr()?;
             // What a parameter says of itself, written in one place: `above: Option<Task> (above)`, the
             // place the view offering the action supplies it in, which no caller gives and so takes no
-            // default; `saved: Bool (label: "On the Watch later list")`, what it is called where a
-            // person gives it.
-            let (place, label) = if self.is(&Tok::LParen) && matches!(self.peek_at(2), Tok::Colon) {
-                (None, Some(self.param_label()?))
+            // default; `token: Text (secret)`, a value handed over once and kept nowhere; `saved: Bool
+            // (label: "On the Watch later list")`, what it is called where a person gives it.
+            let (place, secret, label) = if self.is(&Tok::LParen)
+                && matches!(self.peek_at(2), Tok::Colon)
+            {
+                (None, false, Some(self.param_label()?))
             } else if self.is(&Tok::LParen) {
                 self.bump();
-                let role = self.ident("a part a parameter is (`above`)")?;
+                let role = self.ident("a part a parameter is (`above`, `secret`)")?;
                 self.expect(&Tok::RParen)?;
                 if role.name == "entry" {
                     return self.fail(
@@ -1859,9 +1861,13 @@ impl<'a> Parser<'a> {
                         "an entry fills the action's one `Text` parameter with the words nothing else takes, so the parameter is plain: `title: Text = \"\"`",
                     );
                 }
-                (Some(role), None)
+                if role.name == "secret" {
+                    (None, true, None)
+                } else {
+                    (Some(role), false, None)
+                }
             } else {
-                (None, None)
+                (None, false, None)
             };
             let default = if self.eat(&Tok::Assign) {
                 let default = self.expr()?;
@@ -1911,6 +1917,7 @@ impl<'a> Parser<'a> {
                 default,
                 place,
                 label,
+                secret,
             });
             if !self.eat(&Tok::Comma) {
                 break;

@@ -266,6 +266,7 @@ impl Checker<'_> {
             place: false,
             label: None,
             entry: false,
+            secret: false,
         }];
         params.extend(captures.iter().map(|(name, _, ty)| ParamInfo {
             name: name.clone(),
@@ -274,6 +275,7 @@ impl Checker<'_> {
             place: false,
             label: None,
             entry: false,
+            secret: false,
         }));
         params.push(ParamInfo {
             name: ROW_KEY.to_owned(),
@@ -282,6 +284,7 @@ impl Checker<'_> {
             place: false,
             label: None,
             entry: false,
+            secret: false,
         });
         // View state the body uses is passed by value; `set(...)` and `bind:` still name the part, which
         // is the view's, not the row's.

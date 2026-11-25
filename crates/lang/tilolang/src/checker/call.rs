@@ -703,6 +703,7 @@ impl Checker<'_> {
                 place: false,
                 label: None,
                 entry: false,
+                secret: false,
             });
             args.push(arg);
         }

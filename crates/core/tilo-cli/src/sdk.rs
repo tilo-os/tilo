@@ -468,6 +468,7 @@ impl Resolver<'_> {
         let inner = |ty: &FieldType| Box::new(self.ty(ty));
         match ty {
             FieldType::Text
+            | FieldType::Secret
             | FieldType::RichText
             | FieldType::Date
             | FieldType::Time

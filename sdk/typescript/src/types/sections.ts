@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@3b09a19d16246bcb";
+export const SURFACE = "so.tilo.settings.sections@721e4b8ccb740b6e";
 
 export interface Ink {
   primary: number;
@@ -691,6 +691,34 @@ export interface RecordUpdateCheckArgs {
 export interface MuteAppArgs {
   app: string;
   duration: string;
+}
+
+/** The arguments of `set-app-kinds`. */
+export interface SetAppKindsArgs {
+  app: string;
+  banners?: boolean;
+  previews?: boolean;
+  sounds?: boolean;
+  badges?: boolean;
+}
+
+/** The arguments of `set-app-reach`. */
+export interface SetAppReachArgs {
+  app: string;
+  lock_screen?: boolean;
+  cross_device?: boolean;
+}
+
+/** The arguments of `set-app-priority`. */
+export interface SetAppPriorityArgs {
+  app: string;
+  priority: boolean;
+  priority_contacts: boolean;
+}
+
+/** The arguments of `clear-app`. */
+export interface ClearAppArgs {
+  app: string;
 }
 
 /** The arguments of `set-quiet-hours`. */
@@ -1466,6 +1494,34 @@ export interface Notifications extends tilo.Resource {
   }): Promise<void>;
   /** Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   muteAppMany(items: MuteAppArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAppKinds(args: {
+    app: string;
+    banners?: boolean;
+    previews?: boolean;
+    sounds?: boolean;
+    badges?: boolean;
+  }): Promise<void>;
+  /** Runs `set-app-kinds` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setAppKindsMany(items: SetAppKindsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAppReach(args: {
+    app: string;
+    lock_screen?: boolean;
+    cross_device?: boolean;
+  }): Promise<void>;
+  /** Runs `set-app-reach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setAppReachMany(items: SetAppReachArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAppPriority(args: {
+    app: string;
+    priority: boolean;
+    priority_contacts: boolean;
+  }): Promise<void>;
+  /** Runs `set-app-priority` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setAppPriorityMany(items: SetAppPriorityArgs[]): Promise<tilo.ActionAnswer[]>;
+  clearApp(args: {
+    app: string;
+  }): Promise<void>;
+  /** Runs `clear-app` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clearAppMany(items: ClearAppArgs[]): Promise<tilo.ActionAnswer[]>;
   setQuietHours(args: {
     start_minute: number;
     end_minute: number;
@@ -1477,7 +1533,7 @@ export interface Notifications extends tilo.Resource {
 
 /** The actions `Notifications` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTIFICATIONS_ACTIONS = ["muteApp", "muteAppMany", "setQuietHours", "setQuietHoursMany"] as const;
+export const NOTIFICATIONS_ACTIONS = ["muteApp", "muteAppMany", "setAppKinds", "setAppKindsMany", "setAppReach", "setAppReachMany", "setAppPriority", "setAppPriorityMany", "clearApp", "clearAppMany", "setQuietHours", "setQuietHoursMany"] as const;
 
 /** The `settings.notifications` kind at `path`. */
 export function notifications(ws: tilo.Workspace, path: string): Notifications {

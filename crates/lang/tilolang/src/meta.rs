@@ -643,6 +643,10 @@ pub struct ParamMeta {
     /// later list")`): the catalogue's message `d-<action>-<name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The value it takes is handed over once and kept nowhere (`token: Text (secret)`): a
+    /// password, a token, a one-time code. What a record of a call keeps of it is its name alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl ParamMeta {

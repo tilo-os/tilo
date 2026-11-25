@@ -21522,6 +21522,12 @@
         ],
         "description": "Reports a message of a conversation to the workspace's moderators, saying why when the\nreporter does. Who reported it is the report's history's, so moderators see who asked; the\nconversation keeps it, with who wrote the message and what it said, after the message is\ndeleted."
       },
+      "tl.so.tilo.chat.TextChannel.export_markdown.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "A conversation as a Markdown file, which the system's one Export… lists and saves where the\nperson says: every message in order, each under the name it shows with and the time it was\nwritten."
+      },
       "tl.so.tilo.chat.TextChannel.start_thread.Arguments": {
         "type": "object",
         "properties": {
@@ -22472,6 +22478,12 @@
         ],
         "description": "Reports a message of a conversation to the workspace's moderators, saying why when the\nreporter does. Who reported it is the report's history's, so moderators see who asked; the\nconversation keeps it, with who wrote the message and what it said, after the message is\ndeleted."
       },
+      "tl.so.tilo.chat.Thread.export_markdown.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "A conversation as a Markdown file, which the system's one Export… lists and saves where the\nperson says: every message in order, each under the name it shows with and the time it was\nwritten."
+      },
       "tl.so.tilo.chat.Direct.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -22952,6 +22964,12 @@
           "m"
         ],
         "description": "Reports a message of a conversation to the workspace's moderators, saying why when the\nreporter does. Who reported it is the report's history's, so moderators see who asked; the\nconversation keeps it, with who wrote the message and what it said, after the message is\ndeleted."
+      },
+      "tl.so.tilo.chat.Direct.export_markdown.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "A conversation as a Markdown file, which the system's one Export… lists and saves where the\nperson says: every message in order, each under the name it shows with and the time it was\nwritten."
       },
       "tl.so.tilo.chat.Direct.start_thread.Arguments": {
         "type": "object",
@@ -66982,6 +67000,16 @@
         ],
         "description": "Takes in a theme saved with Export, from this workspace or another: every role, tuned value\nand glass shader, once it is admitted and keeps every contrast floor. Importing names it by\nits own name, so what a person exported under a name comes back under one."
       },
+      "tl.so.tilo.settings.Settings.set_own_picture.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Give this person the picture `file` holds. The session keeps it in their identity record,\nwhere every device and every app that shows them reads it."
+      },
       "tl.so.tilo.settings.Screen.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -72043,6 +72071,18 @@
           "current"
         ],
         "description": "What choosing a row with a modifier held does: a row the search found opens the way `here`\n(a tab in front), `beside` (a window beside it) or `more` (the row's own way) names, and\nevery other row opens as it does plainly."
+      },
+      "tl.so.tilo.shell.launcher_query.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "The launcher's field was edited: the open search's query is the text it now holds, so the\nrows it shows and the search resource an agent or a script reads say what the person typed,\nnot what they typed before. An empty field asks nothing of the search, which keeps its last\nquery until the next one is typed."
       },
       "tl.so.tilo.shell.choose_launcher_row.Arguments": {
         "type": "object",
@@ -95775,6 +95815,98 @@
         ],
         "description": ""
       },
+      "settings.notifications.set-app-kinds.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "banners": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "previews": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "sounds": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "badges": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "description": ""
+      },
+      "settings.notifications.set-app-reach.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "lock_screen": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cross_device": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "description": ""
+      },
+      "settings.notifications.set-app-priority.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "boolean"
+          },
+          "priority_contacts": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "app",
+          "priority",
+          "priority_contacts"
+        ],
+        "description": ""
+      },
+      "settings.notifications.clear-app.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "description": ""
+      },
       "settings.notifications.set-quiet-hours.Arguments": {
         "type": "object",
         "properties": {
@@ -103282,6 +103414,12 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.TextChannel",
+      "action": "export_markdown",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.export_markdown.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "start_thread",
       "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.start_thread.Arguments"
     },
@@ -103563,6 +103701,12 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
+      "action": "export_markdown",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.export_markdown.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Direct",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.$create.Arguments"
@@ -103650,6 +103794,12 @@
       "resource": "tl.so.tilo.chat.Direct",
       "action": "report",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.report.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
+      "action": "export_markdown",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.export_markdown.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -120711,6 +120861,12 @@
     },
     {
       "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings.Settings",
+      "action": "set_own_picture",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.Settings.set_own_picture.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
       "resource": "tl.so.tilo.settings.Screen",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.settings.Screen.$create.Arguments"
@@ -122292,6 +122448,12 @@
       "resource": "tl.so.tilo.shell",
       "action": "choose_launcher_row_as",
       "arguments": "#/components/schemas/tl.so.tilo.shell.choose_launcher_row_as.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell",
+      "action": "launcher_query",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.launcher_query.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -130500,6 +130662,30 @@
       "resource": "settings.notifications",
       "action": "mute-app",
       "arguments": "#/components/schemas/settings.notifications.mute-app.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.notifications",
+      "action": "set-app-kinds",
+      "arguments": "#/components/schemas/settings.notifications.set-app-kinds.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.notifications",
+      "action": "set-app-reach",
+      "arguments": "#/components/schemas/settings.notifications.set-app-reach.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.notifications",
+      "action": "set-app-priority",
+      "arguments": "#/components/schemas/settings.notifications.set-app-priority.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.notifications",
+      "action": "clear-app",
+      "arguments": "#/components/schemas/settings.notifications.clear-app.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

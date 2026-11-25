@@ -805,6 +805,7 @@ impl Reader<'_> {
                     place: false,
                     entry: false,
                     label: None,
+                    secret: false,
                 }],
                 result: Some("Text".to_owned()),
                 class: EffectClass::Read,
@@ -981,6 +982,7 @@ impl Reader<'_> {
                 place: false,
                 entry: false,
                 label: None,
+                secret: false,
             });
         }
         for param in &verb.params {
@@ -991,6 +993,10 @@ impl Reader<'_> {
             } else {
                 param.ty.clone()
             };
+            // A secret is text as tilolang holds it, and the parameter says so beside its type:
+            // a record of a call of the action keeps its name alone.
+            let secret = matches!(ty, FieldType::Secret)
+                || matches!(&ty, FieldType::Option(inner) if matches!(**inner, FieldType::Secret));
             let ty = match ty {
                 FieldType::Option(_) => ty,
                 other if !param.required => FieldType::Option(Box::new(other)),
@@ -998,11 +1004,19 @@ impl Reader<'_> {
             };
             // A parameter tilolang code cannot give leaves the verb out when it must be given,
             // and is left to its default when it may be left out.
-            let Some(ty) = self.ty(&ty, rename) else {
-                if param.required {
-                    return;
+            let ty = if secret {
+                match ty {
+                    FieldType::Option(_) => "Option<Text>".to_owned(),
+                    _ => "Text".to_owned(),
                 }
-                continue;
+            } else {
+                let Some(ty) = self.ty(&ty, rename) else {
+                    if param.required {
+                        return;
+                    }
+                    continue;
+                };
+                ty
             };
             // A parameter the verb may go without is optional as a tilolang action's is:
             // `x: Option<Int> = .none`, left out of a call wherever it stands, and given as
@@ -1014,6 +1028,7 @@ impl Reader<'_> {
                 place: false,
                 entry: false,
                 label: None,
+                secret,
             });
         }
         // What the action answers with, as the surface types it: the value a
@@ -1152,7 +1167,9 @@ impl Reader<'_> {
                     .collect();
                 cases?.join(" | ")
             }
-            FieldType::Any | FieldType::Reactions | FieldType::Outbox(_) => return None,
+            FieldType::Any | FieldType::Reactions | FieldType::Outbox(_) | FieldType::Secret => {
+                return None;
+            }
         })
     }
 
@@ -1248,5 +1265,50 @@ fields = [ { name = "rx_per_sec", type = "float" } ]
             connectivity.fields.iter().any(|field| field.name == "wifi"),
             "the first Network stays the connectivity reading"
         );
+    }
+
+    /// A parameter the surface types a secret is text as tilolang gives it, and says beside its
+    /// type that what is typed is handed over once and kept nowhere: a call of the action keeps
+    /// its name alone.
+    #[test]
+    fn a_secret_parameter_reads_as_text_that_says_so() {
+        let compiled = tilo_surface_compile::compile(
+            r#"
+[[resources]]
+kind = "accounts"
+label = "Accounts"
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "submit-sign-in-code"
+kind = "outside"
+params = [
+  { name = "signIn", required = true, type = "text" },
+  { name = "code", required = true, type = "secret" },
+]
+"#,
+        )
+        .expect("the surface compiles");
+        let surfaces = parse_surfaces(&compiled).expect("the surface reads");
+        let meta = package_of("tilo.accounts", "Accounts", &surfaces);
+        let action = meta
+            .actions
+            .iter()
+            .find(|action| action.verb == "submit-sign-in-code")
+            .expect("the surface's verb");
+        let code = action
+            .params
+            .iter()
+            .find(|param| param.name == "code")
+            .expect("the code parameter");
+        assert!(code.secret, "the surface's type says it is a secret");
+        assert_eq!(code.ty, "Text", "a secret is text to tilolang");
+        let sign_in = action
+            .params
+            .iter()
+            .find(|param| param.name == "sign_in")
+            .expect("the sign-in parameter");
+        assert!(!sign_in.secret, "a plain text parameter stays plain");
     }
 }

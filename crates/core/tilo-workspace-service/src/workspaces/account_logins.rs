@@ -12,7 +12,10 @@
 //! the places its entry names, and each release is written down in the entry's uses first.
 
 use accounts::person::AccountList;
-use accounts::vault_items::{ItemId, ItemKind, NewItem, Place, Released, UsedFor};
+/// The place an account signs in at, as [`AccountLogin::places`] names it: what a sign-in is
+/// kept for, and nowhere else.
+pub use accounts::vault_items::Place;
+use accounts::vault_items::{ItemId, ItemKind, NewItem, Released, UsedFor};
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{Caller, InvokeRequest};
 use tilo_peer_state::workspace_documents::DocumentRead;

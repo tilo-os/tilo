@@ -239,7 +239,8 @@ pub struct ReturnsSurface {
 pub fn param_type(param: &crate::ActionParam) -> FieldType {
     use crate::ParamType;
     match param.ty {
-        ParamType::Text | ParamType::Secret | ParamType::DateTime => FieldType::Text,
+        ParamType::Text | ParamType::DateTime => FieldType::Text,
+        ParamType::Secret => FieldType::Secret,
         ParamType::Resource => {
             FieldType::Resource(param.resource_kind().unwrap_or_default().to_owned())
         }

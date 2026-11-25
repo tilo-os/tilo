@@ -43,12 +43,17 @@ fn params_of(
             let declared = param_types
                 .iter()
                 .find(|(name, _)| *name == param.name.as_ref());
-            let ty = match declared {
-                Some((_, ty)) => ty(types),
-                None => flat
-                    .iter()
-                    .find(|(name, _)| name == param.name.as_ref())
-                    .map_or_else(|| FieldType::from_schema(&schema), |(_, ty)| ty.clone()),
+            let ty = if param.ty == tilo_actions::ParamType::Secret {
+                // What it takes is handed over once and kept nowhere, whatever Rust type holds it.
+                FieldType::Secret
+            } else {
+                match declared {
+                    Some((_, ty)) => ty(types),
+                    None => flat
+                        .iter()
+                        .find(|(name, _)| name == param.name.as_ref())
+                        .map_or_else(|| FieldType::from_schema(&schema), |(_, ty)| ty.clone()),
+                }
             };
             ParamSurface {
                 name: param.name.to_string(),

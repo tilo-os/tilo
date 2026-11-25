@@ -312,6 +312,7 @@ fn published() -> tilolang::PackageMeta {
         place: false,
         entry: false,
         label: None,
+        secret: false,
     };
     tilolang::PackageMeta {
         app: "so.tilo.session".to_owned(),

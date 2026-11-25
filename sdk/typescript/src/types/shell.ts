@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shell@739c06729a02adba";
+export const SURFACE = "so.tilo.shell@d77c3128da78787f";
 
 /** One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it. One of "menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer". */
 export type BarPartKind = "menu" | "workspace" | "app_menu" | "strip" | "tasks" | "clock" | "people" | "status" | "power" | "agent" | "spacer";
@@ -974,6 +974,10 @@ export interface TiloShell extends tilo.Resource {
     packed: string;
     current: boolean;
   }): Promise<void>;
+  /** The launcher's field was edited: the open search's query is the text it now holds, so the rows it shows and the search resource an agent or a script reads say what the person typed, not what they typed before. An empty field asks nothing of the search, which keeps its last query until the next one is typed. */
+  launcher_query(args: {
+    text: string;
+  }): Promise<void>;
   /** What choosing the row the person reached does, read off the row's value: opening an application or a window here, running a row the search found, or one of the shell's own surfaces. A row is only ever one of those, so a raw choice — what is typed with no row under it — opens the first row the text finds, or searches everywhere for it. */
   choose_launcher_row(args: {
     choice: string;
@@ -1044,7 +1048,7 @@ export interface TiloShell extends tilo.Resource {
 
 /** The actions `TiloShell` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOSHELL_ACTIONS = ["rename_workspace", "rename_strip", "decline", "size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "put_history_away", "step_level", "choose_launcher_row_as", "choose_launcher_row", "open_surface", "close_launcher", "toggle_vpn", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany", "move_before", "move_right", "equal_widths", "equal_widthsMany", "place_widget", "place_widgetMany"] as const;
+export const TILOSHELL_ACTIONS = ["rename_workspace", "rename_strip", "decline", "size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "put_history_away", "step_level", "choose_launcher_row_as", "launcher_query", "choose_launcher_row", "open_surface", "close_launcher", "toggle_vpn", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany", "move_before", "move_right", "equal_widths", "equal_widthsMany", "place_widget", "place_widgetMany"] as const;
 
 /** The `tl.so.tilo.shell` kind at `path`. */
 export function tiloShell(ws: tilo.Workspace, path: string): TiloShell {

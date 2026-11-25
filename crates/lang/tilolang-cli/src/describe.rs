@@ -320,12 +320,18 @@ fn asked_in_a_field(ty: &str) -> bool {
 /// What an offer says of the value `param` asks: its name, the type the form shows and the words
 /// beside its field.
 fn asked_of(param: &ParamMeta) -> FleetAsked {
-    let kind = match inner_type(&param.ty) {
-        "Int" | "Duration" => "integer",
-        "Float" => "number",
-        "Bool" => "boolean",
-        "Time" => "datetime",
-        _ => "text",
+    // A secret is shown as a field that keeps what is typed out of every record, whatever it is
+    // held as.
+    let kind = if param.secret {
+        "secret"
+    } else {
+        match inner_type(&param.ty) {
+            "Int" | "Duration" => "integer",
+            "Float" => "number",
+            "Bool" => "boolean",
+            "Time" => "datetime",
+            _ => "text",
+        }
     };
     FleetAsked {
         name: param.name.clone(),

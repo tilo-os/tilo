@@ -172,7 +172,13 @@ fn params(
         name: param.name.to_string(),
         required: param.required,
         schema: serde_json::Value::Null,
-        ty: if ty.is_any() { param_type(param) } else { ty },
+        ty: if param.ty == ParamType::Secret {
+            FieldType::Secret
+        } else if ty.is_any() {
+            param_type(param)
+        } else {
+            ty
+        },
         within: None,
     };
     let declared = decl.and_then(|decl| {
