@@ -637,9 +637,9 @@ type = "String"
     );
     server.shutdown().await;
 }
-/// The server decides each change against its author's grants, as the workspace's
-/// host projects them: a commenter's comment reaches the workspace, their
-/// edit of the record does not.
+/// The workspace decides each change against its author's grants, by the claims the author's
+/// device names for the readers that hold no key of the record: a commenter's comment is taken
+/// in, their edit of the record is not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_server_refuses_an_action_the_author_is_not_granted() {
     const SURFACE: &str = r#"
@@ -690,7 +690,6 @@ params = []
         bob_link,
         ..
     } = governed_workspace(Role::Commenter).await;
-
     // Alice's chat: the record exists before Bob writes to it.
     alice_link
         .publish(|peer| {
@@ -704,22 +703,40 @@ params = []
         })
         .unwrap();
     crate::common::receives(&bob_link, |peer| text(peer, "topic").is_some()).await;
-    // Signed as Bob's device signs, without his own copy checking it.
-    let sign = |doc: &mut AutoCommit, seq: u64| {
-        let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&[]));
+    // Signed as Bob's device signs, its own copy checking none of it: each write is a change on
+    // the record his copy holds, and carries the claims its change names, which a reader that
+    // holds no key of the record decides it by.
+    let held = bob_link.opened((APP, "")).expect("Bob holds the record");
+    let forged = |doc: &mut AutoCommit, heads: &[automerge::ChangeHash]| {
+        let claims = collab_types::claim::claims_of(
+            &doc.get_changes(heads),
+            collab_types::claim::record_unit,
+        )
+        .expect("the change names what it did");
+        let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(heads));
         let route = (workspace.workspace.as_str(), APP, "");
-        crate::common::signed_by_hand(&phone.sk, route, &mutation, seq, Some(hash))
+        crate::common::signed_by_hand(&phone.sk, route, &mutation, 1, Some(hash), claims)
+    };
+    let sealed = |write: &neighbour_wire::NeighbourMsg| {
+        let NeighbourMsg::AppDocument { envelope, .. } = write else {
+            panic!("a record write is a document frame");
+        };
+        (**envelope).clone()
     };
     // An edit of the topic: published by the app, not granted to a commenter.
-    let mut doc = AutoCommit::new();
+    let mut doc = AutoCommit::load(&held).unwrap();
+    let heads = doc.get_heads();
     doc.put(ROOT, "topic", "from Bob").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
+    let edit_write = forged(&mut doc, &heads);
+    let edit = sealed(&edit_write);
     bob_link
-        .send(sign(&mut doc, 1))
+        .send(edit_write)
         .expect("Bob's edit goes out on his link");
     // A comment: theirs to make. The refused edit took no number, so the
     // comment is Bob's first write too.
-    let mut doc = AutoCommit::new();
+    let mut doc = AutoCommit::load(&held).unwrap();
+    let heads = doc.get_heads();
     doc.put(ROOT, "comment", "looks good").unwrap();
     let context = tilo_actions::ActionContext {
         what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
@@ -727,19 +744,72 @@ params = []
             [],
         ))),
         ..tilo_actions::ActionContext::for_resource("fixture", "fixture", "Fixture")
-    };
+    }
+    .with_invoker(tilo_actions::ActionInvoker::person(
+        tilo_action_policy::PersonId::from_root(phone.cert.user_public_key),
+    ));
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(context.change_message().unwrap()),
     );
+    let comment_write = forged(&mut doc, &heads);
+    let comment = sealed(&comment_write);
     bob_link
-        .send(sign(&mut doc, 1))
+        .send(comment_write)
         .expect("Bob's comment goes out on his link");
-    crate::common::receives(&alice_link, |peer| text(peer, "comment").is_some()).await;
+
+    // The workspace decided each change by the claims its author's device named: the comment is
+    // a commenter's to make and the edit of the topic is not. Alice's copy holds what the
+    // workspace forwarded, which a member reads with the workspace's keys.
+    let read = |bytes: Vec<u8>| {
+        let doc = AutoCommit::load(&bytes).unwrap();
+        let field = |key: &str| {
+            doc.get(ROOT, key)
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_string().ok())
+        };
+        (field("topic"), field("comment"))
+    };
+    let (topic, said) = tilo_test_env::within("Bob's comment reaches the workspace", async {
+        loop {
+            if let Some(held) = alice_link.opened((APP, "")).map(&read)
+                && held.1.is_some()
+            {
+                return held;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     assert_eq!(
-        alice_link.read(|peer| text(peer, "topic")).as_deref(),
+        said.as_deref(),
+        Some("looks good"),
+        "the workspace took in Bob's comment"
+    );
+    assert_eq!(
+        topic.as_deref(),
         Some("from Alice"),
         "the server forwarded an ungranted edit"
+    );
+    // The host carried the comment's sealed write and nothing of the edit: a holder keeps what
+    // it may not read, and the workspace admits what it carries.
+    let workspaces = server.workspaces().unwrap();
+    assert!(
+        workspaces
+            .state(&workspace.workspace)
+            .await
+            .is_some_and(|state| state.publication().holds_sealed(APP, "", &comment)),
+        "the host carried Bob's comment"
+    );
+    assert!(
+        !workspaces
+            .state(&workspace.workspace)
+            .await
+            .expect("the host holds the workspace")
+            .publication()
+            .holds_sealed(APP, "", &edit),
+        "the host carried an ungranted edit"
     );
     server.shutdown().await;
 }

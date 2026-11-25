@@ -1899,7 +1899,14 @@ fn forged_in(
         Some(_) => collab_types::DocumentMutation::Incremental(document.save_after(&heads)),
         None => collab_types::DocumentMutation::Snapshot(document.save()),
     };
-    crate::common::signed_by_hand(&device.sk, (&workspace, app, record), &mutation, 1, None)
+    crate::common::signed_by_hand(
+        &device.sk,
+        (&workspace, app, record),
+        &mutation,
+        1,
+        None,
+        Vec::new(),
+    )
 }
 
 /// The hello a device opens each link with: its certificate.

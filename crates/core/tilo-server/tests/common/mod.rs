@@ -50,14 +50,16 @@ pub static KEYS: std::sync::LazyLock<key_group::ContentKeys> = std::sync::LazyLo
 });
 
 /// `mutation` of `record` of `app` in `workspace`, sealed under [`KEYS`] and signed by `key` as
-/// its `seq`th write, naming `surface`: the write a device signs without its own copy checking
-/// it, as a forger or a misbehaving device sends one.
+/// its `seq`th write, naming `surface` and the `claims` its changes carry: the write a device
+/// signs without its own copy checking it, as a forger or a misbehaving device sends one, and as
+/// one that seals names what it did for the readers that hold no key.
 pub fn signed_by_hand(
     key: &SigningKey,
     (workspace, app, record): (&str, &str, &str),
     mutation: &collab_types::DocumentMutation,
     seq: u64,
     surface: Option<[u8; 32]>,
+    claims: Vec<collab_types::claim::ChangeClaim>,
 ) -> neighbour_wire::NeighbourMsg {
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let artifact = collab_types::document_artifact_id(app, workspace, record);
@@ -80,6 +82,7 @@ pub fn signed_by_hand(
         seq,
         encryption,
     )
+    .with_claims(claims)
     .with_surface(surface);
     collab_types::sign_op(&mut op, key).unwrap();
     neighbour_wire::NeighbourMsg::AppDocument {
