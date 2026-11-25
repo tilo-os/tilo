@@ -36,6 +36,9 @@ pub(crate) struct SessionSettings {
     /// The workspaces the device's daemon holds, as it last answered: asked off the loop, `None`
     /// until it answered.
     held: Arc<std::sync::Mutex<Option<Vec<String>>>>,
+    /// Whether a read of the settings is with the device's daemon now: one at a time, on a thread
+    /// of its own.
+    reading: Arc<std::sync::atomic::AtomicBool>,
     /// The revision of the settings, and the device they were read on, last left for the
     /// processes outside the session.
     published: std::cell::RefCell<Option<(u64, String)>>,
@@ -74,6 +77,7 @@ impl SessionSettings {
             attached: Cell::new(false),
             looked: Cell::new(None),
             held: Arc::default(),
+            reading: Arc::default(),
             published: std::cell::RefCell::new(None),
             publisher: publisher.ok(),
         }
@@ -133,9 +137,38 @@ impl SessionSettings {
             self.attached.set(true);
             return;
         }
-        self.settings.sync();
         if due {
             self.looked.set(Some(now));
+            self.read_off_the_loop(wake);
+        }
+    }
+
+    /// Carry what was set and take in what moved, on a thread of its own: each of the two is a
+    /// round trip to the device's daemon, and the loop must never wait on one. The next pass reads
+    /// what it left, woken by its answer; one read is in flight at a time.
+    fn read_off_the_loop(&self, wake: &tilo_service::Wake) {
+        use std::sync::atomic::Ordering;
+        if self.reading.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (settings, wake, reading) = (
+            Arc::clone(&self.settings),
+            Arc::clone(wake),
+            Arc::clone(&self.reading),
+        );
+        let spawned = std::thread::Builder::new()
+            .name("settings-read".into())
+            .spawn(move || {
+                settings.sync();
+                if settings.refresh() {
+                    wake();
+                }
+                reading.store(false, Ordering::Release);
+            });
+        if let Err(error) = spawned {
+            reading.store(false, Ordering::Release);
+            tracing::warn!(%error, "the settings are read on the loop");
+            self.settings.sync();
             self.settings.refresh();
         }
     }
