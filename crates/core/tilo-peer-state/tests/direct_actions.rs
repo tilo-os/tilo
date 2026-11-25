@@ -4,7 +4,7 @@
 //! engine authorized, and is refused from the moment the asking device may
 //! no longer act.
 
-use crate::common::{addr, device, localhost_endpoint, workspace};
+use crate::common::{addr, device, device_with, localhost_endpoint, workspace};
 use serde_json::Value;
 use tilo_peer_state::join::WorkspaceId;
 
@@ -27,7 +27,7 @@ use tilo_peer_state::join::{
     issue_invitation, sign_join_proof, verify_join_proof,
 };
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
     sign_device_cert, sign_revocation_entry,
 };
 use tilo_workspace_join::delegation::{Delegate, DelegateScope, Delegation};
@@ -848,6 +848,214 @@ async fn an_agents_key_the_workspace_lists_is_bound_to_it() {
 
     engine.close().await;
     helper_endpoint.close().await;
+}
+
+/// A key `n` certified by `root` for an agent's grant, expiring an hour on: an agent's grant
+/// that is no server key always does (ninety days at most).
+fn agent_key(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::from_bytes(&[n; 32]);
+    let now = tilo_clock::unix_now_ns().saturating_sub(60_000_000_000);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("device-{n}"),
+        capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        issued_at_ns: now,
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    (key, cert)
+}
+
+/// The device that hosts `root`'s workspace, with two keys of theirs admitted to it: `agent`,
+/// which their root approved for an agent, and `server`, their server key.
+struct HostWithKeys {
+    engine: Engine,
+    dispatcher: Arc<TestProvider>,
+    agent: (SigningKey, DeviceCert),
+    server: (SigningKey, DeviceCert),
+    now: SystemTime,
+    person: String,
+}
+
+async fn host_with_keys() -> HostWithKeys {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let agent = agent_key(&root, 7);
+    let server = device_with(
+        &root,
+        8,
+        DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
+    );
+    let roster = vec![a.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let now = tilo_clock::wall();
+    for (key, cert, name) in [
+        (&agent.0, &agent.1, "Bea's agent"),
+        (&server.0, &server.1, "Bea's backend"),
+    ] {
+        assert!(
+            engine
+                .replica
+                .write(|peer| {
+                    let listed = peer.governance_mut().admit_member_device(cert, key, now)?;
+                    let granted =
+                        peer.governance_mut()
+                            .author_own_grant(cert, Some(name), key, now)?;
+                    Ok::<_, String>(listed || granted)
+                })
+                .unwrap(),
+            "the workspace takes {name} in"
+        );
+    }
+    HostWithKeys {
+        engine,
+        dispatcher,
+        agent,
+        server,
+        now,
+        person: hex::encode(root.verifying_key().to_bytes()),
+    }
+}
+
+/// A key the person approved for an agent, dialing the device that hosts their workspace, acts as
+/// that agent: the workspace's grants naming it decide its calls, never its person's rights.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_the_workspace_lists_acts_as_its_agent() {
+    let host = host_with_keys().await;
+    let agent = host.agent;
+    let (agent_endpoint, agent_service) = asking(&agent.0).await;
+    let remote = agent_service.remote(&agent_endpoint, &host.engine.addr(), WORKSPACE);
+    let agent_id = tilo_action_policy::key_agent_id(&agent.1.device_public_key);
+    let caller = Caller::delegated_agent(
+        agent_id.clone(),
+        agent.1.user_public_key,
+        agent.1.device_public_key,
+    );
+    assert_eq!(queried(&remote, &caller).await, Ok(()));
+    let answered_as = host
+        .dispatcher
+        .callers()
+        .pop()
+        .expect("the agent's request reached the dispatcher");
+    assert_eq!(
+        answered_as.acting().member_id(),
+        Some(&tilo_action_policy::MemberId::agent(
+            agent_id.clone(),
+            host.person.clone()
+        )),
+        "a key acts as the agent its certificate names"
+    );
+    assert_eq!(
+        answered_as.acting().person_id(),
+        None,
+        "the agent never stands for its person"
+    );
+    assert_eq!(
+        answered_as.acting().acted_for_person(),
+        Some(host.person.as_str()),
+        "it acts for the person whose root approved it"
+    );
+    assert_eq!(
+        answered_as.device_public_key(),
+        Some(&agent.1.device_public_key)
+    );
+    assert_eq!(
+        answered_as.user_public_key(),
+        Some(&agent.1.user_public_key)
+    );
+    assert!(
+        answered_as.granted().iter().any(|grant| grant
+            .grantee
+            .as_agent()
+            .is_some_and(|(id, of)| id == agent_id && of.as_str() == host.person)),
+        "the workspace's grant naming the agent reaches it: {:?}",
+        answered_as.granted()
+    );
+    assert!(
+        answered_as
+            .granted()
+            .iter()
+            .all(|grant| grant.grantee.as_agent().is_some()),
+        "no person's own grant reaches the agent: {:?}",
+        answered_as.granted()
+    );
+
+    // What the workspace leaves to its owner, its agent's grant does not allow: the workspace's
+    // own settings. The person's access allows it; the agent's, decided by the grants it carries,
+    // does not.
+    let settings = tilo_action_policy::roles::workspace_resource(WORKSPACE);
+    let write = tilo_action_policy::ActionKind::Undoable;
+    let access = host
+        .engine
+        .replica
+        .read(|peer| peer.permissions(agent.1.device_public_key, host.now))
+        .expect("the workspace knows the key");
+    assert!(
+        access.allows(&settings, write, host.now),
+        "the person may change their workspace's settings"
+    );
+    let agent_access = access
+        .as_acting(answered_as.acting().clone())
+        .expect("the agent acts for its person")
+        .granted(answered_as.granted());
+    assert!(
+        !agent_access.allows(&settings, write, host.now),
+        "the agent's own grants leave its person's settings alone"
+    );
+
+    host.engine.close().await;
+    agent_endpoint.close().await;
+}
+
+/// A server key of the person's is them at the key: what its person may do there is theirs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_key_acts_as_its_person() {
+    let host = host_with_keys().await;
+    let server = host.server;
+    let (server_endpoint, server_service) = asking(&server.0).await;
+    let remote = server_service.remote(&server_endpoint, &host.engine.addr(), WORKSPACE);
+    let caller = Caller::authenticated(server.1.user_public_key, server.1.device_public_key);
+    assert_eq!(queried(&remote, &caller).await, Ok(()));
+    let answered_as = host
+        .dispatcher
+        .callers()
+        .pop()
+        .expect("the server key's request reached the dispatcher");
+    assert_eq!(
+        answered_as.acting().person_id(),
+        Some(host.person.as_str()),
+        "a server key is the person at the key"
+    );
+    assert_eq!(
+        answered_as.acting().member_id(),
+        Some(&tilo_action_policy::MemberId::person(host.person.clone()))
+    );
+    let server_access = host
+        .engine
+        .replica
+        .read(|peer| peer.permissions(server.1.device_public_key, host.now))
+        .expect("the workspace knows the key");
+    assert!(
+        server_access.allows(
+            &tilo_action_policy::roles::workspace_resource(WORKSPACE),
+            tilo_action_policy::ActionKind::Undoable,
+            host.now
+        ),
+        "a server key holds its person's own"
+    );
+
+    host.engine.close().await;
+    server_endpoint.close().await;
 }
 
 /// A key the workspace's roster never listed, or has retired, is refused at the server and

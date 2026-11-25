@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage,
+    ReceiptStatus, RemoteActionMessage, formats,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_runtime::key_sessions::{KeySessions, SessionHost, Sessions};
@@ -487,6 +487,66 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
         "the key entered nothing"
     );
     assert!(device.runs.opened.lock().unwrap().is_empty());
+}
+
+/// An agent's grant, dialing the device that hosts the person's workspace, asks as the agent it
+/// is: what only a person on a device of theirs reads — their own region and formats — is
+/// refused it, which the person's server key reads as they do.
+#[tokio::test(flavor = "current_thread")]
+async fn an_agents_grant_reads_no_persons_formats_where_a_server_key_does() {
+    let root = SigningKey::from_bytes(&[0x16; 32]);
+    let device = device_host(&root).await;
+
+    let agent = certified(
+        &root,
+        16,
+        "Visa backend #3",
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let agent_key = session(&device, &agent).await;
+    let entered = agent_key
+        .enter_workspace(&device.workspace, "Visa backend #3")
+        .await
+        .unwrap();
+    let refused = agent_key
+        .ask_host(
+            entered,
+            formats::target(formats::READ),
+            serde_json::Map::new(),
+        )
+        .await
+        .expect_err("an agent reads no person's formats");
+    assert_eq!(
+        refused.code,
+        ActionCallError::UnknownAction.code(),
+        "the host answers, and answers no: {refused:?}"
+    );
+    agent_key.close();
+
+    let server = certified(
+        &root,
+        17,
+        "Visa backend #4",
+        DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
+    );
+    let server_key = session(&device, &server).await;
+    let entered = server_key
+        .enter_workspace(&device.workspace, "Visa backend #4")
+        .await
+        .unwrap();
+    let formats = server_key
+        .ask_host(
+            entered,
+            formats::target(formats::READ),
+            serde_json::Map::new(),
+        )
+        .await
+        .expect("a server key reads its person's formats");
+    assert!(
+        formats.is_object(),
+        "the formats a person on their device reads: {formats}"
+    );
+    server_key.close();
 }
 
 #[tokio::test(flavor = "current_thread")]

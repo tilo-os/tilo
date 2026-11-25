@@ -277,25 +277,19 @@ impl Workspaces {
         // ([`tilo_user_identity::DeviceCapabilities::own_key_in`]). Any other grant is an
         // agent's: it acts as its own member, never as the person who delegated it, and every
         // call of its run is decided by the grant its person signed for it — the workspace's
-        // grants naming that agent.
-        let caller = if key.capabilities.agent.is_some() && !key.capabilities.server_key {
-            let granted = {
-                let hosted = held.lock().await;
-                hosted
-                    .peer()
-                    .permissions(key.device_public_key, system_time(tilo_clock::unix_now_ns()))
-                    .map_err(|_| "the workspace holds no grant for this key")?
-                    .granted
-            };
-            Caller::delegated_agent(
-                tilo_action_policy::key_agent_id(&key.device_public_key),
-                key.user_public_key,
-                key.device_public_key,
-            )
-            .granting(granted)
-        } else {
-            Caller::authenticated(key.user_public_key, key.device_public_key)
-        }
+        // grants naming that agent ([`tilo_peer_state::key_caller::caller_of_key`]).
+        let caller = tilo_peer_state::key_caller::caller_of_key(key, async {
+            let governed = held.lock().await;
+            Ok(governed
+                .peer()
+                .permissions(
+                    key.device_public_key,
+                    system_time(tilo_clock::unix_now_ns()),
+                )
+                .map_err(|_| "the workspace holds no grant for this key")?
+                .granted)
+        })
+        .await?
         .in_workspace(workspace)
         .from_foreign_device(true)
         .in_new_execution();

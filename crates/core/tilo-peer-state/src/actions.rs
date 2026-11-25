@@ -1196,7 +1196,15 @@ impl ActionService {
             Actor::Member(MemberId::Bot(installation)) => {
                 Caller::bot(installation.clone(), certificate.user_public_key, acting)
             }
-            _ => Caller::authenticated(certificate.user_public_key, acting),
+            // A person on a device of theirs: the person. A key their certificate approves for an
+            // agent is the agent, with the workspace's grants naming it, never its person
+            // ([`crate::key_caller::caller_of_key`]).
+            _ => crate::key_caller::caller_of_key(
+                &certificate,
+                std::future::ready(Ok(authority.granted.clone())),
+            )
+            .await
+            .map_err(|reason| ActionCallError::Refused { reason })?,
         };
         Ok(Decided::Serve(Box::new(Admitted {
             caller: forwarded(own_call(carrying(caller))?)
