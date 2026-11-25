@@ -951,11 +951,11 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         for looked in apps.values_mut() {
             let known = match looked {
                 // A name that pinned one window of the app keeps naming that window: only the
-                // app found by its own names is what a start or a call says runs.
-                Looked::Found(AppRef::Running { pinned: true, .. }) => false,
+                // app found by its own names is what a start or a call says runs. A refusal
+                // names no app that runs.
+                Looked::Found(AppRef::Running { pinned: true, .. }) | Looked::Refused(_) => false,
                 Looked::Found(app) => app.app_id() == app_id,
                 Looked::Named(known) => known == app_id,
-                Looked::Refused(_) => false,
             };
             if known {
                 *looked = Looked::Found(running.clone());
