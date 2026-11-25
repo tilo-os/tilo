@@ -4,11 +4,8 @@
 //! they leave with everything it kept. A customer's agent works in its workspace over MCP and is
 //! refused on its neighbour's and on the account.
 
-use std::sync::Arc;
-
 use serde_json::{Value, json};
 use tilo_runtime::RuntimeServices as _;
-use tilo_user_identity::{AgentScope, DeviceCapabilities};
 
 use crate::language::host;
 
@@ -42,11 +39,18 @@ fn ids(listed: &Value) -> Vec<String> {
 }
 
 /// A workspace made through the account, labelled `labels`.
+///
+/// The backend asks to wait as long as the API allows: making a workspace writes its records and
+/// settles them, which can outlast the default wait on a busy computer, and a backend waiting
+/// for its customer's workspace is no reason to answer it `202`.
 async fn made(key: &host::Key, name: &str, labels: Value) -> String {
+    let body = json!({"name": name, "labels": labels});
     let (status, answer) = key
-        .post(
+        .request(
+            "POST",
             &account("workspaces", "create"),
-            &json!({"name": name, "labels": labels}),
+            &[("content-type", "application/json"), ("prefer", "wait=60")],
+            body.to_string().as_bytes(),
         )
         .await;
     assert_eq!(status, 200, "the account makes a workspace: {answer}");
@@ -65,64 +69,10 @@ async fn listed(key: &host::Key, labels: Value) -> Vec<String> {
     ids(&answer["result"])
 }
 
-/// A key certified for `workspace` alone, calling the daemon's API in process: what a backend
-/// mints for one customer's agent.
-struct Customer {
-    direct: tilo_api::direct::Direct,
-}
-
-impl Customer {
-    /// `GET path`: the status and the JSON answered.
-    async fn get(&self, path: &str) -> (u16, Value) {
-        self.send("GET", path, b"").await
-    }
-
-    /// `POST path` with `body`: the status and the JSON answered.
-    async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
-        self.send("POST", path, body.to_string().as_bytes()).await
-    }
-
-    /// The MCP tool `name` with `arguments`: its result.
-    async fn tool(&self, name: &str, arguments: &Value) -> Value {
-        let answer = self
-            .direct
-            .mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                        "params": {"name": name, "arguments": arguments}}))
-            .await
-            .unwrap();
-        answer["result"].clone()
-    }
-
-    async fn send(&self, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
-        host::json_of(
-            self.direct
-                .request(
-                    method,
-                    path,
-                    &[("content-type".into(), "application/json".into())],
-                    body,
-                )
-                .await,
-        )
-        .await
-    }
-}
-
-/// The key of a customer's agent: the person's, certified for `workspace` alone.
-fn customer(host: &host::Host, workspace: &str, label: &str) -> Customer {
-    let id = uuid::Uuid::parse_str(workspace).unwrap();
-    let (key, cert) = host.certify(
-        label,
-        DeviceCapabilities::agent_grant(AgentScope::Workspace(*id.as_bytes())),
-    );
-    let direct = tilo_api::direct::Direct::here(
-        Arc::clone(&host.daemon()) as Arc<dyn tilo_api::session::Here>,
-        key,
-        cert,
-        label,
-    )
-    .unwrap();
-    Customer { direct }
+/// The key of a customer's agent: a server key of the person's reaching `workspace` alone, as
+/// a backend mints one for that customer.
+fn customer(host: &host::Host, workspace: &str, label: &str) -> host::Key {
+    host.key_reaching(workspace, label)
 }
 
 /// The book the site publishes explains the SDK and the MCP tools, and every tool the
@@ -290,10 +240,13 @@ fn a_customers_files_are_put_and_read_with_its_workspace() {
         let key = host.key("Visa backend");
         let workspace = made(&key, "Applicant 0", json!({"customer_id": "cus_0"})).await;
         for text in ["passport scan\n", "cover letter\n"] {
+            let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
             let (status, kept) = key
-                .post(
-                    &format!("/v1/workspaces/{workspace}/contents"),
-                    &json!({"bytes": text}),
+                .request(
+                    "PUT",
+                    &format!("/v1/workspaces/{workspace}/contents/{hash}"),
+                    &[("content-type", "application/octet-stream")],
+                    text.as_bytes(),
                 )
                 .await;
             assert!((200..300).contains(&status), "{kept}");
@@ -304,16 +257,22 @@ fn a_customers_files_are_put_and_read_with_its_workspace() {
                 .strip_prefix("tilo.content:")
                 .unwrap_or_else(|| panic!("the put answers a content reference: {kept}"));
             let (status, read) = key
-                .get(&format!("/v1/workspaces/{workspace}/contents/{reference}"))
+                .bytes(&format!("/v1/workspaces/{workspace}/contents/{reference}"))
                 .await;
-            assert_eq!(status, 200, "{read}");
-            assert_eq!(read.as_str(), Some(text), "the bytes come back: {read}");
+            assert_eq!(
+                status,
+                200,
+                "{reference}: {}",
+                String::from_utf8_lossy(&read)
+            );
+            assert_eq!(read, text.as_bytes(), "the bytes come back");
         }
     });
 }
 
 /// The customer's agent, an MCP client outside Tilo, works in its workspace: an issue written
-/// through an action, then the view the app shows of it.
+/// through an action, then read back where the app holds it. No window shows the app on the
+/// agent's connection, so the record is what it reads, not a view a person at a window sees.
 #[test]
 fn an_outside_agent_runs_an_action_and_reads_a_view() {
     host::run(|host| async move {
@@ -325,20 +284,20 @@ fn an_outside_agent_runs_an_action_and_reads_a_view() {
             .tool(
                 "tilo_do",
                 &json!({"path": "so.tilo.tasks#new_task",
-                        "args": {"title": "Checklist of cus_0", "body": "- passport\n"}}),
+                        "args": {"title": "Checklist of cus_0", "notes": "- passport\n"}}),
             )
             .await;
         assert_eq!(
             wrote["isError"], false,
             "the agent writes an issue: {wrote}"
         );
-        let viewed = customer
-            .tool("tilo_view", &json!({"path": "so.tilo.tasks"}))
+        let read = customer
+            .tool("tilo_read", &json!({"path": "so.tilo.tasks"}))
             .await;
-        assert_eq!(viewed["isError"], false, "{viewed}");
+        assert_eq!(read["isError"], false, "{read}");
         assert!(
-            viewed.to_string().contains("Checklist of cus_0"),
-            "the view shows the issue the agent wrote: {viewed}"
+            read.to_string().contains("Checklist of cus_0"),
+            "the record holds the issue the agent wrote: {read}"
         );
     });
 }
@@ -398,7 +357,7 @@ fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() {
                 .replace("{grant}", "0000");
             let body = json!({"title": "planted"}).to_string();
             let (status, answer) = customer
-                .send(operation.method.as_str(), &path, body.as_bytes())
+                .request(operation.method.as_str(), &path, &[], body.as_bytes())
                 .await;
             if operation.path.contains("{workspace}") {
                 assert_eq!(status, 403, "{} {path}: {answer}", operation.id);

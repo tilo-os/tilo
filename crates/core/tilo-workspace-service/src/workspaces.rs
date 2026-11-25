@@ -1199,6 +1199,9 @@ struct WorkspacesInner {
     /// uses, so a write that waits on the key service or a link never waits on the thread that
     /// asked for it — nor on the reactor a record's read was made on.
     record_writes: std::sync::OnceLock<Option<tokio::runtime::Handle>>,
+    /// The thread driving that runtime: work it starts itself is never waited for there, since
+    /// nothing would run it.
+    writes_thread: std::sync::OnceLock<std::thread::ThreadId>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
     /// The workspace UUID after each settled governance decision.
@@ -1627,6 +1630,7 @@ impl Workspaces {
                 action_service,
                 jobs,
                 record_writes: std::sync::OnceLock::new(),
+                writes_thread: std::sync::OnceLock::new(),
                 applications: host.apps.clone(),
                 workspaces,
                 readings: readings::Readings::default(),
@@ -2477,10 +2481,15 @@ impl Workspaces {
     }
 
     /// Carry this device's writes of a record on `runtime` from now on
-    /// ([`WorkspacesInner::record_writes`]): the runtime of the service's writes thread, which
-    /// nothing else drives. The first embedder to name one decides it.
-    pub(crate) fn carry_record_writes_on(&self, runtime: tokio::runtime::Handle) {
+    /// ([`WorkspacesInner::record_writes`]), the runtime of the service's writes thread, which
+    /// `thread` drives and nothing else does. The first embedder to name one decides it.
+    pub(crate) fn carry_writes_on(
+        &self,
+        runtime: tokio::runtime::Handle,
+        thread: std::thread::ThreadId,
+    ) {
         let _ = self.inner.record_writes.set(Some(runtime));
+        let _ = self.inner.writes_thread.set(thread);
     }
 
     /// The runtime a record's writes are carried on: the one the embedder named, else the
@@ -2515,6 +2524,57 @@ impl Workspaces {
                 .map_err(|_| "the workspace service stopped before it answered".to_owned())?,
             None => work.await,
         }
+    /// The runtime the service named for its writes thread, where it named one: the thread
+    /// nothing else drives ([`WorkspacesInner::record_writes`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn named_writes_runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.inner.record_writes.get().cloned().flatten()
+    }
+
+    /// Wait for `future` on the service's writes thread where the service named one, and on a
+    /// thread of its own otherwise: what a write made from a synchronous caller waits with.
+    ///
+    /// What the write starts with [`tokio::spawn`] runs on a runtime whose thread waits on
+    /// nothing else, never on a thread of the caller's own runtime, which cannot run it while it
+    /// is blocked here.
+    ///
+    /// # Panics
+    ///
+    /// The service's writes thread stopped while `future` ran: the service is being dropped, and
+    /// the caller's work cannot be answered.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[expect(
+        clippy::expect_used,
+        reason = "the writes thread stops only as the service is dropped, which ends its callers"
+    )]
+    pub(crate) fn on_its_own<F>(&self, future: F) -> F::Output
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let Some(runtime) = self.named_writes_runtime() else {
+            return crate::documents::on_its_own(future);
+        };
+        if self.inner.writes_thread.get() == Some(&std::thread::current().id()) {
+            // Already on the writes thread: waiting on it here would keep it from running what
+            // the future starts, so the thread waits for the future itself.
+            return futures::executor::block_on(future);
+        }
+        let (done, answer) = tokio::sync::oneshot::channel();
+        runtime.spawn(async move {
+            let _ = done.send(future.await);
+        });
+        futures::executor::block_on(answer)
+            .expect("the service's writes thread stopped while it ran a caller's work")
+    }
+
+    /// Wait for `future` with this thread: a page drives no runtime beside it.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn on_its_own<F>(&self, future: F) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        futures::executor::block_on(future)
     }
 
     async fn workspace(

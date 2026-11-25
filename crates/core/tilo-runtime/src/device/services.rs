@@ -4394,10 +4394,14 @@ impl tilo_api::session::AccountHere for Daemon {
         let device = self.cert.clone();
         Box::pin(async move {
             known(&device, &key)?;
-            let id = id.unwrap_or_else(Uuid::new_v4);
             let mut arguments = Map::new();
             arguments.insert("name".into(), json!(name));
-            arguments.insert("workspace".into(), json!(id.to_string()));
+            // An id the caller chose, so a retried create asks for the same workspace. Without
+            // one the host chooses, and a retry with the same labels answers the workspace they
+            // labelled rather than another beside it.
+            if let Some(id) = id {
+                arguments.insert("workspace".into(), json!(id.to_string()));
+            }
             if !labels.is_empty() {
                 arguments.insert("labels".into(), json!(labels));
             }

@@ -661,6 +661,15 @@ impl Workspaces {
         .ok()
     }
 
+    /// [`Self::labels_of`], awaited where the caller runs: a label nobody has read yet is read
+    /// on that runtime, never waited for on a thread of its own.
+    pub(super) async fn labels_of_awaiting(&self, workspace: &str) -> WorkspaceLabels {
+        person_workspace::read_on::<Ownership>(self, workspace, membership::OWNERSHIP)
+            .await
+            .map(|ownership: Ownership| ownership.labels)
+            .unwrap_or_default()
+    }
+
     /// Apply `action` to a record of `workspace`, as this host.
     fn change<R: tilo_resource::Resource>(
         &self,
@@ -669,10 +678,11 @@ impl Workspaces {
         action: tilo_resource::Invoke<R>,
     ) -> Result<(), String> {
         let workspaces = self.clone();
+        let inside = workspaces.clone();
         let workspace = workspace.to_owned();
         let (app, record) = (record.0.to_owned(), record.1.to_owned());
-        crate::device_documents::on_its_own(async move {
-            person_workspace::apply_on(&workspaces, &workspace, (&app, &record), action).await
+        workspaces.on_its_own(async move {
+            person_workspace::apply_on(&inside, &workspace, (&app, &record), action).await
         })
     }
 

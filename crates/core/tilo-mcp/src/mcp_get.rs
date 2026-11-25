@@ -10,8 +10,9 @@ use super::{ActionProvider, Deserialize, McpServer, Value, json, parse};
 /// The get tool's name.
 pub(super) const GET: &str = "tilo_get";
 
-/// The most raw bytes one call answers with.
-pub(super) const MAX_GET_CALL_BYTES: u64 = 512 * 1024;
+/// The most raw bytes one call answers with: one piece of a content frame, which no call may
+/// ask past ([`tilo_actions::remote::MAX_CONTENT_FRAME_BYTES`]).
+pub(super) const MAX_GET_CALL_BYTES: u64 = tilo_actions::remote::MAX_CONTENT_FRAME_BYTES as u64;
 
 pub(super) fn is_get_tool(name: &str) -> bool {
     name == GET
@@ -21,7 +22,7 @@ pub(super) fn is_get_tool(name: &str) -> bool {
 pub(super) fn tool_definitions() -> Vec<Value> {
     vec![json!({
         "name": GET,
-        "description": "Download a workspace file by its tilo.content:<hash> reference (one an upload or an action answered with): answers the bytes, base64, at offset, up to 524288 a call; call again at next_offset for the rest.",
+        "description": "Download a workspace file by its tilo.content:<hash> reference (one an upload or an action answered with): answers the bytes, base64, at offset, up to 393216 a call; call again at next_offset for the rest.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -1253,7 +1253,9 @@ impl Workspaces {
         // A backend that keeps a workspace per customer labels each with its own id for that
         // customer: asking again with the same labels when a call is retried answers the
         // workspace labelled so, not another one beside it.
-        if let Some(existing) = self.own_labelled_for(person, (name, moving), labels.as_ref(), own)
+        if let Some(existing) = self
+            .own_labelled_for(person, (name, moving), labels.as_ref(), own)
+            .await
         {
             let summary = self
                 .summary(&existing)
@@ -1437,8 +1439,9 @@ impl Workspaces {
     }
 
     /// The workspace `person` already has under exactly `labels`, which an ask naming no
-    /// workspace and retried with the same labels answers rather than making another.
-    fn own_labelled_for(
+    /// workspace and retried with the same labels answers rather than making another. Read where
+    /// the caller runs: a create asks this of every one of the person's workspaces.
+    async fn own_labelled_for(
         &self,
         person: [u8; 32],
         (name, moving): (Option<&str>, Option<&str>),
@@ -1449,9 +1452,12 @@ impl Workspaces {
             return None;
         }
         let labels = labels.filter(|labels| !labels.is_empty())?;
-        own.of(&person)
-            .into_iter()
-            .find(|workspace| self.labels_of(workspace) == *labels)
+        for workspace in own.of(&person) {
+            if self.labels_of_awaiting(&workspace).await == *labels {
+                return Some(workspace);
+            }
+        }
+        None
     }
 
     /// Invite the host's own person (`device` is theirs) into the workspace
