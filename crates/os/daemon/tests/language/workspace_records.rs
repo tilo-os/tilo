@@ -71,25 +71,28 @@ fn a_create_answers_the_issue_it_made_and_the_issue_reads_back() {
                     .await,
             );
             assert!(!is_error, "the create is made: {answer}");
-            assert!(answer.contains(title), "the answer names it: {answer}");
+            // The create answers the issue it made, by the address its answer names: the task
+            // is read where it stands, and it says the title it was made with.
+            let issue = answer
+                .lines()
+                .find_map(|line| line.strip_prefix("-> "))
+                .unwrap_or_else(|| panic!("the answer names it: {answer}"));
+            let (task, is_error) = said(
+                &agent
+                    .tool(
+                        "tilo_read",
+                        &json!({"path": format!("so.tilo.tasks/{issue}")}),
+                    )
+                    .await,
+            );
+            assert!(!is_error, "the issue reads where it was made: {task}");
+            assert!(task.contains(title), "it reads back: {task}");
             made.push(answer);
         }
         assert_ne!(
             made[0], made[1],
             "each create answers the issue it made: {made:?}"
         );
-        let (issues, is_error) = said(
-            &agent
-                .tool(
-                    "tilo_read",
-                    &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}),
-                )
-                .await,
-        );
-        assert!(!is_error, "{issues}");
-        for title in ["Plan the launch", "Ship it"] {
-            assert!(issues.contains(title), "it reads back: {issues}");
-        }
     });
 }
 

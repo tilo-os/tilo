@@ -4441,6 +4441,7 @@ impl tilo_api::session::AccountHere for Daemon {
                     "this device does not keep that workspace".into(),
                 ));
             }
+            enter_the_key(&workspaces, &workspace, &key).await;
             let summary = workspaces
                 .copies()
                 .rename(&workspace, &name)
@@ -4726,7 +4727,26 @@ fn described_workspace(
     workspace
 }
 
-/// Run the workspace's own verb `action` with `arguments` as `key`, in process: its output.
+/// A key of the person's enters the workspace it asks of here, on its first call of any kind: a
+/// key issued for a program comes in with no ticket, so this device, which keeps the workspace,
+/// signs the key's own row in as every key's enters (`Workspaces::enter`), and the workspace's
+/// own certificates admit it from then on. A key the workspace revoked or removed enters
+/// nothing, and the call it made is refused as it was; one asked of a workspace this device does
+/// not keep is left to the host that does.
+async fn enter_the_key(workspaces: &ServiceWorkspaces, workspace: &str, key: &GrantKey) {
+    let signing = SigningKey::from_bytes(&key.secret());
+    if let Err(error) = workspaces
+        .copies()
+        .enter(
+            workspace,
+            (key.cert(), &signing as &dyn collab_types::signer::DeviceSigner),
+        )
+        .await
+    {
+        tracing::warn!(%error, workspace, "a key does not enter the workspace it asks of");
+    }
+}
+
 async fn workspace_verb(
     workspaces: &ServiceWorkspaces,
     workspace: &str,
@@ -4735,6 +4755,7 @@ async fn workspace_verb(
     arguments: Map<String, Value>,
 ) -> Result<Value, ServerError> {
     let id = WorkspaceId::parse(workspace).ok_or(ServerError::NotFound)?;
+    enter_the_key(workspaces, workspace, key).await;
     let caller = Caller::authenticated(key.cert().user_public_key, key.cert().device_public_key);
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
