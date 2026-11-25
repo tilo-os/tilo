@@ -105,7 +105,10 @@ async fn found_front(workspaces: &Workspaces, workspace: &str, want: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_server_sealed() {
-    holds_its_workspace_and_lists_what_the_server_keeps(DeviceCapabilities::member()).await;
+    Box::pin(holds_its_workspace_and_lists_what_the_server_keeps(
+        DeviceCapabilities::member(),
+    ))
+    .await;
 }
 
 /// A server on an operating system Tilo does not control, as one in a container or on a rented
@@ -113,10 +116,12 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
 /// own workspace lists what the server keeps for them, and the login reads it there all the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_foreign_server_handed_the_persons_workspace_has_its_workspaces_listed_by_their_device() {
-    holds_its_workspace_and_lists_what_the_server_keeps(DeviceCapabilities {
-        foreign: true,
-        ..DeviceCapabilities::member()
-    })
+    Box::pin(holds_its_workspace_and_lists_what_the_server_keeps(
+        DeviceCapabilities {
+            foreign: true,
+            ..DeviceCapabilities::member()
+        },
+    ))
     .await;
 }
 

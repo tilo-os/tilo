@@ -565,18 +565,7 @@ mod tests {
         })
         .kept()
         .expect("the kept workspace reads");
-        let entry = open[0].entry.clone().expect("its entry is founded");
-        assert_eq!(
-            entry.listing,
-            Some(ListingPolicy {
-                description: "Coffee and tea".into(),
-                default_role: Role::Commenter,
-            })
-        );
-        assert!(
-            !entry.invitation_only,
-            "an open entry admits anyone who asks"
-        );
+        assert_open_entry(&open);
 
         let invite = keeping(KeptWorkspace {
             id: "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11".into(),
@@ -591,30 +580,7 @@ mod tests {
         })
         .kept()
         .expect("the kept workspace reads");
-        let entry = invite[0].entry.as_ref().expect("its entry is founded");
-        assert!(entry.invitation_only, "only people it invited join");
-        assert_eq!(entry.wait_list_max, 500);
-        assert_eq!(entry.contact.as_deref(), Some("hello@lounge.example"));
-        assert_eq!(
-            entry.mail,
-            Some(EntryMail {
-                from: "invitations@lounge.example".into(),
-                templates: None,
-            })
-        );
-        assert_eq!(
-            entry.listing.as_ref().map(|listing| listing.default_role),
-            Some(Role::Editor),
-            "a deployment that names no role hands out an editor's part"
-        );
-        assert_eq!(
-            entry
-                .listing
-                .as_ref()
-                .map(|listing| listing.description.as_str()),
-            Some("Lounge"),
-            "a deployment that names no description is listed by its name"
-        );
+        assert_invite_entry(&invite);
 
         let unnamed = keeping(KeptWorkspace {
             id: "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11".into(),
@@ -653,6 +619,51 @@ mod tests {
                 "the refusal says which setting: {why}"
             );
         }
+    }
+
+    /// An open entry is listed as its deployment names it, and admits anyone who asks.
+    fn assert_open_entry(founded: &[KeptFounding]) {
+        let entry = founded[0].entry.clone().expect("its entry is founded");
+        assert_eq!(
+            entry.listing,
+            Some(ListingPolicy {
+                description: "Coffee and tea".into(),
+                default_role: Role::Commenter,
+            })
+        );
+        assert!(
+            !entry.invitation_only,
+            "an open entry admits anyone who asks"
+        );
+    }
+
+    /// An invited entry is only for those it invited, with what the deployment names and an
+    /// editor's part by default.
+    fn assert_invite_entry(founded: &[KeptFounding]) {
+        let entry = founded[0].entry.as_ref().expect("its entry is founded");
+        assert!(entry.invitation_only, "only people it invited join");
+        assert_eq!(entry.wait_list_max, 500);
+        assert_eq!(entry.contact.as_deref(), Some("hello@lounge.example"));
+        assert_eq!(
+            entry.mail,
+            Some(EntryMail {
+                from: "invitations@lounge.example".into(),
+                templates: None,
+            })
+        );
+        assert_eq!(
+            entry.listing.as_ref().map(|listing| listing.default_role),
+            Some(Role::Editor),
+            "a deployment that names no role hands out an editor's part"
+        );
+        assert_eq!(
+            entry
+                .listing
+                .as_ref()
+                .map(|listing| listing.description.as_str()),
+            Some("Lounge"),
+            "a deployment that names no description is listed by its name"
+        );
     }
 
     /// A machine that is a server runs the packet relay its pages are reached through

@@ -172,6 +172,27 @@ fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_k
     }
 }
 
+/// The joins `lanes` make at the same moment, each on its own thread: what each answered.
+fn racing_joins(lanes: &[Arc<tilo_live::app_call::AppLane>]) -> Vec<serde_json::Value> {
+    let racing = std::sync::Barrier::new(lanes.len());
+    std::thread::scope(|scope| {
+        let runs: Vec<_> = (1..)
+            .zip(lanes)
+            .map(|(correlation, lane)| {
+                let racing = &racing;
+                scope.spawn(move || {
+                    let _entered = tilo_rt::app().handle().enter();
+                    racing.wait();
+                    result_of(lane.take(&carry(correlation)))
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| run.join().expect("a join answers"))
+            .collect()
+    })
+}
+
 /// A join given once ([`tilo_action_policy::Lifetime::Once`]) admits the app's join once: the
 /// device's dispatch spends the grant as it admits the call, so of two joins at the same moment
 /// only one is admitted, and the app's next join is decided afresh and refused.
@@ -237,23 +258,7 @@ fn a_join_given_once_joins_the_call_once() {
 
     // Two joins decided at the same moment: the grant given once admits exactly one of them.
     let lanes = [lane(), lane()];
-    let racing = std::sync::Barrier::new(lanes.len());
-    let answers: Vec<serde_json::Value> = std::thread::scope(|scope| {
-        let runs: Vec<_> = (1..)
-            .zip(&lanes)
-            .map(|(correlation, lane)| {
-                let racing = &racing;
-                scope.spawn(move || {
-                    let _entered = tilo_rt::app().handle().enter();
-                    racing.wait();
-                    result_of(lane.take(&carry(correlation)))
-                })
-            })
-            .collect();
-        runs.into_iter()
-            .map(|run| run.join().expect("a join answers"))
-            .collect()
-    });
+    let answers = racing_joins(&lanes);
     let joined = serde_json::json!({ "Ok": null });
     assert_eq!(
         answers.iter().filter(|answer| **answer == joined).count(),

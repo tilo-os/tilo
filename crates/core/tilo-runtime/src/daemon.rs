@@ -2262,14 +2262,21 @@ fn asks_the_device_key(stream: &Stream) -> bool {
     let Ok(request) = serde_json::from_slice::<Value>(line) else {
         return false;
     };
-    let params = &request["params"];
-    request["method"] == "tools/call"
-        && params["name"] == "tilo_do"
-        && params["arguments"]["path"].as_str().is_some_and(|path| {
-            path.strip_prefix(tilo_device_identity::login::RESOURCE)
-                .and_then(|action| action.strip_prefix('#'))
-                .is_some_and(crate::device::key_use::asked_of_the_key)
-        })
+    let params = request.get("params");
+    request.get("method").and_then(Value::as_str) == Some("tools/call")
+        && params
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str)
+            == Some("tilo_do")
+        && params
+            .and_then(|params| params.get("arguments"))
+            .and_then(|arguments| arguments.get("path"))
+            .and_then(Value::as_str)
+            .is_some_and(|path| {
+                path.strip_prefix(tilo_device_identity::login::RESOURCE)
+                    .and_then(|action| action.strip_prefix('#'))
+                    .is_some_and(crate::device::key_use::asked_of_the_key)
+            })
 }
 
 /// The first message on `stream`, with the descriptors it carries: a Windows pipe carries bytes
