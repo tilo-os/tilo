@@ -2320,8 +2320,9 @@ fn retained_panes_remeasure_theme_resize_replacement_and_edits_beside_a_drawer()
             "first line\nsecond line\nthird line",
         )
         .unwrap();
-    h.relayout_at((480, 800))
-        .expect("edit beside the drawer measured");
+    // A write past the framework reaches the widgets in the frame that refreshes the model, as a
+    // host's own write marks the window for a sync.
+    h.relayout();
     let changed = text_rect(&mut h);
     assert!(
         changed.height() > before.height(),
