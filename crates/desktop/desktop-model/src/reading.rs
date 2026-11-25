@@ -62,21 +62,6 @@ pub struct LayoutStripReading {
     /// rather than among them in its row.
     #[serde(default)]
     pub floating: bool,
-    /// The corner of the work area a floating window keeps its distance from:
-    /// `top-left`, `top-right`, `bottom-right` or `bottom-left`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub float_corner: String,
-    /// Its distance from that corner's side edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dx: i64,
-    /// Its distance from that corner's top or bottom edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dy: i64,
-    /// Its floating width and height in canvas pixels.
-    #[serde(default)]
-    pub float_width: i64,
-    #[serde(default)]
-    pub float_height: i64,
     /// Where the floating window stands now on the display it floats over, from that display's
     /// top-left corner, as `x, y, width, height`: where the record keeps it on this device's
     /// display, or where the person's hand has it while they carry it. Empty while it floats on no
@@ -267,12 +252,6 @@ pub fn of(
                     canvas_height: canvas.map_or(0, |held| i64::from(held.height)),
                     canvas_hugs: canvas.is_some_and(|held| held.hugs),
                     floating: float.is_some(),
-                    float_corner: float
-                        .map_or_else(String::new, |float| float.corner.as_str().to_owned()),
-                    float_dx: float.map_or(0, |float| i64::from(float.dx)),
-                    float_dy: float.map_or(0, |float| i64::from(float.dy)),
-                    float_width: float.map_or(0, |float| i64::from(float.width)),
-                    float_height: float.map_or(0, |float| i64::from(float.height)),
                     float_at: Vec::new(),
                     leaving: false,
                     control: Vec::new(),

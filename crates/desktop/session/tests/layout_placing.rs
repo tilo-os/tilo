@@ -186,6 +186,21 @@ fn number(key: &str) -> u64 {
     key.parse().expect("an id reads as its number")
 }
 
+/// Where the window `tab` floats, as the shell's record keeps it; `None` when it stands in its
+/// strip.
+fn float_of(session: &Session, tab: u64) -> Option<tilo_desktop_model::FloatPlace> {
+    session.handle().read(|tree| {
+        tree.workspaces.iter().find_map(|workspace| {
+            let group = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|shown| shown.id == tab))?;
+            workspace.layout.float_of(group.id)
+        })
+    })
+}
+
 /// The row of the workspace in front, as the canvas place action names it.
 fn front_row(session: &Session) -> u64 {
     let tree = session.handle().read(Clone::clone);
@@ -580,14 +595,19 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
     let entry = placed(&mut session, place);
     let held = strip_of(&session, number(&entry.strip)).expect("its strip is in the record");
     assert!(held.floating, "it stands above the windows");
-    assert_eq!(held.float_corner, "top-left", "at the corner it asked for");
+    let at = float_of(&session, place).expect("the record keeps where it floats");
     assert_eq!(
-        (held.float_dx, held.float_dy),
+        at.corner,
+        tilo_desktop_model::FloatCorner::TopLeft,
+        "at the corner it asked for"
+    );
+    assert_eq!(
+        (at.dx, at.dy),
         (48, 64),
         "kept that far off the corner's edges"
     );
     assert_eq!(
-        (held.float_width, held.float_height),
+        (at.width, at.height),
         (520, 360),
         "at the size it asked for"
     );

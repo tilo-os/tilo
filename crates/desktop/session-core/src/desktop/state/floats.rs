@@ -161,37 +161,10 @@ pub fn set(shared: &mut Shared, strip: StripId, group: u64, float: Option<FloatP
     true
 }
 
-/// A window floating as a card in the floating layer's column on this device: the layer stacks it
-/// with the activities' cards, by the one rule they all stand by, and the shell stands the window
-/// where the layer put it ([`super::DesktopHandle::dock_at`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct DockedCard {
-    /// The window, by its group id.
-    pub group: u64,
-    /// The size it stands at: the card, or its header alone while collapsed.
-    pub size: (f64, f64),
-}
-
-/// The windows this device docks in the layer's column, and where the layer last put each. Docking
-/// is this device's: the record keeps the window floating, and where on another device's display
-/// it stands is that device's column.
-#[derive(Default)]
-pub struct Dock {
-    /// The docked windows, by group, each at its card size.
-    pub cards: std::collections::BTreeMap<u64, DockedCard>,
-    /// Where the layer put each docked window, in shell coordinates.
-    pub places: std::collections::BTreeMap<u64, Rect>,
-    /// The docked windows folded to their header, with the size they open to again.
-    pub collapsed: std::collections::BTreeMap<u64, (f64, f64)>,
-    /// The windows that opened here as cards: snapped into their strip and floated again, they go
-    /// back to the column as the card they were, not over the shell at a window's size.
-    pub born: std::collections::BTreeSet<u64>,
-}
-
-/// The place a card docked in the work area `area` keeps in the record: the layer's corner, until
-/// the layer gives it its place in the column — and on a device that does not dock it.
+/// The place a window opened over the shell as a card keeps in the record: the work area's
+/// bottom-right corner, by an inset from its edges.
 #[must_use]
-pub fn docked_place(area: Rect) -> Rect {
+pub fn card_place(area: Rect) -> Rect {
     let (width, height) = FLOAT_CARD_SIZE;
     let inset = ui::floating_layer::EDGE_INSET;
     let height = height.min(area.height() - 2.0 * inset).max(1.0);
@@ -201,39 +174,16 @@ pub fn docked_place(area: Rect) -> Rect {
     )
 }
 
-/// Fold the docked card `group` to its header, `header` tall, or open it to its size again.
-/// Returns whether the dock changed.
-pub fn collapse(dock: &mut Dock, group: u64, header: f64) -> bool {
-    let Some(card) = dock.cards.get_mut(&group) else {
-        return false;
-    };
-    if let Some(open) = dock.collapsed.remove(&group) {
-        card.size = open;
-    } else {
-        dock.collapsed.insert(group, card.size);
-        card.size = (card.size.0, header);
-    }
-    true
-}
-
-/// Open the window `group` of `strip` over the shell as a card docked in the floating layer's
-/// column of the work area `area`, beside the window it opened next to: that window gives up
-/// the room the card stands in ([`tilo_desktop_model::width::share_for_float`]), so the card
-/// stands beside what the person was reading rather than over it. The record keeps where the
-/// card stands as it opens, so every member finds it there, not only the host that turns the ask
-/// into an arranging action. Returns the window it opened beside, which the strip brings into
-/// view.
-pub fn dock_beside(shared: &mut Shared, strip: StripId, group: u64, area: Rect) -> Option<u64> {
+/// Open the window `group` of `strip` over the shell as a card at the work area `area`'s corner,
+/// beside the window it opened next to: that window gives up the room the card stands in
+/// ([`tilo_desktop_model::width::share_for_float`]), so the card stands beside what the person was
+/// reading rather than over it. The record keeps where the card stands as it opens, so every
+/// member finds it there, not only the host that turns the ask into an arranging action. Returns
+/// the window it opened beside, which the strip brings into view.
+pub fn open_as_card(shared: &mut Shared, strip: StripId, group: u64, area: Rect) -> Option<u64> {
     let beside = share_with_card(shared, strip, group, area);
-    let at = docked_place(area);
-    shared.dock.born.insert(group);
-    shared.dock.cards.insert(
-        group,
-        DockedCard {
-            group,
-            size: (at.width(), at.height()),
-        },
-    );
+    let at = card_place(area);
+    shared.cards_born.insert(group);
     let place = FloatPlace::of_rect(area_of(area), place_of(at));
     set(shared, strip, group, Some(place));
     if let Some(workspace) = shared
@@ -376,6 +326,10 @@ impl super::DesktopHandle {
     /// Each floating window the shell draws, by its group, and where it stands on the display it
     /// floats over, from that display's top-left corner: where the record keeps it, or where the
     /// person's hand has it while they carry it.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the float's corner against the display it was laid out on, both whole pixels"
+    )]
     pub fn floats_drawn(&self) -> Vec<(GroupId, Rect)> {
         let shared = self.shared.borrow();
         shared

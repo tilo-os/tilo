@@ -151,7 +151,7 @@ impl DesktopPass {
         }
     }
 
-    /// Apply the queued verbs to the tree: a window opened over the shell docks as a card beside
+    /// Apply the queued verbs to the tree: a window opened over the shell opens as a card beside
     /// the window it opened next to, one asked to float lifts over the middle of the display it
     /// stands on, and the strips bring the windows opened, restored or moved into view and pan as
     /// asked. The shell reads every other change from the tree.
@@ -171,7 +171,7 @@ impl DesktopPass {
                     let display = shared.tree.outputs.display_of(group);
                     let area = super::shown::work_area(&shared, display);
                     if let Some(beside) =
-                        super::floats::dock_beside(&mut shared, strip, group, area)
+                        super::floats::open_as_card(&mut shared, strip, group, area)
                     {
                         shared.reveal_asked.push((strip, beside));
                     }
@@ -180,10 +180,10 @@ impl DesktopPass {
                     let mut shared = self.handle.shared.borrow_mut();
                     let display = shared.tree.outputs.display_of(group);
                     let area = super::shown::work_area(&shared, display);
-                    // A window that opened as a card goes back to the column as the card it was.
-                    if shared.dock.born.contains(&group) {
+                    // A window that opened as a card goes back to the card it was.
+                    if shared.cards_born.contains(&group) {
                         if let Some(beside) =
-                            super::floats::dock_beside(&mut shared, strip, group, area)
+                            super::floats::open_as_card(&mut shared, strip, group, area)
                         {
                             shared.reveal_asked.push((strip, beside));
                         }

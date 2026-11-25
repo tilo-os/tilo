@@ -150,6 +150,21 @@ fn held(session: &Session, tab: u64) -> StripReading {
         .unwrap_or_else(|| panic!("the shell keeps the strip of the window {tab}"))
 }
 
+/// The place the window `tab` floats at, as the shell's record keeps it; `None` when it stands in
+/// its strip.
+fn float_of(session: &Session, tab: u64) -> Option<tilo_desktop_model::FloatPlace> {
+    session.handle().read(|tree| {
+        tree.workspaces.iter().find_map(|workspace| {
+            let group = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|shown| shown.id == tab))?;
+            workspace.layout.float_of(group.id)
+        })
+    })
+}
+
 /// The windows of the strip holding `tab` , in the order it lays them out.
 fn order(session: &Session, tab: u64) -> Vec<u64> {
     session.handle().read(|tree| {
@@ -422,23 +437,17 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
         held(session, chat).floating
     });
 
-    // The place it stands at is the record's: the floating size, its corner and how far it is from
-    // it.
-    let floating = held(&session, chat);
+    // The place it stands at is the record's: the floating size, and the row it was lifted out of.
+    let floating = float_of(&session, chat).expect("the record keeps where it floats");
     assert_eq!(
-        (floating.float_width, floating.float_height),
+        (floating.width, floating.height),
         (640, 480),
         "the floating window's own size"
     );
     assert_eq!(
-        floating.row, before.row,
+        held(&session, chat).row,
+        before.row,
         "the row it was lifted out of is its own"
-    );
-    assert!(
-        ["top-left", "top-right", "bottom-left", "bottom-right"]
-            .contains(&floating.float_corner.as_str()),
-        "it is placed from a corner: {:?}",
-        floating.float_corner
     );
 
     // And the shell draws it there, at the floating size, on the display.

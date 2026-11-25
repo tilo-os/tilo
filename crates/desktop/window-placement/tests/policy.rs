@@ -983,11 +983,6 @@ fn a_conversation_opens_beside_its_sender() {
         "the conversation stands beside its sender, never over what the person was reading: \
          sender {sender_content:?}, conversation {content:?}"
     );
-    assert_eq!(
-        policy.float_covers().len(),
-        0,
-        "a place no window fills yet draws nothing over the shell"
-    );
 
     // The session gives the place up when nothing came to fill it: the tab
     // goes, and the window it was held for has nowhere to land.
@@ -997,40 +992,6 @@ fn a_conversation_opens_beside_its_sender() {
         tabs(&policy).len(),
         1,
         "the place held for a window that never came is gone"
-    );
-}
-
-#[test]
-fn a_floated_windows_cover_is_where_the_shell_draws_it() {
-    let mut policy = mount();
-    map(&mut policy, 1, "so.tilo.chat");
-    policy
-        .handle()
-        .dispatch(ChromeEffect::OpenApp {
-            app: "so.tilo.notes".into(),
-            beside: None,
-            background: None,
-            float: Some(true),
-        })
-        .unwrap();
-    settle(&mut policy);
-    assert!(
-        policy.float_covers().is_empty(),
-        "a place no window fills draws nothing over the shell"
-    );
-    // The window the shell held the place for takes it.
-    map(&mut policy, 2, "so.tilo.notes");
-    let covers = policy.float_covers();
-    assert_eq!(covers.len(), 1, "one window floats: {covers:?}");
-    let (window, cover) = covers[0];
-    assert_eq!(window, 2, "the cover is of the window that floats");
-    // A window an app opens floating stands as a card beside the window it
-    // opened next to: the cover is that card alone, so the windows behind show
-    // under the shadow it casts.
-    assert_eq!(
-        (cover.width(), cover.height()),
-        ui::widget::FLOAT_CARD_SIZE,
-        "the card's bar and body, as the shell draws it: {cover:?}"
     );
 }
 

@@ -39,7 +39,7 @@ pub mod banners;
 pub mod displays;
 pub mod drawn;
 pub mod floats;
-pub use floats::{AskedFloat, DockedCard};
+pub use floats::AskedFloat;
 pub mod history;
 pub mod launch;
 pub mod lookup;
@@ -196,9 +196,9 @@ pub type SearchAsk = (usize, Option<String>, Option<String>, Option<u32>);
 
 pub struct Shared {
     pub tree: Layout,
-    /// The floating windows this device stands in the floating layer's column, and where the
-    /// layer put each ([`DesktopHandle::docked_cards`], [`DesktopHandle::dock_at`]).
-    pub dock: floats::Dock,
+    /// The windows that opened here as cards: snapped into their strip and floated again, they go
+    /// back to the card they were, not over the shell at a window's size.
+    pub cards_born: std::collections::BTreeSet<GroupId>,
     /// The windows the person floated or put back that the host has not made arranging actions of
     /// yet ([`DesktopHandle::take_asked_floats`]).
     pub asked_floats: Vec<floats::AskedFloat>,
@@ -478,22 +478,6 @@ impl DesktopHandle {
 
     pub fn revision(&self) -> u64 {
         self.shared.borrow().revision
-    }
-
-    /// The floating windows that stand as cards in the floating layer's column on this device.
-    #[must_use]
-    pub fn docked_cards(&self) -> Vec<DockedCard> {
-        self.shared.borrow().dock.cards.values().cloned().collect()
-    }
-
-    /// Where the floating layer put each docked window this pass, by group, in shell coordinates:
-    /// the shell stands each there from its next pass.
-    pub fn dock_at(&self, places: std::collections::BTreeMap<u64, Rect>) {
-        let mut shared = self.shared.borrow_mut();
-        if shared.dock.places != places {
-            shared.dock.places = places;
-            shared.wake.wake();
-        }
     }
 
     /// Changes whenever the navigation snapshot may: the tree or what the surface presents beside

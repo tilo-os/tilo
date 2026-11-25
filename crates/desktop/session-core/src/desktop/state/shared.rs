@@ -77,7 +77,7 @@ impl Shared {
     ) -> Self {
         Self {
             tree,
-            dock: super::floats::Dock::default(),
+            cards_born: std::collections::BTreeSet::new(),
             asked_floats: Vec::new(),
             holders: HashMap::new(),
             opened_by: std::collections::BTreeMap::new(),

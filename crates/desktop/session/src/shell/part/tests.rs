@@ -1965,3 +1965,91 @@ fn a_choice_of_a_shell_kept_in_the_workspace_is_a_call_of_its_action_there() {
     }
     assert!(link.take_own_calls().is_empty(), "a call is handed once");
 }
+
+/// What the shell draws over the windows under a floating window is its card: the cover names the
+/// window that floats, at the card's bar and body, and a place still waiting for its window covers
+/// nothing of the windows under it.
+#[test]
+fn a_float_covers_the_windows_under_it_once_its_window_fills_it() {
+    use tilo_desktop_model::{FloatCorner, FloatPlace, IdMinter, Tab, TileContent};
+    use tilo_session_core::desktop::state::DesktopHandle;
+
+    let mut minter = IdMinter::new(21);
+    let mut tab = |tile: TileContent, title: &str| Tab {
+        id: minter.mint(),
+        title: title.to_owned(),
+        tile,
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let filled = tab(
+        TileContent::Foreign {
+            app_id: "so.tilo.mail".to_owned(),
+            surface_id: 42,
+        },
+        "Inbox",
+    );
+    let waiting = tab(
+        TileContent::LocalApp {
+            app_id: "so.tilo.notes".to_owned(),
+            label: "Notes".to_owned(),
+            note: String::new(),
+        },
+        "Notes",
+    );
+    let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Studio", vec![filled, waiting]);
+    let desktop = DesktopHandle::new(tree, minter.salt());
+    desktop.set_viewport_width(1280.0);
+    let (strip, groups) = desktop.read(|tree| {
+        let workspace = tree.workspaces.first().expect("the shell has a workspace");
+        let strip = workspace.strips.first().expect("and a strip");
+        (
+            strip.id,
+            strip
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+        )
+    });
+    let area = {
+        let shared = desktop.shared.borrow();
+        tilo_session_core::desktop::state::shown::work_area(&shared, None)
+    };
+    {
+        let mut shared = desktop.shared.borrow_mut();
+        // A window opened over the shell stands as a card; one already floating keeps the place
+        // the record holds, which no window fills yet.
+        let _ = tilo_session_core::desktop::state::floats::open_as_card(
+            &mut shared,
+            strip,
+            groups[0],
+            area,
+        );
+        let corner = FloatPlace::new(FloatCorner::TopLeft, 40, 40, 640, 480);
+        if let Some(workspace) = shared.tree.workspaces.first_mut() {
+            workspace.layout.set_float(groups[1], Some(corner));
+        }
+    }
+    tilo_session_core::desktop::state::shown::lay_out(&mut desktop.shared.borrow_mut());
+
+    let (mut part, _link) = part();
+    part.carry_floats(desktop);
+    let covers = part.drawn_over_windows();
+    assert_eq!(
+        covers.len(),
+        1,
+        "a place no window fills yet draws nothing over the shell: {covers:?}"
+    );
+    let cover = covers.first().expect("the window that floats is covered");
+    assert_eq!(cover.window, 42, "the cover is of the window that floats");
+    // A window an app opens floating stands as a card beside the window it opened next to: the
+    // cover is that card alone, so the windows behind show under the shadow it casts.
+    assert_eq!(
+        (f64::from(cover.rect.2), f64::from(cover.rect.3)),
+        ui::widget::FLOAT_CARD_SIZE,
+        "the card's bar and body, as the shell draws it: {:?}",
+        cover.rect
+    );
+}

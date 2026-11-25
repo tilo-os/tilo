@@ -257,6 +257,21 @@ fn strip_reading_of(session: &Session, place: u64) -> layout::StripReading {
     strip_at(session, strip).expect("the strip is in the record")
 }
 
+/// Where the window `tab` floats, as the shell's record keeps it; `None` when it stands in its
+/// strip.
+fn float_of(session: &Session, tab: u64) -> Option<tilo_desktop_model::FloatPlace> {
+    session.handle().read(|tree| {
+        tree.workspaces.iter().find_map(|workspace| {
+            let group = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|shown| shown.id == tab))?;
+            workspace.layout.float_of(group.id)
+        })
+    })
+}
+
 // (6) A window let go outside its strip floats above the shell, where every member of the workspace
 // sees it: one step of the person's record, taken back by undo, and snapping it back with no target
 // returns it exactly where it was.
@@ -290,9 +305,10 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
 
     let floating = strip_reading_of(&session, window);
     assert!(floating.floating, "the window floats");
-    assert_eq!(floating.float_corner, "bottom-right");
-    assert_eq!((floating.float_dx, floating.float_dy), (40, 24));
-    assert_eq!((floating.float_width, floating.float_height), (640, 480));
+    let place = float_of(&session, window).expect("the record keeps where it floats");
+    assert_eq!(place.corner, tilo_desktop_model::FloatCorner::BottomRight);
+    assert_eq!((place.dx, place.dy), (40, 24));
+    assert_eq!((place.width, place.height), (640, 480));
     assert!(
         !strip_reading_of(&session, other).floating,
         "only the window the person let go floats"
@@ -379,14 +395,10 @@ fn a_float_is_in_the_workspaces_layout_so_the_next_start_shows_it() {
     step(&mut next);
     let back = strip_reading_of(&next, window);
     assert!(back.floating, "the next start shows it floating");
-    assert_eq!(back.float_corner, "top-left");
+    let place = float_of(&next, window).expect("the record keeps where it floats");
+    assert_eq!(place.corner, tilo_desktop_model::FloatCorner::TopLeft);
     assert_eq!(
-        (
-            back.float_dx,
-            back.float_dy,
-            back.float_width,
-            back.float_height
-        ),
+        (place.dx, place.dy, place.width, place.height),
         (10, 10, 600, 400)
     );
     assert_eq!(strip_of(&next, window), Some(strip));

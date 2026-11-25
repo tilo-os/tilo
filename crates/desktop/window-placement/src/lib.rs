@@ -2164,20 +2164,6 @@ impl DesktopPolicy {
             .collect()
     }
 
-    /// Each window floating over the shell, and the rect the shell draws over the windows under
-    /// it for that window: the whole of its bar and body, which it paints opaque, in surface
-    /// coordinates. What lies under it there is drawn around it.
-    #[must_use]
-    pub fn float_covers(&self) -> Vec<(u64, Rect)> {
-        self.handle.read(|tree| {
-            self.handle
-                .float_covers()
-                .into_iter()
-                .filter_map(|(tab, cover)| Some((window_of(tree, tab)?, cover)))
-                .collect()
-        })
-    }
-
     /// The window covering the display the person works on, if one is.
     #[must_use]
     pub fn covering_window(&self) -> Option<u64> {
