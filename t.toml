@@ -388,9 +388,9 @@ packages = [
 # workspace-unify, so every shared library resolves with the features the family's whole build
 # gives it, and an ad-hoc `t cargo check -p` of a package resolves them the same way.
 #
-# It is main's gate (`gate`): every head of main asks it whatever its change reaches, and its one
-# job stands ahead of people's work in line, so a head that doesn't compile is said within minutes
-# of its push instead of waiting behind the queue. That is the check the compiler cache serves
+# It is not main's gate (`gate`) while t admits a gate's cargo driver only on a whole free core:
+# on a node its compiles keep full, the gate stood first in line without starting and held people's
+# work behind it. As a gate, every head of main asks it and its one job stands ahead of people's. That is the check the compiler cache serves
 # warmest: every `t cargo check`, `t test` and `t cargo test` compiles these units, so a head pays
 # only for what its change moved. A package the family leaves out builds for another platform or
 # architecture (its `clippy-{arch}` family has it), so no single native check covers it.
@@ -409,9 +409,8 @@ exclude = [
     "windows-vm", "workspace-unify",
 ]
 default = false
-gate = true
 
-# The page's compile, as main's gate beside `check`: the crates clippy-page lints, built for
+# The page's compile, beside `check` and not a gate for the same reason: the crates clippy-page lints, built for
 # wasm32-unknown-unknown with no lints, asked of every head of main and ranked with `check`. No
 # `wrapper`: the page's clippy configuration bans std's clocks for lints, and a compile alone
 # needs none of it. No `unify`: workspace-unify builds nothing for wasm32, and the page's own
@@ -423,7 +422,6 @@ name = "check-page"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "check"
 args = ["--locked", "--target", "wasm32-unknown-unknown"]
-gate = true
 default = false
 packages = [
     "tilo-key-group", "tilo-browser-runtime",
