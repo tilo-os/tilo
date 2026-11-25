@@ -79,6 +79,21 @@ impl Workspace {
             command @ (Command::RecordChanges { .. }
             | Command::RecordChange { .. }
             | Command::Records) => self.documents.command(command),
+            // The caller's last steps still in effect, from the documents' change graph: a read
+            // that needs the store itself, so it does not go through `wire::read`, as the
+            // workspace service answers it too.
+            Command::Steps {
+                steps,
+                invoker,
+                kinds,
+                redo,
+            } => Ok(wire::steps(
+                &mut self.store.borrow_mut(),
+                steps,
+                &invoker,
+                &kinds,
+                redo,
+            )),
             command if command.writes() => {
                 let stamps = stamps_of(&command);
                 let mut store = self.store.borrow_mut();
