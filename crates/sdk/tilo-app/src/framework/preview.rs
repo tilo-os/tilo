@@ -431,7 +431,7 @@ mod tests {
     /// Bring `replica` back to the version `target` through the store's `restore` verb, as
     /// `Shelf`'s history decodes it.
     fn restore(
-        replica: &mut Replica<Shelf, tilo_resource::AppNamed>,
+        replica: &mut Replica<Shelf, AppNamed>,
         target: &[ui_core::automerge::ChangeHash],
     ) -> Result<(), tilo_actions::ActionError> {
         use super::super::history::{HistoryEdit, ResourceHistoryEdit, version_name};
