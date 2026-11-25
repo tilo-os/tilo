@@ -1406,6 +1406,9 @@ fn holding_super_shows_the_keys_on_the_shells_screen() {
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
     });
+    // What the shell says before the hold: a key's words the bar already holds ("Strips" in
+    // "Showing Strips") would read as the card long after it left.
+    let before = session.accessible_labels();
 
     press_key(&mut session, KEY_LEFT_META, true);
     until(&mut session, "the keys a held Super reaches", |session| {
@@ -1418,8 +1421,8 @@ fn holding_super_shows_the_keys_on_the_shells_screen() {
         .into_iter()
         .flat_map(|(_, hints)| hints)
         .map(|hint| hint.label)
-        .find(|label| !label.is_empty())
-        .expect("a key says what it does");
+        .find(|label| !label.is_empty() && !before.iter().any(|said| said.contains(label)))
+        .expect("a key says what it does, in words the shell said nowhere before the hold");
     until(&mut session, "the key card", |session| {
         session.shell_says(&label)
     });
