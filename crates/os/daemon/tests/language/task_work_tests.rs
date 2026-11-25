@@ -17,7 +17,7 @@ mod session_tests {
     use tilo_server_protocol::WorkspaceId;
     use tilo_workspace_service::agent_shortcuts::TASKS;
     use tilo_workspace_service::agents::task_work::{
-        Task, TaskWork, Work, made_task, task, with_place,
+        Task, TaskWork, Work, made_by, task, with_place,
     };
     use tilo_workspace_service::agents::triggered;
     use tilo_workspace_service::agents::{EngineActions, Outcome, WorkspaceActionProvider};
@@ -352,7 +352,9 @@ mod session_tests {
             let made = self
                 .act(&format!("tl:{TASKS}"), "new_task", arguments)
                 .await;
-            made_task(made.value.as_ref().unwrap()).unwrap().to_owned()
+            made_by(made.value.as_ref().unwrap(), TASKS)
+                .unwrap()
+                .to_owned()
         }
 
         /// The task `id` as the device holds it, its work read where Tasks keeps it.

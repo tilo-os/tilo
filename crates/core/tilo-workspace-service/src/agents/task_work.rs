@@ -516,9 +516,9 @@ impl TaskWork {
             arguments,
         )
         .await?;
-        made.pointer("/resources/0")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+        made.get("value")
+            .and_then(|answer| made_by(answer, NOTES))
+            .map(|id| triggered::published(NOTES, id))
             .ok_or_else(|| format!("Notes made no note: {made}"))
     }
 }
@@ -751,9 +751,9 @@ pub fn task_id(address: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// The id of the task Tasks answered (`answer`, an action's value) its call made, by the address
-/// each record it made is published at (`so.tilo.tasks/<id>`).
-pub fn made_task(answer: &Value) -> Option<&str> {
+/// The id of the record of `app` that `answer` (an action's value) says its call made, by the
+/// address each record it made is published at (`<app>/<id>`).
+pub fn made_by<'a>(answer: &'a Value, app: &str) -> Option<&'a str> {
     answer
         .get("made")?
         .as_array()?
@@ -761,7 +761,7 @@ pub fn made_task(answer: &Value) -> Option<&str> {
         .filter_map(|made| {
             made.get("address")?
                 .as_str()?
-                .strip_prefix(TASKS)?
+                .strip_prefix(app)?
                 .strip_prefix('/')
         })
         .find(|id| !id.is_empty())

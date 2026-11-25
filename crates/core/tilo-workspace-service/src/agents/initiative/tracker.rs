@@ -129,7 +129,7 @@ impl Tracker {
         .await?;
         let address = made
             .get("value")
-            .and_then(task_work::made_task)
+            .and_then(|answer| task_work::made_by(answer, TASKS))
             .map(|id| triggered::published(TASKS, id))
             .ok_or_else(|| format!("Tasks made no task: {made}"))?;
         let task = self.filed(&address).await?;
