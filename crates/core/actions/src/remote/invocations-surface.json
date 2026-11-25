@@ -535,6 +535,28 @@
             {
               "name": "resource",
               "type": "text"
+            },
+            {
+              "name": "at",
+              "type": {
+                "option": {
+                  "named": "PressPoint"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "PressPoint",
+          "doc": "Where in its window a press was, in its logical pixels from the top-left corner.",
+          "fields": [
+            {
+              "name": "x",
+              "type": "int"
+            },
+            {
+              "name": "y",
+              "type": "int"
             }
           ]
         },

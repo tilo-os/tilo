@@ -173,6 +173,9 @@ pub enum ShellCall {
         window: u64,
         /// The input serial the compositor issued to that window with the press.
         serial: u32,
+        /// Where in the window the press was, for a pointer's or a finger's: where a question
+        /// the call it proves raises stands. Always written: the wire reads by position.
+        at: Option<tilo_actions::remote::asked::PressPoint>,
     },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.

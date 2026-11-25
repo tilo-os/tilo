@@ -4,10 +4,10 @@
 //! click or a key the compositor delivered to one of the app's windows while that window had
 //! focus, and never input an agent's seat or another device sent through the shared seat. The
 //! compositor saw that input, so it is the one that can say so: each press it delivers to a
-//! window is recorded with the input serial it issued to that window, and the session hands it
-//! to the device's daemon over its shell link
-//! ([`runtime_collab::wire::shell::ShellCall::Press`]), which decides whether a call naming the
-//! serial follows it.
+//! window is recorded with the input serial it issued to that window, and where in the window a
+//! pointer or a finger pressed, and the session hands it to the device's daemon over its shell
+//! link ([`runtime_collab::wire::shell::ShellCall::Press`]), which decides whether a call naming
+//! the serial follows it, and stands a question that call raises where the press was.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -16,28 +16,40 @@ use std::sync::Mutex;
 /// session's next pass, and bounded so a session that fell behind is not grown without end.
 const KEPT: usize = 64;
 
+/// One press of the person's in a window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersonPress {
+    /// The window it reached, by its id.
+    pub window: u64,
+    /// The input serial the compositor issued to that window with it.
+    pub serial: u32,
+    /// Where in the window it was, in logical pixels from the window's top-left corner: a
+    /// pointer's or a finger's press; `None` for a key.
+    pub at: Option<(i32, i32)>,
+}
+
 /// The person's presses this compositor delivered, each with the serial it issued to the window
 /// that received it, waiting to be handed to the daemon.
 #[derive(Debug, Default)]
 pub struct PersonPresses {
-    pending: Mutex<VecDeque<(u64, u32)>>,
+    pending: Mutex<VecDeque<PersonPress>>,
 }
 
 impl PersonPresses {
-    /// The person pressed in `window`, delivered with the input serial `serial`.
-    pub fn note(&self, window: u64, serial: u32) {
+    /// The person pressed in `window`, delivered with the input serial `serial`, at `at` in it.
+    pub fn note(&self, window: u64, serial: u32, at: Option<(i32, i32)>) {
         let Ok(mut pending) = self.pending.lock() else {
             return;
         };
-        pending.push_back((window, serial));
+        pending.push_back(PersonPress { window, serial, at });
         while pending.len() > KEPT {
             let _ = pending.pop_front();
         }
     }
 
-    /// The presses delivered since this was last asked, each window and its serial, oldest
-    /// first: what the session hands the device's daemon.
-    pub fn take(&self) -> Vec<(u64, u32)> {
+    /// The presses delivered since this was last asked, oldest first: what the session hands the
+    /// device's daemon.
+    pub fn take(&self) -> Vec<PersonPress> {
         let Ok(mut pending) = self.pending.lock() else {
             return Vec::new();
         };
@@ -49,12 +61,29 @@ impl PersonPresses {
 mod tests {
     use super::*;
 
+    fn press(window: u64, serial: u32) -> PersonPress {
+        PersonPress {
+            window,
+            serial,
+            at: None,
+        }
+    }
+
     #[test]
     fn a_press_is_handed_over_once() {
         let presses = PersonPresses::default();
-        presses.note(7, 11);
-        presses.note(8, 12);
-        assert_eq!(presses.take(), [(7, 11), (8, 12)]);
+        presses.note(7, 11, None);
+        presses.note(8, 12, Some((40, 18)));
+        assert_eq!(
+            presses.take(),
+            [
+                press(7, 11),
+                PersonPress {
+                    at: Some((40, 18)),
+                    ..press(8, 12)
+                }
+            ]
+        );
         assert!(presses.take().is_empty(), "each press is handed over once");
     }
 
@@ -63,11 +92,11 @@ mod tests {
         let presses = PersonPresses::default();
         let kept = u32::try_from(KEPT).expect("the bound fits a serial");
         for serial in 0..(kept + 2) {
-            presses.note(3, serial);
+            presses.note(3, serial, None);
         }
         let taken = presses.take();
         assert_eq!(taken.len(), KEPT);
-        assert_eq!(taken.first(), Some(&(3, 2)), "the oldest fell out");
-        assert_eq!(taken.last(), Some(&(3, kept + 1)));
+        assert_eq!(taken.first(), Some(&press(3, 2)), "the oldest fell out");
+        assert_eq!(taken.last(), Some(&press(3, kept + 1)));
     }
 }

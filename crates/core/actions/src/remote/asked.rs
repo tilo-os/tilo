@@ -835,6 +835,18 @@ pub struct Pressed {
     /// The window's tab key, as the session publishes it (`device.Window.key`).
     pub instance: String,
     pub resource: String,
+    /// Where in that window the press was, as the compositor that delivered it saw it: the
+    /// question stands there, its answer under the press. `None` for a press it gave no point
+    /// for (a key).
+    #[serde(default)]
+    pub at: Option<PressPoint>,
+}
+
+/// A point in a window, in its logical pixels from its top-left corner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PressPoint {
+    pub x: i32,
+    pub y: i32,
 }
 
 /// One question that waits for the person, as the reading of its workspace's invocations

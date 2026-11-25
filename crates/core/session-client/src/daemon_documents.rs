@@ -136,13 +136,19 @@ impl DaemonShell {
     }
 
     /// Tell the daemon the person pressed in `window` (its tab id, as `device.Window.key` names
-    /// it), delivered with the input serial `serial` the compositor issued: a call an app's
-    /// window makes that names it runs as the person, once. Sent without waiting: a press the
+    /// it), at `at` in it where a pointer or a finger pressed, delivered with the input serial
+    /// `serial` the compositor issued: a call an app's window makes that names it runs as the
+    /// person, once, and a question it raises stands at `at`. Sent without waiting: a press the
     /// daemon hears late proves nothing, and the call it makes possible waits for it.
-    pub fn press(&self, window: u64, serial: u32) {
+    pub fn press(
+        &self,
+        window: u64,
+        serial: u32,
+        at: Option<tilo_actions::remote::asked::PressPoint>,
+    ) {
         let inner = Arc::clone(&self.inner);
         self.inner.runtime.spawn(async move {
-            if let Err(error) = inner.ask(ShellCall::Press { window, serial }).await {
+            if let Err(error) = inner.ask(ShellCall::Press { window, serial, at }).await {
                 tracing::debug!(%error, "the device's daemon was not told of the person's press");
             }
         });

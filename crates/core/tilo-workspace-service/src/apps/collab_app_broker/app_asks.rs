@@ -19,7 +19,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use tilo_actions::remote::asked::{AskedBy, AskedDispatch, AskedFacts, AskedRecords, RecordRef};
+use tilo_actions::remote::asked::{
+    AskedBy, AskedDispatch, AskedFacts, AskedRecords, PressPoint, Pressed, RecordRef,
+};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvocationReceipt, InvocationState,
     InvokeRequest, ReceiptStatus, RemoteActionMessage,
@@ -90,7 +92,7 @@ impl Calls {
     }
 }
 
-/// The asked records of the apps' calls this broker keeps, and the calls kept in them.
+/// The asked records of the apps' calls kept here, and the calls kept in them.
 pub(super) struct AppAsks {
     /// The records and their store, once the device's workspaces keep one.
     records: OnceLock<(
@@ -98,6 +100,9 @@ pub(super) struct AppAsks {
         Arc<tilo_actions::remote::asked::AskedStore>,
     )>,
     calls: Mutex<Calls>,
+    /// Where the person pressed each call that is being written as its asked record: what the
+    /// store reads back while it writes it ([`AskedDispatch::pressed`]), and keeps with it.
+    pressing: Mutex<HashMap<InvocationId, Pressed>>,
 }
 
 impl AppAsks {
@@ -105,6 +110,7 @@ impl AppAsks {
         Arc::new(Self {
             records: OnceLock::new(),
             calls: Mutex::default(),
+            pressing: Mutex::default(),
         })
     }
 
@@ -133,16 +139,33 @@ fn cancelled(invocation: InvocationId, message: &str) -> InvocationState {
     )
 }
 
+/// Whether `answer` refused its call for want of the person's yes: what is kept as its asked
+/// record ([`AppBrokerState::keep_app_ask`]).
+pub(super) fn waits_for_yes(answer: &RemoteActionMessage) -> bool {
+    matches!(
+        answer,
+        RemoteActionMessage::Receipt(InvocationReceipt {
+            status: ReceiptStatus::Rejected {
+                error: ActionCallError::ConfirmationRequired(_),
+            },
+            ..
+        })
+    )
+}
+
 impl AppBrokerState {
     /// Keep `request`, which `caller` made on the connection of `app` and which `first`
     /// refused for want of the person's yes, as its asked record: answered waiting in it, and
-    /// sent again through `provider` once the person approves. Any other answer, a call that
-    /// carries an approve already, and a host that keeps no asked records, answer `first`.
+    /// sent again through `provider` once the person approves. `pressed` is the window of this
+    /// device the person pressed the call in, by its tab id, and where in it, when their press
+    /// there made it: the question stands at that press. Any other answer, a call that carries
+    /// an approve already, and a host that keeps no asked records, answer `first`.
     pub(super) fn keep_app_ask(
         &self,
         (provider, app): (&ConnectionActionProvider, &str),
         caller: &Caller,
         request: &InvokeRequest,
+        pressed: Option<(u64, Option<PressPoint>)>,
         first: RemoteActionMessage,
     ) -> RemoteActionMessage {
         let RemoteActionMessage::Receipt(InvocationReceipt {
@@ -175,7 +198,28 @@ impl AppBrokerState {
             };
         }
         let invocation = request.invocation;
-        let status = match records.write_asked(&workspace, caller, request, &facts) {
+        // Where the person pressed it, by this device's id and the window's tab key as the
+        // session publishes them, so the shell stands the question at that press.
+        let device = self
+            .services
+            .shell
+            .as_ref()
+            .map(|shell| hex::encode(shell.workspaces.device_cert().device_public_key));
+        if let (Some((window, at)), Some(device)) = (pressed, device) {
+            asks.pressing.lock_recover().insert(
+                invocation,
+                Pressed {
+                    device,
+                    app: app.to_owned(),
+                    instance: window.to_string(),
+                    resource: request.target.address.resource.clone(),
+                    at,
+                },
+            );
+        }
+        let written = records.write_asked(&workspace, caller, request, &facts);
+        asks.pressing.lock_recover().remove(&invocation);
+        let status = match written {
             Ok(record) => {
                 let state = InvocationState::new(invocation, record.waiting(invocation));
                 let status = state.receipt().status;
@@ -304,6 +348,10 @@ impl AskedDispatch for AppAsks {
         // The connection that made it is what sends it again: once it is gone, nothing here
         // admits it, after a restart included.
         serde_json::Value::Null
+    }
+
+    fn pressed(&self, invocation: InvocationId) -> Option<Pressed> {
+        self.pressing.lock_recover().get(&invocation).cloned()
     }
 
     fn readmit(

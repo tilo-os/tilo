@@ -320,11 +320,11 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
                 None => None,
             })
         }
-        ShellCall::Press { window, serial } => {
+        ShellCall::Press { window, serial, at } => {
             // The compositor saw the person's input reach this window and issued `serial` with
             // it: the daemon keeps it, and a call whose app connection is that window runs as
             // the person once when it names it.
-            shell.broker.state.note_press(window, serial);
+            shell.broker.state.note_press(window, serial, at);
             ShellReply::Pressed
         }
         ShellCall::Writes => ShellReply::Writes(next_writes(&shell.writes).await),

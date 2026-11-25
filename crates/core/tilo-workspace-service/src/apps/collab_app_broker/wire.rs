@@ -792,7 +792,13 @@ impl JoinedChannel {
             .ok_or_else(|| BrokerError::failed("the action provider dropped the request".into()))?;
             Ok(match asking {
                 Some((provider, caller, invoke)) => {
-                    state.keep_app_ask((&provider, &app_id), &caller, &invoke, answer)
+                    // A call the person's press in this connection's window made asks there.
+                    let pressed = if super::app_asks::waits_for_yes(&answer) {
+                        state.pressed_in_window(peer_id, press).await
+                    } else {
+                        None
+                    };
+                    state.keep_app_ask((&provider, &app_id), &caller, &invoke, pressed, answer)
                 }
                 None => answer,
             })
