@@ -994,7 +994,6 @@ impl Session {
             agent_sessions: std::sync::Arc::clone(&agent_sessions),
             handle: handle.clone(),
             person: options.person.clone(),
-            activities: Rc::clone(&activities),
             live: Rc::clone(&live),
             surfaces: surfaces.clone(),
             tray: tray.clone(),
@@ -1951,10 +1950,7 @@ impl Session {
         shared
             .services
             .borrow_mut()
-            .add(Box::new(crate::time::Served::new(
-                Rc::clone(&shared.activities),
-                &shared.wake_handle,
-            )));
+            .add(Box::new(crate::time::Served::new(&shared.wake_handle)));
         // Whether the person is typing, read by what steps aside for their text.
         shared
             .services

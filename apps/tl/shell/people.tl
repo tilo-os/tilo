@@ -968,7 +968,7 @@ view clock_or_follow(compact: Bool) {
     if board.following != "" or board.stopped != "" {
         follow_chip(compact)
     } else {
-        clock(compact)
+        clock()
     }
 }
 

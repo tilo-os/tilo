@@ -82,8 +82,6 @@ fn band() -> u32 {
 /// The shell on the session, and what feeds it.
 pub(crate) struct Shell {
     lists: DeviceLists,
-    /// The due timer ids announced already, so an unchanged one is announced once.
-    announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
     /// The services' revision and the layout the places' readings were last followed at.
     followed: Option<(u64, LayoutReading)>,
@@ -231,7 +229,6 @@ impl Shell {
         let record = crate::shell_document::ShellRecord::open(state, kept_elsewhere);
         let mut shell = Self {
             lists,
-            announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             link,
             followed: None,
             reading: std::collections::BTreeMap::new(),
@@ -264,14 +261,6 @@ impl Shell {
         shell.follow_deadline(None);
         tilo_startup_metrics::mark("shell-build-done");
         Ok(shell)
-    }
-
-    /// A timer Clocks says came due that the bar has not announced: its id, and what to say in the
-    /// app's own words. Each id is announced once.
-    pub(crate) fn new_due_timer(&self) -> Option<(String, String, String)> {
-        let (id, title, body) = self.lists.due_timer()?;
-        let mut announced = self.announced.borrow_mut();
-        announced.insert(id.clone()).then_some((id, title, body))
     }
 
     /// Make a part for each output `compositor` shows that has none, stand each part on its
@@ -1867,16 +1856,6 @@ impl crate::Session {
         let Some(shell) = self.shell.as_mut() else {
             return Ok(());
         };
-        if let Some((_, title, body)) = shell.new_due_timer() {
-            self.shared
-                .telling()
-                .show(&crate::platform::notice::Notice::new(
-                    String::new(),
-                    1,
-                    title,
-                    body,
-                ));
-        }
         // The styles the device offers, followed as its daemon publishes them, so a style a
         // person or their agent installed is offered without a restart (shell.md §6).
         shell.follow_styles();

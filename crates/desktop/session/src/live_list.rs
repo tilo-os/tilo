@@ -771,7 +771,7 @@ mod tests {
 
     use super::*;
 
-    const CLOCKS: &str = crate::shell::activities::CLOCKS_APP;
+    const CLOCKS: &str = ui::apps::CLOCKS;
 
     /// The rows of a session with nothing live in a workspace, beside `board`'s activities.
     fn sources(board: &Arc<runtime_collab::LiveActivities>) -> Sources {

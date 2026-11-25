@@ -11,8 +11,8 @@ view live_pill(phone: Bool, wide: Bool) {
     // What the person kept off this bar stays in quick settings.
     let rows = device.live.rows.filter(r -> not r.collapsed)
     // The pill's own slot is only as wide as what it shows: the bar's width (`phone`, `wide`)
-    // says how much room there is. Only a wide bar has room for what is live itself, its name
-    // and its play button.
+    // says how much room there is. Only a wide bar has room for what is live itself: its name,
+    // what it reads now and its play button.
     let roomy = wide
     if let newest = rows.last() {
         if phone {
@@ -152,6 +152,9 @@ view native_row(r: device.LiveItem, compact: Bool) {
         row(gap: .related, align: .center) {
             stack(fill) {
                 ui.Text(live_name(r), role: .label, lines: 1, truncate)
+            }
+            if r.value != "" {
+                ui.Text(r.value, role: .caption, numeric: true, lines: 1)
             }
             for c in r.controls {
                 if c.id == "play-pause" {

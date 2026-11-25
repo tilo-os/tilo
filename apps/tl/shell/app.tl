@@ -95,22 +95,10 @@ fn loads_style(chosen: Text) -> Bool {
     true
 }
 
-/// The time, to the minute, and the timer Clocks runs beside it: its label and what it has
-/// left. What runs now — a call, a timer — is a live activity, which the shell shows from the live
-/// views the index derives. The time's name is a text of its own, so a reader hears it. A compact
-/// bar keeps the time alone: the timer's readout stands beside it where the bar has the room for
-/// it, and on a phone the live pill reads what the timer has left.
-view clock(compact: Bool) {
-    row(gap: .tight, align: .center) {
-        ui.Text(device.time.clock, role: .subheading, numeric: true, lines: 1)
-        if not compact and device.time.timer != "" {
-            ui.Text(device.time.timer, role: .caption)
-            if device.time.timer_paused {
-                ui.Text("Paused", role: .caption)
-            }
-            ui.Text(device.time.timer_left, role: .caption, numeric: true)
-        }
-    }
+/// The time, to the minute. What runs now — a call, a timer — is a live activity, which the
+/// shell's live pill shows with what it reads now.
+view clock() {
+    ui.Text(device.time.clock, role: .subheading, numeric: true, lines: 1)
 }
 
 /// The top bar: the parts the person put on it, in their order, each a view of its own, so a change

@@ -10,9 +10,6 @@ use ui::live_activity::{Published, Summary};
 
 use crate::platform::notice::{Notice, Notices as Told};
 
-/// The app whose live activity is the clocks app's when the shell reads the running timer.
-pub use ui::apps::CLOCKS as CLOCKS_APP;
-
 /// What the board published, parsed, at the revision it was read at.
 type Parsed = (u64, Rc<Vec<(String, Published)>>);
 
@@ -43,14 +40,6 @@ impl Activities {
     /// The board the apps show their live activities on.
     pub(crate) fn board(&self) -> &Arc<runtime_collab::LiveActivities> {
         &self.board
-    }
-
-    /// What one app publishes now.
-    pub(crate) fn published(&self, app: &str) -> Option<Published> {
-        let activity = self.board.activity(app)?;
-        serde_json::from_value(activity)
-            .inspect_err(|error| tracing::warn!(%error, app, "a live activity does not read back"))
-            .ok()
     }
 
     /// The due events the apps want announced, each told once.
@@ -180,6 +169,7 @@ impl Activities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::apps::CLOCKS as CLOCKS_APP;
 
     fn publish(board: &runtime_collab::LiveActivities, app: &str, published: Published) {
         board.show(app, Some(serde_json::to_value(published).expect("JSON")));

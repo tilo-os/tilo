@@ -440,9 +440,6 @@ pub(crate) struct DeviceLists {
     pub(crate) person: String,
     /// The surfaces the shell shows over its windows, and where they stand.
     pub(crate) surfaces: Surfaces,
-    /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
-    /// putting the floating one away hides it until Clocks shows something new.
-    pub(crate) activities: Rc<crate::shell::activities::Activities>,
     /// What is live now, as `device.live` reads it.
     pub(crate) live: Rc<crate::live_list::Sources>,
     /// The running applications' tray items, when their watcher serves: the bar shows them,
@@ -481,7 +478,6 @@ pub(crate) struct Shared {
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
-    pub(crate) activities: Rc<crate::shell::activities::Activities>,
     pub(crate) live: Rc<crate::live_list::Sources>,
     pub(crate) surfaces: Surfaces,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
@@ -503,7 +499,6 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         agent_sessions: std::sync::Arc::clone(&shared.agent_sessions),
         handle: shared.handle.clone(),
         person: shared.person.clone(),
-        activities: Rc::clone(&shared.activities),
         live: Rc::clone(&shared.live),
         surfaces: shared.surfaces.clone(),
         tray: shared.tray.clone(),
@@ -721,26 +716,6 @@ impl DeviceLists {
             }
         }
         windows
-    }
-
-    /// The due event Clocks wants announced, by its id and in the app's own words when it has them
-    /// (the desktop's otherwise): what the bar announces once.
-    pub(crate) fn due_timer(&self) -> Option<(String, String, String)> {
-        let announced = self
-            .activities
-            .published(crate::shell::activities::CLOCKS_APP)?
-            .announce?;
-        let title = if announced.title.is_empty() {
-            crate::i18n::t("clock-due-title")
-        } else {
-            announced.title
-        };
-        let body = if announced.body.is_empty() {
-            crate::i18n::t("clock-due-body")
-        } else {
-            announced.body
-        };
-        Some((announced.id, title, body))
     }
 
     /// The running applications' tray items, in the order they registered: each's key, the app's

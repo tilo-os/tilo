@@ -448,7 +448,6 @@ d-b3rfswle = Platz zeigen
 d-b3rfswle-place = Platz
 
 d-72tgr4px = Uhr
-    .w-paused = Pausiert
 
 d-3ezewqgy = Leiste
     .w-top-bar = Obere Leiste

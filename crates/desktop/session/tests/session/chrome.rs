@@ -141,8 +141,8 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     drop(app);
 }
 
-/// Clocks' live activity is the bar's clock: a running timer reads there,
-/// over the windows, and a timer coming due is announced once.
+/// Clocks' live activity stands on the bar beside the clock: a running timer reads there, and a
+/// timer coming due is announced once.
 #[test]
 fn a_running_timer_is_the_bars_clock() {
     let _settled = ui::motion::testing::settled();

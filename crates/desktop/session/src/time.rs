@@ -1,6 +1,5 @@
-//! The device's time as the person reads it: the minute in their style and zone, and the timer
-//! Clocks floats beside it. Published again when either moves, so a view that shows the time runs
-//! again then and at no other time.
+//! The device's time as the person reads it: the minute in their style and zone. Published again
+//! when it moves, so a view that shows the time runs again then and at no other time.
 //!
 //! Whether the clock is synchronised is published beside it (`session:clock`): a code made from a
 //! seed and the clock is only as good as the clock, and an app that shows one asks this before it
@@ -51,7 +50,7 @@ fn minute() -> i64 {
 /// The time now, as the session publishes it: the minute, and today as a calendar reads it — the
 /// day, its weekday, the month's name and the month's own shape, in the person's formats and
 /// language, so a view that draws a month needs no clock and no words of its own.
-fn now(activities: &crate::shell::activities::Activities) -> Time {
+fn now() -> Time {
     let local = ui::clock::local_now();
     let day = local.datetime().date();
     let formats = ui::format::region::current();
@@ -60,7 +59,7 @@ fn now(activities: &crate::shell::activities::Activities) -> Time {
     let first = day
         .checked_sub(jiff::Span::new().days(i64::from(day.day().saturating_sub(1))))
         .unwrap_or(day);
-    let mut time = Time {
+    Time {
         clock: ui::clock::time_of_day(local),
         year: i64::from(day.year()),
         month: i64::from(day.month()),
@@ -78,34 +77,13 @@ fn now(activities: &crate::shell::activities::Activities) -> Time {
             .iter()
             .map(|weekday| tilo_formats::weekday_name(*weekday, words))
             .collect(),
-        ..Time::default()
-    };
-    let Some(published) = activities.published(crate::shell::activities::CLOCKS_APP) else {
-        return time;
-    };
-    let Some(summary) = published.summary.filter(|_| published.overlay) else {
-        return time;
-    };
-    let countdown = summary.countdown.unwrap_or_default();
-    let stopwatch = summary.kind == ui::live_activity::Kind::Stopwatch;
-    time.timer = if !summary.title.is_empty() {
-        summary.title
-    } else if stopwatch {
-        "Stopwatch".to_owned()
-    } else {
-        "Timer".to_owned()
-    };
-    time.timer_left = ui::format::timecode(u64::try_from(countdown).unwrap_or_default());
-    // A paused timer is one with time still to run before it is due.
-    time.timer_paused = summary.tone == ui::live_activity::Tone::Neutral && countdown > 0;
-    time
+    }
 }
 
 /// The time as the session's services publish it, and the clock fact beside it.
 pub(crate) struct Served {
     published: Time,
     clock: Clock,
-    activities: std::rc::Rc<crate::shell::activities::Activities>,
     /// The platform's answer to whether the clock is synchronised, asked again off the loop as
     /// the minute moves: asking runs a program, and a program on the loop is a frozen desktop.
     synchronised: Synchronised,
@@ -172,14 +150,12 @@ impl Synchronised {
 
 impl Served {
     pub(crate) fn new(
-        activities: std::rc::Rc<crate::shell::activities::Activities>,
-        wake: &tilo_service::Wake,
+            wake: &tilo_service::Wake,
     ) -> Self {
         Self {
             published: Time::default(),
             // Asked before the loop: an app reads it beside the time from its first frame.
             clock: clock(),
-            activities,
             synchronised: Synchronised::start(wake),
         }
     }
@@ -224,7 +200,7 @@ impl Service for Served {
         if let Some(clock) = clock {
             self.clock = clock;
         }
-        let now = now(&self.activities);
+        let now = now();
         if now == self.published && !clock_moved {
             return false;
         }
@@ -251,11 +227,8 @@ mod tests {
     /// runs: an app reads `device.clock` beside the time and asks before it trusts what it makes.
     #[test]
     fn the_clock_is_published_beside_the_time() {
-        let activities = std::rc::Rc::new(crate::shell::activities::Activities::new(
-            std::sync::Arc::new(runtime_collab::LiveActivities::default()),
-        ));
         let wake: tilo_service::Wake = std::sync::Arc::new(|| {});
-        let mut served = super::Served::new(activities, &wake);
+        let mut served = super::Served::new(&wake);
         let published: Vec<String> = served
             .resources()
             .into_iter()

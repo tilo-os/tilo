@@ -563,15 +563,17 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
                 let name = format!("clock-{size}-{theme}-{state}");
                 super::shell::capture_to(&mut session, &dir, &name);
                 whole_clock(&session, &name, width, &mut clipped);
-                if size == "phone" {
-                    // The time gives way to nothing, and nor does what the timer has left: the
-                    // phone's pill reads it.
-                    let left = session.shell_text_bounds("4:32");
-                    if !left.is_some_and(|(x, y, w, _)| {
-                        y < 48.0 && x >= 0.0 && x + w <= f64::from(width)
-                    }) {
-                        clipped.push(format!("{name}: the bar reads no time left: {left:?}"));
-                    }
+                // The time gives way to nothing, and nor does what the timer has left: the pill
+                // reads it on a phone and on a desktop alike.
+                let left = session.shell_text_bounds("4:32");
+                if !left.is_some_and(|(x, y, w, _)| y < 48.0 && x >= 0.0 && x + w <= f64::from(width))
+                {
+                    clipped.push(format!("{name}: the bar reads no time left: {left:?}"));
+                }
+                // The running timer's card offers to pause it: nothing on the bar says it is
+                // paused.
+                if session.shell_text_bounds("Paused").is_some() {
+                    clipped.push(format!("{name}: the bar calls the running timer paused"));
                 }
             }
         }

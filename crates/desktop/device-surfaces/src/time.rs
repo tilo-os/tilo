@@ -30,12 +30,6 @@ pub struct Time {
     pub weekdays: Vec<String>,
     /// The person's week, full names, seven from the day their week starts on (`Monday`).
     pub weekday_names: Vec<String>,
-    /// The timer or stopwatch Clocks floats, by its name: its label, or `Timer` or `Stopwatch`
-    /// when the app named none; empty when none floats.
-    pub timer: String,
-    /// What the timer has left, or what the stopwatch has run.
-    pub timer_left: String,
-    pub timer_paused: bool,
 }
 
 /// The time as a view of another language reads it (`device.time`).
