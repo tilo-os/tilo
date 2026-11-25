@@ -3817,7 +3817,7 @@ impl ResourceStore {
     /// The stamp a commit of `note` carries: the action, who invoked it and when, and what the
     /// versions it makes say of it on every replica (what it was made from, the run it is a
     /// step of, who proposed it).
-    fn stamp(&self, note: &ChangeNote) -> Stamp {
+    fn stamp(&self, note: &ChangeNote, migration: bool) -> Stamp {
         let burst = self.burst_invocation(note);
         let (acted_for, acting) = self.acted_for();
         let context = Self::change_context(acting, note.readers.as_deref());
@@ -3869,7 +3869,21 @@ impl ResourceStore {
             invoker: note
                 .invoker
                 .as_ref()
-                .map(actor_text)
+                .map(|invoker| {
+                    // A migration is the platform bringing a package's document up to date on
+                    // this device, not an action someone invoked: its change is the person
+                    // whose device runs it, as the platform's other own writes are, so their
+                    // undo takes the carrying back as one step.
+                    match invoker {
+                        Actor::App(_) if migration => self
+                            .inner
+                            .writer
+                            .borrow()
+                            .as_ref()
+                            .map_or_else(|| actor_text(invoker), actor_text),
+                        _ => actor_text(invoker),
+                    }
+                })
                 // A write a page's reader made is theirs, not the person at this device's.
                 .or_else(|| self.inner.serving_invoker.borrow().clone())
                 .unwrap_or_else(|| {
@@ -5216,8 +5230,8 @@ impl Store for ResourceStore {
             self.mark_in(txn, &mark.doc, TRIGGERED, &mark.key, mark.value)?;
         }
         let migrating = self.inner.migrating.borrow_mut().take();
-        if let Some((migration, doc)) = migrating {
-            self.mark_in(txn, &doc, MIGRATED, &migration, Json::Bool(true))?;
+        if let Some((migration, doc)) = &migrating {
+            self.mark_in(txn, doc, MIGRATED, migration, Json::Bool(true))?;
         }
         let state = {
             let mut open = self.inner.txn.borrow_mut();
@@ -5232,7 +5246,7 @@ impl Store for ResourceStore {
                 }
             }
         };
-        let stamp = self.stamp(note);
+        let stamp = self.stamp(note, migrating.is_some());
         let commands = self.commands(&state, &stamp);
         let by = note.invoker.clone();
         let mut state = state;
